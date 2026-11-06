@@ -135,6 +135,34 @@ async def test_claim_atomically_reserves_gateway_selected_candidate(db_session, 
 
 
 @pytest.mark.asyncio
+async def test_active_cycle_adopts_a_raised_operator_ceiling_but_never_a_lowered_one(db_session, monkeypatch):
+    """#7975: the cycle row froze the ceiling at creation; a raised budget/slots must apply the same day."""
+    _enable(monkeypatch, slots=1, cycle_budget="0.01")
+    db_session.add(_destination())
+    await db_session.commit()
+    assert (await claim_probe(db_session)).claimed is True
+    assert (await claim_probe(db_session)).reason == "cycle_budget_exhausted"
+
+    # Operator raises both controls (rendered ConfigMap -> Settings); the next claim is admitted.
+    _enable(monkeypatch, slots=3, cycle_budget="0.03")
+    raised = await claim_probe(db_session)
+    assert raised.claimed is True
+    cycle = (await db_session.scalars(select(ModelProbeCycle))).one()
+    assert cycle.max_slots == 3
+    assert cycle.budget_usd == Decimal("0.030000")
+    assert cycle.reserved_usd == Decimal("0.020000")
+
+    # A lowered configuration never shrinks the live envelope below what is already reserved.
+    _enable(monkeypatch, slots=1, cycle_budget="0.01")
+    lowered = await claim_probe(db_session)
+    assert lowered.claimed is True  # third slot of the raised ceiling
+    cycle = (await db_session.scalars(select(ModelProbeCycle))).one()
+    assert cycle.max_slots == 3
+    assert cycle.budget_usd == Decimal("0.030000")
+    assert (await claim_probe(db_session)).reason == "cycle_budget_exhausted"
+
+
+@pytest.mark.asyncio
 async def test_operator_scope_selects_only_catalogue_models(db_session, monkeypatch):
     _enable(monkeypatch)
     monkeypatch.setenv("BG_MODEL_PROBE_MODEL_ALLOWLIST", '["not-a-catalogue-model", "us.anthropic.claude-sonnet-4-6"]')

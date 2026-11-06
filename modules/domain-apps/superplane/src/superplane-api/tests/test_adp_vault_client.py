@@ -1450,3 +1450,65 @@ def test_evidence_refuses_credential_provider_fallback(method):
             )
         )
     assert not recorder
+
+
+@pytest.mark.parametrize(
+    "claims,grant,allowed",
+    [
+        ({"authenticated_subject": "subject-alice", "authenticated_owner_principal": "user:canonical-alice"}, True, True),
+        ({"authenticated_subject": "other-subject", "authenticated_owner_principal": "user:canonical-alice"}, True, False),
+        ({"authenticated_subject": "subject-alice", "authenticated_owner_principal": None}, True, False),
+        ({"authenticated_subject": None, "authenticated_owner_principal": "user:canonical-alice"}, True, False),
+        ({}, True, False),
+        ({"authenticated_subject": "subject-alice", "authenticated_owner_principal": "user:canonical-alice"}, False, False),
+    ],
+)
+def test_producer_owner_mapping_never_substitutes_an_unverified_subject(monkeypatch, claims, grant, allowed):
+    from app.routers import provider_connections as consumer
+    from fastapi import HTTPException
+    from superplane_contracts.connections import RENEW_CREDENTIAL_PERMISSION
+
+    reader, recorder = _client(
+        [_Response(200, _evidence_body(
+            owner_principal="user:canonical-alice", delegated_to_workspaces=[], **claims,
+        ))], is_async=True,
+    )
+    monkeypatch.setattr(consumer, "get_credential_evidence_reader", lambda: reader)
+    permissions = frozenset({RENEW_CREDENTIAL_PERMISSION}) if grant else frozenset()
+    monkeypatch.setattr(consumer, "_permissions", lambda _: permissions)
+    request = SimpleNamespace(state=SimpleNamespace(caller=SimpleNamespace(
+        principal=SimpleNamespace(subject="subject-alice"),
+    )))
+
+    async def fetch():
+        return await consumer._vault_evidence(request, ORG, WORKSPACE, _reference())
+
+    if allowed:
+        evidence = asyncio.run(fetch())
+        assert evidence.ownership.owner_principal == "user:canonical-alice"
+        assert evidence.authenticated_subject == "subject-alice"
+        assert evidence.authenticated_owner_principal == "user:canonical-alice"
+    else:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(fetch())
+        assert error.value.status_code == 403
+        assert error.value.detail == "not authorized to delegate this credential for this workspace"
+    assert recorder[0]["json"]["principal"] == "subject-alice"
+    assert recorder[0]["json"]["org_id"] == ORG
+
+
+def test_producer_delegated_workspace_remains_valid_without_owner_mapping(monkeypatch):
+    from app.routers import provider_connections as consumer
+    from superplane_contracts.connections import RENEW_CREDENTIAL_PERMISSION
+
+    reader, _ = _client([_Response(200, _evidence_body(
+        owner_principal="user:other-owner", delegated_to_workspaces=[WORKSPACE],
+    ))], is_async=True)
+    monkeypatch.setattr(consumer, "get_credential_evidence_reader", lambda: reader)
+    monkeypatch.setattr(consumer, "_permissions", lambda _: frozenset({RENEW_CREDENTIAL_PERMISSION}))
+    request = SimpleNamespace(state=SimpleNamespace(caller=SimpleNamespace(
+        principal=SimpleNamespace(subject="subject-alice"),
+    )))
+    evidence = asyncio.run(consumer._vault_evidence(request, ORG, WORKSPACE, _reference()))
+    assert evidence.ownership.owner_principal == "user:other-owner"
+    assert evidence.ownership.delegated_to_workspaces == frozenset({WORKSPACE})

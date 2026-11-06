@@ -76,6 +76,30 @@ function makeItem(overrides: Partial<InvocationItem> = {}): InvocationItem {
 // ---------------------------------------------------------------------------
 
 describe('InvocationDetail', () => {
+  it('shows recorded spend separately from reservations for a stopped run', () => {
+    const item = makeItem({
+      status: 'budget_stopped', stop_reason: 'run_cap_exceeded', total_cost_usd: 40.95,
+      budget_usage: { counter_total_usd: 71.18, outstanding_reservations_usd: 30.23, observed_at: '2026-10-27T10:00:00Z' },
+    });
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    expect(screen.getByText(/Recorded spend:.*40.95/)).toBeInTheDocument();
+    expect(screen.getByText(/Outstanding reservations:.*30.23/)).toBeInTheDocument();
+    expect(screen.getByText(/next request’s estimate/)).toBeInTheDocument();
+  });
+
+  it('distinguishes tool admission from provider completion and shows its receipt', () => {
+    const item = makeItem({
+      channel: 'tool', status: 'tool_authorized', topic: null, tool_name: 'websearch___search',
+      estimated_cost_usd: 0.05, receipt_id: 'receipt-one', total_cost_usd: null,
+      call_count: null, completed_at: null,
+    });
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    expect(screen.getByText('websearch___search')).toBeInTheDocument();
+    expect(screen.getByText(/conservative authorization estimate, not a settled provider charge/)).toBeInTheDocument();
+    expect(screen.getByText('receipt-one')).toBeInTheDocument();
+    expect(screen.queryByText(/Running since/)).not.toBeInTheDocument();
+  });
+
   it('renders correlation_id, run_id, status, and status_updated_at', () => {
     const item = makeItem();
     renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);

@@ -30,7 +30,6 @@ from .exceptions import (
     TokenValidationError,
 )
 from .middleware import auth_middleware
-from .routes import router
 from .schemas import (
     ServiceAccountCreate,
     ServiceAccountResponse,
@@ -65,3 +64,15 @@ __all__ = [
     "TenantInfo",
     "TokenClaims",
 ]
+
+
+def __getattr__(name: str):
+    # Admin audit depends on auth.dependencies; loading every HTTP router while
+    # importing that dependency creates an audit -> auth -> ratelimit -> audit
+    # cycle. Defer only the router, preserving middleware startup validation.
+    if name == "router":
+        from .routes import router
+
+        globals()[name] = router
+        return router
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

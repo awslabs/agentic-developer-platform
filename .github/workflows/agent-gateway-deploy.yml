@@ -35,7 +35,7 @@ jobs:
   # workflow_dispatch forces everything on.
   changes:
     name: Detect changes
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     outputs:
       lambdas: ${{ steps.filter.outputs.lambdas }}
     steps:
@@ -59,7 +59,7 @@ jobs:
 
   deploy-lambdas:
     name: Deploy Ingest + Response Lambdas (Terraform)
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     environment: adp-deploy-dev
     needs: changes
     if: github.ref == 'refs/heads/main' && (needs.changes.outputs.lambdas == 'true')
@@ -209,7 +209,7 @@ jobs:
 #
 # build-and-deploy-python-worker:
 #   name: Build Python Worker Image and Update ScaledJob
-#   runs-on: arc-runner-org
+#   runs-on: arc-runner-deploy
 #   steps:
 #     - uses: actions/checkout@v7
 #     - name: Package source and upload to S3

@@ -10,6 +10,10 @@ on:
       - 'modules/domain-apps/superplane/infra/provider-authority/**'
       - 'environments/dev/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-deploy.yml'
+      - '.github/workflows/webhook-code-deploy.yml'
+      - '.github/actions/trusted-webhook-code/**'
+      - 'platform/automation-infra/*webhook*.py'
+      - 'platform/automation-infra/webhook-code-manifest.json'
       - '.github/scripts/detect-webhook-deploy-changes.sh'
       - '.github/deployment-holds/webhook-infra.md'
       # Documentation-only changes do not start this workflow.
@@ -60,6 +64,7 @@ on:
 concurrency:
   group: gateway-release-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
+  queue: max
 
 env:
   # ACCOUNT_ID, AWS_REGION, ENVIRONMENT, STATE_BUCKET are populated at the
@@ -84,12 +89,21 @@ jobs:
       - id: filter
         run: bash .github/scripts/detect-webhook-deploy-changes.sh
 
+  deploy-code:
+    name: Deploy admitted Lambda code
+    needs: changes
+    if: github.ref == 'refs/heads/main' && needs.changes.outputs.code == 'true' && needs.changes.outputs.infra == 'false'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/webhook-code-deploy.yml
+
   package:
     name: Package Lambda Code
     runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: changes
-    if: github.ref == 'refs/heads/main' && (needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true')
+    if: github.ref == 'refs/heads/main' && needs.changes.outputs.infra == 'true'
     permissions:
       contents: read
       pull-requests: read

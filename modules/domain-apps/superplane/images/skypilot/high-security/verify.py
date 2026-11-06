@@ -14,7 +14,9 @@ from tarfile_regression import check
 
 assert sky.__version__ == "0.12.3"
 assert importlib.metadata.version("vastai") == "1.0.13+adp1"
-assert importlib.metadata.version("pillow") == "12.3.0"
+# This check also runs before the final maintenance stage. That stage separately
+# requires the exact +adp1 backport and exercises all five CVE regressions.
+assert importlib.metadata.version("pillow") in {"12.3.0", "12.3.0+adp1"}
 client = VastAI(api_key="offline-fixture")
 assert client is not None
 for encoding in ("PNG", "JPEG", "TIFF", "WEBP"):

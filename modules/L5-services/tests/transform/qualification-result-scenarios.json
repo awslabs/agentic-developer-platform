@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "fixture_class": "synthetic_not_provider_evidence",
+  "clock_at": "2026-10-29T00:00:00Z",
+  "cases": [
+    {"id": "valid-source-provider-result", "change": "none", "expected_status": "evaluated"},
+    {"id": "falsified-source-revision", "change": "source_revision", "expected_status": "rejected"},
+    {"id": "falsified-provider-patch", "change": "provider_patch", "expected_status": "rejected"},
+    {"id": "falsified-result-revision", "change": "result_revision", "expected_status": "rejected"},
+    {"id": "missing-independent-check", "change": "missing_check", "expected_status": "unresolved"}
+  ]
+}

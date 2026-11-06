@@ -142,6 +142,12 @@ class EffectResult:
     retry_at: datetime | None = None
     detail: str | None = None
     settlement: TransactionMutation | None = None
+    # A typed refusal can leave an intent pending without a worker running.
+    block: BlockRecord | None = None
+
+    def __post_init__(self) -> None:
+        if self.block is not None and self.outcome is EffectOutcome.SUCCEEDED:
+            raise ValueError("a successful effect cannot carry a block")
 
 
 @dataclass(frozen=True)
@@ -385,11 +391,28 @@ async def _load_due(
     """
     positive_statuses = sorted(status.value for status in set(ExecutionStatus) - set(TERMINAL_EXECUTION_STATUSES))
     phase_values = sorted(phase.value for phase in phases)
+    # load_execution refuses these stale ownership rows. Exclude them before
+    # both limits: otherwise they monopolize the tenant/row scan on every tick,
+    # and valid later work is never reached. Keep the full authority recheck
+    # below and before effects; this predicate neither settles nor adopts a row.
+    held_claim = (
+        select(OrchestrationWorkClaim.id)
+        .where(
+            OrchestrationWorkClaim.id == OrchestrationExecution.claim_id,
+            OrchestrationWorkClaim.org_id == OrchestrationExecution.org_id,
+            OrchestrationWorkClaim.owner_kind == OwnerKind.ENGINE_FLOW.value,
+            OrchestrationWorkClaim.owner_ref == OrchestrationExecution.flow_id,
+            OrchestrationWorkClaim.state == ClaimState.HELD.value,
+            OrchestrationWorkClaim.generation == OrchestrationExecution.claim_generation,
+        )
+        .exists()
+    )
     async with factory() as session:
         oldest_due = func.min(OrchestrationExecution.next_check_at).label("oldest_due")
         org_rows = await session.execute(
             select(OrchestrationExecution.org_id, oldest_due)
             .where(
+                held_claim,
                 OrchestrationExecution.status.in_(positive_statuses),
                 OrchestrationExecution.phase.in_(phase_values),
                 OrchestrationExecution.accepted_plan_version > 0,
@@ -409,6 +432,7 @@ async def _load_due(
                     select(OrchestrationExecution)
                     .where(
                         OrchestrationExecution.org_id == org_id,
+                        held_claim,
                         OrchestrationExecution.status.in_(positive_statuses),
                         OrchestrationExecution.phase.in_(phase_values),
                         OrchestrationExecution.accepted_plan_version > 0,
@@ -443,6 +467,17 @@ async def _load_due(
             outcome = await load_execution(session, identity=identity)
             if outcome is not None and outcome.kind is OutcomeKind.APPLIED and outcome.record is not None:
                 records.append(outcome.record)
+            else:
+                # A due execution the runner cannot act on is otherwise invisible: it is
+                # neither examined nor blocked, and its wake-up never moves. Name it so a
+                # stalled flow can be diagnosed from the tick log (#7727).
+                logger.warning(
+                    "execution runner skipped due execution node=%s cycle=%s status=%s reason=%s",
+                    row.node_id,
+                    row.cycle,
+                    row.status,
+                    getattr(outcome, "reason", None) if outcome is not None else "not_found",
+                )
         await session.commit()
         return records
 
@@ -614,6 +649,10 @@ async def _advance(
                     now=now or datetime.now(UTC),
                 ),
             )
+        if outcome.kind is OutcomeKind.APPLIED and outcome.record is not None and outcome.record.status is ExecutionStatus.CONCLUDED:
+            from .delivery_recovery import close_recovered_delivery
+
+            await close_recovered_delivery(session, outcome.record)
         await session.commit()
         return outcome
 
@@ -691,8 +730,10 @@ async def _record_and_advance(
                 deadline_at=observation.record.deadline_at,
                 progress_note=progress_note,
             ),
+            block=effect_result.block,
+            pending_action_key=observation.record.pending_action_key if effect_result.block is not None else None,
         )
-        if advanced.kind is not OutcomeKind.APPLIED or advanced.record is None:
+        if advanced.kind not in {OutcomeKind.APPLIED, OutcomeKind.BLOCKED} or advanced.record is None:
             await session.rollback()
             return advanced
         if effect_result.settlement is not None:
@@ -1241,6 +1282,9 @@ async def _process_one(
         report.effects_failed += 1
     else:
         report.effects_uncertain += 1
+    if effect_result.block is not None:
+        report.blocked += 1
+        report.bump(initial.org_id, "blocked")
     report.advanced += 1
 
 
@@ -1260,7 +1304,13 @@ async def run_execution_runner(
     if not config.enabled:
         return report
 
+    operations_handler = None
     if handlers is None:
+        from .operations_continuation import OperationsContinuationHandler
+
+        # New recovery stays with the operations agent and the ordinary bounded
+        # retry path. Existing controller claims still need reconciliation/closure.
+        operations_handler = OperationsContinuationHandler(factory)
         from .deployment_controller import handlers as runtime_handlers
         from .deployment_workflows import handlers as deployment_handlers
         from .evaluation_controller import handlers as evaluation_handlers
@@ -1294,6 +1344,8 @@ async def run_execution_runner(
             report.capped = True
             break
         handler = handlers.get(candidate.phase)
+        if operations_handler is not None and (candidate.handoff_receipt_ref or "").startswith("operations-continuation:"):
+            handler = operations_handler
         if handler is None:
             # Real phase handlers land in named downstream stories. Absence does
             # not fabricate progress or erase the existing due time.

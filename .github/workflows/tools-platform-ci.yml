@@ -1,0 +1,254 @@
+name: Tools platform Terraform CI
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'modules/tools/platform/infra/**'
+      - 'modules/tools/platform/schemas/**'
+      - 'modules/tools/platform/bootstrap/**'
+      - 'modules/tools/platform/knowledge-edge/**'
+      - 'modules/tools/platform/knowledge-capacity/**'
+      - 'modules/tools/platform/scripts/**'
+      - 'modules/tools/platform/tests/**'
+      - 'modules/tools/scripts/release_scope.py'
+      - 'modules/tools/scripts/reconcile_release.py'
+      - 'tests/e2e/tools/test_release_8068.py'
+      - 'tests/e2e/tools/atlassian_integration.py'
+      - 'tests/e2e/tools/test_atlassian_integration.py'
+      - 'tests/e2e/tools/atlassian_client_matrix.py'
+      - 'tests/e2e/tools/atlassian_native_matrix.py'
+      - 'tests/e2e/tools/test_atlassian_native_matrix.py'
+      - 'tests/e2e/tools/atlassian_fixture_provider.py'
+      - 'tests/e2e/tools/test_atlassian_fixture_lifecycle.py'
+      - 'tests/e2e/tools/test_atlassian_cleanup_binding.py'
+      - 'tests/e2e/tools/atlassian_recovery_consumer.py'
+      - 'tests/e2e/tools/atlassian_recovery_scenario.py'
+      - 'tests/e2e/tools/test_atlassian_recovery_consumer.py'
+      - 'tests/e2e/tools/atlassian_recovery_archive.py'
+      - 'tests/e2e/tools/test_atlassian_recovery_archive.py'
+      - 'tests/e2e/tools/atlassian_recovery_handoff.py'
+      - 'tests/e2e/tools/test_atlassian_recovery_handoff.py'
+      - 'tests/e2e/tools/atlassian_regression_scenario.py'
+      - 'tests/e2e/tools/atlassian_regression_binding.py'
+      - 'tests/e2e/tools/test_atlassian_regression_binding.py'
+      - 'tests/e2e/tools/legacy_live_bindings.py'
+      - 'tests/e2e/tools/test_legacy_live_bindings.py'
+      - 'tests/e2e/tools/test_atlassian_regression_scenario.py'
+      - 'tests/e2e/tools/atlassian_authority_scenario.py'
+      - 'tests/e2e/tools/test_atlassian_authority_scenario.py'
+      - 'tests/e2e/tools/atlassian_authority_binding.py'
+      - 'tests/e2e/tools/test_atlassian_authority_binding.py'
+      - 'tests/e2e/tools/atlassian_scenario_selection.py'
+      - 'tests/e2e/tools/test_atlassian_scenario_selection.py'
+      - 'tests/e2e/tools/test_atlassian_client_matrix.py'
+      - 'tests/e2e/tools/atlassian_client_binding.py'
+      - 'tests/e2e/tools/atlassian_readback_grant.py'
+      - 'tests/e2e/tools/test_atlassian_readback_grant.py'
+      - 'tests/e2e/tools/atlassian_setup_client.py'
+      - 'tests/e2e/tools/test_atlassian_setup_client.py'
+      - 'tests/e2e/tools/native_client_transport.py'
+      - 'tests/e2e/tools/test_native_client_transport.py'
+      - 'tests/e2e/tools/atlassian_authority.py'
+      - 'tests/e2e/tools/test_atlassian_authority.py'
+      - 'tests/e2e/tools/atlassian_probe_qualification.py'
+      - 'tests/e2e/tools/test_atlassian_probe_qualification.py'
+      - 'tests/e2e/tools/atlassian_setup_live.py'
+      - 'tests/e2e/tools/atlassian_setup_binding.py'
+      - 'tests/e2e/tools/atlassian_adapter_binding.py'
+      - 'tests/e2e/tools/test_atlassian_adapter_binding.py'
+      - 'tests/e2e/tools/test_atlassian_setup_binding.py'
+      - 'tests/e2e/tools/atlassian_setup_oidc.py'
+      - 'tests/e2e/tools/test_atlassian_setup_oidc.py'
+      - 'tests/e2e/tools/atlassian_setup_recovery.py'
+      - 'tests/e2e/tools/test_atlassian_setup_recovery.py'
+      - 'tests/e2e/tools/test_atlassian_setup_live.py'
+      - 'tests/e2e/tools/atlassian_setup_observer.py'
+      - 'tests/e2e/tools/test_atlassian_setup_observer.py'
+      - 'tests/e2e/tools/atlassian_policy_observation.py'
+      - 'tests/e2e/tools/test_atlassian_policy_observation.py'
+      - 'tests/e2e/tools/test_atlassian_setup_policy.py'
+      - 'tests/e2e/tools/atlassian_fixture_cleanup.py'
+      - 'tests/e2e/tools/test_atlassian_fixture_cleanup.py'
+      - 'tests/e2e/tools/atlassian_flow_summary.py'
+      - 'tests/e2e/tools/test_atlassian_flow_summary.py'
+      - 'tests/e2e/tools/atlassian_mutation_observer.py'
+      - 'tests/e2e/tools/test_atlassian_mutation_observer.py'
+      - 'tests/e2e/tools/runner.py'
+      - 'tests/e2e/tools/release_observer.py'
+      - 'tests/e2e/tools/test_release_observer.py'
+      - 'tests/e2e/tools/test_release_window.py'
+      - '.github/workflows/tools-platform-ci.yml'
+      - '.github/workflows/tools-platform-deploy.yml'
+      - '.github/workflows/tools-live-evaluation.yml'
+      - 'modules/tools/deploy.sh'
+      - 'modules/tools/orchestrate.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tools-platform-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  plan:
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      STATE_BUCKET: ${{ vars.ADP_TOOLS_STATE_BUCKET }}
+      PLAN_ROLE_ARN: ${{ vars.ADP_TOOLS_PLAN_ROLE_ARN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.1'
+          cache: false
+      - name: Validate tools workflow expressions and context availability
+        # actionlint 1.7.12 predates GitHub's queue field; validate that field below.
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -ignore '^unexpected key "queue" for "concurrency" section\.' -shellcheck= -pyflakes= .github/workflows/tools-platform-ci.yml .github/workflows/tools-platform-deploy.yml .github/workflows/tools-live-evaluation.yml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test PR planning boundaries
+        run: |
+          python -m pip install pytest==9.0.3 PyYAML==6.0.3 botocore==1.43.111 boto3==1.43.111 httpx==0.28.1 ruff==0.9.6 cryptography==50.0.0
+          python -m pip install -e modules/tools -e modules/tools/adapters
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for name in ("tools-platform-ci", "tools-platform-deploy", "tools-live-evaluation"):
+              path = Path(".github/workflows") / (name + ".yml")
+              document = yaml.safe_load(path.read_text())
+              for owner in (document, *document.get("jobs", {}).values()):
+                  concurrency = owner.get("concurrency", {})
+                  if isinstance(concurrency, dict) and "queue" in concurrency:
+                      assert concurrency["queue"] in ("single", "max"), f"{path}: invalid concurrency queue"
+                      if concurrency["queue"] == "max":
+                          assert concurrency.get("cancel-in-progress", False) is False, f"{path}: max queue cannot cancel running work"
+          PY
+          python -m unittest discover -s modules/tools/platform/tests -p 'test_*.py'
+          python -m pytest -q modules/tools/platform/tests
+          python -m pytest -q tests/e2e/tools/test_release_observer.py tests/e2e/tools/test_release_window.py tests/e2e/tools/test_release_8068.py tests/e2e/tools/test_atlassian_integration.py tests/e2e/tools/test_atlassian_client_matrix.py tests/e2e/tools/test_atlassian_authority.py tests/e2e/tools/test_atlassian_probe_qualification.py tests/e2e/tools/test_atlassian_setup_live.py tests/e2e/tools/test_atlassian_setup_binding.py tests/e2e/tools/test_atlassian_setup_oidc.py tests/e2e/tools/test_atlassian_setup_recovery.py tests/e2e/tools/test_atlassian_setup_observer.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_policy_observation.py tests/e2e/tools/test_atlassian_setup_policy.py tests/e2e/tools/test_atlassian_fixture_cleanup.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_flow_summary.py tests/e2e/tools/test_atlassian_mutation_observer.py tests/e2e/tools/test_atlassian_evidence_reader.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_readback_grant.py tests/e2e/tools/test_atlassian_setup_client.py tests/e2e/tools/test_native_client_transport.py tests/e2e/tools/test_atlassian_native_matrix.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_fixture_lifecycle.py tests/e2e/tools/test_atlassian_cleanup_binding.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_recovery_consumer.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_recovery_archive.py tests/e2e/tools/test_atlassian_recovery_handoff.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_regression_scenario.py tests/e2e/tools/test_atlassian_regression_binding.py tests/e2e/tools/test_legacy_live_bindings.py
+          ruff check tests/e2e/tools/atlassian_regression_binding.py tests/e2e/tools/test_atlassian_regression_binding.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_authority_scenario.py tests/e2e/tools/test_atlassian_authority_binding.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_scenario_selection.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_release_binding.py tests/e2e/tools/test_atlassian_release_scenario.py tests/e2e/tools/test_atlassian_completion_report.py
+          ruff check tests/e2e/tools/atlassian_release_binding.py tests/e2e/tools/atlassian_flow_producer.py tests/e2e/tools/test_atlassian_release_binding.py
+          python -m pytest -q tests/e2e/tools/test_atlassian_adapter_binding.py modules/tools/adapters/tests/test_observation_configuration.py
+          ruff check tests/e2e/tools/atlassian_flow_summary.py tests/e2e/tools/test_atlassian_flow_summary.py tests/e2e/tools/atlassian_mutation_observer.py tests/e2e/tools/test_atlassian_mutation_observer.py tests/e2e/tools/test_atlassian_evidence_reader.py
+          ruff check tests/e2e/tools/atlassian_setup_live.py tests/e2e/tools/atlassian_setup_binding.py tests/e2e/tools/atlassian_setup_oidc.py tests/e2e/tools/atlassian_setup_recovery.py tests/e2e/tools/atlassian_setup_observer.py tests/e2e/tools/test_atlassian_setup_live.py tests/e2e/tools/test_atlassian_setup_binding.py tests/e2e/tools/test_atlassian_setup_oidc.py tests/e2e/tools/test_atlassian_setup_recovery.py tests/e2e/tools/test_atlassian_setup_observer.py
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - uses: terraform-linters/setup-tflint@v4
+      - name: Check Terraform formatting and lint
+        working-directory: modules/tools/platform/infra
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive
+          tflint --init
+          tflint
+      - name: Validate and test with mock providers
+        working-directory: modules/tools/platform/infra
+        run: |
+          set -euo pipefail
+          terraform init -backend=false -lockfile=readonly -input=false
+          terraform validate -no-color
+          terraform test -no-color
+      - name: Validate bootstrap-owned infrastructure with mock providers
+        working-directory: modules/tools/platform/bootstrap
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive
+          terraform init -backend=false -lockfile=readonly -input=false
+          terraform validate -no-color
+          terraform test -no-color
+      - name: Validate the private Knowledge edge and optional network
+        working-directory: modules/tools/platform/knowledge-edge
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive
+          terraform init -backend=false -lockfile=readonly -input=false
+          terraform validate -no-color
+          terraform test -no-color
+      - name: Validate dormant dedicated Knowledge subnet capacity
+        working-directory: modules/tools/platform/knowledge-capacity
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive
+          terraform init -backend=false -lockfile=readonly -input=false
+          terraform validate -no-color
+          terraform test -no-color
+      - name: Check read-only plan configuration
+        env:
+          PLAN_TFVARS_JSON: ${{ secrets.ADP_TOOLS_PLAN_TFVARS_JSON }}
+        run: |
+          set -euo pipefail
+          [[ "$STATE_BUCKET" =~ ^[a-z0-9.-]+$ ]]
+          [[ "$PLAN_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+          umask 077
+          # Non-secret inputs (account id, role ARNs, environment) are committed so a
+          # pull request that adds a Terraform variable can supply it in the same
+          # change (#7457). The secret is an optional overlay for private values and
+          # wins on conflict; it is not required for a plan.
+          committed=environments/dev/modules/tools-platform.tfvars.json
+          jq -e 'type == "object"' "$committed" > /dev/null
+          printf '%s' "${PLAN_TFVARS_JSON:-{\}}" | jq -e 'type == "object"' > /dev/null
+          jq -s '.[0] * .[1]' "$committed" <(printf '%s' "${PLAN_TFVARS_JSON:-{\}}") > "$RUNNER_TEMP/tools-platform.tfvars.json"
+          jq -e 'type == "object" and (.aws_account_id | type == "string")' "$RUNNER_TEMP/tools-platform.tfvars.json" > /dev/null
+      - name: Preserve runner identity for private CI evidence
+        run: |
+          set -euo pipefail
+          test -n "$AWS_ROLE_ARN"
+          test -f "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          printf 'CI_EVIDENCE_RUNNER_ROLE_ARN=%s\n' "$AWS_ROLE_ARN" >> "$GITHUB_ENV"
+          printf 'CI_EVIDENCE_RUNNER_TOKEN_FILE=%s\n' "$AWS_WEB_IDENTITY_TOKEN_FILE" >> "$GITHUB_ENV"
+      - name: Assume read-only planning role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          unset-current-credentials: true
+          mask-aws-account-id: true
+      - name: Validate and plan against the existing dev state
+        working-directory: modules/tools/platform/infra
+        run: |
+          set -euo pipefail
+          terraform init -input=false -backend-config="bucket=$STATE_BUCKET" -backend-config='key=tools/platform/dev.tfstate' -backend-config="region=$AWS_REGION" -backend-config='encrypt=true' -backend-config='use_lockfile=true'
+          terraform plan -input=false -lock=false -no-color -var-file="$RUNNER_TEMP/tools-platform.tfvars.json" -out="$RUNNER_TEMP/tools-platform.tfplan"
+          expected_targets=$(jq -r 'if (.interceptor_lambda_arn // "") == "" then 0 else 3 end' "$RUNNER_TEMP/tools-platform.tfvars.json")
+          terraform show -json "$RUNNER_TEMP/tools-platform.tfplan" | jq -e --argjson expected_targets "$expected_targets" '
+            [(.planned_values.root_module.resources // [])[] | .type] as $resources
+            | select(
+                ([$resources[] | select(. == "aws_bedrockagentcore_gateway")] | length) == 1 and
+                all($resources[]; startswith("aws_bedrockagentcore_")) and
+                ([$resources[] | select(. == "aws_bedrockagentcore_gateway_target")] | length) == $expected_targets
+              )
+            | {format_version, terraform_version,
+               resources: {gateways: 1, targets: $expected_targets},
+               changes: [.resource_changes[]? | {address, actions: .change.actions}]}
+          ' > "$RUNNER_TEMP/tools-platform-plan.json"
+          test -s "$RUNNER_TEMP/tools-platform-plan.json"
+      - name: Upload redacted plan artifact
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: tools-platform-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/tools-platform-plan.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove private plan files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tools-platform.tfvars.json" "$RUNNER_TEMP/tools-platform.tfplan"

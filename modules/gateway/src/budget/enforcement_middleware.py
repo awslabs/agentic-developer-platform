@@ -21,10 +21,13 @@ Issue #4287: the pre-request estimate is model- and size-aware instead of a flat
             $0.05. Still no body read — see _estimate_cost.
 """
 
+import asyncio
 import json
+import os
 from decimal import Decimal
 from uuid import uuid4
 
+from sqlalchemy import text
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -35,6 +38,7 @@ from src.shared.schemas.budget import DenyReason, EnforcementResult
 from src.shared.timing import get_timings
 
 from .enforcement_service import BudgetEnforcementService, budget_enforcement_service
+from .metering_activation import mark_legacy_cohort_not_dispatched, record_legacy_cohort_admission, require_non_draining_admission
 
 logger = get_logger(__name__)
 
@@ -75,6 +79,7 @@ class BudgetEnforcementMiddleware:
     ):
         self.app = app
         self.enforcement_service = enforcement_service or budget_enforcement_service
+        self._production_gate_fence = enforcement_service is None or enforcement_service is budget_enforcement_service
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -93,6 +98,82 @@ class BudgetEnforcementMiddleware:
 
         if not token_context:
             await self.app(scope, receive, send)
+            return
+
+        gateway = scope.get("app")
+        metered_responses = (
+            path == "/openai/v1/responses"
+            and scope.get("method") == "POST"
+            and getattr(getattr(gateway, "state", None), "metered_responses_ready", False)
+        )
+        if metered_responses:
+            if token_context._native_test_handoff is not None or any(
+                name.lower() in {b"x-adp-native-test-capability", b"x-adp-native-test-operation"} for name, _ in scope.get("headers", [])
+            ):
+                from starlette.responses import JSONResponse
+
+                await JSONResponse({"error": "unsupported_metered_test_scope", "retryable": False}, status_code=403)(scope, receive, send)
+                return
+
+        if (
+            not metered_responses
+            and scope.get("method") == "POST"
+            and (self._production_gate_fence or os.environ.get("BG_METERING_GATE_DRAIN_ENABLED") == "true")
+        ):
+            try:
+                record_cohort = os.environ.get("BG_METERING_GATE_DRAIN_ENABLED") == "true"
+                async with asyncio.timeout(2):
+                    async with self.enforcement_service._get_session() as session:
+                        for tenant_id in sorted({token_context.org_id, token_context.attributed_org_id}):
+                            await require_non_draining_admission(session, tenant_id=tenant_id)
+                        if record_cohort:
+                            request_id = state.get("request_id") or str(uuid4())
+                            state["request_id"] = request_id
+                            await record_legacy_cohort_admission(
+                                session,
+                                tenant_id=token_context.attributed_org_id,
+                                authenticated_tenant_id=token_context.org_id,
+                                request_id=request_id,
+                                owner_id=token_context.user_id,
+                            )
+                        await session.commit()
+                        if record_cohort:
+                            state["metering_legacy_cohort_admitted"] = True
+            except Exception:
+                from starlette.responses import JSONResponse
+
+                logger.warning("Provider admission refused while metering gate is draining or unavailable")
+                try:
+                    message = await asyncio.wait_for(receive(), timeout=0.02)
+                    if message.get("type") == "http.disconnect":
+                        return
+                except TimeoutError:
+                    pass
+                headers = {"Connection": "close"} if scope.get("http_version", "1.1").startswith("1.") else None
+                await JSONResponse({"error": "metering_admission_unavailable", "retryable": False}, status_code=503, headers=headers)(
+                    scope, receive, send
+                )
+                return
+
+        if token_context._native_test_handoff is not None:
+            from src.agentauth.native_test_model import native_handoff
+
+            handoff = native_handoff(token_context)
+            handoff.require_context(token_context, state.get("request_id"))
+            # The native primitive already reserved all hierarchy + test scopes
+            # atomically. Generic admission/zero cleanup would lose that scope.
+            await self.app(scope, receive, send)
+            if not token_context._budget_provider_started:
+                await self._disposition_if_unsent(state, token_context, "pre_provider_return")
+            return
+
+        if any(name.lower() in {b"x-adp-native-test-capability", b"x-adp-native-test-operation"} for name, _ in scope.get("headers", [])):
+            from starlette.responses import JSONResponse
+
+            # An asserted test scope without the adopted native middleware may
+            # never silently enter ordinary paid admission.
+            await self._disposition_if_unsent(state, token_context, "native_header_denied")
+            await JSONResponse({"error": "mandatory_native_test_enforcement_unavailable", "retryable": False}, status_code=403)(scope, receive, send)
             return
 
         if state.get("request_started_at") is not None:
@@ -123,7 +204,7 @@ class BudgetEnforcementMiddleware:
                 state["request_id"] = token_context._policy_request_id
             result = result or await self.enforcement_service.check_budget_hierarchy(
                 token_context,
-                self._estimate_cost(scope, path) if token_context._budget_enforcement_enabled else Decimal(0),
+                self._estimate_cost(scope, path) if token_context._budget_enforcement_enabled and not metered_responses else Decimal(0),
                 # Issue #4287: idempotency key for the live-denominator
                 # reservation, so the proxy can adjust THIS request's reservation
                 # to its real cost once the response lands. Set by
@@ -136,39 +217,77 @@ class BudgetEnforcementMiddleware:
                 # `set_agent_run_id_from_header` dependency because this
                 # middleware runs before any route is resolved.
                 run_id=self._asserted_run_id(scope),
+                reserve=not metered_responses,
             )
 
         if not result.allowed:
-            # Drain the request body — some ASGI servers (Uvicorn/h11)
-            # require the request body to be fully consumed before a
-            # response can be sent, otherwise the connection hangs.
-            while True:
-                msg = await receive()
-                if msg.get("type") == "http.disconnect":
-                    # Client disconnected before we could respond
-                    return
-                if not msg.get("more_body", False):
-                    break
+            await self._disposition_if_unsent(state, token_context, "budget_denied")
+            if metered_responses:
+                deadline = asyncio.get_running_loop().time() + 0.02
+                body_complete = False
+                while True:
+                    receive_task = asyncio.create_task(receive())
+                    try:
+                        done, _ = await asyncio.wait({receive_task}, timeout=max(0, deadline - asyncio.get_running_loop().time()))
+                    except BaseException:
+                        receive_task.cancel()
+                        receive_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+                        raise
+                    if not done:
+                        receive_task.cancel()
+                        receive_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+                        break
+                    message = receive_task.result()
+                    if message.get("type") == "http.disconnect":
+                        return
+                    if message.get("type") != "http.request":
+                        break
+                    if not message.get("more_body", False):
+                        body_complete = True
+                        break
+            else:
+                body_complete = True
+                while True:
+                    message = await receive()
+                    if message.get("type") == "http.disconnect":
+                        return
+                    if not message.get("more_body", False):
+                        break
 
-            # Write the denial directly via ASGI send(). Issue #4075: which
-            # denial matters — a real cap is 402, an unreadable ledger is 503.
+            denial_send = send
+            if not body_complete and scope.get("http_version", "1.1").startswith("1."):
+
+                async def close_connection(message):
+                    if message["type"] == "http.response.start":
+                        message = {**message, "headers": [*message.get("headers", []), (b"connection", b"close")]}
+                    await send(message)
+
+                denial_send = close_connection
+
             if result.deny_reason == DenyReason.RESERVATIONS_PENDING:
-                await self._send_reservations_pending(send, result)
+                await self._send_reservations_pending(denial_send, result)
             elif result.deny_reason == DenyReason.CHECK_UNAVAILABLE:
-                await self._send_check_unavailable(send, result)
+                await self._send_check_unavailable(denial_send, result)
                 logger.info("Budget check unavailable response sent successfully")
             else:
-                await self._send_budget_exceeded(send, result)
+                await self._send_budget_exceeded(denial_send, result)
                 logger.info("Budget exceeded response sent successfully")
+            return
+        if metered_responses:
+            await self.app(scope, receive, send)
             return
 
         # Release only a request rejected before provider dispatch. Unknown
         # provider outcomes retain their estimates, and measured charges must
         # never be overwritten by a generic error-response cleanup.
+        returned = False
         try:
             await self.app(scope, receive, send)
+            returned = True
         finally:
             if not token_context._budget_provider_started:
+                if returned:
+                    await self._disposition_if_unsent(state, token_context, "pre_provider_return")
                 await self.enforcement_service.reconcile_reservation(
                     context=token_context,
                     request_id=state.get("request_id"),
@@ -177,6 +296,21 @@ class BudgetEnforcementMiddleware:
                     output_tokens=0,
                     actual_cost_usd=Decimal("0"),
                 )
+
+    async def _disposition_if_unsent(self, state: dict, token_context: TokenContext, reason: str) -> None:
+        if not state.get("metering_legacy_cohort_admitted"):
+            return
+        async with asyncio.timeout(2):
+            async with self.enforcement_service._get_session() as session:
+                await session.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                await mark_legacy_cohort_not_dispatched(
+                    session,
+                    tenant_id=token_context.attributed_org_id,
+                    request_id=state["request_id"],
+                    owner_id=token_context.user_id,
+                    disposition=reason,
+                )
+                await session.commit()
 
     def _should_enforce(self, path: str) -> bool:
         return path != "/v1/messages/count_tokens" and any(path.startswith(p) for p in ENFORCED_PATHS)
@@ -295,6 +429,10 @@ class BudgetEnforcementMiddleware:
         if result.scope:
             error_body["details"]["scope"] = result.scope
             error_body["details"]["scope_cap_usd"] = float(result.scope_cap_usd) if result.scope_cap_usd is not None else None
+        if result.current_total_usd is not None:
+            error_body["details"]["current_total_usd"] = float(result.current_total_usd)
+        if result.request_estimate_usd is not None:
+            error_body["details"]["request_estimate_usd"] = float(result.request_estimate_usd)
 
         body_bytes = json.dumps(error_body).encode("utf-8")
 

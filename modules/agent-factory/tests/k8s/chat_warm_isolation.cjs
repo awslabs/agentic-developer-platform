@@ -22,7 +22,7 @@ const api = {
     assert(!JSON.stringify(template).match(/AWS_ROLE_ARN|AWS_SECRET_ACCESS_KEY|envFrom|hostPath/));
     assert.equal(livePods.size, 0);
     const identity = { name, uid };
-    createdPods.push({ ...identity, labels: template.metadata.labels });
+    createdPods.push({ ...identity, labels: template.metadata.labels, annotations: template.metadata.annotations });
     livePods.set(name, { uid, files: new Set(), processes: new Set(), token: `mock-${uid}` });
     return { metadata: { ...template.metadata, ...identity }, spec: template.spec };
   },
@@ -53,7 +53,8 @@ async function verifyIsolation() {
   assert.deepEqual(removedPods, createdPods.map(({ name, uid }) => ({ name, uid })));
   assert.equal(new Set(createdPods.map(pod => pod.name)).size, 3);
   assert.equal(new Set(createdPods.map(pod => pod.uid)).size, 3);
-  assert.equal(new Set(createdPods.map(pod => pod.labels['adp.io/run-hash'])).size, 3);
+  assert.equal(new Set(createdPods.map(pod => pod.annotations['adp.io/run-hash'])).size, 3);
+  assert(createdPods.every(pod => !('adp.io/run-hash' in pod.labels)));
 }
 
 verifyIsolation().catch(error => { console.error(error); process.exitCode = 1; });

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -48,7 +49,11 @@ def repo(tmp_path, monkeypatch):
 @pytest.fixture
 def transport(monkeypatch):
     """Intercept the gateway call, recording the payload the worker would send."""
-    state = {"payloads": [], "response": {"commit_sha": "c" * 40, "branch": "agent/issue-5223", "parent_sha": "a" * 40}, "raise": None}
+    state = {
+        "payloads": [],
+        "response": {"commit_sha": "c" * 40, "branch": "agent/issue-5223", "parent_sha": "a" * 40},
+        "raise": None,
+    }
 
     def fake(payload, *, timeout=None):
         state["payloads"].append(payload)
@@ -133,7 +138,16 @@ def test_a_submodule_change_is_refused_before_anything_is_uploaded(repo, tmp_pat
     (other / "f.txt").write_text("x\n")
     git(other, "add", ".")
     git(other, "commit", "-m", "dep")
-    result = git(repo, "-c", "protocol.file.allow=always", "submodule", "add", str(other), "vendor/dep", check=False)
+    result = git(
+        repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(other),
+        "vendor/dep",
+        check=False,
+    )
     if result.returncode != 0:
         pytest.skip("git refused a local submodule in this environment")
 
@@ -204,7 +218,9 @@ def test_the_complete_serialized_request_is_bounded_before_transport(monkeypatch
     wire_bytes = len(json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8"))
     assert wire_bytes > 10_000_000
 
-    with pytest.raises(mg.MediatedError, match=rf"{wire_bytes} bytes.*{mg.MAX_REQUEST_BYTES} bytes"):
+    with pytest.raises(
+        mg.MediatedError, match=rf"{wire_bytes} bytes.*{mg.MAX_REQUEST_BYTES} bytes"
+    ):
         mg._request(payload)
 
 
@@ -246,7 +262,15 @@ def test_no_method_url_installation_or_token_field_is_ever_sent(repo, transport)
     mg.publish_commit(repo=repo, message="fix")
 
     payload = transport["payloads"][0]
-    for forbidden in ("method", "url", "installation_id", "tenant_id", "token", "claim_generation", "not_after"):
+    for forbidden in (
+        "method",
+        "url",
+        "installation_id",
+        "tenant_id",
+        "token",
+        "claim_generation",
+        "not_after",
+    ):
         assert forbidden not in payload
     assert json.dumps(payload).count("http") == 0
 
@@ -254,7 +278,9 @@ def test_no_method_url_installation_or_token_field_is_ever_sent(repo, transport)
 def test_repository_and_branch_are_sent_only_as_assertions(repo, transport):
     (repo / "keep.py").write_text("print(5)\n")
 
-    mg.publish_commit(repo=repo, message="fix", repository="acme/widgets", branch="agent/issue-5223")
+    mg.publish_commit(
+        repo=repo, message="fix", repository="acme/widgets", branch="agent/issue-5223"
+    )
 
     payload = transport["payloads"][0]
     assert payload["repository"] == "acme/widgets"
@@ -366,7 +392,12 @@ def test_a_review_names_only_the_pull_request_and_the_event(repo, transport):
 
     mg.publish_review(pull_number=7, body="notes", event="COMMENT")
 
-    assert transport["payloads"][0] == {"operation": "publish_review", "pull_number": 7, "body": "notes", "review_event": "COMMENT"}
+    assert transport["payloads"][0] == {
+        "operation": "publish_review",
+        "pull_number": 7,
+        "body": "notes",
+        "review_event": "COMMENT",
+    }
 
 
 # --- Conflicts, timeouts and the absence of a fallback ---------------------
@@ -392,17 +423,30 @@ def test_there_is_no_installation_token_fallback_anywhere_in_this_module():
     """A fallback would restore the broad, hour-long, merge-capable credential this
     path exists to remove — and would do it exactly when authorization was in doubt."""
     source = Path(mg.__file__).read_text()
-    for forbidden in ("github_installation_token", "GatewayCredentialClient", "GH_TOKEN", "ghs_", "x-access-token"):
+    for forbidden in (
+        "github_installation_token",
+        "GatewayCredentialClient",
+        "GH_TOKEN",
+        "ghs_",
+        "x-access-token",
+    ):
         assert forbidden not in source
 
 
 @pytest.mark.parametrize(
     ("code", "expected"),
-    [(409, mg.MediatedConflict), (503, mg.MediatedUnavailable), (404, mg.MediatedRefused), (403, mg.MediatedRefused)],
+    [
+        (409, mg.MediatedConflict),
+        (503, mg.MediatedUnavailable),
+        (404, mg.MediatedRefused),
+        (403, mg.MediatedRefused),
+    ],
 )
 def test_gateway_status_codes_map_to_the_right_outcome(monkeypatch, code, expected):
     monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gw.example.invalid")
-    monkeypatch.setattr(mg, "_identity_headers", lambda: {"X-Adp-Run-Credential": "c", "X-Adp-Workload-Token": "w"})
+    monkeypatch.setattr(
+        mg, "_identity_headers", lambda: {"X-Adp-Run-Credential": "c", "X-Adp-Workload-Token": "w"}
+    )
     monkeypatch.setattr(mg, "_sign", lambda method, url, headers, data: headers)
 
     class Opener:
@@ -447,12 +491,54 @@ def test_a_provider_error_body_is_not_surfaced_to_the_caller(monkeypatch):
     assert "secret-detail" not in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    "code,path,body,actionable",
+    [
+        (403, mg.MEDIATED_OPERATION_PATH, {"detail": {"code": "repair_scope_not_accepted", "message": "secret-detail"}}, True),
+        (404, mg.MEDIATED_OPERATION_PATH, {"detail": {"code": "repair_scope_not_accepted"}}, False),
+        (403, "/internal/v1/agent/self/actions-operation", {"detail": {"code": "repair_scope_not_accepted"}}, False),
+        (403, mg.MEDIATED_OPERATION_PATH, {"detail": {"code": "unknown", "message": "secret-detail"}}, False),
+        (403, mg.MEDIATED_OPERATION_PATH, {"detail": "secret-detail"}, False),
+        (403, mg.MEDIATED_OPERATION_PATH, [], False),
+        (403, mg.MEDIATED_OPERATION_PATH, b"not json", False),
+        (403, mg.MEDIATED_OPERATION_PATH, {"detail": {"code": "repair_scope_not_accepted", "message": "x" * 1024}}, False),
+    ],
+)
+def test_only_bounded_known_own_scope_code_has_static_actionable_guidance(monkeypatch, code, path, body, actionable):
+    monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gw.example.invalid")
+    monkeypatch.setattr(mg, "_identity_headers", lambda: {})
+    monkeypatch.setattr(mg, "_sign", lambda method, url, headers, data: headers)
+
+    class Opener:
+        def open(self, request, timeout=None):
+            encoded = body if isinstance(body, bytes) else json.dumps(body).encode()
+            raise HTTPError(request.full_url, code, "secret-detail", {}, io.BytesIO(encoded))
+
+    monkeypatch.setattr(mg, "build_opener", lambda *_: Opener())
+    with pytest.raises(mg.MediatedRefused) as failure:
+        mg._request({"operation": "validate_repair_edit"}, path=path)
+    message = str(failure.value)
+    assert "secret-detail" not in message
+    if actionable:
+        assert "repair_scope_not_accepted" in message
+        assert "plan amendment" in message
+        assert "reapprove any invalidated budget/limit supplements" in message
+        assert "Retrying unchanged cannot resolve this" in message
+    else:
+        assert message == f"mediated operation refused (HTTP {code})"
+
+
 # --- Transport requirements ------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "endpoint",
-    ["http://gw.example.invalid", "https://user:pw@gw.example.invalid", "https://gw.example.invalid?x=1", ""],
+    [
+        "http://gw.example.invalid",
+        "https://user:pw@gw.example.invalid",
+        "https://gw.example.invalid?x=1",
+        "",
+    ],
 )
 def test_a_non_clean_https_endpoint_is_refused(monkeypatch, endpoint):
     """The identity headers are bearer-shaped; plaintext or a redirect would hand
@@ -474,7 +560,10 @@ def test_both_worker_proofs_are_sent(monkeypatch, tmp_path):
 
     headers = mg._identity_headers()
 
-    assert headers == {"X-Adp-Run-Credential": "adpr1.payload.mac", "X-Adp-Workload-Token": "a-projected-token"}
+    assert headers == {
+        "X-Adp-Run-Credential": "adpr1.payload.mac",
+        "X-Adp-Workload-Token": "a-projected-token",
+    }
 
 
 def test_a_missing_workload_token_is_an_error_not_an_unauthenticated_request(monkeypatch, tmp_path):
@@ -488,7 +577,10 @@ def test_a_missing_workload_token_is_an_error_not_an_unauthenticated_request(mon
 
 
 def test_redirects_are_not_followed(monkeypatch):
-    assert mg._NoRedirect().redirect_request(None, None, 302, "found", {}, "https://elsewhere.invalid") is None
+    assert (
+        mg._NoRedirect().redirect_request(None, None, 302, "found", {}, "https://elsewhere.invalid")
+        is None
+    )
 
 
 def test_mediation_is_dormant_unless_explicitly_enabled(monkeypatch):
@@ -548,7 +640,9 @@ def _slice_server(archive: bytes, *, digest=None, total=None, slice_bytes=None):
         chunk = archive[offset : offset + window]
         real_digest = hashlib.sha256(archive).hexdigest()
         resolved_digest = digest(len(calls)) if callable(digest) else (digest or real_digest)
-        resolved_total = total(len(calls)) if callable(total) else (total if total is not None else len(archive))
+        resolved_total = (
+            total(len(calls)) if callable(total) else (total if total is not None else len(archive))
+        )
         return {
             "commit_sha": "c" * 40,
             "branch": "agent/issue-5223",
@@ -607,7 +701,9 @@ def test_an_archive_larger_than_one_slice_is_reassembled_and_verified(monkeypatc
 
     assert rejoined == archive
     assert len(server.calls) > 1, "a multi-slice archive must take more than one call"
-    assert [call["archive_offset"] for call in server.calls] == [i * 4096 for i in range(len(server.calls))]
+    assert [call["archive_offset"] for call in server.calls] == [
+        i * 4096 for i in range(len(server.calls))
+    ]
     # Transfer bookkeeping must not leak into the caller's envelope as state.
     for leaked in ("archive_base64", "archive_offset", "archive_slice_bytes", "archive_complete"):
         assert leaked not in envelope
@@ -618,7 +714,9 @@ def test_a_repository_that_moves_between_slices_is_refused_not_spliced(monkeypat
     """Each slice request re-fetches gateway-side, so a push mid-transfer would
     otherwise splice two different snapshots into one work tree."""
     archive = _tarball({"README.md": _noise(20_000)})
-    server = _slice_server(archive, slice_bytes=4096, digest=lambda n: "0" * 64 if n > 1 else "1" * 64)
+    server = _slice_server(
+        archive, slice_bytes=4096, digest=lambda n: "0" * 64 if n > 1 else "1" * 64
+    )
     monkeypatch.setattr(mg, "_request", server)
 
     with pytest.raises(mg.MediatedConflict):
@@ -703,5 +801,15 @@ def test_a_materialized_tree_is_a_real_repository_recording_the_remote_head(tmp_
     assert (destination / "app.py").read_bytes() == b"print(1)\n"
     assert (destination / ".git").is_dir()
     assert result["remote_head"] == "c" * 40
-    assert result["local_head"] != result["remote_head"], "a locally built commit cannot reproduce the provider's SHA"
+    assert result["local_head"] != result["remote_head"], (
+        "a locally built commit cannot reproduce the provider's SHA"
+    )
     assert "archive_base64" not in result
+
+
+def test_reassembly_ceiling_matches_the_host_provider_archive_bound():
+    """#7860: the worker must accept every archive the gateway is willing to serve."""
+    from lib.codex_source_limits import MAX_PROVIDER_ARCHIVE_BYTES
+
+    assert mg._MAX_ARCHIVE_BYTES == MAX_PROVIDER_ARCHIVE_BYTES == 64 * 1024 * 1024
+    assert mg._MAX_ARCHIVE_SLICES * 6 * 1024 * 1024 >= mg._MAX_ARCHIVE_BYTES

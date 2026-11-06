@@ -53,7 +53,7 @@ class InvestigationError(ValueError):
 
 
 def validate_start(payload):
-    if not isinstance(payload, dict) or set(payload) - {"url", "profile", "scope"}:
+    if not isinstance(payload, dict) or set(payload) - {"url", "profile", "scope", "deadline_at"}:
         raise InvestigationError("Unsupported investigation options")
     url = payload.get("url")
     if not isinstance(url, str) or len(url) > 8192:
@@ -69,8 +69,13 @@ def validate_start(payload):
         raise InvestigationError("scope must be host or observed_external")
     if payload.get("profile", "desktop") not in {"desktop", "mobile"}:
         raise InvestigationError("profile must be desktop or mobile")
+    deadline = payload.get("deadline_at")
+    if deadline is not None and (type(deadline) is not int or
+                                 not int(time.time()) < deadline <= int(time.time()) + 900):
+        raise InvestigationError("Browser authority expired", browser_start_unattempted=True)
     return {
         "url": url,
+        **({"deadline_at": deadline} if deadline is not None else {}),
         "profile": payload.get("profile", "desktop"),
         "scope": payload.get("scope", "observed_external"),
     }
@@ -170,7 +175,7 @@ class BrowserInvestigation:
                         }
                     )
                     continue
-                ident = f"{kind}-{len(self.candidates) + 1:03d}"
+                ident = f"{kind}-{secrets.token_hex(12)}"
                 expected = {k: row[k] for k in ("href", "text", "download", "target")}
                 self.candidates[ident] = (kind, selector, row["index"], expected)
                 choices.append(
@@ -323,7 +328,9 @@ class _Actor:
         self.ready = Future()
         self.ended = threading.Event()
         self.close_result = None
-        self.deadline = time.monotonic() + LEASE_SECONDS
+        remaining = (LEASE_SECONDS if "deadline_at" not in self.payload else
+                     max(0, self.payload["deadline_at"] - time.time()))
+        self.deadline = time.monotonic() + min(LEASE_SECONDS, remaining)
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -421,17 +428,18 @@ class InvestigationManager:
                     browser_start_unattempted=True,
                 )
             token = secrets.token_urlsafe(32)
+            payload = validate_start(payload)
             actor = self.actor_factory(payload, self.factory, lambda actor: None)
             self.actors[token] = actor
         if hasattr(actor, "initial"):
             packet = actor.initial()
-            return {**packet, "session_token": token, "lease_seconds": LEASE_SECONDS}
+            return {**packet, "session_token": token, "lease_seconds": max(0, int(actor.deadline - time.monotonic()))}
         try:
-            packet = actor.ready.result(timeout=STARTUP_SECONDS)
+            packet = actor.ready.result(timeout=max(0, min(STARTUP_SECONDS, actor.deadline - time.monotonic())))
         except TimeoutError:
             actor.deadline = 0
             raise InvestigationError("Browser startup timed out")
-        return {**packet, "session_token": token, "lease_seconds": LEASE_SECONDS}
+        return {**packet, "session_token": token, "lease_seconds": max(0, int(actor.deadline - time.monotonic()))}
 
     def request(self, payload):
         if not isinstance(payload, dict) or not isinstance(

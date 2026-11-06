@@ -90,6 +90,26 @@ def _configuration_reason(settings: Settings) -> str | None:
     return None
 
 
+def _adopt_raised_ceiling(cycle: ModelProbeCycle, settings: Settings, now: datetime) -> None:
+    """Let an active cycle follow a *raised* operator ceiling (#7975).
+
+    The row froze ``max_slots``/``budget_usd`` when the day's first claim created
+    it, so a budget raised mid-day (BG_MODEL_PROBE_* come from the rendered
+    ConfigMap, never from a caller) had no effect until the next UTC date. Only
+    raise: existing reservations stay valid, and callers still cannot manufacture
+    envelopes because the values are Settings, not request input.
+    """
+    changed = False
+    if settings.model_probe_max_slots_per_cycle > cycle.max_slots:
+        cycle.max_slots = settings.model_probe_max_slots_per_cycle
+        changed = True
+    if settings.model_probe_budget_usd_per_cycle > cycle.budget_usd:
+        cycle.budget_usd = settings.model_probe_budget_usd_per_cycle
+        changed = True
+    if changed:
+        cycle.updated_at = now
+
+
 def _cycle_key(now: datetime) -> str:
     # All trigger types share the same daily spend envelope. Otherwise repeated
     # `manual` claims could manufacture new cycles and bypass the ceiling.
@@ -200,6 +220,8 @@ async def claim_probe(
             cycle.updated_at = now
         await db.commit()
         return ClaimResult(claimed=False, reason="cycle_budget_exhausted")
+    else:
+        _adopt_raised_ceiling(cycle, settings, now)
 
     await _expire_leases(db, now)
     slot_count = await db.scalar(

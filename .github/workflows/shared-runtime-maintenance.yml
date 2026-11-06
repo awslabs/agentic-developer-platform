@@ -50,6 +50,7 @@ on:
 concurrency:
   group: ${{ (inputs.stage == 'diagnose' || inputs.stage == 'redis-diagnose') && 'gateway-diagnostics-dev' || 'gateway-release-dev' }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -166,9 +167,9 @@ jobs:
           python platform/scripts/maintain-shared-runtime.py "${args[@]}"
       - name: Retain sanitized evidence and account-specific inputs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: shared-runtime-${{ inputs.stage }}-${{ github.run_id }}
           path: ${{ runner.temp }}/shared-runtime-evidence/*.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90

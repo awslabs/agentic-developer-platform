@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adp-tool-adapters"
+version = "0.1.0"
+description = "Independent ADP connector adapter service"
+requires-python = ">=3.12,<3.14"
+dependencies = ["adp-tools-shared==0.1.0", "fastapi>=0.115,<1", "httpx>=0.27,<1", "uvicorn>=0.30,<1", "PyJWT[crypto]>=2.10,<3"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff==0.9.6"]
+harness = ["cryptography==50.0.0"]
+
+[tool.uv]
+build-constraint-dependencies = ["setuptools==80.9.0", "wheel==0.45.1"]
+
+[tool.uv.sources]
+adp-tools-shared = {path = ".."}
+
+[tool.setuptools]
+packages = ["tool_adapters"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

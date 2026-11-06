@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/l5/well-architected/contract-proposal.json",
+  "title": "Proposed Well-Architected source-only inputs; not runtime registration",
+  "$defs": {
+    "RecordRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tenant_id", "project_id", "source_connection_id", "record_type", "record_id", "record_revision"],
+      "properties": {
+        "tenant_id": {"type": "string", "minLength": 1, "maxLength": 255},
+        "project_id": {"type": "string", "minLength": 1, "maxLength": 255},
+        "source_connection_id": {"type": "string", "minLength": 1, "maxLength": 255},
+        "record_type": {"type": "string", "minLength": 1, "maxLength": 255},
+        "record_id": {"type": "string", "minLength": 1, "maxLength": 255},
+        "record_revision": {"type": "string", "minLength": 1, "maxLength": 512, "not": {"enum": ["HEAD", "latest", "null"]}}
+      }
+    },
+    "SourceRef": {
+      "allOf": [
+        {"$ref": "#/$defs/RecordRef"},
+        {"properties": {"record_type": {"enum": ["document", "repository_commit"]}}}
+      ]
+    },
+    "Settings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["review_mode"],
+      "properties": {
+        "review_mode": {"const": "source_only"},
+        "pillars": {
+          "type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true,
+          "items": {"enum": ["COST_OPTIMIZATION", "SECURITY", "RESILIENCE", "PERFORMANCE", "OPERATIONAL_EXCELLENCE"]}
+        },
+        "goal_refs": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"$ref": "#/$defs/RecordRef"}},
+        "execution_role_ref": {"$ref": "#/$defs/RecordRef"},
+        "source_store_ref": {"$ref": "#/$defs/RecordRef"}
+      }
+    },
+    "RunInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["service_id", "capability", "configuration_revision", "binding_id", "sources"],
+      "properties": {
+        "service_id": {"const": "well_architected"},
+        "capability": {"const": "architecture_review"},
+        "configuration_revision": {"type": "integer", "minimum": 1},
+        "binding_id": {"type": "string", "minLength": 1, "maxLength": 255},
+        "sources": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"$ref": "#/$defs/SourceRef"}},
+        "parent_task_ref": {"$ref": "#/$defs/RecordRef"}
+      }
+    }
+  }
+}

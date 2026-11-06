@@ -15,16 +15,18 @@ the transaction, so a decision and the plan version it accepted can land
 atomically.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.base import utcnow
 
 from .cost import escape_like
+from .decision_projection import DisplayDecision, current_display_decisions
 from .display_state import DisplayState, FlowStatus, derive_flow_status
 from .models import (
     OrchestrationAcceptedPlan,
@@ -72,7 +74,7 @@ class FlowDisplayCounts:
 
 @dataclass(frozen=True)
 class WaveAggregate:
-    """One `(epic_ref, wave_ref)` group, in first-appearance order."""
+    """One `(epic_ref, wave_ref)` group, in the plan's declared order (#7226)."""
 
     flow_id: str
     epic_ref: str
@@ -106,7 +108,7 @@ class FlowAggregate:
 
     flow: OrchestrationFlow
     display_counts: FlowDisplayCounts
-    # Compatibility field: always equals display_counts.stalled.
+    # Current attention count; archived flows retain historical node counts separately.
     stalled_count: int
     status: FlowStatus
     story_count: int = 0
@@ -131,6 +133,8 @@ class FlowAggregate:
         first-match-wins, so a flow that is both stalled and gated reports only
         `attention_needed` while satisfying this predicate on either ground.
         """
+        if self.flow.archived_at is not None:
+            return False
         return self.display_counts.gate > 0 or self.display_counts.stalled > 0 or self.stalled_count > 0
 
     @property
@@ -139,7 +143,7 @@ class FlowAggregate:
 
     @property
     def current_wave_ref(self) -> str | None:
-        """The first wave, in first-appearance order, with unfinished work.
+        """The first wave, in the plan's declared order, with unfinished work.
 
         None when every wave is finished (or there are no waves) — a flow with
         nothing in flight has no current wave, and naming its last one would read
@@ -159,13 +163,29 @@ class FlowPage:
     # Rows matching the filters across ALL pages, from `COUNT(*) OVER ()` in the
     # same statement — not the length of `flows`.
     total: int
+    # Current `wave_metadata` / `epic_metadata` per flow on this page, read once
+    # here so wave ordering (#7226) and the route's display text share one query.
+    display_metadata: dict[str, dict[str, list[dict]]] = field(default_factory=dict)
+
+
+def _in_declared_wave_order(rollups: list[WaveAggregate], wave_metadata: list[dict]) -> list[WaveAggregate]:
+    """Sort wave rollups by the plan's declared `(epic_ref, wave_ref)` order (#7226).
+
+    Waves the plan does not describe (legacy plans, or a revision that added a
+    wave without display text) keep their incoming order — `MIN(created_at)` —
+    and sort after the declared ones. The sort is stable, so ties never reorder.
+    """
+    declared = {(item.get("epic_ref"), item.get("wave_ref")): index for index, item in enumerate(wave_metadata) if isinstance(item, dict)}
+    undeclared = len(declared)
+    return sorted(rollups, key=lambda wave: declared.get((wave.epic_ref, wave.wave_ref), undeclared))
 
 
 class OrchestrationRepository:
     """Tenant-scoped reads and appends over the orchestration graph tables."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, lineage_resolver=None) -> None:
         self._session = session
+        self._lineage_resolver = lineage_resolver
 
     # -- flows --------------------------------------------------------------
 
@@ -176,6 +196,7 @@ class OrchestrationRepository:
         slug: str,
         title: str,
         intent_ref: str | None = None,
+        product_id: str | None = None,
         description: str | None = None,
         design_history: dict | None = None,
     ) -> OrchestrationFlow:
@@ -215,6 +236,7 @@ class OrchestrationRepository:
             slug=slug,
             title=title,
             intent_ref=intent_ref,
+            product_id=product_id,
             description=description,
             design_history=design_history,
         )
@@ -275,6 +297,7 @@ class OrchestrationRepository:
 
     async def list_flows(self, *, org_id: str) -> list[OrchestrationFlow]:
         """EVERY flow in the tenant, unbounded. Do not add a limit here.
+        Archived flows remain here so their slugs and cost lineage stay reserved.
 
         ⚠️ This method must keep taking `org_id` and nothing else — not even a
         defaulted `limit`. Both production callers depend on seeing the whole set:
@@ -304,7 +327,7 @@ class OrchestrationRepository:
         """Aggregate current display buckets in SQL, without per-flow reads."""
         from .plan_lineage import preserved_execution_pairs
 
-        preserved = await preserved_execution_pairs(self._session, org_id=org_id)
+        preserved = await preserved_execution_pairs(self._session, org_id=org_id, resolver=self._lineage_resolver)
         nodes = node_progress_rows(org_id=org_id, preserved_executions=preserved)
         evaluation_story = and_(nodes.c.kind == "eval", func.trim(nodes.c.issue_ref) != "", nodes.c.state != "superseded")
         columns = [func.count().filter(nodes.c.display_state == display.value).label(display.value) for display in DisplayState]
@@ -325,12 +348,16 @@ class OrchestrationRepository:
     async def node_display_states(self, *, org_id: str, flow_id: str) -> dict[str, str | None]:
         """The graph uses exactly the same projection as list and wave counts."""
         from .plan_lineage import preserved_execution_pairs
+        from .read_cache import cached_projection
 
-        preserved = await preserved_execution_pairs(self._session, org_id=org_id, flow_ids=[flow_id])
-        nodes = node_progress_rows(org_id=org_id, flow_ids=[flow_id], preserved_executions=preserved)
-        return dict((await self._session.execute(select(nodes.c.node_id, nodes.c.display_state))).all())
+        async def load():
+            preserved = await preserved_execution_pairs(self._session, org_id=org_id, flow_ids=[flow_id], resolver=self._lineage_resolver)
+            nodes = node_progress_rows(org_id=org_id, flow_ids=[flow_id], preserved_executions=preserved)
+            return dict((await self._session.execute(select(nodes.c.node_id, nodes.c.display_state))).all())
 
-    async def _joined_flows(self, *, org_id: str) -> tuple[Select, dict[str, Any]]:
+        return await cached_projection(self._session, org_id=org_id, operation="node-states", parameters=[flow_id], load=load, flow_id=flow_id)
+
+    async def _joined_flows(self, *, org_id: str, product_id: str | None = None, project_id: str | None = None) -> tuple[Select, dict[str, Any]]:
         """`orchestration_flows` LEFT JOINed to current node aggregates, org-filtered.
 
         LEFT, not inner: a flow with zero nodes must still appear (as
@@ -350,6 +377,10 @@ class OrchestrationRepository:
             derived[name] = func.coalesce(getattr(node_agg.c, name), 0)
 
         base = select(OrchestrationFlow).outerjoin(node_agg, node_agg.c.flow_id == OrchestrationFlow.id).where(OrchestrationFlow.org_id == org_id)
+        if product_id is not None:
+            base = base.where(OrchestrationFlow.product_id == product_id)
+        if project_id is not None:
+            base = base.where(OrchestrationFlow.project_id == project_id)
         return base, derived
 
     async def list_flows_page_with_aggregates(
@@ -362,15 +393,19 @@ class OrchestrationRepository:
         status: FlowStatus | None = None,
         needs_me: bool = False,
         sort: str = "created",
+        flow_id: str | None = None,
+        include_archived: bool = False,
+        product_id: str | None = None,
+        project_id: str | None = None,
     ) -> FlowPage:
         """One page of flows with their derived counts, statuses and waves.
 
-        Everything this endpoint filters and sorts on — `status`, `needs_me`,
-        `stalled_count` — is **derived** from `orchestration_nodes` and
-        `orchestration_decisions`. None of it is a column on
-        `orchestration_flows`, so `LIMIT/OFFSET` cannot be applied before those
-        values exist, and a filtered `total` is not computable at all if
-        pagination happens first. Hence: grouped subqueries LEFT JOINed, then
+        Node status, `needs_me`, and `stalled_count` are derived from nodes and
+        decisions; archive state is stored on the flow. `LIMIT/OFFSET` cannot
+        be applied before the joined status and archive predicates because those
+        would then filter only the fetched page, not the tenant's whole set.
+        A filtered `total` is not computable if pagination happens first. Hence:
+        grouped subqueries are LEFT JOINed, then
         filtered, sorted and paginated in ONE statement, with `COUNT(*) OVER ()`
         carrying the filtered total out of the same pass.
 
@@ -388,7 +423,12 @@ class OrchestrationRepository:
         if sort not in FLOW_SORTS:
             raise ValueError(f"unknown sort {sort!r}; expected one of {FLOW_SORTS}")
 
-        base, derived = await self._joined_flows(org_id=org_id)
+        base, derived = await self._joined_flows(org_id=org_id, product_id=product_id, project_id=project_id)
+        if flow_id is None:
+            base = base.where(*self._archive_predicates(include_archived=include_archived, status=status, needs_me=needs_me))
+
+        if flow_id is not None:
+            base = base.where(OrchestrationFlow.id == flow_id)
 
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
@@ -418,7 +458,7 @@ class OrchestrationRepository:
             # Not a `status` alias — see `FlowAggregate.needs_me`.
             stmt = stmt.where(or_(derived["gate"] > 0, derived["stalled"] > 0, derived["stalled_count"] > 0))
 
-        if status is not None:
+        if status is not None and status is not FlowStatus.ARCHIVED:
             stmt = stmt.where(self._status_predicate(status, derived))
 
         stmt = stmt.order_by(*self._order_by(sort, derived)).limit(limit).offset(offset)
@@ -428,10 +468,16 @@ class OrchestrationRepository:
         total = int(rows[0].total_matching) if rows else 0
         aggregates = [self._to_aggregate(row) for row in rows]
 
-        # One grouped query for every flow on the page — not one per flow.
-        waves_by_flow = await self.list_wave_aggregates(org_id=org_id, flow_ids=[agg.flow.id for agg in aggregates])
+        # One grouped query for every flow on the page — not one per flow — plus one
+        # read of the current plans' display metadata, which also fixes wave order (#7226).
+        page_ids = [agg.flow.id for agg in aggregates]
+        display_metadata = await self.display_metadata_for_flows(org_id=org_id, flow_ids=page_ids)
+        waves_by_flow = await self.list_wave_aggregates(
+            org_id=org_id, flow_ids=page_ids, wave_metadata={fid: meta.get("wave_metadata", []) for fid, meta in display_metadata.items()}
+        )
 
         return FlowPage(
+            display_metadata=display_metadata,
             flows=tuple(
                 FlowAggregate(
                     flow=agg.flow,
@@ -453,6 +499,17 @@ class OrchestrationRepository:
         )
 
     @staticmethod
+    def _archive_predicates(*, include_archived: bool, status: FlowStatus | None = None, needs_me: bool = False):
+        predicates = []
+        if status is FlowStatus.ARCHIVED:
+            predicates.append(OrchestrationFlow.archived_at.is_not(None))
+        elif not include_archived or status is not None:
+            predicates.append(OrchestrationFlow.archived_at.is_(None))
+        if needs_me:
+            predicates.append(OrchestrationFlow.archived_at.is_(None))
+        return predicates
+
+    @staticmethod
     def _to_aggregate(row: Any) -> FlowAggregate:
         """Project one result row onto a `FlowAggregate`.
 
@@ -460,13 +517,15 @@ class OrchestrationRepository:
         use — so a chip can never claim a status no row reports.
         """
         counts = FlowDisplayCounts(**{display.value: int(getattr(row, display.value) or 0) for display in DisplayState})
-        stalled_count = int(row.stalled_count or 0)
+        stalled_count = 0 if row[0].archived_at is not None else int(row.stalled_count or 0)
         return FlowAggregate(
             flow=row[0],
             display_counts=counts,
             stalled_count=stalled_count,
             **{name: int(getattr(row, name) or 0) for name in FLOW_COUNT_FIELDS},
-            status=derive_flow_status(
+            status=FlowStatus.ARCHIVED
+            if row[0].archived_at
+            else derive_flow_status(
                 queued=counts.queued,
                 in_progress=counts.in_progress,
                 gate=counts.gate,
@@ -523,11 +582,17 @@ class OrchestrationRepository:
         if sort == "updated":
             return [func.coalesce(OrchestrationFlow.updated_at, OrchestrationFlow.created_at).desc(), tiebreak]
         if sort == "stalled":
-            return [derived["stalled_count"].desc(), OrchestrationFlow.created_at.desc(), tiebreak]
+            return [
+                case((OrchestrationFlow.archived_at.is_not(None), 0), else_=derived["stalled_count"]).desc(),
+                OrchestrationFlow.created_at.desc(),
+                tiebreak,
+            ]
         return [OrchestrationFlow.created_at.desc(), tiebreak]
 
-    async def count_flows_by_status(self, *, org_id: str) -> dict[FlowStatus, int]:
-        """How many flows are in each status, across the WHOLE tenant.
+    async def count_flows_by_status(
+        self, *, org_id: str, include_archived: bool = False, product_id: str | None = None, project_id: str | None = None
+    ) -> dict[FlowStatus, int]:
+        """How many flows are in each status, across the selected archive population.
 
         Deliberately unfiltered, and therefore necessarily a separate statement:
         the chips describe the population an operator is choosing *among*, so with
@@ -540,10 +605,11 @@ class OrchestrationRepository:
         chip row's shape jump around as work moves.
 
         This aggregate touches all of the tenant's flows and is the real ceiling
-        on this endpoint. If it ever hurts: **cache it, do not filter it.**
-        Filtering it would change what it means.
+        on this endpoint. If it ever hurts: cache the archive-selected aggregate,
+        rather than filtering by search, needs-me or status.
         """
-        base, derived = await self._joined_flows(org_id=org_id)
+        base, derived = await self._joined_flows(org_id=org_id, product_id=product_id, project_id=project_id)
+        base = base.where(*self._archive_predicates(include_archived=include_archived))
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
             derived["stalled_count"].label("stalled_count"),
@@ -557,24 +623,34 @@ class OrchestrationRepository:
             counts[self._to_aggregate(row).status] += 1
         return counts
 
-    async def list_wave_aggregates(self, *, org_id: str, flow_ids: list[str]) -> dict[str, list[WaveAggregate]]:
-        """Wave rollups for the given flows, in **first-appearance order**.
+    async def list_wave_aggregates(
+        self, *, org_id: str, flow_ids: list[str], wave_metadata: dict[str, list[dict]] | None = None
+    ) -> dict[str, list[WaveAggregate]]:
+        """Wave rollups for the given flows, in **the plan's declared order**.
 
         One `GROUP BY flow_id, epic_ref, wave_ref` for the whole page, not one
-        query per flow.
+        query per flow. `wave_metadata` (flow id -> the current plan's declared
+        waves) is supplied by the caller — `list_flows` reads it once for the
+        page — so this method issues no extra statement; without it the rollups
+        keep creation order.
 
-        **Ordered by `MIN(node.created_at)` per group, and that is a correctness
-        requirement.** Two wrong ways to get an order here, both real:
+        **Ordered by the accepted plan's `wave_metadata` (declaration order),
+        falling back to `MIN(node.created_at)` per group** (#7226). Three wrong
+        ways to get an order here, all real:
 
-        - Sorting `wave_ref` lexicographically puts `wave-10` before `wave-2`.
-          `flowLayout.ts` warns about this verbatim for the same data.
+        - Sorting `wave_ref` lexicographically puts `wave-10` before `wave-2`
+          and `dashboard` before `runtime`. `flowLayout.ts` warns about this.
         - Parsing an integer out of `wave_ref` assumes a `wave-<n>` shape nothing
           enforces — `_SEGMENT` permits `wave-as`, which exists in the tests.
+        - `MIN(created_at)` alone is right for a plan registered once and wrong
+          after a draft revision adds a wave: the new wave is created last but
+          may be declared second. Flow `9a67bcca…` showed exactly that.
 
-        `MIN(created_at)` reproduces the first-appearance order the detail view
-        already uses. A `GROUP BY` guarantees no order at all, so leaving it
-        implicit is not "usually fine": the failure is invisible below 10 waves
-        and appears exactly at the 7–14 wave scale the rail is built for.
+        `wave_metadata` is the author's declared order and already drives the
+        graph page's titles; a plan without it (legacy) keeps creation order. A
+        `GROUP BY` guarantees no order at all, so leaving it implicit is not
+        "usually fine": the failure is invisible below 10 waves and appears
+        exactly at the 7–14 wave scale the rail is built for.
         """
         if not flow_ids:
             # No page, no query. Returning early keeps the statement count honest
@@ -583,7 +659,7 @@ class OrchestrationRepository:
 
         from .plan_lineage import preserved_execution_pairs
 
-        preserved = await preserved_execution_pairs(self._session, org_id=org_id, flow_ids=flow_ids)
+        preserved = await preserved_execution_pairs(self._session, org_id=org_id, flow_ids=flow_ids, resolver=self._lineage_resolver)
         nodes = node_progress_rows(org_id=org_id, flow_ids=flow_ids, preserved_executions=preserved)
         columns = [func.count().filter(nodes.c.display_state == display.value).label(display.value) for display in DisplayState]
         stmt = (
@@ -603,6 +679,9 @@ class OrchestrationRepository:
                     **{name: int(getattr(row, name) or 0) for name in KIND_COUNTS},
                 )
             )
+        if wave_metadata:
+            for flow_id, rollups in waves.items():
+                waves[flow_id] = _in_declared_wave_order(rollups, wave_metadata.get(flow_id, []))
         return waves
 
     # -- nodes --------------------------------------------------------------
@@ -618,6 +697,8 @@ class OrchestrationRepository:
         kind: str,
         title: str,
         issue_ref: str | None = None,
+        lineage: dict | None = None,
+        labels: dict | None = None,
         state: str | None = None,
     ) -> OrchestrationNode:
         # `state=None` means "use the column default" (pending), which is what
@@ -635,6 +716,8 @@ class OrchestrationRepository:
             kind=kind,
             title=title,
             issue_ref=issue_ref,
+            lineage=lineage,
+            labels=labels,
             **({"state": state} if state is not None else {}),
         )
         self._session.add(node)
@@ -797,6 +880,23 @@ class OrchestrationRepository:
         self._session.add(decision)
         await self._session.flush()
         return decision
+
+    async def display_decisions(self, *, org_id: str, flow_id: str, node_ids: list[str], dispatch_only: bool = False) -> list[DisplayDecision]:
+        from .read_cache import cached_projection
+
+        async def load():
+            rows = await current_display_decisions(self._session, org_id=org_id, flow_id=flow_id, node_ids=node_ids, dispatch_only=dispatch_only)
+            return [{**asdict(row), "created_at": row.created_at.isoformat()} for row in rows]
+
+        values = await cached_projection(
+            self._session,
+            org_id=org_id,
+            operation="display-decisions",
+            parameters=[flow_id, sorted(set(node_ids)), dispatch_only],
+            load=load,
+            flow_id=flow_id,
+        )
+        return [DisplayDecision(**{**row, "created_at": datetime.fromisoformat(row["created_at"])}) for row in values]
 
     async def list_decisions(self, *, org_id: str, flow_id: str) -> list[OrchestrationDecision]:
         stmt = (

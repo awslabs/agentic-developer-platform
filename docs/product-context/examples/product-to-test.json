@@ -1,0 +1,353 @@
+{
+  "schema_version": "1.0",
+  "context_snapshot_id": "snapshot-product-to-test-example",
+  "tenant_id": "tenant-example",
+  "project_id": "project-example",
+  "generated_at": "2026-10-10T10:02:00Z",
+  "records": [
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "adp-example",
+      "record_type": "product",
+      "record_id": "product-membership-example",
+      "record_revision": "context-1",
+      "recorded_at": "2026-10-10T10:02:00Z",
+      "data": {
+        "name": "Team Administration",
+        "purpose": "Manage access and organization membership.",
+        "intended_users": [
+          "Organization administrators"
+        ],
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-membership-example"
+        },
+        "starting_point": "existing_assets",
+        "lifecycle_status": "active"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/purpose",
+            "/data/intended_users",
+            "/data/owner_ref",
+            "/data/starting_point",
+            "/data/lifecycle_status"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-example",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-product-membership-example",
+              "record_revision": "context-1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-product",
+            "record_revision": "context-1"
+          },
+          "observed_at": "2026-10-10T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "adp-example",
+      "record_type": "project",
+      "record_id": "project-example",
+      "record_revision": "context-1",
+      "recorded_at": "2026-10-10T10:02:00Z",
+      "data": {
+        "name": "Team administration delivery",
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-membership-example"
+        },
+        "state": "registered"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/owner_ref",
+            "/data/state"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-example",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-project-example",
+              "record_revision": "context-1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-project",
+            "record_revision": "context-1"
+          },
+          "observed_at": "2026-10-10T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "work_item",
+      "record_id": "issue-40",
+      "record_revision": "context-1",
+      "recorded_at": "2026-10-10T10:02:00Z",
+      "data": {
+        "kind": "epic",
+        "native_type": "Epic",
+        "title": "Manage team membership",
+        "status": "in_progress",
+        "status_native": "open"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/kind",
+            "/data/native_type",
+            "/data/title",
+            "/data/status",
+            "/data/status_native"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-example",
+              "source_connection_id": "connection-example",
+              "record_type": "source_observation",
+              "record_id": "input-issue-40",
+              "record_revision": "context-1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-work_item",
+            "record_revision": "context-1"
+          },
+          "observed_at": "2026-10-10T10:00:00Z",
+          "stale_after": "2026-10-10T11:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "work_item",
+      "record_id": "issue-42",
+      "record_revision": "context-1",
+      "recorded_at": "2026-10-10T10:02:00Z",
+      "data": {
+        "kind": "story",
+        "native_type": "Story",
+        "title": "Invite a member",
+        "description": "An organization administrator can invite a member.",
+        "status": "planned",
+        "status_native": "open"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/kind",
+            "/data/native_type",
+            "/data/title",
+            "/data/description",
+            "/data/status",
+            "/data/status_native"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-example",
+              "source_connection_id": "connection-example",
+              "record_type": "source_observation",
+              "record_id": "input-issue-42",
+              "record_revision": "context-1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-work_item",
+            "record_revision": "context-1"
+          },
+          "observed_at": "2026-10-10T10:00:00Z",
+          "stale_after": "2026-10-10T11:00:00Z"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "relationship_id": "product-project",
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1",
+      "relationship_type": "product_project",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-membership-example",
+        "record_revision": "context-1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "adp-example",
+        "record_type": "project",
+        "record_id": "project-example",
+        "record_revision": "context-1"
+      },
+      "valid_from": "2026-10-10T09:00:00Z",
+      "recorded_at": "2026-10-10T10:02:00Z",
+      "mapping_version": "mapping-1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-example",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "decision-product-project",
+          "record_revision": "context-1"
+        }
+      ]
+    },
+    {
+      "relationship_id": "product-epic",
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1",
+      "relationship_type": "product_work",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-membership-example",
+        "record_revision": "context-1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "connection-example",
+        "record_type": "work_item",
+        "record_id": "issue-40",
+        "record_revision": "context-1"
+      },
+      "valid_from": "2026-10-10T09:00:00Z",
+      "recorded_at": "2026-10-10T10:02:00Z",
+      "mapping_version": "mapping-1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-example",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "decision-product-epic",
+          "record_revision": "context-1"
+        }
+      ]
+    },
+    {
+      "relationship_id": "epic-story",
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1",
+      "relationship_type": "work_parent",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "connection-example",
+        "record_type": "work_item",
+        "record_id": "issue-40",
+        "record_revision": "context-1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "connection-example",
+        "record_type": "work_item",
+        "record_id": "issue-42",
+        "record_revision": "context-1"
+      },
+      "valid_from": "2026-10-10T09:00:00Z",
+      "recorded_at": "2026-10-10T10:02:00Z",
+      "mapping_version": "mapping-1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-example",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "decision-epic-story",
+          "record_revision": "context-1"
+        }
+      ]
+    },
+    {
+      "relationship_id": "story-requirement-revision",
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1",
+      "relationship_type": "work_story_revision",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "connection-example",
+        "record_type": "work_item",
+        "record_id": "issue-42",
+        "record_revision": "context-1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "connection-example",
+        "record_type": "story_revision",
+        "record_id": "issue-42",
+        "record_revision": "revision-1"
+      },
+      "valid_from": "2026-10-10T09:00:00Z",
+      "recorded_at": "2026-10-10T10:02:00Z",
+      "mapping_version": "mapping-1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-example",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "decision-story-requirement-revision",
+          "record_revision": "context-1"
+        }
+      ]
+    }
+  ]
+}

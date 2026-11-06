@@ -109,3 +109,32 @@ removed {
     destroy = false
   }
 }
+
+resource "aws_ssm_parameter" "gitlab_runner_url" {
+  count       = var.certificate_arn != "" ? 1 : 0
+  name        = "/adp/${var.environment}/gitlab/runner-url"
+  description = "Private HTTPS GitLab URL for group runners"
+  type        = "String"
+  value       = "https://${var.gitlab_domain}${var.cloudfront_domain != "" ? "/gitlab" : ""}"
+  tags        = local.common_tags
+
+  lifecycle {
+    precondition {
+      condition = (
+        length(var.gitlab_domain) <= 253 &&
+        can(regex("^([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.gitlab_domain)) &&
+        endswith(var.gitlab_domain, ".${trimsuffix(var.route53_zone_name, ".")}")
+      )
+      error_message = "Runner URL must use a hostname in the configured private DNS zone."
+    }
+  }
+}
+
+resource "aws_ssm_parameter" "gitlab_runner_ca_secret_arn" {
+  count       = var.certificate_arn != "" ? 1 : 0
+  name        = "/adp/${var.environment}/gitlab/ca-chain-secret-arn"
+  description = "ARN of the operator-validated GitLab runner CA trust bundle"
+  type        = "String"
+  value       = aws_secretsmanager_secret.runner_ca.arn
+  tags        = local.common_tags
+}

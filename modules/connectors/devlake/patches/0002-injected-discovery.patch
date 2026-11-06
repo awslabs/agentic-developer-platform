@@ -1,0 +1,130 @@
+diff --git a/backend/plugins/github/api/remote_api.go b/backend/plugins/github/api/remote_api.go
+index 9bae777..b102f16 100644
+--- a/backend/plugins/github/api/remote_api.go
++++ b/backend/plugins/github/api/remote_api.go
+@@ -57,0 +58,44 @@ func listGithubRemoteScopes(
++func ADPListRemoteScopes(
++	apiClient plugin.ApiClient,
++	installation bool,
++	namespace string,
++	page GithubRemotePagination,
++) ([]dsmodels.DsRemoteApiScopeListEntry[models.GithubRepo], *GithubRemotePagination, errors.Error) {
++	if page.Page == 0 {
++		page.Page = 1
++	}
++	if page.PerPage == 0 {
++		page.PerPage = 100
++	}
++	if !installation && namespace == "" {
++		if page.Page == 1 {
++			children, err := listGithubUser(apiClient)
++			if err != nil {
++				return nil, nil, err
++			}
++			return children, &GithubRemotePagination{Page: 2, PerPage: page.PerPage}, nil
++		}
++		page.Page--
++		children, nextPage, err := listGithubOrgs(apiClient, page)
++		if nextPage != nil {
++			nextPage.Page++
++		}
++		return children, nextPage, err
++	}
++	connection := &models.GithubConnection{}
++	if installation {
++		connection.AuthMethod = plugin.AUTH_METHOD_APPKEY
++	}
++	children, nextPage, err := listGithubRemoteScopes(connection, apiClient, namespace, page)
++	if err != nil || !installation || namespace == "" {
++		return children, nextPage, err
++	}
++	selected := children[:0]
++	for _, child := range children {
++		if child.ParentId != nil && *child.ParentId == namespace {
++			selected = append(selected, child)
++		}
++	}
++	return selected, nextPage, nil
++}
++
+@@ -68 +112 @@ func listGithubUserOrgs(
+-		userBody, err := apiClient.Get("user", nil, nil)
++		children, err = listGithubUser(apiClient)
+@@ -72,8 +115,0 @@ func listGithubUserOrgs(
+-		var o org
+-		errors.Must(api.UnmarshalResponse(userBody, &o))
+-		children = append(children, dsmodels.DsRemoteApiScopeListEntry[models.GithubRepo]{
+-			Type:     api.RAS_ENTRY_TYPE_GROUP,
+-			Id:       fmt.Sprintf("%v", o.Login),
+-			Name:     fmt.Sprintf("%v", o.Login),
+-			FullName: fmt.Sprintf("%v", o.Login),
+-		})
+@@ -80,0 +117,29 @@ func listGithubUserOrgs(
++	organizations, nextPage, err := listGithubOrgs(apiClient, page)
++	return append(children, organizations...), nextPage, err
++}
++
++func listGithubUser(apiClient plugin.ApiClient) ([]dsmodels.DsRemoteApiScopeListEntry[models.GithubRepo], errors.Error) {
++	userBody, err := apiClient.Get("user", nil, nil)
++	if err != nil {
++		return nil, err
++	}
++	var user org
++	if err := api.UnmarshalResponse(userBody, &user); err != nil {
++		return nil, err
++	}
++	return []dsmodels.DsRemoteApiScopeListEntry[models.GithubRepo]{{
++		Type:     api.RAS_ENTRY_TYPE_GROUP,
++		Id:       fmt.Sprintf("%v", user.Login),
++		Name:     fmt.Sprintf("%v", user.Login),
++		FullName: fmt.Sprintf("%v", user.Login),
++	}}, nil
++}
++
++func listGithubOrgs(
++	apiClient plugin.ApiClient,
++	page GithubRemotePagination,
++) (
++	children []dsmodels.DsRemoteApiScopeListEntry[models.GithubRepo],
++	nextPage *GithubRemotePagination,
++	err errors.Error,
++) {
+@@ -125 +190,3 @@ func getOwnerInfo(apiClient plugin.ApiClient, owner string) (ownerType string, o
+-	errors.Must(api.UnmarshalResponse(resp, &info))
++	if err := api.UnmarshalResponse(resp, &info); err != nil {
++		return "", 0, err
++	}
+@@ -138 +205,3 @@ func getAuthenticatedUserID(apiClient plugin.ApiClient) (int, errors.Error) {
+-	errors.Must(api.UnmarshalResponse(resp, &user))
++	if err := api.UnmarshalResponse(resp, &user); err != nil {
++		return 0, err
++	}
+@@ -193 +262,3 @@ func listGithubOwnerRepos(
+-	errors.Must(api.UnmarshalResponse(reposBody, &repos))
++	if err = api.UnmarshalResponse(reposBody, &repos); err != nil {
++		return
++	}
+@@ -227 +298,3 @@ func listGithubAppInstalledRepos(
+-	errors.Must(api.UnmarshalResponse(resApp, &appRepos))
++	if err = api.UnmarshalResponse(resApp, &appRepos); err != nil {
++		return
++	}
+diff --git a/backend/plugins/jira/api/remote_api.go b/backend/plugins/jira/api/remote_api.go
+index fcee625..a38fde6 100644
+--- a/backend/plugins/jira/api/remote_api.go
++++ b/backend/plugins/jira/api/remote_api.go
+@@ -80,0 +81,3 @@ func queryJiraAgileBoards(
++		if resBody.StartAt != page.StartAt || resBody.MaxResults <= 0 {
++			return nil, nil, errors.Default.New("invalid Jira pagination")
++		}
+@@ -83 +86 @@ func queryJiraAgileBoards(
+-			StartAt:    page.StartAt + page.MaxResults,
++			StartAt:    resBody.StartAt + resBody.MaxResults,
+@@ -102,0 +106,7 @@ func listJiraRemoteScopes(
++func ADPListRemoteScopes(
++	apiClient plugin.ApiClient,
++	page JiraRemotePagination,
++) ([]dsmodels.DsRemoteApiScopeListEntry[models.JiraBoard], *JiraRemotePagination, errors.Error) {
++	return listJiraRemoteScopes(nil, apiClient, "", page)
++}
++

@@ -1,13 +1,64 @@
 """Native paid workers select only admitted, supported lifecycle phases."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from harness_jobs.identity import OperationRefused
 from superplane_executor import task_worker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_seconds", [3600, 10800])
+async def test_worker_renews_after_original_hour_only_with_extended_deadline(
+    monkeypatch, tmp_path, runtime_seconds
+):
+    started = datetime.now(UTC)
+    elapsed = 0
+
+    class Clock:
+        @staticmethod
+        def now(zone):
+            return started + timedelta(seconds=elapsed)
+
+    class Stop:
+        def is_set(self):
+            return False
+
+        async def wait(self):
+            nonlocal elapsed
+            elapsed = 3700 if elapsed == 0 else 10801
+
+    async def wait_for(awaitable, *, timeout):
+        await awaitable
+
+    calls = []
+
+    async def post(path, body):
+        calls.append((path, elapsed))
+        return {"credential": "renewed-after-original-hour"}
+
+    monkeypatch.setattr(task_worker, "datetime", Clock)
+    monkeypatch.setattr(
+        task_worker,
+        "asyncio",
+        SimpleNamespace(
+            get_running_loop=lambda: SimpleNamespace(time=lambda: elapsed),
+            wait_for=wait_for,
+        ),
+    )
+    transport = SimpleNamespace(post=post, run_file=tmp_path / "credential")
+    with pytest.raises(OperationRefused, match="paid task approval expired"):
+        await task_worker.maintain(
+            transport, Stop(), started + timedelta(seconds=runtime_seconds)
+        )
+    renewals = [time for path, time in calls if path.endswith("/renew")]
+    assert renewals == ([3700] if runtime_seconds == 10800 else [])
+    if renewals:
+        assert transport.run_file.read_text() == "renewed-after-original-hour"
+    assert all(time < runtime_seconds for _, time in calls)
 
 
 @pytest.mark.asyncio
@@ -60,9 +111,10 @@ def test_default_and_controller_modes_do_not_enable_lifecycle(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("phase", sorted(task_worker.LIFECYCLE_PHASES))
+@pytest.mark.parametrize("phase", [None, *sorted(task_worker.LIFECYCLE_PHASES)])
 async def test_native_lifecycle_uses_verified_operation_phase(monkeypatch, phase):
     from workspace_provisioning import runtime
+    from workspace_provisioning.artifacts import canonical, initial_execution_steps
 
     monkeypatch.setenv("SUPERPLANE_PAID_WORKER_MODE", "native-lifecycle")
     monkeypatch.setenv("SUPERPLANE_LIFECYCLE_POLICY_FILE", "/run/policy/lifecycle.json")
@@ -79,6 +131,15 @@ async def test_native_lifecycle_uses_verified_operation_phase(monkeypatch, phase
             }
         ),
     )
+    if phase is None:
+        parameters = operation.request.parameters
+        del parameters["lifecycle_phase"]
+        parameters.update(
+            plan_revision="b" * 64,
+            lifecycle_request=canonical({"mode": "existing-account-managed"}),
+        )
+        parameters["execution_steps"] = initial_execution_steps(parameters)
+    original_parameters = dict(operation.request.parameters)
     transport = SimpleNamespace(
         post=AsyncMock(return_value={"verified": True}),
         _verified_operation=Mock(return_value=operation),
@@ -105,6 +166,7 @@ async def test_native_lifecycle_uses_verified_operation_phase(monkeypatch, phase
     run_lifecycle.assert_awaited_once()
     passed_operation, context = run_lifecycle.await_args.args
     assert passed_operation is operation
+    assert dict(operation.request.parameters) == original_parameters
     assert context.authority is transport
     assert context.connect is execution.acquire
     assert context.domain_connect is domain.acquire

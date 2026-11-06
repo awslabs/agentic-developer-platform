@@ -55,6 +55,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from src.orchestration.models import OrchestrationEnvironmentLease
+from tests.migrations.conftest_postgres import upgrade
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "alembic" / "versions"
 
@@ -547,55 +548,56 @@ class TestModelMigrationParity:
     on the first real query — so compare them directly.
     """
 
-    async def _migrated_columns(self):
-        engine = await _bare_engine()
-        await _upgrade(engine)
-        async with engine.connect() as conn:
-            columns = await conn.run_sync(lambda c: sa_inspect(c).get_columns(LEASES))
-        await engine.dispose()
+    def _migrated_columns(self, pg_url):
+        upgrade(pg_url, "head")
+        engine = sa.create_engine(pg_url)
+        try:
+            with engine.connect() as connection:
+                columns = sa_inspect(connection).get_columns(LEASES)
+        finally:
+            engine.dispose()
         return {column["name"]: column for column in columns}
 
-    async def test_column_names_match_the_model(self):
-        migrated = set(await self._migrated_columns())
+    def test_column_names_match_the_model(self, pg_url):
+        migrated = set(self._migrated_columns(pg_url))
         declared = {column.name for column in OrchestrationEnvironmentLease.__table__.columns}
         assert migrated == declared, f"drift — migration-only: {sorted(migrated - declared)}, model-only: {sorted(declared - migrated)}"
 
-    async def test_column_types_match_the_model(self):
-        from sqlalchemy.dialects import sqlite
+    def test_column_types_match_the_model(self, pg_url):
+        from sqlalchemy.dialects import postgresql
 
-        dialect = sqlite.dialect()
-        migrated_columns = await self._migrated_columns()
+        dialect = postgresql.dialect()
+        migrated_columns = self._migrated_columns(pg_url)
         declared = {column.name: str(column.type.compile(dialect=dialect)) for column in OrchestrationEnvironmentLease.__table__.columns}
         migrated = {name: str(column["type"].compile(dialect=dialect)) for name, column in migrated_columns.items()}
         assert migrated == declared, "column types drifted between migration and model"
 
-    async def test_nullability_matches_the_model(self):
+    def test_nullability_matches_the_model(self, pg_url):
         """Nullability drift is the dangerous half of parity.
 
         A column the model believes optional but the database requires fails only on
         the write path that omits it — which here is `release_lease`, a path first
         exercised when a deployment finishes.
         """
-        migrated_columns = await self._migrated_columns()
+        migrated_columns = self._migrated_columns(pg_url)
         declared = {column.name: column.nullable for column in OrchestrationEnvironmentLease.__table__.columns}
         migrated = {name: column["nullable"] for name, column in migrated_columns.items()}
         assert migrated == declared, "nullability drifted between migration and model"
 
-    async def test_index_shape_matches_the_model(self):
+    def test_index_shape_matches_the_model(self, pg_url):
         """Including uniqueness, which is where a drift would be invisible and fatal.
 
         A model declaring a unique index that the migration created as non-unique
         passes every ORM-built test — `create_all` uses the model — and admits the
         double-hold on every deployed database.
         """
-        engine = await _bare_engine()
-        await _upgrade(engine)
-        async with engine.connect() as conn:
-            migrated = {
-                index["name"]: (index["unique"], list(index["column_names"]))
-                for index in await conn.run_sync(lambda c: sa_inspect(c).get_indexes(LEASES))
-            }
-        await engine.dispose()
+        upgrade(pg_url, "head")
+        engine = sa.create_engine(pg_url)
+        try:
+            with engine.connect() as connection:
+                migrated = {index["name"]: (index["unique"], list(index["column_names"])) for index in sa_inspect(connection).get_indexes(LEASES)}
+        finally:
+            engine.dispose()
 
         declared = {
             index.name: (bool(index.unique), [column.name for column in index.columns]) for index in OrchestrationEnvironmentLease.__table__.indexes

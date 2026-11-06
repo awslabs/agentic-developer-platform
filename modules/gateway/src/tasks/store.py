@@ -503,6 +503,11 @@ class TaskStore:
             "policy_version": request.policy_version,
             "request_digest": digest,
             "input_payload": request.request_payload,
+            **(
+                {"product_id": request.immutable_input["work_scope"]["product_id"], "project_id": request.immutable_input["work_scope"]["project_id"]}
+                if request.immutable_input.get("work_scope")
+                else {}
+            ),
             "idempotency_partition": idempotency_pk,
             "grant_reference": request.grant_reference,
             "capacity_scope_hash": request.capacity_scope_hash,
@@ -3611,11 +3616,25 @@ def _validate_run_bindings(request: AcceptanceRequest) -> None:
     if isinstance(request.model_binding, dict) and request.model_binding.get("transport") == "openai_responses" and request.harness is None:
         raise TaskStoreError("Responses acceptance requires a frozen harness")
     immutable_input = request.immutable_input
-    allowed_input = {"instructions", "inputs", "acceptance_criteria", "artifacts", "input_digest"}
+    allowed_input = {"instructions", "inputs", "acceptance_criteria", "artifacts", "input_digest", "work_scope"}
     if not isinstance(immutable_input, dict) or not {"instructions", "input_digest"}.issubset(immutable_input):
         raise TaskStoreError("immutable run input is incomplete")
     if not set(immutable_input).issubset(allowed_input):
         raise TaskStoreError("immutable run input contains unknown fields")
+    work_scope = immutable_input.get("work_scope")
+    requested_scope = bool(request.request_payload.get("product_id") or request.request_payload.get("project_id"))
+    if requested_scope != (work_scope is not None):
+        raise TaskStoreError("Task Project scope is incomplete")
+    if work_scope is not None:
+        if (
+            not isinstance(work_scope, dict)
+            or work_scope.get("tenant_id") != request.tenant
+            or not work_scope.get("project_id")
+            or not work_scope.get("product_id")
+            or (request.request_payload.get("product_id") and request.request_payload["product_id"] != work_scope["product_id"])
+            or (request.request_payload.get("project_id") and request.request_payload["project_id"] != work_scope["project_id"])
+        ):
+            raise TaskStoreError("Task Project scope disagrees with the accepted request")
     instructions = immutable_input.get("instructions")
     if not isinstance(instructions, str) or not instructions or len(instructions) > 16_000:
         raise TaskStoreError("immutable run instructions are invalid")

@@ -1,6 +1,7 @@
 """Exact plan proposals and immutable lineage for separately approved continuation."""
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 import hashlib
 import json
 import re
@@ -45,6 +46,32 @@ def initial_execution_steps(parameters):
             )
         ]
     )
+
+
+def native_lifecycle_phase(parameters):
+    """Select the admitted phase without changing the approved request bytes.
+
+    Initial dedicated managed plans encode their phase in execution_steps;
+    continuation plans also carry lifecycle_phase. Runtime policy and lineage
+    validation remain mandatory after selection.
+    """
+    phase = parameters.get("lifecycle_phase")
+    if phase is not None or "runtime_config_sha256" not in parameters:
+        return phase
+    try:
+        request = json.loads(parameters["lifecycle_request"])
+        if (
+            request.get("mode") == "existing-account-managed"
+            and "lifecycle_artifact_id" not in parameters
+            and "lifecycle_source_operation_id" not in parameters
+            and re.fullmatch(r"[a-f0-9]{64}", parameters["runtime_config_sha256"])
+            and re.fullmatch(r"[a-f0-9]{64}", parameters["plan_revision"])
+            and parameters.get("execution_steps") == initial_execution_steps(parameters)
+        ):
+            return "prepare-infrastructure"
+    except (KeyError, TypeError, ValueError, AttributeError):
+        pass
+    raise LifecycleRefused("initial native lifecycle phase is not a reviewed recipe")
 
 
 async def record_artifact(operation, context, *, account_id, target, metadata):
@@ -187,6 +214,11 @@ def proposal(row):
         "plan_json_sha256": metadata.get("plan_json_sha256"),
         "inventory": metadata.get("inventory"),
         "estimate": metadata.get("estimate"),
+        **(
+            {"daily_budget_amendment": metadata["daily_budget_amendment"]}
+            if "daily_budget_amendment" in metadata
+            else {}
+        ),
         "lifecycle_request": json.loads(parameters["lifecycle_request"]),
         "lifecycle_inputs": json.loads(parameters["lifecycle_inputs"]),
     }
@@ -204,6 +236,34 @@ def continuation_parameters(row):
         "bootstrap-workspace",
     }:
         raise LifecycleRefused("plan continuation phase is invalid")
+    amendment = metadata.get("daily_budget_amendment")
+    if amendment is not None:
+        if (
+            phase != "apply-infrastructure"
+            or parameters.get("lifecycle_artifact_id")
+            or amendment["source_operation_id"] != row["source_operation_id"]
+            or amendment["source_plan_digest"] != row["source_payload_digest"]
+            or amendment["previous_daily_micros"]
+            != int(parameters["lifecycle_allocation_max_cost_micros"])
+            or type(amendment["daily_micros"]) is not int
+            or amendment["daily_micros"] <= amendment["previous_daily_micros"]
+        ):
+            raise LifecycleRefused(
+                "budget amendment differs from original initial proposal"
+            )
+        amended_inputs = json.loads(parameters["lifecycle_inputs"])
+        amended_inputs["budget_max_daily_usd"] = str(
+            Decimal(amendment["daily_micros"]) / 1000000
+        )
+        if amendment["next_lifecycle_inputs"] != canonical(amended_inputs):
+            raise LifecycleRefused(
+                "budget amendment changes unrelated lifecycle inputs"
+            )
+        parameters.update(
+            lifecycle_allocation_max_cost_micros=str(amendment["daily_micros"]),
+            lifecycle_inputs=amendment["next_lifecycle_inputs"],
+            plan_revision=amendment["next_plan_revision"],
+        )
     request = json.loads(parameters["lifecycle_request"])
     credential_account = (
         request["management_account_id"]

@@ -17,6 +17,7 @@ from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.organization import Organization, User
 from src.shared.models.vault import UserCredential
+from tests.auth.proxy_stream import stream_from_request
 
 
 @pytest.fixture
@@ -26,6 +27,7 @@ async def vault(db_session, monkeypatch):
     db_session.add(User(id="vault-user", org_id="vault-org", team_id="", email="vault@example.test"))
     await db_session.flush()
     cred = UserCredential(
+        agent_consent=True,
         id="vault-key",
         org_id="vault-org",
         user_id="vault-user",
@@ -81,6 +83,7 @@ async def vault(db_session, monkeypatch):
         enforce_credential_binding=False,
         webhook_events_table="events",
         vault_raw_read_enabled=True,
+        github_pat_grace_days=30,
         vault_materialization_bucket="vault-fixture",
         aws_region="us-east-1",
         vault_proxy_require_https=True,
@@ -156,7 +159,9 @@ async def test_raw_api_key_delivery_and_rotation_preserve_audit(vault):
     assert len(logs) == 2
     assert all(row.details["credential_id"] == "vault-key" for row in logs)
     assert all("fixture-key" not in str(row.details) for row in logs)
-    assert vault.runtime.validate_flow.await_count == 2
+    # Each request validates the worker at admission, after secret lookup, and
+    # before delivery; rotation must preserve all three live checks.
+    assert vault.runtime.validate_flow.await_count == 6
 
 
 @pytest.mark.asyncio
@@ -164,6 +169,7 @@ async def test_proxy_injects_selected_key_and_preserves_host_restriction(vault):
     context = MagicMock()
     upstream = context.__aenter__.return_value
     upstream.request = AsyncMock(return_value=httpx.Response(200, text="provider-ok"))
+    upstream.stream = lambda **kwargs: stream_from_request(upstream, **kwargs)
     with (
         patch("src.internal.credential_routes.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]),
         patch("src.internal.credential_routes.httpx.AsyncClient", return_value=context),
@@ -183,7 +189,7 @@ async def test_proxy_injects_selected_key_and_preserves_host_restriction(vault):
 
 
 @pytest.mark.asyncio
-async def test_file_materialization_and_metadata_remain_available(vault):
+async def test_file_materialization_refused_without_secret_effects_and_metadata_remains_available(vault):
     vault.cred.credential_type = "config_file"
     await vault.db.commit()
     with patch("boto3.client") as aws:
@@ -191,9 +197,10 @@ async def test_file_materialization_and_metadata_remain_available(vault):
         response = vault.client.post(
             "/internal/v1/credential-materialize", json=vault.body, headers={**vault.headers, "X-Agent-Scopes": "credential:materialize"}
         )
-        assert response.status_code == 201, response.text
-        assert aws.return_value.put_object.call_args.kwargs["Body"] == b"fixture-api-key"
-        assert aws.return_value.generate_presigned_url.call_args.kwargs["ExpiresIn"] == 300
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["error"] == "credential_materialization_cleanup_unavailable"
+        aws.assert_not_called()
+        vault.sm.get_secret.assert_not_called()
     response = vault.client.get(
         "/internal/v1/user-credentials", params={"user_id": "vault-user", "invocation_id": "vault-run"}, headers=vault.headers
     )

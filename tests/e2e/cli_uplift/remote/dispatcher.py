@@ -29,7 +29,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # purpose -> (module, extra payload the orchestrator does not have to supply)
 PURPOSES = {
+    "assistant_latency": ("assistant_latency", {}),
     "assistant_baseline": ("assistant_baseline", {}),
+    "dev_box_lifecycle": ("dev_box_lifecycle", {}),
+    "assistant_sessions": ("assistant_sessions", {}),
+    "assistant_faults": ("assistant_faults", {}),
+    "assistant_stream": ("assistant_stream", {}),
+    "assistant_sources": ("assistant_sources", {}),
+    "assistant_isolation": ("assistant_isolation", {}),
     "hosted_coding": ("hosted_coding", {}),
     "hierarchy_lifecycle": ("hierarchy_lifecycle", {}),
     "knowledge_lifecycle": ("knowledge_lifecycle", {}),
@@ -61,6 +68,11 @@ PURPOSES = {
     "story_gitlab": ("story_reads", {"mode": "gitlab"}),
     # E01/E02/E03 — install the served release, then a real Cognito login.
     "install_auth": ("install_auth", {}),
+    "product_actor": ("install_auth", {}),
+    "product_cleanup": ("product_cleanup", {}),
+    "product_workspace": ("product_workspace", {}),
+    "product_probe": ("product_probe", {}),
+    "product_v01": ("product_v01", {}),
     # E04/E05 — `adp aws connect`, provisioned and handoff variants.
     "personal_aws_provision": ("personal_aws", {"mode": "provision"}),
     "personal_aws_handoff": ("personal_aws", {"mode": "handoff"}),
@@ -71,6 +83,11 @@ PURPOSES = {
     # E13 — the live API run through its own CLI consumers and checked against
     # the browser's declared wire types.
     "api_parity": ("api_parity", {}),
+    "product_scope_isolation": ("product_scopes", {"mode": "isolation"}),
+    "product_scope_denials": ("product_scopes", {"mode": "denials"}),
+    "product_scope_history": ("product_scopes", {"mode": "history"}),
+    "product_profile_roundtrip": ("product_profile", {"mode": "roundtrip"}),
+    "product_profile_denial_retry": ("product_profile", {"mode": "denial_retry"}),
     # E14 — `adp update`, `adp update --rollback`, an interrupted install, and
     # the `codex setup`/`claude setup` verbs plus both launchers.
     "update_rollback": ("update_rollback", {}),
@@ -137,6 +154,42 @@ def self_check():
             continue
         if not hasattr(module, "execute"):
             problems[purpose] = f"remote/{name}.py has no execute(config, evidence)"
+    try:
+        product_driver = importlib.import_module("tests.e2e.product_onboarding.live")
+        if not callable(getattr(product_driver, "run", None)):
+            problems["product_v01_driver"] = (
+                "Shipped Product driver has no run entry point"
+            )
+    except Exception as exc:
+        problems["product_v01_driver"] = (
+            f"{type(exc).__name__} importing shipped Product driver"
+        )
+    try:
+        state_module = importlib.import_module("product_state")
+        if not callable(getattr(state_module, "ProductState", None)):
+            problems["product_v01_state"] = "Shipped Product ownership store is missing"
+    except Exception as exc:
+        problems["product_v01_state"] = (
+            f"{type(exc).__name__} importing shipped Product ownership store"
+        )
+    try:
+        product_http = importlib.import_module("product_http")
+        if not callable(getattr(product_http, "local_owner", None)):
+            problems["product_v01_actor"] = "Shipped Product actor adapter is missing"
+    except Exception as exc:
+        problems["product_v01_actor"] = (
+            f"{type(exc).__name__} importing shipped Product actor adapter"
+        )
+    try:
+        product_runner = importlib.import_module("product_v01")
+        if not callable(getattr(product_runner, "run_selected", None)):
+            problems["product_v01_runner"] = (
+                "Shipped Product runner has no selection entry point"
+            )
+    except Exception as exc:
+        problems["product_v01_runner"] = (
+            f"{type(exc).__name__} importing shipped Product runner"
+        )
     print(
         json.dumps(
             {

@@ -4,13 +4,41 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from src.agentauth.chat_admission import _encoded
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, ChatLaunchStore
+from src.agentauth.chat_history_write import ChatHistoryConflictError
+
+
+class ChatSandboxRemovalUnconfirmedError(ChatHistoryConflictError):
+    """Finalize/complete asked for removal evidence the API server does not yet give.
+
+    Distinct from the generic history conflict so the supervisor can re-await the pod's removal
+    and retry instead of giving up (#8047); the route maps it to 409 ``chat_sandbox_removal_unconfirmed``.
+    """
+
+
+def sandbox_removed(workloads, *, name, uid):
+    """Absent from the API server, or still returned only while the kubelet reclaims an exited pod."""
+    return workloads.is_absent(name=name) or workloads.is_terminating(name=name, uid=uid)
 
 
 class ChatTeardown:
-    def __init__(self, authority, launches):
+    def __init__(self, authority, launches, crew_store=None):
         self.authority = authority
         self.store = authority.store
         self.launches = launches
+        self.crew_store = crew_store
+
+    def workloads_for_cleanup(self, run_id):
+        previous = self.store._read(f"CHAT-LAUNCH#{run_id}", "TEARDOWN")
+        if previous is None:
+            return self.authority.workloads_for_run(run_id)
+        scope = previous.get("binding", {}).get("M", {}).get("observation_scope")
+        if scope == {"M": _encoded(self.authority.workloads.observation_scope)}:
+            return self.authority.workloads
+        if self.authority.crew_workloads is not None:
+            crew = self.authority.crew_workloads()
+            if scope == {"M": _encoded(crew.observation_scope)}:
+                return crew
+        raise ChatAuthorizationRefusedError("chat cleanup observation scope changed")
 
     def observe(self, body, role, bindings, *, removed, now):
         pointer = self.store._read(f"INVOCATION#{body.run_id}", "DISPATCH") or {}
@@ -19,6 +47,7 @@ class ChatTeardown:
             raise ChatAuthorizationRefusedError("chat teardown root refused")
         metadata = self.store._read(f"TENANT#{tenant}", f"EXEC#{body.run_id}") or {}
         launch = self.launches.load(body.run_id)
+        workloads = self.workloads_for_cleanup(launch.run_id)
         if (
             not any(
                 binding.chat_supervisor_role == role and binding.tenant_id == tenant and metadata.get("persona", {}).get("S") in binding.personas
@@ -45,7 +74,7 @@ class ChatTeardown:
                 "attempt": launch.attempt,
                 "credential_epoch": launch.credential_epoch,
                 "lease_generation": launch.lease_generation,
-                "observation_scope": self.authority.workloads.observation_scope,
+                "observation_scope": workloads.observation_scope,
             }
         )
         key = _encoded({"pk": f"CHAT-LAUNCH#{launch.run_id}", "sk": "TEARDOWN"})
@@ -57,11 +86,13 @@ class ChatTeardown:
         field = "removed_at" if removed else "exited_at"
         if previous is not None and field in previous:
             self._persist(previous, previous, pointer, metadata, launch)
+            if removed:
+                self._revoke_crew(launch)
             return True
         observed = (
-            self.authority.workloads.is_absent(name=body.pod_name)
+            sandbox_removed(workloads, name=body.pod_name, uid=body.pod_uid)
             if removed
-            else self.authority.workloads.has_exited(name=body.pod_name, uid=body.pod_uid, image_digest=launch.image_digest)
+            else workloads.has_exited(name=body.pod_name, uid=body.pod_uid, image_digest=launch.image_digest)
         )
         fenced_absence = False
         if (
@@ -71,7 +102,7 @@ class ChatTeardown:
             and metadata.get("chat_session_lost")
             == {"M": _encoded({"run_id": launch.run_id, "sandbox_uid": launch.sandbox_uid, "lease_generation": launch.lease_generation})}
         ):
-            fenced_absence = self.authority.workloads.is_absent(name=body.pod_name)
+            fenced_absence = workloads.is_absent(name=body.pod_name)
             observed = fenced_absence
         if not observed:
             return False
@@ -79,7 +110,13 @@ class ChatTeardown:
         if fenced_absence:
             receipt.update(exit_evidence={"S": "lease_fenced_absence"}, removed_at={"N": str(now)})
         self._persist(receipt, previous, pointer, metadata, launch)
+        if removed:
+            self._revoke_crew(launch)
         return True
+
+    def _revoke_crew(self, launch):
+        if self.crew_store is not None and launch.session_run_id:
+            self.crew_store.revoke_for_lease(tenant_id=launch.tenant_id, session_id=launch.session_id, lease_generation=launch.lease_generation)
 
     def _unchanged(self, item):
         fields = [field for field in item if field not in {"pk", "sk"}]

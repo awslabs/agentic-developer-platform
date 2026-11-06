@@ -71,12 +71,15 @@ def normalize_team_role(role: str | None) -> str:
     return DEFAULT_TEAM_ROLE
 
 
-async def _load_user_in_org(db: AsyncSession, *, user_id: str, org_id: str) -> User:
+async def _load_user_in_org(db: AsyncSession, *, user_id: str, org_id: str, lock: bool = True) -> User:
     """Fetch a user, asserting it belongs to ``org_id``. Raises 404 if not.
 
     Tenant scoping is enforced by making the org part of the lookup rather than
     checking it after: a user in another tenant is indistinguishable from one that
     does not exist, which is what we want an out-of-org caller to learn.
+
+    Readers opt out of serialization. Writers lock first, then check revocation
+    with a fresh statement snapshot so a wait cannot outlive a removal tombstone.
     """
     from src.shared.models.onboarding import TenantMembership
 
@@ -85,7 +88,11 @@ async def _load_user_in_org(db: AsyncSession, *, user_id: str, org_id: str) -> U
         .where(TenantMembership.user_id == user_id, TenantMembership.tenant_id == org_id, TenantMembership.revoked_at.is_not(None))
         .exists()
     )
-    user = (await db.execute(select(User).where(User.id == user_id, User.org_id == org_id, ~revoked).with_for_update())).scalar_one_or_none()
+    if lock:
+        await db.execute(select(User.id).where(User.id == user_id, User.org_id == org_id).with_for_update())
+    user = (
+        await db.execute(select(User).where(User.id == user_id, User.org_id == org_id, ~revoked).execution_options(populate_existing=True))
+    ).scalar_one_or_none()
     if user is None:
         raise ResourceNotFoundError("User", user_id)
     return user
@@ -105,7 +112,7 @@ async def list_memberships(db: AsyncSession, *, user_id: str, org_id: str) -> li
     Primary first, then oldest-first, so the caller (and the UI) get a stable order
     without having to sort.
     """
-    await _load_user_in_org(db, user_id=user_id, org_id=org_id)
+    await _load_user_in_org(db, user_id=user_id, org_id=org_id, lock=False)
     rows = (
         (
             await db.execute(

@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import os
+import sys
+import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 # Path to the zoekt manifest
 MANIFEST_PATH = Path(__file__).parent.parent.parent / "manifests" / "zoekt.yaml"
@@ -42,10 +46,6 @@ class TestZoektManifestStructure:
     def test_shard_sync_uses_sleep_60(self):
         """Sidecar sleeps 60s between sync cycles (guards against reload-loop)."""
         assert "sleep 60" in self.manifest
-
-    def test_shard_sync_uses_cp_u(self):
-        """Sidecar uses cp -u to only copy newer files (avoids unnecessary writes)."""
-        assert "cp -u" in self.manifest
 
     def test_shard_sync_removes_stale(self):
         """Sidecar removes shards that no longer exist on S3."""
@@ -93,23 +93,25 @@ class TestShardSyncScript:
         repo2_dir.mkdir(parents=True)
         (repo2_dir / "acme_gadget_v16.00000.zoekt").write_bytes(b"shard-data-3")
 
-    def _run_sync_script(self):
-        """Run the sync portion of the sidecar script (one cycle)."""
-        script = f"""
-        # Sync new/updated shards from S3 mount to flat index dir
-        find {self.s3_mount} -name "*.zoekt" -exec cp -u {{}} {self.index_dir}/ \\;
+    def _command(self, extra_env=None):
+        deployment = next(yaml.safe_load_all(MANIFEST_PATH.read_text()))
+        containers = deployment["spec"]["template"]["spec"]["containers"]
+        script = next(c for c in containers if c["name"] == "shard-sync")["args"][0]
+        env = {
+            **os.environ,
+            "SHARD_SOURCE_DIR": str(self.s3_mount),
+            "SHARD_INDEX_DIR": str(self.index_dir),
+            "SYNC_ONCE": "true",
+            **(extra_env or {}),
+        }
+        return ["sh", "-c", script], env
 
-        # Remove shards from index that no longer exist on S3
-        for f in {self.index_dir}/*.zoekt; do
-            [ -f "$f" ] || continue
-            basename=$(basename "$f")
-            if ! find {self.s3_mount} -name "$basename" -print -quit | grep -q .; then
-                rm -f "$f"
-            fi
-        done
-        """
+    def _run_sync_script(self):
+        """Execute the actual manifest script, including error handling."""
+        command, env = self._command()
         result = subprocess.run(
-            ["sh", "-c", script],
+            command,
+            env=env,
             capture_output=True,
             timeout=10,
         )
@@ -164,7 +166,7 @@ class TestShardSyncScript:
 
         self._run_sync_script()
 
-        # mtimes should not change (cp -u skips unchanged files)
+        # Unchanged shards retain their inode and mtime across cycles.
         mtimes_after = {f.name: f.stat().st_mtime for f in self.index_dir.iterdir()}
         assert mtimes_before == mtimes_after
 
@@ -212,3 +214,87 @@ class TestShardSyncScript:
         index_files = [f.name for f in self.index_dir.iterdir()]
         assert "README.md" not in index_files
         assert "metadata.json" not in index_files
+
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_reader_never_observes_partial_copy(self, tmp_path, existing):
+        shutil.rmtree(self.s3_mount)
+        self.s3_mount.mkdir()
+        source = self.s3_mount / "example%2Fservice_v16.00000.zoekt"
+        source.write_bytes(b"complete-new-shard-data")
+        target = self.index_dir / source.name
+        reader = None
+        if existing:
+            target.write_bytes(b"previous-shard")
+            os.utime(target, (0, 0))
+            reader = target.open("rb")
+
+        started, release = tmp_path / "started", tmp_path / "release"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        copier = bin_dir / "cp"
+        copier.write_text(
+            f"#!{sys.executable}\n"
+            "import os, pathlib, sys, time\n"
+            "data = pathlib.Path(sys.argv[1]).read_bytes()\n"
+            "with open(sys.argv[2], 'wb') as output:\n"
+            "    output.write(data[:4]); output.flush()\n"
+            "    pathlib.Path(os.environ['COPY_STARTED']).touch()\n"
+            "    while not pathlib.Path(os.environ['COPY_RELEASE']).exists(): time.sleep(0.01)\n"
+            "    output.write(data[4:])\n"
+        )
+        copier.chmod(0o755)
+        command, env = self._command(
+            {
+                "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+                "COPY_STARTED": str(started),
+                "COPY_RELEASE": str(release),
+            }
+        )
+        process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not started.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert started.exists(), "copy never reached its partial-write boundary"
+            if existing:
+                assert target.read_bytes() == b"previous-shard"
+            else:
+                assert not target.exists()
+            release.touch()
+            _, stderr = process.communicate(timeout=5)
+            assert process.returncode == 0, stderr.decode()
+            assert target.read_bytes() == b"complete-new-shard-data"
+            if reader:
+                assert reader.read() == b"previous-shard"
+            assert sorted(p.name for p in self.index_dir.iterdir()) == [source.name]
+        finally:
+            release.touch()
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+            if reader:
+                reader.close()
+
+    def test_failed_source_listing_retains_existing_index(self):
+        self._run_sync_script()
+        before = {p.name: p.read_bytes() for p in self.index_dir.iterdir()}
+        shutil.rmtree(self.s3_mount)
+        command, env = self._command()
+        result = subprocess.run(command, env=env, capture_output=True, timeout=10)
+        assert result.returncode != 0
+        assert {p.name: p.read_bytes() for p in self.index_dir.iterdir()} == before
+
+    def test_failed_copy_retains_previous_shards_and_defers_cleanup(self, tmp_path):
+        self._run_sync_script()
+        before = {p.name: p.read_bytes() for p in self.index_dir.iterdir()}
+        (self.s3_mount / "new.zoekt").write_bytes(b"new-shard")
+        (self.s3_mount / "acme/gadget/acme_gadget_v16.00000.zoekt").unlink()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        copier = bin_dir / "cp"
+        copier.write_text('#!/bin/sh\nprintf partial > "$2"\nexit 1\n')
+        copier.chmod(0o755)
+        command, env = self._command({"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]})
+        result = subprocess.run(command, env=env, capture_output=True, timeout=10)
+        assert result.returncode != 0
+        assert {p.name: p.read_bytes() for p in self.index_dir.iterdir()} == before

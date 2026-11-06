@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "url": "https://github.com/apache/devlake.git",
+    "revision": "6502e549f58eb40c40ccbcd39aab9bc8eea6616f",
+    "go_mod_sha256": "7f14b9d87b23617ed8da7a6c1565b4ce2fe04dcfec0728649e1d2e1c1d767f78",
+    "go_sum_sha256": "9c63089faced2fb053752b06b6c982b33b3b228a1929fb44cfa3da7324d6a841"
+  },
+  "toolchain": "go1.26.0",
+  "platform": "linux/amd64",
+  "patches": [
+    {
+      "path": "0001-require-provisioned-raw-tables.patch",
+      "sha256": "3509a77beffb9f890896eaec22a1d626f6cb765ef52a68155306b8e4b7126614"
+    },
+    {
+      "path": "0002-injected-discovery.patch",
+      "sha256": "41dad7a77043276489e5e0abc77fb4d66a37626a04e35ebbc54161d4715c5d99"
+    },
+    {
+      "path": "0003-provider-expansion.patch",
+      "sha256": "6f288b8b9f6be159084e45270d2e165c2d8f03233de68973afee791ae5c663d4"
+    },
+    {
+      "path": "0004-workflow-providers.patch",
+      "sha256": "8b2041a2d934e9108a8bccc43c63cd5d855ea6d6c807fb2eba04800bf7dfe2df"
+    }
+  ],
+  "images": {
+    "builder": "mirror.gcr.io/library/golang:1.26-bookworm@sha256:98e20eb89c0b04076da4e5a6c1ebf3cd7499042c6db8807a66fb8c83f65074c1",
+    "runtime": "mirror.gcr.io/library/debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3"
+  },
+  "oci_packager": {
+    "module": "github.com/google/go-containerregistry",
+    "version": "v0.20.7",
+    "go_mod_sha256": "7937457d0000ea1e7d68d6244ed3c3e0d8764475d6afa1a110838b1da18f8fda",
+    "go_sum_sha256": "5191d1e02e095cd187b659e104e07d2e14264c00a1bfb17c51f67d2d87daf04a"
+  }
+}

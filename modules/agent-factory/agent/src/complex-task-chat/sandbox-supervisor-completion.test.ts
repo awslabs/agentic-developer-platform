@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import type { fromTokenFile } from '@aws-sdk/credential-provider-web-identity';
 import { canonicalJson } from '../invocability-probe/canonical-json';
 import { runOneSupervisorDispatch } from './chat-supervisor';
+import { RETRY_LOG_LIMIT } from './sandbox-supervisor-completion';
 import { buildSandboxPod, sandboxCreationName } from './sandbox-pod';
-import { gatewayBinding } from './sandbox-gateway.fixture';
+import { gatewayBinding, runningSandboxPod } from './sandbox-gateway.fixture';
 import type { SandboxPodApi } from './sandbox-launcher';
 
 const settings = { roleArn: 'arn:aws:iam::000000000000:role/chat-supervisor',
@@ -40,6 +41,7 @@ function fixture(crash?: string) {
   const timing = { now: () => elapsed, sleep: jest.fn(async (ms: number) => { elapsed += ms; }) };
   const api: jest.Mocked<SandboxPodApi> = {
     resolveGateway: jest.fn(async () => gatewayBinding),
+    inspect: jest.fn(async (name: string, uid: string) => runningSandboxPod(name, uid)),
     create: jest.fn(async (requested: Parameters<SandboxPodApi['create']>[0]) => {
       expect(requested.metadata.name).toBe(pod.name);
       created = true;
@@ -375,4 +377,211 @@ test('never starts or acknowledges when trusted recovery is refused', async () =
   await expect(state.run()).rejects.toThrow('admission refused');
   expect(state.api.create).not.toHaveBeenCalled();
   expect(state.queue.acknowledge).not.toHaveBeenCalled();
+});
+
+test('a sandbox that ended its turn with a refused model-policy decision is finalized as failed and released (#7968)', async () => {
+  const state = fixture();
+  const failedTerminal = { ...terminal, outcome: 'failed', retryable: false, accounting_status: 'not_used' };
+  const failedCompletion = { ...completion,
+    delivery_id: `chat-terminal-${createHash('sha256').update(canonicalJson(failedTerminal)).digest('hex')}` };
+  const original = state.send.getMockImplementation()!;
+  state.send.mockImplementation(async (url, request) => {
+    const operation = String(url).split('/').pop();
+    if (operation !== 'finalize' && operation !== 'complete') return original(url, request);
+    state.events.push(operation);
+    return new Response(JSON.stringify(operation === 'finalize' ? failedTerminal : failedCompletion));
+  });
+  await expect(state.run()).resolves.toBe('completed');
+  expect(state.events.slice(state.events.indexOf('exit'))).toEqual(['exit', 'delete-pod', 'teardown', 'finalize', 'complete', 'acknowledge']);
+  expect(state.api.remove).toHaveBeenCalledWith(pod.name, pod.uid);
+  expect(state.queue.acknowledge).toHaveBeenCalledWith('first-receipt');
+});
+
+test('a failed terminal whose completion receipt does not match is not acknowledged', async () => {
+  const state = fixture();
+  const failedTerminal = { ...terminal, outcome: 'failed', retryable: false, accounting_status: 'not_used' };
+  const original = state.send.getMockImplementation()!;
+  state.send.mockImplementation(async (url, request) => String(url).endsWith('/finalize')
+    ? new Response(JSON.stringify(failedTerminal)) : original(url, request));
+  await expect(state.run()).rejects.toThrow('completion receipt invalid');
+  expect(state.queue.acknowledge).not.toHaveBeenCalled();
+});
+
+describe('completion retries (#8047)', () => {
+  const removalUnconfirmed = () => new Response(JSON.stringify({ detail: { error: 'chat_sandbox_removal_unconfirmed' } }), { status: 409 });
+
+  test('re-awaits removal and retries when complete answers 409 removal-unconfirmed, then acknowledges once', async () => {
+    const state = fixture();
+    const original = state.send.getMockImplementation()!;
+    let completes = 0;
+    state.send.mockImplementation(async (url, request) => {
+      if (!String(url).endsWith('/complete') || ++completes !== 1) return original(url, request);
+      state.events.push('complete-refused');
+      return removalUnconfirmed();
+    });
+    await expect(state.run()).resolves.toBe('completed');
+    expect(completes).toBe(2);
+    expect(state.events.slice(state.events.indexOf('finalize'))).toEqual(['finalize', 'complete-refused', 'teardown', 'complete', 'acknowledge']);
+    expect(state.queue.acknowledge).toHaveBeenCalledTimes(1);
+    expect(state.timing.sleep).toHaveBeenCalledWith(1000);
+  });
+
+  test('also recognises the gateway message in a plain body', async () => {
+    const state = fixture();
+    const original = state.send.getMockImplementation()!;
+    let completes = 0;
+    state.send.mockImplementation(async (url, request) => String(url).endsWith('/complete') && ++completes === 1 ?
+      new Response('chat sandbox removal not confirmed', { status: 409 }) : original(url, request));
+    await expect(state.run()).resolves.toBe('completed');
+    expect(state.events.filter(event => event === 'teardown')).toHaveLength(2);
+  });
+
+  test('stops within the completion window, exits non-zero naming the gateway body, and withholds acknowledgement', async () => {
+    const state = fixture();
+    const original = state.send.getMockImplementation()!;
+    let completes = 0;
+    state.send.mockImplementation(async (url, request) => String(url).endsWith('/complete') ? (completes++, removalUnconfirmed()) : original(url, request));
+    await expect(state.run()).rejects.toThrow(/completion deadline exceeded.*HTTP 409.*chat_sandbox_removal_unconfirmed/);
+    expect(state.queue.acknowledge).not.toHaveBeenCalled();
+    expect(completes).toBeLessThanOrEqual(20);
+    expect(completes).toBeGreaterThan(3);
+    expect(state.timing.now()).toBeLessThan(900_000 - 60_000);
+    // Redelivery after the visibility window resumes the admitted turn without another sandbox.
+    state.send.mockImplementation(original);
+    await expect(state.redeliver()).resolves.toBe('completed');
+    expect(state.api.create).toHaveBeenCalledTimes(1);
+  });
+
+  test('a persistent generic 409 is retried with growing backoff, not every second, and ends non-zero', async () => {
+    const state = fixture();
+    const original = state.send.getMockImplementation()!;
+    let completes = 0;
+    state.send.mockImplementation(async (url, request) => String(url).endsWith('/complete') ?
+      (completes++, new Response(JSON.stringify({ detail: { error: 'chat_history_conflict' } }), { status: 409 })) : original(url, request));
+    await expect(state.run()).rejects.toThrow(/completion deadline exceeded.*chat_history_conflict/);
+    expect(completes).toBeLessThanOrEqual(20);
+    const delays = state.timing.sleep.mock.calls.map(call => call[0]).filter(ms => ms > 0);
+    expect(delays.slice(0, 5)).toEqual([1000, 2000, 4000, 8000, 16_000]);
+    expect(Math.max(...delays)).toBe(30_000);
+    expect(state.events.filter(event => event === 'teardown')).toHaveLength(1);
+    expect(state.queue.acknowledge).not.toHaveBeenCalled();
+  });
+
+  test('completion retries end before the queue visibility deadline when it is closer than the window', async () => {
+    const state = fixture();
+    const original = state.send.getMockImplementation()!;
+    state.send.mockImplementation(async (url, request) => String(url).endsWith('/complete') ? removalUnconfirmed() : original(url, request));
+    const envelopeBody = JSON.stringify(envelope);
+    const queue = { receive: async () => [{ Body: envelopeBody, ReceiptHandle: 'receipt' }], acknowledge: jest.fn() };
+    const timing = { ...state.timing, visibilityDeadline: 120_000 };
+    await expect(runOneSupervisorDispatch(settings, queue, state.api, state.send, state.load, timing)).rejects.toThrow('completion deadline exceeded');
+    expect(state.timing.now()).toBeGreaterThanOrEqual(120_000);
+    expect(state.timing.now()).toBeLessThan(130_000);
+    expect(queue.acknowledge).not.toHaveBeenCalled();
+  });
+});
+
+describe('a reserved pod that never starts (#8061)', () => {
+  const pending = (name: string, uid: string) => ({ metadata: { name, uid },
+    status: { phase: 'Pending', containerStatuses: [{ name: 'chat-agent', state: { waiting: { reason: 'ContainerCreating' } } }] } });
+  const resumeBodies = (state: ReturnType<typeof fixture>) => state.send.mock.calls
+    .filter(call => String(call[0]).endsWith('/resume')).map(call => JSON.parse(String((call[1] as RequestInit).body)) as Record<string, unknown>);
+  // Collects [supervisor] lines; sandbox_start lines are also sequenced into the fixture's events
+  // so their order relative to pod deletion and gateway calls can be asserted.
+  const capture = (state: ReturnType<typeof fixture>) => {
+    const lines: Record<string, unknown>[] = [];
+    const spy = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      const line = String(args[0]);
+      if (!line.startsWith('[supervisor] ')) return;
+      const parsed = JSON.parse(line.slice('[supervisor] '.length)) as Record<string, unknown>;
+      lines.push(parsed);
+      if (parsed.step === 'sandbox_start') state.events.push(`log:${parsed.status}`);
+    });
+    return { lines, restore: () => spy.mockRestore() };
+  };
+
+  test('is named in the log before deletion and reconciled within the same dispatch with its uid', async () => {
+    const state = fixture();
+    state.api.inspect.mockImplementation(async (name: string, uid: string) => pending(name, uid));
+    const log = capture(state);
+    try { await expect(state.run()).resolves.toBe('completed'); } finally { log.restore(); }
+    // The pod is named in the log before the launcher's delete call, then named again on resume.
+    expect(state.events).toEqual(['resume', 'reserve', 'create', 'log:failed', 'delete-pod', 'log:reconciling', 'resume', 'delete-pod',
+      'teardown', 'complete', 'log:reconciled', 'acknowledge']);
+    expect(state.api.create).toHaveBeenCalledTimes(1);
+    expect(state.timing.now()).toBeGreaterThanOrEqual(60_000);
+    const [first, second] = resumeBodies(state);
+    expect(Object.keys(first).sort()).toEqual(['envelope_digest', 'run_id']);
+    expect(second).toMatchObject({ run_id: 'run-a', pod_name: pod.name, pod_uid: pod.uid });
+    expect(state.queue.acknowledge).toHaveBeenCalledWith('first-receipt');
+    expect(state.queue.acknowledge).toHaveBeenCalledTimes(1);
+    expect(log.lines).toContainEqual({ run_id: 'run-a', step: 'sandbox_start', status: 'failed', pod_name: pod.name, pod_uid: pod.uid });
+    expect(log.lines).toContainEqual(expect.objectContaining({ step: 'sandbox_start', status: 'reconciling', pod_uid: pod.uid,
+      error: 'Chat sandbox did not start before the supervisor deadline' }));
+    expect(log.lines).toContainEqual(expect.objectContaining({ step: 'sandbox_start', status: 'reconciled', pod_uid: pod.uid, sandbox_uid: pod.uid }));
+    expect(log.lines).toContainEqual(expect.objectContaining({ step: 'dispatch', status: 'completed' }));
+  });
+
+  test('re-raises the start failure when the gateway keeps conflicting, logging each distinct 409 body once, and completes on redelivery', async () => {
+    const state = fixture();
+    state.api.inspect.mockImplementation(async (name: string, uid: string) => pending(name, uid));
+    const original = state.send.getMockImplementation()!;
+    let conflicts = 0;
+    state.send.mockImplementation(async (url, request) => {
+      if (!String(url).endsWith('/resume') || !String(request?.body).includes('pod_uid')) return original(url, request);
+      conflicts += 1;
+      return new Response(JSON.stringify({ detail: { error: 'chat_history_conflict', reason: conflicts > 30 ? 'later' : 'early' } }), { status: 409 });
+    });
+    const log = capture(state);
+    try { await expect(state.run()).rejects.toThrow('Chat sandbox did not start before the supervisor deadline'); } finally { log.restore(); }
+    expect(conflicts).toBeGreaterThan(30);
+    expect(conflicts).toBeLessThanOrEqual(61);
+    expect(state.queue.acknowledge).not.toHaveBeenCalled();
+    const retrying = log.lines.filter(line => line.step === 'resume' && line.status === 'retrying');
+    expect(retrying).toEqual([
+      { run_id: 'run-a', step: 'resume', status: 'retrying', http_status: 409, gateway_error: expect.stringContaining('"reason":"early"') },
+      { run_id: 'run-a', step: 'resume', status: 'retrying', http_status: 409, gateway_error: expect.stringContaining('"reason":"later"') },
+    ]);
+    expect(retrying.every(line => String(line.gateway_error).length <= 200)).toBe(true);
+    expect(log.lines).toContainEqual(expect.objectContaining({ step: 'sandbox_start', status: 'unreconciled', pod_uid: pod.uid,
+      error: expect.stringMatching(/reconciliation deadline exceeded; last gateway response: HTTP 409 .*chat_history_conflict/) }));
+    expect(log.lines).toContainEqual(expect.objectContaining({ step: 'dispatch', status: 'failed',
+      error: 'Chat sandbox did not start before the supervisor deadline' }));
+    // The redelivery no longer knows the uid; the gateway's recorded cleanup completes the turn without another sandbox.
+    state.send.mockImplementation(original);
+    await expect(state.redeliver()).resolves.toBe('completed');
+    expect(state.api.create).toHaveBeenCalledTimes(1);
+    expect(state.queue.acknowledge).toHaveBeenCalledWith('redelivery-receipt');
+    expect(state.events.slice(-3)).toEqual(['teardown', 'complete', 'acknowledge']);
+  });
+
+  test('bounds the retry log to RETRY_LOG_LIMIT distinct responses', async () => {
+    const state = fixture();
+    state.api.inspect.mockImplementation(async (name: string, uid: string) => pending(name, uid));
+    const original = state.send.getMockImplementation()!;
+    let conflicts = 0;
+    state.send.mockImplementation(async (url, request) => {
+      if (!String(url).endsWith('/resume') || !String(request?.body).includes('pod_uid')) return original(url, request);
+      conflicts += 1;
+      return new Response(JSON.stringify({ detail: { error: 'chat_history_conflict', attempt: conflicts } }), { status: 409 });
+    });
+    const log = capture(state);
+    try { await expect(state.run()).rejects.toThrow('Chat sandbox did not start'); } finally { log.restore(); }
+    expect(conflicts).toBeGreaterThan(RETRY_LOG_LIMIT);
+    expect(log.lines.filter(line => line.step === 'resume' && line.status === 'retrying')).toHaveLength(RETRY_LOG_LIMIT);
+  });
+
+  test('a gateway that answers anything but the cleanup state leaves the delivery pending with the original failure', async () => {
+    const state = fixture();
+    state.api.inspect.mockImplementation(async (name: string, uid: string) => pending(name, uid));
+    const original = state.send.getMockImplementation()!;
+    state.send.mockImplementation(async (url, request) => String(url).endsWith('/resume') && String(request?.body).includes('pod_uid') ?
+      new Response(JSON.stringify({ run_id: 'run-a', session_id: 'session-a', task_id: 'task-a', session_generation: envelope.session_generation,
+        state: 'unstarted' })) : original(url, request));
+    const log = capture(state);
+    try { await expect(state.run()).rejects.toThrow('Chat sandbox did not start before the supervisor deadline'); } finally { log.restore(); }
+    expect(log.lines).toContainEqual(expect.objectContaining({ step: 'sandbox_start', status: 'unreconciled', state: 'unstarted' }));
+    expect(state.queue.acknowledge).not.toHaveBeenCalled();
+    expect(state.events.filter(event => event === 'create')).toHaveLength(1);
+  });
 });

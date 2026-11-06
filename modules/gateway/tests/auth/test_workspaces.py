@@ -309,8 +309,23 @@ def test_strict_writer_uses_verified_sub_and_persists_refresh_claims(monkeypatch
     path = Path(__file__).parents[2] / "infra/modules/cognito/lambda/pre_token_generation.py"
     spec = importlib.util.spec_from_file_location("workspace_pre_token", path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    event = module.handle_user_token_generation({"request": {"userAttributes": persisted}})
+    with patch("boto3.resource"):
+        spec.loader.exec_module(module)
+    client.admin_get_user.return_value = {
+        "Username": "real-login-name",
+        "UserAttributes": [
+            {"Name": "sub", "Value": "login-sub"},
+            *[{"Name": key, "Value": value} for key, value in persisted.items()],
+        ],
+    }
+    with patch("boto3.client", return_value=client):
+        event = module.handle_user_token_generation(
+            {
+                "userPoolId": "pool",
+                "userName": "real-login-name",
+                "request": {"userAttributes": {"sub": "login-sub", **persisted}},
+            }
+        )
     token = event["response"]["claimsAndScopeOverrideDetails"]["accessTokenGeneration"]["claimsToAddOrOverride"]
     assert token["custom:org_id"] == "work" and token["custom:role"] == "member"
     assert "custom:team_id" not in token and "custom:department_id" not in token

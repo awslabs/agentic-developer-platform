@@ -96,7 +96,7 @@ def reserve_creation(authority, delivery, pointer, execution, image, *, now):
     return {"state": "create", "pod_name": binding["pod_name"]["S"], "image_digest": image, "attempt": int(binding["attempt"]["N"])}
 
 
-def admission_creation_check(authority, run_id, tenant_id, pod):
+def admission_creation_check(authority, run_id, tenant_id, pod, *, reused=False):
     from src.agentauth.chat_delivery import load_registered_delivery
 
     store = authority.store
@@ -108,6 +108,8 @@ def admission_creation_check(authority, run_id, tenant_id, pod):
     pointer = store._read(f"INVOCATION#{run_id}", "DISPATCH") or {}
     creation = load_creation(authority, delivery, pointer, execution)
     binding = creation["binding"]["M"]
-    if binding["pod_name"] != {"S": pod.name} or binding["image_digest"] != {"S": pod.image_digest}:
+    run_hash = hashlib.sha256(run_id.encode()).hexdigest()
+    expected_name = f"chat-turn-{run_hash[:12]}-{run_hash[12:32]}" if reused else pod.name
+    if binding["pod_name"] != {"S": expected_name} or binding["image_digest"] != {"S": pod.image_digest}:
         raise ChatAuthorizationRefusedError("chat admission creation mismatch")
     return {"ConditionCheck": ChatTeardown(authority, None)._unchanged(creation)}

@@ -56,7 +56,7 @@ run(["scip-go", "index"], go)
 assert (go / "index.scip").stat().st_size > 100
 out["scip-go"] = (go / "index.scip").stat().st_size
 sbom = json.loads(run(["syft", "file:/usr/local/bin/zoekt-git-index", "-o", "json"], ts))
-assert any(a["name"] == "stdlib" and a["version"] == "go1.26.8" for a in sbom["artifacts"])
+assert any(a["name"] == "stdlib" and a["version"] == "go1.26.9" for a in sbom["artifacts"])
 out["syft_go_runtime_detected"] = True
 result = json.loads(
     run(["trivy", "fs", "--scanners", "secret", "--no-progress", "--format", "json", str(ts)], ts)

@@ -132,6 +132,7 @@ elif [ "$DRY_RUN" = true ]; then
 elif ! aws lambda get-function --function-name "$FUNCTION_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
   fail "Lambda $FUNCTION_NAME not found — apply gateway-infra first."
 else
+  python3 "${SCRIPT_DIR}/prepare-broker-state.py" --function-name "$FUNCTION_NAME" --region "$AWS_REGION"
   aws lambda update-function-code \
     --function-name "$FUNCTION_NAME" \
     --s3-bucket "$STATE_BUCKET" --s3-key "$S3_KEY" \

@@ -112,6 +112,10 @@ class SlackAdapter(ChannelAdapter):
 
         See: https://api.slack.com/authentication/verifying-requests-from-slack
         """
+        if not self._signing_secret.strip():
+            logger.warning("Slack signing secret is not configured")
+            return False
+
         timestamp = headers.get("x-slack-request-timestamp", "")
         signature = headers.get("x-slack-signature", "")
 

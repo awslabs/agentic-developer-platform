@@ -25,7 +25,10 @@ vi.mock('@/services/orchestration', () => ({
   rejectGate: vi.fn(),
   resumeNode: vi.fn(),
   getGatePlanPreview: vi.fn(),
+  bindDraftProduct: vi.fn(),
 }));
+
+vi.mock('@/services/products', () => ({ listProducts: vi.fn() }));
 
 const mockHasPermission = vi.fn();
 vi.mock('@/hooks/usePermissions', () => ({
@@ -37,7 +40,8 @@ vi.mock('@/hooks/useFeatures', () => ({
   useFeatures: () => mockUseFeatures(),
 }));
 
-import { approveGate, rejectGate, resumeNode, getGatePlanPreview } from '@/services/orchestration';
+import { approveGate, rejectGate, resumeNode, getGatePlanPreview, bindDraftProduct } from '@/services/orchestration';
+import { listProducts } from '@/services/products';
 
 const hash = 'a'.repeat(64);
 const plan = { version: 1, plan_hash: hash, superseded_at: null, plan_document: { title: 'Repair plan', nodes: [{address: 'flow/epic-1/wave-1/gate-a', title: 'Design gate', kind: 'gate'}], proposed_execution_policy: {allowed_actions: ['review', 'merge']} } };
@@ -159,6 +163,18 @@ describe('which control a state earns', () => {
     expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, undefined);
   });
 
+  it('shows evaluation evidence and sends the reviewed binding for approval', async () => {
+    const user = userEvent.setup();
+    const evidence = {plan_version: 1, predecessors: [{head_sha: 'b'.repeat(40), merge_sha: 'c'.repeat(40)}]};
+    const execution = {required: false, ready: true, problems: [], runs: [], evidence_id: 'bound-evidence-1', evidence};
+    mockPreview.mockResolvedValue({...plan, execution});
+    renderControls(makeNode('awaiting_gate', 'eval'));
+    expect(await screen.findByText('Review human evaluation evidence')).toBeInTheDocument();
+    expect(screen.getByText(/"merge_sha"/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: 'Accept evaluation'}));
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, execution);
+  });
+
   it('reopens a gate after requested changes', async () => {
     const user = userEvent.setup();
     renderControls(makeNode('rejected_at_gate'));
@@ -225,6 +241,18 @@ describe('recording a decision', () => {
     await user.click(screen.getByTestId('gate-approve'));
 
     await waitFor(() => expect(mockApprove).toHaveBeenCalledWith('node-1', 'looks right', hash, undefined));
+  });
+
+  it('says since when the gate has waited, and that an answered gate stays closed even if the flow asks again', async () => {
+    const user = userEvent.setup();
+    renderControls({ ...makeNode('awaiting_gate'), updated_at: '2026-10-16T06:38:00Z' });
+
+    expect(screen.getByTestId('gate-waiting-since')).toHaveTextContent('Waiting for your decision since');
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
+    await user.click(screen.getByTestId('gate-approve'));
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Approval recorded at'));
+    expect(screen.getByRole('status')).toHaveTextContent('This gate is closed. If the flow asks for another decision, that is the next gate in the chain, not this one.');
   });
 
   it('sends no actor_kind — attribution is the session\'s to decide, not the caller\'s', async () => {
@@ -382,4 +410,98 @@ describe('executable next step', () => {
     await user.click(screen.getByTestId('gate-approve'));
     expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, execution);
   });
+});
+
+const missingProductPlan = {
+  ...plan,
+  execution: { required: false, ready: false, runs: [], problems: ['Select a Product for this draft before approving execution.'],
+    product: { required: true, product_id: null, can_bind_draft: true, ready: false, problem: 'Product required' } },
+};
+
+describe('Product assignment before initial approval', () => {
+  it('loads all Product pages, saves only a binding, and approves only the refreshed revision', async () => {
+    const user = userEvent.setup();
+    mockPreview.mockResolvedValue(missingProductPlan);
+    vi.mocked(listProducts)
+      .mockResolvedValueOnce({ items: [{ id: 'other', name: 'Other Product', revision: 1, project_ids: [] }], next_cursor: 'page2' })
+      .mockResolvedValueOnce({ items: [{ id: 'adp', name: 'ADP Platform', revision: 1, project_ids: [] }], next_cursor: null });
+    vi.mocked(bindDraftProduct).mockResolvedValue();
+    renderControls(makeNode('awaiting_gate'));
+    expect(await screen.findByText('Select a Product for this draft before approving execution.')).toBeVisible();
+    await screen.findByRole('option', { name: 'ADP Platform' });
+    const selector = screen.getByRole('combobox', { name: /Product/ });
+    expect(selector).toHaveValue('');
+    expect(screen.getByTestId('gate-approve')).toBeDisabled();
+    expect(listProducts).toHaveBeenCalledWith('page2');
+    expect(screen.getByRole('link', { name: /Create Product/ })).toHaveAttribute('href', '/products/new');
+    await user.selectOptions(selector, 'adp');
+    const nextPlan = { ...missingProductPlan, version: 2, plan_hash: 'b'.repeat(64), plan_document: { ...plan.plan_document, product_id: 'adp' },
+      execution: { ...missingProductPlan.execution, ready: true, problems: [], product: { required: true, product_id: 'adp', can_bind_draft: true, ready: true, problem: null } } };
+    mockPreview.mockResolvedValue(nextPlan);
+    await user.click(screen.getByRole('button', { name: 'Save Product' }));
+    await screen.findByText(/Review plan version 2/);
+    expect(bindDraftProduct).toHaveBeenCalledWith('flow-1', 'adp', missingProductPlan, undefined);
+    expect(mockApprove).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
+    await user.click(screen.getByTestId('gate-approve'));
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, nextPlan.plan_hash, nextPlan.execution);
+  });
+
+  it('retains the blocker when saving fails and offers Product reload after a list failure', async () => {
+    const user = userEvent.setup();
+    mockPreview.mockResolvedValue(missingProductPlan);
+    vi.mocked(listProducts).mockRejectedValueOnce(new Error('unavailable'));
+    renderControls(makeNode('awaiting_gate'));
+    await screen.findByText('Products unavailable');
+    expect(screen.getByTestId('gate-approve')).toBeDisabled();
+    vi.mocked(listProducts).mockResolvedValue({ items: [{ id: 'adp', name: 'ADP Platform', revision: 1, project_ids: [] }], next_cursor: null });
+    await user.click(screen.getByRole('button', { name: 'Reload Products' }));
+    await screen.findByRole('option', { name: 'ADP Platform' });
+    await user.selectOptions(screen.getByRole('combobox', { name: /Product/ }), 'adp');
+    vi.mocked(bindDraftProduct).mockRejectedValue(new Error('The current draft changed; reload its preview.'));
+    await user.click(screen.getByRole('button', { name: 'Save Product' }));
+    await screen.findByText('The current draft changed; reload its preview.');
+    expect(screen.getByTestId('gate-approve')).toBeDisabled();
+    expect(mockApprove).not.toHaveBeenCalled();
+  });
+
+  it('keeps approval disabled if refreshing the saved revision fails', async () => {
+    const user = userEvent.setup();
+    mockPreview.mockResolvedValue(missingProductPlan);
+    vi.mocked(listProducts).mockResolvedValue({ items: [{ id: 'adp', name: 'ADP Platform', revision: 1, project_ids: [] }], next_cursor: null });
+    vi.mocked(bindDraftProduct).mockResolvedValue();
+    renderControls(makeNode('awaiting_gate'));
+    await screen.findByRole('option', { name: 'ADP Platform' });
+    await user.selectOptions(screen.getByRole('combobox', { name: /Product/ }), 'adp');
+    mockPreview.mockRejectedValue(new Error('Preview unavailable'));
+    await user.click(screen.getByRole('button', { name: 'Save Product' }));
+    await screen.findByText('Plan preview unavailable');
+    expect(screen.getByTestId('gate-approve')).toBeDisabled();
+    expect(mockApprove).not.toHaveBeenCalled();
+  });
+});
+
+it('preserves entered gate feedback through wave collapse and reopen', async () => {
+  const { useState } = await import('react');
+  const { WaveCard } = await import('@/components/orchestration/WaveCard');
+  const node = makeNode('awaiting_gate');
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  function ReviewWave() {
+    const [expanded, setExpanded] = useState(true);
+    return <WaveCard epicRef="epic-1" wave={{ waveRef: 'wave-1', nodes: [node], stages: [[node]], unordered: [], dependsOn: [] }}
+      graph={{ flow_id: 'flow-1', nodes: [node], edges: [] } as import('@/types/orchestration').FlowGraph}
+      expanded={expanded} onToggle={() => setExpanded(value => !value)} />;
+  }
+  render(<QueryClientProvider client={client}><ReviewWave /></QueryClientProvider>);
+  const user = userEvent.setup();
+  const note = await screen.findByPlaceholderText('Decision note (required to request changes)');
+  await user.type(note, 'Keep the migration reversible');
+  const toggle = screen.getByRole('button', { name: /^Wave 1/ });
+  await user.click(toggle);
+  expect(note).not.toBeVisible();
+  await user.click(toggle);
+  expect(note).toBeVisible();
+  expect(note).toHaveValue('Keep the migration reversible');
+  expect(mockApprove).not.toHaveBeenCalled();
+  expect(mockReject).not.toHaveBeenCalled();
 });

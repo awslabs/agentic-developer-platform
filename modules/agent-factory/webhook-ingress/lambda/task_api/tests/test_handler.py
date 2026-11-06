@@ -98,6 +98,43 @@ def test_the_202_carries_only_identifiers_the_gateway_issued(enabled):
         assert body[field] == _RECEIPT[field]
 
 
+@pytest.mark.parametrize("scope", [
+    {"product_id": "p" * 36},
+    {"project_id": "j" * 255},
+    {"product_id": "product-1", "project_id": "project-1"},
+])
+def test_requested_work_scope_reaches_gateway_admission_unchanged(enabled, scope):
+    submitted = {**_VALID_SUBMIT, **scope}
+    raw = json.dumps(submitted)
+    with patch("task_api.handler.admit_client.admit", return_value=_RECEIPT) as admit:
+        response = handler.handle_task_submit(_event(body=raw), None)
+    assert response["statusCode"] == 202
+    assert admit.call_args.kwargs["submit"] == submitted
+    assert admit.call_args.kwargs["request_body"] == raw.encode()
+
+
+@pytest.mark.parametrize("field,maximum", [("product_id", 36), ("project_id", 255)])
+@pytest.mark.parametrize("value", [None, True, 1, [], {}, "", "oversize"])
+def test_malformed_work_scope_is_refused_before_admission(enabled, field, maximum, value):
+    if value == "oversize":
+        value = "x" * (maximum + 1)
+    raw = json.dumps({**_VALID_SUBMIT, field: value})
+    with patch("task_api.handler.admit_client.admit") as admit:
+        response = handler.handle_task_submit(_event(body=raw), None)
+    assert response["statusCode"] == 400
+    assert _body(response)["code"] == "invalid_request"
+    admit.assert_not_called()
+
+
+def test_gateway_work_scope_refusal_is_preserved(enabled):
+    raw = json.dumps({**_VALID_SUBMIT, "product_id": "product-1"})
+    with patch("task_api.handler.admit_client.admit", side_effect=errors.disallowed_scope()) as admit:
+        response = handler.handle_task_submit(_event(body=raw), None)
+    assert response["statusCode"] == 403
+    assert _body(response)["code"] == "disallowed_scope"
+    admit.assert_called_once()
+
+
 def test_idempotent_replay_returns_the_existing_handle(enabled):
     replay = {**_RECEIPT, "idempotent_replay": True}
     with patch("task_api.handler.admit_client.admit", return_value=replay):

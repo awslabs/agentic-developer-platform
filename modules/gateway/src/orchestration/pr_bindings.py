@@ -136,7 +136,7 @@ from .models import (
     OrchestrationNode,
     OrchestrationPullRequestBinding,
 )
-from .state import ActorKind
+from .state import ActorKind, NodeState
 
 logger = get_logger(__name__)
 
@@ -238,6 +238,7 @@ class RegistrationTarget:
     issue: int
     installation_id: int
     accepted_scope: str | None = None
+    provider_repository_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -263,10 +264,19 @@ class MergeEvidence:
     url: str | None = None
     provider_repository_id: int | None = None
     provider_pr_node_id: str | None = None
+    # True when a current-head CHANGES_REQUESTED comes from anyone other than the
+    # tenant's own reviewer App; None when the provider did not report reviews.
+    foreign_changes_requested: bool | None = None
+    # True when the tenant's own reviewer identity formally approved this exact
+    # head; None when the provider did not report reviews. Together with
+    # `foreign_changes_requested is False` on a merged PR it identifies the App's
+    # standing CI snapshot that GitHub refuses to dismiss after merge (#7639).
+    own_approval_on_head: bool | None = None
 
     # Diagnostic observations only; completion still uses the verified fields above.
     checks_state: str | None = None
     review_state: str | None = None
+    review_updated_at: str | None = None
     draft: bool = False
     mergeable: str | None = None
     merge_state: str | None = None
@@ -304,6 +314,88 @@ def binding_scope_matches(binding: OrchestrationPullRequestBinding, node: Orches
         return False
     scope = json.loads(binding.accepted_scope)
     return scope.get("node") == {"kind": node.kind, "issue_ref": node.issue_ref, "title": node.title}
+
+
+async def continuation_binding_hold(
+    session: AsyncSession, node: OrchestrationNode, binding: OrchestrationPullRequestBinding, *, provisional_checkpoint: bool = False
+) -> str | None:
+    current = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
+    if (
+        provisional_checkpoint
+        and current is None
+        and binding.id.startswith("checkpoint:")
+        and binding.pr_number is None
+        and binding.provider_pr_node_id is None
+    ):
+        previous = await session.scalar(
+            select(OrchestrationPullRequestBinding.id).where(
+                OrchestrationPullRequestBinding.org_id == node.org_id,
+                OrchestrationPullRequestBinding.node_id == node.id,
+                OrchestrationPullRequestBinding.attempt == node.attempts,
+            )
+        )
+        if previous is None:
+            current = binding
+    if (
+        current is None
+        or current.id != binding.id
+        or current.revision != binding.revision
+        or current.org_id != node.org_id
+        or current.node_id != node.id
+        or not binding_scope_matches(current, node)
+    ):
+        return "bound_pr_or_scope_changed"
+    from .accepted_node import accepted_node_contract, requires_verified_repository_connection
+
+    requires_connection = await requires_verified_repository_connection(session, node)
+    from .evaluation_correction_state import validate_correction
+    from .repository_binding import RepositoryBindingError, resolve_story_repository
+    from .review_cycle import CycleBlockedError
+
+    try:
+        correction = await validate_correction(session, node)
+        if correction is not None and (source := correction.detail.get("source_authorization")) is not None:
+            if (current.repo, current.provider_repository_id, current.installation_id) != (
+                source["repository"],
+                source["provider_repository_id"],
+                source["installation_id"],
+            ):
+                return "bound_pr_or_scope_changed"
+            verified = await resolve_story_repository(
+                session,
+                tenant_id=node.org_id,
+                name=source["repository"],
+                repository_id=source["provider_repository_id"],
+                installation_id=source["installation_id"],
+                issue=int(node.issue_ref),
+                operation="dispatch",
+            )
+            if (verified.repository_id, verified.installation_id) != (source["provider_repository_id"], source["installation_id"]):
+                return "repository_connection_unavailable"
+            return None
+    except (CycleBlockedError, RepositoryBindingError, KeyError, TypeError, ValueError):
+        return "repository_connection_unavailable"
+    if not node.repository_identity and not requires_connection:
+        return None
+
+    from src.admin.installations.resolver import OwnerState, resolve_installation_owner
+
+    contract = await accepted_node_contract(session, node)
+    if (
+        contract is None
+        or contract.node.repository_identity != node.repository_identity
+        or contract.node.provider_repository_id != node.provider_repository_id
+        or (requires_connection and contract.node.repository_connection is None)
+        or (contract.node.repository_connection.model_dump(mode="json") if contract.node.repository_connection else None)
+        != node.repository_connection
+        or node.provider_repository_id != current.provider_repository_id
+        or (requires_connection and (node.repository_connection or {}).get("installation_id") != current.installation_id)
+    ):
+        return "bound_pr_or_scope_changed"
+    owner, state = await resolve_installation_owner(current.installation_id, db=session)
+    if state is not OwnerState.RESOLVED or owner is None or owner.tenant_id != node.org_id:
+        return "repository_connection_unavailable"
+    return None
 
 
 async def _accepted_scope(session: AsyncSession, node: OrchestrationNode, decision: OrchestrationDecision | None = None) -> str:
@@ -460,12 +552,43 @@ async def resolve_registration_target(
                 f"Run {asserted} belongs to a {node.kind} node; only story nodes carry implementation pull requests.",
             )
 
-        # The dispatch record carries `repo` and `issue` but not the installation, so
-        # it is resolved from the tenant's own record through the shared fail-closed
-        # resolver `results.py` and `dispatch_pass.py` already use. Reused rather than
-        # re-derived for the reason its own docstring gives: a second implementation
-        # of a fail-closed check drifts, and it drifts invisibly.
-        installation_id = await resolve_installation_id(session, org_id=node.org_id)
+        from .evaluation_correction_state import validate_correction
+        from .review_cycle import CycleBlockedError
+
+        try:
+            correction = await validate_correction(session, node)
+        except (CycleBlockedError, KeyError, TypeError, ValueError) as exc:
+            raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The correction source authority changed.") from exc
+        if correction is not None and (source := correction.detail.get("source_authorization")) is not None:
+            if (dispatch.get("repo"), dispatch.get("provider_repository_id"), dispatch.get("installation_id")) != (
+                source["repository"],
+                source["provider_repository_id"],
+                source["installation_id"],
+            ):
+                raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The correction dispatch differs from its affected source.")
+
+        # Accepted story dispatches freeze the installation and immutable repository
+        # identity. Legacy dispatches retain the single-installation resolver.
+        from .accepted_node import requires_verified_repository_connection
+
+        requires_connection = await requires_verified_repository_connection(session, node)
+        if node.repository_identity or requires_connection:
+            assignment = dispatch.get("assignment") or {}
+            if (
+                assignment.get("repo") != dispatch.get("repo")
+                or assignment.get("issue") != dispatch.get("issue")
+                or assignment.get("flow_id") != node.flow_id
+                or assignment.get("provider_repository_id") != node.provider_repository_id
+                or dispatch.get("provider_repository_id") != node.provider_repository_id
+                or str(node.issue_ref).lstrip("#") != str(dispatch.get("issue"))
+                or not assignment.get("installation_id")
+                or assignment.get("installation_id") != dispatch.get("installation_id")
+                or (requires_connection and assignment.get("installation_id") != (node.repository_connection or {}).get("installation_id"))
+            ):
+                raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The accepted story repository assignment changed.")
+            installation_id = assignment["installation_id"]
+        else:
+            installation_id = await resolve_installation_id(session, org_id=node.org_id)
         return RegistrationTarget(
             org_id=node.org_id,
             flow_id=node.flow_id,
@@ -479,6 +602,7 @@ async def resolve_registration_target(
             # so such a story holds with a stated reason instead of passing.
             installation_id=int(installation_id or 0),
             accepted_scope=await _accepted_scope(session, node, decision),
+            provider_repository_id=dispatch.get("provider_repository_id"),
         )
 
     raise BindingError(
@@ -661,6 +785,17 @@ async def register_binding(
     ).scalar_one_or_none()
     if node is None or node.attempts != target.attempt or node.flow_id != target.flow_id:
         raise BindingError(BindingRefusal.STALE_RUN, "The story attempt changed while registering its pull request.")
+    if target.provider_repository_id is not None and pr.provider_repository_id != target.provider_repository_id:
+        raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The PR is not in the dispatched repository.")
+    from .accepted_node import requires_verified_repository_connection
+
+    requires_connection = await requires_verified_repository_connection(session, node)
+    if (node.repository_identity or requires_connection) and (
+        node.provider_repository_id != pr.provider_repository_id
+        or (requires_connection and (node.repository_connection or {}).get("installation_id") != target.installation_id)
+        or str(node.issue_ref).lstrip("#") != str(target.issue)
+    ):
+        raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The PR does not match the accepted story repository assignment.")
     if replaces_reason and actor_kind != ActorKind.HUMAN:
         raise BindingError(BindingRefusal.AMBIGUOUS_CANDIDATE, "Replacing an implementation pull request requires explicit human authority.")
     scope = target.accepted_scope or await _accepted_scope(session, node)
@@ -678,8 +813,12 @@ async def register_binding(
             .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
+    adopted_from = None
     if existing is not None and existing.node_id != target.node_id:
-        raise BindingError(BindingRefusal.ALREADY_BOUND_ELSEWHERE, "This pull request already implements a different story.")
+        holder = await session.get(OrchestrationNode, existing.node_id)
+        if not _successor_may_adopt(holder, node, existing):
+            raise BindingError(BindingRefusal.ALREADY_BOUND_ELSEWHERE, "This pull request already implements a different story.")
+        adopted_from = holder
     if existing is not None and existing.state == BindingState.SUPERSEDED.value:
         raise BindingError(BindingRefusal.SUPERSEDED, "This pull request was explicitly superseded and cannot be adopted again.")
 
@@ -711,12 +850,16 @@ async def register_binding(
         next_role = BindingRole.IMPLEMENTATION.value if actor_kind == ActorKind.HUMAN and recovery_reason else existing.role
     changing = existing is None or any(
         (
+            adopted_from is not None,
             existing.head_sha != pr.head_sha,
             existing.attempt != target.attempt,
             existing.run_id != target.run_id,
             existing.accepted_scope != scope,
             existing.role != next_role,
             bool(rivals),
+            bool(recovery_reason)
+            and actor_kind == ActorKind.HUMAN
+            and (existing.registered_by, existing.registered_by_kind, existing.recovery_reason) != (actor_id, actor_kind.value, recovery_reason),
         )
     )
     if changing and node.state in {"passed", "superseded"}:
@@ -735,6 +878,22 @@ async def register_binding(
         if changing:
             # Earlier snapshots are immutable decisions, so updating the current
             # pointer preserves the old attempt, head, scope and provenance.
+            if adopted_from is not None:
+                # The row moves to the successor: the unique index allows one row per
+                # PR, and the retired story keeps its history in the decisions.
+                existing.node_id = target.node_id
+                existing.flow_id = target.flow_id
+                recovery_reason = recovery_reason or (
+                    f"adopted from superseded story {adopted_from.node_ref} ({adopted_from.id}) carrying the same issue"
+                )
+                logger.info(
+                    "pr_binding_adopted pr=%s#%s from_node=%s to_node=%s issue=%s",
+                    pr.repo,
+                    pr.pr_number,
+                    adopted_from.id,
+                    target.node_id,
+                    node.issue_ref,
+                )
             existing.attempt = target.attempt
             existing.run_id = target.run_id
             existing.head_sha = pr.head_sha
@@ -784,6 +943,29 @@ async def register_binding(
     _record_revision(session, binding, actor_id=actor_id, actor_kind=actor_kind)
     await session.flush()
     return binding, True
+
+
+def _successor_may_adopt(holder: OrchestrationNode | None, node: OrchestrationNode, existing: OrchestrationPullRequestBinding) -> bool:
+    """Whether `node` may take over the PR currently bound to `holder` (#7818).
+
+    A replan that splits or renames a started story supersedes its node and carries
+    the same issue forward under a new address. The developer's PR stays bound to
+    the retired node, and every successor attempt used to end `already_bound_elsewhere`
+    (cos-runtime COS-S15, 2026-10-15: two full developer runs failed at registration).
+    The successor may adopt exactly when the holder is gone for good and the work is
+    the same work: same tenant, same flow, same issue, holder `superseded`, binding
+    still active. Anything else — a live holder, another issue, another flow, an
+    explicitly superseded binding — is still the different story the refusal names.
+    """
+    return (
+        holder is not None
+        and holder.org_id == node.org_id
+        and holder.flow_id == node.flow_id
+        and holder.state == NodeState.SUPERSEDED.value
+        and bool(holder.issue_ref)
+        and holder.issue_ref == node.issue_ref
+        and existing.state == BindingState.ACTIVE.value
+    )
 
 
 async def carry_forward_binding(
@@ -893,6 +1075,15 @@ async def recover_binding(
     dispatch = json.loads(decision.reason or "{}") if decision else {}
     if dispatch.get("attempt") != node.attempts or dispatch.get("run_id") != attempt_run_id(node.id, node.attempts):
         raise BindingError(BindingRefusal.STALE_RUN, "Recovery requires the story's current dispatched attempt.")
+    from .accepted_node import requires_verified_repository_connection
+
+    requires_connection = await requires_verified_repository_connection(session, node)
+    if (node.repository_identity or requires_connection) and (
+        dispatch.get("provider_repository_id") != node.provider_repository_id
+        or (requires_connection and dispatch.get("installation_id") != (node.repository_connection or {}).get("installation_id"))
+        or installation_id != dispatch.get("installation_id")
+    ):
+        raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "Recovery requires the original story installation and repository.")
     scope = json.loads(await _accepted_scope(session, node))
     scope.update(dispatch_decision_id=decision.id, root_decision_id=dispatch.get("root_decision_id"))
     target = RegistrationTarget(
@@ -905,6 +1096,7 @@ async def recover_binding(
         issue=int(dispatch.get("issue") or 0),
         installation_id=installation_id,
         accepted_scope=json.dumps(scope, sort_keys=True),
+        provider_repository_id=dispatch.get("provider_repository_id"),
     )
     binding, _ = await register_binding(
         session,

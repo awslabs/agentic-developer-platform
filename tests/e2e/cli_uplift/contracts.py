@@ -26,6 +26,7 @@ this whole harness is built against.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from . import release
 
@@ -151,3 +152,122 @@ def wire_contracts(revision, *, repo_root=None, read=release.git_blob):
         )
         contracts.update(found)
     return contracts
+
+
+# ---------------------------------------------------------------------------
+# The gateway's own mounted route table
+# ---------------------------------------------------------------------------
+#
+# A request path is only right relative to the routes the app actually mounts,
+# and a double that matches the harness's own spelling cannot tell a right path
+# from a wrong one. Issue #8242 spent two live deployments proving that: the
+# team-inventory request was asserted as a literal in mocks, agreed with itself,
+# and was answered 404 by the deployment twice (runs 39733378117 and
+# 39767400131, two different wrong prefixes).
+#
+# So the admin paths this harness requests are derived the same way the browser
+# contract above is derived — from the declaration, which cannot agree with a
+# guess by accident. FastAPI composes a mounted path from three things and all
+# three are read here: the app's include (`app.py` registers every UNIT_MODULES
+# router with `app.include_router(module.router)`, with no prefix of its own),
+# the router's own `prefix=`, and the route decorator's path. That is why
+# `/admin/organizations/<org>/teams` and
+# `/api/admin/identity/organizations/<org>/users` are both correct at the same
+# time: two routers, two prefixes, one app.
+#
+# Sub-routers a module includes into its own router are deliberately NOT walked.
+# This answers "is the path the harness sends a route of the router that owns
+# this surface", and a missing route fails loudly here rather than being
+# approximated.
+
+APP_SOURCE = "modules/gateway/src/app.py"
+
+ROUTER_SOURCES = {
+    "src.admin.routes": "modules/gateway/src/admin/routes.py",
+    "src.admin.identity.router": "modules/gateway/src/admin/identity/router.py",
+}
+
+MODULE_INCLUDE = re.compile(r"app\.include_router\(\s*module\.router\s*\)")
+ROUTER_DECLARATION = re.compile(
+    r"^router\s*=\s*APIRouter\((?P<args>.*?)\)\s*$", re.M | re.S
+)
+ROUTER_PREFIX = re.compile(r"prefix\s*=\s*\"(?P<prefix>[^\"]*)\"")
+ROUTE_DECORATOR = re.compile(
+    r"@router\.(?P<method>get|post|put|patch|delete)\(\s*\"(?P<path>/[^\"]*)\""
+)
+PATH_PARAMETER = re.compile(r"\{[^{}/]+\}")
+
+
+def repo_root():
+    """The checkout this module lives in: tests/e2e/cli_uplift/contracts.py."""
+    return Path(__file__).resolve().parents[3]
+
+
+def _source(path, *, root=None):
+    location = (Path(root) if root else repo_root()) / path
+    require(
+        location.is_file(),
+        f"{path} is not present in this checkout, so the mounted route table "
+        "cannot be derived and nothing would be validated",
+    )
+    return location.read_text(encoding="utf-8")
+
+
+def mounted_routes(module, *, root=None):
+    """Every `(METHOD, path)` the app mounts for one unit module's own router."""
+    require(
+        module in ROUTER_SOURCES,
+        f"{module} is not a router source this evaluation knows how to read",
+    )
+    app_source = _source(APP_SOURCE, root=root)
+    require(
+        MODULE_INCLUDE.search(app_source),
+        "app.py no longer mounts unit-module routers with "
+        "`app.include_router(module.router)`, so a mounted path is no longer the "
+        "router's own prefix plus its route and this derivation would be fiction",
+    )
+    require(
+        f'"{module}"' in app_source,
+        f"{module} is not registered in app.py, so none of its routes are mounted",
+    )
+    source = _source(ROUTER_SOURCES[module], root=root)
+    declaration = ROUTER_DECLARATION.search(source)
+    require(
+        declaration,
+        f"{ROUTER_SOURCES[module]} declares no module-level `router = APIRouter(...)`",
+    )
+    prefix = ROUTER_PREFIX.search(declaration.group("args"))
+    mount = prefix.group("prefix") if prefix else ""
+    routes = {
+        (match.group("method").upper(), mount + match.group("path"))
+        for match in ROUTE_DECORATOR.finditer(source)
+    }
+    require(routes, f"{ROUTER_SOURCES[module]} declares no routes on its own router")
+    return routes
+
+
+def admin_routes(*, root=None):
+    """The mounted admin surface this harness calls, across both admin routers."""
+    found = set()
+    for module in ROUTER_SOURCES:
+        found |= mounted_routes(module, root=root)
+    return found
+
+
+def mounted_route(method, request_path, routes):
+    """The mounted template answering `request_path`, or None if none does.
+
+    Takes the request exactly as the harness sends it, query string included, so
+    a caller asserts the real wire path rather than a tidied-up version of it.
+    """
+    path = request_path.split("?", 1)[0]
+    for mounted_method, template in sorted(routes):
+        if mounted_method != method.upper():
+            continue
+        pattern = "".join(
+            "[^/]+" if PATH_PARAMETER.fullmatch(part) else re.escape(part)
+            for part in re.split(r"(\{[^{}/]+\})", template)
+        )
+        if re.fullmatch(pattern, path):
+            return template
+    return None

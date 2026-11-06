@@ -26,6 +26,7 @@ const SDK_VERSION = "0.155.1";
 export const WORKER_SANDBOX_MODE = "danger-full-access" as const;
 
 export type ReviewRunResult =
+  | { status: "read_only_reviewed"; sha: string; verdict: "approve" | "request-changes"; submission: { verdict_recorded: boolean; state: string; commit_id: string; review_id: number } }
   | { status: "issue_reviewed"; issue: number; blockers: number }
   | { status: "stale"; expected: string; actual: string }
   | { status: "changes_requested"; blockers: number }

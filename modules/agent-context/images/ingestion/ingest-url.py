@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -33,7 +34,8 @@ log = get_logger("ingest-url")
 
 from config import settings
 from s3_store import S3ContentStore
-from scope import ScopeValidationError, compute_s3_prefix, parse_scope_from_env
+from code_embedder import embed_registered_documents
+from scope import ScopeValidationError, asset_storage_prefix, parse_scope_from_env, validate_ingestion_attempt
 
 # SSRF admission + fetch guard (#5658). Every URL this pipeline touches is
 # attacker-influenced: the crawl target comes from a registration request, and
@@ -370,6 +372,15 @@ async def ingest_url(
 
     try:
         scope = parse_scope_from_env()
+        content_prefix = asset_storage_prefix(scope, settings.s3_content_prefix, registry_asset_id)
+        from job_client import enabled
+        if enabled():
+            from scope import compute_s3_prefix
+            content_prefix = f"{compute_s3_prefix(scope, settings.s3_content_prefix)}/assets/{registry_asset_id}"
+        ingestion_attempt_id = os.environ.get("INGESTION_ATTEMPT_ID")
+        if enabled() or scope.is_product or (scope.is_personal and registry_asset_id):
+            ingestion_attempt_id = validate_ingestion_attempt(ingestion_attempt_id)
+            content_prefix += f"/attempts/{ingestion_attempt_id}"
     except ScopeValidationError:
         return {"url": scrub_url_credentials(url), "pages_discovered": 0,
                 "pages_uploaded": 0, "status": "refused", "reason_code": "invalid_scope"}
@@ -377,7 +388,7 @@ async def ingest_url(
     # Preserve the producer's ownership when writing crawled pages.
     store = S3ContentStore(
         bucket_name=settings.s3_bucket_name,
-        prefix=compute_s3_prefix(scope, settings.s3_content_prefix),
+        prefix=content_prefix,
         region_name=settings.aws_region,
     )
 
@@ -394,6 +405,7 @@ async def ingest_url(
 
     result: dict[str, Any] = {
         "url": url,
+        "registry_asset_id": registry_asset_id if scope.is_product or scope.is_personal else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "pages_discovered": 0,
         "pages_crawled": 0,
@@ -442,12 +454,15 @@ async def ingest_url(
 
     # Step 3: Upload crawled pages to S3 (tracked as "s3_upload" stage)
     last_s3_path = None
+    product_documents = []
     for page_url, markdown in crawled_pages.items():
         s3_path = url_to_s3_path(page_url)
         uploaded = store.put_content(s3_path, markdown)
         if uploaded:
             result["pages_uploaded"] += 1
             last_s3_path = s3_path
+            product_documents.append({"source": page_url, "source_type": "url", "text": markdown,
+                                      "s3_key": f"{content_prefix}/{s3_path}"})
         else:
             result["errors"].append(f"upload_failed: {page_url}")
 
@@ -461,11 +476,26 @@ async def ingest_url(
             else:
                 ctx.fail("No pages uploaded to S3")
 
+    if scope.is_product or (scope.is_personal and registry_asset_id):
+        embedded = embed_registered_documents(product_documents, scope, registry_asset_id, ingestion_attempt_id=ingestion_attempt_id)
+        result["stage_results"] = {"embed_vectors": "verified" if embedded["status"] == "complete" else "failed"}
+        if tracker:
+            with tracker.stage("embed_vectors") as ctx:
+                if embedded["status"] == "complete":
+                    ctx.set_artifact(f"s3vectors://{embedded['index']}/{registry_asset_id}")
+                    ctx.set_metrics({"vectors": embedded["vectors"]})
+                    ctx.verify(lambda: embedded["vectors"] > 0)
+                else:
+                    ctx.fail(embedded.get("error", "Document embedding failed"))
+        if embedded["status"] != "complete":
+            result["errors"].append(embedded.get("error", "Document embedding failed"))
+
     # Finalize stage tracker
     if tracker:
         try:
             tracker.finalize()
             result["run_id"] = tracker.run_id
+            result["stage_results"] = {stage.stage: stage.status for stage in tracker.results}
         except Exception as e:
             log.warning("Stage tracker finalize failed (non-fatal): %s", e)
 
@@ -480,10 +510,14 @@ async def ingest_url(
 
 def update_dynamo_state_url(url: str, result: dict[str, Any], tags: dict[str, str] | None = None):
     """Update DynamoDB STATE record after URL ingestion."""
+    from job_client import enabled
+    if enabled():
+        return  # The parent reports state through the bound gateway sink.
     try:
         import boto3
         table = boto3.resource("dynamodb", region_name=AWS_REGION).Table(DYNAMO_TABLE)
-        pk = f"url#{url}"
+        identity = result.get("registry_asset_id") or url
+        pk = f"url#{identity}"
         now = datetime.now(timezone.utc).isoformat()
 
         item = {
@@ -546,6 +580,14 @@ def main():
     # A refused URL is a rejected request, not a crawl outcome: writing state for
     # it would record an asset that does not exist, and update_dynamo_state_url
     # itself issues a HEAD, which is another fetch of the URL we just refused.
+    from ingestion_result import publish, summarize
+
+    uploaded, crawled = result.get("pages_uploaded", 0), result.get("pages_crawled", 0)
+    publish(summarize(
+        {"fetch": "verified" if crawled else "failed", "s3_upload": "verified" if uploaded else "failed", **result.get("stage_results", {})},
+        status="failed" if not uploaded else ("partial" if result.get("errors") else None),
+        run_id=result.get("run_id"),
+    ))
     if result.get("status") == "refused":
         print(json.dumps(result, indent=2))
         sys.exit(2)

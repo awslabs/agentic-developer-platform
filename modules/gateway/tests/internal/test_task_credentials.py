@@ -47,7 +47,7 @@ def test_existing_source_principal_is_retained_without_platform_permissions(sour
     result = issue_task_session(invocation_id="run-1", not_after=datetime.now(UTC) + timedelta(hours=1))
     call = sts.assume_role.call_args.kwargs
     assert call["RoleArn"] == ROLE
-    assert 900 <= call["DurationSeconds"] < 3600
+    assert call["DurationSeconds"] == 900
     assert json.loads(call["Policy"]) == task_session_policy("aws", ACCOUNT)
     assert result["Version"] == 1 and result["AccessKeyId"] == "test-source-key"
     # These are source permissions only. Destination AssumeRole is still made by

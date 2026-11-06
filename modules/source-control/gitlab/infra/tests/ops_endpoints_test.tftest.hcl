@@ -212,8 +212,8 @@ run "public_ops_endpoints_are_denied_while_private_ops_routes_forward" {
 
   assert {
     condition = (
-      strcontains(aws_instance.gitlab.user_data, "gitlab_rails['relative_url_root'] = \"/gitlab\"") &&
-      strcontains(aws_instance.gitlab.user_data, "nginx['relative_url_root'] = \"/gitlab\"")
+      strcontains(local.gitlab_user_data, "gitlab_rails['relative_url_root'] = \"/gitlab\"") &&
+      strcontains(local.gitlab_user_data, "nginx['relative_url_root'] = \"/gitlab\"")
     )
     error_message = "The test must exercise relative-root mode, where private operator monitoring routes are /gitlab-prefixed too."
   }
@@ -258,12 +258,12 @@ run "public_ops_endpoints_are_denied_while_private_ops_routes_forward" {
   # ---------------------------------------------------------------------------
 
   assert {
-    condition     = strcontains(aws_instance.gitlab.user_data, "gitlab_rails['monitoring_whitelist'] = ['10.0.0.0/16']")
+    condition     = strcontains(local.gitlab_user_data, "gitlab_rails['monitoring_whitelist'] = ['10.0.0.0/16']")
     error_message = "monitoring_whitelist must be rendered from the VPC CIDR, not a hard-coded or world-open value."
   }
 
   assert {
-    condition     = !strcontains(aws_instance.gitlab.user_data, "monitoring_whitelist'] = ['0.0.0.0/0']")
+    condition     = !strcontains(local.gitlab_user_data, "monitoring_whitelist'] = ['0.0.0.0/0']")
     error_message = "monitoring_whitelist must not be 0.0.0.0/0 — that declares GitLab's operational endpoints readable by any caller that can reach the instance."
   }
 
@@ -271,7 +271,50 @@ run "public_ops_endpoints_are_denied_while_private_ops_routes_forward" {
   # what answers the ALB probe ahead of Rails, so losing it takes the target
   # unhealthy even though no listener rule changed.
   assert {
-    condition     = strcontains(aws_instance.gitlab.user_data, "location /-/health")
+    condition     = strcontains(local.gitlab_user_data, "location /-/health")
     error_message = "The nginx /-/health location must remain in user_data; it answers the ALB health probe independently of Rails and of the monitoring allowlist."
+  }
+}
+
+
+run "compressed_bootstrap_fits_ec2_with_portal_and_backups" {
+  command = plan
+
+  override_data {
+    target = data.aws_caller_identity.current
+    values = { account_id = "123456789012" }
+  }
+
+  override_data {
+    target = data.terraform_remote_state.platform
+    values = {
+      outputs = {
+        vpc_id             = "vpc-00000000000000000"
+        vpc_cidr_block     = "10.0.0.0/16"
+        private_subnet_ids = ["subnet-00000000000000001", "subnet-00000000000000002"]
+      }
+    }
+  }
+
+  override_resource {
+    target          = aws_s3_bucket.backup[0]
+    override_during = plan
+    values          = { id = "synthetic-gitlab-backups" }
+  }
+
+  variables {
+    portal_sso_enabled = true
+    backup_enabled     = true
+    cloudfront_domain  = "portal.example.test"
+  }
+
+  assert {
+    condition     = length(local.gitlab_user_data) > 16384
+    error_message = "This regression fixture must exercise bootstrap content larger than EC2's raw user-data limit."
+  }
+
+  assert {
+    condition     = startswith(aws_instance.gitlab.user_data_base64, "H4sI") && length(aws_instance.gitlab.user_data_base64) <= 21844
+    error_message = "EC2 must receive a gzip bootstrap payload within its 16 KiB decoded-upload limit, including portal SSO and backups."
   }
 }

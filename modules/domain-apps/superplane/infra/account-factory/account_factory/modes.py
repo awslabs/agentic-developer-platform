@@ -302,7 +302,8 @@ class AccountFactoryRequest:
     Every identity is required and none is defaulted — see the module docstring. The
     three ownership questions are separate fields on purpose:
 
-    * `organization_id` — which AWS Organization this acts in (organization ownership);
+    * `organization_id` — which AWS Organization this acts in, or explicit `standalone`
+      for managed/adopt in the management account (never account creation);
     * `management_account_id` / `management_cluster` — which account and cluster run the
       controllers doing the acting (management-cluster ownership);
     * `workspace_id` — which Superplane workspace the result serves (workspace ownership).
@@ -387,10 +388,20 @@ def _check_legacy_values(
 
 
 def _check_shapes(request: AccountFactoryRequest, problems: _Problems) -> None:
-    if not _ORG_ID_RE.match(request.organization_id or ""):
+    if request.organization_id == "standalone":
+        if (
+            request.mode is OwnershipMode.NEW_ACCOUNT_MANAGED
+            or request.target_account_id != request.management_account_id
+            or request.organizational_unit_id is not None
+        ):
+            problems.add(
+                "standalone requires managed/adopt in the management account "
+                "without an organizational unit; account creation is refused"
+            )
+    elif not _ORG_ID_RE.match(request.organization_id or ""):
         problems.add(
             f"organization_id={request.organization_id!r} is not an AWS Organization id "
-            f"(expected o-xxxxxxxxxx)"
+            f"(expected o-xxxxxxxxxx or explicit standalone)"
         )
     if not _ACCOUNT_ID_RE.match(request.management_account_id or ""):
         problems.add(

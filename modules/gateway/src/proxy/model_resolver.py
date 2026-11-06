@@ -5,6 +5,7 @@ Implements US-9.6: Model Not Allowed - ensures users can only access permitted m
 
 import fnmatch
 import logging
+import re
 from typing import Any
 
 from src.shared.config import Settings, get_settings
@@ -23,6 +24,23 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     # inference-profile ID (global. prefix), verified ACTIVE + invokable
     # (issues #2279/#2300). Bare opus/sonnet/haiku removed: a /model choice
     # must name an explicit version so it can't silently drift.
+    # The spellings Claude Code and the Claude ACP adapter use for the same models
+    # (`claude-<family>-<major>-<minor>`, optionally dated). Each is already a
+    # version-pinned name, so it keeps the "no bare family alias" rule. Without
+    # these a Claude Code `/model opus` on a Dev Box, or Kiro Crew's model
+    # dropdown, answered 403 model_not_allowed although the owner was entitled to
+    # the very same inference profile (dev 2026-10-25).
+    "claude-opus-5-5": "global.anthropic.claude-opus-5-5",
+    "claude-opus-5": "global.anthropic.claude-opus-5",
+    "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
+    "claude-opus-4-7": "global.anthropic.claude-opus-4-7",
+    "claude-opus-4-6": "global.anthropic.claude-opus-4-6-v1",
+    "claude-opus-4-5-20251101": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
+    "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
+    "claude-sonnet-4-5-20250929": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-haiku-4-5-20251001": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     "opus55": "global.anthropic.claude-opus-5-5",
     "opus5": "global.anthropic.claude-opus-5",
     "opus48": "global.anthropic.claude-opus-4-8",
@@ -264,6 +282,35 @@ class ModelResolver:
                     break
 
         return models
+
+    def get_claude_desktop_models(self, context: TokenContext) -> list[dict[str, Any]]:
+        """List distinct, allowed Claude inference profiles for this caller."""
+        import time
+
+        candidates = {*self._aliases.values(), *self._get_allowed_patterns(context)}
+        profile_ids: set[str] = set()
+        for candidate in candidates:
+            model_id = self.resolve_model(candidate, context.org_id)
+            if not re.fullmatch(r"[a-z][a-z0-9-]*\.anthropic\.claude-[a-z0-9][a-z0-9.:-]*", model_id):
+                continue
+            if self.resolve_model(model_id, context.org_id) != model_id:
+                continue
+            if self.is_model_allowed(model_id, context):
+                profile_ids.add(model_id)
+
+        def version_key(model_id: str) -> tuple[int, int, tuple[int, ...], str]:
+            numbers = [int(part) for part in re.findall(r"\d+", model_id.split(".claude-", 1)[1])]
+            major = numbers[0] if numbers else 0
+            minor = numbers[1] if len(numbers) > 1 and numbers[1] < 100 else 0
+            return major, minor, tuple(numbers[1:]), model_id
+
+        ordered_ids = sorted(
+            profile_ids,
+            key=version_key,
+            reverse=True,
+        )
+        created = int(time.time())
+        return [{"id": model_id, "object": "model", "created": created, "owned_by": "anthropic"} for model_id in ordered_ids]
 
     def _get_allowed_patterns(self, context: TokenContext) -> list[str]:
         """Get allowed model patterns for the given context.

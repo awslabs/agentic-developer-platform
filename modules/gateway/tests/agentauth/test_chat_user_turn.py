@@ -2,11 +2,13 @@
 
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from botocore.exceptions import EndpointConnectionError
 
 from src.agentauth import chat_admission, chat_data_routes
+from src.agentauth.agentcore_governance import advance_owner_state
 from src.agentauth.bootstrap import BootstrapRefusedError, envelope_digest
 from src.agentauth.external_roots import provision_root
 from src.orchestration import intake_wiring
@@ -45,7 +47,7 @@ def prepare(runtime, **changes):
         "attachments": ["art_0123456789ab"],
         **changes,
     }
-    provision_root(runtime[1].store, envelope, source="chat", human_id="human", now=datetime.fromtimestamp(runtime[-1], UTC))
+    provision_root(runtime[1].store, envelope, source="chat", human_id="human", team_id="team", now=datetime.fromtimestamp(runtime[-1], UTC))
     return envelope
 
 
@@ -91,6 +93,20 @@ async def test_changed_root_input_cannot_replace_an_accepted_user_turn(client, r
     with pytest.raises(BootstrapRefusedError):
         prepare(runtime, message="Replacement input")
     assert rows(runtime) == original
+
+
+async def test_admission_binds_current_owner_epoch_and_replay_preserves_it(client, runtime):
+    owner = SimpleNamespace(tenant_id="tenant", user_id="human")
+    advance_owner_state(runtime[2], owner, "forgotten-record", "a" * 64, "forget")
+    envelope = prepare(runtime)
+    response = await accept(client, runtime, envelope)
+    assert response.status_code == 200, response.text
+    key = {"PK": "session#session-a", "SK": "turn#run-user"}
+    original = runtime[2].get_item(Key=key, ConsistentRead=True)["Item"]
+    assert original["ownerEpoch"] == 1
+    advance_owner_state(runtime[2], owner, "another-record", "b" * 64, "forget")
+    assert (await accept(client, runtime, envelope)).status_code == 200
+    assert runtime[2].get_item(Key=key, ConsistentRead=True)["Item"] == original
 
 
 @pytest.mark.parametrize("removed", [False, True])
@@ -333,7 +349,7 @@ async def test_consumed_input_retry_survives_input_expiry_and_verifies_scrubbed_
     launch = chat_admission.ChatLaunchStore(runtime[1].store).load("run-user")
     chat_admission.renew_lease(runtime[1], launch, now=runtime[-1] + 3)
     monkeypatch.setattr(chat_data_routes, "clock", lambda: runtime[-1] + 6)
-    provision_root(runtime[1].store, envelope, source="chat", human_id="human", now=datetime.fromtimestamp(runtime[-1] + 6, UTC))
+    provision_root(runtime[1].store, envelope, source="chat", human_id="human", team_id="team", now=datetime.fromtimestamp(runtime[-1] + 6, UTC))
     assert (await accept(client, runtime, envelope)).status_code == 200
     message = next(row for row in rows(runtime) if row["SK"].startswith("msg#"))
     assert message["content"] == "Inspect π [REDACTED:PASSWORD]"

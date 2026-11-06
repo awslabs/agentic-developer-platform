@@ -167,6 +167,7 @@ class EntrypointTests(unittest.TestCase):
             target = root / 'platform/scripts/deploy-all.sh'
             target.parent.mkdir(parents=True)
             shutil.copy(SCRIPTS / 'deploy-prerequisites.sh', target.parent / 'deploy-prerequisites.sh')
+            shutil.copy(SCRIPTS / 'release-resume-context.py', target.parent / 'release-resume-context.py')
             target.write_text('printf "%s\\n" "$@"\n')
             result = subprocess.run(['bash', str(root / 'deploy.sh'), '--update', '--confirm-destructive',
                                      '--allow-known-claude-gap', '--from', 'webhook', '--skip-agents',
@@ -184,6 +185,7 @@ class EntrypointTests(unittest.TestCase):
             target = root / 'platform/scripts/deploy-all.sh'
             target.parent.mkdir(parents=True)
             shutil.copy(SCRIPTS / 'deploy-prerequisites.sh', target.parent / 'deploy-prerequisites.sh')
+            shutil.copy(SCRIPTS / 'release-resume-context.py', target.parent / 'release-resume-context.py')
             target.write_text('printf "%s\\n" "$@"\n')
             result = subprocess.run(['bash', str(root / 'deploy.sh'), '--resume'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -226,6 +228,125 @@ class EntrypointTests(unittest.TestCase):
         result = subprocess.run(['bash', str(ROOT / 'deploy.sh'), '--confirm-destructive', '--dry-run'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn('requires --update', result.stderr)
+
+
+class ReleaseResumeTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        parent = Path(self.directory.name)
+        self.root = parent / 'source'
+        scripts = self.root / 'platform/scripts'
+        scripts.mkdir(parents=True)
+        shutil.copy(ROOT / 'deploy.sh', self.root / 'deploy.sh')
+        for name in ('deploy-prerequisites.sh', 'release-resume-context.py', 'deploy-checkpoints.py'):
+            shutil.copy(SCRIPTS / name, scripts / name)
+        # Exercise the public wrapper and real checkpoint validation; replace only
+        # cloud provisioning, which must not run after a rejected resume.
+        (scripts / 'deploy-all.sh').write_text('''set -euo pipefail
+test "$ADP_RELEASE_BUILD" = true
+test "$ADP_PORTABLE_RELEASE_CONFIG" = true
+python3 "$TEST_ROOT/platform/scripts/deploy-checkpoints.py" "$TEST_ROOT/state.json" init \\
+  --root "$TEST_ROOT" --account 123456789012 --region us-east-1 --environment dev \\
+  --source "$(git -C "$TEST_ROOT" rev-parse HEAD)" --options full --resume
+echo continued > "$TEST_ROOT/continued"
+''')
+        self.config = self.root / 'environments/dev/gateway.tfvars'
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text('size = 2\n')
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
+        subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(self.root), '-c', 'user.name=Test',
+                        '-c', 'user.email=test@example.com', 'commit', '-qm', 'fixture'], check=True)
+        sha = subprocess.check_output(['git', '-C', str(self.root), 'rev-parse', 'HEAD'], text=True).strip()
+        binaries = parent / 'bin'
+        binaries.mkdir()
+        aws = binaries / 'aws'
+        aws.write_text('#!/usr/bin/env python3\nimport json,sys\n'
+                       'assert sys.argv[1:] == ["sts","get-caller-identity","--output","json"]\n'
+                       'print(json.dumps({"Account":"123456789012"}))\n')
+        aws.chmod(0o755)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(('ADP_', 'TF_VAR_', 'TF_CLI_ARGS'))}
+        self.env.update(PATH=f'{binaries}:{os.environ["PATH"]}', TEST_ROOT=str(self.root), ADP_GITHUB_ORG='')
+        initial_env = dict(self.env, ADP_RELEASE_BUILD='true', ADP_PORTABLE_RELEASE_CONFIG='true')
+        self.state = self.root / 'state.json'
+        subprocess.run(['python3', str(scripts / 'deploy-checkpoints.py'), str(self.state), 'init',
+                        '--root', str(self.root), '--account', '123456789012', '--region', 'us-east-1',
+                        '--environment', 'dev', '--source', sha, '--options', 'full'], env=initial_env, check=True)
+        state = json.loads(self.state.read_text())
+        state['phases']['bootstrap'] = 'complete'
+        state['phases']['platform'] = 'failed'
+        checkpoints.save(self.state, state)
+        self.receipt = parent / 'release-upgrade.json'
+        self.metadata = dict(repository='aws-e/adp', source_sha=sha, account_id='123456789012',
+                             environment='dev', region='us-east-1', mode='upgrade',
+                             configuration='portable-release-defaults', status='failed')
+        self.receipt.write_text(json.dumps(self.metadata))
+
+    def resume(self, *args, **env):
+        return subprocess.run(['bash', str(self.root / 'deploy.sh'), '--update', '--resume',
+                               '--env', 'dev', '--region', 'us-east-1', *args],
+                              env=dict(self.env, **env), capture_output=True, text=True)
+
+    def test_public_release_resume_restores_modes_and_preserves_completed_phases(self):
+        original_binding = json.loads(self.state.read_text())['binding']
+        result = self.resume()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        resumed = json.loads(self.state.read_text())
+        self.assertEqual(resumed['binding'], original_binding)
+        self.assertEqual(resumed['phases']['bootstrap'], 'complete')
+        self.assertEqual(resumed['phases']['platform'], 'pending')
+        self.assertTrue((self.root / 'continued').exists())
+
+    def test_release_resume_still_rejects_operator_configuration_and_source_edits(self):
+        for path in (self.config, self.root / 'platform/scripts/deploy-all.sh'):
+            with self.subTest(path=path.name):
+                original = path.read_text()
+                path.write_text(original + '\n# operator edit\n')
+                result = self.resume()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('configuration or options changed', result.stderr)
+                self.assertFalse((self.root / 'continued').exists())
+                path.write_text(original)
+
+    def test_fresh_release_resume_restores_modes_without_switching_to_update(self):
+        self.receipt.unlink()
+        (self.root.parent / 'release-install.json').write_text(json.dumps(dict(self.metadata, mode='install')))
+        result = subprocess.run(['bash', str(self.root / 'deploy.sh'), '--resume', '--env', 'dev',
+                                 '--region', 'us-east-1'], env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(self.state.read_text())['phases']['bootstrap'], 'complete')
+
+    def test_receipt_target_source_and_mode_must_match(self):
+        for key, value in (('account_id', '999999999999'), ('source_sha', 'b' * 40),
+                           ('region', 'eu-west-1'), ('environment', 'prod'),
+                           ('mode', 'install'), ('configuration', 'unreviewed'), ('repository', 'other/repo')):
+            with self.subTest(key=key):
+                self.receipt.write_text(json.dumps(dict(self.metadata, **{key: value})))
+                result = self.resume()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Release resume error:', result.stderr)
+                self.assertFalse((self.root / 'continued').exists())
+
+    def test_conflicting_release_override_is_not_silently_replaced(self):
+        for key in ('ADP_RELEASE_BUILD', 'ADP_PORTABLE_RELEASE_CONFIG'):
+            with self.subTest(key=key):
+                result = self.resume(**{key: 'false'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('conflicts with the retained release build mode', result.stderr)
+                self.assertFalse((self.root / 'continued').exists())
+
+    def test_malformed_or_conflicting_receipts_stop_before_deployment(self):
+        self.receipt.write_text('{bad json')
+        result = self.resume()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / 'continued').exists())
+        self.receipt.write_text(json.dumps(self.metadata))
+        (self.root.parent / 'release-install.json').write_text(json.dumps(self.metadata))
+        result = self.resume()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Conflicting retained release receipts', result.stderr)
+        self.assertFalse((self.root / 'continued').exists())
 
 
 if __name__ == '__main__':

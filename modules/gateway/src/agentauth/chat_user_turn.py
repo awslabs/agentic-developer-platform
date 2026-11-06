@@ -8,6 +8,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.agentauth.agentcore_governance import owner_state
 from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError
 from src.agentauth.chat_history_store import history_version
@@ -172,6 +173,7 @@ def user_turn_records(table, header: dict | None, launch, payload: dict) -> tupl
         "ref": reference,
         "ordinal": ordinal,
         "inputDigest": envelope_digest(payload),
+        "ownerEpoch": owner_state(table, launch)["epoch"],
         "status": "accepted",
         "acceptedHistoryVersion": version + 1,
         "acceptedNextOrdinal": ordinal + 1,

@@ -89,6 +89,19 @@ _STRIPPED_ENV: frozenset[str] = frozenset(
 # Default timeout, matching `Commands.call`.
 _TIMEOUT = 120
 
+# Only these kubectl transport failures qualify for a bounded GET retry. Do not
+# match arbitrary "timeout" text, which can accompany a denial or another error.
+_GET_TIMEOUT_ERRORS = frozenset(
+    "Unable to connect to the server: " + reason
+    for reason in (
+        "context deadline exceeded (Client.Timeout exceeded while awaiting headers)",
+        "net/http: request canceled while waiting for connection "
+        "(Client.Timeout exceeded while awaiting headers)",
+        "net/http: timeout awaiting response headers",
+        "net/http: TLS handshake timeout",
+    )
+)
+
 # The bootstrap taint key, restated here rather than imported from `workspace.py`
 # because that module imports this one's siblings and the import would be a cycle. The
 # two are pinned to the same value by `tests/test_adapters.py`, so a change in one that
@@ -490,11 +503,16 @@ class KubectlClusterAccess:
     controller_image: str
     node_role: NodeRoleFacts
     manifests: Mapping[str, Path] = field(default_factory=dict)
-    request_timeout: str = "30s"
+    # client-go includes exec authentication in this deadline. The worker's
+    # credential process may spend 75s checking current authority before it can
+    # return credentials; 30s could expire before a write reached Kubernetes.
+    # Leave time for the API response within the runner's existing 120s bound.
+    request_timeout: str = "90s"
     imds_probe_image: str = ""
     tenant_identity_reader: object = None
     component_journal: object = field(default=None, repr=False)
     management_observation: object = field(default=None, repr=False)
+    permission_client: object = field(default=None, repr=False)
     controller_mode = "management"
 
     def __post_init__(self) -> None:
@@ -600,26 +618,42 @@ class KubectlClusterAccess:
         return payload
 
     def _kube(self, *args: str, data: str | None = None) -> CommandResult:
-        if hasattr(self, "_bound_target"):
-            from .target import _binding_identity
+        for attempt in range(3):
+            if hasattr(self, "_bound_target"):
+                from .target import _binding_identity
 
-            _binding_identity(self._operation_binding)
-            if not hasattr(self, "_transport_path"):
-                raise BootstrapRefused("bound cluster transport is closed")
-        return self.runner.run(
-            (
-                "kubectl",
-                "--kubeconfig",
-                str(getattr(self, "_transport_path", self.kubeconfig)),
-                f"--request-timeout={self.request_timeout}",
-                *args,
-            ),
-            data=data,
-        )
+                _binding_identity(self._operation_binding)
+                if not hasattr(self, "_transport_path"):
+                    raise BootstrapRefused("bound cluster transport is closed")
+            # Re-enter the runner for every attempt: WorkerProcesses checks the
+            # current operation/deadline before, during and after each command.
+            # The caller's bootstrap journal fence remains held across retries.
+            result = self.runner.run(
+                (
+                    "kubectl",
+                    "--kubeconfig",
+                    str(getattr(self, "_transport_path", self.kubeconfig)),
+                    f"--request-timeout={self.request_timeout}",
+                    *args,
+                ),
+                data=data,
+            )
+            if (
+                attempt == 2
+                or not args
+                or args[0] != "get"
+                or data is not None
+                or result.returncode != 1
+                or result.stdout.strip()
+                or result.stderr.strip() not in _GET_TIMEOUT_ERRORS
+            ):
+                return result
 
     def bootstrap_permission(self, *, verb, resource, namespace=None, name=None):
         resource, _, group = resource.partition(".")
         attributes = {"verb": verb, "resource": resource, "group": group}
+        if "/" in resource:
+            attributes["resource"], attributes["subresource"] = resource.split("/", 1)
         if namespace is not None:
             attributes["namespace"] = namespace
         if name is not None:
@@ -629,15 +663,28 @@ class KubectlClusterAccess:
             "kind": "SelfSubjectAccessReview",
             "spec": {"resourceAttributes": attributes},
         }
-        result = self._kube("create", "-f", "-", "-o", "json", data=json.dumps(body))
+        if self.permission_client is not None:
+            from .target import _binding_identity
+
+            if not hasattr(self, "_transport_path"):
+                raise BootstrapRefused("bound cluster transport is closed")
+            _binding_identity(self._operation_binding)
+            payload = self.permission_client.self_subject_access_review(
+                body, target=self._bound_target
+            )
+            _binding_identity(self._operation_binding)
+        else:
+            result = self._kube(
+                "create", "-f", "-", "-o", "json", data=json.dumps(body)
+            )
+            payload = _parse_json(
+                _require_success(result, "bootstrap permission review"),
+                "bootstrap permission review",
+            )
         try:
-            status = json.loads(result.stdout)["status"]
+            status = payload["status"]
             answer = status["allowed"]
-            if (
-                result.returncode
-                or type(answer) is not bool
-                or status.get("evaluationError")
-            ):
+            if type(answer) is not bool or status.get("evaluationError"):
                 raise ValueError("unanswered")
         except (ValueError, KeyError, TypeError) as exc:
             raise BootstrapRefused(

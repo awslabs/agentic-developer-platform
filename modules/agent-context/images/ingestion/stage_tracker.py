@@ -131,8 +131,12 @@ class StageTracker:
         """All stage results collected so far."""
         return list(self._results)
 
-    def should_skip(self, stage: str) -> bool:
+    def should_skip(self, stage: str, *, artifact_prefix: str | None = None) -> bool:
         """Check if this stage is already verified at the current SHA."""
+        if artifact_prefix is not None:
+            return stage_db.should_skip_stage(
+                self._conn, self._repo, stage, self._commit_sha, artifact_prefix=artifact_prefix
+            )
         return stage_db.should_skip_stage(self._conn, self._repo, stage, self._commit_sha)
 
     @contextmanager

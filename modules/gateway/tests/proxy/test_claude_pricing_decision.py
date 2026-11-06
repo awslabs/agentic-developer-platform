@@ -1,6 +1,7 @@
 """Actual Claude route -> raw metering -> Decimal persistence -> S3 decision."""
 
 import asyncio
+from contextlib import aclosing
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -21,6 +22,7 @@ from src.proxy.bedrock_enforcement import RoutingDecision
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.pricing_capture import PricingCapture
 from src.proxy.service import ProxyService
+from src.shared.exceptions import BedrockGatewayError
 from tests.proxy.conftest import MockBedrockClient, MockPoolService
 
 FORWARDED = "global.anthropic.claude-opus-4-6-v1"
@@ -64,7 +66,7 @@ def metering(monkeypatch, token_context):
     def factory():
         return AsyncMock()
 
-    monkeypatch.setattr(pricing_decisions, "get_session_factory", lambda: factory)
+    monkeypatch.setattr(pricing_decisions, "get_accounting_session_factory", lambda: factory)
     monkeypatch.setattr("src.proxy.service.get_session_factory", lambda: factory)
     usage_service = SimpleNamespace(log_request=AsyncMock())
     monkeypatch.setattr("src.proxy.service.UsageService", lambda _: usage_service)
@@ -182,7 +184,9 @@ async def test_missing_usage_is_not_a_zero_cost_success(metering, usage):
     client = Client(usage)
     proxy = ProxyService(MockPoolService(client))
     capture = PricingCapture("request-missing-usage", FORWARDED)
-    await proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, pricing_capture=capture)
+    with pytest.raises(BedrockGatewayError, match="Model usage could not be confirmed") as error:
+        await proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, pricing_capture=capture)
+    assert error.value.details == {"retryable": False}
     assert capture.decision is None
     metering.usage.log_request.assert_not_awaited()
     metering.writer.write_log.assert_not_awaited()
@@ -304,9 +308,10 @@ async def test_public_claude_cost_and_compatibility_helper_use_v2(metering, monk
     assert response.cost_usd == Decimal(".001750")
     assert response.input_cost_per_1k_tokens == Decimal(".005")
     assert calculate_model_cost(FORWARDED, 100, 50) == (Decimal(".001750"), Decimal(".005"), Decimal(".025"))
-    service.record_cost = AsyncMock()
+    service._record_cost_in_session = AsyncMock()
     await service.record_usage(metering.context, tokens_in=100, tokens_out=50, model=FORWARDED)
-    assert all(call.args[0].request_cost_usd == Decimal(".001750") for call in service.record_cost.await_args_list)
+    assert service._record_cost_in_session.await_count == 4
+    assert all(call.args[1].request_cost_usd == Decimal(".001750") for call in service._record_cost_in_session.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -567,8 +572,7 @@ async def test_blocked_persistence_cannot_withhold_measured_settlement(metering,
     async def run():
         if mode == "stream":
             source = await proxy.invoke_model(FORWARDED, body, metering.context, stream=True, pricing_capture=capture)
-            async for _ in settlement_wrapper(source, capture, metering):
-                pass
+            return b"".join([chunk async for chunk in settlement_wrapper(source, capture, metering)])
         else:
 
             async def invoke():
@@ -590,11 +594,18 @@ async def test_blocked_persistence_cannot_withhold_measured_settlement(metering,
         consumer.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(consumer, 1)
+    elif mode == "stream":
+        payload = await asyncio.wait_for(consumer, 1)
+        assert b"event: message_stop\n" not in payload
+        assert b"usage_settlement_unconfirmed" in payload
     elif outcome == "error":
-        with pytest.raises(Exception, match="socket failure after final usage|response error after measured usage"):
+        with pytest.raises(
+            Exception, match="socket failure after final usage|response error after measured usage|Model usage could not be confirmed"
+        ):
             await asyncio.wait_for(consumer, 1)
     else:
-        await asyncio.wait_for(consumer, 1)
+        with pytest.raises(BedrockGatewayError, match="Model usage could not be confirmed"):
+            await asyncio.wait_for(consumer, 1)
     from src.chat_logging.service import _stream_finalizers
 
     pending = [task for task in (*_stream_finalizers, *routes._failure_finalizers) if capture.request_id in task.get_name()]
@@ -609,6 +620,28 @@ async def test_blocked_persistence_cannot_withhold_measured_settlement(metering,
     assert verify_pricing_decision(capture.decision, request_id=capture.request_id, org_id=event["org_id"]) == Decimal(".007650")
     assert "Claude usage persistence timed out" in caplog.text
     assert not any(c.kwargs.get("actual_cost_usd") == Decimal("0") for c in metering.reconcile.await_args_list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/messages", "/v1/chat/completions", "/bedrock/invoke"])
+async def test_unconfirmed_receipt_route_error_is_explicitly_nonretryable(metering, path):
+    from src.shared.accounting_health import METERING_WRITE_FAILURES
+
+    failures = METERING_WRITE_FAILURES._value.get()
+    metering.usage.log_request.side_effect = RuntimeError("database unavailable")
+    proxy = ProxyService(MockPoolService(Client(USAGE)))
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[routes.get_token_context] = lambda: metering.context
+    app.dependency_overrides[routes.get_proxy_service] = lambda: proxy
+    body = {"model": FORWARDED, "max_tokens": 80, "messages": [{"role": "user", "content": "hello"}]}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        response = await http.post(path, json=body)
+    assert response.status_code == 502
+    assert response.json()["detail"]["error"] == "usage_settlement_unconfirmed"
+    assert response.json()["detail"]["details"] == {"retryable": False}
+    metering.usage.log_request.assert_awaited_once()
+    assert METERING_WRITE_FAILURES._value.get() == failures + 1
 
 
 @pytest.mark.asyncio
@@ -643,7 +676,8 @@ async def test_missing_usage_release_is_bounded_without_fabricating_settlement(m
     metering.reconcile.side_effect = blocked_release
     proxy = ProxyService(MockPoolService(Client({})))
     capture = PricingCapture("unpriced-release-timeout", FORWARDED)
-    await asyncio.wait_for(proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, pricing_capture=capture), 1)
+    with pytest.raises(BedrockGatewayError, match="Model usage could not be confirmed"):
+        await asyncio.wait_for(proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, pricing_capture=capture), 1)
     assert capture.decision is None and capture.finalization_task.done()
     metering.usage.log_request.assert_not_awaited()
     metering.writer.write_log.assert_not_awaited()
@@ -675,6 +709,10 @@ async def test_upstream_failure_keeps_error_log_without_a_settlement_charge(mete
     assert logged["cost_usd"] == Decimal("0")
     metering.reconcile.assert_awaited_once()
     assert metering.reconcile.await_args.kwargs["actual_cost_usd"] == Decimal("0")
+    # The failed call keeps its admitted bound rather than leaving the flow's
+    # spend unknown; a sibling worker's next call is not refused for it.
+    assert metering.reconcile.await_args.kwargs["usage_known"] is False
+    assert metering.reconcile.await_args.kwargs["retain_failed_bound"] is True
     metering.writer.write_log.assert_not_awaited()
 
 
@@ -707,7 +745,8 @@ async def test_sql_failure_retains_reservation_with_transcripts_disabled(meterin
     metering.usage.log_request.side_effect = RuntimeError("ledger unavailable")
     proxy = ProxyService(MockPoolService(Client(USAGE)))
     capture = PricingCapture("sql-failed", FORWARDED)
-    await proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, pricing_capture=capture)
+    with pytest.raises(BedrockGatewayError, match="Model usage could not be confirmed"):
+        await proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, pricing_capture=capture)
     assert capture.decision is not None
     metering.usage.log_request.assert_awaited_once()
     assert metering.reconcile.await_count == 1
@@ -765,3 +804,69 @@ async def test_streaming_200_before_client_failure_releases_preprovider_hold(met
     assert metering.context._budget_provider_started is False
     admission.reconcile_reservation.assert_awaited_once()
     assert admission.reconcile_reservation.await_args.kwargs["actual_cost_usd"] == Decimal("0")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmed", [False, True])
+async def test_bedrock_terminal_requires_confirmed_receipt(metering, confirmed):
+    if not confirmed:
+        metering.usage.log_request.side_effect = RuntimeError("database unavailable")
+    proxy = ProxyService(MockPoolService(Client(USAGE)))
+    capture = PricingCapture("bedrock-completion", FORWARDED)
+    stream = await proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, stream=True, pricing_capture=capture)
+    received = []
+    async with aclosing(stream):
+        async for chunk in stream:
+            if chunk.startswith(b"event: message_stop\n"):
+                metering.usage.log_request.assert_awaited_once()
+                assert confirmed
+            received.append(chunk)
+    payload = b"".join(received)
+    assert (b"event: message_stop\n" in payload) is confirmed
+    assert (b"usage_settlement_unconfirmed" in payload) is not confirmed
+    metering.usage.log_request.assert_awaited_once()
+    if not confirmed:
+        assert metering.reconcile.await_args.kwargs["retain_failed_bound"] is True
+
+
+@pytest.mark.asyncio
+async def test_anthropic_terminal_waits_for_confirmed_receipt(metering):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def persist(*args, **kwargs):
+        started.set()
+        await release.wait()
+
+    metering.usage.log_request.side_effect = persist
+    proxy = ProxyService(MockPoolService(Client(USAGE)))
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[routes.get_token_context] = lambda: metering.context
+    app.dependency_overrides[routes.get_proxy_service] = lambda: proxy
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        request = asyncio.create_task(
+            http.post(
+                "/v1/messages",
+                json={"model": FORWARDED, "max_tokens": 80, "messages": [{"role": "user", "content": "hello"}], "stream": True},
+            )
+        )
+        started_wait = asyncio.create_task(started.wait())
+        try:
+            finished, _ = await asyncio.wait({started_wait, request}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+            if request in finished:
+                await request
+                pytest.fail("request finished before receipt settlement began")
+            assert started_wait in finished, "receipt settlement did not begin"
+            assert not request.done()
+            release.set()
+            response = await asyncio.wait_for(request, 10)
+        finally:
+            release.set()
+            started_wait.cancel()
+            if not request.done():
+                request.cancel()
+            await asyncio.gather(started_wait, request, return_exceptions=True)
+    assert response.status_code == 200
+    assert b"message_stop" in response.content
+    metering.usage.log_request.assert_awaited_once()

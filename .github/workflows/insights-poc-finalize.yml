@@ -1,0 +1,60 @@
+name: Insights POC artifact finalizer
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Probe or explicitly request terminal cleanup or a hold
+        type: choice
+        required: true
+        default: probe
+        options: [probe, abort, failure, hold]
+      component:
+        description: Registered component (only used for hold)
+        type: choice
+        required: true
+        default: api
+        options: [api, worker]
+permissions:
+  contents: read
+concurrency:
+  group: insights-poc-finalize
+  cancel-in-progress: false
+jobs:
+  probe:
+    if: github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: arc-runner-org
+    environment: adp-devlake-finalizer
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.ADP_DEVLAKE_FINALIZER_REVISION }}
+          persist-credentials: false
+      - name: Verify selected finalizer identity and protected artifact ledger
+        env:
+          ADP_DEVLAKE_PILOT_ID: ${{ vars.ADP_DEVLAKE_PILOT_ID }}
+          ADP_DEVLAKE_LEDGER_TABLE: ${{ vars.ADP_DEVLAKE_LEDGER_TABLE }}
+          ADP_DEVLAKE_ACCOUNT: ${{ vars.ADP_DEVLAKE_ACCOUNT }}
+          ADP_DEVLAKE_REGION: ${{ vars.ADP_DEVLAKE_REGION }}
+          ADP_DEVLAKE_FINALIZE_ROLE: ${{ vars.ADP_DEVLAKE_FINALIZE_ROLE }}
+          ADP_DEVLAKE_FINALIZER_REVISION: ${{ vars.ADP_DEVLAKE_FINALIZER_REVISION }}
+          ADP_DEVLAKE_PUBLISH_ROLE: ${{ vars.ADP_DEVLAKE_PUBLISH_ROLE }}
+          ADP_DEVLAKE_CONNECTION_LABEL: ${{ secrets.ADP_DEVLAKE_FINALIZE_CONNECTION_LABEL }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ inputs.action }}
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = schedule ]; then
+            python3 modules/insights/poc/devlake/finalize.py --mode scheduled
+          elif [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$ACTION" = hold ]; then
+              python3 modules/insights/poc/devlake/finalize.py --mode manual --action hold --component "$COMPONENT"
+            else
+              python3 modules/insights/poc/devlake/finalize.py --mode manual --action "$ACTION"
+            fi
+          else
+            exit 1
+          fi

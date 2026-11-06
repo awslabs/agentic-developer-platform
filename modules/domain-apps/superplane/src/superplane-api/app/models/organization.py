@@ -37,6 +37,7 @@ class Organization(Base):
     sso_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     sso_metadata_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     sso_provider_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sso_cognito_provider_name: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
     sso_provider_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
     sso_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

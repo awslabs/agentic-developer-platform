@@ -1,0 +1,88 @@
+{
+  "scenario": "SCN-04",
+  "contract_version": "devops/1.0-r2",
+  "fixed_clock": "2026-01-01T00:00:00Z",
+  "controls": {"fault": "source_read_timeout", "max_polls": 3, "provider_calls": 0,
+               "cleanup": "discard isolated fixtures; no external resources created"},
+  "cases": [
+    {
+      "id": "nonadp-first-project",
+      "tenant_id": "tenant-example",
+      "product_id": "product-river-example",
+      "project_id": "project-river-api-example",
+      "binding_ids": ["binding-river-api-one", "binding-river-api-two"],
+      "team_id": "team-river-api-example",
+      "environment_id": "environment-river-api-example",
+      "workload_kind": "aws_resource",
+      "integrations": ["cloudwatch"],
+      "capabilities": ["investigation", "release_readiness", "release_verification"],
+      "available_inputs": ["space", "membership", "qualified_session", "account", "resources", "telemetry"],
+      "expected_input_gaps": {
+        "native_ui": [], "investigation": [],
+        "release_readiness": ["base_revision", "head_revision", "native_eligibility", "repository"],
+        "release_verification": ["credential_ref", "isolated_target", "scenarios", "source_deployment_link"]
+      }
+    },
+    {
+      "id": "nonadp-second-product-eks",
+      "tenant_id": "tenant-example",
+      "product_id": "product-summit-example",
+      "project_id": "project-summit-service-example",
+      "binding_ids": ["binding-summit-service"],
+      "team_id": "team-summit-service-example",
+      "environment_id": "environment-summit-service-example",
+      "repository_id": "repository-summit-example",
+      "workload_kind": "eks",
+      "integrations": ["github", "cloudwatch"],
+      "capabilities": ["investigation", "release_readiness"],
+      "available_inputs": ["space", "membership", "qualified_session", "account", "resources", "telemetry", "cluster_ref", "namespace", "network_access", "repository", "base_revision", "head_revision", "native_eligibility"],
+      "expected_input_gaps": {"native_ui": [], "investigation": [], "release_readiness": []}
+    },
+    {
+      "id": "sibling-project-without-telemetry",
+      "tenant_id": "tenant-example",
+      "product_id": "product-river-example",
+      "project_id": "project-river-worker-example",
+      "binding_ids": ["binding-river-worker"],
+      "team_id": "team-river-worker-example",
+      "environment_id": "environment-river-worker-example",
+      "repository_id": "repository-river-worker-example",
+      "workload_kind": "aws_resource",
+      "integrations": ["github"],
+      "capabilities": ["investigation", "release_readiness"],
+      "available_inputs": ["space", "membership", "qualified_session", "account", "resources", "repository", "base_revision", "head_revision", "native_eligibility"],
+      "expected_input_gaps": {"native_ui": [], "investigation": ["telemetry"], "release_readiness": []}
+    },
+    {
+      "id": "eks-namespace-pending",
+      "tenant_id": "tenant-example",
+      "product_id": "product-summit-example",
+      "project_id": "project-summit-other-example",
+      "binding_ids": ["binding-summit-other"],
+      "team_id": "team-summit-other-example",
+      "environment_id": "environment-summit-other-example",
+      "repository_id": "repository-summit-other-example",
+      "workload_kind": "eks",
+      "integrations": ["github", "cloudwatch"],
+      "capabilities": ["investigation", "release_readiness"],
+      "available_inputs": ["space", "membership", "qualified_session", "account", "resources", "telemetry", "cluster_ref", "network_access", "repository", "base_revision", "head_revision", "native_eligibility"],
+      "expected_input_gaps": {"native_ui": [], "investigation": ["namespace"], "release_readiness": []}
+    },
+    {
+      "id": "browser-access-without-repository-or-eks",
+      "tenant_id": "tenant-example",
+      "product_id": "product-forest-example",
+      "project_id": "project-forest-api-example",
+      "binding_ids": ["binding-forest-api"],
+      "team_id": "team-forest-api-example",
+      "environment_id": "environment-forest-api-example",
+      "workload_kind": "aws_resource",
+      "integrations": [],
+      "capabilities": ["prevention"],
+      "available_inputs": ["space", "membership", "qualified_session"],
+      "expected_input_gaps": {"native_ui": [], "prevention": ["explicit_enablement", "verified_schedule"]}
+    }
+  ],
+  "unsupported_connectors": ["gitlab", "custom_oidc", "arbitrary_telemetry"],
+  "expected_platform_artifact": "one shared L5 contract revision; no project-specific platform build"
+}

@@ -1,0 +1,11 @@
+**
+!modules/
+!modules/tools/
+!modules/tools/pyproject.toml
+!modules/tools/adp_tools/
+!modules/tools/adp_tools/*.py
+!modules/tools/adapters/
+!modules/tools/adapters/pyproject.toml
+!modules/tools/adapters/uv.lock
+!modules/tools/adapters/tool_adapters/
+!modules/tools/adapters/tool_adapters/*.py

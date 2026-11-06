@@ -52,6 +52,8 @@ import botocore.awsrequest
 import botocore.session
 import requests
 
+from lib.reviewer_errors import review_refusal
+
 from lib.run_identity import (
     CREDENTIAL_FILE_ENV,
     WORKLOAD_HEADER,
@@ -75,13 +77,14 @@ _MAX_CREDENTIAL_BYTES = 4096
 class StatusGatewayError(Exception):
     """The authenticated write could not be completed.
 
-    Carries no response body and no token material: this is raised into fail-soft
-    callers that log it, and a gateway refusal reason is not theirs to disclose.
+    Carries no response body or token material. Only allowlisted review refusal
+    codes may cross this boundary; all other operations retain uniform errors.
     """
 
-    def __init__(self, message: str, *, retryable: bool = False):
+    def __init__(self, message: str, *, retryable: bool = False, code: str = "agent_authority_unavailable"):
         super().__init__(message)
         self.retryable = retryable
+        self.code = code
 
 
 def authority_enabled() -> bool:
@@ -192,12 +195,10 @@ def _post_bytes(path: str, data: bytes, *, content_type: str, success_statuses: 
                 stream=True,
             ) as response:
                 if response.status_code not in success_statuses:
-                    # The status code is safe to log; the body is not — it is the
-                    # gateway's refusal reason, and the gateway deliberately keeps
-                    # those uniform to the caller.
+                    code, retryable = review_refusal(response, path, f"agent_authority_http_{response.status_code}")
                     raise StatusGatewayError(
-                        f"gateway refused the write (status {response.status_code})",
-                        retryable=response.status_code == 429 or response.status_code >= 500,
+                        f"gateway refused the write (status {response.status_code}; {code})",
+                        retryable=retryable, code=code,
                     )
                 raw = response.raw.read(max_response_bytes + 1, decode_content=True)
                 if len(raw) > max_response_bytes:

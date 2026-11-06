@@ -237,6 +237,7 @@ class GateAnswerStatus(StrEnum):
     # author believes constrained. RECORDED, and remediable by re-answering with the
     # reviewed revision's hash. Nothing is approved.
     REFUSED_UNBOUND_POLICY_GRANT = "refused_unbound_policy_grant"
+    REFUSED_PRODUCT = "refused_product"
 
 
 @dataclass(frozen=True)
@@ -374,6 +375,24 @@ def build_gate_decision(
     )
 
 
+async def _flow_ever_had_execution_policy(session, node) -> bool:
+    """True when any accepted plan version of this flow declared an execution policy.
+
+    An amendment that drops the policy must not turn a contracted evaluation
+    back into a plain decision (policy history); a flow whose plans never had
+    one is the legacy shape that approves without evidence.
+    """
+    from ..models import OrchestrationAcceptedPlan
+
+    documents = await session.scalars(
+        select(OrchestrationAcceptedPlan.plan_document).where(
+            OrchestrationAcceptedPlan.org_id == node.org_id,
+            OrchestrationAcceptedPlan.flow_id == node.flow_id,
+        )
+    )
+    return any((document or {}).get("execution_policy") for document in documents)
+
+
 async def _resolve_platform_identity(
     session: AsyncSession,
     *,
@@ -429,6 +448,7 @@ async def _record_refusal(
     node_id: str,
     actor_id: str,
     actor_role: str,
+    actor_kind: ActorKind,
     input_path: InputPath,
     reason: str | None,
     rejection_reason: str,
@@ -453,7 +473,7 @@ async def _record_refusal(
         kind=DecisionKind.TRANSITION_REJECTED,
         actor_id=actor_id,
         actor_role=actor_role,
-        actor_kind=ActorKind.HUMAN,
+        actor_kind=actor_kind,
         input_path=input_path,
         reason=reason,
         rejection_reason=rejection_reason,
@@ -958,6 +978,7 @@ async def apply_gate_answer_for_context(
         )
 
     actor_role = (await access.get_user_role(context))[0].value
+    actor_kind = ActorKind.HUMAN if context.account_type == "human" and context.auth_source == "jwt" else ActorKind.SERVICE
     observed_state = node.state
     target_state = (NodeState.PASSED if approve else NodeState.REJECTED_AT_GATE).value
 
@@ -975,6 +996,7 @@ async def apply_gate_answer_for_context(
             node_id=node_id,
             actor_id=context.user_id,
             actor_role=actor_role,
+            actor_kind=actor_kind,
             input_path=input_path,
             reason=reason,
             rejection_reason=f"{Permission.PLAN_APPROVE.value} is required to answer a gate: {exc}",
@@ -1086,6 +1108,7 @@ async def apply_gate_answer_for_context(
                 node_id=node_id,
                 actor_id=context.user_id,
                 actor_role=actor_role,
+                actor_kind=actor_kind,
                 input_path=input_path,
                 reason=reason,
                 rejection_reason=stale_reason,
@@ -1159,6 +1182,7 @@ async def apply_gate_answer_for_context(
                 node_id=node_id,
                 actor_id=context.user_id,
                 actor_role=actor_role,
+                actor_kind=actor_kind,
                 input_path=input_path,
                 reason=reason,
                 rejection_reason=rejection_reason,
@@ -1180,6 +1204,70 @@ async def apply_gate_answer_for_context(
                 decision_id=decision_id,
             )
 
+    if approve and node.kind == "eval" and observed_state == NodeState.AWAITING_GATE.value:
+        from ..evaluation_plan import human_evaluation, latest_human_gate_evidence, validate_human_gate_evidence
+        from ..review_cycle import CycleBlockedError
+
+        try:
+            # Gate evidence binds an evaluation that carries, or once carried, a
+            # human acceptance contract (#7381): a recorded evidence row, a live
+            # contract, or any accepted plan version in this flow's history that
+            # declared an execution policy all mean the approval must cite
+            # reviewed evidence. A flow that never had an execution policy
+            # presents its eval as a plain decision, exactly as before.
+            recorded, _ = await latest_human_gate_evidence(session, node)
+            if recorded is not None or await _flow_ever_had_execution_policy(session, node) or await human_evaluation(session, node) is not None:
+                await validate_human_gate_evidence(session, node, (execution_preview or {}).get("evidence_id"))
+        except (CycleBlockedError, ValueError) as error:
+            refusal = error.reason if isinstance(error, CycleBlockedError) else "evaluation_gate_evidence_unverifiable"
+            record, decision_id = await _record_refusal(
+                session,
+                org_id=org_id,
+                flow_id=node.flow_id,
+                node_id=node_id,
+                actor_id=context.user_id,
+                actor_role=actor_role,
+                actor_kind=actor_kind,
+                input_path=input_path,
+                reason=reason,
+                rejection_reason=refusal,
+                from_state=observed_state,
+                to_state=target_state,
+            )
+            return GateAnswerOutcome(
+                status=GateAnswerStatus.REFUSED_STALE_PLAN,
+                node_id=node_id,
+                message=f"this evaluation gate was NOT answered: {refusal}. Review the current gate evidence and retry.",
+                decision=record,
+                decision_id=decision_id,
+            )
+
+    if approve and observed_state == NodeState.AWAITING_GATE.value:
+        from ..compile import ApprovalContext, ProposalRejectedError, is_legacy_acceptance, require_accessible_product
+
+        in_force = await repository_module.OrchestrationRepository(session).get_accepted_plan(org_id=org_id, flow_id=node.flow_id)
+        if in_force is not None:
+            product_id = (in_force.plan_document or {}).get("product_id")
+            try:
+                if product_id is None:
+                    if not await is_legacy_acceptance(session, in_force):
+                        raise ProposalRejectedError("Product is required for new execution acceptance")
+                else:
+                    if context.account_type != "human":
+                        raise ProposalRejectedError("Product is unknown or inaccessible")
+                    await require_accessible_product(
+                        session,
+                        product_id=product_id,
+                        decision=ApprovalContext(
+                            org_id=org_id,
+                            actor_id=context.user_id,
+                            actor_role=actor_role,
+                            username=context.cognito_username,
+                        ),
+                    )
+            except ProposalRejectedError as exc:
+                return GateAnswerOutcome(status=GateAnswerStatus.REFUSED_PRODUCT, node_id=node_id, message=str(exc))
+
     rows, allowed, rejection_reason = await _gate_transition(
         session,
         node_id=node_id,
@@ -1199,6 +1287,7 @@ async def apply_gate_answer_for_context(
             node_id=node_id,
             actor_id=context.user_id,
             actor_role=actor_role,
+            actor_kind=actor_kind,
             input_path=input_path,
             reason=reason,
             rejection_reason=rejection_reason or "transition refused",
@@ -1265,6 +1354,11 @@ async def apply_gate_answer_for_context(
     )
     repo = repository_module.OrchestrationRepository(session)
     appended = await repo.append_decision(**record.to_append_kwargs())
+
+    if approve and node.kind == "eval":
+        from ..tick import release_satisfied_successors
+
+        await release_satisfied_successors(session, node)
 
     # --- activate a proposed execution policy, if this answer is its grant ----
     # After the append, so the decision row this policy is accepted *by* already

@@ -118,6 +118,7 @@ PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
 
 INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
+        ("GET", "/internal/readers/{workspace_id}"),
         ("GET", "/internal/installation"),
         ("POST", "/internal/controller/reconcile"),
         ("GET", "/api/v1/workspaces/{workspace_id}/bootstrap-observation"),
@@ -213,16 +214,26 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     # Issue #6048. Organization-scoped like `GET /workspaces` above: this lists
     # shared-placement eligibility across the caller's whole organization, not
     # one workspace, so it takes the same scope for the same reason.
+    ("GET", "/workspaces/{workspace_id}/provider-authority"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
     ("GET", "/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
-    ("GET", "/workspaces/{workspace_id}/access/v1/me"): (Scope.WORKSPACE, Permission.READ),
+    ("GET", "/workspaces/{workspace_id}/access/v1/me"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
     ("GET", "/workspaces/{workspace_id}/access/v1/grants"): (
-        Scope.WORKSPACE, Permission.ADMINISTER,
+        Scope.WORKSPACE,
+        Permission.ADMINISTER,
     ),
     ("POST", "/workspaces/{workspace_id}/access/v1/grants"): (
-        Scope.WORKSPACE, Permission.ADMINISTER,
+        Scope.WORKSPACE,
+        Permission.ADMINISTER,
     ),
     ("POST", "/workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke"): (
-        Scope.WORKSPACE, Permission.ADMINISTER,
+        Scope.WORKSPACE,
+        Permission.ADMINISTER,
     ),
     ("DELETE", "/workspaces/{workspace_id}"): (
         Scope.WORKSPACE,
@@ -328,10 +339,12 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("POST", "/workspaces/preview"): (Scope.ORGANIZATION, Permission.PROVISION),
     ("POST", "/workspaces/adopt"): (Scope.ORGANIZATION, Permission.PROVISION),
     ("POST", "/workspaces/{workspace_id}/retirement/access/preview"): (
-        Scope.WORKSPACE, Permission.PROVISION,
+        Scope.WORKSPACE,
+        Permission.PROVISION,
     ),
     ("POST", "/workspaces/{workspace_id}/retirement/access"): (
-        Scope.WORKSPACE, Permission.PROVISION,
+        Scope.WORKSPACE,
+        Permission.PROVISION,
     ),
     ("POST", "/workspaces/{workspace_id}/retirement/preview"): (
         Scope.WORKSPACE,
@@ -353,6 +366,123 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
         Scope.WORKSPACE,
         Permission.PROVISION,
     ),
+    ("POST", "/workspaces/{workspace_id}/dispatch-recovery/review"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/dispatch-recovery/decision"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/dispatch-recovery/resume"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/provider-recovery/review"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/provider-recovery/decision"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/provider-recovery/resume"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/planning-recovery/review"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/bootstrap-recovery/observe"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/bootstrap-recovery/review"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/planning-recovery/decision"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/bootstrap-recovery/decision"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/planning-recovery/resume"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/bootstrap-recovery/resume"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/settled-bootstrap-recovery/review"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/settled-bootstrap-recovery/decision"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/settled-bootstrap-recovery/resume"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/saved-plan-completion/review"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/interrupted-planning-recovery/review"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/saved-plan-completion/decision"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/interrupted-planning-recovery/decision"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/saved-plan-completion/resume"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/interrupted-planning-recovery/resume"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/partial-apply/preparation/preview"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/partial-apply/preparation"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/partial-apply/repair/review"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/partial-apply/repair/decision"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/partial-apply/repair/resume"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/planning-budget/review"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/planning-budget/decision"): (
+        Scope.WORKSPACE,
+        Permission.ADMINISTER,
+    ),
+    ("GET", "/control-plane-health"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/operations/{operation_id}"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/operations/by-idempotency/{idempotency_key}"): (
         Scope.ORGANIZATION,
@@ -373,9 +503,18 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     # -- Organization records ------------------------------------------------
     ("GET", "/orgs/current"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/orgs/current/access/v1/me"): (Scope.ORGANIZATION, Permission.READ),
-    ("GET", "/orgs/current/access/v1/grants"): (Scope.ORGANIZATION, Permission.ADMINISTER),
-    ("POST", "/orgs/current/access/v1/grants"): (Scope.ORGANIZATION, Permission.ADMINISTER),
-    ("POST", "/orgs/current/access/v1/grants/{grant_id}/revoke"): (Scope.ORGANIZATION, Permission.ADMINISTER),
+    ("GET", "/orgs/current/access/v1/grants"): (
+        Scope.ORGANIZATION,
+        Permission.ADMINISTER,
+    ),
+    ("POST", "/orgs/current/access/v1/grants"): (
+        Scope.ORGANIZATION,
+        Permission.ADMINISTER,
+    ),
+    ("POST", "/orgs/current/access/v1/grants/{grant_id}/revoke"): (
+        Scope.ORGANIZATION,
+        Permission.ADMINISTER,
+    ),
     ("PATCH", "/orgs/current"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("GET", "/orgs/current/sso"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("PATCH", "/orgs/current/sso"): (Scope.ORGANIZATION, Permission.ADMINISTER),

@@ -209,7 +209,8 @@ async def test_approver_grant_cannot_outlive_adp_membership(monkeypatch):
     "approver_state,expected_status",
     [("active", 200), ("revoked", 403), ("disabled", 403), ("denied", 403), ("unavailable", 503)],
 )
-async def test_approval_issue_distinguishes_approver_outage_from_denial(monkeypatch, approver_state, expected_status):
+@pytest.mark.parametrize("require_distinct", [False, True])
+async def test_approval_issue_distinguishes_approver_outage_from_denial(monkeypatch, approver_state, expected_status, require_distinct):
     import uuid
 
     from fastapi import HTTPException
@@ -225,6 +226,7 @@ async def test_approval_issue_distinguishes_approver_outage_from_denial(monkeypa
     from app.services.operation_approvals import ApprovalService
     from tests.conftest import async_session_test
 
+    monkeypatch.setattr(settings, "superplane_require_distinct_approver", require_distinct)
     org_id, workspace_id = uuid.uuid4(), uuid.uuid4()
     async with async_session_test() as session:
         session.add(Organization(id=org_id, name="approval-identity", adp_org_id="O1"))
@@ -276,7 +278,8 @@ async def test_approval_issue_distinguishes_approver_outage_from_denial(monkeypa
             assert failure.value.status_code == expected_status
             assert failure.value.detail == (
                 "operation approval unavailable" if expected_status == 503
-                else "no distinct current human approver is available"
+                else "no distinct current human approver is available" if require_distinct
+                else "no current human administrator is available to approve"
             )
         assert "approver" in reader.subjects
         async with async_session_test() as session:

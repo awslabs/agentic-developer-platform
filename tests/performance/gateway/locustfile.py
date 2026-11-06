@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import random
 import time
@@ -7,6 +8,9 @@ from pathlib import Path
 
 import gevent
 from locust import HttpUser, LoadTestShape, between, events, task
+
+from campaign_guard import WorkerClient
+from campaign_controller import private_path
 
 ROOT = Path(os.environ.get("ADP_PERF_OUTPUT_DIR", "/tmp/adp-gateway-perf"))
 ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -18,6 +22,28 @@ ACTIVE = 0
 RESULTS = []
 START = time.monotonic()
 OUT = (ROOT / (LABEL + "-requests.jsonl")).open("w", buffering=1)
+CONTROLLER_URL = os.environ.get("PERF_CONTROLLER_URL")
+CONTROLLER_TOKEN_FILE = os.environ.get("PERF_CONTROLLER_TOKEN_FILE")
+if bool(CONTROLLER_URL) != bool(CONTROLLER_TOKEN_FILE):
+    raise ValueError("controller URL and private token file must be set together")
+WORKER_CLIENT = None
+if CONTROLLER_URL:
+    WORKER_CLIENT = WorkerClient(
+        CONTROLLER_URL, private_path(CONTROLLER_TOKEN_FILE, "controller token").read_text().strip(),
+        ca_file=os.environ.get("PERF_CONTROLLER_CA_FILE")
+    )
+    DRAIN_SECONDS = float(os.environ["PERF_DRAIN_SECONDS"])
+    if not math.isfinite(DRAIN_SECONDS) or not 0 < DRAIN_SECONDS <= 240:
+        raise ValueError("controller drain must have a finite bound")
+    IDENTITY_ID = os.environ["PERF_IDENTITY_ID"]
+    IDENTITY_KIND = os.environ["PERF_IDENTITY_KIND"]
+    if not IDENTITY_ID or IDENTITY_KIND not in {"developer", "agent"}:
+        raise ValueError("controller mode requires explicit developer or agent identity")
+    INPUT_RESERVE = int(os.environ["PERF_RESERVE_INPUT_TOKENS"])
+    INPUT_PRICE = float(os.environ["PERF_PRICE_PER_INPUT_TOKEN"])
+    OUTPUT_PRICE = float(os.environ["PERF_PRICE_PER_OUTPUT_TOKEN"])
+    if INPUT_RESERVE <= 0 or not math.isfinite(INPUT_PRICE) or INPUT_PRICE <= 0 or not math.isfinite(OUTPUT_PRICE) or OUTPUT_PRICE <= 0:
+        raise ValueError("controller mode requires positive token and price reservations")
 
 
 class CampaignShape(LoadTestShape):
@@ -89,10 +115,24 @@ class GatewayUser(HttpUser):
                     "effort": os.environ.get("PERF_REASONING_EFFORT", "medium")
                 },
             }
+        attempt_id = None
+        if WORKER_CLIENT:
+            attempt_id = WORKER_CLIENT.permit(
+                INPUT_RESERVE, limit, INPUT_RESERVE * INPUT_PRICE + limit * OUTPUT_PRICE
+            )
+            if not attempt_id:
+                self.environment.runner.stop()
+                return
+        if WORKER_CLIENT and not WORKER_CLIENT.dispatch(attempt_id):
+            WORKER_CLIENT.finish(attempt_id, {"success": False, "complete": False})
+            self.environment.runner.stop()
+            return
         started = time.monotonic()
         ACTIVE += 1
         row = {
             "started_epoch": time.time(),
+            "identity_id": IDENTITY_ID if WORKER_CLIENT else None,
+            "identity_kind": IDENTITY_KIND if WORKER_CLIENT else None,
             "scenario": "long" if long else "short",
             "max_tokens": limit,
             "model": payload["model"],
@@ -107,7 +147,9 @@ class GatewayUser(HttpUser):
                 stream=True,
                 catch_response=True,
                 name="LLM/" + row["scenario"],
-                timeout=(10, int(os.environ.get("PERF_READ_TIMEOUT", "180"))),
+                timeout=(min(10, DRAIN_SECONDS) if WORKER_CLIENT else 10,
+                         min(DRAIN_SECONDS, int(os.environ.get("PERF_READ_TIMEOUT", "180")))
+                         if WORKER_CLIENT else int(os.environ.get("PERF_READ_TIMEOUT", "180"))),
             ) as response:
                 row["status"] = response.status_code
                 row["request_id"] = response.headers.get("X-Request-ID")
@@ -215,8 +257,20 @@ class GatewayUser(HttpUser):
             row["duration_ms"] = (time.monotonic() - started) * 1000
         finally:
             ACTIVE -= 1
+            if WORKER_CLIENT and not WORKER_CLIENT.finish(attempt_id, row):
+                row["success"] = False
+                row["error"] = "controller_outcome_unknown"
+                self.environment.runner.stop()
             RESULTS.append(row)
             OUT.write(json.dumps(row) + "\n")
+
+
+@events.init.add_listener
+def validate_drain(environment, **kwargs):
+    if WORKER_CLIENT:
+        timeout = getattr(environment.parsed_options, "stop_timeout", None)
+        if not timeout or timeout > DRAIN_SECONDS:
+            raise ValueError("controller workers require --stop-timeout within drain cap")
 
 
 @events.test_start.add_listener

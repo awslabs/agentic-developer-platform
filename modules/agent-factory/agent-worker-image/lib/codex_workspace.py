@@ -253,18 +253,21 @@ class CodexWorkspace:
             self._parts(prefix)
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
             raise WorkspaceError("Invalid workspace listing window")
+        # The bound applies to what is being listed, after the prefix narrows it
+        # (#7828): counting the whole tree first refused every listing of a
+        # repository with more than MAX_SOURCE_ENTRIES paths, however small the
+        # requested subtree, so the repair loop could never inspect the workspace.
         paths = sorted(
             set(
                 path
                 for path in self._git(
                     "ls-files", "-z", "--cached", "--others", "--exclude-standard"
                 ).split("\0")
-                if path
+                if path and path.startswith(prefix)
             )
         )
         if len(paths) > MAX_SOURCE_ENTRIES:
             raise WorkspaceError("Workspace listing exceeds bound")
-        paths = [path for path in paths if path.startswith(prefix)]
         return {
             "paths": paths[offset : offset + limit],
             "nextOffset": offset + limit if offset + limit < len(paths) else None,

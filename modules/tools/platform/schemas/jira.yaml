@@ -1,0 +1,29 @@
+openapi: 3.0.3
+info:
+  title: Jira user connection tools
+  version: '1.0'
+servers:
+  - url: https://api.atlassian.com
+paths:
+  /ex/jira/{cloudId}/rest/api/3/issue/{issueIdOrKey}:
+    get:
+      operationId: get_issue
+      description: Read an issue from a Jira Cloud site the connected user can access.
+      parameters:
+        - name: cloudId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: issueIdOrKey
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Issue JSON
+          content:
+            application/json:
+              schema:
+                type: object

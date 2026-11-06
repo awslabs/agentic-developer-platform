@@ -147,6 +147,9 @@ class BootstrapStore:
             "orchestration_node_id",
             "orchestration_node_attempt",
             "provider_repository_id",
+            "source_revision",
+            "definition_revision",
+            "default_branch",
             # Issue #4529: the amendment request an AI-DLC authoring run answers.
             # Server-written by `engine.provision_authoring` and re-read on every call
             # by `validate_authoring_authority`, which is what stops an authoring run
@@ -314,7 +317,7 @@ class BootstrapStore:
             try:
                 parent_id, parent_attempt = execution["parent_principal"]["S"].rsplit("#", 1)
                 parent = self._read(f"TENANT#{tenant_id}", f"EXEC#{parent_id}")
-                if not parent or parent.get("status", {}).get("S") in {"cancelled", "revoked"}:
+                if not parent or parent.get("status", {}).get("S") in {"cancelled", "revoked"} or parent.get("campaign_retirement_operation"):
                     raise BootstrapRefusedError("parent delegation refused")
                 parent_grant = self.live_grant(
                     invocation_id=parent_id,

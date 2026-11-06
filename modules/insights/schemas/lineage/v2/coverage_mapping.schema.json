@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "coverage_mapping (section 11.6)",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "if": {
+        "properties": {
+          "mapping_kind": {
+            "const": "criterion_scenario"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "from_ref": {
+            "allOf": [
+              {
+                "$ref": "references.schema.json#/$defs/record_ref"
+              },
+              {
+                "properties": {
+                  "record_type": {
+                    "const": "acceptance_criterion"
+                  }
+                }
+              }
+            ]
+          },
+          "to_ref": {
+            "allOf": [
+              {
+                "$ref": "references.schema.json#/$defs/record_ref"
+              },
+              {
+                "properties": {
+                  "record_type": {
+                    "const": "coverage_definition"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "from_ref": {
+            "allOf": [
+              {
+                "$ref": "references.schema.json#/$defs/record_ref"
+              },
+              {
+                "properties": {
+                  "record_type": {
+                    "const": "coverage_definition"
+                  }
+                }
+              }
+            ]
+          },
+          "to_ref": {
+            "allOf": [
+              {
+                "$ref": "references.schema.json#/$defs/record_ref"
+              },
+              {
+                "properties": {
+                  "record_type": {
+                    "const": "test_definition"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "const": "coverage_mapping"
+    },
+    "mapping_kind": {
+      "enum": [
+        "criterion_scenario",
+        "scenario_test"
+      ]
+    },
+    "from_ref": {
+      "$ref": "references.schema.json#/$defs/record_ref"
+    },
+    "to_ref": {
+      "$ref": "references.schema.json#/$defs/record_ref"
+    },
+    "lifecycle_status": {
+      "enum": [
+        "active",
+        "retired"
+      ]
+    }
+  },
+  "required": [
+    "mapping_kind",
+    "from_ref",
+    "to_ref",
+    "lifecycle_status"
+  ],
+  "unevaluatedProperties": false
+}

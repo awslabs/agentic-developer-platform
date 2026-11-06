@@ -1,5 +1,5 @@
 /**
- * SetupInstructions — connect Claude Code, Codex, Hermes or Kimi to this gateway.
+ * SetupInstructions — connect CLI tools and compatible macOS apps to this gateway.
  *
  * Issue #4146 rewrote the content end-to-end (the previous AWS-SSO +
  * `bg-auth.sh` flow no longer worked). Issue #4159 made it tabbed. Issue #4852
@@ -37,6 +37,7 @@ import { Card, CardTitle, CopyButton, Tabs, TabsList, Tab, TabPanel } from '@/co
 import { getGatewayBaseUrl } from '@/utils/gatewayUrl';
 import { ScriptDownloadList } from '@/components/setup/ScriptDownload';
 import { ConnectCliPanel } from '@/components/setup/ConnectCliPanel';
+import { MacOsAppSetup } from '@/components/setup/MacOsAppSetup';
 
 /**
  * The exact value `adp claude setup` writes (Issue #4852 D4, finished in #4859).
@@ -681,25 +682,40 @@ ADP_GATEWAY_DUMMY="$(jq -r .capability ~/.bedrock-gateway/proxy.json)" codex`}
 
   return (
     <div className="space-y-8">
-      <section className="space-y-4">
-        <SectionHeading title="Set up your CLI">
-          Pick your tool — each tab is the complete recipe, start to finish.
-        </SectionHeading>
-        <Card>
-          <Tabs defaultValue="claude-code">
-            <TabsList className="flex-wrap">
-              <Tab value="claude-code">Claude Code</Tab>
-              <Tab value="codex">Codex</Tab>
-              <Tab value="hermes">Hermes</Tab>
-              <Tab value="kimi">Kimi Code</Tab>
-            </TabsList>
-            <TabPanel value="claude-code">{renderToolSteps(claudeCodeSteps)}</TabPanel>
-            <TabPanel value="codex">{renderToolSteps(codexSteps)}</TabPanel>
-            <TabPanel value="hermes">{renderToolSteps(hermesSteps)}</TabPanel>
-            <TabPanel value="kimi">{renderToolSteps(kimiSteps)}</TabPanel>
-          </Tabs>
-        </Card>
-      </section>
+      <Tabs defaultValue="cli-tools">
+        <TabsList className="flex-wrap">
+          <Tab value="cli-tools">CLI tools</Tab>
+          <Tab value="macos-apps">macOS apps</Tab>
+        </TabsList>
+        <TabPanel value="cli-tools">
+          <section className="space-y-4">
+            <SectionHeading title="Set up your CLI">
+              Pick your tool — each tab is the complete recipe, start to finish.
+            </SectionHeading>
+            <Card>
+              <Tabs defaultValue="claude-code">
+                <TabsList className="flex-wrap">
+                  <Tab value="claude-code">Claude Code</Tab>
+                  <Tab value="codex">Codex</Tab>
+                  <Tab value="hermes">Hermes</Tab>
+                  <Tab value="kimi">Kimi Code</Tab>
+                </TabsList>
+                <TabPanel value="claude-code">{renderToolSteps(claudeCodeSteps)}</TabPanel>
+                <TabPanel value="codex">{renderToolSteps(codexSteps)}</TabPanel>
+                <TabPanel value="hermes">{renderToolSteps(hermesSteps)}</TabPanel>
+                <TabPanel value="kimi">{renderToolSteps(kimiSteps)}</TabPanel>
+              </Tabs>
+            </Card>
+          </section>
+        </TabPanel>
+        <TabPanel value="macos-apps">
+          <MacOsAppSetup
+            baseUrl={baseUrl}
+            installStep={<InstallAdpStep baseUrl={baseUrl} />}
+            signInStep={<SignInStep />}
+          />
+        </TabPanel>
+      </Tabs>
 
       <section className="space-y-4">
         <SectionHeading title="Verify">
@@ -708,8 +724,8 @@ ADP_GATEWAY_DUMMY="$(jq -r .capability ~/.bedrock-gateway/proxy.json)" codex`}
         <Card>
           <CardTitle>Verify it works</CardTitle>
           <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">
-            Ask your CLI assistant anything, then open the <strong>Log Viewer</strong> in this
-            dashboard. Your request should appear there within a few seconds — that confirms traffic
+            Send a message from the app or CLI you configured, then open the <strong>Log Viewer</strong>{' '}
+            in this dashboard. Your request should appear there within a few seconds — that confirms traffic
             is flowing through the gateway and being metered against your account. If it does not,
             see Troubleshooting below.
           </p>

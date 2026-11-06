@@ -61,6 +61,8 @@ from src.orchestration.models import (
 from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode
 from src.orchestration.state import ActorKind
 from src.shared.models.base import Base
+from src.shared.models.organization import User
+from tests.orchestration.product_fixture import seed_product, seed_product_membership
 
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
@@ -94,6 +96,10 @@ async def session():
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as s:
+        await seed_product(s, org_id=ORG_A, actor_id=HUMAN)
+        s.add(User(id="cognito-sub-999", org_id=ORG_A, team_id="binding-team", email="other@example.test"))
+        await seed_product_membership(s, org_id=ORG_A, user_id="cognito-sub-999")
+        await s.commit()
         yield s
     await engine.dispose()
 
@@ -153,6 +159,7 @@ def valid_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
     """A well-formed two-wave proposal, matching `test_compile.py`'s shape."""
     payload = {
         "flow_slug": FLOW,
+        "product_id": f"product-{org_id}",
         "title": "Demo flow",
         "org_id": org_id,
         "spec_revision": SPEC_REVISION,
@@ -242,7 +249,7 @@ class TestMissingPolicyPreservesLegacySemantics:
         Hardcoding one key made this test fail on the *addition* of the second field
         while the property it protects still held.
         """
-        proposal = valid_proposal()
+        proposal = valid_proposal(product_id=None)
         legacy_document = {
             k: v for k, v in proposal.model_dump(mode="json", exclude=HASH_EXCLUDED_FIELDS).items() if k not in HASH_OMITTED_WHEN_ABSENT
         }
@@ -669,7 +676,7 @@ async def test_v2_acceptance_checks_selected_vault_acl_and_preserves_idempotency
 
     session.add(Organization(id=ORG_A, name="Credential approval fixture"))
     await session.flush()
-    session.add(User(id=HUMAN, org_id=ORG_A, team_id="", email="owner@example.test"))
+    await session.merge(User(id=HUMAN, org_id=ORG_A, team_id="", email="owner@example.test"))
     session.add(User(id="other-owner", org_id=ORG_A, team_id="", email="other@example.test"))
     await session.flush()
     if selection != "missing":

@@ -1,3 +1,4 @@
+import { activityBase, type ActivityScope } from '@/contexts/ActivityScopeContext';
 import { deploymentSetting } from '@/config/runtime';
 import { getAccessToken } from './auth';
 
@@ -11,12 +12,15 @@ export class FeedError extends Error {
 }
 /** Fetch streams carry auth headers; credentials never appear in URLs. */
 export async function readExplanations(invocationId: string, cursor: string | undefined,
-  signal: AbortSignal, update: (value: StreamUpdate) => void): Promise<void> {
+  signal: AbortSignal, update: (value: StreamUpdate) => void, scope?: ActivityScope): Promise<void> {
   const token = getAccessToken();
   if (!token) throw new FeedError(401);
   const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' };
   if (cursor) headers['Last-Event-ID'] = cursor;
-  const response = await fetch(`${deploymentSetting('VITE_API_URL') || '/api'}/activity/invocations/${encodeURIComponent(invocationId)}/agent/events`,
+  // Browser-only event request to the deployment API with an encoded invocation ID.
+  // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
+  const path = scope ? `${activityBase(scope)}/${encodeURIComponent(invocationId)}/events` : `/activity/invocations/${encodeURIComponent(invocationId)}/agent/events`;
+  const response = await fetch(`${deploymentSetting('VITE_API_URL') || '/api'}${path}`,
     { headers, signal, cache: 'no-store', redirect: 'error' });
   if (!response.ok) {
     const detail = response.status === 409 ? await response.json().catch(() => ({})) : {};

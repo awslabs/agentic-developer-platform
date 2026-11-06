@@ -1,5 +1,6 @@
 """Real SQL K2 lifecycle using shared-worker assignments, no protected grants."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -108,6 +109,31 @@ async def shared(cycle, monkeypatch):  # noqa: F811
     return ctx
 
 
+async def test_shared_transport_refuses_protected_developer_recovery_receipt(shared):
+    from src.orchestration.execution_runner import RunnerContext
+    from src.orchestration.execution_store import load_execution
+    from src.orchestration.review_cycle import CycleBlockedError
+
+    async with shared.factory() as db:
+        loaded = await load_execution(db, identity=shared.identity)
+        context = RunnerContext(shared.identity, loaded.record, datetime.now(UTC))
+        facts = await shared.service.facts(db, context, shared.node, shared.binding, [])
+        facts["developer_recovery_decision_id"] = "protected-owner-receipt"
+        with pytest.raises(CycleBlockedError, match="protected_recovery_requires_protected_transport"):
+            await shared.service.recheck(db, context, shared.node, shared.binding, facts)
+    assert not shared.calls
+
+
+async def test_shared_review_uses_bound_repository_after_global_change(shared):
+    shared.service.config = replace(shared.service.config, repo="fictional/global-a")
+    result = await protocol.tick(shared)
+    assert result.effects_succeeded == 1, result
+    envelope = shared.calls[-1]
+    assert envelope["source_ref"]["repo"] == shared.binding.repo
+    assert envelope["source_ref"]["installation_id"] == shared.binding.installation_id
+    assert envelope["review_expect"]["flow_id"] == shared.flow.id
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -118,6 +144,10 @@ async def shared(cycle, monkeypatch):  # noqa: F811
 )
 async def test_shared_transport_preserves_delivery_protocol(shared, case):
     await getattr(protocol, case)(shared)
+
+
+async def test_shared_committed_receipt_cannot_replay_after_budget_exhaustion(shared):
+    await protocol.test_committed_dispatch_receipt_cannot_replay_after_budget_exhaustion(shared)
 
 
 @pytest.mark.parametrize("flow_state", ["running", "pending"])
@@ -205,10 +235,12 @@ async def test_started_successor_settles_uncertain_dispatch_without_republishing
 
 
 async def test_engine_does_not_merge_when_owned_reviewer_has_not_delivered(shared, monkeypatch):
+    """The engine never merges a reviewer-owned PR; a reviewer that ended without merging gets another delivery pass (#7472)."""
     async with merge_protocol.prepared_merge(shared, monkeypatch) as ctx:
         result = await merge_protocol.tick(ctx)
         assert result.effects_attempted == 0
-        assert (await protocol.state(ctx))[0].block_detail == "reviewer_merge_not_delivered"
+        execution = (await protocol.state(ctx))[0]
+        assert execution.phase == "awaiting_review" and execution.block_detail is None
         assert ctx.mutations == [] and len(ctx.calls) == 1
 
 

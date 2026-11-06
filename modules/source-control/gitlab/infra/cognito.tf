@@ -24,6 +24,10 @@ resource "aws_cognito_user_pool_client" "gitlab_oidc" {
   # Server-side OIDC flow requires a client secret
   generate_secret = true
 
+  # Keep tenant and role attributes server-managed. An omitted allowlist uses
+  # Cognito defaults instead of explicitly restricting client profile writes.
+  write_attributes = ["email", "name"]
+
   # OAuth configuration
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["code"]

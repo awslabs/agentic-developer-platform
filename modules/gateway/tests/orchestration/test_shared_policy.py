@@ -8,14 +8,14 @@ from types import SimpleNamespace
 
 import fakeredis.aioredis
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import update
 
 from src.budget.config import budget_config
 from src.budget.reservations import ReservationStore
 from src.orchestration import flow_budget, shared_policy
 from src.orchestration.execution_policy import Action, DenyReason
 from src.orchestration.flow_meter import meter_target
-from src.orchestration.models import OrchestrationDecision, OrchestrationWorkClaim
+from src.orchestration.models import OrchestrationDecision, OrchestrationPullRequestBinding, OrchestrationWorkClaim
 from src.orchestration.review_cycle import CycleBlockedError
 from src.orchestration.run_reports import OrchestrationRunReport
 from src.shared.models.onboarding import TenantMembership
@@ -232,13 +232,24 @@ async def test_current_run_does_not_consume_second_concurrency_slot(shared):
         ),
         execution=SimpleNamespace(attempts=1),
     )
-    binding = SimpleNamespace(
+    binding = OrchestrationPullRequestBinding(
         org_id=shared.node.org_id,
+        flow_id=shared.flow.id,
         node_id=shared.node.id,
+        attempt=shared.node.attempts,
+        run_id="run-current",
         repo=REPO,
         provider_repository_id=12345,
+        provider_pr_node_id="PR_current",
+        pr_number=42,
+        installation_id=INSTALLATION_A,
+        head_sha="a" * 40,
+        registered_by="run-current",
+        registered_by_kind="service",
         accepted_scope=json.dumps({"node": {"kind": shared.node.kind, "issue_ref": shared.node.issue_ref, "title": shared.node.title}}),
     )
+    shared.session.add(binding)
+    await shared.session.flush()
     assert await shared_policy.authorize_shared_action(shared.session, context, shared.node, binding, "run-current", Action.REPAIR)
     other = await _make_node(shared.session, shared.flow, node_ref="other", state="running", attempts=1, issue_ref="999")
     await report(shared, other, "run-other")
@@ -285,8 +296,8 @@ async def test_acceptance_facts_remain_verifiable(shared, monkeypatch, mutation)
 
 async def test_revocation_and_wrong_principal_stop_dispatch(shared):
     assert not (await dispatch(shared, principal_user_id="other-user")).permitted
-    await shared.session.execute(delete(TenantMembership))
-    assert (await dispatch(shared)).reason == DenyReason.ROLE_REVOKED
+    await shared.session.execute(update(TenantMembership).values(revoked_at=datetime.now(UTC)))
+    assert (await dispatch(shared)).reason == DenyReason.MEMBERSHIP_REVOKED
 
 
 @pytest.mark.parametrize("state", ["halted", "passed", "failed"])

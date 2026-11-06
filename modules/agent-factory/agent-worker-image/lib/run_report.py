@@ -18,6 +18,8 @@ import botocore.awsrequest
 import botocore.session
 import requests
 
+from lib.reviewer_errors import review_refusal
+
 _assignment: dict | None = None
 
 
@@ -42,6 +44,11 @@ def configure(envelope: dict) -> None:
         return
     if report.get("contract_version") != 1 or not isinstance(report.get("credential"), str):
         raise RunReportError("unsupported_run_report", retryable=False)
+    # A protected worker identity is denied direct S3 by its permissions boundary;
+    # the dispatcher then tells it to keep the pending-report marker in the gateway.
+    spool = report.get("spool", "s3")
+    if spool not in {"s3", "gateway"}:
+        raise RunReportError("unsupported_run_report", retryable=False)
     # File handoff follows the existing protected-run convention. Child clients
     # read this file rather than embedding the capability in command arguments.
     fd, path = tempfile.mkstemp(prefix="adp-run-report-")
@@ -59,6 +66,7 @@ def configure(envelope: dict) -> None:
         "bound_pull_request": envelope.get("bound_pull_request"),
         "tenant_id": envelope["tenant_id"],
         "repo": envelope["source_ref"]["repo"],
+        "spool": spool,
         "reviewer_owned_delivery": (envelope.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True,
     }
     os.environ["ADP_RUN_REPORT_OWNERSHIP_NONCE"] = _assignment["ownership_nonce"]
@@ -78,7 +86,7 @@ def enabled() -> bool:
     return _assignment is not None
 
 
-def request(path: str = "", body: dict | None = None, *, timeout: int = 15) -> dict:
+def request(path: str = "", body: dict | None = None, *, timeout: int = 15, max_bytes: int = 32768) -> dict:
     if _assignment is None:
         raise RunReportError("run_report_unconfigured", retryable=False)
     base = os.environ.get("ADP_AGENT_CONTROL_ENDPOINT", "").rstrip("/")
@@ -125,12 +133,10 @@ def request(path: str = "", body: dict | None = None, *, timeout: int = 15) -> d
                 stream=True,
             ) as response:
                 if response.status_code not in (200, 201):
-                    raise RunReportError(
-                        f"run_report_http_{response.status_code}",
-                        retryable=response.status_code >= 500 or response.status_code == 429,
-                    )
-                raw = response.raw.read(32769, decode_content=True)
-                if len(raw) > 32768:
+                    code, retryable = review_refusal(response, path, f"run_report_http_{response.status_code}")
+                    raise RunReportError(code, retryable=retryable)
+                raw = response.raw.read(max_bytes + 1, decode_content=True)
+                if len(raw) > max_bytes:
                     raise RunReportError("invalid_run_report_receipt")
                 result = json.loads(raw)
     except RunReportError:
@@ -144,6 +150,16 @@ def request(path: str = "", body: dict | None = None, *, timeout: int = 15) -> d
         or result.get("attempt") != _assignment["attempt"]
     ):
         raise RunReportError("invalid_run_report_receipt", retryable=False)
+    return result
+
+
+def operations_report(report: str) -> dict:
+    result = request("/operations", {"report": report})
+    receipt = result.get("operations_report_receipt") or {}
+    if (receipt.get("recorded") is not True or receipt.get("run_id") != result["run_id"]
+            or receipt.get("attempt") != result["attempt"]
+            or receipt.get("sha256") != hashlib.sha256(report.encode("utf-8")).hexdigest()):
+        raise RunReportError("operations_report_unacknowledged")
     return result
 
 
@@ -172,22 +188,55 @@ def _spool_client():
     return boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 
+SPOOL_LIMIT = 2 * 1024 * 1024
+
+
+def _gateway_spool() -> bool:
+    if _assignment is None:
+        raise RunReportError("report_spool_unconfigured", retryable=False)
+    return _assignment.get("spool") == "gateway"
+
+
+def _read_gateway_spool() -> dict | None:
+    """The gateway holds the marker verbatim; it is still validated here as untrusted."""
+    try:
+        return request("/spool", max_bytes=SPOOL_LIMIT).get("spool_document")
+    except RunReportError:
+        raise RunReportError("report_spool_unavailable") from None
+
+
+def _write_gateway_spool(body: dict, *, create: bool) -> None:
+    try:
+        request("/spool", {"document": body, "create": create}, max_bytes=SPOOL_LIMIT)
+    except RunReportError as exc:
+        if exc.code == "run_report_http_409":
+            # Same meaning as the S3 IfNoneMatch precondition: another creator exists.
+            raise RunReportError("delivery_recovery_required", retryable=False) from None
+        if read_spool() != body:
+            raise RunReportError("report_spool_unavailable") from None
+
+
 def read_spool() -> dict | None:
     """Read untrusted recovery material, checking its exact dispatch attribution."""
-    bucket, key = _spool_location()
-    try:
-        response = _spool_client().get_object(Bucket=bucket, Key=key)
-        with response["Body"] as stream:
-            raw = stream.read(2 * 1024 * 1024 + 1)
-        if len(raw) > 2 * 1024 * 1024:
-            raise RunReportError("invalid_report_spool", retryable=False)
-        body = json.loads(raw)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
+    if _gateway_spool():
+        body = _read_gateway_spool()
+        if body is None:
             return None
-        raise RunReportError("report_spool_unavailable") from None
-    except (BotoCoreError, OSError, ValueError, KeyError, TypeError):
-        raise RunReportError("report_spool_unavailable") from None
+    else:
+        bucket, key = _spool_location()
+        try:
+            response = _spool_client().get_object(Bucket=bucket, Key=key)
+            with response["Body"] as stream:
+                raw = stream.read(SPOOL_LIMIT + 1)
+            if len(raw) > SPOOL_LIMIT:
+                raise RunReportError("invalid_report_spool", retryable=False)
+            body = json.loads(raw)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
+                return None
+            raise RunReportError("report_spool_unavailable") from None
+        except (BotoCoreError, OSError, ValueError, KeyError, TypeError):
+            raise RunReportError("report_spool_unavailable") from None
     if (
         not isinstance(body, dict)
         or body.get("contract_version") != 1
@@ -247,7 +296,6 @@ def can_retry_start(spool: dict, snapshot: dict) -> bool:
 
 
 def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = False, review_content: str | None = None, failure: dict | None = None) -> None:
-    bucket, key = _spool_location()
     body = _spool_document(phase, candidate)
     if phase in {"failed", "review"}:
         body["ownership_nonce"] = _assignment["ownership_nonce"]
@@ -255,6 +303,12 @@ def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = Fa
         body["review_content"] = review_content
     if failure is not None:
         body["failure"] = failure
+    if _gateway_spool():
+        _write_gateway_spool(body, create=create)
+        if read_spool() != body:
+            raise RunReportError("report_spool_unacknowledged")
+        return
+    bucket, key = _spool_location()
     options = {"IfNoneMatch": "*"} if create else {}
     try:
         _spool_client().put_object(

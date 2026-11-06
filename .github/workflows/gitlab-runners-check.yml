@@ -1,0 +1,86 @@
+name: GitLab Runners Check
+
+on:
+  pull_request:
+    paths:
+      - 'modules/source-control/gitlab/runners/**'
+      - 'modules/source-control/gitlab/deployment/**'
+      - 'modules/source-control/gitlab/infra/**'
+      - 'modules/source-control/gitlab/tests/acceptance/**'
+      - 'modules/source-control/gitlab/scripts/runner-stack-*.py'
+      - 'modules/source-control/gitlab/scripts/registration_*.py'
+      - 'modules/source-control/gitlab/scripts/tests/test_registration_*.py'
+      - 'modules/source-control/gitlab/scripts/register-runner.py'
+      - 'modules/source-control/gitlab/scripts/manager_integration.py'
+      - 'modules/source-control/gitlab/scripts/manager_identity.py'
+      - 'modules/source-control/gitlab/scripts/runner_workflow.py'
+      - 'modules/source-control/gitlab/scripts/runner_delivery.py'
+      - 'modules/source-control/gitlab/scripts/delivery_evidence.py'
+      - 'modules/source-control/gitlab/scripts/qualification_bundle.py'
+      - 'modules/source-control/gitlab/scripts/tests/test_delivery_evidence.py'
+      - 'modules/source-control/gitlab/scripts/tests/test_qualification_bundle.py'
+      - 'modules/source-control/gitlab/scripts/tests/test_manager_integration.py'
+      - 'modules/source-control/gitlab/scripts/tests/test_manager_identity.py'
+      - 'modules/source-control/gitlab/scripts/tests/test_runner_workflow.py'
+      - 'modules/source-control/gitlab/scripts/tests/test_register_runner.py'
+      - 'modules/source-control/gitlab/scripts/tests/test_runner_stack_guards.py'
+      - '.github/scripts/tests/test_gitlab_runners_workflows.py'
+      - 'codebuild/bs-gitlab-runner-bootstrap.yml'
+      - '.github/workflows/gitlab-runners-*.yml'
+      - '.github/workflows/gitlab-infra-apply.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check formatting and runner tests without credentials
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive modules/source-control/gitlab/infra
+          terraform -chdir=modules/source-control/gitlab/infra init -backend=false -input=false
+          terraform -chdir=modules/source-control/gitlab/infra validate
+          terraform -chdir=modules/source-control/gitlab/infra test
+          terraform fmt -check -recursive modules/source-control/gitlab/deployment/infra
+          terraform -chdir=modules/source-control/gitlab/deployment/infra init -backend=false -input=false
+          terraform -chdir=modules/source-control/gitlab/deployment/infra validate
+          terraform -chdir=modules/source-control/gitlab/deployment/infra test
+          terraform fmt -check -recursive modules/source-control/gitlab/runners
+          terraform -chdir=modules/source-control/gitlab/runners init -backend=false -input=false
+          terraform -chdir=modules/source-control/gitlab/runners validate
+          terraform -chdir=modules/source-control/gitlab/runners test
+          terraform -chdir=modules/source-control/gitlab/runners/ca-exporter/infra init -backend=false -input=false
+          terraform -chdir=modules/source-control/gitlab/runners/ca-exporter/infra validate
+          terraform -chdir=modules/source-control/gitlab/runners/ca-exporter/infra test
+          terraform -chdir=modules/source-control/gitlab/runners/image/infra init -backend=false -input=false
+          terraform -chdir=modules/source-control/gitlab/runners/image/infra validate
+          terraform -chdir=modules/source-control/gitlab/runners/image/infra test
+          terraform -chdir=modules/source-control/gitlab/runners/builder/infra init -backend=false -input=false
+          terraform -chdir=modules/source-control/gitlab/runners/builder/infra validate
+          terraform -chdir=modules/source-control/gitlab/runners/builder/infra test
+          python3 -m pip install --quiet pytest pytest-asyncio boto3 httpx cryptography PyYAML jsonschema pydantic==2.12.5 fastapi==0.136.3
+          python3 -m pytest modules/source-control/gitlab/runners/builder/infra/tests/test_check_plan.py -q
+          task_runner_tools=$(mktemp -d)
+          trap 'rm -rf "$task_runner_tools"' EXIT
+          export GITLAB_RUNNER_BINARY="$task_runner_tools/gitlab-runner"
+          python3 -m pytest modules/source-control/gitlab/runners/tests/test_prepare_test_runner.py -q
+          python3 modules/source-control/gitlab/runners/scripts/prepare_test_runner.py --output "$GITLAB_RUNNER_BINARY"
+          python3 -m pytest modules/source-control/gitlab/runners/tests/test_rendered_runner.py modules/source-control/gitlab/runners/tests/test_bootstrap.py modules/source-control/gitlab/runners/tests/test_job_host.py -q
+          python3 -m unittest discover -s modules/source-control/gitlab/runners/tests -p 'test_deployment_guard.py'
+          python3 -m pytest modules/source-control/gitlab/runners/tests/test_runtime_images.py -q
+          python3 -m pytest modules/source-control/gitlab/runners/tests/test_job_ami_build.py -q
+          python3 -m pytest modules/source-control/gitlab/runners/tests/test_activate_manager.py modules/source-control/gitlab/scripts/tests/test_manager_integration.py modules/source-control/gitlab/scripts/tests/test_manager_identity.py modules/source-control/gitlab/scripts/tests/test_register_runner.py -q
+          python3 -m pytest modules/source-control/gitlab/tests/acceptance/tests/test_executor_probe.py modules/source-control/gitlab/tests/acceptance/tests/test_dispatch.py modules/source-control/gitlab/tests/acceptance/tests/test_host_observation.py modules/source-control/gitlab/tests/acceptance/tests/test_host_journal.py -q
+          python3 -m pytest .github/scripts/tests/test_gitlab_runners_workflows.py modules/source-control/gitlab/scripts/tests/test_runner_stack_guards.py modules/source-control/gitlab/tests/acceptance/tests/test_verify.py modules/source-control/gitlab/tests/acceptance/tests/test_probe.py modules/source-control/gitlab/tests/acceptance/tests/test_poll_pending.py modules/source-control/gitlab/tests/acceptance/tests/test_poll_cleanup.py modules/source-control/gitlab/tests/acceptance/tests/test_runbook.py modules/source-control/gitlab/runners/tests/test_build_artifacts.py modules/source-control/gitlab/runners/tests/test_reconcile_scope.py -q
+          python3 -m pytest modules/source-control/gitlab/scripts/tests/test_runner_workflow.py modules/source-control/gitlab/scripts/tests/test_registration_delivery.py modules/source-control/gitlab/scripts/tests/test_registration_workflow.py modules/source-control/gitlab/scripts/tests/test_delivery_evidence.py modules/source-control/gitlab/scripts/tests/test_qualification_bundle.py modules/source-control/gitlab/tests/acceptance/tests/test_ec04.py -q

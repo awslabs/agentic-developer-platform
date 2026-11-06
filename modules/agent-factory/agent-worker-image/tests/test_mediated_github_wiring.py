@@ -48,6 +48,7 @@ _BROKER_RESULT = (_BROKERED_TOKEN, _BROKERED_APP_ID, "2099-01-01T00:00:00Z")
 
 
 def _prepare(monkeypatch, tmp_path, entrypoint, *, mediated: str | None):
+    monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", MagicMock(return_value={"status": "up_to_date"}))
     # Runtime execution is stubbed here; process-group deadlines use real-process tests.
     monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: entrypoint.subprocess.run(command, **options))
     monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
@@ -132,6 +133,8 @@ def _stub_mediated_startup(monkeypatch, work_dir):
     from lib import mediated_github
 
     calls = {"read": 0, "materialize": 0}
+    reconciliation = MagicMock(return_value={"status": "up_to_date", "head_revision": "a" * 40})
+    monkeypatch.setattr("lib.branch_reconciliation.reconcile_mediated_branch", reconciliation)
 
     def _read_repository(**_kwargs):
         calls["read"] += 1
@@ -153,6 +156,7 @@ def _stub_mediated_startup(monkeypatch, work_dir):
         }
 
     def _materialize(destination, **_kwargs):
+        reconciliation.assert_called_once_with()
         calls["materialize"] += 1
         Path(destination).mkdir(parents=True, exist_ok=True)
         return {"repository": "acme-corp/flagship-app", "remote_head": "a" * 40, "local_head": "b" * 40}

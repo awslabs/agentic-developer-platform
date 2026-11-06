@@ -72,6 +72,15 @@ PR6060 scratch/retry fixes. Production rollout requires a newly tested immutable
 candidate incorporating the reviewed fixes. Never use the broad build/deploy
 workflow as a validation shortcut because it updates latest and deploys.
 
+An ingestion-only successful image build now skips the automatic full service
+deployment. After validating the candidate, dispatch `agent-context-deploy.yml`
+on reviewed main with `ingestion_only=true`, its immutable `ingestion_image_tag`
+digest and the exact live `ingestion_expected_image` reference. Leave manual
+source and engine correlation inputs empty. This protected promotion validates
+all three existing ingestion controllers before changing their images, preserves
+other specification fields and running Jobs, and records a promotion receipt.
+Mixed builds containing service images retain the existing full rollout behavior.
+
 On canary failure, stop new attempts and restore only the recorded changed fields
 with current UID/resourceVersion guards, including old mount options and pullable
 images. Verify newly mounted rollback Pods before resuming controllers. No data

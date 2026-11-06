@@ -1,0 +1,169 @@
+#!/usr/bin/python3 -I
+"""The owner's GitHub token for this Dev Box, from the loopback adapter — never from disk (#8555).
+
+Used by the box's ``gh`` wrapper and ``git-credential-adp`` helper (both in this directory).
+The adapter (``crew-model-adapter.ts``) mints the token through the gateway's signed host
+route from the owner's consented GitHub connection and keeps it in memory; this helper
+only relays it to the process that asked, so nothing writes a token under /mnt/crew or
+/home. Standard library only.
+
+Where the adapter is: the Crew environment carries ``ADP_CREW_TOOLS_URL`` /
+``ADP_CREW_TOOLS_TOKEN`` (or ``ANTHROPIC_BASE_URL`` / ``ANTHROPIC_API_KEY``); the owner's
+SSH shell may not have called ``adp_dev_box_model`` yet (``git push`` straight after login),
+so the helper falls back to the owner's private ``/run/adp-dev-box-shell/model.env`` with the
+same ownership and mode checks the shell applies.
+
+Usage:
+  adp-github-token                      print the bare token
+  adp-github-token --json               print {"token","login","expires_at"}
+  adp-github-token --git-credential get git credential protocol on stdin/stdout (github.com, https only)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import stat
+import sys
+import urllib.error
+import urllib.request
+
+SHELL_DIRECTORY = "/run/adp-dev-box-shell"
+LOOPBACK = re.compile(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}\Z")
+SECRET = re.compile(r"[0-9a-f]{64}\Z")
+CREDENTIAL_HOST = "github.com"
+
+
+class Unavailable(Exception):
+    """A named reason the token cannot be served; printed to stderr, never a secret."""
+
+
+def _owned_private(path: str, mode: int) -> bool:
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    kind = stat.S_ISDIR if mode == 0o700 else stat.S_ISREG
+    return kind(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == mode
+
+
+def shell_model(directory: str = SHELL_DIRECTORY) -> dict[str, str]:
+    """The owner shell's published adapter address and key, or {} when it is not published for us."""
+    settings = os.path.join(directory, "model.env")
+    if not (_owned_private(directory, 0o700) and _owned_private(settings, 0o600)):
+        return {}
+    values: dict[str, str] = {}
+    try:
+        with open(settings, encoding="utf-8") as source:
+            for line in source:
+                key, separator, value = line.rstrip("\n").partition("=")
+                if separator and re.fullmatch(r"[A-Z_]+", key):
+                    values[key] = value
+    except OSError:
+        return {}
+    return values
+
+
+def adapter(environment=os.environ, directory: str = SHELL_DIRECTORY) -> tuple[str, str]:
+    for source in (environment, shell_model(directory)):
+        base = source.get("ADP_CREW_TOOLS_URL") or source.get("ANTHROPIC_BASE_URL") or ""
+        key = source.get("ADP_CREW_TOOLS_TOKEN") or source.get("ANTHROPIC_API_KEY") or ""
+        if LOOPBACK.fullmatch(base) and SECRET.fullmatch(key):
+            return base, key
+    raise Unavailable(
+        "Dev Box GitHub access unavailable: the Crew model adapter is not running for this login"
+    )
+
+
+def fetch(base: str, key: str, opener=urllib.request.urlopen) -> dict:
+    request = urllib.request.Request(
+        base + "/github/token",
+        headers={"x-api-key": key, "accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with opener(request, timeout=45) as response:
+            payload = json.loads(response.read(65536))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read(65536))
+            message = detail["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            message = f"the Crew model adapter refused the request ({exc.code})"
+        raise Unavailable(str(message)[:300]) from None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise Unavailable(
+            f"the Crew model adapter did not answer ({exc.__class__.__name__})"
+        ) from None
+    token = payload.get("token") if isinstance(payload, dict) else None
+    if (
+        not isinstance(token, str)
+        or not token
+        or any(char.isspace() for char in token)
+        or len(token) > 16384
+    ):
+        raise Unavailable("the Crew model adapter returned an unusable token")
+    return payload
+
+
+def git_credential(action: str, payload_for, stdin=sys.stdin, stdout=sys.stdout) -> int:
+    """`git credential` helper protocol: answer `get` for https://github.com; `store`/`erase` are no-ops."""
+    if action != "get":
+        return 0
+    attributes: dict[str, str] = {}
+    for line in stdin:
+        line = line.rstrip("\n")
+        if not line:
+            break
+        key, _, value = line.partition("=")
+        attributes[key] = value
+    if attributes.get("protocol") != "https" or attributes.get("host") != CREDENTIAL_HOST:
+        return 0
+    payload = payload_for()
+    stdout.write(f"username=x-access-token\npassword={payload['token']}\n")
+    stdout.flush()
+    return 0
+
+
+def main(
+    argv: list[str] | None = None,
+    environment=os.environ,
+    opener=urllib.request.urlopen,
+    stdin=sys.stdin,
+    stdout=sys.stdout,
+) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        if (
+            argv[:1] == ["--git-credential"]
+            and len(argv) == 2
+            and argv[1] in ("get", "store", "erase")
+        ):
+            return git_credential(
+                argv[1], lambda: fetch(*adapter(environment), opener), stdin=stdin, stdout=stdout
+            )
+        if argv not in ([], ["--json"]):
+            print(
+                "usage: adp-github-token [--json | --git-credential get|store|erase]",
+                file=sys.stderr,
+            )
+            return 2
+        payload = fetch(*adapter(environment), opener)
+        stdout.write(
+            (
+                json.dumps({key: payload.get(key) for key in ("token", "login", "expires_at")})
+                if argv
+                else payload["token"]
+            )
+            + "\n"
+        )
+        stdout.flush()
+        return 0
+    except Unavailable as reason:
+        print(reason, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

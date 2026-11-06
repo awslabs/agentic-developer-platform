@@ -6,6 +6,10 @@ on:
       - '.github/actions/upload-ci-evidence-s3/**'
       - '.github/scripts/upload_ci_evidence_s3.py'
       - '.github/scripts/tests/test_ci_evidence_s3.py'
+      - '.github/scripts/release_evidence_s3.py'
+      - '.github/scripts/tests/test_release_evidence_s3.py'
+      - 'tests/e2e/chat/helpers.py'
+      - 'tests/unit/test_e2e_screenshots.py'
       - '.github/workflows/ci-evidence-storage.yml'
       - 'platform/ci-evidence-infra/**'
       - 'modules/agent-factory/infra/modules/runner-runtime-policy/**'
@@ -23,7 +27,9 @@ jobs:
       - name: Install uploader test dependencies
         run: python -m pip install pytest pyyaml boto3
       - name: Test evidence packaging and receipt checks
-        run: python -m pytest .github/scripts/tests/test_ci_evidence_s3.py -q
+        run: python -m pytest .github/scripts/tests/test_ci_evidence_s3.py .github/scripts/tests/test_release_evidence_s3.py -q
+      - name: Test private screenshot capture
+        run: python -m pytest tests/unit/test_e2e_screenshots.py -q
       - name: Create harmless storage probe
         run: printf 'CI evidence probe\n' > "$RUNNER_TEMP/ci-evidence-probe.txt"
       - id: upload

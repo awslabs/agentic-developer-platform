@@ -20,6 +20,7 @@ output "release_configuration" {
     codex_github_personas                  = var.codex_github_personas
     codex_reviewer_model                   = var.codex_reviewer_model
     codex_task_personas                    = var.codex_task_personas
+    engine_operations_executor_enabled     = var.engine_operations_executor_enabled
     enable_adversarial_e2e                 = var.enable_adversarial_e2e
     enable_agent_otel                      = var.enable_agent_otel
     enable_lambda_reserved_concurrency     = var.enable_lambda_reserved_concurrency

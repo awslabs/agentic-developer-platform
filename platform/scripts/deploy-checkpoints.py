@@ -5,9 +5,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
-PHASES = 'bootstrap platform gateway-infra gateway gateway-alb broker admin webhook factory context finalize frontend verify'.split()
+PHASES = 'bootstrap platform gateway-infra gateway gateway-alb broker admin webhook factory tools-adapters dev-box context finalize frontend verify'.split()
 
 
 def fingerprint(root, environment):
@@ -20,7 +21,7 @@ def fingerprint(root, environment):
     digest = hashlib.sha256(diff)
     files = list((root / 'environments' / environment).rglob('*.tfvars'))
     files += [root / 'config/deployment.yml', root / 'modules/agent-context/config.local.env']
-    for key in ('ADP_GATEWAY_UPDATE_TFVARS', 'ADP_PLATFORM_UPDATE_TFVARS'):
+    for key in ('ADP_GATEWAY_UPDATE_TFVARS', 'ADP_PLATFORM_UPDATE_TFVARS', 'ADP_TOOLS_ADAPTERS_CONFIG'):
         if os.environ.get(key):
             files.append(Path(os.environ[key]).resolve())
     for path in sorted(set(files)):
@@ -62,8 +63,9 @@ def initialize(path, binding, resume=False, start=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('file', type=Path)
-    parser.add_argument('action', choices=['init', 'status', 'running', 'complete', 'failed', 'finish'])
-    parser.add_argument('phase', nargs='?')
+    parser.add_argument('action', choices=['init', 'status', 'running', 'complete', 'failed', 'finish', 'note'])
+    parser.add_argument('phase', nargs='?', help='phase name, or the note key for `note`')
+    parser.add_argument('value', nargs='?', help='note text for `note`')
     parser.add_argument('--root', type=Path)
     parser.add_argument('--account')
     parser.add_argument('--region')
@@ -79,12 +81,19 @@ def main():
             binding['inputs'] = fingerprint(args.root, args.environment)
             # Hash operator overrides, never persist their potentially secret values.
             overrides = {k: v for k, v in os.environ.items() if k.startswith(('TF_VAR_', 'TF_CLI_ARGS', 'ADP_RELEASE_'))
-                         or k in ('ADP_GITHUB_ORG', 'ADP_GATEWAY_UPDATE_TFVARS', 'ADP_PLATFORM_UPDATE_TFVARS')}
+                         or k in ('ADP_GITHUB_ORG', 'ADP_GATEWAY_UPDATE_TFVARS', 'ADP_PLATFORM_UPDATE_TFVARS', 'ADP_TOOLS_ADAPTERS_CONFIG')}
             binding['overrides'] = hashlib.sha256(json.dumps(overrides, sort_keys=True).encode()).hexdigest()
             initialize(args.file, binding, args.resume, args.start)
             return
         state = json.loads(args.file.read_text())
-        if args.action == 'finish':
+        if args.action == 'note':
+            # Operator decisions recorded in the journal (e.g. the chat rollout mode and
+            # its qualification/exception record). Keys are fixed identifiers; values
+            # are operator-supplied references, never credentials.
+            if not re.fullmatch(r'[a-z][a-z0-9-]{0,40}', args.phase or '') or args.value is None:
+                raise ValueError('note requires a key ([a-z0-9-]) and a value')
+            state.setdefault('notes', {})[args.phase] = args.value
+        elif args.action == 'finish':
             if any(value != 'complete' for value in state['phases'].values()):
                 raise ValueError('Cannot finish with incomplete phases')
             state['status'] = 'complete'

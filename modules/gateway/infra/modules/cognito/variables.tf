@@ -155,6 +155,10 @@ variable "create_test_users" {
   type        = bool
   description = "Create test users (admins group, test user, test admin) for dev/test environments. Never enable in production."
   default     = false
+  validation {
+    condition     = !var.create_test_users || contains(["dev", "test"], var.environment)
+    error_message = "Test users with permanent passwords are allowed only in dev/test with explicit opt-in. Use an operator-selected bootstrap administrator in other environments."
+  }
 }
 
 variable "test_user_email" {

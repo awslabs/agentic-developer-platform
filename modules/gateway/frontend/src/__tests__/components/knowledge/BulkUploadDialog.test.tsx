@@ -88,14 +88,14 @@ describe('BulkUploadDialog', () => {
   it('renders the dialog with dropzone when open', () => {
     render(<BulkUploadDialog {...defaultProps} />);
 
-    expect(screen.getByText('Bulk Upload')).toBeInTheDocument();
+    expect(screen.getByText('Import a list of links')).toBeInTheDocument();
     expect(screen.getByText('Drop a file here or click to select')).toBeInTheDocument();
   });
 
   it('does not render content when closed', () => {
     render(<BulkUploadDialog {...defaultProps} isOpen={false} />);
 
-    expect(screen.queryByText('Bulk Upload')).not.toBeInTheDocument();
+    expect(screen.queryByText('Import a list of links')).not.toBeInTheDocument();
   });
 
   it('shows file name after selecting a file', async () => {
@@ -120,7 +120,7 @@ describe('BulkUploadDialog', () => {
     await user.click(screen.getByText('Preview'));
 
     await waitFor(() => {
-      expect(mockBulkPreview).toHaveBeenCalledWith(file, 'tenant');
+      expect(mockBulkPreview).toHaveBeenCalledWith(file, 'tenant', undefined);
     });
   });
 
@@ -380,4 +380,15 @@ describe('BulkUploadDialog', () => {
       expect(screen.getByText('1 duplicate skipped.')).toBeInTheDocument();
     });
   });
+  it('preserves Product scope for preview and commit', async () => {
+    render(<BulkUploadDialog {...defaultProps} scope="product" productId="product-one" />);
+    const file = createTestFile();
+    await userEvent.upload(screen.getByTestId('bulk-file-input'), file);
+    await userEvent.click(screen.getByText('Preview'));
+    await screen.findByText('Commit 2 Assets');
+    expect(mockBulkPreview).toHaveBeenCalledWith(file, 'product', 'product-one');
+    await userEvent.click(screen.getByText('Commit 2 Assets'));
+    expect(mockBulkCommit).toHaveBeenCalledWith(expect.objectContaining({ scope: 'product', product_id: 'product-one' }));
+  });
+
 });

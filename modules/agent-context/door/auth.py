@@ -24,9 +24,12 @@ IDENTITY_HEADERS = frozenset(
         "x-github-teams",
         "x-tenant-id",
         "x-owner-sub",
+        "x-asset-owner-id",
+        "x-product-id",
         "x-adp-run-service",
         "x-internal-api-key",
         "x-adp-door-identity",
+        "x-adp-door-catalogue",
     }
 )
 MAX_BODY = 1024 * 1024
@@ -94,11 +97,71 @@ def verify_identity(
         r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", payload["owner_sub"]
     ):
         raise ValueError("invalid owner")
+    # Asset ownership uses canonical users.id; memory keeps the login subject.
+    # Older signed gateways omit this claim and retain their previous behavior.
+    if "asset_owner_id" in payload and (
+        not isinstance(payload["asset_owner_id"], str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@:-]{0,255}", payload["asset_owner_id"])
+    ):
+        raise ValueError("invalid asset owner")
+    if "product_id" in payload and (
+        not isinstance(payload["product_id"], str)
+        or not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", payload["product_id"])
+    ):
+        raise ValueError("invalid product")
     return payload
 
 
 def _is_public_path(path: str) -> bool:
     return path.rstrip("/") in {"/health", "/ready"}
+
+
+def verify_catalogue(
+    token: str, keys: dict, *, method: str, path: str, body: bytes, now=None
+) -> None:
+    """Metadata-only delegation cannot authorize calls, health detail or REST reads."""
+    if not token or len(token) > 8192:
+        raise ValueError("invalid assertion")
+    version, encoded, signature = token.split(".")
+    if version != "adpdm1":
+        raise ValueError("invalid version")
+    claims = json.loads(_decode(encoded))
+    fields = {"iss", "aud", "kid", "method", "path", "body_sha256", "iat", "exp"}
+    if not isinstance(claims, dict) or set(claims) != fields:
+        raise ValueError("invalid metadata claims")
+    if any(not isinstance(claims[k], str) for k in fields - {"iat", "exp"}):
+        raise ValueError("invalid metadata claims")
+    key = serialization.load_pem_public_key(keys[claims["kid"]].encode())
+    if not isinstance(key, Ed25519PublicKey):
+        raise ValueError("invalid key type")
+    key.verify(_decode(signature), (version + "." + encoded).encode())
+    now = time.time() if now is None else now
+    if (
+        claims["iss"] != "adp-gateway"
+        or claims["aud"] != "adp-knowledge-catalogue"
+        or type(claims["iat"]) is not int
+        or type(claims["exp"]) is not int
+        or not 0 < claims["exp"] - claims["iat"] <= 30
+        or claims["iat"] > now + 5
+        or claims["exp"] <= now
+        or method != "POST"
+        or path != "/mcp/"
+        or claims["method"] != method
+        or claims["path"] != path
+        or claims["body_sha256"] != hashlib.sha256(body).hexdigest()
+    ):
+        raise ValueError("invalid metadata binding")
+    packet = json.loads(body)
+    if (
+        not isinstance(packet, dict)
+        or set(packet) != {"jsonrpc", "id", "method", "params"}
+        or packet["jsonrpc"] != "2.0"
+        or packet["method"] != "tools/list"
+        or packet["params"] != {}
+        or type(packet["id"]) not in {str, int}
+        or len(str(packet["id"])) > 256
+    ):
+        raise ValueError("invalid metadata operation")
 
 
 async def check_request_auth(request: Request):
@@ -121,6 +184,24 @@ async def check_request_auth(request: Request):
     try:
         if request.url.query:
             raise ValueError("unsigned query")
+        metadata = request.headers.getlist("x-adp-door-catalogue")
+        if metadata:
+            if len(metadata) != 1 or request.headers.getlist("x-adp-door-identity"):
+                raise ValueError("ambiguous metadata authority")
+            verify_catalogue(
+                metadata[0], keys, method=request.method, path=request.url.path, body=body
+            )
+            request.scope["headers"] = [
+                (k, v)
+                for k, v in request.scope["headers"]
+                if k.decode().lower() not in IDENTITY_HEADERS
+            ]
+            if hasattr(request, "_headers"):
+                del request._headers
+            request.state.door_catalogue = True
+            return None
+        if len(request.headers.getlist("x-adp-door-identity")) != 1:
+            raise ValueError("ambiguous identity authority")
         claims = verify_identity(
             request.headers.get("x-adp-door-identity", ""),
             keys,
@@ -142,6 +223,8 @@ async def check_request_auth(request: Request):
             "x-github-login": claims["github_login"],
             "x-tenant-id": claims["tenant_id"],
             "x-owner-sub": claims["owner_sub"],
+            "x-asset-owner-id": claims.get("asset_owner_id", claims["owner_sub"]),
+            "x-product-id": claims.get("product_id", ""),
             "x-adp-run-service": "true",
         }.items()
     )

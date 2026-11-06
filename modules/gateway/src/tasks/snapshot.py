@@ -84,4 +84,7 @@ def render(record: TaskRecord, *, request_id: str) -> dict:
     if record.external_reference is not None:
         body["external_reference"] = record.external_reference
 
+    if record.product_id and record.project_id:
+        body.update(product_id=record.product_id, project_id=record.project_id)
+
     return body

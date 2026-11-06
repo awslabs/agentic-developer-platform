@@ -69,6 +69,8 @@ test('MCP exposes only the explicit registered repository operations', async () 
   let called = 0;
   const server = await startToolServer([{ name: 'read_file', description: 'Read', inputSchema: { type: 'object' }, execute: async () => { called++; return { content: [{ type: 'text', text: 'ok' }] }; } }], { controller: new AbortController() });
   try {
+    // Test-owned server bound to loopback on an ephemeral port; no external URL input.
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
     const call = async (method, params) => (await fetch(server.url, { method: 'POST', headers: { authorization: 'Bearer ' + server.token }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json();
     assert.equal((await call('tools/list')).result.tools.length, 1);
     assert.ok((await call('tools/call', { name: 'shell' })).error);

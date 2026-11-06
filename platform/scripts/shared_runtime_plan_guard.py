@@ -189,7 +189,6 @@ def preserved_tick_inputs(configuration, policy, wiring, *, revision):
         "orchestration_tick_image_tag": revision,
         "orchestration_dispatch_queue_url": env["BG_ORCH_DISPATCH_QUEUE_URL"],
         "orchestration_dispatch_queue_arn": wiring["dispatch_queue_arn"],
-        "orchestration_dispatch_repo": env["BG_ORCH_DISPATCH_REPO"],
         "orchestration_dispatch_persona": env["BG_ORCH_DISPATCH_PERSONA"],
         "orchestration_dispatch_max_per_tick": int(env["BG_ORCH_DISPATCH_MAX_PER_TICK"]),
         "orchestration_webhook_events_table": env["WEBHOOK_EVENTS_TABLE"],

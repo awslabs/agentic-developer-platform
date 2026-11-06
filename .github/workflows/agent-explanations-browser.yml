@@ -35,13 +35,10 @@ jobs:
           cache: npm
           cache-dependency-path: modules/gateway/frontend/package-lock.json
       - run: npm ci
-      - name: Install isolated browser tooling
-        run: |
-          npm install --prefix "$RUNNER_TEMP/adp-stream-playwright" --no-save --package-lock=false @playwright/test@1.63.0
-          ln -s "$RUNNER_TEMP/adp-stream-playwright/node_modules/@playwright" node_modules/@playwright
-          "$RUNNER_TEMP/adp-stream-playwright/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Install pinned browser
+        run: npx playwright install --with-deps chromium
       - run: npx vitest run src/__tests__/components/LiveExplanations.test.tsx src/__tests__/services/agentExplanations.test.ts
-      - run: '"$RUNNER_TEMP/adp-stream-playwright/node_modules/.bin/playwright" test --config tests/e2e/explanations.config.ts'
+      - run: npx playwright test --config tests/e2e/explanations.config.ts
       - uses: ./.github/actions/upload-ci-evidence-s3
         if: always()
         with:

@@ -381,6 +381,8 @@ def parser():
             cmd.add_argument("--max-events", type=int, default=10000)
         if verb == "submit":
             cmd.add_argument("--key", required=True)
+            cmd.add_argument("--product", help="Product for this task; defaults to its base Project")
+            cmd.add_argument("--project", help="Explicit Project within the selected Product")
         if verb == "abort":
             cmd.add_argument("--command-id", required=True)
             cmd.add_argument("--reason", required=True)
@@ -422,6 +424,12 @@ def main(argv=None):
             body = json.loads(raw)
             if not isinstance(body, dict) or not args.key or len(args.key) > 256:
                 raise CliError("Supply a request object and durable idempotency key (1..256 characters).", "usage_error", 1)
+            for field in ("product", "project"):
+                selected = getattr(args, field)
+                if selected:
+                    if body.get(field + "_id") not in (None, selected):
+                        raise CliError("Project options conflict with the request file.", "usage_error", 1)
+                    body[field + "_id"] = selected
             result = client.submit(body, args.key)
             output("submitted", result, args.json)
             return monitor(client, result["task_id"], args) if args.wait else 0

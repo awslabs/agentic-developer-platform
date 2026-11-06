@@ -61,6 +61,7 @@ get ``None`` from :meth:`ReservationStore.reserve` to signal exactly that.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -74,11 +75,27 @@ from src.shared.redis_client import create_redis_client
 logger = get_logger(__name__)
 
 _KEY_PREFIX = "budget:resv"
+# A strict reservation's `pending:` marker lives this long; writers delete it on
+# settlement. mark_unknown() rewrites it as already expired. A request is treated
+# as abandoned (#7451) once its marker has been expired for a short settlement
+# grace, so a receipt that is merely late still wins. The marker already outlives
+# any provider call, so by the time it expires the request is over; while the
+# flow waits, every model call of every worker in the flow is refused with
+# spend_unknown, which killed in-flight developers (#7509). Deploys that restart
+# the gateway mid-request are the usual source of lost settlements.
+PENDING_MARKER_SECONDS = 3660
+ABANDONED_PENDING_GRACE_SECONDS = 300
 
 # Check EVERY key's headroom before incrementing ANY of them.
 #
 # KEYS  = one reservation hash per (entity, period) budget being enforced
-# ARGV = [request_id, amount, now, headroom_1, ttl_1, initialized_1, ...]
+# ARGV = [request_id, amount, now,
+#         headroom_1, ttl_1, initialized_1, retained_1, pending_1, amount_1, ...]
+#
+# Issue #9536: ``amount_i`` is the amount reserved against KEYS[i]. Every target
+# passes the shared request estimate except a target that carries its own
+# ``reserve_usd`` (the Project meter holding a quote ceiling). The headroom
+# check and the stored field both use the per-target amount.
 #
 # Each hash maps request_id -> "<amount>:<deadline>". Storing the deadline
 # per-field (rather than relying on the key TTL) is what makes an abandoned
@@ -100,35 +117,59 @@ _KEY_PREFIX = "budget:resv"
 # admitted.
 _RESERVE_SCRIPT = """
 local request_id = ARGV[1]
-local amount = tonumber(ARGV[2])
+-- ARGV[2] is the shared estimate; each target's own amount arrives per target.
 local now = tonumber(ARGV[3])
 
 -- An authenticated policy meter already records which requests still await
 -- trusted usage. Read those markers atomically with the cap check. They only
 -- classify a DENIAL as transient; they never reduce the admitted denominator.
 local pending_requests = {}
+local retained_targets = {}
 for i = 1, #KEYS do
+    -- A finalized Project request cannot acquire a second spending allowance.
+    if redis.call('EXISTS', KEYS[i] .. ':settled:' .. request_id) == 1 then return {-2, i} end
     -- An off-mode request has no upper bound. ON cannot count it as zero,
     -- even for a legacy run or organization budget without a strict anchor.
     local fields = redis.call('HKEYS', KEYS[i])
+    local retained = {}
     for j = 1, #fields do
         if string.sub(fields[j], 1, 10) == 'unbounded:' then return {-2, i} end
+        if string.sub(fields[j], 1, 9) == 'retained:' then
+            local id = string.sub(fields[j], 10)
+            local value = redis.call('HGET', KEYS[i], id)
+            if not value or id == request_id then return {-1, i} end
+            retained[id] = true
+        end
     end
-    if ARGV[3 + (i * 3)] == '1' then
+    retained_targets[i] = retained
+    if ARGV[i * 6] == '1' then
+        -- The anchor marks an initialized meter; its deadline is bookkeeping,
+        -- not an expiry (the hash TTL governs the meter's lifetime).
         local anchor = redis.call('HGET', KEYS[i], '__initialized__')
         if not anchor then return {-1, i} end
         local sep = string.find(anchor, ':')
-        if not sep or tonumber(string.sub(anchor, 1, sep - 1)) ~= 0 or tonumber(string.sub(anchor, sep + 1)) <= now then
+        if not sep or tonumber(string.sub(anchor, 1, sep - 1)) ~= 0 then
             return {-1, i}
         end
         local entries = redis.call('HGETALL', KEYS[i])
+        local unsettled = {}
+        for j = 1, #entries, 2 do
+            local field = entries[j]
+            if string.sub(field, 1, 8) == 'pending:' then
+                pending_requests[string.sub(field, 9)] = true
+                unsettled[string.sub(field, 9)] = true
+            end
+        end
         for j = 1, #entries, 2 do
             local field, value = entries[j], entries[j + 1]
             local split = string.find(value, ':')
-            -- Expired/unknown usage is unavailable, never a retryable cap wait.
-            if tonumber(string.sub(value, split + 1)) <= now then return {-1, i} end
-            if string.sub(field, 1, 8) == 'pending:' then
-                pending_requests[string.sub(field, 9)] = true
+            if field ~= '__initialized__' and tonumber(string.sub(value, split + 1)) <= now then
+                -- An expired pending marker, or an expired reservation whose
+                -- outcome is still pending, is unknown usage: unavailable, never
+                -- a retryable cap wait. A retained failed bound is a known upper
+                -- bound (counted while live), so like a settled reservation it is
+                -- pruned on the next write and ignored once it ages out.
+                if string.sub(field, 1, 8) == 'pending:' or unsettled[field] then return {-1, i} end
             end
         end
     end
@@ -138,8 +179,10 @@ end
 -- leave a partial reservation behind. A definitive cap takes precedence over
 -- temporary contention at another level of the same hierarchy.
 local waiting_index = 0
+local waiting_total = 0
 for i = 1, #KEYS do
-    local headroom = tonumber(ARGV[1 + (i * 3)])
+    local headroom = tonumber(ARGV[(i * 6) - 2])
+    local amount_i = tonumber(ARGV[3 + (i * 6)])
     local in_flight, awaiting_usage, settled = 0, 0, 0
     local entries = redis.call('HGETALL', KEYS[i])
     for j = 1, #entries, 2 do
@@ -149,7 +192,7 @@ for i = 1, #KEYS do
         local entry_deadline = tonumber(string.sub(value, sep + 1))
         -- A retry replaces its own reservation; expired non-policy entries
         -- retain their existing TTL semantics.
-        if field ~= request_id and entry_deadline > now then
+        if field ~= request_id and (entry_deadline > now or retained_targets[i][field]) then
             in_flight = in_flight + entry_amount
             if pending_requests[field] then
                 awaiting_usage = awaiting_usage + entry_amount
@@ -158,20 +201,22 @@ for i = 1, #KEYS do
             end
         end
     end
-    if in_flight + amount > headroom then
-        if awaiting_usage > 0 and settled + amount <= headroom then
-            if waiting_index == 0 then waiting_index = i end
+    if in_flight + amount_i > headroom then
+        if awaiting_usage > 0 and settled + amount_i <= headroom then
+            if waiting_index == 0 then waiting_index = i; waiting_total = in_flight end
         else
-            return {0, i, 0}
+            return {0, i, 0, tostring(in_flight)}
         end
     end
 end
-if waiting_index > 0 then return {0, waiting_index, 1} end
+if waiting_index > 0 then return {0, waiting_index, 1, tostring(waiting_total)} end
 
 -- Pass 2: every budget had room, so commit to all of them.
 for i = 1, #KEYS do
-    local ttl = tonumber(ARGV[2 + (i * 3)])
-    local strict = ARGV[3 + (i * 3)] == '1'
+    local ttl = tonumber(ARGV[(i * 6) - 1])
+    local strict = ARGV[i * 6] == '1'
+    local retain = ARGV[1 + (i * 6)] == '1'
+    local amount_i = tonumber(ARGV[3 + (i * 6)])
     local deadline = now + ttl
     -- Prune expired fields opportunistically so the hash cannot grow without
     -- bound under sustained traffic on a long period (e.g. monthly).
@@ -179,15 +224,27 @@ for i = 1, #KEYS do
     for j = 1, #entries, 2 do
         local value = entries[j + 1]
         local sep = string.find(value, ':')
-        if tonumber(string.sub(value, sep + 1)) <= now then
+        -- The anchor is never pruned: its deadline is bookkeeping, not an expiry.
+        local field = entries[j]
+        local retained_id = string.match(field, '^retained:(.+)$') or string.match(field, '^pending:(.+)$')
+        if field ~= '__initialized__' and not retained_targets[i][field]
+            and not (retained_id and retained_targets[i][retained_id])
+            and tonumber(string.sub(value, sep + 1)) <= now then
             redis.call('HDEL', KEYS[i], entries[j])
         end
     end
-    redis.call('HSET', KEYS[i], request_id, amount .. ':' .. deadline)
+    redis.call('HSET', KEYS[i], request_id, amount_i .. ':' .. deadline)
     if strict then
-        redis.call('HSET', KEYS[i], 'pending:' .. request_id, '0:' .. (now + 3660))
+        redis.call('HSET', KEYS[i], 'pending:' .. request_id, '0:' .. (now + tonumber(ARGV[2 + (i * 6)])))
     end
-    redis.call('EXPIRE', KEYS[i], ttl)
+    if retain then
+        redis.call('HSET', KEYS[i], 'retained:' .. request_id, '0:' .. deadline)
+    end
+    if retain or next(retained_targets[i]) then
+        redis.call('PERSIST', KEYS[i])
+    elseif redis.call('TTL', KEYS[i]) < ttl then
+        redis.call('EXPIRE', KEYS[i], ttl)
+    end
 end
 
 return {1, 0}
@@ -226,7 +283,7 @@ local adjusted = 0
 
 for i = 1, #KEYS do
     local existing = redis.call('HGET', KEYS[i], request_id)
-    if existing then
+    if existing and redis.call('HEXISTS', KEYS[i], 'retained:' .. request_id) == 0 then
         local sep = string.find(existing, ':')
         if tonumber(string.sub(existing, sep + 1)) > now then
             local ttl = tonumber(ARGV[3 + i])
@@ -234,9 +291,15 @@ for i = 1, #KEYS do
             redis.call('HDEL', KEYS[i], 'pending:' .. request_id)
             redis.call('HDEL', KEYS[i], 'bounded:' .. request_id)
             redis.call('HDEL', KEYS[i], 'unbounded:' .. request_id)
-            redis.call('EXPIRE', KEYS[i], ttl)
+            local retained = false
+            for _, field in ipairs(redis.call('HKEYS', KEYS[i])) do
+                if string.sub(field, 1, 9) == 'retained:' then retained = true end
+            end
+            if not retained and redis.call('TTL', KEYS[i]) < ttl then redis.call('EXPIRE', KEYS[i], ttl) end
             adjusted = adjusted + 1
-        else
+        elseif redis.call('HEXISTS', KEYS[i], '__initialized__') == 0 then
+            -- Strict accounting is not a disposable settlement-lag cache.
+            -- A late finalizer must not delete the only retained charge.
             redis.call('HDEL', KEYS[i], request_id)
         end
     end
@@ -275,6 +338,19 @@ class ReservationTarget:
     # Accepted-policy accumulators are initialized once before any work runs.
     # Loss of that anchor or an unresolved provider receipt is unknown usage.
     require_initialization: bool = False
+    # All-in native obligations cannot restore headroom by elapsed time or an
+    # ordinary partial-usage finalizer. A trusted complete settlement must own
+    # their eventual reduction. The immutable marker is written by reserve Lua.
+    retain_until_settlement: bool = False
+    pending_marker_seconds: int = PENDING_MARKER_SECONDS
+    # Issue #9536: the amount THIS target reserves when it differs from the
+    # request estimate every other target reserves. ``None`` means "the shared
+    # amount". A Project meter holds a provider quote's full-context ceiling so
+    # an unknown outcome can be charged at that ceiling, while the run, chain,
+    # flow and hierarchy caps admit against the request-sized estimate; before
+    # this field the ceiling was pushed into the shared estimate and a 25 USD run
+    # cap refused a reviewer's first 0.5 USD request because its ceiling was 30.
+    reserve_usd: Decimal | None = None
 
     def key(self) -> str:
         """Redis key for this budget's in-flight reservations.
@@ -309,12 +385,14 @@ class ReservationOutcome:
     usage_unavailable: bool = False
     exhausted: ReservationTarget | None = None
     awaiting_usage: bool = False
+    current_total_usd: Decimal | None = None
 
 
 @dataclass(frozen=True)
 class ReservationSnapshot:
     total_usd: Decimal
     has_pending: bool
+    request_amounts: dict[str, Decimal] | None = None
 
 
 class ReservationStore:
@@ -398,14 +476,25 @@ class ReservationStore:
         if not targets:
             return ReservationOutcome(admitted=True)
 
+        # Model callers can outlive a gateway rollout. Upgrade old deadlines at
+        # their actual spending boundary too, not only at node admission.
+        for target in targets:
+            if self._is_flow_meter(target) and not await self.extend_flow_retention(target):
+                return None
+
         now = self._clock()
 
-        # Interleaved (headroom, ttl, initialization requirement) per target.
+        # Interleaved (headroom, ttl, initialization, retained hold, pending
+        # marker, amount) per target. The amount is the shared estimate unless the
+        # target carries its own ``reserve_usd`` (#9536).
         per_target_args: list[str | int] = []
         for target in targets:
             per_target_args.append(str(target.headroom_usd))
             per_target_args.append(self._ttl_for(target))
             per_target_args.append("1" if target.require_initialization else "0")
+            per_target_args.append("1" if target.retain_until_settlement else "0")
+            per_target_args.append(target.pending_marker_seconds)
+            per_target_args.append(str(target.reserve_usd if target.reserve_usd is not None else amount_usd))
 
         try:
             client = await self._get_client()
@@ -435,7 +524,45 @@ class ReservationStore:
             return ReservationOutcome(admitted=True)
 
         index = int(result[1])
-        return ReservationOutcome(admitted=False, exhausted=targets[index - 1], awaiting_usage=len(result) > 2 and bool(int(result[2])))
+        return ReservationOutcome(
+            admitted=False,
+            exhausted=targets[index - 1],
+            awaiting_usage=len(result) > 2 and bool(int(result[2])),
+            current_total_usd=Decimal(result[3].decode() if isinstance(result[3], bytes) else result[3]) if len(result) > 3 else None,
+        )
+
+    async def live_request_amounts(self, target: ReservationTarget) -> dict[str, Decimal] | None:
+        """Read-only usage display; missing/expired counters have no displayed total."""
+        entries = await (await self._get_client()).hgetall(target.key())
+        result = {}
+        now = self._clock()
+        for request_id, value in entries.items():
+            if request_id == "__initialized__" or request_id.startswith(("pending:", "bounded:", "unbounded:", "retained:")):
+                continue
+            amount, deadline = map(Decimal, value.split(":"))
+            if not amount.is_finite() or amount < 0 or not deadline.is_finite():
+                return None
+            if deadline > now or f"retained:{request_id}" in entries:
+                result[request_id] = amount
+        return result or None
+
+    async def retain_maximum(self, request_id: str, amount: Decimal, targets: list[ReservationTarget]) -> None:
+        """Raise unknown request exposure to its ceiling without renewing any TTL."""
+        if not targets or not amount.is_finite() or amount < 0:
+            return
+        script = """
+        for i = 1, #KEYS do
+            local value = redis.call('HGET', KEYS[i], ARGV[1])
+            if value then
+                local cost, deadline = string.match(value, '^([^:]+):([^:]+)$')
+                if tonumber(deadline) > tonumber(ARGV[3]) and tonumber(cost) < tonumber(ARGV[2]) then
+                    redis.call('HSET', KEYS[i], ARGV[1], ARGV[2] .. ':' .. deadline)
+                end
+            end
+        end
+        return 1
+        """
+        await (await self._get_client()).eval(script, len(targets), *[target.key() for target in targets], request_id, str(amount), self._clock())
 
     async def observe(self, request_id: str, targets: list[ReservationTarget]) -> bool:
         """Record an unbounded call while enforcement is off, without cap checks.
@@ -450,45 +577,201 @@ class ReservationStore:
         script = """
         local now = tonumber(ARGV[2])
         for i = 1, #KEYS do
-            local ttl = tonumber(ARGV[2 + i])
+            local ttl = tonumber(ARGV[1 + 2 * i])
+            if redis.call('HEXISTS', KEYS[i], 'retained:' .. ARGV[1]) == 1
+                or redis.call('EXISTS', KEYS[i] .. ':settled:' .. ARGV[1]) == 1 then return 0 end
+        end
+        for i = 1, #KEYS do
+            local ttl = tonumber(ARGV[1 + 2 * i])
             redis.call('HSET', KEYS[i], ARGV[1], '0:' .. (now + ttl))
             redis.call('HSET', KEYS[i], 'unbounded:' .. ARGV[1], '0:' .. now)
-            redis.call('EXPIRE', KEYS[i], ttl)
+            if ARGV[2 + 2 * i] == '1' then
+                redis.call('HSET', KEYS[i], 'retained:' .. ARGV[1], '0:' .. now)
+                redis.call('PERSIST', KEYS[i])
+            end
+            local retained = false
+            for _, field in ipairs(redis.call('HKEYS', KEYS[i])) do
+                if string.sub(field, 1, 9) == 'retained:' then retained = true end
+            end
+            if not retained and redis.call('TTL', KEYS[i]) < ttl then redis.call('EXPIRE', KEYS[i], ttl) end
         end
         return 1
         """
         try:
             client = await self._get_client()
-            await client.eval(script, len(targets), *[t.key() for t in targets], request_id, self._clock(), *[self._ttl_for(t) for t in targets])
-            return True
+            return bool(
+                await client.eval(
+                    script,
+                    len(targets),
+                    *[t.key() for t in targets],
+                    request_id,
+                    self._clock(),
+                    *[value for t in targets for value in (self._ttl_for(t), int(t.retain_until_settlement))],
+                )
+            )
         except Exception:
             logger.warning("Budget observation unavailable while enforcement is off")
             return False
 
-    async def snapshot(self, target: ReservationTarget) -> ReservationSnapshot | None:
-        """Read an initialized policy accumulator; absence is never zero spend."""
+    async def snapshot(
+        self, target: ReservationTarget, *, existing_scope: bool = False, include_requests: bool = False
+    ) -> ReservationSnapshot | None:
+        """Read an accumulator without changing it; absence is never zero spend.
+
+        Legacy run/chain scopes predate initialization anchors. An explicit
+        existing-scope read may inspect a nonempty lifetime hash, but cannot
+        treat a missing hash as zero or relax a policy/flow accumulator.
+        """
+        if existing_scope and (target.entity_type not in {"run", "chain"} or target.period_type != "run" or target.period_start != "lifetime"):
+            return None
         try:
             entries = await (await self._get_client()).hgetall(target.key())
             now = self._clock()
+            if existing_scope:
+                markers = ("pending:", "bounded:", "unbounded:", "retained:")
+                charges = {field for field in entries if field != "__initialized__" and not field.startswith(markers)}
+                if not charges or any(field.startswith("unbounded:") for field in entries):
+                    return None
+                for field, value in entries.items():
+                    amount, deadline = map(Decimal, value.split(":"))
+                    if not amount.is_finite() or amount < 0 or not deadline.is_finite() or deadline < 0:
+                        return None
+                    if field.startswith(markers) and (amount != 0 or field.split(":", 1)[1] not in charges):
+                        return None
             anchor = entries.get("__initialized__")
-            if anchor is None:
+            if anchor is None and not (existing_scope and entries):
                 return None
-            amount, deadline = anchor.split(":")
-            if Decimal(amount) != 0 or float(deadline) <= now:
-                return None
+            if anchor is not None:
+                amount, _deadline = anchor.split(":")
+                if Decimal(amount) != 0:
+                    # The anchor's deadline is bookkeeping, not an expiry: the hash TTL
+                    # governs the meter's lifetime (mirrors the Lua gate).
+                    return None
+            unsettled = {field.split(":", 1)[1] for field in entries if field.startswith(("pending:", "retained:"))}
             total = Decimal(0)
             pending = False
+            requests = {} if include_requests else None
             for field, value in entries.items():
+                if field == "__initialized__":
+                    continue
                 amount, deadline = value.split(":")
                 cost = Decimal(amount)
-                if not cost.is_finite() or cost < 0 or float(deadline) <= now:
+                if not cost.is_finite() or cost < 0:
                     return None
+                if float(deadline) <= now:
+                    # Unknown usage stays unavailable; a settled reservation or a
+                    # retained failed bound (a known upper bound) that aged past its
+                    # TTL window is ignored (pruned on the next write).
+                    if field.startswith(("pending:", "unbounded:")) or field in unsettled:
+                        return None
+                    continue
                 total += cost
                 pending |= field.startswith("pending:")
-            return ReservationSnapshot(total, pending)
+                if requests is not None and not field.startswith(("pending:", "bounded:", "unbounded:", "retained:")):
+                    requests[field] = cost
+            return ReservationSnapshot(total, pending, requests)
         except Exception:
             logger.warning("Policy budget snapshot unavailable")
             return None
+
+    @staticmethod
+    def _is_flow_meter(target: ReservationTarget) -> bool:
+        return (
+            target.require_initialization
+            and target.entity_type == "flow"
+            and target.entity_id.endswith(":models")
+            and target.period_type == "run"
+            and target.period_start == "lifetime"
+        )
+
+    async def extend_flow_retention(self, target: ReservationTarget, *, expected_entries: dict[str, str] | None = None) -> bool:
+        """Keep an existing flow's complete denominator through its policy window.
+
+        Older flows can still carry the former two-day field and key deadlines.
+        Extend amounts in place, atomically with concurrent finalizers. Receipt
+        deadlines and unknown-usage markers are deliberately unchanged: keeping
+        accounting must never turn an overdue request into a fresh pending one.
+        A missing or malformed meter is refused, never initialized from usage.
+        """
+        if not self._is_flow_meter(target):
+            return False
+        script = """
+        local key, now, ttl = KEYS[1], tonumber(ARGV[1]), tonumber(ARGV[2])
+        if ARGV[3] ~= '' then
+            local expected = cjson.decode(ARGV[3])
+            local count = 0
+            for field, value in pairs(expected) do
+                count = count + 1
+                if redis.call('HGET', key, field) ~= value then return 0 end
+            end
+            if redis.call('HLEN', key) ~= count then return 0 end
+        end
+        local anchor = redis.call('HGET', key, '__initialized__')
+        if not anchor then return 0 end
+        local function parse(value)
+            local a, d = string.match(value, '^([^:]+):([^:]+)$')
+            a, d = tonumber(a), tonumber(d)
+            if not a or not d or a ~= a or d ~= d or a < 0 or d < 0
+                or a == math.huge or d == math.huge then return nil end
+            return a, d
+        end
+        local a = parse(anchor)
+        if a ~= 0 then return 0 end
+        local entries = redis.call('HGETALL', key)
+        local latest = now + ttl
+        local renew = false
+        local renewal_floor = latest - math.min(86400, ttl / 10)
+        local retained = false
+        -- Validate the whole hash before the first write.
+        for i = 1, #entries, 2 do
+            local field, value = entries[i], entries[i + 1]
+            local amount, deadline = parse(value)
+            if not amount then return 0 end
+            local id = string.match(field, '^pending:(.+)$')
+                or string.match(field, '^bounded:(.+)$')
+                or string.match(field, '^unbounded:(.+)$')
+                or string.match(field, '^retained:(.+)$')
+            if id and (amount ~= 0 or redis.call('HEXISTS', key, id) == 0) then return 0 end
+            if string.sub(field, 1, 9) == 'retained:' then retained = true end
+            if not id or string.sub(field, 1, 8) == 'bounded:' then
+                latest = math.max(latest, deadline)
+                if deadline < renewal_floor then renew = true end
+            end
+        end
+        for i = 1, #entries, 2 do
+            local field, value = entries[i], entries[i + 1]
+            -- Preserve pending/unknown/retained marker times byte-for-byte.
+            if renew and string.sub(field, 1, 8) ~= 'pending:'
+                and string.sub(field, 1, 10) ~= 'unbounded:'
+                and string.sub(field, 1, 9) ~= 'retained:' then
+                local amount, deadline = string.match(value, '^([^:]+):([^:]+)$')
+                if tonumber(deadline) < latest then
+                    redis.call('HSET', key, field, amount .. ':' .. latest)
+                end
+            end
+        end
+        local current_ttl = redis.call('TTL', key)
+        if retained then
+            redis.call('PERSIST', key)
+        elseif current_ttl >= 0 and current_ttl < math.ceil(latest - now) then
+            redis.call('EXPIRE', key, math.ceil(latest - now))
+        end
+        return 1
+        """
+        try:
+            return bool(
+                await (await self._get_client()).eval(
+                    script,
+                    1,
+                    target.key(),
+                    self._clock(),
+                    self._ttl_for(target),
+                    json.dumps(expected_entries) if expected_entries is not None else "",
+                )
+            )
+        except Exception:
+            logger.warning("Flow accounting retention unavailable; existing amounts retained")
+            return False
 
     async def retain_failed_bound(self, request_id: str, target: ReservationTarget) -> bool:
         """Keep the entire admitted bound after HTTP 5xx or a stream interruption.
@@ -501,12 +784,12 @@ class ReservationStore:
         if not target.require_initialization or request_id == "__initialized__":
             return False
         script = """
-        local key, id, now = KEYS[1], ARGV[1], tonumber(ARGV[2])
+        local key, id, now, grace = KEYS[1], ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3])
         local anchor = redis.call('HGET', key, '__initialized__')
         local entry = redis.call('HGET', key, id)
         if not anchor or not entry or redis.call('HEXISTS', key, 'unbounded:' .. id) == 1 then return 0 end
         local a, d = string.match(anchor, '^([^:]+):([^:]+)$')
-        if tonumber(a) ~= 0 or not tonumber(d) or tonumber(d) <= now then return 0 end
+        if tonumber(a) ~= 0 or not tonumber(d) then return 0 end
         local amount, deadline = string.match(entry, '^([^:]+):([^:]+)$')
         if not tonumber(amount) or tonumber(amount) < 0 or not tonumber(deadline) or tonumber(deadline) <= now then return 0 end
         -- A trusted receipt that won the race must never become estimated again.
@@ -526,29 +809,94 @@ class ReservationStore:
         entries = await (await self._get_client()).hgetall(target.key())
         return sorted({field.split(":", 1)[1] for field in entries if field.startswith(("pending:", "bounded:"))})
 
-    async def reconcile_receipt(self, request_id: str, actual_usd: Decimal, target: ReservationTarget) -> bool:
+    async def reconcile_receipt(self, request_id: str, actual_usd: Decimal, target: ReservationTarget, *, lifetime_receipt: bool = False) -> bool:
         """Retry a durable receipt without resetting deadlines or reviving a lost meter.
 
         A live finalizer may have settled first. Only unresolved, unexpired fields
         can change; expired strict accounting remains unknown instead of disappearing.
         """
-        if not actual_usd.is_finite() or actual_usd < 0 or not target.require_initialization:
+        legacy = lifetime_receipt and target.entity_type in {"run", "chain"} and target.period_type == "run" and target.period_start == "lifetime"
+        if not actual_usd.is_finite() or actual_usd < 0 or not (target.require_initialization or legacy):
             return False
         script = """
         local key, id, now = KEYS[1], ARGV[1], tonumber(ARGV[3])
         local anchor = redis.call('HGET', key, '__initialized__')
         local value = redis.call('HGET', key, id)
-        if not anchor or not value or redis.call('HEXISTS', key, 'unbounded:' .. id) == 1 then return 0 end
-        local a, d = string.match(anchor, '^([^:]+):([^:]+)$')
+        if redis.call('HEXISTS', key, 'retained:' .. id) == 1 then return 0 end
+        if not value or redis.call('HEXISTS', key, 'unbounded:' .. id) == 1 then return 0 end
+        if ARGV[4] ~= '1' and not anchor then return 0 end
+        local a, d = string.match(anchor or '0:0', '^([^:]+):([^:]+)$')
         local amount, deadline = string.match(value, '^([^:]+):([^:]+)$')
-        if tonumber(a) ~= 0 or not tonumber(d) or tonumber(d) <= now
+        if tonumber(a) ~= 0 or not tonumber(d)
           or not tonumber(amount) or tonumber(amount) < 0 or not tonumber(deadline) or tonumber(deadline) <= now then return 0 end
-        if redis.call('HEXISTS', key, 'pending:' .. id) == 0 and redis.call('HEXISTS', key, 'bounded:' .. id) == 0 then return 0 end
+        if ARGV[4] ~= '1' and redis.call('HEXISTS', key, 'pending:' .. id) == 0
+            and redis.call('HEXISTS', key, 'bounded:' .. id) == 0 then return 0 end
         redis.call('HSET', key, id, ARGV[2] .. ':' .. deadline)
         redis.call('HDEL', key, 'pending:' .. id, 'bounded:' .. id)
         return 1
         """
-        return bool(await (await self._get_client()).eval(script, 1, target.key(), request_id, str(actual_usd), self._clock()))
+        return bool(
+            await (await self._get_client()).eval(script, 1, target.key(), request_id, str(actual_usd), self._clock(), "1" if legacy else "0")
+        )
+
+    async def expired_pending_requests(self, target: ReservationTarget) -> list[str]:
+        """Request ids whose strict `pending:` marker has been expired for a full grace period while the reservation is live.
+
+        These are the requests that never settled: no usage, no receipt, and a
+        marker the writer would have deleted on settlement. Each one makes
+        :meth:`snapshot` unavailable for the whole meter until it is dealt with.
+        A marker that expired recently (including one mark_unknown() just wrote)
+        is still waiting for its receipt and is not reported.
+        """
+        entries = await (await self._get_client()).hgetall(target.key())
+        now = self._clock()
+        cutoff = now - ABANDONED_PENDING_GRACE_SECONDS
+        expired: list[str] = []
+        for field, value in entries.items():
+            if not field.startswith("pending:"):
+                continue
+            request_id = field.split(":", 1)[1]
+            marker_deadline = value.split(":")[1]
+            reservation = entries.get(request_id)
+            if float(marker_deadline) <= cutoff and reservation is not None and float(reservation.split(":")[1]) > now:
+                expired.append(request_id)
+        return sorted(expired)
+
+    async def settle_expired_pending(self, request_id: str, target: ReservationTarget) -> bool:
+        """Charge a request whose usage never arrived at its full reserved bound (#7451).
+
+        A strict marker that expired with no receipt used to leave the meter
+        unreadable forever: snapshot() refuses any expired field, reconcile_receipt()
+        refuses expired fields, and nothing else touched the marker. The engine then
+        refused every story of the flow with budget_unavailable / spend_unknown and
+        no operator route existed.
+
+        Settling at the bound is the conservative direction the accounting already
+        prefers: the reservation field keeps its admitted amount (never lowered), the
+        marker is removed so the meter reads again, and the caller records a
+        BudgetAccountingGap for audit. Only a marker expired for longer than
+        ABANDONED_PENDING_GRACE_SECONDS on a LIVE reservation qualifies; a live or
+        recently expired marker still awaits its receipt and is untouched.
+        """
+        if not target.require_initialization or request_id == "__initialized__":
+            return False
+        script = """
+        local key, id, now, grace = KEYS[1], ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3])
+        local anchor = redis.call('HGET', key, '__initialized__')
+        local entry = redis.call('HGET', key, id)
+        local marker = redis.call('HGET', key, 'pending:' .. id)
+        if redis.call('HEXISTS', key, 'retained:' .. id) == 1 then return 0 end
+        if not anchor or not entry or not marker or redis.call('HEXISTS', key, 'unbounded:' .. id) == 1 then return 0 end
+        local a, d = string.match(anchor, '^([^:]+):([^:]+)$')
+        if tonumber(a) ~= 0 or not tonumber(d) then return 0 end
+        local amount, deadline = string.match(entry, '^([^:]+):([^:]+)$')
+        if not tonumber(amount) or tonumber(amount) < 0 or not tonumber(deadline) or tonumber(deadline) <= now then return 0 end
+        local _, marker_deadline = string.match(marker, '^([^:]+):([^:]+)$')
+        if not tonumber(marker_deadline) or tonumber(marker_deadline) > now - grace then return 0 end
+        redis.call('HDEL', key, 'pending:' .. id, 'bounded:' .. id)
+        return 1
+        """
+        return bool(await (await self._get_client()).eval(script, 1, target.key(), request_id, self._clock(), ABANDONED_PENDING_GRACE_SECONDS))
 
     async def mark_unknown(self, request_id: str, target: ReservationTarget) -> None:
         """Retain the reserved upper bound and block new spend until a receipt."""
@@ -598,6 +946,57 @@ class ReservationStore:
             )
         except Exception as exc:
             logger.warning(f"Budget reservation reconcile failed (TTL will reap): {exc}")
+
+    async def initialize_project_meter(self, target: ReservationTarget, balance: Decimal) -> None:
+        if target.entity_type != "project" or not balance.is_finite() or balance < 0:
+            raise ValueError("Invalid Project opening balance")
+        await (await self._get_client()).eval(
+            """
+            if redis.call('HEXISTS', KEYS[1], '__initialized__') == 0 then
+                if redis.call('HLEN', KEYS[1]) > 0 then return redis.error_reply('Project meter lacks an anchor') end
+                redis.call('HSET', KEYS[1], '__initialized__', '0:1000000000000000',
+                           '__settled__', ARGV[1] .. ':1000000000000000')
+            end
+            redis.call('PERSIST', KEYS[1])
+            return 1
+        """,
+            1,
+            target.key(),
+            str(balance),
+        )
+
+    async def release_project_receipt(self, request_id: str, actual: Decimal, target: ReservationTarget) -> None:
+        """Called only after durable Project debit is verified by its owner."""
+        if (
+            target.entity_type != "project"
+            or not target.require_initialization
+            or not target.retain_until_settlement
+            or not actual.is_finite()
+            or actual < 0
+        ):
+            raise ValueError("A Project settlement target is required")
+        await (await self._get_client()).eval(
+            """
+            if redis.call('HEXISTS', KEYS[1], '__initialized__') == 0 then return 0 end
+            local proof = KEYS[1] .. ':settled:' .. ARGV[1]
+            local prior = redis.call('GET', proof)
+            if not prior and redis.call('HEXISTS', KEYS[1], 'retained:' .. ARGV[1]) == 0 then return 0 end
+            local delta = tonumber(ARGV[2]) - tonumber(prior or '0')
+            if delta < 0 then return redis.error_reply('Project settlement cannot decrease') end
+            local value = redis.call('HGET', KEYS[1], '__settled__') or '0:0'
+            local amount = tonumber(string.match(value, '^([^:]+):'))
+            redis.call('HSET', KEYS[1], '__settled__', tostring(amount + delta) .. ':1000000000000000')
+            redis.call('SET', proof, ARGV[2])
+            redis.call('HDEL', KEYS[1], ARGV[1], 'pending:' .. ARGV[1],
+                       'retained:' .. ARGV[1], 'bounded:' .. ARGV[1], 'unbounded:' .. ARGV[1])
+            redis.call('PERSIST', KEYS[1])
+            return 1
+        """,
+            1,
+            target.key(),
+            request_id,
+            str(actual),
+        )
 
     async def close(self) -> None:
         """Close the Redis client."""

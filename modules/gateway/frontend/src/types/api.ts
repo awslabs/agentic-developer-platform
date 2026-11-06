@@ -34,6 +34,7 @@ export interface RequestOptions {
   headers?: Record<string, string>;
   body?: unknown;
   signal?: AbortSignal;
+  preserveSessionOnUnauthorized?: boolean;
 }
 
 // Pagination params

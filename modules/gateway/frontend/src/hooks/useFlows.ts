@@ -11,11 +11,9 @@
  * a different page from the one described. `useSearchParams` makes the URL the
  * single source of truth, so back/forward and reload also behave.
  *
- * **2. `placeholderData: keepPreviousData` is the named v5 import**, exactly as in
- * `useFlowGraph`. The v4 spelling (`keepPreviousData: true` as a boolean option)
- * is a **silent no-op** on the pinned 5.62.0 — it type-errors nowhere and simply
- * stops working, so every poll and every filter change would blank the list back
- * to skeletons. On a 30-second cadence that is a visible flash twice a minute.
+ * **2. Placeholder data is retained only within the same Product scope.** Filter
+ * changes keep the current list while loading, but switching Products must not
+ * temporarily display another Product's flows.
  *
  * The 30s `refetchInterval` is explicit for the reason `useFlowGraph` documents:
  * the app sets a global `staleTime` of five minutes, so a query relying on cache
@@ -26,9 +24,10 @@
 
 import { useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { listFlows } from '@/services/orchestration';
 import type { FlowList, FlowListParams, FlowStatus } from '@/types/orchestration';
+import { useFlowPollInterval } from '@/hooks/useFlowPollInterval';
 
 /**
  * Poll cadence, matching `useFlowGraph`. The two views poll the same engine, and
@@ -44,7 +43,7 @@ export const FLOWS_PAGE_SIZE = 25;
 export const FLOW_SORTS = ['created', 'updated', 'stalled'] as const;
 export type FlowSort = (typeof FLOW_SORTS)[number];
 
-/** The six statuses, in the order the chips render. Worst news first. */
+/** The seven statuses, in the order the chips render. Archived work is last. */
 export const FLOW_STATUSES: readonly FlowStatus[] = [
   'attention_needed',
   'awaiting_you',
@@ -52,6 +51,7 @@ export const FLOW_STATUSES: readonly FlowStatus[] = [
   'queued',
   'complete',
   'empty',
+  'archived',
 ];
 
 const FLOW_STATUS_SET = new Set<string>(FLOW_STATUSES);
@@ -68,6 +68,7 @@ export interface FlowFilters {
   q: string;
   status: FlowStatus | undefined;
   needsMe: boolean;
+  includeArchived: boolean;
   sort: FlowSort;
   offset: number;
 }
@@ -101,6 +102,7 @@ export function useFlowFilters(): {
       q: searchParams.get('q') ?? '',
       status: rawStatus && FLOW_STATUS_SET.has(rawStatus) ? (rawStatus as FlowStatus) : undefined,
       needsMe: searchParams.get('needs_me') === 'true',
+      includeArchived: searchParams.get('include_archived') === 'true',
       sort: (FLOW_SORTS as readonly string[]).includes(rawSort ?? '') ? (rawSort as FlowSort) : 'created',
       offset: parseOffset(searchParams.get('offset')),
     };
@@ -118,6 +120,7 @@ export function useFlowFilters(): {
       if (next.q) params.set('q', next.q);
       if (next.status) params.set('status', next.status);
       if (next.needsMe) params.set('needs_me', 'true');
+      if (next.includeArchived) params.set('include_archived', 'true');
       if (next.sort !== 'created') params.set('sort', next.sort);
       if (offset > 0) params.set('offset', String(offset));
 
@@ -139,25 +142,30 @@ export function toFlowListParams(filters: FlowFilters): FlowListParams {
     q: filters.q || undefined,
     status: filters.status,
     needs_me: filters.needsMe,
+    include_archived: filters.includeArchived,
     sort: filters.sort,
   };
 }
 
-export function useFlows(filters: FlowFilters) {
-  const params = toFlowListParams(filters);
+export function useFlows(filters: FlowFilters, productId?: string, projectId?: string, readerKey?: string) {
+  const params = { ...toFlowListParams(filters), ...(productId ? { product_id: productId } : {}), ...(projectId ? { project_id: projectId } : {}) };
+  const interval = useFlowPollInterval(FLOWS_REFETCH_INTERVAL_MS);
 
   return useQuery<FlowList>({
     // Every filter is in the key: two different filter sets are two different
     // results, and sharing a key would serve one operator's search to the next.
-    queryKey: ['orchestration', 'flows', params],
-    queryFn: () => listFlows(params),
-    refetchInterval: FLOWS_REFETCH_INTERVAL_MS,
+    queryKey: ['orchestration', 'flows', params, readerKey],
+    queryFn: ({ signal }) => listFlows(params, signal),
+    refetchInterval: interval,
+    ...(projectId ? { staleTime: 0, gcTime: 0 } : {}),
+    refetchIntervalInBackground: false,
     // An operator who tabs away to GitHub and back expects current state on
     // arrival, not on the next tick. `'always'` refetches even while fresh —
     // plain `true` defers to the global `staleTime` and would do nothing.
     refetchOnWindowFocus: 'always',
-    // The named v5 import. See the module docstring: the v4 boolean is a silent
-    // no-op here and would blank the list to skeletons on every poll.
-    placeholderData: keepPreviousData,
+    // Keep pagination/filter changes smooth, but never show another Product's
+    // previous page while the new Product's request is pending or denied.
+    placeholderData: (previous, query) =>
+      (query?.queryKey[2] as FlowListParams | undefined)?.product_id === productId && (query?.queryKey[2] as FlowListParams | undefined)?.project_id === projectId && query?.queryKey[3] === readerKey ? previous : undefined,
   });
 }

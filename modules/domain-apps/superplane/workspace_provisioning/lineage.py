@@ -63,7 +63,10 @@ async def verified_native_lineage(
                 not in {"confirmed", "retained", "released"}
                 or not paid["requester"]
                 or not paid["approved_by"]
-                or paid["requester"] == paid["approved_by"]
+                or (
+                    paid["requires_distinct_approver"]
+                    and paid["requester"] == paid["approved_by"]
+                )
                 or derive_operation_identity(paid["approval_id"])
                 != (row["operation_id"], row["job_id"], row["attempt_id"])
             ):

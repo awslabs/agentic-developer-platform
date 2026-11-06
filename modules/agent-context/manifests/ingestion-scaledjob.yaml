@@ -1,13 +1,4 @@
-# KEDA ScaledJob for parallel ingestion from SQS
-# Scales 0->50 pods based on SQS queue depth (one pod per message)
-#
-# Variables substituted by template_file() from _common.sh:
-#   NAMESPACE, SERVICE_ACCOUNT, INGESTION_IMAGE, SQS_QUEUE_URL,
-#   DYNAMO_TABLE, AWS_REGION, OV_URL, OPENVIKING_ROOT_KEY,
-#   DEEPWIKI_URL, NEPTUNE_ENDPOINT, NEPTUNE_PORT, OPENSEARCH_ENDPOINT,
-#   LLM_BASE_URL, WIKI_LLM_MODEL, GRAPHRAG_ENABLED, ECR_REGISTRY,
-#   GITHUB_APP_ID_SECRET, GITHUB_APP_KEY_SECRET, GITHUB_APP_OWNER
----
+# Queue access exists only in admission; the worker is skipped by the IRSA webhook.
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
 metadata:
@@ -25,19 +16,23 @@ spec:
     backoffLimit: 0
     template:
       metadata:
-        # Protect in-flight ingestion runs from Karpenter/Auto Mode consolidation
-        # (see #1807): long-running, restartPolicy: Never — eviction kills the run
-        # silently. On the WORK pod (not per-node), so idle nodes still consolidate.
         annotations:
-          karpenter.sh/do-not-disrupt: "true"
+          karpenter.sh/do-not-disrupt: 'true'
+          eks.amazonaws.com/skip-containers: worker
+          cloudwatch.aws.amazon.com/auto-annotate-python: 'false'
+          instrumentation.opentelemetry.io/inject-python: 'false'
+          cloudwatch.aws.amazon.com/auto-annotate-java: 'false'
+          instrumentation.opentelemetry.io/inject-java: 'false'
+          cloudwatch.aws.amazon.com/auto-annotate-nodejs: 'false'
+          instrumentation.opentelemetry.io/inject-nodejs: 'false'
+          cloudwatch.aws.amazon.com/auto-annotate-dotnet: 'false'
+          instrumentation.opentelemetry.io/inject-dotnet: 'false'
         labels:
           app: ingestion-worker
+          adp.io/ingestion-isolation: v1
       spec:
-        serviceAccountName: ${SERVICE_ACCOUNT}
+        serviceAccountName: ingestion-receiver
         restartPolicy: Never
-        # Pod-level security context (#6038 — S15 non-root hardening).
-        # runAsUser/runAsGroup match the image's appuser (UID/GID 10001).
-        # fsGroup:10001 makes PVC files group-writable without chmod 777.
         securityContext:
           runAsUser: 10001
           runAsGroup: 10001
@@ -46,87 +41,266 @@ spec:
           seccompProfile:
             type: RuntimeDefault
         containers:
-          - name: worker
-            image: ${INGESTION_IMAGE}
-            command: ["python3", "/app/sqs-worker.py"]
-            # Defence in depth for ingestion of untrusted repositories (#5614,
-            # finding #4720). The primary control is in scip_indexer.py, which
-            # refuses to execute repository-authored build logic at all; this
-            # limits the damage if any execution path is ever reintroduced.
-            # readOnlyRootFilesystem: writable scratch via emptyDir mounts.
-            # runAsNonRoot: image declares USER appuser (UID 10001) (#6038).
-            securityContext:
-              runAsNonRoot: true
-              readOnlyRootFilesystem: true
-              allowPrivilegeEscalation: false
-              privileged: false
-              capabilities:
-                drop: ["ALL"]
-            envFrom:
-              - configMapRef:
-                  name: agent-context-config
-              - secretRef:
-                  name: agent-context-secrets
-                  optional: true
-            env:
-              # Pod name for stage tracking (log correlation — issue #2305)
-              - name: POD_NAME
-                valueFrom:
-                  fieldRef:
-                    fieldPath: metadata.name
-              # Override: SQS workers clone to ephemeral /tmp (not persistent storage)
-              - name: CLONE_BASE
-                value: /tmp/repos
-              # Secret injected from K8s Secret (not ConfigMap)
-              - name: OPENVIKING_ROOT_KEY
-                valueFrom:
-                  secretKeyRef:
-                    name: agent-context-secrets
-                    key: openviking-root-key
-                    # OpenViking is deprecated/absent in this stack; the worker
-                    # defaults this to "" (sqs-worker.py). Without optional:true,
-                    # KEDA's strict job-template validation fails to create the
-                    # ScaledJob (ScaledJobCheckFailed) when the secret is absent.
-                    # Mirrors repo-refresh-cronjob.yaml. (#2213 follow-up)
-                    optional: true
-            resources:
-              requests:
-                cpu: "500m"
-                memory: "2Gi"
-              limits:
-                cpu: "2"
-                memory: "6Gi"
-            volumeMounts:
-              - name: platform-data
-                mountPath: /platform-data
-              - name: tmp
-                mountPath: /tmp
-              - name: home
-                mountPath: /home/appuser
-        volumes:
+        - name: worker
+          image: ${INGESTION_IMAGE}
+          command:
+          - python3
+          - /app/sqs-worker.py
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop:
+              - ALL
+          env:
+          - name: AWS_REGION
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: AWS_REGION
+                optional: true
+          - name: S3_BUCKET_NAME
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: S3_BUCKET_NAME
+                optional: true
+          - name: S3_VECTORS_BUCKET
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: S3_VECTORS_BUCKET
+                optional: true
+          - name: S3_VECTORS_BUCKET_NAME
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: S3_VECTORS_BUCKET_NAME
+                optional: true
+          - name: S3_VECTORS_REGION
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: S3_VECTORS_REGION
+                optional: true
+          - name: S3_CONTENT_PREFIX
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: S3_CONTENT_PREFIX
+                optional: true
+          - name: ZOEKT_INDEX_ENABLED
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: ZOEKT_INDEX_ENABLED
+                optional: true
+          - name: ZOEKT_SHARDS_S3_PREFIX
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: ZOEKT_SHARDS_S3_PREFIX
+                optional: true
+          - name: EMBED_VECTORS_ENABLED
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: EMBED_VECTORS_ENABLED
+                optional: true
+          - name: SBOM_ENABLED
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: SBOM_ENABLED
+                optional: true
+          - name: DEEPWIKI_ENABLED
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: DEEPWIKI_ENABLED
+                optional: true
+          - name: GRAPHRAG_ENABLED
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: GRAPHRAG_ENABLED
+                optional: true
+          - name: DEEPWIKI_URL
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: DEEPWIKI_URL
+                optional: true
+          - name: LLM_BASE_URL
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: LLM_BASE_URL
+                optional: true
+          - name: WIKI_LLM_MODEL
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: WIKI_LLM_MODEL
+                optional: true
+          - name: NEPTUNE_ENDPOINT
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: NEPTUNE_ENDPOINT
+                optional: true
+          - name: NEPTUNE_PORT
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: NEPTUNE_PORT
+                optional: true
+          - name: GATEWAY_CALLBACK_URL
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: GATEWAY_CALLBACK_URL
+                optional: true
+          - name: INGESTION_JOB_FILE
+            value: /admission/job.json
+          - name: INGESTION_CONTROL_URL
+            value: ${INGESTION_CONTROL_URL}
+          - name: INGESTION_ISOLATION_REQUIRED
+            value: 'true'
+          - name: AWS_EC2_METADATA_DISABLED
+            value: 'true'
+          - name: AWS_CONFIG_FILE
+            value: /dev/null
+          - name: AWS_SHARED_CREDENTIALS_FILE
+            value: /dev/null
+          - name: CLONE_BASE
+            value: /tmp/repos
+          - name: SCIP_ENABLED
+            value: 'true'
+          - name: SCIP_ISOLATED_BACKEND
+            value: ''
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: MODEL_WIKI
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: MODEL_WIKI
+                optional: true
+          - name: MODEL_GRAPHRAG
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: MODEL_GRAPHRAG
+                optional: true
+          - name: EMBED_MODEL
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: EMBED_MODEL
+                optional: true
+          - name: S3_VECTORS_SHARD_COUNT
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: S3_VECTORS_SHARD_COUNT
+                optional: true
+          - name: S3_SOURCE_ALLOWLIST
+            valueFrom:
+              configMapKeyRef:
+                name: agent-context-config
+                key: S3_SOURCE_ALLOWLIST
+                optional: true
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: '2'
+              memory: 6Gi
+          volumeMounts:
           - name: platform-data
-            persistentVolumeClaim:
-              claimName: platform-data
+            mountPath: /platform-data
           - name: tmp
-            emptyDir:
-              sizeLimit: 10Gi
+            mountPath: /tmp
           - name: home
-            emptyDir:
-              sizeLimit: 512Mi
+            mountPath: /home/appuser
+          - name: admission
+            mountPath: /admission
+            readOnly: true
+        volumes:
+        - name: platform-data
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 10Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: admission
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        automountServiceAccountToken: false
+        hostNetwork: false
+        hostPID: false
+        hostIPC: false
+        initContainers:
+        - name: admission
+          image: ${INGESTION_IMAGE}
+          command:
+          - python3
+          - /app/receive-job.py
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop:
+              - ALL
+          env:
+          - name: AWS_REGION
+            value: ${AWS_REGION}
+          - name: SQS_QUEUE_URL
+            value: ${SQS_QUEUE_URL}
+          - name: INGESTION_CONTROL_URL
+            value: ${INGESTION_CONTROL_URL}
+          - name: AWS_EC2_METADATA_DISABLED
+            value: 'true'
+          - name: INGESTION_JOB_FILE
+            value: /admission/job.json
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+          - name: admission
+            mountPath: /admission
+          - name: tmp
+            mountPath: /tmp
+    activeDeadlineSeconds: 3900
   pollingInterval: 10
   maxReplicaCount: 50
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 10
   triggers:
-    - type: aws-sqs-queue
-      metadata:
-        queueURL: "${SQS_QUEUE_URL}"
-        queueLength: "1"
-        awsRegion: "${AWS_REGION}"
-      authenticationRef:
-        name: keda-aws-auth
+  - type: aws-sqs-queue
+    metadata:
+      queueURL: ${SQS_QUEUE_URL}
+      queueLength: '1'
+      awsRegion: ${AWS_REGION}
+    authenticationRef:
+      name: keda-aws-auth
 ---
-# KEDA TriggerAuthentication for AWS (uses IRSA)
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
 metadata:

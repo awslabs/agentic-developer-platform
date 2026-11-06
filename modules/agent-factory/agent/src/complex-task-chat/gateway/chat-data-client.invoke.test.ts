@@ -46,6 +46,110 @@ describe('scoped text-model invocation transport', () => {
     } });
   });
 
+  it('routes persistent inference with only the minted Crew run header', async () => {
+    const crewRunId = '00000000-0000-4000-8000-000000000001';
+    fetchMock.mockReset().mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockResolvedValueOnce(json(receipt));
+    client = new ChatDataClient({ baseUrl: 'https://gateway.example.test',
+      workloadToken: async () => 'sandbox.workload.token', crewRunId });
+    await expect(client.invokeTextModel('summary-1', request)).resolves.toMatchObject({ text: 'A summary' });
+    expect(fetchMock.mock.calls[0][1]?.headers).not.toHaveProperty('x-agent-runid');
+    expect(fetchMock.mock.calls[1][0]).toBe('https://gateway.example.test/v1/chat/model/invoke');
+    expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({ 'x-agent-runid': crewRunId });
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toEqual({
+      run_id: 'run-a', session_id: 'session-a', operation_id: 'summary-1', request,
+    });
+  });
+
+  it('preserves the pinned Crew identity in cancellation-scoped clients', async () => {
+    const crewRunId = '00000000-0000-4000-8000-000000000001';
+    fetchMock.mockReset().mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockResolvedValueOnce(json(receipt));
+    client = new ChatDataClient({ baseUrl: 'https://gateway.example.test',
+      workloadToken: async () => 'sandbox.workload.token', crewRunId });
+    await client.sessionScope();
+    const scoped = client.withSignal(new AbortController().signal);
+    await expect(scoped.invokeTextModel('summary-1', request)).resolves.toMatchObject({ text: 'A summary' });
+    expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({ 'x-agent-runid': crewRunId });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('posts tool events only through a persistent run-bound gateway capability', async () => {
+    const crewRunId = '00000000-0000-4000-8000-000000000001';
+    fetchMock.mockReset().mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockResolvedValueOnce(json({ accepted: true }));
+    client = new ChatDataClient({ baseUrl: 'https://gateway.example.test',
+      workloadToken: async () => 'sandbox.workload.token', crewRunId });
+    await client.publishToolCall('call-1', 'write_file', { file_path: '/tmp/workspace/a.txt' });
+    expect(fetchMock.mock.calls[1][0]).toBe('https://gateway.example.test/v1/chat/model/tool-events');
+    expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({
+      Authorization: 'Bearer synthetic.capability', 'x-agent-runid': crewRunId,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toEqual({
+      run_id: 'run-a', session_id: 'session-a', operation_id: 'tool_call-1',
+      tool_call_id: 'call-1', name: 'write_file', args: { file_path: '/tmp/workspace/a.txt' },
+    });
+    fetchMock.mockReset().mockResolvedValueOnce(json(binding));
+    client = new ChatDataClient({ baseUrl: 'https://gateway.example.test', workloadToken: async () => 'sandbox.workload.token' });
+    await expect(client.publishToolCall('call-1', 'write_file', {})).rejects.toMatchObject({ code: 'scope_mismatch' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['x', '界', '😀'])('bounds %s tool arguments by UTF-8 bytes without failing valid calls', async character => {
+    const crewRunId = '00000000-0000-4000-8000-000000000001';
+    fetchMock.mockReset().mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockImplementation(async () => json({ accepted: true }));
+    client = new ChatDataClient({ baseUrl: 'https://gateway.example.test',
+      workloadToken: async () => 'sandbox.workload.token', crewRunId });
+    const empty = { file_path: '/tmp/workspace/a.txt', content: '' };
+    const remaining = 16_000 - Buffer.byteLength(JSON.stringify(empty));
+    const content = character.repeat(Math.floor(remaining / Buffer.byteLength(character))) +
+      'x'.repeat(remaining % Buffer.byteLength(character));
+    for (const size of [15_999, 16_000, 16_001, 20_049]) {
+      const args = { ...empty, content: size < 16_000 ? 'x'.repeat(remaining - 1) : content + 'x'.repeat(size - 16_000) };
+      expect(Buffer.byteLength(JSON.stringify(args))).toBe(size);
+      await expect(client.publishToolCall(`call-${size}`, 'write_file', args)).resolves.toBeUndefined();
+      const published = JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string);
+      expect(published.args).toEqual(size <= 16_000 ? args : {
+        _adp_tool_event: { arguments_omitted: true, utf8_bytes: size, limit_bytes: 16_000 },
+      });
+      expect(Buffer.byteLength(JSON.stringify(published.args))).toBeLessThanOrEqual(16_000);
+    }
+  });
+
+  it('refuses a missing Crew run binding before inference', async () => {
+    fetchMock.mockReset().mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }));
+    await expect(client.invokeTextModel('summary-1', request)).rejects.toMatchObject({ code: 'scope_mismatch' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a Crew run header on an ephemeral invocation', async () => {
+    client = new ChatDataClient({ baseUrl: 'https://gateway.example.test',
+      workloadToken: async () => 'sandbox.workload.token', crewRunId: '00000000-0000-4000-8000-000000000001' });
+    await expect(client.invokeTextModel('summary-1', request)).rejects.toMatchObject({ code: 'scope_mismatch' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a forged or revoked Crew run at the gateway without using another model route', async () => {
+    const crewRunId = '00000000-0000-4000-8000-000000000002';
+    fetchMock.mockReset().mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockImplementationOnce(async (_url, options) => {
+        expect(options?.headers).toMatchObject({ 'x-agent-runid': crewRunId });
+        return json({ detail: { error: 'chat_scope_refused' } }, 403);
+      });
+    client = new ChatDataClient({ baseUrl: 'https://gateway.example.test',
+      workloadToken: async () => 'sandbox.workload.token', crewRunId });
+    await expect(client.invokeTextModel('summary-1', request)).rejects.toMatchObject({ code: 'denied', status: 403 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects invalid Crew run headers before bootstrap', () => {
+    expect(() => new ChatDataClient({ baseUrl: 'https://gateway.example.test',
+      workloadToken: async () => 'sandbox.workload.token', crewRunId: 'forged\r\nx-agent-runid: stolen' }))
+      .toThrow('Chat data invalid_request');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('retries a lost reply with the same operation and captured request, never a fresh paid call', async () => {
     const mutable = JSON.parse(JSON.stringify(request)) as TextModelRequest;
     fetchMock.mockImplementationOnce(async () => {
@@ -100,6 +204,26 @@ describe('scoped text-model invocation transport', () => {
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    ['rejected', 'not_started', 'not_reserved', 'model_admission_refused', 'denied'],
+    ['unknown', 'unknown', 'unknown', 'model_outcome_unknown', 'incomplete'],
+  ])('carries the %s receipt\'s error code, class and bounded detail on the failure (#8048)', async (status, handoff, reservation, code, failure) => {
+    fetchMock.mockResolvedValueOnce(json({ ...receipt, status, handoff, reservation_status: reservation, usage: null,
+      content: undefined, stop_reason: undefined, error_code: code,
+      error_class: 'ChatAuthorizationRefusedError', error_detail: 'chat model budget refused' }));
+    await expect(client.invokeTextModel('summary-1', request)).rejects.toMatchObject({ code: failure, refusal: {
+      status, error_code: code, error_class: 'ChatAuthorizationRefusedError', error_detail: 'chat model budget refused' } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('still fails a rejected receipt from a gateway that predates error_class and error_detail', async () => {
+    fetchMock.mockResolvedValueOnce(json({ ...receipt, status: 'rejected', handoff: 'not_started', reservation_status: 'not_reserved',
+      usage: null, content: undefined, stop_reason: undefined, error_code: 'model_admission_refused' }));
+    const failure = client.invokeTextModel('summary-1', request);
+    await expect(failure).rejects.toMatchObject({ code: 'denied', refusal: { status: 'rejected', error_code: 'model_admission_refused' } });
+    await expect(failure).rejects.not.toHaveProperty('refusal.error_class');
+  });
 
   it('propagates refusal without a direct-provider fallback', async () => {
     fetchMock.mockResolvedValueOnce(json({ detail: { error: 'chat_scope_refused' } }, 404));

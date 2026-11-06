@@ -1,14 +1,13 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import { captureReportProbe } from './report-probe.mjs';
+import { captureReportProbe, REPORT_PROBE_PERSONAS } from './report-probe.mjs';
 const source = new URL('../../../gateway/src/agentauth/codex-github-catalogue.json', import.meta.url);
 const catalogue = await readFile(source);
 const target = new URL('./report-probe-catalogue.json', import.meta.url);
 if (process.argv.includes('--check')) assert.deepEqual(await readFile(target), catalogue);
 else await writeFile(target, catalogue);
-const manifest = { schema_version: 1, sdk: '0.155.1', normalization: 'codex-report-probe-v1', personas: {} };
-for (const name of ['architect', 'product', 'pm', 'intent-refinement']) {
-  const persona = 'agent-codex-' + name;
+const manifest = { schema_version: 1, sdk: '0.155.1', normalization: 'codex-report-probe-v2', personas: {} };
+for (const persona of Object.keys(REPORT_PROBE_PERSONAS)) {
   manifest.personas[persona] = {};
   for (const model of ['openai.gpt-6-astra', 'openai.gpt-6-sol', 'openai.gpt-6-luna']) {
     const first = await captureReportProbe(persona, model), second = await captureReportProbe(persona, model);

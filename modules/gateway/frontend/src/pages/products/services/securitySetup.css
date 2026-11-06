@@ -1,0 +1,51 @@
+/* Keep routine setup visible and give technical tools a separate, focused surface. */
+.security-workspace .security-setup-intro { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; margin-bottom: 24px; background: var(--security-subtle); border-radius: 8px; }
+.security-workspace .security-setup-intro p { margin: 0; }
+.security-workspace .security-setup-intro button { flex-shrink: 0; }
+.security-workspace .security-setup-steps { display: grid; gap: 28px; border: 0; padding: 0; }
+.security-workspace .security-setup-step { min-width: 0; padding-bottom: 28px; border-bottom: 1px solid var(--security-line); }
+.security-workspace .security-setup-step > header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 18px; border: 0; padding: 0; }
+.security-workspace .security-setup-step h3 { margin: 0 0 4px; }
+.security-workspace .security-setup-step p { margin: 0; color: var(--security-muted); font-size: 13px; }
+.security-workspace .security-step-number { display: grid; place-items: center; flex: 0 0 28px; height: 28px; border-radius: 50%; color: #1e40af; background: #eff6ff; font-weight: 650; }
+.security-workspace .security-assessment-choices, .security-workspace .security-product-context, .security-workspace .security-source-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.security-workspace .security-assessment-choice { padding: 16px; border: 1px solid var(--security-line); border-radius: 8px; cursor: pointer; }
+.security-workspace .security-assessment-choice:has(input:checked) { border-color: #93b4e6; background: #f5f9ff; }
+.security-workspace .security-assessment-choice strong, .security-workspace .security-source-choice strong { display: block; font-weight: 600; }
+.security-workspace .security-assessment-choice small, .security-workspace .security-source-choice small { display: block; margin-top: 4px; font-weight: 400; }
+.security-workspace p.security-unavailable { margin-top: 12px; font-size: 12px; }
+.security-workspace .security-product-context { margin-bottom: 22px; }
+.security-workspace .security-product-context > div { min-width: 0; }
+.security-workspace .security-product-context span, .security-workspace .security-product-context strong, .security-workspace .security-product-context small { display: block; overflow-wrap: anywhere; }
+.security-workspace .security-product-context span { font-size: 12px; color: var(--security-muted); margin-bottom: 4px; }
+.security-workspace .security-product-context strong { font-size: 13px; font-weight: 500; }
+.security-workspace .security-product-context small { margin-top: 4px; color: #52667d; }
+.security-workspace .security-source-groups fieldset { border: 0; margin: 0; padding: 0; }
+.security-workspace .security-source-groups legend { margin-bottom: 6px; }
+.security-workspace .security-source-choice { margin: 12px 0 0; }
+.security-workspace p.security-missing-input { margin-top: 12px; padding: 12px; border-radius: 6px; background: #fff7ed; color: #9a3412; }
+.security-workspace .security-setup-links { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-top: 18px; }
+.security-workspace .security-setup-links a, .security-workspace .security-setup-footer a { color: var(--color-primary-600, #2563eb); font-weight: 500; }
+.security-workspace .security-enable { margin-top: 20px; }
+.security-workspace .security-workspace-connection { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
+.security-workspace .security-workspace-connection > div { flex: 1 1 260px; }
+.security-workspace .security-workspace-connection strong { display: block; margin-bottom: 4px; font-size: 13px; }
+.security-workspace .security-change-reason { max-width: 640px; }
+.security-workspace .security-setup-footer { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: center; gap: 16px; padding: 22px 0 4px; }
+.security-workspace .devops-setup-dialog { width: min(720px, calc(100vw - 32px)); max-width: calc(100vw - 32px); max-height: calc(100dvh - 48px); margin: auto; padding: 0; border: 1px solid var(--security-line); border-radius: 12px; color: var(--security-ink); background: var(--security-surface); box-shadow: 0 24px 70px #0f172a33; }
+.security-workspace .devops-setup-dialog[hidden] { display: none; }
+.security-workspace .devops-setup-dialog::backdrop { background: #0f172a66; }
+.security-workspace .devops-setup-dialog > header { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--security-line); background: var(--security-surface); }
+.security-workspace .devops-setup-dialog h2 { font-size: 18px; }
+.security-workspace .devops-setup-dialog-content { padding: 24px; overflow-wrap: anywhere; }
+.security-workspace .devops-setup-dialog-content > * + *, .security-workspace .security-setup-diagnostics > * + * { margin-top: 20px; }
+.security-workspace .devops-setup-dialog :is(details, fieldset) > * + * { margin-top: 12px; }
+.security-workspace .devops-setup-dialog summary { cursor: pointer; font-weight: 600; }
+.security-workspace .devops-setup-dialog .product-card { padding: 0; box-shadow: none; border: 0; }
+.security-workspace .security-binding-advanced { border-top: 1px solid var(--security-line); padding-top: 16px; }
+@media (max-width: 700px) {
+  .security-workspace .security-assessment-choices, .security-workspace .security-product-context, .security-workspace .security-source-groups { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .security-workspace .security-setup-intro { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .security-workspace .devops-setup-dialog-content, .security-workspace .devops-setup-dialog > header { padding: 16px; }
+  .security-workspace .security-setup-footer .security-actions { gap: 16px; }
+}

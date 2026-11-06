@@ -82,32 +82,52 @@ async def human(db, record, subject):
     require(user is not None and user.id == record["user_id"] and user.user_kind == "human" and not user.is_shadow)
 
 
-async def resolve(db, sm, credential_id, *, subject, adp_org_id=None, org_id=None, workspace_id=None, service=None, label=None):
-    record = await asyncio.to_thread(read, credential_id)
+async def resolve(db, sm, credential_id, **kwargs):
+    return await _resolve(db, sm, credential_id, read_authority=read, **kwargs)
+
+
+async def _resolve(db, sm, credential_id, *, read_authority, subject, adp_org_id=None, org_id=None, workspace_id=None, service=None, label=None):
+    """Internal identity checks shared with the sealed service cleanup command.
+
+    The normal credential API always uses read(), including its expiry check.
+    A closed cleanup supplies a protected permit reader, never a request flag.
+    """
+    record = await asyncio.to_thread(read_authority, credential_id)
     for key, expected in (("adp_org_id", adp_org_id), ("org_id", org_id), ("workspace_id", workspace_id), ("service", service), ("label", label)):
         require(expected is None or record[key] == expected)
     require(record["account_id"] == os.environ.get("ADP_DOMAIN_PROVIDER_ACCOUNT_ID"))
     binding = binding_for("superplane", record["org_id"])
     require(binding.adp_org_id == record["adp_org_id"] and digest(asdict(binding)) == record["binding_sha256"])
-    await asyncio.to_thread(current_registrations, record, binding)
     from src.domain_proxy.superplane import registration, route_bucket
 
     require(route_bucket() == f"adp-terraform-state-{record['account_id']}")
-    installed = await asyncio.to_thread(registration, fresh=True)
-    require(installed.get("installation_id") == record["installation_id"] and installed.get("namespace") == binding.worker_namespace)
-    await human(db, record, subject)
     try:
         iam = aws_client("iam")
-        role_id, policy = await asyncio.to_thread(policy_identity, iam, record["role_arn"], record["managed_policy_arns"])
-        child = await asyncio.to_thread(boundary_identity, iam, record["child_boundary_arn"])
+        # These independent reads use the same immutable enrollment snapshot.
+        # Await every reader before inspecting results or releasing the DB
+        # session; never cache authority or leave a failed reader running.
+        results = await asyncio.gather(
+            asyncio.to_thread(current_registrations, record, binding),
+            asyncio.to_thread(registration, fresh=True),
+            human(db, record, subject),
+            asyncio.to_thread(policy_identity, iam, record["role_arn"], record["managed_policy_arns"]),
+            asyncio.to_thread(boundary_identity, iam, record["child_boundary_arn"]),
+            asyncio.to_thread(sm.current_version_id, record["secret_arn"]),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        _, installed, _, (role_id, policy), child, version = results
+        require(installed.get("installation_id") == record["installation_id"] and installed.get("namespace") == binding.worker_namespace)
         require((role_id, policy, child) == (record["role_id"], record["policy_sha256"], record["child_boundary_sha256"]))
-        require(await asyncio.to_thread(sm.current_version_id, record["secret_arn"]) == record["secret_version"])
+        require(version == record["secret_version"])
     except HTTPException:
         raise
     except Exception:
         raise HTTPException(503, "domain provider identity unavailable") from None
     # All preceding I/O is untrusted time: a revoke must not survive it.
-    require(await asyncio.to_thread(read, credential_id) == record)
+    require(await asyncio.to_thread(read_authority, credential_id) == record)
     return record
 
 
@@ -159,7 +179,7 @@ def reading_digest(reading):
     )
 
 
-def read_report(record, claimed):
+def read_report(record, claimed, *, include_reading=False):
     _, table = tables()
     response = aws_client("dynamodb").query(
         TableName=table,
@@ -176,6 +196,8 @@ def read_report(record, claimed):
     checked = datetime.fromisoformat(item["observed_at"]["S"])
     require(checked.tzinfo is not None and datetime.now(UTC) - timedelta(hours=6) <= checked <= datetime.now(UTC))
     require(item["authority_revision"]["S"] == digest(record) and (claimed is None or hmac.compare_digest(reading_digest(reading), claimed)))
+    if include_reading:
+        return {**reading, "checked_at": checked.isoformat()}
     if claimed is None:
         require(all(reading.get(key) is True for key in ("credential_valid", "permissions_sufficient", "quota_available")))
     return checked

@@ -315,10 +315,16 @@ async def test_cluster_resolution_rechecks_current_identity_with_ingress_flag_of
         }
         identities.identities[("owner", "human")] = replace(identity, **changes[kind])
     response = await client.get(PATH, headers=token())
-    assert response.status_code == 403, response.text
-    assert response.json() == {"detail": REFUSAL}
+    if kind in {"missing", "unavailable"}:
+        assert response.status_code == 503, response.text
+        assert response.json() == {"detail": "current ADP identity unavailable"}
+    else:
+        assert response.status_code == 403, response.text
+        assert response.json() == {
+            "detail": REFUSAL if kind == "new-membership" else "current domain membership required"
+        }
     if kind == "missing":
-        assert (await client.get("/workspaces", headers=token())).status_code == 200
+        assert (await client.get("/workspaces", headers=token())).status_code == 503
 
 
 async def test_compatibility_service_requires_own_typed_grant_and_current_delegation(
@@ -335,8 +341,8 @@ async def test_compatibility_service_requires_own_typed_grant_and_current_delega
         grant.principal_type = "service"
         await session.commit()
     response = await client.get(PATH, headers=headers)
-    assert response.status_code == 200, response.text
-    assert [row["id"] for row in response.json()["clusters"]] == [str(cluster_id)]
+    assert response.status_code == 403, response.text
+    assert response.json() == {"detail": "human domain identity required"}
     assert (await client.get(PATH, headers=token())).status_code == 403
     identities.identities[("owner", "service")] = replace(
         identities.identities[("owner", "service")], delegation_id=None

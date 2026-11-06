@@ -488,7 +488,7 @@ export function analyzeComments(comments: IssueComment[]): {
     // Detect user approvals
     if (comment.authorAssociation === 'MEMBER' || comment.authorAssociation === 'OWNER') {
       if (body.includes('approve') || body.includes('lgtm') || body.includes('continue')) {
-        userApprovals.push(comment.body.substring(0, 100));
+        userApprovals.push(`Comment claimed approval: ${comment.body.substring(0, 100)}`);
       }
     }
   }

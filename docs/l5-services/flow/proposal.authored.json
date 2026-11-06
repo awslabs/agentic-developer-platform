@@ -1,0 +1,2167 @@
+{
+  "flow_slug": "l5-security-8682",
+  "title": "L5 Security Agent #8682 \u2014 autonomous delivery",
+  "org_id": "example-org",
+  "spec_revision": "3b5ff02ba2b942b3446924e06a466b24648febb8",
+  "intent_ref": "8682",
+  "description": "16 Security stories in four engine waves: foundation, lifecycle, assessments/clients, then one coordinated release and live qualification. Gateway/frontend auto-deploys do not gate code. Optional planned file groups explain work; they never restrict agent changes. Initial trigger only; all wave evaluations are machine-driven.",
+  "epic_metadata": [
+    {
+      "epic_ref": "epic-8682",
+      "title": "Product Security Agent",
+      "description": "Shared L5 services configuration, event-driven threat modeling and static code review, findings and Product Context reuse; UI, CLI and MCP."
+    }
+  ],
+  "wave_metadata": [
+    {
+      "epic_ref": "epic-8682",
+      "wave_ref": "w01-foundation",
+      "title": "Shared foundation",
+      "description": "Contracts \u2192 Product access \u2192 configuration \u2192 admission \u2192 durable execution. Reviewed merges and offline tests; no deployment barrier."
+    },
+    {
+      "epic_ref": "epic-8682",
+      "wave_ref": "w02-lifecycle",
+      "title": "Lifecycle and release preparation",
+      "description": "Bindings, triggers, findings and release tooling can develop concurrently. Build the release path; defer L5 publication."
+    },
+    {
+      "epic_ref": "epic-8682",
+      "wave_ref": "w03-assessments-clients",
+      "title": "Assessments and clients",
+      "description": "Threat modeling, static review, UI, CLI and MCP; Context publication follows the two adapters and findings API."
+    },
+    {
+      "epic_ref": "epic-8682",
+      "wave_ref": "w04-release-qualification",
+      "title": "One release and live qualification",
+      "description": "Build SA16 harness, then SA15 releases the combined candidate and retains ownership through real assessments, all clients, recovery and cleanup. Logical waves 4 and 5 share this engine wave."
+    }
+  ],
+  "nodes": [
+    {
+      "address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "kind": "story",
+      "title": "SA01: Define the shared L5 configuration/execution and Security capability contracts",
+      "issue_ref": "8683",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Architecture and contract specifications",
+          "purpose": "Maintain the shared design and one versioned API/data/MCP contract.",
+          "modify": [
+            "docs/l5-services/architecture.md",
+            "docs/l5-services/backlog.md",
+            "docs/l5-services/verification.md",
+            "docs/l5-services/contracts/v1/README.md",
+            "docs/l5-services/contracts/v1/peer-contracts.md",
+            "docs/l5-services/contracts/v1/catalog.py",
+            "docs/l5-services/contracts/v1/schemas.json",
+            "docs/l5-services/contracts/v1/openapi.json",
+            "docs/l5-services/contracts/v1/mcp-tools.json",
+            "docs/l5-services/contracts/v1/operations.tsv",
+            "docs/l5-services/contracts/v1/examples.json",
+            "docs/l5-services/contracts/v1/scenarios.json",
+            "modules/L5-services/README.md"
+          ]
+        },
+        {
+          "group": "Contract verification",
+          "purpose": "Keep offline specification checks separate from the planned handler/compatibility tests.",
+          "create": [
+            "modules/L5-services/tests/contracts/test_contracts.py"
+          ],
+          "modify": [
+            "docs/l5-services/contracts/v1/validate.py",
+            "docs/l5-services/contracts/v1/test_contracts.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa01. Finish contracts and catalog mappings; maintain L5 CI from this first story. Existing acceptance IDs remain stable."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w01-foundation/sa02-build",
+      "kind": "story",
+      "title": "SA02: Enable scoped service access to Product APIs for L5 Lambdas",
+      "issue_ref": "8684",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "L5 Product client and package foundation",
+          "purpose": "Introduce the Product API client and minimal installable package; SA15 later adds release packaging.",
+          "create": [
+            "modules/L5-services/src/l5_services/__init__.py",
+            "modules/L5-services/src/l5_services/product_client.py",
+            "modules/L5-services/pyproject.toml"
+          ]
+        },
+        {
+          "group": "Product-owned source snapshots",
+          "purpose": "Implement source pin/read/content/manifest routes and retention with connector-owned credentials.",
+          "create": [
+            "modules/gateway/src/products/source_snapshots.py",
+            "modules/gateway/src/products/source_snapshot_routes.py"
+          ],
+          "modify": [
+            "modules/gateway/src/products/routes.py",
+            "modules/gateway/src/products/source_routes.py",
+            "modules/gateway/src/products/models.py"
+          ]
+        },
+        {
+          "group": "Delegation and broker integration",
+          "purpose": "Verify service identity, scoped delegation and transient credential sessions through existing host authority.",
+          "create": [
+            "modules/gateway/src/internal/l5_credential_routes.py"
+          ],
+          "modify": [
+            "modules/gateway/src/shared/identity/product_scope.py",
+            "modules/gateway/src/internal/auth_deps.py",
+            "modules/gateway/src/internal/service_authorization.py",
+            "modules/gateway/src/internal/assume_role_routes.py",
+            "modules/gateway/src/internal/route_authority_manifest.py",
+            "modules/gateway/src/app.py"
+          ]
+        },
+        {
+          "group": "Product storage migration",
+          "purpose": "Product snapshot storage remains Product-owned; bind the inspected host Alembic head at implementation.",
+          "create": [
+            "modules/gateway/alembic/versions/product_source_snapshots.py"
+          ]
+        },
+        {
+          "group": "Delegation and source tests",
+          "purpose": "Preserve all published delegation selectors and add exact-content/expiry checks.",
+          "create": [
+            "modules/gateway/tests/products/test_l5_delegation.py",
+            "modules/gateway/tests/products/test_l5_source_snapshots.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa02. Introduce the installable package with an offline dev test extra and Product-owned delegated source/credential APIs."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+      "kind": "story",
+      "title": "SA03: Implement shared L5 configuration APIs and automatic Profile population",
+      "issue_ref": "8685",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Configuration API and host mount",
+          "purpose": "Create the configuration API/router and inject host dependencies through one thin gateway shim.",
+          "create": [
+            "modules/L5-services/src/l5_services/api/__init__.py",
+            "modules/L5-services/src/l5_services/api/router.py",
+            "modules/L5-services/src/l5_services/api/configuration.py",
+            "modules/gateway/src/l5_integration.py"
+          ],
+          "modify": [
+            "modules/gateway/src/app.py",
+            "modules/gateway/src/products/configuration.py",
+            "modules/gateway/src/product_onboarding/handoffs.py"
+          ]
+        },
+        {
+          "group": "Configuration state and migrations",
+          "purpose": "Own L5 metadata and the first L5 migration branch; no direct Profile-table reads.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/__init__.py",
+            "modules/L5-services/src/l5_services/models/base.py",
+            "modules/L5-services/src/l5_services/models/configuration.py",
+            "modules/L5-services/src/l5_services/migrations/__init__.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_configurations.py"
+          ]
+        },
+        {
+          "group": "Configuration tests and shared fixtures",
+          "purpose": "Cover inherited settings, revision races, handoff recovery and scope.",
+          "create": [
+            "modules/L5-services/tests/conftest.py",
+            "modules/L5-services/tests/integration/test_configuration.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa03. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+      "kind": "story",
+      "title": "SA05: Implement the shared asynchronous L5 execution API and durable admission",
+      "issue_ref": "8687",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Run admission and API",
+          "purpose": "Create atomic admission, immutable run receipts and run controls.",
+          "create": [
+            "modules/L5-services/src/l5_services/api/runs.py",
+            "modules/L5-services/src/l5_services/admission.py"
+          ]
+        },
+        {
+          "group": "Run, receipt and work state",
+          "purpose": "Introduce the durable work records consumed by SA06.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/run.py",
+            "modules/L5-services/src/l5_services/models/receipt.py",
+            "modules/L5-services/src/l5_services/models/work.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_runs_and_work.py"
+          ]
+        },
+        {
+          "group": "Shared registration",
+          "purpose": "Add runs and their models to the established entry points.",
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/api/router.py",
+              "created_by": "SA03"
+            },
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Execution API verification",
+          "purpose": "Preserve the existing submit/replay, outbox and cancellation selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_execution_api.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa05. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w01-foundation/sa06-build",
+      "kind": "story",
+      "title": "SA06: Build the L5 orchestration Lambda and durable assessment recovery",
+      "issue_ref": "8688",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Bounded workers and dispatch",
+          "purpose": "Implement immediate send, delayed polling and the separate repair sweep.",
+          "create": [
+            "modules/L5-services/src/l5_services/workers/__init__.py",
+            "modules/L5-services/src/l5_services/workers/execution.py",
+            "modules/L5-services/src/l5_services/workers/relay.py",
+            "modules/L5-services/src/l5_services/workers/recovery.py"
+          ]
+        },
+        {
+          "group": "Worker/provider boundary and storage",
+          "purpose": "Implement the common adapter protocol, fenced leases and source-manifest materialization.",
+          "create": [
+            "modules/L5-services/src/l5_services/adapters/__init__.py",
+            "modules/L5-services/src/l5_services/adapters/protocol.py",
+            "modules/L5-services/src/l5_services/work_store.py",
+            "modules/L5-services/src/l5_services/source_manifest.py"
+          ]
+        },
+        {
+          "group": "Execution integration",
+          "purpose": "Wire SA05 admission to the common post-commit publisher; consume its existing work/run models.",
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/admission.py",
+              "created_by": "SA05"
+            }
+          ]
+        },
+        {
+          "group": "Worker and monitoring verification",
+          "purpose": "Cover transport/provider faults, fresh unchanged observations, cancellation, revocation and deadlines.",
+          "create": [
+            "modules/L5-services/tests/integration/test_lambda_execution.py",
+            "modules/L5-services/tests/fixtures/security_provider.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa06. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation",
+      "kind": "eval",
+      "title": "Verify code and CI",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "611772880b006a4d58e2655d85f1ba8685515aafa7c6d70716f88cfb31db63ef"
+        },
+        "predecessors": [
+          {
+            "address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w01-foundation/sa02-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w01-foundation/sa06-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build",
+      "kind": "story",
+      "title": "SA04: Configure and reconcile persistent AWS Security Agent bindings",
+      "issue_ref": "8686",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Bindings and provider setup",
+          "purpose": "Implement create/link/check/update/suspend/resume/unlink/owned cleanup using immutable SetupIntent.",
+          "create": [
+            "modules/L5-services/src/l5_services/api/bindings.py",
+            "modules/L5-services/src/l5_services/adapters/security/__init__.py",
+            "modules/L5-services/src/l5_services/adapters/security/binding.py"
+          ]
+        },
+        {
+          "group": "Binding state and migrations",
+          "purpose": "Separate persistent bindings and bounded setup operations.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/binding.py",
+            "modules/L5-services/src/l5_services/models/setup.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_bindings_and_setup.py"
+          ]
+        },
+        {
+          "group": "Shared registration",
+          "purpose": "Register the new API and models through the existing L5 entry points.",
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/api/router.py",
+              "created_by": "SA03"
+            },
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Binding verification",
+          "purpose": "Test uncertain setup, replay, scope and owned-only cleanup.",
+          "create": [
+            "modules/L5-services/tests/integration/test_security_binding.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa04. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w02-lifecycle/sa09-build",
+      "kind": "story",
+      "title": "SA09: Drive Security assessments from configured Product and source events",
+      "issue_ref": "8691",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Trigger admission",
+          "purpose": "Normalize source/manual/schedule events and freeze the selected capability, binding and source revisions.",
+          "create": [
+            "modules/L5-services/src/l5_services/events/__init__.py",
+            "modules/L5-services/src/l5_services/events/handler.py",
+            "modules/L5-services/src/l5_services/events/sources.py",
+            "modules/L5-services/src/l5_services/events/schedules.py"
+          ]
+        },
+        {
+          "group": "Event state and migration",
+          "purpose": "Persist semantic deduplication, source order and causal-loop information.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/event.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_events.py"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Existing producer integration",
+          "purpose": "Forward authenticated events through the L5 adapter while preserving current webhook/Task behavior; unavailable feeds stay unavailable.",
+          "modify": [
+            "modules/agent-factory/webhook-ingress/lambda/github/handler.py",
+            "modules/gateway/src/products/source_routes.py"
+          ]
+        },
+        {
+          "group": "Trigger verification",
+          "purpose": "Retain the planned event-ordering, document/profile and scheduled-run selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_triggers.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa09. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build",
+      "kind": "story",
+      "title": "SA10: Expose Security findings, triage and revision comparisons through shared L5 results APIs",
+      "issue_ref": "8692",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Results, comparison and triage",
+          "purpose": "Implement the shared result APIs and append-only triage.",
+          "create": [
+            "modules/L5-services/src/l5_services/api/results.py",
+            "modules/L5-services/src/l5_services/findings.py",
+            "modules/L5-services/src/l5_services/triage.py"
+          ]
+        },
+        {
+          "group": "Result storage and migrations",
+          "purpose": "Persist result/finding/triage data and artifact references.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/result.py",
+            "modules/L5-services/src/l5_services/models/finding.py",
+            "modules/L5-services/src/l5_services/models/triage.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_results_and_triage.py"
+          ]
+        },
+        {
+          "group": "Shared registration",
+          "purpose": "Register result APIs and models; serialize this with other wave-2 router/model edits.",
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/api/router.py",
+              "created_by": "SA03"
+            },
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Result verification",
+          "purpose": "Preserve normalization, comparison/triage and visibility selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_results.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa10. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build",
+      "kind": "story",
+      "title": "SA15: Deploy the L5 Security APIs, Lambda workers and durable event infrastructure \u2014 build only",
+      "issue_ref": "8698",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Module infrastructure",
+          "purpose": "Keep workers/queues/repair, IAM, alarms and variables in the L5 Terraform child module.",
+          "create": [
+            "modules/L5-services/infra/main.tf",
+            "modules/L5-services/infra/variables.tf",
+            "modules/L5-services/infra/outputs.tf",
+            "modules/L5-services/infra/workers.tf",
+            "modules/L5-services/infra/queues.tf",
+            "modules/L5-services/infra/recovery.tf",
+            "modules/L5-services/infra/iam.tf",
+            "modules/L5-services/infra/alarms.tf"
+          ],
+          "modify": [
+            "modules/gateway/infra/main.tf"
+          ]
+        },
+        {
+          "group": "Package and worker artifacts",
+          "purpose": "Package versioned schemas into the shared wheel, build locked worker artifacts and publish one grouped release.",
+          "create": [
+            "modules/L5-services/scripts/build-package.sh",
+            "modules/L5-services/scripts/build-workers.sh",
+            "modules/L5-services/scripts/publish-workers.sh",
+            "modules/L5-services/requirements-security.lock"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/L5-services/pyproject.toml",
+              "created_by": "SA02"
+            }
+          ]
+        },
+        {
+          "group": "Gateway build and schema integration",
+          "purpose": "Stage the identical wheel, register L5 metadata/version locations and preserve compatibility checks.",
+          "modify": [
+            "modules/gateway/Dockerfile",
+            "modules/gateway/pyproject.toml",
+            "modules/gateway/scripts/stage-contracts.sh",
+            "modules/gateway/alembic/env.py",
+            "modules/gateway/alembic.ini",
+            "modules/gateway/scripts/migrate-before-rollout.py",
+            "modules/gateway/scripts/sync-gateway-engine.py",
+            "modules/gateway/scripts/sync-gateway-writers.py",
+            "modules/gateway/scripts/pricing-rollout.py",
+            "modules/gateway/src/products/runtime_proof_routes.py",
+            "codebuild/bs-gateway-build.yml",
+            "platform/scripts/publish-shared-image.sh"
+          ]
+        },
+        {
+          "group": "CI and deployment workflows",
+          "purpose": "Select exact-case module/contracts, preserve gateway/frontend auto-deployments and make initial worker publication explicitly grouped.",
+          "create": [
+            ".github/workflows/l5-services-release.yml"
+          ],
+          "modify": [
+            ".github/workflows/gateway-ci.yml",
+            ".github/workflows/gateway-deploy.yml",
+            ".github/workflows/gateway-frontend-deploy.yml",
+            ".github/workflows/gateway-infra-plan.yml",
+            ".github/workflows/gateway-infra-apply.yml",
+            ".github/workflows/run-gateway-migrations.yml",
+            ".github/workflows/postgres-schema-check.yml",
+            ".github/workflows/_build-python.yml",
+            "codebuild/security_image_targets.py",
+            "codebuild/security-image-recipes.json"
+          ]
+        },
+        {
+          "group": "Operations registration and runtime proof",
+          "purpose": "Register allowed L5 workflows/component readback under existing authority; target values remain private.",
+          "modify": [
+            "modules/gateway/src/agentauth/actions_routes.py",
+            "modules/gateway/src/orchestration/deployment_runtime_reader.py",
+            "modules/gateway/src/orchestration/deployment_manifest.py",
+            "modules/gateway/src/orchestration/manifests/orchestration-deployments.yaml"
+          ]
+        },
+        {
+          "group": "Published release, launcher and lifecycle integration",
+          "purpose": "Include L5 artifacts and ordered schema/worker rollout, status and safe teardown in existing delivery paths.",
+          "modify": [
+            "deploy.sh",
+            "remove.sh",
+            "status.sh",
+            "platform/scripts/deploy-all.sh",
+            "platform/scripts/undeploy.sh",
+            "platform/scripts/release/build.py",
+            "platform/scripts/release/artifacts.py",
+            "platform/scripts/release/upgrade.py",
+            ".github/workflows/adp-release.yml",
+            ".github/workflows/adp-release-promote.yml",
+            ".github/workflows/adp-release-upgrade.yml",
+            ".github/workflows/adp-release-tests.yml",
+            ".github/workflows/undeploy.yml"
+          ]
+        },
+        {
+          "group": "Deployment verification and operations guide",
+          "purpose": "Preserve installed-package, recovery/rollback and scope/cleanup selectors.",
+          "create": [
+            "modules/L5-services/tests/deployment/test_l5_security_release.py",
+            "docs/l5-services/operations.md"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa15. Construction only: implement the grouped workflow and workflow-evidence/v2 release contract in flow/README.md. Qualify recovery under accepted authority; planned files never become an allowlist. No L5 apply/publication in this phase."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation",
+      "kind": "eval",
+      "title": "Verify code and CI",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "611772880b006a4d58e2655d85f1ba8685515aafa7c6d70716f88cfb31db63ef"
+        },
+        "predecessors": [
+          {
+            "address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w02-lifecycle/sa09-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa07-build",
+      "kind": "story",
+      "title": "SA07: Deliver the reusable Security threat-model assessment adapter",
+      "issue_ref": "8689",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Threat-model adapter",
+          "purpose": "Consume pinned document bytes and map native jobs/tasks/threats to shared results and monitoring.",
+          "create": [
+            "modules/L5-services/src/l5_services/adapters/security/threat_model.py"
+          ]
+        },
+        {
+          "group": "Threat-model verification",
+          "purpose": "Preserve exact-source, replay and incomplete-evidence selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_threat_model.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa07. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa08-build",
+      "kind": "story",
+      "title": "SA08: Deliver Product-scoped Security code review with exact source evidence",
+      "issue_ref": "8690",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Static code-review adapter",
+          "purpose": "Implement exact-commit/PR review and archive validation with static-only provider settings.",
+          "create": [
+            "modules/L5-services/src/l5_services/adapters/security/code_review.py",
+            "modules/L5-services/src/l5_services/source_archive.py"
+          ]
+        },
+        {
+          "group": "Code-review verification",
+          "purpose": "Preserve source-admission, scan-coverage and legacy compatibility selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_code_review.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa08. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build",
+      "kind": "story",
+      "title": "SA12: Add the Product L5 Services UI with complete Security setup and results",
+      "issue_ref": "8694",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Product Services/Security screens",
+          "purpose": "Group the service tab, setup, binding, run, results and monitoring UI under Product pages.",
+          "create": [
+            "modules/gateway/frontend/src/pages/products/services/ProductServices.tsx",
+            "modules/gateway/frontend/src/pages/products/services/SecurityConfiguration.tsx",
+            "modules/gateway/frontend/src/pages/products/services/SecurityBindings.tsx",
+            "modules/gateway/frontend/src/pages/products/services/SecurityRuns.tsx",
+            "modules/gateway/frontend/src/pages/products/services/SecurityResults.tsx"
+          ],
+          "modify": [
+            "modules/gateway/frontend/src/App.tsx",
+            "modules/gateway/frontend/src/pages/products/ProductOverview.tsx"
+          ]
+        },
+        {
+          "group": "Typed API client",
+          "purpose": "Keep HTTP/ETag handling in a shared client consumed by the Product screens.",
+          "create": [
+            "modules/gateway/frontend/src/services/l5Services.ts"
+          ]
+        },
+        {
+          "group": "UI verification",
+          "purpose": "Keep the published browser selector path and add focused component/client coverage.",
+          "create": [
+            "modules/gateway/frontend/tests/e2e/l5-security.spec.ts",
+            "modules/gateway/frontend/src/__tests__/pages/products/services/ProductServices.test.tsx",
+            "modules/gateway/frontend/src/__tests__/services/l5Services.test.ts"
+          ]
+        },
+        {
+          "group": "User documentation",
+          "purpose": "Document the Product Services/Security experience in the canonical L5 documentation folder.",
+          "create": [
+            "docs/l5-services/user-guide.md"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa12. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build",
+      "kind": "story",
+      "title": "SA13: Provide complete installed CLI configuration and execution for L5 Security",
+      "issue_ref": "8695",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "CLI command and installation",
+          "purpose": "Add the shared service command and wire the installed CLI distribution.",
+          "create": [
+            "modules/gateway/cli/adp-service.py"
+          ],
+          "modify": [
+            "modules/gateway/cli/adp",
+            "modules/gateway/cli/command-manifest.json",
+            "modules/gateway/cli/install.sh"
+          ]
+        },
+        {
+          "group": "Download and capability integration",
+          "purpose": "Advertise and serve the same installed command contract.",
+          "modify": [
+            "modules/gateway/src/cli_download/routes.py",
+            "modules/gateway/src/cli_capabilities/routes.py",
+            "modules/gateway/src/cli_capabilities/contract.py"
+          ]
+        },
+        {
+          "group": "CLI verification and documentation",
+          "purpose": "Keep the existing planned installed-CLI selectors and document commands/output.",
+          "create": [
+            "modules/gateway/tests/cli/test_l5_security.py",
+            "docs/l5-services/cli.md"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa13. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build",
+      "kind": "story",
+      "title": "SA14: Expose L5 Security configuration and execution through MCP",
+      "issue_ref": "8696",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Gateway MCP adapter and registration",
+          "purpose": "Add thin L5 tool dispatch using the shared HTTP contracts and exact ETag envelopes.",
+          "create": [
+            "modules/gateway/src/internal/tools_l5.py"
+          ],
+          "modify": [
+            "modules/gateway/src/internal/tools_discovery.py",
+            "modules/gateway/src/internal/tools_catalogue.py",
+            "modules/gateway/src/agentauth/task_tool_routes.py"
+          ]
+        },
+        {
+          "group": "Existing MCP transport and client",
+          "purpose": "Integrate the existing facade and MCP CLI; do not create a second backend.",
+          "modify": [
+            "modules/tools/facade/tools_facade/server.py",
+            "modules/gateway/cli/adp-mcp.py"
+          ]
+        },
+        {
+          "group": "MCP verification and documentation",
+          "purpose": "Preserve all published discovery/authority/replay selectors and document the tool surface.",
+          "create": [
+            "modules/gateway/tests/internal/test_l5_security_tools.py",
+            "docs/l5-services/mcp.md"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa14. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa11-build",
+      "kind": "story",
+      "title": "SA11: Publish validated Security results into Product Context with durable retry",
+      "issue_ref": "8693",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Product Context publication",
+          "purpose": "Produce contributions, retry independently of assessment execution and propagate invalidation.",
+          "create": [
+            "modules/L5-services/src/l5_services/publication/__init__.py",
+            "modules/L5-services/src/l5_services/publication/client.py",
+            "modules/L5-services/src/l5_services/publication/contributions.py",
+            "modules/L5-services/src/l5_services/publication/recovery.py"
+          ]
+        },
+        {
+          "group": "Publication state and migration",
+          "purpose": "Persist contribution receipts and owed publication work.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/publication.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_publications.py"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Publication verification",
+          "purpose": "Preserve contribution identity, recovery and visibility/invalidation selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_context_contributions.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa11. Build and verify the code-phase criteria; retain all required live acceptance for final qualification."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w03-assessments-clients/machine-evaluation",
+      "kind": "eval",
+      "title": "Verify code and CI",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "611772880b006a4d58e2655d85f1ba8685515aafa7c6d70716f88cfb31db63ef"
+        },
+        "predecessors": [
+          {
+            "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa07-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa08-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w03-assessments-clients/sa11-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build",
+      "kind": "story",
+      "title": "SA16: Qualify complete Product Security journeys and cross-service recovery \u2014 build only",
+      "issue_ref": "8699",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Live harness and independent reader",
+          "purpose": "Keep the accepted tests/e2e entry point; place reusable live drivers, evidence, durable attempts and cleanup in tests/live.",
+          "create": [
+            "modules/L5-services/tests/e2e/test_l5_security_acceptance.py",
+            "modules/L5-services/tests/live/conftest.py",
+            "modules/L5-services/tests/live/fixtures.py",
+            "modules/L5-services/tests/live/clients.py",
+            "modules/L5-services/tests/live/providers.py",
+            "modules/L5-services/tests/live/evidence.py",
+            "modules/L5-services/tests/live/continuation.py",
+            "modules/L5-services/tests/live/cleanup.py"
+          ]
+        },
+        {
+          "group": "Protected live execution and machine completion",
+          "purpose": "Run the harness through a bounded workflow and integrate exact evidence/criterion completion with existing engine paths.",
+          "create": [
+            ".github/workflows/l5-security-live.yml"
+          ],
+          "modify": [
+            "modules/gateway/src/agentauth/actions_routes.py",
+            "modules/gateway/src/orchestration/repository_evaluation_contract.py",
+            "modules/gateway/src/orchestration/workflow_evaluation_contract.py",
+            "modules/gateway/src/orchestration/external_completion.py"
+          ]
+        },
+        {
+          "group": "Qualification report and verification guidance",
+          "purpose": "Keep sanitized summaries in docs; raw runtime/provider evidence remains private.",
+          "create": [
+            "docs/l5-services/qualification.md"
+          ],
+          "modify": [
+            "docs/l5-services/verification.md"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "Architecture, acceptance and phase handoff",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/architecture.md, backlog.md and flow/README.md; file plan: docs/l5-services/story-files.md#sa16. Build the real live drivers and independent evidence reader plus release-workflow integration from flow/README.md. Use Refs, not Closes. Real execution follows in SA15 operation; no fixture/mock results may count as live proof."
+        }
+      ]
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w04-release-qualification/machine-evaluation",
+      "kind": "eval",
+      "title": "Verify complete Security acceptance and cleanup",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "611772880b006a4d58e2655d85f1ba8685515aafa7c6d70716f88cfb31db63ef"
+        },
+        "predecessors": [
+          {
+            "address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build",
+            "required_checks": [
+              {
+                "name": "L5 contract and module tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 395944459,
+                  "workflow_path": ".github/workflows/l5-services-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w04-release-qualification/sa15-release-qualification",
+            "required_checks": []
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "qualified-security-release",
+            "path": ".github/workflows/l5-services-release.yml",
+            "source": {
+              "predecessor": "l5-security-8682/epic-8682/w04-release-qualification/sa15-release-qualification"
+            },
+            "definition": {
+              "predecessor": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "L5 release and live qualification"
+            ],
+            "artifacts": [
+              {
+                "name": "l5-security-qualification",
+                "path": "qualification.json",
+                "bind_workflow_provenance": true,
+                "predicates": [
+                  {
+                    "criterion_id": "qualification-version",
+                    "pointer": "/schema_version",
+                    "operation": "equals",
+                    "expected": 1
+                  },
+                  {
+                    "criterion_id": "epic-coverage",
+                    "pointer": "/epic_criteria",
+                    "operation": "records",
+                    "expected": [
+                      "EC-01",
+                      "EC-02",
+                      "EC-03",
+                      "EC-04",
+                      "EC-05",
+                      "EC-06",
+                      "EC-07",
+                      "EC-08",
+                      "EC-09"
+                    ],
+                    "id_field": "id",
+                    "required_fields": {
+                      "outcome": [
+                        "passed"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "story-coverage",
+                    "pointer": "/story_criteria",
+                    "operation": "records",
+                    "expected": [
+                      "SA01/AC-01",
+                      "SA01/AC-02",
+                      "SA01/AC-03",
+                      "SA02/AC-01",
+                      "SA02/AC-02",
+                      "SA02/AC-03",
+                      "SA03/AC-01",
+                      "SA03/AC-02",
+                      "SA03/AC-03",
+                      "SA04/AC-01",
+                      "SA04/AC-02",
+                      "SA04/AC-03",
+                      "SA05/AC-01",
+                      "SA05/AC-02",
+                      "SA05/AC-03",
+                      "SA06/AC-01",
+                      "SA06/AC-02",
+                      "SA06/AC-03",
+                      "SA07/AC-01",
+                      "SA07/AC-02",
+                      "SA07/AC-03",
+                      "SA08/AC-01",
+                      "SA08/AC-02",
+                      "SA08/AC-03",
+                      "SA09/AC-01",
+                      "SA09/AC-02",
+                      "SA09/AC-03",
+                      "SA10/AC-01",
+                      "SA10/AC-02",
+                      "SA10/AC-03",
+                      "SA11/AC-01",
+                      "SA11/AC-02",
+                      "SA11/AC-03",
+                      "SA12/AC-01",
+                      "SA12/AC-02",
+                      "SA12/AC-03",
+                      "SA13/AC-01",
+                      "SA13/AC-02",
+                      "SA13/AC-03",
+                      "SA14/AC-01",
+                      "SA14/AC-02",
+                      "SA14/AC-03",
+                      "SA15/AC-01",
+                      "SA15/AC-02",
+                      "SA15/AC-03",
+                      "SA16/AC-01",
+                      "SA16/AC-02",
+                      "SA16/AC-03",
+                      "SA16/AC-04"
+                    ],
+                    "id_field": "id",
+                    "required_fields": {
+                      "outcome": [
+                        "passed"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "scenario-coverage",
+                    "pointer": "/scenarios",
+                    "operation": "records",
+                    "expected": [
+                      "SA01/SCN-01",
+                      "SA01/SCN-02",
+                      "SA01/SCN-03",
+                      "SA02/SCN-01",
+                      "SA02/SCN-02",
+                      "SA02/SCN-03",
+                      "SA03/SCN-01",
+                      "SA03/SCN-02",
+                      "SA03/SCN-03",
+                      "SA04/SCN-01",
+                      "SA04/SCN-02",
+                      "SA04/SCN-03",
+                      "SA05/SCN-01",
+                      "SA05/SCN-02",
+                      "SA05/SCN-03",
+                      "SA06/SCN-01",
+                      "SA06/SCN-02",
+                      "SA06/SCN-03",
+                      "SA07/SCN-01",
+                      "SA07/SCN-02",
+                      "SA07/SCN-03",
+                      "SA08/SCN-01",
+                      "SA08/SCN-02",
+                      "SA08/SCN-03",
+                      "SA09/SCN-01",
+                      "SA09/SCN-02",
+                      "SA09/SCN-03",
+                      "SA10/SCN-01",
+                      "SA10/SCN-02",
+                      "SA10/SCN-03",
+                      "SA11/SCN-01",
+                      "SA11/SCN-02",
+                      "SA11/SCN-03",
+                      "SA12/SCN-01",
+                      "SA12/SCN-02",
+                      "SA12/SCN-03",
+                      "SA13/SCN-01",
+                      "SA13/SCN-02",
+                      "SA13/SCN-03",
+                      "SA14/SCN-01",
+                      "SA14/SCN-02",
+                      "SA14/SCN-03",
+                      "SA15/SCN-01",
+                      "SA15/SCN-02",
+                      "SA15/SCN-03",
+                      "SA16/SCN-01",
+                      "SA16/SCN-02",
+                      "SA16/SCN-03",
+                      "SA16/SCN-04"
+                    ],
+                    "id_field": "id",
+                    "required_fields": {
+                      "outcome": [
+                        "passed"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "live-observations",
+                    "pointer": "/live_checks",
+                    "operation": "records",
+                    "expected": [
+                      "same-wheel",
+                      "runtime-revisions",
+                      "schema-compatible",
+                      "source-pinning",
+                      "immediate-dispatch",
+                      "delayed-polling",
+                      "durable-recovery",
+                      "least-privilege",
+                      "real-threat-model",
+                      "real-static-review",
+                      "ui-cli-mcp-parity",
+                      "context-reuse",
+                      "scope-revocation",
+                      "owned-cleanup"
+                    ],
+                    "id_field": "id",
+                    "required_fields": {
+                      "outcome": [
+                        "passed"
+                      ],
+                      "observation": [
+                        "independent-live"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "qualification-cleanup",
+                    "pointer": "/cleanup/outcome",
+                    "operation": "equals",
+                    "expected": "passed"
+                  },
+                  {
+                    "criterion_id": "qualification-unresolved",
+                    "pointer": "/unresolved",
+                    "operation": "equals",
+                    "expected": []
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "l5-security-8682/epic-8682/w04-release-qualification/sa15-release-qualification",
+      "kind": "story",
+      "title": "SA15 + SA16: release once, run real qualification, recover and clean up",
+      "issue_ref": "8698",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:l5-security"
+      ],
+      "required_inputs": [
+        {
+          "name": "Selected existing platform connection",
+          "source": "environment_connection:example-connection"
+        },
+        {
+          "name": "Combined release and qualification workflow",
+          "source": "deployment_workflow:l5-services-release.yml"
+        },
+        {
+          "name": "Reviewed release tooling",
+          "source": "node:l5-security-8682/epic-8682/w02-lifecycle/sa15-build"
+        },
+        {
+          "name": "Reviewed combined candidate and live harness",
+          "source": "node:l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+        },
+        {
+          "name": "Release and qualification contract",
+          "source": "repository:aws-e/adp",
+          "description": "Follow docs/l5-services/flow/README.md. SA15 retains ownership until real SA16 evidence and cleanup pass; readiness is progress, not completion. Reuse compatible gateway/frontend auto-deployments. Scope is the selected existing platform; no new environment."
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "l5-security-8682/epic-8682/w02-lifecycle/sa15-build",
+          "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+        ],
+        "repository": "aws-e/adp",
+        "target": "example-platform",
+        "component": "l5-security",
+        "workflows": [
+          "l5-services-release.yml"
+        ],
+        "definition_predecessor": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build",
+        "default_branch": "main",
+        "delivery_contract": {
+          "schema_version": 2,
+          "connection_id": "example-connection",
+          "resource_kind": "eks-namespace",
+          "resource_id": "example-cluster/example-namespace",
+          "definition_revision": "3b5ff02ba2b942b3446924e06a466b24648febb8",
+          "baseline_revision": "3b5ff02ba2b942b3446924e06a466b24648febb8",
+          "workflow_inputs": {
+            "environment": "dev"
+          },
+          "required_checks": [
+            "same-wheel",
+            "runtime-revisions",
+            "schema-compatible",
+            "source-pinning",
+            "immediate-dispatch",
+            "delayed-polling",
+            "durable-recovery",
+            "least-privilege",
+            "real-threat-model",
+            "real-static-review",
+            "ui-cli-mcp-parity",
+            "context-reuse",
+            "scope-revocation",
+            "owned-cleanup"
+          ],
+          "cleanup_required": true,
+          "evidence_artifact": "delivery-evidence"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/sa02-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa02-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa02-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa02-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa02-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build",
+      "to_address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa02-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa09-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa09-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa09-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa09-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa09-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa09-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa02-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build",
+      "to_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa07-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa07-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa07-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa07-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa07-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa08-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa08-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa06-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa08-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa08-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa08-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa02-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa03-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa05-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w01-foundation/sa01-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa11-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa07-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa11-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa08-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa11-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa11-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa11-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa11-build",
+      "to_address": "l5-security-8682/epic-8682/w03-assessments-clients/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa04-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa07-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa08-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa09-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa10-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa11-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa12-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa13-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/sa14-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w03-assessments-clients/machine-evaluation",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/machine-evaluation"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w02-lifecycle/sa15-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa15-release-qualification"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w04-release-qualification/sa16-build",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/sa15-release-qualification"
+    },
+    {
+      "from_address": "l5-security-8682/epic-8682/w04-release-qualification/sa15-release-qualification",
+      "to_address": "l5-security-8682/epic-8682/w04-release-qualification/machine-evaluation"
+    }
+  ],
+  "proposed_execution_policy": {
+    "schema_version": 2,
+    "org_id": "example-org",
+    "repository_ids": [
+      "aws-e/adp"
+    ],
+    "environment_connection_ids": [
+      "example-connection"
+    ],
+    "allowed_actions": [
+      "develop",
+      "review",
+      "repair",
+      "merge",
+      "operate",
+      "deploy",
+      "evaluate"
+    ],
+    "human_gates": [],
+    "evaluation_acceptance": {
+      "l5-security-8682/epic-8682/w01-foundation/machine-evaluation": "machine",
+      "l5-security-8682/epic-8682/w02-lifecycle/machine-evaluation": "machine",
+      "l5-security-8682/epic-8682/w03-assessments-clients/machine-evaluation": "machine",
+      "l5-security-8682/epic-8682/w04-release-qualification/machine-evaluation": "machine"
+    },
+    "expires_at": "2026-11-01T12:03:46.525196Z",
+    "limits": {
+      "max_spend_usd": "1000",
+      "max_wall_clock_seconds": 604800,
+      "max_attempts_per_node": 3,
+      "max_concurrent_actions": 3
+    },
+    "user_credentials": {
+      "permission_mode": "user_configured",
+      "lifetime": "provider_managed",
+      "vault_credential_ids": [
+        "example-connection"
+      ],
+      "aws_role_arns": [
+        "arn:aws:iam::123456789012:role/example-l5-delivery"
+      ],
+      "actions": [
+        "operate",
+        "deploy",
+        "evaluate"
+      ]
+    }
+  }
+}

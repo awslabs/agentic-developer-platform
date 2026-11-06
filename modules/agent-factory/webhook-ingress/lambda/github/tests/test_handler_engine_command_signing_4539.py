@@ -141,7 +141,11 @@ def _run(payload: dict, *, event_type: str = "issue_comment", **event_overrides)
         patch("handler._get_identity_resolver") as mock_resolver,
         patch("handler._get_signature") as mock_sig,
         patch("handler._get_webhook_event_logger") as mock_event_logger,
+        patch("handler._authorize_github_dispatch") as admission,
     ):
+        from common.github_actor_authority import ActorDecision
+
+        admission.return_value = ActorDecision(True, "allowed")
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         rate = MagicMock()

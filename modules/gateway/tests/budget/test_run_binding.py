@@ -927,7 +927,7 @@ class TestJoinKeyIsEventIdNotTheRowRunIdAttribute:
 
         assert "run_id" not in projected
         # Positive half: the identity attributes the binding genuinely needs.
-        assert {"user_id", "tenant_id", "root_human_id", "correlation_id"} <= projected
+        assert {"user_id", "tenant_id", "root_human_id", "correlation_id", "host_role_arn"} <= projected
 
     def test_projection_reserved_keywords_are_aliased(self):
         """A DynamoDB reserved keyword sent raw in a ProjectionExpression makes
@@ -976,7 +976,7 @@ class TestJoinKeyIsEventIdNotTheRowRunIdAttribute:
 
         await resolver.resolve(RUN_ID)
 
-        assert table.queries[-1]["ExpressionAttributeNames"] == {"#status": "status"}
+        assert table.queries[-1]["ExpressionAttributeNames"] == run_binding_module._PROJECTION_NAMES
         assert "#status" in table.queries[-1]["ProjectionExpression"]
 
     @pytest.mark.asyncio

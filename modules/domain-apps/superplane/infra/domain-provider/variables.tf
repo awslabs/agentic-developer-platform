@@ -73,7 +73,7 @@ variable "node_image_repository_arns" {
   type = set(string)
   validation {
     condition = length(var.node_image_repository_arns) > 0 && alltrue([
-      for arn in var.node_image_repository_arns : can(regex("^arn:aws:ecr:${var.aws_region}:[0-9]{12}:repository/[a-z0-9][a-z0-9._/-]*$", arn))
+      for arn in var.node_image_repository_arns : can(regex("^arn:aws:ecr:[a-z0-9-]+:[0-9]{12}:repository/[a-z0-9][a-z0-9._/-]*$", arn))
     ])
     error_message = "Supply all exact reviewed ECR repositories, including pinned EKS system repositories."
   }
@@ -85,6 +85,8 @@ variable "execution" {
     actor_role_arns               = set(string)
     state_bucket                  = string
     lock_table                    = string
+    node_image_ids                = set(string)
+    node_instance_types           = set(string)
     validation_image_id           = string
     validation_instance_type      = string
     validation_subnet_id          = string
@@ -97,6 +99,8 @@ variable "execution" {
       length(var.execution.actor_role_arns) == 3 && alltrue([for arn in var.execution.actor_role_arns : can(regex("^arn:aws:iam::${var.account_id}:role/[A-Za-z0-9+=,.@_-]+$", arn))]) &&
       can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.execution.state_bucket)) &&
       can(regex("^[A-Za-z0-9_.-]{3,255}$", var.execution.lock_table)) &&
+      length(var.execution.node_image_ids) > 0 && alltrue([for id in var.execution.node_image_ids : can(regex("^ami-[0-9a-f]+$", id))]) &&
+      length(var.execution.node_instance_types) > 0 && alltrue([for name in var.execution.node_instance_types : can(regex("^[a-z][a-z0-9-]*\\.[a-z0-9]+$", name))]) &&
       can(regex("^ami-[0-9a-f]+$", var.execution.validation_image_id)) &&
       can(regex("^[a-z][a-z0-9-]*\\.[a-z0-9]+$", var.execution.validation_instance_type)) &&
       can(regex("^subnet-[0-9a-f]+$", var.execution.validation_subnet_id)) &&
@@ -104,5 +108,24 @@ variable "execution" {
       alltrue([for id in var.execution.validation_security_group_ids : can(regex("^sg-[0-9a-f]+$", id))])
     )
     error_message = "Execution requires exact same-account foundation key/three actor roles, backend and reviewed EC2 validation profile."
+  }
+}
+
+variable "state_region" {
+  description = "Region of the retained Terraform lock table; defaults to the workspace region for existing installations."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.state_region == null ? true : can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.state_region))
+    error_message = "State region must be an exact AWS region."
+  }
+}
+variable "management_region" {
+  description = "Region for read-only management NAT observation; no management network mutations are granted."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.management_region == null ? true : can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.management_region))
+    error_message = "Management region must be an exact AWS region."
   }
 }

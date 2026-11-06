@@ -83,11 +83,13 @@ class CredentialResponse(BaseModel):
     service: str
     label: str
     credential_type: str
+    provider: str | None = None
     scope: str  # "user" | "team" | "org" | "domain_app"
     scopes: dict | None
     expires_at: datetime | None
     last_used_at: datetime | None
     strict: bool
+    agent_consent: bool
     created_at: datetime
     updated_at: datetime | None
 
@@ -99,11 +101,13 @@ class CredentialResponse(BaseModel):
             service=cred.service,
             label=cred.label,
             credential_type=cred.credential_type,
+            provider=cred.provider,
             scope=cred.owner_scope,
             scopes=cred.scopes,
             expires_at=cred.expires_at,
             last_used_at=cred.last_used_at,
             strict=cred.strict,
+            agent_consent=cred.agent_consent,
             created_at=cred.created_at,
             updated_at=cred.updated_at,
         )

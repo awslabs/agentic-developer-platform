@@ -14,10 +14,14 @@
   ],
   "reviewer": [
     "phases/construction/pr-review.md",
-    "phases/construction/build-and-test.md",
-    "phases/construction/task-breakdown.md"
+    "phases/construction/build-and-test.md"
   ],
   "operations": [
     "phases/operations/deployment.md"
+  ],
+  "pm": [
+    "agents/issue-authoring.md",
+    "templates/epic-issue.md",
+    "templates/developer-issue.md"
   ]
 }

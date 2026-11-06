@@ -144,8 +144,12 @@ Always use non-interactive flags to avoid hanging:
 ## Issue-authoring convention (MANDATORY for every new issue)
 
 Use the canonical [developer issue template](modules/agent-factory/rules/templates/developer-issue.md)
-and [issue-authoring guide](modules/agent-factory/rules/agents/issue-authoring.md).
-The GitHub `Developer task` template exposes the same body for manual filing.
+or [epic template](modules/agent-factory/rules/templates/epic-issue.md), following
+the [issue-authoring guide](modules/agent-factory/rules/agents/issue-authoring.md).
+GitHub exposes the same bodies as `Developer task` and `Engineering epic`.
+The guide specifies native parent links, stable AC/EC/scenario IDs and controlled,
+independently verifiable tests; the [walkthrough](docs/engineering-insights/issue-authoring.md)
+includes filled examples and an optional offline format check.
 The guide owns the requirements; do not create another inline template here.
 
 Keep these sections in order: **The problem in plain terms**, **Description**,

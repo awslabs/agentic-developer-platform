@@ -1,5 +1,54 @@
 # GitLab CLI and human API
 
+## Use hosted GitLab after ADP login
+
+Install GitLab CLI (`glab` 1.125.0 or newer) and Git, then run `adp login`.
+ADP configures native glab OAuth and an HTTPS Git credential helper automatically.
+There is no second GitLab login, password, PAT, or SSH key to copy. For an
+existing ADP login, run `adp gitlab setup` once after upgrading the ADP CLI.
+
+```sh
+adp login
+git clone https://adp.example.com/gitlab/tenant-example/product-example/service.git
+cd service
+git switch -c my-change
+# Edit and commit your changes.
+git push -u origin my-change
+glab mr create
+```
+
+Use the real HTTPS clone URL from the Product's GitLab home. In the repository,
+glab selects the host from its Git remote. Outside a repository, select that host
+with glab's `--hostname` option where supported, or `GLAB_HOST`. SSH transport
+uses GitLab's separate SSH authentication and is not configured by this flow.
+
+ADP checks current human and Product membership before issuing a one-use,
+60-second assertion with a CLI-specific audience. Only this assertion reaches
+the configured GitLab receiver. GitLab issues user OAuth credentials with
+`api read_user write_repository` scopes and a two-hour access-token lifetime;
+native glab refreshes them automatically. Native Product membership, branch
+protection and GitLab permissions still decide what the user may read or push.
+Membership removal takes effect after successful home reconciliation, as for
+browser sessions. An ADP login alone does not grant access to every Product.
+
+Credentials are stored in glab's private mode-0600 configuration. ADP uses no
+administrator token and never puts credentials in command arguments or Git
+remote URLs. The Git helper answers only the configured HTTPS host/path and
+leaves refresh-token handling to glab. Existing credentials for other GitLab
+hosts are preserved. An existing independently authenticated account on the
+same host is reported as a conflict; use a separate `GLAB_CONFIG_DIR` or log out
+that glab host before adopting ADP authentication. Different ADP deployments
+sharing a GitLab hostname require separate `GLAB_CONFIG_DIR` directories.
+
+`adp logout` revokes this machine's native OAuth grant and clears its managed
+local GitLab credentials. Use the same `GLAB_CONFIG_DIR` for login and logout.
+If remote revocation fails, local credentials are cleared and the CLI reports
+how to revoke ADP CLI under GitLab's Authorized Applications. GitLab's refresh
+grant has its own lifecycle: merely expiring an ADP access token does not revoke
+it. Server administrators can block the native user or revoke the application.
+
+## Repository associations
+
 Source implementation for #5635. It supports administrator-selected, deployment-approved GitLab base URLs and operator-approved immutable project roots. It does not deploy GitLab, create OAuth consent, reuse workload credentials or send ADP tokens to a GitLab host.
 
 ## Existing integration inventory

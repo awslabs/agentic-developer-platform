@@ -96,10 +96,9 @@ from .identity import (
 # requester holding PROVISION can therefore ask; approving is a strictly higher
 # authority, and ADMINISTER is the only one the domain's table closes over both.
 #
-# Choosing PROVISION here would make every principal that can request an operation also
-# able to approve one, which is self-issued authority with extra steps -- the thing
-# `requires_distinct_approver` below refuses case-by-case, made structurally impossible
-# instead. Agreement with the domain spelling is asserted by
+# Streamlined approval still requires ADMINISTER: permission to request alone does
+# not confer permission to approve. Separation of people is a recorded policy choice.
+# Agreement with the domain spelling is asserted by
 # `tests/test_approval_contract_agreement.py`.
 APPROVAL_PERMISSION = "workspace:administer"
 
@@ -295,8 +294,12 @@ class ApprovalRecord:
     decided_at: datetime
     expires_at: datetime
     revoked: bool = False
+    # Persisted server policy; legacy records retain two-person approval.
+    requires_distinct_approver: bool = True
 
     def __post_init__(self) -> None:
+        if type(self.requires_distinct_approver) is not bool:
+            raise ContractViolation("requires_distinct_approver must be a boolean")
         if not isinstance(self.result, ApprovalResult):
             raise ContractViolation("result must be an ApprovalResult")
         if not isinstance(self.binding, ApprovalBinding):
@@ -453,12 +456,15 @@ def evaluate_approval(
             reason="approval was granted to a different requester",
         )
 
-    # (6) Self-approval, delegated to the published predicate so the rule has exactly
-    # one implementation. Note this is reached only after (5) established
+    # (6) Apply the server-recorded separation policy. Streamlined tickets still
+    # require current administrator authority in (7). Reached only after (5)
+    # established
     # `principal.subject == record.binding.requester`, so the predicate's two clauses
     # are the same comparison here -- both are kept in the predicate because it is also
     # callable on its own, where that equality has not been established.
-    if not requires_distinct_approver(principal, record):
+    if record.requires_distinct_approver and not requires_distinct_approver(
+        principal, record
+    ):
         return ApprovalDecision(
             permitted=False,
             reason="an approval issued by its own requester is not authority",
@@ -512,10 +518,9 @@ def requires_distinct_approver(
 ) -> bool:
     """Whether this record's approver is someone other than its requester.
 
-    Published as its own predicate because "no self-issued authority" is a named
-    acceptance concern for this story, and a reviewer should be able to find the rule in
-    one place rather than as two branches inside `evaluate_approval`. The gate calls the
-    branches; this exists so the property is directly testable and directly readable.
+    This identity predicate is used only when the recorded policy requires two
+    people. Streamlined tickets allow the requester to decide, subject to the same
+    current approval permission, plan, expiry and envelope checks.
     """
     if not isinstance(record, ApprovalRecord):
         raise ContractViolation("requires_distinct_approver requires an ApprovalRecord")

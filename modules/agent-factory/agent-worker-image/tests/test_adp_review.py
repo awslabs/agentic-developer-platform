@@ -539,3 +539,17 @@ def test_exit_codes_separate_recorded_from_published_only():
     assert EXIT_OK == 0
     assert EXIT_PENDING_APPROVAL == 3
     assert EXIT_OK != EXIT_PENDING_APPROVAL
+
+
+def test_a_gateway_failure_fails_the_run_instead_of_degrading_to_the_author(monkeypatch):
+    """A transport failure is not "no reviewer App configured": the engine retries a failed run."""
+    import lib.gateway_credential_client as gcc
+
+    class _Failing:
+        is_configured = True
+
+        def github_installation_token(self, **kwargs):
+            raise gcc.GatewayCredentialError("Shared review identity unavailable")
+
+    with pytest.raises(ReviewError, match="reviewer identity unavailable"):
+        _mint_with(monkeypatch, _Failing())

@@ -9,6 +9,9 @@ on:
       - modules/agent-factory/runner-infra/**
       - platform/automation-infra/**
       - platform/scripts/tests/test_release.py
+      - platform/scripts/verify-chat-release-controls.py
+      - platform/scripts/tests/test_chat_release_controls.py
+      - .github/scripts/tests/test_gitlab_config_fail_closed.py
       - .github/scripts/tests/test_assert_findings_bucket_private.py
       - modules/domain-apps/superplane/infra/automation/**
       - platform/infra/modules/codebuild/**
@@ -30,9 +33,9 @@ permissions:
   contents: read
 jobs:
   public-workflow-contracts:
-    # Public mirrors do not inherit the upstream ARC runner pool. This gate
-    # requires no cloud access, protected environment, or repository secrets.
-    runs-on: ubuntu-latest
+    # Upstream jobs stay on ARC; public mirrors have no upstream runner pool.
+    # This gate uses read-only GitHub access and no deployment role.
+    runs-on: ${{ github.repository == 'aws-e/adp' && 'arc-runner-org' || 'ubuntu-latest' }}
     permissions:
       contents: read
     timeout-minutes: 5
@@ -66,6 +69,8 @@ jobs:
           python -m venv /tmp/automation-contracts
           /tmp/automation-contracts/bin/pip install pytest==8.3.5 PyYAML==6.0.2
           /tmp/automation-contracts/bin/python -m pytest -q platform/automation-infra/tests platform/infra/modules/codebuild/tests
+          /tmp/automation-contracts/bin/python -m pytest -q platform/scripts/tests/test_chat_release_controls.py
+          /tmp/automation-contracts/bin/python -m pytest -q .github/scripts/tests/test_gitlab_config_fail_closed.py
       - name: Verify rendered IAM policies using mocked AWS providers
         run: |
           set -euo pipefail

@@ -1,0 +1,4 @@
+interface:
+  display_name: ADP Flow
+  short_description: Turn a confirmed intent into a bounded, inert delivery-flow draft.
+  default_prompt: Interview my intent, prepare and publish the backlog, then register a draft without approving its gate.

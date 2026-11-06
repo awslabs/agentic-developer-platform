@@ -32,7 +32,7 @@
 # Usage:
 #   adp login | status | logout | token | refresh | import | serve
 #   adp codex [args…] | claude [args…]
-#   adp codex setup | claude setup
+#   adp codex setup | claude setup [--skills-only]
 #   adp daemon install | uninstall
 #   adp update [--rollback] | version | help
 
@@ -52,21 +52,17 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py adp-machine.py adp-knowledge.py adp-gitlab.py adp-superplane-research.py adp-platform.py adp-superplane-lifecycle.py adp-chat.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py adp-machine.py adp-knowledge.py adp_context_storage.py adp-product.py adp-onboard.py adp-insights.py adp-service.py adp-gitlab.py adp_gitlab_auth.py adp-superplane-research.py adp-platform.py adp-superplane-lifecycle.py adp-chat.py adp-mcp.py adp_mcp_config.py adp_skills.py adp_native_test.py adp-devbox.py adp-native-credentials.py adp_private_credentials.py native-host-requirements.txt adp-native-credential-host.py adp_native_credential_handoff.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
+CLAUDE_MCP_FILE="${HOME}/.claude.json"
 
 # Where a detached proxy's output goes. A backgrounded process with nowhere to
 # write is a process whose failure is invisible, and "Codex 502s on the first
 # request" needs a log to diagnose.
 ADP_LOG_DIR="${HOME}/.adp/logs"
 PROXY_LOG_FILE="${ADP_LOG_DIR}/proxy.log"
-
-# The core's serve pidfile. Read (never written) here, to tell "no proxy" from
-# "a proxy on some other port" — the core refuses to run two, so the second is a
-# distinct, actionable failure rather than a start timeout.
-PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
 
 # What the proxy publishes after it binds: its port and which deployment it
 # serves (Issue #5413). This is the only trustworthy answer to "is a proxy for MY
@@ -201,6 +197,9 @@ resolve_deployment() {
     exports="$(deployments resolve ${requested:+--deployment "${requested}"} --format env --validate-config --lease-pid "$$" 2>"${diagnostics}")" || status=$?
 
     if [ "${status}" -ne 0 ]; then
+        if [ "${2:-}" = "claude-desktop" ] && grep -Fq 'No deployment named' "${diagnostics}"; then
+            status=2
+        fi
         # A BROKEN registry is fatal whatever the selection route. The registry is
         # what maps every name to a URL, so when it cannot be read there is no
         # evidence about where the saved default points — and continuing on the
@@ -229,7 +228,6 @@ resolve_deployment() {
     CONFIG_FILE="${CONFIG_DIR}/config.json"
     TOKEN_FILE="${CONFIG_DIR}/tokens.json"
     PROXY_LOG_FILE="${ADP_LOG_DIR}/proxy.log"
-    PROXY_PID_FILE="${ADP_RUNTIME_DIR}/proxy.pid"
     PROXY_IDENTITY_FILE="${ADP_RUNTIME_DIR}/proxy.json"
     DAEMON_CAPABILITY_FILE="${ADP_HOME:-${HOME}/.adp}/daemon-capability"
     LEGACY_DAEMON_CAPABILITY_FILE="${ADP_RUNTIME_DIR}/daemon-capability"
@@ -341,10 +339,28 @@ token_username() {
 }
 
 require_session() {
+    if [ "${ADP_CREW_TOOLS_URL+x}" ]; then
+        require_identity
+        return
+    fi
     if [ ! -f "${CONFIG_FILE}" ] || [ ! -f "${TOKEN_FILE}" ]; then
         print_error "Not signed in — run 'adp login' first."
         exit 1
     fi
+}
+
+require_identity() {
+    if [ "${ADP_CREW_TOOLS_URL+x}" ]; then
+        if [[ ! "${ADP_CREW_TOOLS_URL}" =~ ^http://127\.0\.0\.1:[0-9]{1,5}$ ]] ||
+           [[ ! "${ADP_CREW_TOOLS_TOKEN:-}" =~ ^[a-f0-9]{64}$ ]] ||
+           [[ ! "${ADP_CREW_RUN_ID:-}" =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ ]] ||
+           [ -n "${ADP_DEPLOYMENT:-}${ADP_DEPLOYMENT_ID:-}${ADP_TENANT:-}${ADP_TENANT_ID:-}" ]; then
+            print_error "Crew tools binding unavailable or mixed with a laptop selection."
+            return 2
+        fi
+        return 0
+    fi
+    require_session
 }
 
 # --- launcher helpers (Issue #4863) -----------------------------------------
@@ -756,6 +772,7 @@ cmd_codex_launch() {
     # Decode quoted TOML key segments before comparing managed transport paths.
     deployments check-codex-args -- "$@" || exit $?
     require_live_session "Codex"
+    cmd_mcp_configure --client codex
     ensure_proxy
 
     # Codex sends this variable's value as its bearer token, and since #5686 the
@@ -892,9 +909,19 @@ cmd_claude_launch() {
         fi
     done
 
-    local settings='{}' rest=() supplied
+    local settings='{}' mcp='{"mcpServers":{}}' rest=() supplied
     while [ $# -gt 0 ]; do
         case "$1" in
+            --mcp-config|--mcp-config=*)
+                if [ "$1" = "--mcp-config" ]; then
+                    [ $# -ge 2 ] || { print_error "--mcp-config needs a value."; exit 1; }
+                    supplied="$2"; shift 2
+                else supplied="${1#--mcp-config=}"; shift; fi
+                if [ -f "${supplied}" ]; then supplied="$(cat "${supplied}")"; fi
+                supplied="$(printf '%s' "${supplied}" | jq -e 'select(type == "object" and (.mcpServers | type == "object") and (.mcpServers | has("adp-tools") | not))')" || {
+                    print_error "Claude --mcp-config must have an mcpServers object without adp-tools."; exit 1;
+                }
+                mcp="$(printf '%s' "${mcp}" | jq -c --argjson supplied "${supplied}" '.mcpServers += $supplied.mcpServers')" ;;
             --settings|--settings=*)
                 if [ "$1" = "--settings" ]; then
                     [ $# -ge 2 ] || { print_error "--settings needs a value."; exit 1; }
@@ -911,15 +938,18 @@ cmd_claude_launch() {
         esac
     done
     require_live_session "Claude Code"
+    [ -f "$(adp_dir)/adp-mcp.py" ] || { print_error "The MCP bridge is missing. Run adp update."; exit 1; }
+    python3 "$(adp_dir)/adp_mcp_config.py" --client claude-code --entry "$(mcp_entry)" \
+        --config "${CLAUDE_MCP_FILE}" --state-dir "${ADP_HOME:-${HOME}/.adp}/mcp-config" --check
+    mcp="$(printf '%s' "${mcp}" | jq -c --argjson entry "$(mcp_entry)" '.mcpServers["adp-tools"] = $entry')"
     if [ -n "${ADP_DEPLOYMENT_URL:-}" ]; then
         settings="$(printf '%s' "${settings}" | jq -c --arg helper "$(pinned_token_helper)" --arg url "${ADP_DEPLOYMENT_URL}" \
             '.apiKeyHelper = $helper | .env = ((.env // {}) + {ANTHROPIC_BEDROCK_BASE_URL: $url, CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1"})')"
         export ANTHROPIC_BEDROCK_BASE_URL="${ADP_DEPLOYMENT_URL}"
         export CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
         unset CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
-        exec claude --settings "${settings}" ${rest[@]+"${rest[@]}"}
     fi
-    exec claude ${rest[@]+"${rest[@]}"}
+    exec claude --mcp-config "${mcp}" --settings "${settings}" ${rest[@]+"${rest[@]}"}
 }
 
 # --- login ------------------------------------------------------------------
@@ -970,6 +1000,7 @@ cmd_login() {
 
     # Bash 3.2 (macOS) treats an empty array as unset under set -u.
     core login --web --gateway-url "${gateway_url}" ${args[@]+"${args[@]}"}
+    setup_gitlab_session
 }
 
 # A named deployment's URL is its IDENTITY, so establishing a session against a
@@ -1028,12 +1059,39 @@ cmd_import() {
         previous="${arg}"
     done
     core import "$@"
+    setup_gitlab_session
+}
+
+# Native GitLab sessions are configured after ADP sign-in, never by asking the
+# user for another password/token. Failures do not erase a successful ADP login.
+setup_gitlab_session() {
+    if command -v glab >/dev/null 2>&1 && [ -f "$(adp_dir)/adp_gitlab_auth.py" ]; then
+        python3 "$(adp_dir)/adp_gitlab_auth.py" setup || print_warning "ADP login succeeded. Retry GitLab setup with: adp gitlab setup"
+    fi
+}
+
+clear_gitlab_session() {
+    if [ -f "$(adp_dir)/adp_gitlab_auth.py" ]; then
+        python3 "$(adp_dir)/adp_gitlab_auth.py" logout || print_warning "GitLab logout needs attention; ADP local logout will continue."
+    fi
 }
 
 # --- status -----------------------------------------------------------------
 # Read-only day-1 confirmation and day-N "am I still good?". Exits non-zero
 # when there is no session, so it is usable in a script.
 cmd_status() {
+    if [ "${ADP_CREW_TOOLS_URL+x}" ]; then
+        require_identity || return $?
+        if [ "${1:-}" = "--json" ] && [ $# -eq 1 ]; then
+            printf '{"mode":"host-run","run_id":"%s"}\n' "${ADP_CREW_RUN_ID}"
+        elif [ $# -eq 0 ]; then
+            printf 'Host run: %s (Dev Box)\n' "${ADP_CREW_RUN_ID}"
+        else
+            print_error "Usage: adp status [--json]"
+            return 1
+        fi
+        return 0
+    fi
     if [ "${1:-}" = "--json" ] && [ $# -eq 1 ]; then
         deployments status --json
         return $?
@@ -1101,6 +1159,115 @@ cmd_status() {
 # Rewrites ONLY the `model_provider` line and the [model_providers.adp-gateway]
 # block; the rest of the user's TOML is preserved verbatim so an existing Codex
 # setup is not clobbered. Running it twice produces the same file.
+cmd_mcp_unregister() {
+    local client target
+    for client in claude-code codex; do
+        if [ "${client}" = codex ]; then target="${CODEX_CONFIG_FILE}"; else target="${CLAUDE_MCP_FILE}"; fi
+        python3 "$(adp_dir)/adp_mcp_config.py" --client "${client}" --config "${target}" \
+            --state-dir "${ADP_HOME:-${HOME}/.adp}/mcp-config" --remove || return $?
+    done
+}
+
+cmd_tools_logout() {
+    if [ "$#" -ne 0 ]; then
+        print_error "Usage: adp tools logout"
+        return 1
+    fi
+    if [ -f "${TOKEN_FILE}" ]; then
+        if ! jq -e '.refresh_token | strings | select(length >= 16)' "${TOKEN_FILE}" >/dev/null 2>&1; then
+            print_error "Cannot confirm token revocation; run adp login or use adp logout to clear local tokens."
+            return 1
+        fi
+        local gateway_url
+        gateway_url="$(stored_gateway_url)"
+        case "${gateway_url}" in
+            https://*|http://127.0.0.1:*) ;;
+            *) print_error "Invalid configured gateway URL; cannot revoke token."; return 1 ;;
+        esac
+        case "${gateway_url}" in
+            */api) ;;
+            *) gateway_url="${gateway_url%/}/api" ;;
+        esac
+        if ! jq -c '{refresh_token: .refresh_token}' "${TOKEN_FILE}" | curl -fsS --max-time 15 \
+            -H 'Content-Type: application/json' --data-binary @- -o /dev/null "${gateway_url}/auth/cli/revoke"; then
+            print_error "Could not confirm token revocation; retry adp tools logout."
+            return 1
+        fi
+        clear_gitlab_session
+        core logout
+    fi
+    cmd_mcp_unregister
+    python3 "$(adp_dir)/adp_skills.py" --remove --home "${HOME}"
+    print_success "Removed adp-tools and logged out."
+}
+
+mcp_entry() {
+    local name="" tenant="" directory="${BG_CONFIG_DIR:-$CONFIG_DIR}"
+    if [ -n "${ADP_DEPLOYMENT_NAME:-}" ]; then name="${ADP_DEPLOYMENT_NAME}"; fi
+    if [ -n "${ADP_TENANT_ID:-}" ]; then tenant="${ADP_TENANT_ID}"; fi
+    jq -cn --arg command "$(adp_path)" --arg name "${name}" --arg tenant "${tenant}" --arg directory "${directory}" \
+        --arg id "${ADP_DEPLOYMENT_ID:-}" --arg url "${ADP_DEPLOYMENT_URL:-}" \
+        --arg subject "${ADP_TENANT_SUB:-}" --arg source "${ADP_TENANT_SOURCE:-}" \
+        --arg mode "${ADP_TENANT_MODE:-}" --arg membership "${ADP_TENANT_MEMBERSHIP:-}" '
+        {command: $command, args: (
+            (if $name == "" then [] else ["--deployment", $name] end) +
+            (if $tenant == "" then [] else ["--tenant", $tenant] end) + ["mcp"]
+        ), env: ({BG_CONFIG_DIR: $directory} + (
+            [{key:"ADP_DEPLOYMENT_ID",value:$id}, {key:"ADP_DEPLOYMENT_URL",value:$url},
+             {key:"ADP_TENANT_ID",value:$tenant}, {key:"ADP_TENANT_SUB",value:$subject},
+             {key:"ADP_TENANT_SOURCE",value:$source}, {key:"ADP_TENANT_MODE",value:$mode},
+             {key:"ADP_TENANT_MEMBERSHIP",value:$membership}]
+            | map(select(.value != "")) | from_entries))}'
+}
+
+cmd_mcp_configure() {
+    if { [ "$#" -ne 2 ] && [ "$#" -ne 4 ]; } || [ "$1" != "--client" ]; then
+        print_error "Usage: adp mcp configure --client claude-code|codex"
+        return 1
+    fi
+
+    local entry target provider=()
+    entry="$(mcp_entry)"
+    case "$2" in
+        claude-code) target="${CLAUDE_MCP_FILE}" ;;
+        codex) target="${CODEX_CONFIG_FILE}" ;;
+        *)
+            print_error "Unknown MCP client '$2'. Use claude-code or codex."
+            return 1
+            ;;
+    esac
+    if [ "$#" -eq 4 ]; then
+        if [ "$2" != "codex" ] || [ "$3" != "--provider-port" ]; then
+            print_error "Usage: adp mcp configure --client codex [--provider-port PORT]"
+            return 1
+        fi
+        provider=(--provider-port "$4")
+    fi
+    python3 "$(adp_dir)/adp_mcp_config.py" --client "$2" --entry "${entry}" \
+        --config "${target}" --state-dir "${ADP_HOME:-${HOME}/.adp}/mcp-config" ${provider[@]+"${provider[@]}"} || return $?
+    print_success "Registered adp-tools for $2."
+}
+
+cmd_skills_sync() {
+    if [ "$#" -ne 2 ] || [ "$1" != "--client" ]; then
+        print_error "Usage: cmd_skills_sync --client claude-code|codex"
+        return 1
+    fi
+    local source="${ADP_HOME:-${HOME}/.adp}/skills"
+    local directory
+    directory="$(adp_dir)"
+    if [ -f "${directory}/skills/MANIFEST.json" ]; then
+        source="${directory}/skills"
+    elif [ -f "${directory%/bin}/skills/MANIFEST.json" ]; then
+        source="${directory%/bin}/skills"
+    fi
+    if [ ! -f "${source}/MANIFEST.json" ]; then
+        print_warning "Skills archive not served by this deployment; setup continues without bundled skills."
+        return 0
+    fi
+    python3 "${directory}/adp_skills.py" --client "$2" --source "${source}" --home "${HOME}"
+}
+
 cmd_codex_setup() {
     require_session
 
@@ -1117,56 +1284,9 @@ cmd_codex_setup() {
     if { [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_ID}" != "default" ]; } || [ -n "${ADP_TENANT_ID:-}" ]; then
         setup_proxy_port="$(deployments setup-port)"
     fi
-    mkdir -p "$(dirname "${CODEX_CONFIG_FILE}")"
-
-    # Everything we do NOT own, preserved verbatim. awk (not sed) because the
-    # provider block is multi-line: it ends at the next [section] header.
-    # $(...) drops trailing newlines, which is what makes a second run
-    # byte-identical to the first.
-    local preserved=""
-    if [ -f "${CODEX_CONFIG_FILE}" ]; then
-        preserved=$(awk -v provider="[model_providers.${CODEX_PROVIDER}]" '
-            {
-                line = $0
-                sub(/^[[:space:]]+/, "", line)
-                sub(/[[:space:]]+$/, "", line)
-            }
-            line ~ /^\[/ { in_block = (line == provider); if (in_block) next }
-            in_block { next }
-            line ~ /^model_provider[[:space:]]*=/ { next }
-            # Suppress the leading blank line that removing our own top-level
-            # key leaves behind — otherwise every run would add one and the
-            # second run would not be a no-op. ($(...) strips trailing ones.)
-            NF { started = 1 }
-            started { print }
-        ' "${CODEX_CONFIG_FILE}")
-    fi
-
-    local tmp
-    tmp=$(mktemp "${CODEX_CONFIG_FILE}.XXXXXX")
-
-    # `model_provider` is a TOP-LEVEL key, so it must precede every [section]
-    # header: in TOML a bare key written after a header belongs to that table,
-    # and appending it at the end of a file with an [mcp_servers.x] block would
-    # silently define mcp_servers.x.model_provider instead. Hence: our key
-    # first, the user's content next, our provider block last (a header, so it
-    # is position-safe).
-    printf 'model_provider = "%s"\n' "${CODEX_PROVIDER}" > "${tmp}"
-    if [ -n "${preserved}" ]; then
-        printf '\n%s\n' "${preserved}" >> "${tmp}"
-    fi
-
-    cat >> "${tmp}" << EOF
-
-[model_providers.${CODEX_PROVIDER}]
-name = "${CODEX_PROVIDER}"
-base_url = "http://127.0.0.1:${setup_proxy_port}/openai/v1"
-wire_api = "responses"
-env_key = "ADP_GATEWAY_DUMMY"
-EOF
-
-    mv -f "${tmp}" "${CODEX_CONFIG_FILE}"
+    cmd_mcp_configure --client codex --provider-port "${setup_proxy_port}"
     print_success "Wired Codex to the ADP gateway (${CODEX_CONFIG_FILE})."
+    cmd_skills_sync --client codex
     echo ""
     echo "Run it — one command, one terminal:"
     echo ""
@@ -1208,8 +1328,166 @@ pinned_token_helper() {
     if [ -n "${ADP_DEPLOYMENT_ID:-}" ]; then
         deployments helper-command "$(adp_path)"
     else
-        python3 -c 'import shlex,sys; print(shlex.join([sys.argv[1], "token"]))' "$(adp_path)"
+        # Legacy single-gateway layout: still pin the tenant resolved at setup
+        # time (#7426), so a helper never asks a multi-tenant user to pick one.
+        python3 - "$(adp_path)" <<'PINNED'
+import os, shlex, sys
+pins = [f"{key}={os.environ[key]}" for key in ("ADP_TENANT_ID", "ADP_TENANT_SUB", "ADP_TENANT_SOURCE", "ADP_TENANT_MODE", "ADP_TENANT_MEMBERSHIP") if key in os.environ]
+print(shlex.join(["env", *pins, sys.argv[1], "token"]) if pins else shlex.join([sys.argv[1], "token"]))
+PINNED
     fi
+}
+
+cmd_claude_desktop_setup() {
+    local check=false json=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --check) check=true ;;
+            --json) json=true ;;
+            *) print_error "Usage: adp claude-desktop setup [--check] [--json]"; return 1 ;;
+        esac
+        shift
+    done
+
+    if [ ! -f "${CONFIG_FILE}" ] || [ ! -f "${TOKEN_FILE}" ] || ! core token >/dev/null 2>&1; then
+        print_error "Not signed in. Run 'adp --deployment ${ADP_DEPLOYMENT_NAME:-default} login' first."
+        return 3
+    fi
+
+    # The helper runs `adp token`, which needs one tenant. Resolve it now, with
+    # the login that is signed in, so the helper is pinned to the tenant selected
+    # at setup time (like its deployment) and a multi-tenant user gets a tenant
+    # error here rather than a misleading "run adp login" from the helper (#7426).
+    if [ -z "${ADP_TENANT_ID:-}" ] && [ -f "$(adp_dir)/adp-tenant.py" ]; then
+        local tenant_exports tenant_status=0 tenant_errors
+        tenant_errors="$(mktemp)"
+        tenant_exports="$(python3 "$(adp_dir)/adp-tenant.py" --resolve-env "${ADP_TENANT:-}" 2>"${tenant_errors}")" || tenant_status=$?
+        if [ "${tenant_status}" -ne 0 ]; then
+            print_error "No tenant is selected for this login: $(tail -n 1 "${tenant_errors}" | sed 's/^\[ERROR\] //')"
+            print_warning "Run 'adp tenant list', then 'adp tenant use TENANT_ID' (or 'adp --tenant TENANT_ID claude-desktop setup'), and rerun setup."
+            rm -f "${tenant_errors}"
+            return 4
+        fi
+        rm -f "${tenant_errors}"
+        eval "${tenant_exports}"
+    fi
+
+    local gateway_url
+    gateway_url="$(stored_gateway_url)"
+    if [ -z "${gateway_url}" ]; then
+        print_error "No gateway URL in ${CONFIG_FILE} — run 'adp login' first."
+        return 1
+    fi
+    gateway_url="${gateway_url%/}"
+    case "${gateway_url}" in
+        */api) ;;
+        *) gateway_url="${gateway_url}/api" ;;
+    esac
+
+    local helper_dir="${ADP_HOME:-${HOME}/.adp}/bin"
+    local helper_path="${helper_dir}/adp-claude-desktop-token"
+    local jwt_pattern='[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+[.][A-Za-z0-9_-]+'
+    local credential_pattern="^(adpctx1~${jwt_pattern}~)?${jwt_pattern}$"
+    local temporary_helper
+    (umask 077; mkdir -p "${helper_dir}")
+    temporary_helper="$(mktemp "${helper_path}.XXXXXX")"
+    if ! {
+        printf '#!/bin/sh\n'
+        python3 - <<'HELPER_PATH'
+import os
+import shlex
+import shutil
+
+dependency_dirs = set()
+for command in ("bash", "python3", "jq", "curl"):
+    executable = shutil.which(command)
+    if executable:
+        dependency_dirs.add(os.path.dirname(os.path.abspath(executable)))
+paths = [os.path.abspath(directory) for directory in os.get_exec_path() if os.path.abspath(directory) in dependency_dirs]
+paths.extend(("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"))
+print("PATH=" + shlex.quote(":".join(dict.fromkeys(paths))))
+print("export PATH")
+HELPER_PATH
+        printf "credential_pattern='%s'\n" "${credential_pattern}"
+        printf 'if ! token="$(%s 2>/dev/null)"; then\n' "$(pinned_token_helper)"
+        cat <<'HELPER'
+    printf 'Credential refresh failed. Run adp login.\n' >&2
+    exit 1
+fi
+case "$token" in
+    *[!A-Za-z0-9_.~-]*) token='' ;;
+esac
+if ! printf '%s' "$token" | LC_ALL=C grep -Eq "$credential_pattern"; then
+    printf 'Credential refresh failed. Run adp login.\n' >&2
+    exit 1
+fi
+printf '%s\n' "$token"
+HELPER
+    } >"${temporary_helper}"; then
+        rm -f "${temporary_helper}"
+        return 1
+    fi
+    chmod 700 "${temporary_helper}"
+    if [ -f "${helper_path}" ] && cmp -s "${helper_path}" "${temporary_helper}"; then
+        rm -f "${temporary_helper}"
+        chmod 700 "${helper_path}"
+    else
+        mv -f "${temporary_helper}" "${helper_path}"
+    fi
+
+    local http_status model_count
+    if [ "${check}" = true ]; then
+        local token response curl_status=0 helper_errors
+        helper_errors="$(mktemp)"
+        if ! token="$("${helper_path}" 2>"${helper_errors}")" \
+            || [[ ! "${token}" =~ ${credential_pattern} ]]; then
+            print_error "Credential check failed: $(tail -n 1 "${helper_errors}" 2>/dev/null || printf 'the helper printed no credential')"
+            rm -f "${helper_errors}"
+            return 1
+        fi
+        rm -f "${helper_errors}"
+        response="$(printf 'header = "Authorization: Bearer %s"\n' "${token}" \
+            | curl -sS -K - --max-time 10 -w '\n%{http_code}' \
+                "${gateway_url}/v1/models?client=claude-desktop" 2>/dev/null)" || curl_status=$?
+        unset token
+        if [ "${curl_status}" -ne 0 ]; then
+            print_error "Gateway models check failed (HTTP 000)."
+            return 1
+        fi
+        http_status="${response##*$'\n'}"
+        if [ "${http_status}" != 200 ] \
+            || ! model_count="$(printf '%s' "${response%$'\n'*}" \
+                | jq -er '.data | if type == "array" then length else error("invalid models") end' 2>/dev/null)"; then
+            print_error "Gateway models check failed (HTTP ${http_status})."
+            return 1
+        fi
+    fi
+
+    if [ "${json}" = true ]; then
+        if [ "${check}" = true ]; then
+            jq -n --arg helper_path "${helper_path}" --arg base_url "${gateway_url}" \
+                --arg deployment "${ADP_DEPLOYMENT_NAME:-default}" --arg tenant "${ADP_TENANT_ID:-}" --arg http_status "${http_status}" \
+                --argjson model_count "${model_count}" \
+                '{helper_path: $helper_path, base_url: $base_url, deployment: $deployment, tenant: (if $tenant == "" then null else $tenant end), settings_written: false, http_status: ($http_status | tonumber), model_count: $model_count}'
+        else
+            jq -n --arg helper_path "${helper_path}" --arg base_url "${gateway_url}" \
+                --arg deployment "${ADP_DEPLOYMENT_NAME:-default}" --arg tenant "${ADP_TENANT_ID:-}" \
+                '{helper_path: $helper_path, base_url: $base_url, deployment: $deployment, tenant: (if $tenant == "" then null else $tenant end), settings_written: false}'
+        fi
+        return 0
+    fi
+    if [ "${check}" = true ]; then
+        printf 'HTTP status: %s\nModel count: %s\n' "${http_status}" "${model_count}"
+        return 0
+    fi
+
+    printf 'Provider: ADP gateway (Anthropic Messages)\n'
+    printf 'Base URL: %s\n' "${gateway_url}"
+    printf 'Authentication: Bearer token\n'
+    printf 'Credential helper: %s\n' "${helper_path}"
+    printf 'Tenant: %s (pinned in the helper; rerun setup after adp tenant use to change it)\n' "${ADP_TENANT_ID:-single-tenant login}"
+    printf 'Models: %s/v1/models?client=claude-desktop (deployment-entitled profiles)\n' "${gateway_url}"
+    printf 'Claude Desktop gateway settings are not publicly documented; no Desktop settings were changed.\n'
 }
 
 # --- claude setup -----------------------------------------------------------
@@ -1238,6 +1516,7 @@ cmd_claude_setup() {
             exit 1
         fi
     fi
+    cmd_mcp_configure --client claude-code
 
     # `env` is merged key-by-key (`*`) so unrelated env entries survive; the
     # scalar keys we own are replaced outright. Shape mirrors
@@ -1262,8 +1541,8 @@ cmd_claude_setup() {
     printf '%s\n' "${merged}" > "${tmp}"
     chmod 600 "${tmp}"
     mv -f "${tmp}" "${CLAUDE_SETTINGS_FILE}"
-
     print_success "Wired Claude Code to the ADP gateway (${CLAUDE_SETTINGS_FILE})."
+    cmd_skills_sync --client claude-code
     echo ""
     echo "Run it:"
     echo ""
@@ -1481,8 +1760,7 @@ PYPLIST
         print_warning "Run 'adp daemon install' again after resolving the launchd error."
         exit 1
     fi
-    local daemon_proxy_port
-    if ! daemon_proxy_port="$(wait_for_daemon_proxy "${daemon_capability}")"; then
+    if ! wait_for_daemon_proxy "${daemon_capability}" >/dev/null; then
         launchctl unload "${LAUNCH_AGENT_FILE}" 2>/dev/null || true
         _release_proxy_spawn_lock
         print_error "The launchd auth proxy did not publish the configured capability within ${PROXY_READY_TIMEOUT_SECONDS}s."
@@ -1549,7 +1827,8 @@ cmd_daemon_uninstall() {
 
 # Python area commands resolve installed siblings, just like the auth helper.
 exec_python_helper() {
-    local helper="$(adp_dir)/$1"
+    local helper
+    helper="$(adp_dir)/$1"
     shift
     if ! command -v python3 >/dev/null 2>&1; then
         print_error "Python 3 is required for this command."; exit 1
@@ -1636,6 +1915,18 @@ cmd_update() {
             exit 1
         fi
         chmod +x "${dir}/adp" "${dir}/${CORE_SCRIPT_NAME}" 2>/dev/null || true
+        local skills_root
+        if [ "${dir##*/}" = "bin" ]; then skills_root="${dir%/bin}/skills"; else skills_root="${dir}/skills"; fi
+        if [ -d "${skills_root}.prev" ]; then
+            rm -rf "${skills_root}"
+            mv -f "${skills_root}.prev" "${skills_root}"
+        elif [ -f "${skills_root}.prev.absent" ]; then
+            rm -rf "${skills_root}"
+            rm -f "${skills_root}.prev.absent"
+        fi
+        if [ -f "${dir}/.adp-manifest.json.prev" ]; then
+            mv -f "${dir}/.adp-manifest.json.prev" "${dir}/.adp-manifest.json"
+        fi
         print_success "Rolled back to CLI version $(declared_version "${dir}/adp")."
         return 0
     fi
@@ -1721,7 +2012,15 @@ Connect your own AWS account:
 Wire up a tool (config only — sign in once, then set up as many as you like):
     codex setup           Point Codex at the local auth proxy
     claude setup          Set Claude Code's apiKeyHelper (merges settings.json)
+    codex|claude setup --skills-only
+                          Sync bundled skills only; no sign-in or model settings changes
+    claude-desktop setup [--check] [--json]
+                          Install a deployment-pinned Desktop credential helper
     hermes setup          Configure Hermes for the selected ADP auth proxy
+    mcp configure --client claude-code|codex
+                          Register adp-tools without changing model settings
+    tools status          Show token expiry; add --access [--json] for read-only tool readiness
+    tools logout          Revoke the login and remove adp-tools from clients
 
 Run a tool:
     codex [args...]       Launch Codex: starts the auth proxy if needed, then execs
@@ -1729,8 +2028,22 @@ Run a tool:
     hermes [args...]      Launch Hermes: reuses/starts the auth proxy, then execs
     kimi [args...]        Launch the configured isolated Kimi Code CLI through ADP
     serve                 Run the localhost auth proxy in the FOREGROUND
+    mcp                   Run the bundled stdio MCP server
+    mcp operations        List locally saved operation references for recovery
+
+Connect to your own Dev Box without AWS credentials:
+    devbox ssh <box>      Open an SSH shell by owner-visible name or ID
+    devbox ssh-config <box>
+                          Write a deployment-pinned SSH alias for IDEs and Kiro Crew
 
 Connect a repository (uses the platform's GitHub App — you supply no secrets):
+    github token [--json]
+                          Your GitHub token with repository access, from the
+                          account connected in Settings → Connections
+    github credential-helper get
+                          git credential helper for github.com (configure with
+                          git config --global credential.https://github.com.helper
+                          '!adp github credential-helper')
     github connect --repo owner/name
                           Authorize a repository you have access to on GitHub
     github disconnect --installation ID --dry-run|--yes
@@ -1786,6 +2099,11 @@ Follow autonomous delivery (AI-DLC flows):
                           Submit a prepared plan for approval
     flow draft preview|save FLOW_ID --file plan.json
                           Revise an unapproved draft using explicit version/hash bindings
+    flow amendment propose|list|show|preview|edit|reject FLOW_ID [DRAFT_ID]
+                          Propose and review changes without applying them; see --help
+    flow amendment accept FLOW_ID DRAFT_ID --expect-revision HASH
+                          --expect-base-version N --expect-base-hash HASH --yes
+                          Approve that exact revision and schedule eligible work
 
 Check what works here, and why something failed:
     capabilities [--json] [--operation ID]
@@ -1848,6 +2166,11 @@ Check what works here, and why something failed:
     logs list             List redacted inference request metadata
     logs show             Lookup --request-id in an explicit window
     logs export           Bounded JSON/NDJSON/CSV with continuation metadata
+    credential host-register Select a fixed command profile for human MCP delivery
+    credential host-serve Run the local private delivery coordinator
+    credential host-setup Install the pinned private credential host runtime
+    credential use        Approve one selected command for private credential delivery
+    credential delivery-status Read original delivery metadata; never recover secrets
     credential list       List visible credential metadata (never secret values)
     credential show       Inspect credential ID and update revision
     credential add        Register using a stable --operation-id and protected secret input
@@ -1868,6 +2191,8 @@ Check what works here, and why something failed:
     agent resume          Resume with the same run; requires explicit intent
     agent steer           Send --instruction TEXT when runtime capability allows
     agent abort           Request abort; acknowledgement alone does not prove exit
+    agent recover-exit    Verify archived worker exit with --dry-run; record failure with --yes
+    agent recovery-status Read the durable recovery receipt by --operation-id
 
     access status|request --tenant ID   Inspect or request tenant membership
     admin access-request list|show|approve|deny   Review exact access requests
@@ -1877,6 +2202,14 @@ Check what works here, and why something failed:
     knowledge bulk preview|commit
     admin indexing list|show
     chat status|start|resume|list|show|watch|export
+    service config show|update|refresh --project ID --product ID [--json]
+    service options|check|binding ...   Configure scoped L5 services (--service security|devops|finops|transform|well_architected)
+    service prevention status|configure   Inspect or control selected DevOps prevention
+    insights context show --project ID --product ID --as-of RFC3339 [--portfolio ID] [--json]
+                          Read dated, authorized business context without changing native costs
+    product list|create|show|update|budget show|budget set
+    product sources|source-bind|source-bindings|source-verify|source-session|source-discover|source-operation|source-apply
+    product lifecycle    Archive or restore with --action and --revision
                           Hosted chat readiness and owned retained history
     tenant list           List visible ADP tenant memberships
     tenant current        Show canonical tenant and selection source
@@ -2023,6 +2356,57 @@ main() {
     local command="${1:-}"
     shift || true
 
+    if { [ "${command}" = "codex" ] || [ "${command}" = "claude" ]; } &&
+       [ "$#" -eq 2 ] && [ "$1" = "setup" ] && [ "$2" = "--skills-only" ]; then
+        if [ "${command}" = "codex" ]; then
+            cmd_skills_sync --client codex
+        else
+            cmd_skills_sync --client claude-code
+        fi
+        return
+    fi
+
+    if [ "${ADP_CREW_TOOLS_URL+x}" ]; then
+        require_identity || return $?
+        if [ -n "${requested_deployment}${requested_tenant}" ]; then
+            print_error "Crew host-run binding cannot use a laptop deployment or tenant selector."
+            return 2
+        fi
+        # #9640: the box acts with the owner's session, so every product/flow/github command is the
+        # laptop's; only human login, full client setup and MCP registration stay laptop-only.
+        case "${command}:${1:-}" in
+            login:*)
+                print_error "Human login is unavailable on a Dev Box. Sign in with the laptop adp CLI or ADP dashboard; no token is stored here."
+                return 2 ;;
+            codex:setup|claude:setup)
+                print_error "A Dev Box only supports 'adp ${command} setup --skills-only'; full setup requires a laptop."
+                return 2 ;;
+            mcp:configure)
+                print_error "MCP registration is not available on a Dev Box; the Crew home is configured by the host."
+                return 2 ;;
+        esac
+        case "${command}" in
+            product) exec_python_helper "adp-product.py" "$@"; return $? ;;
+            flow) exec_python_helper "adp-flow.py" "$@"; return $? ;;
+            github) exec_python_helper "adp-github.py" "$@"; return $? ;;
+            # A box has no deployment registry and host run never selects one, so
+            # the general path's resolve_deployment() only printed "No ADP
+            # deployment is configured" to stderr ahead of the real answer.
+            status) cmd_status "$@"; return $? ;;
+        esac
+    fi
+
+    if [ "${command}" = "mcp" ] && [ "$#" -eq 0 ] && {
+        { [ -n "${SIGV4_PROXY_TARGET:-}" ] && [ -n "${SIGV4_PROXY_PORT:-}" ]; } || [ -n "${ADP_CREW_TOOLS_URL:-}" ];
+    }; then
+        if [ -n "${requested_deployment}${requested_tenant}" ]; then
+            print_error "Proxy-mode MCP uses its workload binding; laptop deployment and tenant selectors are not supported."
+            return 1
+        fi
+        exec_python_helper "adp-mcp.py"
+        return
+    fi
+
     local validate_knowledge=false
     case "${command}:${1:-}" in
         knowledge:show|knowledge:delete|knowledge:status|knowledge:watch|knowledge:reindex)
@@ -2057,14 +2441,23 @@ main() {
             fi
             ;;
         help|--help|-h|version|--version|-v|"") ;;
-        *) resolve_deployment "${requested_deployment}" ;;
+        *) resolve_deployment "${requested_deployment}" "${command}" ;;
     esac
 
     # Tenant selection is separate from deployment and never changes Cognito's
     # global workspace. Repair/local commands remain usable without a tenant.
     local local_tool_setup=false
     case "${command}:${1:-}" in
-        codex:setup|claude:setup|hermes:setup)
+        credential:use|credential:delivery-status|credential:host-setup|credential:host-register|credential:host-serve)
+            # Private delivery authenticates its native session directly. A
+            # generic tenant/proxy namespace cannot replace canonical authority.
+            if [ -n "${requested_tenant}${ADP_TENANT:-}${ADP_TENANT_ID:-}" ]; then
+                print_error "Native credential delivery uses the signed login's current tenant; tenant selectors are unsupported."
+                return 1
+            fi
+            local_tool_setup=true
+            ;;
+        codex:setup|claude:setup|claude-desktop:setup|hermes:setup|tools:logout|tools:status|mcp:configure|mcp:operations)
             # Offline configuration needs no membership lookup. An explicit
             # selector still requests the selected tenant's proxy namespace.
             if [ -z "${requested_tenant}${ADP_TENANT:-}${ADP_TENANT_ID:-}" ]; then
@@ -2085,6 +2478,11 @@ main() {
                 exit 1
             fi
         fi
+    fi
+    if [ "${command}" = "flow" ] && [ "${1:-}" = "amendment" ] && [ "$#" -le 3 ]; then
+        case "${!#}" in
+            --help|-h) local_tool_setup=true ;;
+        esac
     fi
     case "${command}" in
         deployment|help|--help|-h|version|--version|-v|login|logout|import|refresh|update|status|tenant|access|platform|daemon|"")
@@ -2113,7 +2511,13 @@ main() {
                 if [ -f "$(adp_dir)/adp-tenant.py" ]; then
                     tenant_exports="$(python3 "$(adp_dir)/adp-tenant.py" --resolve-env "${requested_tenant}" ${tenant_format})" || tenant_status=$?
                     if [ "${tenant_status}" -ne 0 ]; then
-                        if [ -n "${tenant_exports}" ]; then printf '%s\n' "${tenant_exports}"; fi
+                        if [ -n "${tenant_exports}" ]; then
+                            if [ "${command}" = "mcp" ]; then
+                                printf '%s\n' "${tenant_exports}" >&2
+                            else
+                                printf '%s\n' "${tenant_exports}"
+                            fi
+                        fi
                         return "${tenant_status}"
                     fi
                     eval "${tenant_exports}"
@@ -2160,13 +2564,25 @@ main() {
         access) exec_python_helper "adp-access.py" access "$@" ;;
         ratelimit) exec_python_helper "adp-ratelimit.py" ratelimit "$@" ;;
         budget)  exec_python_helper "adp-budget.py" budget "$@" ;;
-        credential) exec_python_helper "adp-vault.py" credential "$@" ;;
+        credential)
+            case "${1:-}" in
+                host-register|host-serve)
+                    exec python3 -I "$(adp_dir)/adp-native-credential-host.py" "$@" ;;
+                use|delivery-status|host-setup)
+                    exec python3 -I "$(adp_dir)/adp-native-credentials.py" "$@" ;;
+                *) exec_python_helper "adp-vault.py" credential "$@" ;;
+            esac ;;
         identity) exec_python_helper "adp-vault.py" identity "$@" ;;
         usage)   exec_python_helper "adp-usage.py" usage "$@" ;;
         logs)    exec_python_helper "adp-usage.py" logs "$@" ;;
         agent)   exec_python_helper "adp-agent.py" "$@" ;;
         knowledge) exec_python_helper "adp-knowledge.py" knowledge "$@" ;;
+        product) exec_python_helper "adp-product.py" "$@" ;;
+        onboard) exec_python_helper "adp-onboard.py" "$@" ;;
+        insights) exec_python_helper "adp-insights.py" "$@" ;;
+        service) exec_python_helper "adp-service.py" "$@" ;;
         chat)    exec_python_helper "adp-chat.py" "$@" ;;
+        devbox)  exec_python_helper "adp-devbox.py" "$@" ;;
         task)    exec_python_helper "adp-task.py" "$@" ;;
         flow)    exec_python_helper "adp-flow.py" "$@" ;;
         # Capability discovery and diagnosis (Issue #5621). Both verbs are reads
@@ -2179,8 +2595,23 @@ main() {
                  exec_python_helper "adp-doctor.py" "${command}" "$@" ;;
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
+        tools)   case "${1:-}" in
+                     logout) shift; cmd_tools_logout "$@" ;;
+                     status) shift; if [ "${1:-}" = "--access" ]; then
+                                 shift; exec_python_helper "adp-doctor.py" "doctor" "--checks" "tools-access" "$@"
+                             else
+                                 cmd_status "$@"
+                             fi ;;
+                     *) print_error "Usage: adp tools status [--access [--json]]|logout"; return 1 ;;
+                 esac ;;
+        mcp)     if [ "${1:-}" = "configure" ]; then
+                     shift; cmd_mcp_configure "$@"
+                 else
+                     exec python3 "$(adp_dir)/adp-mcp.py" "$@"
+                 fi ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.
-        logout|token|refresh|serve)
+        logout) clear_gitlab_session; core logout "$@" ;;
+        token|refresh|serve)
                  core "${command}" "$@" ;;
         # `import` establishes a session, like `login`, so it gets login's
         # URL-vs-selection check rather than going straight through.
@@ -2206,6 +2637,12 @@ main() {
                 setup) shift; cmd_claude_setup "$@" ;;
                 --)    shift; cmd_claude_launch "$@" ;;
                 *)     cmd_claude_launch "$@" ;;
+            esac
+            ;;
+        claude-desktop)
+            case "${1:-}" in
+                setup) shift; cmd_claude_desktop_setup "$@" ;;
+                *) print_error "Usage: adp claude-desktop setup [--check] [--json]"; return 1 ;;
             esac
             ;;
         hermes)

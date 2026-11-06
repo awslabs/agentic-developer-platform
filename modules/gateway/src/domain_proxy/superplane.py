@@ -170,6 +170,29 @@ async def installation_support():
     }
 
 
+async def _domain_authorization(authorization: str) -> str:
+    """Bridge a verified tenant envelope only when its tenant is unchanged.
+
+    Superplane independently verifies the original Cognito token. Until the
+    domain can verify selected-tenant leases, a different selection must refuse
+    here rather than silently sending the request to the Cognito home tenant.
+    """
+    from src.auth.middleware import validate_cognito_jwt
+    from src.auth.tenant_context import apply_context, split_token
+
+    token, lease = split_token(authorization[7:])
+    if lease is None:
+        return authorization
+    original = await validate_cognito_jwt("Bearer " + token)
+    selected = await apply_context(original, lease)
+    if selected.org_id != original.org_id:
+        raise HTTPException(
+            409,
+            {"error": "superplane_tenant_context_unavailable", "message": "Superplane cannot yet serve this selected account."},
+        )
+    return "Bearer " + token
+
+
 async def _proxy_to_domain(request: Request, native_path: str, *, content: bytes | None = None, before_send=None) -> Response:
     active = await asyncio.to_thread(enabled)
     config = await asyncio.to_thread(registration)
@@ -194,6 +217,7 @@ async def _proxy_to_domain(request: Request, native_path: str, *, content: bytes
         async with httpx.AsyncClient(timeout=30, follow_redirects=False, trust_env=False) as client:
             if before_send is not None:
                 await before_send()
+            headers["Authorization"] = await _domain_authorization(authorization)
             async with client.stream(
                 request.method,
                 target,
@@ -358,6 +382,57 @@ async def register_governed_account(body, request, token, db, secrets, org_id):
 
     response = await _proxy_to_domain(request, "/accounts", content=json.dumps(content).encode(), before_send=before_send)
     return _public_account_response(response, role_arn=record["role_arn"], external_id=secret["external_id"])
+
+
+@router.get("/v1/workspaces/{workspace_id}/provider-authority")
+async def observe_workspace_provider(
+    workspace_id: str,
+    request: Request,
+    token: TokenContext = Depends(get_current_user_context),
+    db: AsyncSession = Depends(get_db),
+    secrets: SecretsManagerHelper = Depends(get_secrets_manager),
+):
+    from datetime import UTC, datetime, timedelta
+    from uuid import UUID
+
+    from src.internal.domain_provider_authority import read_report, require, resolve
+    from src.shared.domain_provider_contract import reserved
+
+    try:
+        require(str(UUID(workspace_id)) == workspace_id)
+    except ValueError:
+        raise HTTPException(404, "Not found") from None
+    require(token.account_type == "human")
+    response = await _proxy_to_domain(request, f"/workspaces/{workspace_id}/provider-authority")
+    if response.status_code != 200:
+        return response
+    metadata = json.loads(response.body)
+    require(metadata.get("workspace_id") == workspace_id)
+    if metadata.get("managed") is False:
+        return metadata
+    credential_id = metadata.get("credential_id", "")
+    require(metadata.get("managed") is True and reserved(credential_id))
+    args = {
+        "subject": token.user_id,
+        "adp_org_id": await resolve_effective_org_id(token, db),
+        "org_id": metadata["org_id"],
+        "workspace_id": workspace_id,
+    }
+    record = await resolve(db, secrets, credential_id, **args)
+    require(record["account_id"] == metadata["account_id"])
+    try:
+        report = await asyncio.to_thread(read_report, record, None, include_reading=True)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        report = None
+    require(await resolve(db, secrets, credential_id, **args) == record)
+    return {
+        **metadata,
+        "validation": report,
+        "expires_at": record["expires_at"],
+        "admits_new_work": datetime.fromisoformat(record["expires_at"]) > datetime.now(UTC) + timedelta(seconds=900),
+    }
 
 
 @router.post("/v1/provider-authorities/{credential_id}/validation")

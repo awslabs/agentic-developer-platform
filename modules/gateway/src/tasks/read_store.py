@@ -83,6 +83,8 @@ class TaskRecord:
     execution_health: str = "healthy"
     recovery_required: bool = False
     external_reference: str | None = None
+    product_id: str | None = None
+    project_id: str | None = None
     result: dict | None = None
     error: dict | None = None
     input_request: dict | None = None

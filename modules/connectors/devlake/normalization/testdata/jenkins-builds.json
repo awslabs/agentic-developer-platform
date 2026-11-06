@@ -1,0 +1,21 @@
+[
+  {
+    "_class": "hudson.model.FreeStyleBuild", "number": 7,
+    "result": "SUCCESS", "building": false, "duration": 42000,
+    "timestamp": 1735689600000,
+    "actions": [
+      {"lastBuiltRevision": {"SHA1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "branch": [{"name": "main"}]}, "remoteUrls": ["https://example.org/team/api.git"]},
+      {"lastBuiltRevision": {"SHA1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "branch": [{"name": "main"}]}, "remoteUrls": ["https://example.org/team/library.git"]}
+    ]
+  },
+  {
+    "_class": "hudson.model.FreeStyleBuild", "number": 8,
+    "result": "UNSTABLE", "building": false, "duration": 1500,
+    "timestamp": 1735689660000, "actions": []
+  },
+  {
+    "_class": "hudson.model.FreeStyleBuild", "number": 9,
+    "result": "SUCCESS", "building": true, "duration": 0,
+    "timestamp": 1735689720000, "actions": []
+  }
+]

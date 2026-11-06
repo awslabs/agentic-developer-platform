@@ -21,18 +21,23 @@ from .definitions import (
     DEFINITION_HASH,
     STORIES,
     TESTS,
+    PRODUCT_STORIES,
+    PRODUCT_TESTS,
     definition,
+    fixture_source_paths,
     fixture_test,
+    fixture_test_path,
 )
 from .faults import CASES, execute_case, inject
 from .http import Client, Unsupported
 from .manifest import load_manifest, verify_checkout
-from .providers import IssueProvider
+from .providers import IssueProvider, ensure_native_parent
 
 
 def build_plan(config, manifest, qualification_id, issues):
     """A fixed chain. An operator supplies policy/evaluation, never graph edges."""
     prefix = f"{qualification_id}/delivery/qualification/"
+    product_epic = config.product_epic
     nodes = [
         dict(
             address=prefix + "first",
@@ -58,10 +63,20 @@ def build_plan(config, manifest, qualification_id, issues):
             issue_ref=str(issues[1]),
         ),
     ]
+    if product_epic:
+        for node, target in zip((nodes[0], nodes[3]), product_epic.stories):
+            node.update(
+                repository_identity=target.repository,
+                provider_repository_id=target.repository_id,
+                repository_connection={
+                    "provider": "github",
+                    "installation_id": target.installation_id,
+                },
+            )
     policy = deepcopy(manifest.execution_policy)
     # The human graph gate is always retained, regardless of machine E2 mode.
     policy["evaluation_acceptance"] = {prefix + "verify": "machine"}
-    return dict(
+    plan = dict(
         flow_slug=qualification_id,
         title=f"[{qualification_id}] Bounded delivery qualification",
         org_id=config.org_ref,
@@ -73,6 +88,27 @@ def build_plan(config, manifest, qualification_id, issues):
             for a, b in zip(nodes, nodes[1:])
         ],
     )
+    if product_epic:
+        epic = product_epic.epic
+        reference = dict(
+            provider="github",
+            repository_id=epic.repository_id,
+            repository=epic.repository,
+            installation_id=epic.installation_id,
+            issue_number=product_epic.epic_issue_number,
+        )
+        plan.update(
+            product_id=product_epic.product_id,
+            origin_ref=reference,
+            tracker_refs=[
+                dict(
+                    scope="epic",
+                    address=f"{qualification_id}/delivery",
+                    issue=reference,
+                )
+            ],
+        )
+    return plan
 
 
 class FlowProvider:
@@ -134,13 +170,53 @@ class FlowProvider:
         if not slug.startswith("q-"):
             return None
         plans = self.client.get(f"/orchestration/flows/{resource_id}/plans")
-        if not any(
+        from .cleanup import qualification_from_slug
+
+        qualification_id = qualification_from_slug(slug)
+        product_epic = self.client.config.product_epic
+        if product_epic and slug == qualification_id:
+            current = [
+                p["plan_document"] for p in plans if p.get("superseded_at") is None
+            ]
+            if len(current) != 1:
+                return None
+            plan = current[0]
+            origin = plan.get("origin_ref") or {}
+            stories = [
+                node for node in plan.get("nodes", []) if node.get("kind") == "story"
+            ]
+            if (
+                graph.get("product_id") != product_epic.product_id
+                or plan.get("product_id") != product_epic.product_id
+                or plan.get("spec_revision") != DEFINITION_HASH
+                or origin.get("repository") != product_epic.epic.repository
+                or origin.get("repository_id") != product_epic.epic.repository_id
+                or origin.get("issue_number") != product_epic.epic_issue_number
+                or len(stories) != 2
+            ):
+                return None
+            for node, target in zip(stories, product_epic.stories):
+                if (
+                    node.get("repository_identity") != target.repository
+                    or node.get("provider_repository_id") != target.repository_id
+                    or (node.get("repository_connection") or {}).get("installation_id")
+                    != target.installation_id
+                ):
+                    return None
+        elif not any(
             p["plan_document"].get("spec_revision") == DEFINITION_HASH for p in plans
         ):
             return None
-        from .cleanup import qualification_from_slug
-
-        return self.client.config.ownership_tags(qualification_from_slug(slug))
+        if self.client.config.scenarios == ("legacy-attribution",) and (
+            graph.get("product_id") is not None
+            or any(
+                p["plan_document"].get("product_id") is not None
+                for p in plans
+                if p.get("superseded_at") is None
+            )
+        ):
+            return None
+        return self.client.config.ownership_tags(qualification_id)
 
     def delete(self, resource_id):
         from tests.e2e.orchestration.fixtures import RetainedAudit
@@ -220,9 +296,12 @@ class LiveSession:
         from .runtime import read_runtime
         from .delivery_resources import plan_resources
 
+        if self.config.product_epic:
+            self.client.verify_product_epic()
         plan_resources(self)
 
-        for component, target in self.manifest.runtime.items():
+        for component in ("engine", "worker"):
+            target = self.manifest.runtime[component]
             observed = read_runtime(self.client, target)
             self.actual_versions[component] = observed["actual_revision"]
             self.prerequisite_runtime[component] = observed
@@ -249,7 +328,9 @@ class LiveSession:
                 request.fixture_id,
                 self.config.ownership_tags(self.inventory.qualification_id),
             )
-            issues.append(record.observed_resource_id)
+            if self.config.product_epic:
+                ensure_native_parent(self.inventory, self.config, provider, record)
+            issues.append(record.observed_resource_id.rsplit("#", 1)[-1])
         plan = build_plan(
             self.config, self.manifest, self.inventory.qualification_id, issues
         )
@@ -333,8 +414,37 @@ class LiveSession:
                     and ref not in self.runtime_observations
                 ):
                     try:
+                        component = (
+                            ("api" if ref == "first" else "client")
+                            if self.config.product_epic
+                            else "engine"
+                        )
+                        target = self.manifest.runtime.get(component)
+                        if target is None:
+                            raise Unsupported(
+                                f"{ref}: reviewed source runtime target unavailable"
+                            )
+                        source = {}
+                        if self.config.product_epic and ref == "second":
+                            repository = self.config.story_repository(2)
+                            binding = by_ref[ref]["bound_pull_request"]
+                            if binding["repo"] != repository:
+                                raise Unsupported(
+                                    "client PR repository differs from its owned fixture"
+                                )
+                            pull_request = self.client.get(
+                                f"/repos/{repository}/pulls/{binding['pr_number']}",
+                                github=True,
+                            )
+                            if not pull_request.get("merged"):
+                                raise Unsupported("client source PR is not merged")
+                            source = {
+                                "repository": repository,
+                                "source_revision": pull_request["merge_commit_sha"],
+                                "workflow_path": self.manifest.source_workflows[ref],
+                            }
                         self.runtime_observations[ref] = read_runtime(
-                            self.client, self.manifest.runtime["engine"]
+                            self.client, target, **source
                         )
                     except (Unsupported, AssertionError, KeyError) as exc:
                         self.observation_errors[ref] = type(exc).__name__
@@ -345,10 +455,16 @@ class LiveSession:
             ):
                 try:
                     runtime = read_runtime(self.client, self.manifest.runtime["engine"])
+                    expected = (
+                        self.config.versions["engine"]
+                        if self.config.product_epic
+                        else self.runtime_observations.get("first", {}).get(
+                            "actual_revision"
+                        )
+                    )
                     if (
                         "first" not in self.runtime_observations
-                        or runtime["actual_revision"]
-                        != self.runtime_observations["first"]["actual_revision"]
+                        or runtime["actual_revision"] != expected
                     ):
                         raise Unsupported(
                             "parity target differs from the first story deployment"
@@ -390,24 +506,27 @@ class LiveSession:
     def pull_requests(self, data):
         result = []
         for ref in ("first", "second"):
+            index = 1 if ref == "first" else 2
+            repository = self.config.story_repository(index)
             node = next(n for n in data["graph"]["nodes"] if n["node_ref"] == ref)
             binding = node.get("bound_pull_request") or {}
-            if binding.get("repo") != self.config.repository:
+            if binding.get("repo") != repository:
                 raise Unsupported(
                     "bound pull request does not belong to the approved repository"
                 )
             number = binding.get("pr_number") or binding.get("number")
             if not isinstance(number, int):
                 raise Unsupported(f"{ref}: genuine pull-request binding unavailable")
-            path = f"/repos/{self.config.repository}/pulls/{number}"
+            path = f"/repos/{repository}/pulls/{number}"
             pr = self.client.get(path, github=True)
             assert binding["head_sha"] == pr["head"]["sha"]
-            test_path = (
-                f"modules/gateway/tests/qualification/{self.inventory.qualification_id}/"
-                + ("test_pricing.py" if ref == "first" else "test_quote.py")
+            test_path = fixture_test_path(
+                index - 1,
+                self.inventory.qualification_id,
+                product=self.config.product_epic is not None,
             )
             content = self.client.get(
-                f"/repos/{self.config.repository}/contents/{test_path}?ref={pr['head']['sha']}",
+                f"/repos/{repository}/contents/{test_path}?ref={pr['head']['sha']}",
                 github=True,
             )
             result.append(
@@ -417,7 +536,7 @@ class LiveSession:
                     "files": self.client.pages(path + "/files"),
                     "test_definition": base64.b64decode(content["content"]).decode(),
                     "checks": self.client.pages(
-                        f"/repos/{self.config.repository}/commits/{pr['head']['sha']}/check-runs",
+                        f"/repos/{repository}/commits/{pr['head']['sha']}/check-runs",
                         key="check_runs",
                     ),
                 }
@@ -496,7 +615,7 @@ class LiveSession:
                         )
                         if action.get("correlation") and action.get("workflow_run_id"):
                             runs = self.client.pages(
-                                f"/repos/{self.config.repository}/actions/runs?head_sha={action['source_revision']}",
+                                f"/repos/{self.config.story_repository(1)}/actions/runs?head_sha={action['source_revision']}",
                                 key="workflow_runs",
                             )
                             observation["remote"] = {
@@ -653,10 +772,9 @@ class LiveSession:
                     invocation = self.client.get(
                         "/me/agent-invocations/" + completed[0]["invocation_id"]
                     )
-                    if (
-                        invocation["correlation_id"] != first["run_id"]
-                        or invocation["repo"] != self.config.repository
-                    ):
+                    if invocation["correlation_id"] != first["run_id"] or invocation[
+                        "repo"
+                    ] != self.config.story_repository(1):
                         raise Unsupported("normal worker exit has a foreign lineage")
                     before = native.request(execution["id"], "read")["after"]
                     self.fault_observations["wait-exit"] = {
@@ -669,16 +787,15 @@ class LiveSession:
                         "gateway:authenticated-invocation-read",
                     )
             binding = first.get("bound_pull_request") or {}
-            if (
-                "failed-ci" not in self.fault_observations
-                and binding.get("repo") == self.config.repository
-            ):
+            if "failed-ci" not in self.fault_observations and binding.get(
+                "repo"
+            ) == self.config.story_repository(1):
                 pr = self.client.get(
-                    f"/repos/{self.config.repository}/pulls/{binding['pr_number']}",
+                    f"/repos/{self.config.story_repository(1)}/pulls/{binding['pr_number']}",
                     github=True,
                 )
                 checks = self.client.pages(
-                    f"/repos/{self.config.repository}/commits/{pr['head']['sha']}/check-runs",
+                    f"/repos/{self.config.story_repository(1)}/commits/{pr['head']['sha']}/check-runs",
                     key="check_runs",
                 )
                 if any(
@@ -803,8 +920,30 @@ class LiveSession:
         return {"harness": self.config.versions["harness"], **self.actual_versions}
 
     def deployments(self, prs):
+        if len(prs) != 2:
+            raise Unsupported("two source PRs are required for deployment evidence")
+        if self.config.product_epic and (
+            set(self.manifest.runtime) != {"engine", "worker", "api", "client"}
+            or set(self.manifest.source_workflows) != {"first", "second"}
+        ):
+            raise Unsupported(
+                "reviewed Product source runtime and workflow targets unavailable"
+            )
         observations = []
-        for ref, row in zip(("first", "second"), prs):
+        if self.config.product_epic:
+            for ref in ("first", "second"):
+                if ref not in self.runtime_observations:
+                    raise Unsupported(
+                        f"{ref}: actual runtime not observed at the delivery barrier"
+                    )
+            from .runtime import read_runtime
+
+            engine = read_runtime(self.client, self.manifest.runtime["engine"])
+            if engine["actual_revision"] != self.config.versions["engine"]:
+                raise Unsupported(
+                    "engine runtime differs from the reviewed stable revision"
+                )
+        for index, (ref, row) in enumerate(zip(("first", "second"), prs), 1):
             pr = row["pr"]
             if ref not in self.runtime_observations:
                 raise Unsupported(
@@ -812,22 +951,72 @@ class LiveSession:
                 )
             runtime = self.runtime_observations[ref]
             assert runtime["actual_revision"] == pr["merge_commit_sha"]
+            if self.config.product_epic:
+                current = read_runtime(
+                    self.client,
+                    self.manifest.runtime["api" if index == 1 else "client"],
+                    **(
+                        {
+                            "repository": self.config.story_repository(index),
+                            "source_revision": pr["merge_commit_sha"],
+                            "workflow_path": self.manifest.source_workflows[ref],
+                        }
+                        if index == 2
+                        else {}
+                    ),
+                )
+                assert (current["actual_revision"], current["digest"]) == (
+                    runtime["actual_revision"],
+                    runtime["digest"],
+                )
+                if index == 2:
+                    assert all(
+                        current[key] == runtime[key]
+                        for key in (
+                            "job_uid",
+                            "pods",
+                            "workflow_run_id",
+                            "workflow_run_attempt",
+                        )
+                    )
+                runtime = current
+            repository = self.config.story_repository(index)
             runs = self.client.pages(
-                f"/repos/{self.config.repository}/actions/runs?head_sha={pr['merge_commit_sha']}",
+                f"/repos/{repository}/actions/runs?head_sha={pr['merge_commit_sha']}",
                 key="workflow_runs",
             )
-            deployments = [
-                r for r in runs if r["path"] in self.manifest.deployment_workflows
-            ]
-            assert {r["path"] for r in deployments} == set(
-                self.manifest.deployment_workflows
+            required = (
+                {self.manifest.source_workflows[ref]}
+                if self.config.product_epic
+                else set(self.manifest.deployment_workflows)
             )
+            deployments = [run for run in runs if run["path"] in required]
+            assert {run["path"] for run in deployments} == required
             assert all(
-                r["head_sha"] == pr["merge_commit_sha"] and r["conclusion"] == "success"
-                for r in deployments
+                run["head_sha"] == pr["merge_commit_sha"]
+                and run["conclusion"] == "success"
+                and (
+                    not self.config.product_epic
+                    or (
+                        run.get("status") == "completed"
+                        and run.get("repository", {}).get("full_name") == repository
+                        and isinstance(run.get("id"), int)
+                        and isinstance(run.get("run_attempt"), int)
+                    )
+                )
+                for run in deployments
             )
+            if self.config.product_epic:
+                assert runtime["kind"] == ("deployment" if index == 1 else "job")
+                if index == 2:
+                    assert any(
+                        run["id"] == runtime["workflow_run_id"]
+                        and run["run_attempt"] == runtime["workflow_run_attempt"]
+                        for run in deployments
+                    )
             observations.append(
                 {
+                    "repository": repository,
                     "source_revision": pr["merge_commit_sha"],
                     "runtime": runtime,
                     "workflows": deployments,
@@ -908,6 +1097,21 @@ def assert_dependency(samples):
     )
 
 
+def assert_fixture_prs(config, qualification_id, prs):
+    assert len(prs) == 2
+    for index, row in enumerate(prs):
+        product = config.product_epic is not None
+        assert row["test_definition"] == fixture_test(
+            index, qualification_id, product=product
+        )
+        files = {file["filename"] for file in row["files"]}
+        assert all(
+            path in files
+            for path in fixture_source_paths(index, qualification_id, product=product)
+        )
+        assert fixture_test_path(index, qualification_id, product=product) in files
+
+
 def execute(config, inventory, providers, *, session_factory=LiveSession):
     if not __debug__:
         raise RuntimeError("qualification assertions require Python without -O")
@@ -919,6 +1123,11 @@ def execute(config, inventory, providers, *, session_factory=LiveSession):
         "manifest": manifest.model_dump(mode="json"),
         "stories": STORIES,
         "tests": TESTS,
+        **(
+            {"product_stories": PRODUCT_STORIES, "product_tests": PRODUCT_TESTS}
+            if config.product_epic is not None
+            else {}
+        ),
     }
     evidence.save("accepted-inputs", pinned, "reviewed-harness:pre-execution")
     session = session_factory(config, manifest, inventory, providers)
@@ -968,23 +1177,7 @@ def execute(config, inventory, providers, *, session_factory=LiveSession):
         def development():
             nonlocal prs
             prs = session.pull_requests(data)
-            for index, row in enumerate(prs):
-                assert row["test_definition"] == fixture_test(
-                    index, inventory.qualification_id
-                )
-                files = {f["filename"] for f in row["files"]}
-                assert (
-                    f"modules/gateway/src/qualification/{inventory.qualification_id}/"
-                    + ("pricing.py" if index == 0 else "quote.py")
-                    in files
-                )
-                assert any(
-                    "test" in f
-                    and f.startswith(
-                        f"modules/gateway/tests/qualification/{inventory.qualification_id}/"
-                    )
-                    for f in files
-                )
+            assert_fixture_prs(config, inventory.qualification_id, prs)
             return {
                 "plan": session.plan_artifact,
                 "code": evidence.save(

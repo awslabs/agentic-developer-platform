@@ -259,6 +259,11 @@ async def resolve_review_context(
     # server-registered binding, so a reviewer naming another pull request is
     # refused by the validator rather than believed.
     binding = await resolve_expected_subject(session, org_id=org_id, node_id=node_id, attempt=attempt)
+    if binding.installation_id != installation_id:
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.REPOSITORY_MISMATCH,
+            "The reviewer's installation does not own the story's bound pull request.",
+        )
 
     try:
         pr = await resolve_pr_identity(org_id=org_id, installation_id=installation_id, repo=binding.repo, pr_number=binding.pr_number)
@@ -271,7 +276,11 @@ async def resolve_review_context(
             ReviewEvidenceRefusal.HEAD_UNVERIFIED,
             "The pull request's current head could not be read from the provider, so this review cannot be bound to an exact revision.",
         ) from None
-    if pr.provider_repository_id != binding.provider_repository_id or pr.provider_pr_node_id != binding.provider_pr_node_id:
+    if (
+        pr.provider_repository_id != binding.provider_repository_id
+        or pr.provider_pr_node_id != binding.provider_pr_node_id
+        or pr.repo.casefold() != binding.repo.casefold()
+    ):
         raise ReviewEvidenceError(
             ReviewEvidenceRefusal.REPOSITORY_MISMATCH,
             "The bound pull request's immutable identity no longer matches the provider, so the binding cannot be trusted.",

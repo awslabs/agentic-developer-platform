@@ -20,6 +20,9 @@ def prepare(root, environment, region):
     for module in ('platform', 'gateway', 'webhook-ingress'):
         source = templates / f'{module}.tfvars'
         content = source.read_text()
+        if module == 'gateway' and re.search(r'^\s*create_test_users\s*=\s*true\b', content, re.M):
+            raise ValueError('Portable releases must disable create_test_users; use an operator-selected bootstrap administrator. '
+                             'Dev/test fixtures require an explicit target-specific override after preparation.')
         if re.search(r'(?<![0-9])[0-9]{12}(?![0-9])', content):
             raise ValueError(f'Portable {module} defaults contain an AWS account ID')
         target = destination / ('platform.tfvars' if module == 'platform' else f'modules/{module}.tfvars')

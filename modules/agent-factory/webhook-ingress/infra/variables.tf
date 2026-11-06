@@ -4,6 +4,16 @@ variable "environment" {
   default     = "dev"
 }
 
+variable "webhook_execution_boundary_arn" {
+  description = "Operator-owned permission ceiling required before admitting code-only webhook publishing."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.webhook_execution_boundary_arn == null ? true : can(regex("^arn:aws:iam::[0-9]{12}:policy/adp-[a-z0-9-]+-webhook-execution-boundary$", var.webhook_execution_boundary_arn))
+    error_message = "Supply the exact operator-owned webhook execution boundary ARN."
+  }
+}
+
 variable "aws_region" {
   description = "AWS region for resources"
   type        = string

@@ -18,7 +18,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 # Valid visibility values per design §9.1
-VALID_VISIBILITIES = ("shared", "tenant", "personal")
+VALID_VISIBILITIES = ("shared", "tenant", "personal", "product")
 
 
 @dataclass(frozen=True)
@@ -29,13 +29,15 @@ class IngestionScope:
         tenant_id: Organization-level isolation key (None = shared corpus).
         owner_sub: User-level isolation key (canonical users.id UUID; None = not personal).
         project_id: Project-level grouping (None = unscoped).
-        visibility: One of "shared", "tenant", "personal".
+        product_id: Product ownership, independent of delivery Projects.
+        visibility: One of "shared", "tenant", "personal", "product".
     """
 
     tenant_id: str | None = None
     owner_sub: str | None = None
     project_id: str | None = None
     visibility: str = "shared"
+    product_id: str | None = None
 
     @property
     def is_shared(self) -> bool:
@@ -52,9 +54,13 @@ class IngestionScope:
         """True when scope is personal (user-level isolation)."""
         return self.visibility == "personal"
 
+    @property
+    def is_product(self) -> bool:
+        return self.visibility == "product"
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON encoding."""
-        return asdict(self)
+        return {key: value for key, value in asdict(self).items() if key != "product_id" or value is not None}
 
     def to_env(self) -> dict[str, str]:
         """Export scope as INGESTION_SCOPE_* environment variables for subprocesses."""
@@ -63,6 +69,7 @@ class IngestionScope:
             "INGESTION_SCOPE_TENANT_ID": self.tenant_id or "",
             "INGESTION_SCOPE_OWNER_SUB": self.owner_sub or "",
             "INGESTION_SCOPE_PROJECT_ID": self.project_id or "",
+            "INGESTION_SCOPE_PRODUCT_ID": self.product_id or "",
         }
 
 
@@ -87,7 +94,7 @@ def parse_scope(raw: dict[str, Any] | None) -> IngestionScope:
     if visibility not in VALID_VISIBILITIES:
         raise ScopeValidationError(f"scope.visibility={visibility!r} is not one of {VALID_VISIBILITIES}")
     identifiers = {}
-    for field in ("tenant_id", "owner_sub", "project_id"):
+    for field in ("tenant_id", "owner_sub", "project_id", "product_id"):
         value = raw.get(field)
         if value in (None, ""):
             identifiers[field] = None
@@ -99,6 +106,13 @@ def parse_scope(raw: dict[str, Any] | None) -> IngestionScope:
         raise ScopeValidationError("scope.visibility=tenant but tenant_id is missing")
     if visibility == "personal" and not identifiers["owner_sub"]:
         raise ScopeValidationError("scope.visibility=personal but owner_sub is missing")
+    if visibility == "product":
+        if not identifiers["tenant_id"] or not identifiers["product_id"]:
+            raise ScopeValidationError("Product scope requires tenant_id and product_id")
+        if identifiers["owner_sub"] or identifiers["project_id"]:
+            raise ScopeValidationError("Product scope cannot carry personal or Project ownership")
+    elif identifiers["product_id"]:
+        raise ScopeValidationError("product_id requires Product visibility")
     if visibility == "shared" and (identifiers["tenant_id"] or identifiers["owner_sub"]):
         raise ScopeValidationError("shared scope cannot carry tenant or owner restrictions")
     return IngestionScope(visibility=visibility, **identifiers)
@@ -114,6 +128,7 @@ def parse_scope_from_env() -> IngestionScope:
             "tenant_id": os.environ.get("INGESTION_SCOPE_TENANT_ID"),
             "owner_sub": os.environ.get("INGESTION_SCOPE_OWNER_SUB"),
             "project_id": os.environ.get("INGESTION_SCOPE_PROJECT_ID"),
+            "product_id": os.environ.get("INGESTION_SCOPE_PRODUCT_ID"),
         }
     )
 
@@ -146,6 +161,8 @@ def compute_s3_prefix(scope: IngestionScope, base_prefix: str) -> str:
     else:
         leaf = base_prefix
 
+    if scope.is_product:
+        return f"tenants/{scope.tenant_id}/products/{scope.product_id}/{leaf}"
     if scope.is_tenant:
         return f"tenants/{scope.tenant_id}/{leaf}"
     elif scope.is_personal:
@@ -153,3 +170,20 @@ def compute_s3_prefix(scope: IngestionScope, base_prefix: str) -> str:
 
     # Fallback (shouldn't reach here due to validation in parse_scope)
     return base_prefix
+
+
+def asset_storage_prefix(scope: IngestionScope, base_prefix: str, asset_id: str | None) -> str:
+    """Product artifacts belong to a registration, never to a globally named source."""
+    prefix = compute_s3_prefix(scope, base_prefix)
+    if scope.is_product or asset_id:
+        if not isinstance(asset_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", asset_id):
+            raise ScopeValidationError("Registered ingestion requires a safe registry_asset_id")
+        if scope.is_product or scope.is_personal:
+            return f"{prefix}/assets/{asset_id}"
+    return prefix
+
+
+def validate_ingestion_attempt(value: str | None) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value):
+        raise ScopeValidationError("Registered ingestion requires a safe ingestion_attempt_id")
+    return value

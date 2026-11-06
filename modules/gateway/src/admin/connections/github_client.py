@@ -171,11 +171,51 @@ class GitHubAppClient:
         resp.raise_for_status()
         return resp.json().get("token", "")
 
+    async def get_installation_repository(self, installation_id: int, repository_id: int) -> dict[str, Any]:
+        """Read a repository by immutable ID with this installation's authority."""
+        token = await self.get_installation_token(installation_id)
+        if not token:
+            raise ValueError("installation access token unavailable")
+        resp = await self._http_client.get(
+            f"/repositories/{repository_id}",
+            headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def installation_request(self, installation_id: int, method: str, path: str, *, body: dict | None = None) -> dict[str, Any]:
+        """Call a fixed GitHub REST path using only this installation's authority."""
+        token = await self.get_installation_token(installation_id)
+        if not token:
+            raise ValueError("installation access token unavailable")
+        response = await self._http_client.request(
+            method,
+            path,
+            headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
+            json=body,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def list_installation_repositories_page(self, installation_id: int, page: int, limit: int) -> dict[str, Any]:
+        """Read one bounded page with the installation's repository permissions."""
+        token = await self.get_installation_token(installation_id)
+        if not token:
+            raise ValueError("installation access token unavailable")
+        response = await self._http_client.get(
+            "/installation/repositories",
+            headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
+            params={"per_page": limit, "page": page},
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def create_issue_comment(
         self,
         *,
         installation_id: int,
         repo: str,
+        repository_id: int,
         issue_number: int,
         body: str,
     ) -> None:
@@ -185,21 +225,34 @@ class GitHubAppClient:
         command gets a visible confirmation or a visible refusal reason, and this is
         how that reply is delivered.
 
-        Authenticated with an installation token rather than the App JWT, because a
-        JWT identifies the App and cannot write to a repository — the same
-        `Authorization: token` shape `check_org_membership` uses.
+        Authenticated with an installation token restricted to the verified repository
+        ID and Issues write permission. The name-based API path may be reused after
+        verification; the narrow token then refuses a write to a different repository.
 
         Args:
             installation_id: The tenant's installation, resolved server-side. Never
                 taken from a webhook payload.
             repo: Full name, ``owner/name``.
+            repository_id: Verified immutable repository ID. Token issuance is limited
+                to this ID so a name reused before the POST cannot redirect the write.
             issue_number: The issue or PR the command arrived on.
             body: The comment text.
 
         Raises on HTTP errors, so a caller that must not fail because of an
         undelivered comment has to contain it (the tick's flush counts it).
         """
-        token = await self.get_installation_token(installation_id)
+        if type(repository_id) is not int or repository_id <= 0:
+            raise ValueError("verified repository ID required for issue comments")
+        from src.knowledge.github_app_service import mint_installation_token_with_expiry
+
+        token, _ = await mint_installation_token_with_expiry(
+            self._app_id,
+            self._private_key_pem,
+            installation_id,
+            repository_ids=[repository_id],
+            permissions={"issues": "write", "metadata": "read"},
+            http_client=self._http_client,
+        )
         resp = await self._http_client.post(
             f"/repos/{repo}/issues/{issue_number}/comments",
             headers={

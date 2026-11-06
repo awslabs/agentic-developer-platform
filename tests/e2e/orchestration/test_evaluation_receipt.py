@@ -41,6 +41,8 @@ def evidence(tmp_path):
         connection_ref="connection",
         expected_account_id="123456789012",
         repository="example/repository",
+        scenarios=(),
+        product_epic=None,
     )
     observations = [
         dict(

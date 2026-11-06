@@ -253,9 +253,8 @@ def build_app(
         return JSONResponse(status_code=exc.status_code, content={"error": exc.error, "message": exc.message})
 
     async def override_db():
-        # Never touched: the intake routes take `get_db` only through
-        # `get_access_control`, which is itself overridden below.
-        yield None
+        # Legacy sessions have no immutable Project association.
+        yield AsyncMock(get=AsyncMock(return_value=None))
 
     access = MagicMock(spec=AccessControl)
     if permitted:
@@ -908,6 +907,325 @@ class TestDerivingAPlanFromARefinedIntent:
         draft = {"intent": "Cut checkout latency", "outcomes": ["p95 under 400ms", "No conversion regression"]}
         draft.update(overrides)
         return {f"session#{SESSION}": draft}
+
+    def test_inaccessible_product_refuses_start_and_plan_before_issue_reads(self, monkeypatch):
+        from src.orchestration import intake_routes, repository_binding
+
+        checked = []
+
+        async def inaccessible(_db, **identity):
+            checked.append(identity)
+            return None
+
+        async def unexpected_issue(*_args, **_kwargs):
+            raise AssertionError("inaccessible Product must refuse before issue lookup")
+
+        monkeypatch.setattr(intake_routes, "product_member", inaccessible)
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", unexpected_issue)
+        http, ingest = self._client(
+            monkeypatch,
+            rows=[a_live_row(intake_repository="acme/api", intake_issue="13", intake_product_id="private-product")],
+            drafts=self._draft(),
+            installations=[(22, ["acme/api"], True)],
+        )
+        started = http.post(
+            SESSIONS,
+            json={
+                "message": "Build checkout",
+                "repository": "acme/api",
+                "issue": "13",
+                "product_id": "private-product",
+            },
+        )
+        planned = http.post(f"{SESSIONS}/{SESSION}/plan", json={})
+
+        assert [result.status_code for result in (started, planned)] == [422, 422]
+        assert [result.json()["detail"]["error"] for result in (started, planned)] == ["product_unavailable"] * 2
+        assert checked == [{"user_id": OWNER, "org_id": ORG, "account_type": "human", "is_platform_admin": False}] * 2
+        assert ingest.calls == []
+
+    def test_unreadable_issue_refuses_start_and_plan_without_dispatch(self, monkeypatch):
+        from src.orchestration import repository_binding
+        from src.orchestration.tracker_provider import GitHubTrackerProvider, TrackerProviderError
+
+        reads = []
+
+        async def unreadable(_provider, **target):
+            reads.append(("start", target["repo"], target["issue_number"]))
+            raise TrackerProviderError("issue unavailable")
+
+        async def unresolved(_db, **target):
+            reads.append(("plan", target["name"], target["issue"]))
+            raise repository_binding.RepositoryBindingError("repository_unavailable")
+
+        monkeypatch.setattr(GitHubTrackerProvider, "read_issue_body", unreadable)
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", unresolved)
+        http, ingest = self._client(
+            monkeypatch,
+            rows=[a_live_row(intake_repository="acme/api", intake_issue="13")],
+            drafts=self._draft(),
+            installations=[(22, ["acme/api"], True)],
+        )
+        started = http.post(SESSIONS, json={"message": "Build checkout", "repository": "acme/api", "issue": "13"})
+        planned = http.post(f"{SESSIONS}/{SESSION}/plan", json={})
+
+        assert [result.status_code for result in (started, planned)] == [422, 422]
+        assert [result.json()["detail"]["error"] for result in (started, planned)] == ["issue_unavailable", "repository_unavailable"]
+        assert reads == [("start", "acme/api", 13), ("plan", "acme/api", 13)]
+        assert ingest.calls == []
+
+    def test_preview_pins_a_verified_issue_to_the_selected_installation(self, monkeypatch):
+        from src.orchestration import repository_binding
+
+        calls = []
+
+        async def verify(_session, *, tenant_id, name, issue, installation_id, operation):
+            calls.append((tenant_id, name, issue, installation_id, operation))
+            return repository_binding.VerifiedRepository("github", 1001, name, installation_id, name, issue, operation)
+
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", verify)
+        http, _ = self._client(
+            monkeypatch,
+            rows=[a_live_row()],
+            drafts=self._draft(),
+            installations=[(11, ["acme/web"], False), (22, ["acme/web"], True)],
+        )
+        response = http.post(f"{SESSIONS}/{SESSION}/plan", json={"repository": "acme/web", "installation_id": 11, "issue": "42"})
+        assert response.status_code == 200, response.text
+        stories = [node for node in response.json()["proposal"]["nodes"] if node["kind"] == "story"]
+        assert {
+            (node["repository_identity"], node["provider_repository_id"], node["repository_connection"]["installation_id"]) for node in stories
+        } == {("acme/web", 1001, 11)}
+        assert response.json()["repository_verified_live"] is True
+        assert calls == [(ORG, "acme/web", 42, 11, "preview")]
+
+    def test_selected_product_survives_start_readback_and_plan(self, monkeypatch):
+        from src.orchestration import intake_routes
+
+        checked = []
+
+        async def check(_db, current_user, product_id):
+            checked.append((current_user.org_id, product_id))
+
+        monkeypatch.setattr(intake_routes, "_check_product", check)
+        http, ingest = self._client(monkeypatch, rows=[a_live_row(intake_product_id="product-1")], drafts=self._draft())
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from src.products.work_scope import ProjectAttribution
+
+        monkeypatch.setattr("src.products.routes.current_owner", AsyncMock(return_value=SimpleNamespace(id=OWNER)))
+        monkeypatch.setattr("src.products.work_scope.resolve_project", AsyncMock(return_value=ProjectAttribution(ORG, "product-1", "base-1", 1)))
+        monkeypatch.setattr("src.products.work_scope.bind_run", AsyncMock())
+        started = http.post(SESSIONS, json={"message": "Improve checkout", "product_id": "product-1"})
+        assert started.status_code == 202, started.text
+        assert ingest.payloads[0]["product_id"] == "product-1"
+        assert http.get(f"{SESSIONS}/{SESSION}").json()["product_id"] == "product-1"
+        plan = http.post(f"{SESSIONS}/{SESSION}/plan", json={"product_id": "product-1"})
+        assert plan.status_code == 200, plan.text
+        assert plan.json()["proposal"]["product_id"] == "product-1"
+        assert checked == [(ORG, "product-1"), (ORG, "product-1")]
+
+    def test_resumed_product_conflict_refuses_before_verification(self, monkeypatch):
+        from src.orchestration import intake_routes
+
+        async def unexpected(*_args):
+            raise AssertionError("conflicting Product must not be verified")
+
+        monkeypatch.setattr(intake_routes, "_check_product", unexpected)
+        http, _ = self._client(monkeypatch, rows=[a_live_row(intake_product_id="product-1")], drafts=self._draft())
+        response = http.post(f"{SESSIONS}/{SESSION}/plan", json={"product_id": "product-2"})
+        assert response.status_code == 422
+        assert response.json()["detail"]["error"] == "product_changed"
+
+    def test_epic_children_use_their_own_verified_repositories(self, monkeypatch):
+        from src.orchestration import intake_routes, repository_binding
+        from src.orchestration.tracker_provider import GitHubTrackerProvider
+
+        async def check(_db, _user, _product):
+            return None
+
+        async def verify(_db, *, tenant_id, name, issue, operation, installation_id=None):
+            assert tenant_id == ORG and operation == "preview"
+            identities = {"acme/planning": (100, 900, 11), "acme/api": (101, 901, 22), "acme/web": (102, 902, 33)}
+            repo_id, issue_id, installed = identities[name]
+            assert issue in {42, 13, 17}
+            return repository_binding.VerifiedRepository("github", repo_id, name, installed, name, issue, operation, issue_id)
+
+        async def children(_provider, **kwargs):
+            assert kwargs["repo"] == "acme/planning" and kwargs["repository_id"] == 100
+            assert kwargs["readable_repositories"] == ["acme/connected", "acme/planning"]
+            return [
+                {"repository_url": "https://api.github.com/repos/acme/api", "number": 13, "id": 901},
+                {"repository_url": "https://api.github.com/repos/acme/web", "number": 17, "id": 902},
+            ]
+
+        monkeypatch.setattr(intake_routes, "_check_product", check)
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", verify)
+        monkeypatch.setattr(GitHubTrackerProvider, "read_sub_issues", children)
+        http, _ = self._client(
+            monkeypatch,
+            rows=[a_live_row(intake_repository="acme/planning", intake_issue="42", intake_product_id="product-1")],
+            drafts=self._draft(),
+            installations=[(11, ["acme/planning", "acme/connected"], True), (99, ["other/private"], True)],
+        )
+        monkeypatch.delenv("BG_ORCH_DISPATCH_QUEUE_URL", raising=False)
+        monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "legacy/unrelated")
+        response = http.post(f"{SESSIONS}/{SESSION}/plan", json={})
+        assert response.status_code == 200, response.text
+        assert response.json()["prerequisites"] == []
+        proposal = response.json()["proposal"]
+        from src.orchestration.proposal import LoopProposal, validate_proposal
+
+        assert validate_proposal(LoopProposal.model_validate(proposal)) == []
+        assert proposal["product_id"] == "product-1"
+        assert proposal["tracker_refs"][0]["issue"]["repository"] == "acme/planning"
+        stories = [node for node in proposal["nodes"] if node["kind"] == "story"]
+        assert [(node["repository_identity"], node["issue_ref"], node["provider_repository_id"]) for node in stories] == [
+            ("acme/api", "13", 101),
+            ("acme/web", "17", 102),
+        ]
+        assert proposal["proposed_execution_policy"]["repository_ids"] == ["acme/api", "acme/web"]
+        assert response.json()["story_repositories"] == ["acme/api", "acme/web"]
+
+    @pytest.mark.parametrize("children_accessible", [True, False])
+    def test_real_native_discovery_preserves_child_bindings_or_refuses_hidden_children(self, monkeypatch, children_accessible):
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        from src.orchestration import intake_routes, repository_binding
+
+        monkeypatch.setattr(intake_routes, "_check_product", AsyncMock())
+        monkeypatch.setattr("src.knowledge.github_app_service.resolve_tenant_app_credentials", AsyncMock(return_value=("app", "key")))
+        minted_scopes = []
+
+        async def mint(_app, _key, installation, **kwargs):
+            assert installation == 11
+            assert kwargs["permissions"] == {"issues": "read", "metadata": "read"}
+            minted_scopes.append(kwargs["repositories"])
+            return "test-token", "expiry"
+
+        monkeypatch.setattr("src.knowledge.github_app_service.mint_installation_token_with_expiry", mint)
+
+        async def verify(_db, *, tenant_id, name, issue, operation, installation_id=None):
+            assert tenant_id == ORG and operation == "preview"
+            repo_id, issue_id = {"acme/planning": (100, 900), "acme/api": (101, 901), "acme/web": (102, 902)}[name]
+            return repository_binding.VerifiedRepository("github", repo_id, name, 11, name, issue, operation, issue_id)
+
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", verify)
+
+        def respond(request):
+            if request.url.path == "/repos/acme/planning":
+                return httpx.Response(200, json={"id": 100, "full_name": "acme/planning"})
+            if request.url.path == "/repos/acme/planning/issues/42":
+                return httpx.Response(200, json={"sub_issues_summary": {"total": 2}})
+            assert request.url.path == "/repos/acme/planning/issues/42/sub_issues"
+            children = [
+                {"repository_url": "https://api.github.com/repos/acme/api", "number": 13, "id": 901},
+                {"repository_url": "https://api.github.com/repos/acme/web", "number": 17, "id": 902},
+            ]
+            return httpx.Response(200, json=[c for c in children if c["repository_url"].rsplit("/", 1)[-1] in minted_scopes[-1]])
+
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            "src.orchestration.tracker_provider.httpx.AsyncClient",
+            lambda **kwargs: real_client(
+                transport=httpx.MockTransport(respond),
+                **kwargs,
+            ),
+        )
+        repos = ["acme/planning", "acme/api", "acme/web"] if children_accessible else ["acme/planning"]
+        http, ingest = self._client(
+            monkeypatch,
+            rows=[a_live_row(intake_repository="acme/planning", intake_issue="42", intake_product_id="product-1")],
+            drafts=self._draft(),
+            installations=[(11, repos, True), (99, ["foreign/secret"], True)],
+        )
+        monkeypatch.delenv("BG_ORCH_DISPATCH_QUEUE_URL", raising=False)
+        monkeypatch.delenv("BG_ORCH_DISPATCH_REPO", raising=False)
+        response = http.post(f"{SESSIONS}/{SESSION}/plan", json={})
+        assert ingest.calls == []
+        if children_accessible:
+            assert response.status_code == 200, response.text
+            data = response.json()
+            assert data["prerequisites"] == []
+            assert data["proposal"]["product_id"] == "product-1"
+            assert data["proposal"]["tracker_refs"][0]["issue"]["repository"] == "acme/planning"
+            assert [(n["repository_identity"], n["issue_ref"]) for n in data["proposal"]["nodes"] if n["kind"] == "story"] == [
+                ("acme/api", "13"),
+                ("acme/web", "17"),
+            ]
+            assert minted_scopes == [["api", "planning", "web"]]
+        else:
+            assert response.status_code == 422, response.text
+            assert response.json()["detail"]["error"] == "epic_children_unavailable"
+            assert "proposal" not in response.json()
+
+    def test_product_direct_story_uses_its_issue_repository(self, monkeypatch):
+        from src.orchestration import intake_routes, repository_binding
+        from src.orchestration.tracker_provider import GitHubTrackerProvider
+
+        async def check(_db, _user, _product):
+            return None
+
+        async def verify(_db, *, tenant_id, name, issue, operation, installation_id=None):
+            assert (tenant_id, name, issue, operation) == (ORG, "acme/api", 13, "preview")
+            return repository_binding.VerifiedRepository("github", 101, name, 22, name, issue, operation, 901)
+
+        async def children(_provider, **kwargs):
+            assert kwargs["repo"] == "acme/api"
+            return []
+
+        monkeypatch.setattr(intake_routes, "_check_product", check)
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", verify)
+        monkeypatch.setattr(GitHubTrackerProvider, "read_sub_issues", children)
+        http, _ = self._client(
+            monkeypatch,
+            rows=[a_live_row(intake_repository="acme/api", intake_issue="13", intake_product_id="product-1")],
+            drafts=self._draft(),
+            installations=[(22, ["acme/api"], True)],
+        )
+        response = http.post(f"{SESSIONS}/{SESSION}/plan", json={})
+        assert response.status_code == 200, response.text
+        assert response.json()["prerequisites"] == []
+        proposal = response.json()["proposal"]
+        assert proposal.get("origin_ref") is None
+        assert {(node["repository_identity"], node["issue_ref"]) for node in proposal["nodes"] if node["kind"] == "story"} == {("acme/api", "13")}
+
+    def test_ambiguous_preview_never_chooses_the_first_installation(self, monkeypatch):
+        http, _ = self._client(
+            monkeypatch,
+            rows=[a_live_row()],
+            drafts=self._draft(),
+            installations=[(11, ["acme/web"], True), (22, ["acme/web"], True)],
+        )
+        response = http.post(f"{SESSIONS}/{SESSION}/plan", json={"repository": "acme/web", "issue": "42"})
+        assert response.status_code != 200
+        assert response.json()["detail"]["error"] == "repository_connection_ambiguous"
+
+    def test_ambiguous_connection_refuses_start_and_resume_before_provider_reads(self, monkeypatch):
+        from src.orchestration import repository_binding
+        from src.orchestration.tracker_provider import GitHubTrackerProvider
+
+        async def unexpected(*_args, **_kwargs):
+            raise AssertionError("ambiguous connection must not read an issue")
+
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", unexpected)
+        monkeypatch.setattr(GitHubTrackerProvider, "read_issue_body", unexpected)
+        http, ingest = self._client(
+            monkeypatch,
+            rows=[a_live_row(intake_repository="acme/web", intake_issue="42")],
+            drafts=self._draft(),
+            installations=[(11, ["acme/web"], True), (22, ["acme/web"], True)],
+        )
+        started = http.post(SESSIONS, json={"message": "Build web", "repository": "acme/web", "issue": "42"})
+        resumed = http.post(f"{SESSIONS}/{SESSION}/plan", json={})
+
+        assert [response.status_code for response in (started, resumed)] == [422, 422]
+        assert [response.json()["detail"]["error"] for response in (started, resumed)] == ["repository_connection_ambiguous"] * 2
+        assert all("Select" in response.json()["detail"]["message"] for response in (started, resumed))
+        assert ingest.calls == []
 
     def test_a_refined_draft_becomes_a_document_the_draft_routes_accept_unchanged(self, monkeypatch):
         """The whole point of blocker 4: the server produces the document, not the CLI.

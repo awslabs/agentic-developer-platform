@@ -32,7 +32,29 @@ class WorkflowProducer(Contract):
             raise ValueError("qualification uses the protected environment fixtures and a fresh evaluation identity")
         if any(name.startswith("adp_") for name in self.inputs):
             raise ValueError("workflow correlation is engine-owned")
+        # #7187 added a protected-target selector to the live lanes. An accepted
+        # qualification may pin it only to the lane default (empty) or to the
+        # accepted environment itself; anything else re-points the evaluation.
+        if self.inputs.get("target_environment", "") not in ("", self.target.resource_id):
+            raise ValueError("qualification target must be the accepted environment")
+        # #7695 added `region` and `smoke_target_digest` to the live lanes. A
+        # qualification may pin the region only to the accepted target's region and
+        # may not select a new-environment smoke target contract (empty = the lane's
+        # regular bindings); either would re-point the evaluation.
+        if self.inputs.get("region", self.target.region) != self.target.region:
+            raise ValueError("qualification region must be the accepted target region")
+        if self.inputs.get("smoke_target_digest", "") != "":
+            raise ValueError("qualification must use the lane's regular bindings, not a smoke target contract")
         return self
+
+    def implied_inputs(self) -> dict[str, str]:
+        """Lane inputs an accepted qualification pins implicitly when it does not name them.
+
+        Each value is the only one `bounded_cli_run` would accept, so a workflow whose
+        default for the input equals this value changes nothing the human accepted. A
+        new lane input outside this map still has to be pinned explicitly.
+        """
+        return {"target_environment": "", "region": self.target.region, "smoke_target_digest": ""}
 
 
 class WorkflowEvaluationSpecification(RepositoryEvaluationSpecification):
@@ -49,7 +71,12 @@ class WorkflowEvaluationSpecification(RepositoryEvaluationSpecification):
             raise ValueError("qualification requires one immutable source and workflow revision")
         if self.producer.inputs.get("expected_revision") != workflow.source.revision:
             raise ValueError("deployed revision must match the accepted source")
-        if set(self.producer.inputs) != {"environment", "expected_revision", "mode", "fixtures_json", "suites", "evaluation_id", "inject_fault"}:
+        required = {"environment", "expected_revision", "mode", "fixtures_json", "suites", "evaluation_id", "inject_fault"}
+        # `target_environment` (#7187) is accepted but not yet required, so specifications
+        # written before the lane grew the input still validate; preflight refuses to
+        # dispatch them until they pin it, which is the visible, amendable failure.
+        optional = set(self.producer.implied_inputs())
+        if not (required <= set(self.producer.inputs) <= required | optional):
             raise ValueError("qualification inputs must be fully specified")
         if set(workflow.required_jobs) != {"Live evaluation (dev)", "Recovery sweep (this run, plus anything expired)"}:
             raise ValueError("qualification requires live evaluation and independent cleanup evidence")

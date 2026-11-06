@@ -27,16 +27,40 @@ class Runner(Contract):
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     repository_id: Count
     harness_sha256: Digest
+    harness_policy: Literal["contract", "exact"] = "contract"
+
+    @model_serializer(mode="wrap")
+    def preserve_existing_contract(self, handler):
+        document = handler(self)
+        if self.harness_policy == "contract":
+            document.pop("harness_policy", None)
+        return document
+
+
+class CheckWorkflow(Contract):
+    workflow_id: Count
+    workflow_path: str = Field(pattern=r"^\.github/workflows/[A-Za-z0-9._-]+\.ya?ml$")
 
 
 class Check(Contract):
     name: Name
     app_id: Count
+    workflow: CheckWorkflow | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_existing_contract(self, handler):
+        document = handler(self)
+        if self.workflow is None:
+            document.pop("workflow", None)
+        return document
 
 
 class Predecessor(Contract):
     address: Name
-    required_checks: list[Check] = Field(min_length=1, max_length=64)
+    # A pull-request predecessor must name at least one check (sources_for refuses
+    # otherwise); an operations predecessor is proven by its deployment receipt and
+    # may name none, or checks to verify on the deployed revision (#7880).
+    required_checks: list[Check] = Field(default_factory=list, max_length=64)
     # Bind historical owner acceptance explicitly; GitHub still verifies evidence.
     accepted_merge_decision_id: str | None = Field(default=None, min_length=1, max_length=36)
 
@@ -100,12 +124,20 @@ class Artifact(Contract):
     name: Name
     path: Name
     predicates: list[Predicate] = Field(min_length=1, max_length=128)
+    bind_workflow_provenance: StrictBool = False
 
     @model_validator(mode="after")
     def safe_path(self):
         if self.path.startswith("/") or "\\" in self.path or any(part in {"", ".", ".."} for part in self.path.split("/")):
             raise ValueError("artifact path must be relative")
         return self
+
+    @model_serializer(mode="wrap")
+    def preserve_existing_contract(self, handler):
+        document = handler(self)
+        if not self.bind_workflow_provenance:
+            document.pop("bind_workflow_provenance", None)
+        return document
 
 
 class Workflow(Contract):
@@ -152,11 +184,26 @@ class RepositoryEvaluationSpecification(Contract):
         return self
 
 
+class CheckWorkflowReceipt(CheckWorkflow):
+    check_suite_id: Count
+    run_id: Count
+    run_attempt: Count
+    job_id: Count
+
+
 class CheckReceipt(Contract):
     name: Name
     app_id: Count
     check_run_id: Count
     head_sha: Sha
+    workflow: CheckWorkflowReceipt | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_existing_receipt(self, handler):
+        document = handler(self)
+        if self.workflow is None:
+            document.pop("workflow", None)
+        return document
 
 
 class PullReceipt(Contract):
@@ -178,6 +225,49 @@ class PullReceipt(Contract):
     review_ref: Annotated[str, Field(min_length=1, max_length=512)] | None = None
     merge_operation_key: Name | None = None
     accepted_merge_decision_id: str | None = Field(default=None, min_length=1, max_length=36)
+    accepted_merge_at: datetime | None = None
+    provider_review_state: Name | None = None
+    review_acceptance: Literal["provider", "owner_acceptance", "own_snapshot_withdrawn"] | None = None
+
+
+class IdentityProofArtifactTarget(Contract):
+    account_id: str = Field(pattern=r"^[0-9]{12}$")
+    region: str = Field(pattern=r"^[a-z]{2}(?:-[a-z]+)+-[0-9]+$")
+    environment: Literal["dev"]
+
+
+class DeploymentSourceReceipt(Contract):
+    """An operations predecessor's evidence: the engine's own accepted deployment receipt.
+
+    An operate-role story delivers a deployment, not a pull request; its proof is the
+    runtime-verified deployment receipt (``operations-runtime:<run>:<attempt>``), whose
+    deployed revision stands where a merge commit stands for a pull-request predecessor.
+    Required checks, when declared, are verified on that revision (#7880).
+    """
+
+    address: Name
+    node_id: Name
+    attempt: Count
+    accepted_plan_version: Count
+    execution_id: Name
+    deployment_receipt_key: Name
+    workflow_operation_keys: list[Name] = Field(min_length=1, max_length=32)
+    components: list[Name] = Field(min_length=1, max_length=32)
+    head_sha: Sha
+    merge_sha: Sha
+    checks: list[CheckReceipt] = Field(default_factory=list, max_length=64)
+    issue_number: Count | None = None
+    identity_proof_artifact_target: IdentityProofArtifactTarget | None = None
+    foundation_artifact_target: IdentityProofArtifactTarget | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_existing_deployments(self, handler):
+        document = handler(self)
+        if self.identity_proof_artifact_target is None:
+            document.pop("identity_proof_artifact_target", None)
+        if self.foundation_artifact_target is None:
+            document.pop("foundation_artifact_target", None)
+        return document
 
 
 class JobReceipt(Contract):
@@ -186,11 +276,21 @@ class JobReceipt(Contract):
 
 
 class ArtifactReceipt(Contract):
-    artifact_id: Count
+    artifact_id: Count | None
+    artifact_ref: str | None = Field(default=None, max_length=2048)
     name: Name
     digest: Digest
     path: Name
     sha256: Digest
+
+    @model_validator(mode="after")
+    def artifact_identity(self):
+        if self.artifact_id is None:
+            if not self.artifact_ref or not self.artifact_ref.startswith("s3://") or "?versionId=" not in self.artifact_ref:
+                raise ValueError("S3 artifact requires a versioned evidence reference")
+        elif self.artifact_ref is not None:
+            raise ValueError("artifact must have exactly one storage identity")
+        return self
 
 
 class CriterionReceipt(Contract):
@@ -217,13 +317,14 @@ def canonical(value):
 
 
 def harness_digest():
-    """Pin the actual deterministic verifier shipped in the gateway artifact."""
+    """Fingerprint the verifier shipped in the gateway artifact for provenance."""
     digest = hashlib.sha256()
     for name in (
         "repository_evaluation_contract.py",
         "repository_evaluation_provider.py",
         "deployment_workflow_provider.py",
         "repository_evaluation.py",
+        "delivery_recovery.py",
         "accepted_merge_evidence.py",
         "evaluation_acceptance.py",
         "evaluation_authority.py",
@@ -237,7 +338,26 @@ def harness_digest():
     ):
         data = Path(__file__).with_name(name).read_bytes()
         digest.update(name.encode() + b"\0" + data + b"\0")
+    from deployment_evidence import store
+
+    digest.update(b"deployment_evidence/store.py\0" + Path(store.__file__).read_bytes() + b"\0")
     return digest.hexdigest()
+
+
+def native_harness_compatible(spec, installed_digest):
+    """Read-only v1 evidence uses contract compatibility unless explicitly pinned.
+
+    Call only after specification validation: the schema and adapter identify the
+    supported semantics. A breaking change must get a new contract version.
+    Producer dispatch and live/multi-repository contracts retain their separate
+    exact implementation fences; this grants no external effect authority.
+    """
+    return spec.runner.harness_sha256 == installed_digest or (
+        spec.evidence_schema == "repository-evaluation/v1"
+        and spec.runner.adapter == "engine-repository-evidence-v1"
+        and spec.runner.harness_policy == "contract"
+        and spec.producer is None
+    )
 
 
 def native_specification(value):

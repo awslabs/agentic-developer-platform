@@ -49,13 +49,14 @@ import logging
 from dataclasses import dataclass, replace
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.budget.enforcement_settings import read_enforcement
 from src.shared.models.base import utcnow
 
 from .cost import CostStatus, get_cost_by_address
+from .developer_personas import OPERATIONS_PERSONAS, operations_executor_enabled
 from .dispatch import graph_address
 from .execution_policy import (
     Action,
@@ -70,9 +71,11 @@ from .execution_policy import (
 from .flow_budget import release_flow_admission, reserve_flow_admission
 from .models import (
     ClaimState,
+    DecisionKind,
     NodeKind,
     OrchestrationAcceptedPlan,
     OrchestrationAction,
+    OrchestrationDecision,
     OrchestrationExecution,
     OrchestrationFlow,
     OrchestrationNode,
@@ -156,6 +159,15 @@ def resolve_node_action(node: OrchestrationNode, *, action_override: Action | No
     return action_for_node_kind(node.kind)
 
 
+async def _accepted_operations_action(session, node):
+    if node.kind != NodeKind.STORY.value or not operations_executor_enabled():
+        return None
+    from .executor_assignment import accepted_executor_persona
+
+    persona = await accepted_executor_persona(session, node, default="developer")
+    return Action.OPERATE if persona in OPERATIONS_PERSONAS else None
+
+
 @dataclass(frozen=True)
 class AdmissionInputs:
     """The policy in force for a flow, plus the plan version it was accepted on.
@@ -172,7 +184,7 @@ class AdmissionInputs:
     refusal: Decision | None = None
 
 
-async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: str) -> AdmissionInputs:
+async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: str, display_lineage=None) -> AdmissionInputs:
     """Read the accepted policy from the plan currently in force for this flow.
 
     Both `org_id` and `flow_id` are filtered in SQL, so a flow id belonging to
@@ -188,18 +200,45 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
         OrchestrationAcceptedPlan.superseded_at.is_(None),
     )
     plan = (await session.execute(stmt)).scalar_one_or_none()
+    return await _policy_from_plan(session, org_id=org_id, flow_id=flow_id, plan=plan, display_lineage=display_lineage)
+
+
+async def display_policy_from_plan(session: AsyncSession, *, org_id: str, flow_id: str, plan: OrchestrationAcceptedPlan | None) -> AdmissionInputs:
+    """Reuse the current plan already read in this request's display snapshot.
+
+    Admission keeps its own fresh lookup. Only the display route supplies an
+    already-resolved plan; neither plans nor enforcement posture are cached.
+    """
+    from .plan_lineage import PolicyDisplayLineage
+
+    if plan is not None and (plan.org_id != org_id or plan.flow_id != flow_id or plan.superseded_at is not None):
+        raise ValueError("Display policy must use the current plan from the same flow and tenant")
+    return await _policy_from_plan(session, org_id=org_id, flow_id=flow_id, plan=plan, display_lineage=PolicyDisplayLineage())
+
+
+async def _policy_from_plan(session, *, org_id, flow_id, plan, display_lineage=None) -> AdmissionInputs:
     raw = (plan.plan_document or {}).get("execution_policy") if plan is not None else None
     if raw is None:
         # Removing an accepted policy withdraws authority. It must not turn old
         # workers or the next dispatch into an unrestricted legacy flow.
-        documents = await session.scalars(
-            select(OrchestrationAcceptedPlan.plan_document).where(
-                OrchestrationAcceptedPlan.org_id == org_id,
-                OrchestrationAcceptedPlan.flow_id == flow_id,
+        document = OrchestrationAcceptedPlan.plan_document
+        document_type = func.jsonb_typeof(document) if session.get_bind().dialect.name == "postgresql" else func.json_type(document)
+        # Transfer one boolean rather than every historical graph document.
+        # JSON null/absence mean no policy; false, zero and malformed values do
+        # not. Unreadable document shapes must not grant legacy authority.
+        had_policy = await session.scalar(
+            select(
+                select(OrchestrationAcceptedPlan.id)
+                .where(
+                    OrchestrationAcceptedPlan.org_id == org_id,
+                    OrchestrationAcceptedPlan.flow_id == flow_id,
+                    or_(document["execution_policy"].as_string().is_not(None), document_type.not_in(("object", "null"))),
+                )
+                .exists()
             )
         )
         version = plan.version if plan is not None else 0
-        if any((document or {}).get("execution_policy") is not None for document in documents):
+        if had_policy:
             return AdmissionInputs(
                 policy=None,
                 plan_version=version,
@@ -213,10 +252,10 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
         from .shared_retry import effective_shared_retry
         from .shared_window import effective_shared_window
 
-        policy = await effective_shared_budget(session, plan, ExecutionPolicy.model_validate(raw))
-        policy = await effective_shared_retry(session, plan, policy)
-        policy = await effective_shared_window(session, plan, policy)
-        policy = await effective_shared_concurrency(session, plan, policy)
+        policy = await effective_shared_budget(session, plan, ExecutionPolicy.model_validate(raw), display_lineage=display_lineage)
+        policy = await effective_shared_retry(session, plan, policy, display_lineage=display_lineage)
+        policy = await effective_shared_window(session, plan, policy, display_lineage=display_lineage)
+        policy = await effective_shared_concurrency(session, plan, policy, display_lineage=display_lineage)
         posture = await read_enforcement(session, org_id=org_id, flow_id=flow_id)
         policy._budget_enforcement_enabled = posture.enabled
         policy._budget_accounting_incomplete = posture.accounting_incomplete
@@ -306,6 +345,9 @@ class SpendObservation:
 
     total_usd: Decimal | None
     settled_node_ids: frozenset[str] = frozenset()
+    # Only evaluations without dispatch or usage evidence may
+    # finish before the first worker initializes the shared model meter.
+    unexecuted_eval_ids: frozenset[str] = frozenset()
 
 
 def _engine_evaluation():
@@ -323,7 +365,7 @@ def _engine_evaluation():
             OrchestrationExecution.node_id == OrchestrationNode.id,
             OrchestrationExecution.cycle == OrchestrationNode.attempts,
             OrchestrationAction.org_id == OrchestrationNode.org_id,
-            OrchestrationAction.kind == "evaluation_context",
+            OrchestrationAction.kind.in_(("evaluation_context", "multi_repository_context")),
             OrchestrationAction.status == "succeeded",
         )
         .exists()
@@ -363,10 +405,29 @@ async def _observed_spend(
         if eval_ids
         else set()
     )
+    # Nodes that may legitimately have no usage row without ever having run: an
+    # evaluation (machine-verified ones conclude without a worker) and a node a
+    # plan revision superseded. For both, the engine's own dispatch decision is
+    # the fact that distinguishes "never ran" from "ran and is unreconciled".
+    undispatchable_ids = eval_ids + [node.id for node in nodes if node.state == NodeState.SUPERSEDED.value]
+    dispatched = (
+        set(
+            await session.scalars(
+                select(OrchestrationDecision.node_id).where(
+                    OrchestrationDecision.org_id == org_id,
+                    OrchestrationDecision.node_id.in_(undispatchable_ids),
+                    OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value,
+                )
+            )
+        )
+        if undispatchable_ids
+        else set()
+    )
 
     total = Decimal(0)
     settled: set[str] = set()
-    unreported_running: list[OrchestrationNode] = []
+    unexecuted_evals: set[str] = set()
+    meter_required: list[OrchestrationNode] = []
     for node in nodes:
         # `graph_address` rather than a local f-string: the ledger is grouped by
         # exactly that spelling, and a second one here would silently match nothing
@@ -382,11 +443,41 @@ async def _observed_spend(
             continue
         # No usable figure. Whether that is expected depends on whether this node
         # ever ran, and on whether it is the kind of node that bills at all.
+        if node.kind == NodeKind.EVAL.value and node.id not in dispatched and cost is None:
+            unexecuted_evals.add(node.id)
         if node.kind == NodeKind.GATE.value or node.id in observers:
             continue
-        if node.state == NodeState.RUNNING.value:
-            unreported_running.append(node)
+        if node.kind == NodeKind.EVAL.value and node.id not in dispatched:
+            # A machine-verified evaluation (repository evidence under an accepted
+            # contract) concludes without dispatching a worker: no run, no model
+            # call, no usage row by construction. Only an eval the engine actually
+            # dispatched a worker for must account for its spend.
             continue
+        if node.state == NodeState.SUPERSEDED.value and node.id not in dispatched:
+            # A plan revision superseded this node before the engine ever dispatched
+            # it: no run, no model call, no usage row by construction. Reading that
+            # absence as unknown spend blocked every flow on its first revision
+            # approval (#7408). A superseded node that did dispatch keeps the rule.
+            continue
+        if node.state in {NodeState.RUNNING.value, NodeState.FAILED.value}:
+            # A failed attempt may have been refused before any inference (a
+            # budget or policy refusal at the worker's first call) and then has no
+            # usage row by construction, exactly like a worker still starting. The
+            # strict flow meter already holds whatever that run reserved, so it is
+            # the authority here; reading the absence as unknown spend blocked the
+            # whole flow, including the retry that would have repaired it (#7542).
+            meter_required.append(node)
+            continue
+        if node.kind == NodeKind.STORY.value and node.state == NodeState.PASSED.value:
+            from .external_completion import has_verified_external_completion
+
+            if await has_verified_external_completion(session, node):
+                # External evidence may complete an exited attempt that never
+                # reached inference. Its transition from failed to passed cannot
+                # invalidate the same conservative meter used for failed work.
+                # Keep all holds; acceptance is not a zero-cost attestation.
+                meter_required.append(node)
+                continue
         if node.state in _EXECUTED_STATES:
             logger.warning(
                 "orchestration admission: flow %s (org %s) node %s is %s with no usage row — spend is UNKNOWN, refusing new spend until reconciled",
@@ -396,22 +487,22 @@ async def _observed_spend(
                 node.state,
             )
             return SpendObservation(total_usd=None)
-    if unreported_running:
+    if meter_required:
         from .flow_meter import read_flow_meter
 
         # Dispatch marks a node running before its first model call can write a
         # usage row. Do not serialize a whole fan-out behind that asynchronous
         # write. The initialized meter accounts for every flow call, including
         # pending and retained bounds; absent/expired/unbounded entries fail closed.
-        # Keep the running nodes' admission holds: the atomic reservation below
+        # Keep these nodes' admission holds: the atomic reservation below
         # still checks their worst-case future spend plus this new admission.
-        meter = await read_flow_meter(org_id=org_id, flow_id=unreported_running[0].flow_id, policy=policy)
+        meter = await read_flow_meter(org_id=org_id, flow_id=meter_required[0].flow_id, policy=policy)
         if meter is None:
             return SpendObservation(total_usd=None)
         # These are overlapping flow-wide readings, not additive charges. Never
         # lower the SQL observation or discard failed-call bounds in the meter.
         total = max(total, meter.total_usd)
-    return SpendObservation(total_usd=total, settled_node_ids=frozenset(settled))
+    return SpendObservation(total_usd=total, settled_node_ids=frozenset(settled), unexecuted_eval_ids=frozenset(unexecuted_evals))
 
 
 async def _running_count(session: AsyncSession, *, org_id: str, flow_id: str) -> int:
@@ -475,20 +566,11 @@ async def resolve_authorization_context(
     issue must still match a claim held by this same flow and invocation.
     """
     member_org_id, member_team_ids = await _member_facts(session, org_id=node.org_id, user_id=principal_user_id)
-    from src.admin.access_control import AccessControl
-    from src.admin.config import Permission, membership_role_to_admin_role
-    from src.shared.identity.workspaces import memberships_for_login
+    from src.shared.identity.workflow_access import is_workflow_member
 
-    # Use the existing membership resolver and permission map, requiring an
-    # actual current role. The legacy RBAC rollback flag must not turn a missing
-    # membership into approval authority for an accepted bounded policy.
-    principal_can_authorize = False
-    if member_org_id is not None:
-        _, memberships = await memberships_for_login(session, principal_user_id)
-        pair = memberships.get(node.org_id)
-        if pair is not None and pair[1] is not None:
-            role = membership_role_to_admin_role(pair[1].role)
-            principal_can_authorize = Permission.PLAN_APPROVE in AccessControl(session).get_role_permissions(role)
+    # Approval and dispatch share one rule: every human workspace member can
+    # authorize execution. A role change alone does not revoke that authority.
+    principal_can_authorize = member_org_id is not None and await is_workflow_member(session, user_id=principal_user_id, org_id=node.org_id)
     from .work_admission import enabled as work_claims_enabled
 
     work_owned = True
@@ -585,6 +667,11 @@ async def authorize_node_dispatch(
     if inputs.policy is None:
         return Decision.permit("no execution policy in force; legacy semantics apply")
 
+    operations_action = await _accepted_operations_action(session, node)
+    if operations_action is not None and action_override not in {None, operations_action}:
+        return Decision.block(DenyReason.ACTION_NOT_PERMITTED, "Operational stories cannot be dispatched under a different action.")
+    action_override = operations_action or action_override
+
     from .shared_policy import authorize_shared_dispatch, is_shared_continuation
 
     if await is_shared_continuation(session, org_id=node.org_id, flow_id=node.flow_id):
@@ -660,15 +747,20 @@ async def authorize_node_dispatch(
         scope = CredentialScope.SCOPED if policy_github_permissions(inputs.policy, action) is not None else CredentialScope.UNSCOPABLE
 
     # A continuation uses its initialized provider accumulator even before the
-    # first asynchronous usage row arrives. Fresh admissions also reconcile the
-    # settled ledger's completed-node holds.
+    # first asynchronous usage row arrives. Both admission paths reconcile the
+    # settled ledger's completed-node holds, so a waiting reviewer does not
+    # retain finished siblings' reservations until another fresh story arrives.
     if continuing_node:
         from .flow_meter import reconcile_flow_meter
 
         if node.state != NodeState.RUNNING.value:
             return Decision.block(DenyReason.WORK_NOT_OWNED, "continuation no longer belongs to a running node")
         meter = await reconcile_flow_meter(session, org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
-        spend = SpendObservation(total_usd=meter.total_usd if meter is not None else None)
+        settled = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes, policy=inputs.policy)
+        spend = SpendObservation(
+            total_usd=max(meter.total_usd, settled.total_usd or Decimal(0)) if meter is not None else None,
+            settled_node_ids=settled.settled_node_ids,
+        )
     else:
         spend = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes, policy=inputs.policy)
 
@@ -702,9 +794,12 @@ async def authorize_node_dispatch(
         # Fresh flows still establish their accounting baseline when possible.
         # Failure is informational while OFF; it must not deny admission. This
         # never resets a previously initialized or already-running flow.
-        from .flow_meter import prepare_flow_meter
+        from .flow_meter import prepare_flow_meter, reconcile_flow_meter
 
-        await prepare_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, nodes=flow_nodes)
+        await reconcile_flow_meter(session, org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+        await prepare_flow_meter(
+            org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, nodes=flow_nodes, unexecuted_eval_ids=spend.unexecuted_eval_ids
+        )
         return decision
 
     # --- The flow's shared allowance, held transactionally (#5128 step 4). ---
@@ -755,9 +850,15 @@ async def authorize_node_dispatch(
             f"flow allowance of ${inputs.policy.limits.max_spend_usd} is exhausted once in-flight admissions are counted",
         )
 
-    from .flow_meter import prepare_flow_meter
+    from .flow_meter import prepare_flow_meter, reconcile_flow_meter
 
-    if not await prepare_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, nodes=flow_nodes):
+    # Repair missed settlement first: a receipt that never reached Redis, or a
+    # request whose strict marker expired with no receipt, must not refuse every
+    # story of the flow as "allowance unavailable" (#7451).
+    await reconcile_flow_meter(session, org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+    if not await prepare_flow_meter(
+        org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, nodes=flow_nodes, unexecuted_eval_ids=spend.unexecuted_eval_ids
+    ):
         await release_flow_admission(
             org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, settled_usd=context.observed_spend_usd or Decimal(0), node_id=node.id
         )
@@ -811,7 +912,8 @@ async def authorize_coordinator_child_request(
     if inputs.policy is None:  # pragma: no cover - callers check absence first
         return Decision.permit("no execution policy in force; legacy semantics apply")
 
-    child_action = resolve_node_action(child_node, action_override=child_action_override, continuing_node=continuing_child)
+    operations_action = await _accepted_operations_action(session, child_node)
+    child_action = resolve_node_action(child_node, action_override=operations_action or child_action_override, continuing_node=continuing_child)
     if child_action is None:
         # A gate, or a kind this build cannot classify. Refused rather than guessed:
         # a coordinator must not be able to request work whose action nobody can name.

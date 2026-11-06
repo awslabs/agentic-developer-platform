@@ -34,7 +34,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useFeatures } from '@/hooks/useFeatures';
 import { Permission } from '@/types';
-import { approveGate, rejectGate, resumeNode, getGatePlanPreview } from '@/services/orchestration';
+import { approveGate, rejectGate, resumeNode, getGatePlanPreview, bindDraftProduct } from '@/services/orchestration';
+import { DraftProductSelector } from './DraftProductSelector';
+import { shortTime } from '@/utils/openGates';
 import type { GraphNode, GateDecisionResult, ResumeResult } from '@/types/orchestration';
 import { Alert, Button, Spinner } from '@/components/ui';
 
@@ -68,6 +70,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
   const queryClient = useQueryClient();
   const [reason, setReason] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [dirtyProductRevision, setDirtyProductRevision] = useState<string | null>(null);
 
   const mode = controlModeFor(node);
   const preview = useQuery({
@@ -80,8 +83,27 @@ export function GateControls({ node, flowId }: GateControlsProps) {
     refetchOnReconnect: false,
   });
   const reviewed = preview.data;
+  const reviewedRevision = reviewed ? `${reviewed.version}:${reviewed.plan_hash}` : null;
+  const productDirty = dirtyProductRevision !== null && dirtyProductRevision === reviewedRevision;
   const nodeInPlan = reviewed?.plan_document.nodes.some(item =>
     item.address.split('/').slice(1).join('/') === `${node.epic_ref}/${node.wave_ref}/${node.node_ref}`);
+
+  const productBinding = useMutation({
+    mutationFn: ({ productId, projectId }: { productId: string; projectId?: string }) => {
+      if (!reviewed || preview.isError) throw new Error('Reload the plan before saving its Product.');
+      return bindDraftProduct(flowId, productId, reviewed, projectId);
+    },
+    onSuccess: async () => {
+      setDirtyProductRevision(null);
+      setFeedback('Product saved. Review the updated plan before approving execution.');
+      mutation.reset();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['orchestration', 'gate-plan-preview', flowId, node.id] }),
+        queryClient.invalidateQueries({ queryKey: ['orchestration', 'flow-graph', flowId] }),
+        queryClient.invalidateQueries({ queryKey: ['orchestration', 'flows'] }),
+      ]);
+    },
+  });
 
   // The two result shapes differ (a resume always produces a decision id; a gate
   // answer may not), so the union is declared rather than inferred from whichever
@@ -105,7 +127,9 @@ export function GateControls({ node, flowId }: GateControlsProps) {
       setFeedback(action === 'reject'
         ? 'Changes requested. Work behind this gate is paused. No revision agent has been started.'
         : action === 'approve'
-          ? 'Approval recorded. Eligible work can start on the next engine check.'
+          // Gates chain: the engine may present the next one within a minute, and it
+          // looks like this one. Say plainly that this decision is done and closed.
+          ? `Approval recorded at ${shortTime(new Date().toISOString())}. This gate is closed. If the flow asks for another decision, that is the next gate in the chain, not this one.`
           : result.state === 'ready' && node.kind === 'gate'
             ? 'Review will reopen on the next engine check. This does not approve the gate.'
             : 'Retry requested. The engine will check this work again.');
@@ -121,8 +145,8 @@ export function GateControls({ node, flowId }: GateControlsProps) {
   if (!hasPermission(Permission.PLAN_APPROVE)) return null;
   if (mode === null) return feedback ? <p role="status" className="mt-2 text-sm">{feedback}</p> : null;
 
-  const busy = mutation.isPending;
-  const decisionDisabled = busy || preview.isFetching || preview.isError || !reviewed || !nodeInPlan;
+  const busy = mutation.isPending || productBinding.isPending;
+  const decisionDisabled = busy || productDirty || preview.isFetching || preview.isError || !reviewed || !nodeInPlan;
 
   return (
     <div className="mt-2 space-y-2" data-testid={`gate-controls-${node.node_ref}`}>
@@ -130,13 +154,20 @@ export function GateControls({ node, flowId }: GateControlsProps) {
         {preview.isPending && <p>Loading the plan for review…</p>}
         {reviewed && <>
           <p className="font-medium">Review plan version {reviewed.version}: {reviewed.plan_document.title}</p>
-          <ul className="list-disc pl-5">{reviewed.plan_document.nodes.map(item =>
-            <li key={item.address}>{item.title} ({item.kind})</li>)}</ul>
+          {reviewed.execution?.product?.can_bind_draft && <DraftProductSelector
+            key={reviewedRevision} flowId={flowId} productId={reviewed.execution.product.product_id} projectId={reviewed.execution.product.project_id}
+            disabled={busy || preview.isFetching || preview.isError} onChange={dirty => setDirtyProductRevision(dirty ? reviewedRevision : null)}
+            onSave={(productId, projectId) => productBinding.mutate({ productId, projectId })} />}
+          {productBinding.isError && <Alert variant="error" title="Product was not saved">{refusalMessage(productBinding.error)}</Alert>}
+          <p>{reviewed.plan_document.nodes.length} planned steps. This decision applies to the reviewed plan version.</p>
           <p>{reviewed.plan_document.proposed_execution_policy ? 'Proposed execution authority — not yet granted'
             : reviewed.plan_document.execution_policy ? 'Recorded execution-policy bounds' : 'This plan has no execution-policy bounds.'}</p>
           {(reviewed.plan_document.proposed_execution_policy || reviewed.plan_document.execution_policy) &&
             <details><summary>Review execution permissions and limits</summary><p>Spend limits apply only when budget enforcement is enabled.</p><pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(
               reviewed.plan_document.proposed_execution_policy || reviewed.plan_document.execution_policy, null, 2)}</pre></details>}
+          {reviewed.execution?.evidence && <details open><summary>Review human evaluation evidence</summary>
+            <pre className="max-h-80 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(reviewed.execution.evidence, null, 2)}</pre>
+          </details>}
           {reviewed.execution?.required && <div className="space-y-2">
             <p className="font-medium">Approving starts the following evaluation</p>
             {reviewed.execution.runs.map(run => <div key={run.node_id}>
@@ -144,20 +175,26 @@ export function GateControls({ node, flowId }: GateControlsProps) {
               <p>Account {run.target.account_id}, {run.target.region}, environment {run.target.resource_id}.</p>
               <p>Evidence: {run.criteria.join(', ')}. Final acceptance remains human.</p>
             </div>)}
-            {reviewed.execution.window_request && <div><p>Approval also renews the expired execution window:</p><pre className="overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(reviewed.execution.window_request, null, 2)}</pre></div>}
-            {reviewed.execution.problems.map(problem => <Alert key={problem} variant="error" title="Next step needs configuration">{problem}</Alert>)}
+            {reviewed.execution.window_request && <div><p>Approval also renews the expired execution window until {typeof reviewed.execution.window_request.expires_at === 'string' ? new Date(reviewed.execution.window_request.expires_at).toLocaleString() : 'the requested deadline'}. {typeof reviewed.execution.window_request.max_wall_clock_seconds === 'number' && <>Maximum elapsed time: {Math.round(reviewed.execution.window_request.max_wall_clock_seconds / 3600 * 10) / 10} hours.</>}</p><details><summary className="cursor-pointer py-1">Exact window renewal request</summary><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify(reviewed.execution.window_request, null, 2)}</pre></details></div>}
           </div>}
+          {reviewed.execution?.problems.map(problem => <Alert key={problem} variant="error" title="Next step needs configuration">{problem}</Alert>)}
           <details><summary>Full plan and dependencies</summary>
             <pre className="max-h-80 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(reviewed.plan_document, null, 2)}</pre>
           </details>
-          <p className="break-all text-xs">Decision applies to revision {reviewed.plan_hash}.</p>
+          <details><summary className="cursor-pointer py-1">Technical details and exact revision</summary><p className="break-all text-xs">Decision applies to revision {reviewed.plan_hash}.</p></details>
           {!nodeInPlan && <p>This gate is absent from the current plan. Reload the graph.</p>}
         </>}
         {preview.isError && <Alert variant="error" title="Plan preview unavailable">{refusalMessage(preview.error)}</Alert>}
         <Button size="sm" variant="secondary" disabled={busy || preview.isFetching}
-          onClick={() => { mutation.reset(); void preview.refetch(); }}>Reload plan preview</Button>
+          onClick={() => { mutation.reset(); productBinding.reset(); void preview.refetch(); }}>Reload plan preview</Button>
       </div>}
       {feedback && <p role="status" className="text-sm">{feedback}</p>}
+      {mode === 'gate' && node.updated_at && (
+        <p className="text-xs font-medium text-amber-900 dark:text-amber-200" data-testid="gate-waiting-since" title={node.updated_at}>
+          Waiting for your decision since {shortTime(node.updated_at)}.
+        </p>
+      )}
+      {mode === 'gate' && reviewed?.execution?.ready === false && <p role="status" className="text-sm text-amber-800 dark:text-amber-200">Approval is unavailable until the configuration problems above are resolved. Reload the preview after updating the configuration.</p>}
       {mode === 'gate' && (
         <p className="text-xs text-gray-600 dark:text-gray-400">
           Add a note to request changes. This pauses work behind the gate; it does not start a revision agent.

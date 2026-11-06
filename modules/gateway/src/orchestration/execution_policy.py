@@ -246,6 +246,7 @@ class Action(StrEnum):
     MERGE = "merge"
     DEPLOY = "deploy"
     EVALUATE = "evaluate"
+    OPERATE = "operate"
     # Authority to read progress and request an eligible child dispatch, and
     # nothing else. A coordinator holding this cannot itself develop, review,
     # merge, deploy or conclude an evaluation — each child needs its own accepted
@@ -362,6 +363,9 @@ class PolicyRejectedError(ValueError):
     """
 
 
+MAX_WALL_CLOCK_SECONDS = 30 * 86_400
+
+
 class PolicyLimits(BaseModel):
     """The bounds an accepted policy places on autonomous work.
 
@@ -381,7 +385,7 @@ class PolicyLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Shared wall-clock ceiling from the flow's first committed dispatch.
-    max_wall_clock_seconds: int = Field(gt=0, le=604_800)
+    max_wall_clock_seconds: int = Field(gt=0, le=MAX_WALL_CLOCK_SECONDS)
     # Total spend this policy authorizes, reserved plus settled, across every
     # descendant. NOT per run and NOT per child — see `flow_budget_binding` for why
     # the allowance has to be shared to mean anything.
@@ -449,7 +453,7 @@ class ChildPersona(StrEnum):
 #: acceptance by `CoordinationScope._bounded_and_canonical` and again at admission by
 #: `authorize_child_request` — so a document that reaches a build without passing the
 #: validators cannot make the acceptance-time refusal the only thing standing there.
-NON_DELEGABLE_CHILD_ACTIONS: frozenset[Action] = frozenset({Action.COORDINATE, Action.MERGE, Action.DEPLOY, Action.EVALUATE})
+NON_DELEGABLE_CHILD_ACTIONS: frozenset[Action] = frozenset({Action.COORDINATE, Action.MERGE, Action.DEPLOY, Action.EVALUATE, Action.OPERATE})
 
 
 class CoordinationScope(BaseModel):
@@ -508,8 +512,7 @@ class CoordinationScope(BaseModel):
         forbidden = sorted(set(self.allowed_child_actions) & (NON_DELEGABLE_CHILD_ACTIONS - {Action.COORDINATE}))
         if forbidden:
             raise ValueError(
-                f"allowed_child_actions must not include {', '.join(forbidden)}; merging, deploying and concluding an evaluation "
-                "are not delegable through coordination authority"
+                f"allowed_child_actions must not include {', '.join(forbidden)}; these actions are not delegable through coordination authority"
             )
         return self
 
@@ -543,6 +546,11 @@ class ExecutionPolicy(BaseModel):
     # serializer below drops the key entirely so an older accepted document's bytes
     # and hash are unchanged by this field existing (#5224).
     coordination: CoordinationScope | None = None
+    # Explicit repository scope is independent of optional human file plans.
+    # Absence retains the existing exact-path authority and policy hash.
+    repair_scope: Literal["repository"] | None = None
+    repair_paths: list[str] = Field(default_factory=list, max_length=256)
+    repair_required_checks: list[str] = Field(default_factory=list, max_length=64)
 
     # --- Server-stamped. A submitted document must leave all three unset. ---
     # Not "may leave unset": :func:`stamp_policy` rejects a document that sets any
@@ -619,7 +627,37 @@ class ExecutionPolicy(BaseModel):
             document.pop("user_credentials", None)
         if self.coordination is None:
             document.pop("coordination", None)
+        if self.repair_scope is None:
+            document.pop("repair_scope", None)
+        if not self.repair_paths:
+            document.pop("repair_paths", None)
+        if not self.repair_required_checks:
+            document.pop("repair_required_checks", None)
         return document
+
+    @model_validator(mode="after")
+    def _bound_repair_paths(self) -> ExecutionPolicy:
+        if self.repair_scope is not None:
+            if self.schema_version != 3 or not {Action.OPERATE, Action.REPAIR} <= set(self.allowed_actions):
+                raise ValueError("repository repair scope requires a v3 operations repair policy")
+            if self.repair_paths:
+                raise ValueError("select repository repair scope or exact repair paths, not both")
+        if self.repair_paths:
+            if self.schema_version != 3 or not {Action.OPERATE, Action.REPAIR} <= set(self.allowed_actions):
+                raise ValueError("repair paths require a v3 operations repair policy")
+            if len(set(self.repair_paths)) != len(self.repair_paths) or any(
+                not 0 < len(path) <= 1024 or "\\" in path or ":" in path or any(part in {"", ".", "..", ".git"} for part in path.split("/"))
+                for path in self.repair_paths
+            ):
+                raise ValueError("repair paths must be unique, exact repository-relative files")
+        if self.repair_required_checks:
+            if self.schema_version != 3 or not (self.repair_paths or self.repair_scope):
+                raise ValueError("required repair checks need a v3 scoped repair policy")
+            if len(set(self.repair_required_checks)) != len(self.repair_required_checks) or any(
+                not name or len(name) > 128 or any(ord(char) < 32 for char in name) for name in self.repair_required_checks
+            ):
+                raise ValueError("required repair checks must be unique bounded names")
+        return self
 
     @model_validator(mode="after")
     def _coordination_requires_v3(self) -> ExecutionPolicy:
@@ -812,6 +850,8 @@ class PolicySummary(BaseModel):
     # which is a different fact from "no coordinator was accepted" and would be the
     # more alarming of the two to show an owner who accepted neither.
     coordination: CoordinationSummary | None = None
+    repair_scope: Literal["repository", "paths"] | None = None
+    repair_path_count: int = 0
     expires_at: datetime
     limits: PolicyLimits
 
@@ -860,6 +900,8 @@ def summarize_policy(policy: ExecutionPolicy) -> PolicySummary:
             if policy.coordination is not None
             else None
         ),
+        repair_scope=policy.repair_scope or ("paths" if policy.repair_paths else None),
+        repair_path_count=len(policy.repair_paths),
         expires_at=policy.expires_at,
         limits=policy.limits,
     )
@@ -1141,7 +1183,7 @@ _ENVIRONMENT_ACTIONS = frozenset({Action.DEPLOY})
 # is where the repository check belongs. Putting `COORDINATE` here would grant a
 # coordinator repository authority it never needs, and would make the *coordinator's*
 # repository the one checked rather than the child's.
-_REPOSITORY_ACTIONS = frozenset({Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE})
+_REPOSITORY_ACTIONS = frozenset({Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE, Action.OPERATE})
 
 
 def authorize_action(

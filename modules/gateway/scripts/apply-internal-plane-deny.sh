@@ -56,6 +56,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 PATCH_FILE="${REPO_ROOT}/modules/gateway/k8s/patches/edge-internal-deny.yaml"
 
+# The deny is ONE extra path on the edge Ingress, inserted ahead of every
+# service path. A strategic-merge patch of `spec.rules` replaces the whole rules
+# list, which silently dropped the tools-facade paths (/api/agent/tools, ...)
+# every time the deny was (re-)asserted after `k8s/ingress.yaml`. Merge only the
+# annotation from the patch file, then add the deny path with a JSON patch so
+# the other paths the manifest declares survive.
+apply_deny_patch() {
+  # kubectl renders the YAML patch file to JSON client-side (no cluster write), so
+  # the runner needs only the Python standard library — PyYAML is not installed
+  # on the deploy runners and importing it broke every gateway deploy.
+  local patch_json
+  patch_json=$(kubectl create --dry-run=client -o json -f "$PATCH_FILE")
+  kubectl patch ingress "$INGRESS_NAME" -n "$NAMESPACE" --type=merge \
+    --patch "$(printf '%s' "$patch_json" | python3 -c 'import json, sys
+doc = json.load(sys.stdin)
+print(json.dumps({"metadata": {"annotations": doc["metadata"]["annotations"]}}))')"
+  local existing
+  existing=$(kubectl get ingress "$INGRESS_NAME" -n "$NAMESPACE" -o json \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for r in d["spec"]["rules"] for p in r["http"]["paths"] if p["path"]=="/internal" and p["backend"]["service"]["name"]=="deny-internal"))')
+  if [ "$existing" != "0" ]; then
+    echo "Deny path already present on the Ingress."
+    return 0
+  fi
+  kubectl patch ingress "$INGRESS_NAME" -n "$NAMESPACE" --type=json \
+    --patch "$(printf '%s' "$patch_json" | python3 -c 'import json, sys
+doc = json.load(sys.stdin)
+deny = [p for r in doc["spec"]["rules"] for p in r["http"]["paths"] if p["path"] == "/internal"][0]
+print(json.dumps([{"op": "add", "path": "/spec/rules/0/http/paths/0", "value": deny}]))')"
+}
+
+
 # ---------------------------------------------------------------------------
 # Step 1: Is the deny currently live on the edge Ingress?
 # ---------------------------------------------------------------------------
@@ -213,9 +244,8 @@ if deny_is_live; then
   # Re-assert the manifest so drift (a manual edit, or a blanket re-apply of
   # ingress.yaml that reverted the rules) is corrected. Safe: the deny is already
   # in effect and the integration is off this ALB, so reachability is unchanged.
-  echo "Deny already applied — re-asserting the patch to correct any drift."
-  kubectl patch ingress "$INGRESS_NAME" -n "$NAMESPACE" \
-    --type=merge --patch-file "$PATCH_FILE"
+  echo "Deny already applied — re-asserting the deny path to correct any drift."
+  apply_deny_patch
   exit 0
 fi
 
@@ -241,8 +271,7 @@ fi
 
 echo "Precondition met: /internal/{proxy+} is repointed at the internal-plane ALB."
 echo "Applying the edge deny..."
-kubectl patch ingress "$INGRESS_NAME" -n "$NAMESPACE" \
-  --type=merge --patch-file "$PATCH_FILE"
+apply_deny_patch
 
 echo "Edge deny applied. /internal/* now returns 403 at the edge ALB."
 echo "NOTE: ELB config changes take ~30s to propagate. A smoke test run"

@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "test_run (section 11.7)",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "if": {
+        "properties": {
+          "selection_status": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "selection_snapshot": {
+            "$ref": "references.schema.json#/$defs/artifact_ref"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "execution_status": {
+            "enum": [
+              "completed",
+              "cancelled",
+              "abandoned"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "ended_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          }
+        }
+      }
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "const": "test_run"
+    },
+    "source_run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_status": {
+      "enum": [
+        "queued",
+        "running",
+        "completed",
+        "cancelled",
+        "abandoned"
+      ]
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ended_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "selection_status": {
+      "enum": [
+        "complete",
+        "unknown"
+      ]
+    },
+    "catalog_snapshot": {
+      "anyOf": [
+        {
+          "$ref": "references.schema.json#/$defs/artifact_ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requirements_snapshot": {
+      "anyOf": [
+        {
+          "$ref": "references.schema.json#/$defs/artifact_ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "selection_snapshot": {
+      "anyOf": [
+        {
+          "$ref": "references.schema.json#/$defs/artifact_ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "source_run_id",
+    "source_attempt",
+    "source_revision",
+    "environment",
+    "execution_status",
+    "started_at",
+    "ended_at",
+    "selection_status",
+    "catalog_snapshot",
+    "requirements_snapshot",
+    "selection_snapshot"
+  ],
+  "unevaluatedProperties": false
+}

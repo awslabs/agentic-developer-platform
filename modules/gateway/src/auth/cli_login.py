@@ -37,16 +37,21 @@ import secrets
 import string
 import threading
 import time
+from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import boto3
 import httpx
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
+from src.auth.client_source import login_source
 from src.auth.cognito_jwt import CognitoTokenClaims, get_cognito_validator
 from src.shared.config import get_settings
 from src.shared.database import get_db
@@ -102,7 +107,7 @@ class CliRefreshUnavailableError(Exception):
 # and lazy abuse; the DB rows it protects expire in minutes anyway.
 _START_RATE_LIMIT = 10  # requests
 _START_RATE_WINDOW_SECONDS = 60
-_start_times: dict[str, list[float]] = {}
+_start_times: OrderedDict[str, list[float]] = OrderedDict()
 _start_lock = threading.Lock()
 
 
@@ -198,6 +203,10 @@ def _normalize_user_code(raw: str) -> str:
 def _check_start_rate(client_ip: str) -> None:
     now = time.monotonic()
     with _start_lock:
+        while _start_times and now - next(iter(_start_times.values()))[-1] >= _START_RATE_WINDOW_SECONDS:
+            _start_times.popitem(last=False)
+        if client_ip not in _start_times and len(_start_times) >= 10_000:
+            raise HTTPException(429, "Too many CLI login attempts; wait a minute.")
         times = [t for t in _start_times.get(client_ip, []) if now - t < _START_RATE_WINDOW_SECONDS]
         if len(times) >= _START_RATE_LIMIT:
             raise HTTPException(
@@ -206,9 +215,7 @@ def _check_start_rate(client_ip: str) -> None:
             )
         times.append(now)
         _start_times[client_ip] = times
-        # Bound the dict itself so a rotating-IP scan cannot grow it forever.
-        if len(_start_times) > 10_000:
-            _start_times.clear()
+        _start_times.move_to_end(client_ip)
 
 
 async def _get_cognito_claims(
@@ -222,13 +229,52 @@ async def _get_cognito_claims(
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail={"error": "missing_token", "message": "Authorization header required"})
+    token = authorization.removeprefix("Bearer ").strip()
     try:
         validator = get_cognito_validator()
-        return validator.validate_token(authorization.removeprefix("Bearer ").strip())
+        claims = await run_in_threadpool(validator.validate_token, token)
+        browser_client = get_settings().cognito_client_id
+        # This route creates a new session. A token accepted by another API or
+        # app client is not browser consent to issue CLI credentials.
+        if not (
+            browser_client
+            and claims.token_use == "access"
+            and claims.client_id == browser_client
+            and claims.account_type in {None, "human"}
+            and claims.username
+            and claims.jti
+            and claims.auth_time > 0
+        ):
+            raise HTTPException(status_code=401, detail={"error": "browser_session_required"})
+        # Password accounts can deny a request but cannot approve one below.
+        # Their hosted-UI tokens need not have Cognito's GetUser scope; only
+        # broker accounts can use this route to mint a new session.
+        if _is_broker_provisioned(claims.username):
+            await run_in_threadpool(_check_browser_session, token, claims)
+        return claims
     except HTTPException:
         raise
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") in {"NotAuthorizedException", "UserNotFoundException"}:
+            raise HTTPException(status_code=401, detail={"error": "browser_session_required"}) from None
+        raise HTTPException(status_code=503, detail={"error": "browser_session_unavailable"}) from None
+    except BotoCoreError:
+        raise HTTPException(status_code=503, detail={"error": "browser_session_unavailable"}) from None
     except Exception:
         raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Token validation failed"})
+
+
+def _check_browser_session(token: str, claims: CognitoTokenClaims) -> None:
+    """Reject revoked sessions without imposing a new browser re-login interval."""
+    client = boto3.client(
+        "cognito-idp",
+        region_name=get_settings().aws_region,
+        config=BotoConfig(connect_timeout=5, read_timeout=10, retries={"total_max_attempts": 1}),
+    )
+    user = client.get_user(AccessToken=token)
+    attributes = {item["Name"]: item["Value"] for item in user.get("UserAttributes", [])}
+    if attributes.get("sub") != claims.sub or user.get("Username", "").casefold() != claims.username.casefold() or claims.exp <= time.time():
+        raise HTTPException(status_code=401, detail={"error": "browser_session_required"})
 
 
 class CliTokenMinter:
@@ -368,6 +414,24 @@ class CliTokenMinter:
             result["RefreshToken"] = payload["refresh_token"]
         return result
 
+    async def revoke(self, refresh_token: str, cli_client_id: str) -> None:
+        client = self._http_client or httpx.AsyncClient(timeout=REFRESH_TIMEOUT_SECONDS)
+        try:
+            response = await client.post(
+                self.token_endpoint.removesuffix("/token") + "/revoke",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={"token": refresh_token, "client_id": cli_client_id, "token_type_hint": "refresh_token"},
+                timeout=REFRESH_TIMEOUT_SECONDS,
+                follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            raise CliRefreshUnavailableError("CLI token revocation unavailable") from exc
+        finally:
+            if self._http_client is None:
+                await client.aclose()
+        if response.status_code != 200:
+            raise CliRefreshUnavailableError(f"CLI token revocation failed (HTTP {response.status_code})")
+
 
 def get_token_minter() -> CliTokenMinter:
     """DI seam so tests can stub Cognito."""
@@ -381,7 +445,7 @@ def get_token_minter() -> CliTokenMinter:
 )
 async def start_cli_login(request: Request, db: AsyncSession = Depends(get_db)) -> StartResponse:
     _require_cli_client_configured()
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = login_source(request)
     _check_start_rate(client_ip)
 
     device_code = secrets.token_urlsafe(48)
@@ -562,3 +626,19 @@ async def refresh_cli_login(
         "refresh_token": auth_result.get("RefreshToken", ""),
         "expires_in": auth_result.get("ExpiresIn", 3600),
     }
+
+
+@router.post("/revoke")
+async def revoke_cli_login(
+    body: RefreshRequest,
+    minter: CliTokenMinter = Depends(get_token_minter),
+) -> dict:
+    cli_client_id = _require_cli_refresh_configured()
+    try:
+        await minter.revoke(body.refresh_token, cli_client_id)
+    except CliRefreshUnavailableError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "revoke_failed", "message": "Could not confirm CLI token revocation; retry logout."},
+        ) from exc
+    return {"revoked": True}

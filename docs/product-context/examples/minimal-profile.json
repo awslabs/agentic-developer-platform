@@ -1,0 +1,148 @@
+{
+  "schema_version": "1.0",
+  "context_snapshot_id": "snapshot-minimal-1",
+  "tenant_id": "tenant-example",
+  "project_id": "project-checkout",
+  "generated_at": "2026-10-15T09:00:00Z",
+  "records": [
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "adp-example",
+      "record_type": "product",
+      "record_id": "product-checkout",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Checkout",
+        "purpose": "Help shoppers complete purchases reliably.",
+        "intended_users": [
+          "Online shoppers"
+        ],
+        "owner_ref": {
+          "kind": "user",
+          "id": "user-example"
+        },
+        "starting_point": "idea",
+        "lifecycle_status": "draft"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/purpose",
+            "/data/intended_users",
+            "/data/owner_ref",
+            "/data/starting_point",
+            "/data/lifecycle_status"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-product-checkout",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-product",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "adp-example",
+      "record_type": "project",
+      "record_id": "project-checkout",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Checkout delivery",
+        "owner_ref": {
+          "kind": "user",
+          "id": "user-example"
+        },
+        "state": "registered"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/owner_ref",
+            "/data/state"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-project-checkout",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-project",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "relationship_id": "link-product-project",
+      "relationship_type": "product_project",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-checkout",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "project",
+        "record_id": "project-checkout",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-product-project",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    }
+  ]
+}

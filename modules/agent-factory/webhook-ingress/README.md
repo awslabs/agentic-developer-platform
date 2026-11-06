@@ -81,8 +81,14 @@ breaks all GitHub deliveries with HTTP 500.
 `GITHUB_AUTO_PR_REVIEW_ENABLED` (Terraform: `github_auto_pr_review_enabled`)
 defaults to `false`. It suppresses automatic reviewer dispatch for PR
 `opened`, `ready_for_review` and `synchronize` events. Explicit human mentions
-and labels still dispatch their requested persona. `/agent/trigger` and
-EventBridge routing are unchanged.
+and labels still dispatch their requested persona. EventBridge routing is
+independent of this switch.
+
+The legacy `/agent/trigger` endpoint returns `410 legacy_agent_trigger_retired`
+in every configuration. Shared IAM identity and published lineage identifiers
+cannot establish ownership of an agent run. Agents must use the gateway's
+authenticated per-run dispatch path with protected worker authority configured.
+Rolling back an engine, review, or authority flag does not reopen the legacy URL.
 
 This switch is independent of `FEATURE_ORCHESTRATION_ENGINE_ENABLED` and each
 flow's `execution_paused` flag. Engine and flow pause never disable the GitHub

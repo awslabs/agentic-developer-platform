@@ -50,7 +50,7 @@ def emit_status_callback(
     Args:
         asset_id: The knowledge_assets row UUID (from registry_asset_id in SQS message).
                   If None or empty, the callback is skipped silently.
-        status: One of "indexing", "complete", "failed".
+        status: One of "indexing", "complete", "partial", "failed".
         status_detail: Optional compact projection of run-state for status_detail JSONB.
         error: Optional error message (used when status is "failed").
         tenant_id: Owning tenant of the asset (scope.tenant_id). Issue #5663 (A09):

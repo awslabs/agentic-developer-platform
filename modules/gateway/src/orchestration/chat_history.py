@@ -10,7 +10,7 @@ import time
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -18,8 +18,9 @@ from src.agentauth.chat_authority import current_chat_member
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError
 from src.agentauth.chat_event_journal import ChatEventJournal
 from src.agentauth.chat_session_cleanup import request_session_end
-from src.agentauth.chat_session_mailbox import ChatSessionMailbox
+from src.agentauth.chat_session_mailbox import CHAT_EXECUTORS, ChatSessionMailbox
 from src.auth.dependencies import get_current_user
+from src.chat_logging.scrub_executor import ScrubCapacityError, run_scrub
 from src.chat_logging.scrubber import RegexScrubber
 from src.features.routes import _is_enabled
 from src.shared.database import get_db
@@ -74,10 +75,43 @@ def mode_store():
     return ChatSessionMailbox(table)
 
 
+ChatExecutor = Literal["sandbox-loop", "claude-code", "kirocrew"]
+# Executors a tenant member may always select for a persistent session: both run in the
+# admitted ADP sandbox image under the same admission, lease and budget controls (#8115).
+SANDBOX_EXECUTORS = frozenset({"sandbox-loop", "claude-code"})
+
+
 class SessionModeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     mode: Literal["ephemeral", "persistent"]
+    # The turn executor for a persistent session (#8115). Omitted keeps the stored choice
+    # (persistent) or clears it (ephemeral); an ephemeral session cannot name a harness.
+    executor: ChatExecutor | None = None
+
+    @model_validator(mode="after")
+    def executor_requires_persistent(self):
+        if self.mode == "ephemeral" and self.executor not in (None, "sandbox-loop"):
+            raise ValueError("executor requires a persistent session")
+        return self
+
+
+async def require_executor_permitted(executor: str, user: TokenContext, db: AsyncSession):
+    """Refuse an executor the tenant's policy does not allow (#8115).
+
+    Sandbox executors need no extra grant. ``kirocrew`` is the user-scoped Crew pod and
+    follows the Crew target policy (`crew.allowed_targets` must include `eks-pod`), the same
+    read the Crew runtime endpoint answers from; an unreadable policy fails closed (503).
+    """
+    if executor in SANDBOX_EXECUTORS:
+        return
+    if executor != "kirocrew" or executor not in CHAT_EXECUTORS:
+        raise HTTPException(403, detail={"error": "executor_not_permitted"})
+    from src.crew.proxy import crew_allowed_targets
+    from src.crew.targets import CrewOwner
+
+    if "eks-pod" not in await crew_allowed_targets(CrewOwner(user.org_id, user.user_id), db):
+        raise HTTPException(403, detail={"error": "executor_not_permitted"})
 
 
 async def owned_session(session_id: str, user: TokenContext, table, db: AsyncSession):
@@ -179,10 +213,19 @@ async def change_mode(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     identity = await owned_mode(session_id, user, table, db)
+    if body.executor is not None:
+        await require_executor_permitted(body.executor, user, db)
     try:
         await run_in_threadpool(mailbox.select_mode, session_id=session_id, owner=identity, mode=body.mode, now=int(time.time()))
+        # The executor is a property of the persistent session (#8115): stored with the mode,
+        # copied onto each turn envelope by the intake, cleared when the session goes ephemeral.
+        if body.mode == "ephemeral" or body.executor is not None:
+            executor = None if body.mode == "ephemeral" else body.executor
+            await run_in_threadpool(mailbox.select_executor, session_id=session_id, owner=identity, executor=executor, now=int(time.time()))
         return await run_in_threadpool(resolved_session_state, mailbox, session_id=session_id, owner=identity, now=int(time.time()))
     except ChatAuthorizationRefusedError as error:
+        if "executor change" in str(error):
+            raise HTTPException(409, detail={"error": "session_executor_locked"}) from None
         if "must end" in str(error) or "mode change pending" in str(error):
             raise HTTPException(409, detail={"error": "session_mode_pending"}) from None
         raise HTTPException(404, detail={"error": "session_not_found"}) from None
@@ -415,4 +458,7 @@ async def show_session(
         from src.orchestration.chat_tasks import enrich
 
         return await enrich(row, user, request, db)
-    return project(row, user)
+    try:
+        return await run_scrub(project, row, user)
+    except ScrubCapacityError:
+        raise unavailable() from None

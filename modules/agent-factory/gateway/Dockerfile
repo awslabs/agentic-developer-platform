@@ -6,7 +6,7 @@
 
 # Reuse authenticated curl packages and the tested portable AWS CLI build.
 ARG CURL_SECURITY_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b
-ARG AWSCLI_SECURITY_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cb081f259e95108195c22ef7506eeed843fef6d015f7ce33366ad4f69fd8284c
+ARG AWSCLI_SECURITY_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:3c0921c90a97ccc89c991c8b73cf27791e4c349774397602fcf71514555f60a2
 FROM ${CURL_SECURITY_IMAGE} AS curl-security
 FROM ${AWSCLI_SECURITY_IMAGE} AS awscli-security
 

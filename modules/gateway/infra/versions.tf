@@ -3,8 +3,10 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.0"
+      source = "hashicorp/aws"
+      # 6.69.0 fails inline Lambda uploads before sending the request:
+      # hashicorp/terraform-provider-aws#50474. Bump with release validation.
+      version = "6.68.0"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"

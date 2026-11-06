@@ -1,10 +1,14 @@
 # AWS CLI source build
 
 The executor builds AWS CLI 2.37.4's maintained `portable-exe` distribution with
-Python 3.14.7. The official 2.37.4 ZIP still embeds Python 3.14.6, affected by
+Python 3.14.8. The official 2.37.4 ZIP still embeds Python 3.14.6, affected by
 CVE-2026-15308, CVE-2026-11940 and CVE-2026-11972. CVE-2026-15308 retains Grype High and an unreviewed GitHub advisory Critical
 rating; the PSF CNA record reports CVSS 4.0 High (8.7). All ratings remain
 visible with their actual sources.
+
+The October 10 worker scan also identified CVE-2026-19445 (Critical) and
+CVE-2026-19553 (High) in the embedded Python 3.14.7 runtime. The current
+source build selects Python 3.14.8 to include their upstream fixes.
 
 The Dockerfile pins the Python image digest, exact upstream source commit and
 archive checksum. Upstream dependency files include hashes, enabling pip's
@@ -57,7 +61,7 @@ maintenance separately from the AWS CLI source-build record. No metadata is
 removed and no scanner findings are suppressed. Source-package notes remain
 embedded identities distinct from root dpkg ownership during qualification.
 
-The ordinary compatibility probe loads the bundle's own Python 3.14.7 and
+The ordinary compatibility probe loads the bundle's own Python 3.14.8 and
 `_uuid` extension, calls `generate_time_safe`, and checks that the versioned
 `UUID_2.20` symbol was loaded from the bundled library path. It is compiled in
 the tools stage and bind-mounted only for the final nonroot, network-disabled

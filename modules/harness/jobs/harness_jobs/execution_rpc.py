@@ -28,7 +28,7 @@ from .execution import (
 )
 from .execution_plan import ExecutionStep as ExecutionStep
 from .execution_plan import admitted_steps as _admitted_steps
-from .execution_plan import step_key
+from .execution_plan import step_key as step_key
 from .identity import (
     ContractViolation,
     OperationRefused,
@@ -36,6 +36,7 @@ from .identity import (
     ResolvedPrincipal,
 )
 from .leases import ExecutionLease, LeaseRefused, lock_lease
+from .provider_retry import effective_step_key
 from .store import OperationStore
 
 MAX_MESSAGE_BYTES = 65536
@@ -205,13 +206,15 @@ class ExecutionRPCServer:
                 raise ProviderCallRefused("Step is not in the admitted plan")
             for predecessor in steps[: steps.index(step)]:
                 call = await read_call(
-                    connection, idempotency_key=step_key(record, predecessor)
+                    connection,
+                    idempotency_key=await effective_step_key(
+                        connection, record, predecessor
+                    ),
                 )
                 if call is None or call.outcome is not CallOutcome.SUCCEEDED:
                     raise ProviderCallRefused("Preceding admitted step is incomplete")
-            existing = await read_call(
-                connection, idempotency_key=step_key(record, step)
-            )
+            key = await effective_step_key(connection, record, step)
+            existing = await read_call(connection, idempotency_key=key)
             if existing is not None and (
                 existing.outcome is not CallOutcome.SUCCEEDED
                 or (existing.provider, existing.operation_kind, existing.target)
@@ -221,7 +224,7 @@ class ExecutionRPCServer:
         if existing is None:
             try:
                 result = await runtime.execute_provider(
-                    idempotency_key=step_key(record, step),
+                    idempotency_key=key,
                     provider=step.provider,
                     operation_kind=step.operation_kind,
                     target=step.target,
@@ -251,7 +254,10 @@ class ExecutionRPCServer:
             if not await lock_lease(connection, grant.lease):
                 raise ProviderCallRefused("Execution lease is no longer live")
             calls = [
-                await read_call(connection, idempotency_key=step_key(record, s))
+                await read_call(
+                    connection,
+                    idempotency_key=await effective_step_key(connection, record, s),
+                )
                 for s in steps
             ]
             if all(c is not None and c.outcome is CallOutcome.SUCCEEDED for c in calls):

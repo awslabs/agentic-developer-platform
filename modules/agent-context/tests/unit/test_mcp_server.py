@@ -32,6 +32,13 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+@pytest.fixture
+def absent_code_index(monkeypatch):
+    from door import server as door_server
+
+    monkeypatch.setattr(door_server.state, "zoekt", None)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -124,13 +131,13 @@ class TestMCPServerRegistration:
 class TestACLParity:
     """Verify MCP path has identical ACL fail-closed behavior to REST path.
 
-    This is the blocking merge gate: code verbs with NO identity headers must
-    return empty results (fail-closed), identical to the REST path.
+    Code verbs with NO identity headers cannot reveal private content. When the
+    code index is unavailable, both paths report the same explicit failure.
     """
 
     @pytest.mark.asyncio
-    async def test_rest_search_no_headers_returns_empty(self, client, acl_store_live):
-        """REST path: search without x-github-login returns empty (baseline)."""
+    async def test_rest_search_no_headers_reports_missing_index(self, client, acl_store_live, absent_code_index):
+        """REST path: no identity cannot turn an absent index into empty success."""
         resp = await client.post(
             "/call",
             content=json.dumps(
@@ -139,8 +146,10 @@ class TestACLParity:
         )
         assert resp.status_code == 200
         body = resp.json()
-        # Without identity headers, ACL fails closed -> empty results
-        assert body["results"] == []
+        assert body == {
+            "error": "Knowledge code index is not ready.",
+            "code": "knowledge_index_not_ready",
+        }
 
     @pytest.mark.asyncio
     async def test_rest_understand_no_headers_returns_empty(self, client, acl_store_live):
@@ -182,13 +191,12 @@ class TestACLParity:
         assert body["entries"] == []
 
     @pytest.mark.asyncio
-    async def test_rest_with_headers_reaches_the_verb(self, client, acl_store_live):
+    async def test_rest_with_headers_reaches_the_verb(self, client, acl_store_live, absent_code_index):
         """REST path: a resolved caller passes the gates and reaches the verb.
 
         With the ACL store live and identity headers present, the request is
-        answered by the verb itself — a normal result envelope, not a refusal.
-        Results may still be empty because Zoekt is not configured in tests;
-        what this asserts is that neither gate rejected the call.
+        answered by the verb itself: an unavailable index reports not ready,
+        rather than pretending the query succeeded with no matches.
         """
         resp = await client.post(
             "/call",
@@ -202,7 +210,7 @@ class TestACLParity:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert "results" in body
+        assert body["code"] == "knowledge_index_not_ready"
         assert body.get("code") != "acl_store_unavailable"
 
     @pytest.mark.asyncio
@@ -251,8 +259,8 @@ class TestMCPToolHandlerACL:
     """
 
     @pytest.mark.asyncio
-    async def test_mcp_search_no_context_returns_empty(self, acl_store_live):
-        """MCP search without headers returns empty (fail-closed)."""
+    async def test_mcp_search_no_context_reports_missing_index(self, acl_store_live, absent_code_index):
+        """MCP search without a code backend returns an explicit error."""
         from door.mcp_app import mcp_server
 
         result = await mcp_server.call_tool("search", {"query": "test", "scope": "code"})
@@ -261,7 +269,10 @@ class TestMCPToolHandlerACL:
         assert len(content) == 1
         text = content[0].text
         parsed = json.loads(text)
-        assert parsed["results"] == []
+        assert parsed == {
+            "error": "Knowledge code index is not ready.",
+            "code": "knowledge_index_not_ready",
+        }
 
     @pytest.mark.asyncio
     async def test_mcp_understand_no_context_returns_empty(self, acl_store_live):

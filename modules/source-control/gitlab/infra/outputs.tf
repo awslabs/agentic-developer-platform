@@ -60,3 +60,13 @@ output "backup_bucket_arn" {
   description = "ARN of the S3 bucket used for GitLab backups"
   value       = var.backup_enabled ? aws_s3_bucket.backup[0].arn : ""
 }
+
+output "gitlab_runner_url" {
+  description = "Private HTTPS GitLab runner URL; absent without an ACM certificate"
+  value       = var.certificate_arn != "" ? "https://${var.gitlab_domain}${var.cloudfront_domain != "" ? "/gitlab" : ""}" : null
+}
+
+output "gitlab_runner_ca_secret_arn" {
+  description = "Runner CA Secrets Manager ARN, not the certificate contents"
+  value       = var.certificate_arn != "" ? aws_secretsmanager_secret.runner_ca.arn : null
+}

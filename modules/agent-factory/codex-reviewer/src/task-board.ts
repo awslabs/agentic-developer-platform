@@ -7,7 +7,8 @@
  * a 10k-line diff. The runtime renders it; the model only reports it.
  */
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 export type TaskKind = "code" | "test" | "infra";
@@ -31,6 +32,29 @@ export interface Task {
   planStep?: PlanStep;
   /** Short SHAs the controller attributed to this task; never model-supplied. */
   commits?: string[];
+  started_at?: string | null;
+  finished_at?: string | null;
+  run_id?: string | null;
+  attempt?: number;
+  checkpoint_note?: string;
+  pattern_id?: string | null;
+}
+
+export interface BoardCheckpoint {
+  runId?: string;
+  attempt?: number;
+  nodeAddress?: string;
+  flowId?: string;
+  scopeHash?: string;
+  previous?: Task[];
+  summary?: string;
+}
+
+export function checkpointIdentity(env: NodeJS.ProcessEnv): BoardCheckpoint {
+  const attempt = Number(env.ADP_RUN_ATTEMPT);
+  return { runId: env.ADP_MESSAGE_ID,
+    attempt: Number.isSafeInteger(attempt) && attempt > 0 ? attempt : undefined,
+    nodeAddress: env.ADP_BOARD_NODE_ADDRESS, flowId: env.ADP_BOARD_FLOW_ID };
 }
 
 export const TASK_KINDS: readonly TaskKind[] = ["code", "test", "infra"];
@@ -60,6 +84,19 @@ export const taskSchema = {
 
 export const taskListSchema = { type: "array", items: taskSchema };
 
+export function safeCheckpointNote(value: string): string {
+  return value
+    .replace(/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/gi, "[REDACTED]")
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[REDACTED]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[REDACTED]")
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{20,})\b/g, "[REDACTED]")
+    .replace(/\b((?:proxy[-_])?authorization["']?\s*[:=][ \t]*)(?:"(?:\\[\s\S]|[^"\\])*"?|'(?:\\[\s\S]|[^'\\])*'?|[^\r\n]+)/gi, "$1[REDACTED]")
+    .replace(/\b(Bearer\s+)\S+/gi, "$1[REDACTED]")
+    .replace(/\b((?:api[_-]?key|(?:aws[_-]?)?secret(?:[_-]?access[_-]?key)?|password|(?:(?:access|refresh|id|(?:aws[_-]?)?session)[_-]?)?token)["']?\s*[:=]\s*)(?:"(?:\\[\s\S]|[^"\\])*"?|'(?:\\[\s\S]|[^'\\])*'?|[^\s,;]+)/gi, "$1[REDACTED]")
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@")
+    .trim().slice(0, 400);
+}
+
 function readPlanStep(raw: unknown): PlanStep | undefined {
   if (raw === undefined) return undefined; // Existing flat boards remain readable.
   if (!raw || typeof raw !== "object") throw new Error("Invalid implementation plan step");
@@ -86,6 +123,11 @@ export function validateTasks(raw: unknown): Task[] {
       return value as string[];
     };
     const commits = strings(task.commits, "commits").filter(sha => /^[0-9a-f]{7,40}$/.test(sha));
+    const optionalString = (value: unknown, name: string) => {
+      if (value !== undefined && value !== null && typeof value !== "string") throw new Error(`Task ${task.id} ${name} must be a string or null`);
+      return value as string | null | undefined;
+    };
+    if (task.attempt !== undefined && (!Number.isSafeInteger(task.attempt) || (task.attempt as number) < 0)) throw new Error(`Task ${task.id} has an invalid attempt`);
     return {
       id: task.id, kind: task.kind as TaskKind, status: task.status as TaskStatus, title: task.title.trim(),
       criterion: typeof task.criterion === "string" ? task.criterion.trim() : "",
@@ -93,6 +135,9 @@ export function validateTasks(raw: unknown): Task[] {
       note: typeof task.note === "string" ? task.note.trim() : "",
       ...(task.planStep !== undefined ? { planStep: readPlanStep(task.planStep) } : {}),
       ...(commits.length ? { commits } : {}),
+      ...Object.fromEntries(["started_at", "finished_at", "run_id", "checkpoint_note", "pattern_id"]
+        .filter(key => task[key] !== undefined).map(key => [key, optionalString(task[key], key)])),
+      ...(task.attempt !== undefined ? { attempt: task.attempt as number } : {}),
     } satisfies Task;
   });
   const ids = new Set<string>();
@@ -138,7 +183,7 @@ export function sanitizeTasks(raw: unknown, previous: Task[] = []): { tasks: Tas
     const status = TASK_STATUSES.includes(t.status as TaskStatus) ? t.status as TaskStatus : (warnings.push(`task ${id}: unknown status "${String(t.status)}" treated as open`), "open" as TaskStatus);
     const strings = (value: unknown) => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.trim() !== "").map(v => v.trim()) : [];
     const title = typeof t.title === "string" && t.title.trim() ? t.title.trim() : (warnings.push(`task ${id}: no title`), "(untitled)");
-    let note = typeof t.note === "string" ? t.note.trim() : "";
+    let note = typeof t.note === "string" ? safeCheckpointNote(t.note) : "";
     let planStep: PlanStep | undefined;
     try { planStep = readPlanStep(t.planStep); } catch { warnings.push(`task ${id}: invalid plan step; retain its saved parent`); }
     if (status === "blocked" && !note) { note = "(no reason given)"; warnings.push(`task ${id}: blocked without a reason`); }
@@ -195,7 +240,9 @@ export function preserveTaskHistory(previous: Task[] | null, reported: Task[]): 
     incoming.delete(saved.id);
     if (!next) { warnings.push(`saved task ${saved.id} was omitted; retained its progress`); return saved; }
     if (saved.planStep && next.planStep?.id !== saved.planStep.id) warnings.push(`saved task ${saved.id} keeps plan step ${saved.planStep.id}`);
-    return { ...next, ...(saved.planStep ? { planStep: saved.planStep } : {}), ...(saved.commits ? { commits: saved.commits } : {}) };
+    return { ...next, ...(saved.planStep ? { planStep: saved.planStep } : {}), ...(saved.commits ? { commits: saved.commits } : {}),
+      ...Object.fromEntries(["started_at", "finished_at", "run_id", "attempt", "checkpoint_note", "pattern_id"]
+        .filter(key => saved[key as keyof Task] !== undefined).map(key => [key, saved[key as keyof Task]])) };
   });
   const merged = [...tasks, ...incoming.values()];
   const parents = new Map(previous.filter(task => task.planStep).map(task => [task.planStep!.id, task.planStep!]));
@@ -357,7 +404,10 @@ export function taskBoardPath(issue: number): string {
 }
 
 export interface TaskBoardFile {
-  version: 1; issue: number; updated_at: string; tasks: Task[];
+  version: 1 | 2; issue: number; updated_at: string; tasks: Task[];
+  node_address?: string | null;
+  flow_id?: string | null;
+  scope_hash?: string | null;
   /** Materialized parent view, regenerated from children at every checkpoint. */
   plan?: Array<PlanStep & { status: TaskStatus; taskIds: string[]; completed: number; total: number }>;
 }
@@ -370,23 +420,54 @@ export async function readTaskBoardFile(workspace: string, issue: number): Promi
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? { tasks: null } : { tasks: null, error: String(error) }; }
   try {
     const data = JSON.parse(raw) as Partial<TaskBoardFile>;
-    if (data.version !== 1 || data.issue !== issue) return { tasks: null, error: "task board file is for another issue or version" };
-    return { tasks: validateTasks(data.tasks) };
+    if (![1, 2].includes(data.version as number) || data.issue !== issue) return { tasks: null, error: "task board file is for another issue or version" };
+    const tasks = validateTasks(data.tasks);
+    return { tasks: data.version === 1 ? tasks.map(task => ({ ...task, started_at: task.started_at ?? null,
+      finished_at: task.finished_at ?? null, run_id: task.run_id ?? null, attempt: task.attempt ?? 0,
+      checkpoint_note: task.checkpoint_note ?? "" })) : tasks };
   } catch (error) { return { tasks: null, error: (error as Error).message }; }
 }
 
 /** Stable, pretty-printed JSON so each turn's diff is only what changed. */
-export async function writeTaskBoardFile(workspace: string, issue: number, tasks: Task[], now = new Date()): Promise<string> {
+export async function writeTaskBoardFile(workspace: string, issue: number, tasks: Task[], now = new Date(), checkpoint: BoardCheckpoint = {}): Promise<string> {
   const path = taskBoardPath(issue);
   await mkdir(join(workspace, ".adp", "tasks"), { recursive: true });
-  const ordered = tasks.map(task => ({ id: task.id, kind: task.kind, criterion: task.criterion, title: task.title, status: task.status,
-    covers: task.covers, files: task.files, note: task.note, ...(task.planStep ? { planStep: task.planStep } : {}), ...(task.commits?.length ? { commits: task.commits } : {}) }));
+  const target = join(workspace, path);
+  const persisted = await readTaskBoardFile(workspace, issue);
+  let header: Partial<TaskBoardFile> = {};
+  if (persisted.tasks) header = JSON.parse(await readFile(target, "utf8")) as Partial<TaskBoardFile>;
+  const sameScope = !checkpoint.scopeHash || header.scope_hash === checkpoint.scopeHash;
+  const previous = new Map(((sameScope ? persisted.tasks : null) ?? checkpoint.previous ?? []).map(task => [task.id, task]));
+  const ordered = tasks.map(task => {
+    const saved = previous.get(task.id);
+    const lineage = saved ?? task;
+    const active = task.status === "in_progress" || task.status === "done";
+    const newAttempt = active && (!saved || (saved.status !== "done" && saved.status !== "in_progress") ||
+      (saved.status === "in_progress" && ((checkpoint.runId && saved.run_id !== checkpoint.runId) ||
+        (checkpoint.attempt ?? 0) > (saved.attempt ?? 0))) ||
+      (saved.status === "done" && task.status === "in_progress"));
+    const started_at = newAttempt ? now.toISOString() : lineage.started_at ?? null;
+    const finished_at = task.status === "done" ? saved?.status !== "done" ? now.toISOString() : lineage.finished_at ?? null : null;
+    return { id: task.id, kind: task.kind, criterion: task.criterion, title: task.title, status: task.status,
+      covers: task.covers, files: task.files, note: safeCheckpointNote(task.note), ...(task.planStep ? { planStep: task.planStep } : {}), ...(task.commits?.length ? { commits: task.commits } : {}),
+      started_at, finished_at, run_id: newAttempt ? checkpoint.runId ?? null : lineage.run_id ?? null,
+      attempt: newAttempt ? Math.max(checkpoint.attempt ?? 1, (saved?.attempt ?? 0) + 1) : lineage.attempt ?? 0,
+      checkpoint_note: safeCheckpointNote(task.note || (newAttempt ? checkpoint.summary : "") || lineage.checkpoint_note || ""),
+      ...(task.pattern_id ?? saved?.pattern_id ? { pattern_id: task.pattern_id ?? saved?.pattern_id } : {}) };
+  });
   const plan = planSteps(tasks).map(step => ({ id: step.id, title: step.title, status: step.status,
     taskIds: step.tasks.map(task => task.id), completed: step.tasks.filter(task => task.status === "done").length, total: step.tasks.length }));
-  const file: TaskBoardFile = { version: 1, issue, updated_at: now.toISOString(), ...(plan.length ? { plan } : {}), tasks: ordered };
-  const target = join(workspace, path);
-  await writeFile(`${target}.tmp`, `${JSON.stringify(file, null, 2)}\n`, "utf8");
-  await rename(`${target}.tmp`, target);
+  const scopeHash = checkpoint.scopeHash || (checkpoint.flowId === header.flow_id && checkpoint.nodeAddress === header.node_address
+    ? header.scope_hash : undefined);
+  const file: TaskBoardFile = { version: 2, issue, updated_at: now.toISOString(),
+    node_address: checkpoint.nodeAddress || header.node_address || null, flow_id: checkpoint.flowId || header.flow_id || null,
+    ...(scopeHash ? { scope_hash: scopeHash } : {}),
+    ...(plan.length ? { plan } : {}), tasks: ordered };
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+    await rename(temporary, target);
+  } finally { await rm(temporary, { force: true }); }
   return path;
 }
 

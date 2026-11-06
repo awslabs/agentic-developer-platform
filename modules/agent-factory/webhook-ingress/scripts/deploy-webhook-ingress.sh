@@ -244,6 +244,32 @@ fi
 # when the group is present in AWS AND absent from state. Both guards make this
 # a clean no-op on re-runs rather than a collision.
 BOOTSTRAP_LOG_GROUP="/adp/${ENVIRONMENT}/agent-factory/bootstrap"
+# The door identity Role/RoleBinding in adp-agents were applied live on dev before
+# door-identity-rbac.tf declared them (#7870/#7892). Adopt them when present so the
+# apply converges instead of failing with "already exists"; a fresh environment
+# has nothing to adopt. Arguments: the terraform var arguments the apply uses.
+adopt_door_identity_rbac() {
+  local managed_addresses
+  managed_addresses=$(terraform state list) || fail "Cannot inspect webhook Terraform state"
+  local kind addr
+  for kind in role role_binding; do
+    addr="kubernetes_${kind}.door_identity_keys_read"
+    if grep -Fxq "$addr" <<< "$managed_addresses"; then continue; fi
+    kubectl get "${kind/_/}" door-identity-keys-read -n adp-agents >/dev/null 2>&1 || continue
+    warn "Existing adp-agents/door-identity-keys-read ${kind/_/} is not in state — adopting"
+    if [ "$UPDATE_MODE" = true ]; then
+      local import_args=(-var-file=terraform.tfvars)
+      [ -z "$WEBHOOK_UPDATE_VAR_FILE" ] || import_args+=("-var-file=$WEBHOOK_UPDATE_VAR_FILE")
+      import_args+=(-var-file="$UPGRADE_RUN_DIR/webhook-ingress.tfvars.json")
+      import_args+=(-var="environment=$ENVIRONMENT" -var="aws_region=$AWS_REGION")
+      terraform import "${import_args[@]}" "$addr" adp-agents/door-identity-keys-read
+    else
+      bash "$TF_WEBHOOK" import "$addr" adp-agents/door-identity-keys-read
+    fi
+    ok "Imported $addr"
+  done
+}
+
 import_bootstrap_log_group() {
   local found
   found=$(aws logs describe-log-groups \
@@ -296,6 +322,7 @@ else
       TF_ARGS+=(-var="gateway_api_url=${GATEWAY_API_URL}")
     fi
     import_bootstrap_log_group
+    adopt_door_identity_rbac
     [ -z "$GITLAB_OVERRIDE" ] || TF_ARGS+=("$GITLAB_OVERRIDE")
     [ -z "$ADVERSARIAL_OVERRIDE" ] || TF_ARGS+=("$ADVERSARIAL_OVERRIDE")
     if [ "$UPDATE_MODE" = false ]; then

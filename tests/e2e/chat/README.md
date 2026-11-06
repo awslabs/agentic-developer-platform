@@ -108,11 +108,14 @@ See `.github/workflows/e2e-chat-playwright.yml`.
 ## Debugging Failures
 
 Each failed test automatically captures:
-1. **Screenshot** — saved to `/tmp/e2e-chat-*.png` and uploaded as CI artifact
+1. **Screenshot** — saved under `E2E_SCREENSHOT_DIR` (`test-results/screenshots/`
+   in CI; `/tmp` for local runs), with mode 0600, and retained in private S3
 2. **Assertion message** — includes the expected route, actual route, and relevant context
 3. **CloudWatch log excerpts** — for routing tests, the last 50 lines of the ingest Lambda log
 
-To see failure details in CI, check the `e2e-chat-results` artifact.
+To see failure details in CI, open the `e2e-chat-results` S3 manifest listed in the
+Actions job summary. Retrieval requires AWS read access to the CI evidence bucket;
+see [CI artifact storage](../../../docs/engineering-insights/ci-artifact-storage.md).
 
 ## Architecture
 

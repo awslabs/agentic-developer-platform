@@ -158,3 +158,57 @@ def test_missing_worker_permissions_refuse_before_component_installation(
     assert all(row["revoked"] for row in store.authority_rows.values())
     assert cluster.taints
     assert not store.rows
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [
+        ({"status": {"allowed": True}}, True),
+        ({"status": {"allowed": False}}, False),
+        ({"status": {"allowed": "true"}}, None),
+        ({"status": {"allowed": True, "evaluationError": "unanswered"}}, None),
+        ({}, None),
+    ],
+)
+def test_scoped_sdk_review_preserves_scope_and_validates_answer(
+    binding, payload, expected
+):
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    client = Mock()
+    client.self_subject_access_review.return_value = payload
+    runner = _Scripted({})
+    access = production_access(runner, permission_client=client)
+    access._transport_path = Path("/synthetic/pinned")
+    access._bound_target = object()
+    access._operation_binding = binding
+    attrs = dict(verb="create", resource="pods/exec", namespace="synthetic")
+    if expected is None:
+        with pytest.raises(BootstrapRefused, match="permission review"):
+            access.bootstrap_permission(**attrs)
+    else:
+        assert access.bootstrap_permission(**attrs) is expected
+    body = client.self_subject_access_review.call_args.args[0]
+    assert body["spec"]["resourceAttributes"] == {
+        "verb": "create",
+        "group": "",
+        "resource": "pods",
+        "subresource": "exec",
+        "namespace": "synthetic",
+    }
+    assert client.self_subject_access_review.call_args.kwargs == {
+        "target": access._bound_target
+    }
+    assert not runner.calls
+
+
+def test_unbound_sdk_permission_review_refuses():
+    from unittest.mock import Mock
+
+    client = Mock()
+    with pytest.raises(BootstrapRefused, match="transport is closed"):
+        production_access(_Scripted({}), permission_client=client).bootstrap_permission(
+            verb="create", resource="pods"
+        )
+    client.self_subject_access_review.assert_not_called()

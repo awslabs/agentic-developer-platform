@@ -62,7 +62,7 @@ async def bootstrap_first_admin(
 ) -> dict:
     """Idempotently seed the first admin's org/tenant/dept/team/user/cognito-identity.
 
-    Returns {"status": "bootstrapped"|"already-bootstrapped", "org_id", "user_id"}.
+    Returns {"status": "bootstrapped"|"already-bootstrapped", "org_id", "user_id", "role"}.
 
     Reuses approve_request for the atomic multi-table creation, then:
       - deletes the stray provider="github" UserIdentity it creates (this admin
@@ -77,8 +77,13 @@ async def bootstrap_first_admin(
     # Guard 1: already bootstrapped for this Cognito identity.
     existing = await db.scalar(select(User).where(User.cognito_sub == cognito_sub))
     if existing is not None:
+        if existing.org_id != org_id or existing.role != role:
+            raise ValueError(
+                "Existing identity does not match the bootstrap administrator role and organization; "
+                "use the administrator management flow instead of overwriting Cognito claims"
+            )
         logger.info("First-admin already bootstrapped (cognito_sub=%s, user=%s)", cognito_sub, existing.id)
-        return {"status": "already-bootstrapped", "org_id": existing.org_id, "user_id": existing.id}
+        return {"status": "already-bootstrapped", "org_id": existing.org_id, "user_id": existing.id, "role": existing.role}
 
     # Build a synthetic pending request and run it through the canonical approver.
     req = TenantAccessRequest(
@@ -119,7 +124,7 @@ async def bootstrap_first_admin(
         role,
         email,
     )
-    return {"status": "bootstrapped", "org_id": tenant_id, "user_id": user.id}
+    return {"status": "bootstrapped", "org_id": tenant_id, "user_id": user.id, "role": user.role}
 
 
 def _build_argparser() -> argparse.ArgumentParser:

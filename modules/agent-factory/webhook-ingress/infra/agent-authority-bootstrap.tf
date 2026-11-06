@@ -122,7 +122,7 @@ resource "kubernetes_role" "gateway_agent_pod_read" {
     # Abort recovery retains exact pods with a finalizer, discovers pending
     # reports even without SQL work claims, then removes its own finalizer.
     # The gateway tests UID and resourceVersion on every JSON patch.
-    verbs = ["get", "list", "patch"]
+    verbs = ["get", "list", "patch", "delete"]
   }
   # The owning Job's deadline includes bootstrap and previous pod attempts.
   # No worker receives Kubernetes API permissions or a caller-selected lookup.

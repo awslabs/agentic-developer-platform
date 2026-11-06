@@ -68,6 +68,8 @@ SUPERPLANE_RECOVERY_BLOCKER = (
 # first (they hold the ENI), then the things they referenced.
 ORDER = (
     "ec2_instance",
+    "assistant_worker",
+    "assistant_session",
     "iam_instance_profile",
     "iam_role",
     "security_group",
@@ -75,11 +77,14 @@ ORDER = (
     "secret",
     "cognito_user",
     "adp_connection",
+    "product_fixture",
     # A destination registered through `adp admin bedrock connect`. Recorded by
     # the E06 journey; without it here, `record()` raises on an unknown kind and
     # `sweep()` treats it as a leak — a successful E06 would have failed cleanup.
     "bedrock_destination",
     *SUPERPLANE_KINDS,
+    "adp_user_email",
+    "adp_org",
     # The ADP account the run registers for its own E02 login, so the user-scoped
     # routes later cases exercise have a `users` row to resolve to.
     #
@@ -337,13 +342,101 @@ def sweep(manifest, deleters, *, prefix=None):
     """
     prefix = prefix or manifest.prefix
     results, ok = [], True
-    for entry in manifest.outstanding():
+    entries = manifest.outstanding()
+    product_run = any(
+        entry["kind"] == "product_fixture"
+        or (
+            entry["kind"] == "adp_user_email"
+            and entry["id"].endswith(f"/{prefix}-product-admin@adp-eval.example")
+        )
+        for entry in manifest.read().get("resources", [])
+    )
+    if product_run:
+        entries.sort(
+            key=lambda entry: (
+                -1
+                if entry["kind"] == "product_fixture"
+                else len(ORDER)
+                if entry["kind"] in {"secret", "cognito_user"}
+                else ORDER.index(entry["kind"]),
+                entry["kind"] == "adp_user"
+                and not entry["id"].startswith(prefix + "-product-"),
+            )
+        )
+    for entry in entries:
         kind, identifier = entry["kind"], entry["id"]
         if not owned(entry, prefix):
             manifest.mark(kind, identifier, SKIPPED_NOT_OWNED)
             results.append(
                 {"kind": kind, "id": identifier, "status": SKIPPED_NOT_OWNED}
             )
+            continue
+        dependencies = [
+            resource.get("detail") or {}
+            for resource in manifest.outstanding()
+            if resource.get("kind") == "product_fixture"
+            and owned(resource, prefix)
+            and resource.get("account") == entry.get("account")
+            and resource.get("region") == entry.get("region")
+        ]
+        actor_cleanup_pending = (
+            product_run
+            and kind in {"secret", "cognito_user"}
+            and any(
+                resource["kind"] in {"adp_org", "adp_user", "adp_user_email"}
+                and owned(resource, prefix)
+                for resource in manifest.outstanding()
+            )
+        )
+        administrator_needed = (
+            product_run
+            and kind == "adp_user"
+            and not identifier.startswith(prefix + "-product-")
+            and any(
+                resource["kind"] in {"adp_org", "adp_user", "adp_user_email"}
+                and resource["id"] != identifier
+                and owned(resource, prefix)
+                for resource in manifest.outstanding()
+            )
+        )
+        owner_registration_pending = kind == "adp_org" and any(
+            resource["kind"] == "adp_user_email"
+            and resource["id"]
+            == f"{identifier}/{prefix}-product-admin@adp-eval.example"
+            and owned(resource, prefix)
+            and resource.get("account") == entry.get("account")
+            and resource.get("region") == entry.get("region")
+            for resource in manifest.outstanding()
+        )
+        if (
+            actor_cleanup_pending
+            or administrator_needed
+            or owner_registration_pending
+            or any(
+                (
+                    kind == "ec2_instance"
+                    and detail.get("instance_id") in (None, identifier)
+                )
+                or kind in {"adp_user", "adp_user_email"}
+                or (kind == "adp_org" and identifier == detail.get("tenant_id"))
+                or (
+                    kind == "adp_user"
+                    and identifier
+                    == f"{detail.get('tenant_id')}/{detail.get('actor_id')}"
+                )
+                or (kind == "secret" and identifier == detail.get("actor_secret_id"))
+                or (
+                    kind == "cognito_user"
+                    and identifier == detail.get("actor_cognito_id")
+                )
+                for detail in dependencies
+            )
+        ):
+            ok = False
+            manifest.mark(
+                kind, identifier, FAILED, error="Product retirement not verified"
+            )
+            results.append({"kind": kind, "id": identifier, "status": FAILED})
             continue
         deleter = deleters.get(kind)
         if deleter is None:
@@ -502,7 +595,7 @@ def owned_by_run(instances, prefix):
     return found
 
 
-def recoverable_instances(instances, *, now, ttl_minutes, prefix=None):
+def recoverable_instances(instances, *, now, ttl_minutes, prefix=None, target=None):
     """What a recovery sweep may terminate: this run's, plus anything expired.
 
     Two authorities, unioned, because they cover different failures:
@@ -515,6 +608,15 @@ def recoverable_instances(instances, *, now, ttl_minutes, prefix=None):
     Deduplicated by instance ID so a resource satisfying both is reported once.
     """
     candidates = {}
+    if target is not None:
+        instances = [
+            instance
+            for instance in instances
+            if {t["Key"]: t["Value"] for t in instance.get("Tags", [])}.get(
+                "adp:evaluator-target"
+            )
+            == target
+        ]
     if prefix:
         for item in owned_by_run(instances, prefix):
             candidates[item["id"]] = item

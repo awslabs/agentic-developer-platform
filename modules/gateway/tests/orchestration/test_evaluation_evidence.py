@@ -242,6 +242,7 @@ def test_contract_selfcheck_runs_from_staged_artifact_without_repo(tmp_path):
     for name in ("evaluation_contract.py", "evaluation_contract_selfcheck.py"):
         shutil.copyfile(ROOT / "modules/gateway/src/orchestration" / name, package / name)
     shutil.copytree(ROOT / "contracts/orchestration-evaluation", stage / "contracts/orchestration-evaluation")
+    shutil.copytree(ROOT / "contracts/multi-repository-evaluation", stage / "contracts/multi-repository-evaluation")
     # setup-python's Linux interpreter needs its native extension library path.
     # Keep interpreter configuration while excluding repository imports and AWS
     # credentials; neither is required to validate a staged artifact.
@@ -260,6 +261,24 @@ def test_contract_selfcheck_runs_from_staged_artifact_without_repo(tmp_path):
     ]
     result = subprocess.run(command, cwd=stage, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+    golden_path = stage / "contracts/orchestration-evaluation/v1/evaluation-receipt.golden.json"
+    golden_bytes = golden_path.read_bytes()
+    golden_path.unlink()
+    result = subprocess.run(command, cwd=stage, env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and "evaluation-receipt.golden.json" in result.stderr
+    golden_path.write_bytes(golden_bytes)
+    multi_golden_path = stage / "contracts/multi-repository-evaluation/v1/evaluation-receipt.golden.json"
+    multi_bytes = multi_golden_path.read_bytes()
+    multi_golden_path.unlink()
+    result = subprocess.run(command, cwd=stage, env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and "evaluation-receipt.golden.json" in result.stderr
+    multi_golden_path.write_bytes(multi_bytes)
+    multi_golden = json.loads(multi_bytes)
+    multi_golden["expected_input_set_digest"] = "0" * 64
+    multi_golden_path.write_text(json.dumps(multi_golden))
+    result = subprocess.run(command, cwd=stage, env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and "multi_repository_input_set_drift" in result.stderr
+    multi_golden_path.write_bytes(multi_bytes)
     (stage / "contracts/orchestration-evaluation/v1/models.py").unlink()
     result = subprocess.run(command, cwd=stage, env=env, capture_output=True, text=True)
     assert result.returncode != 0 and "evaluation_contract_unavailable" in result.stderr

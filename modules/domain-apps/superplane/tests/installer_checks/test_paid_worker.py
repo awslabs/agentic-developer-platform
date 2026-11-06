@@ -118,6 +118,41 @@ def test_paid_image_is_a_separate_reviewed_release(native, problem):
         paid_worker.validate(env, lock)
 
 
+@pytest.mark.parametrize(
+    "fault",
+    [None, "registry", "repository", "source", "digest", "pending", "reused", "flag"],
+)
+def test_retained_worker_keeps_truthful_independent_source_and_image_guards(
+    native, fault
+):
+    env, lock = native
+    source = lock["image_sources"][paid_worker.COMPONENT]
+    source["source_revision"] = "b" * 40
+    with pytest.raises(Refusal):
+        paid_worker.validate(env, lock)
+    if fault == "registry":
+        source["registry"] = "foreign.example.test"
+    elif fault == "repository":
+        source["repository"] = "adp-superplane-api"
+    elif fault == "source":
+        source["source_revision"] = "unreviewed"
+    elif fault == "digest":
+        lock["images"][paid_worker.COMPONENT] = "sha256:" + "0" * 64
+    elif fault == "pending":
+        lock["pending_images"][paid_worker.COMPONENT] = {}
+    elif fault == "reused":
+        lock["images"][paid_worker.COMPONENT] = lock["images"]["superplane-executor"]
+    before = copy.deepcopy(lock)
+    if fault:
+        with pytest.raises(Refusal):
+            paid_worker.validate(
+                env, lock, retain_worker=1 if fault == "flag" else True
+            )
+    else:
+        paid_worker.validate(env, lock, retain_worker=True)
+    assert lock == before
+
+
 def test_native_source_projection_is_paused_without_lifecycle_mounts(native):
     env, lock = native
     paid_worker.validate(env, lock)
@@ -130,7 +165,7 @@ def test_native_source_projection_is_paused_without_lifecycle_mounts(native):
     }
     scaled = by_kind["ScaledJob"]
     assert scaled["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
-    assert scaled["spec"]["maxReplicaCount"] == 0
+    assert scaled["spec"]["maxReplicaCount"] == env["paid_worker"]["max_replica_count"]
     pod = scaled["spec"]["jobTargetRef"]["template"]["spec"]
     worker = pod["containers"][0]
     assert "command" not in worker and "args" not in worker
@@ -153,7 +188,7 @@ def test_valid_native_installer_plan_remains_preparation_only(native, tmp_path):
     installer = Installer(env, lock, tmp_path, commands)
     scaled = next(doc for doc in installer.docs if doc["kind"] == "ScaledJob")
     assert scaled["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
-    assert scaled["spec"]["maxReplicaCount"] == 0
+    assert scaled["spec"]["maxReplicaCount"] == env["paid_worker"]["max_replica_count"]
     report = paid_worker.preparation_report(installer.env, lock)
     assert report["paid_worker_image"].endswith(
         "@" + lock["images"][paid_worker.COMPONENT]
@@ -214,6 +249,26 @@ def lifecycle_config(env):
     )
 
 
+def test_three_hour_worker_requires_lifecycle_mode_and_preserves_explicit_deadline(
+    native,
+):
+    env, lock = native
+    env["paid_worker"]["active_deadline_seconds"] = 10800
+    with pytest.raises(Refusal):
+        paid_worker.validate(env, lock)
+    lifecycle_config(env)
+    paid_worker.validate(env, lock)
+    docs = [{"metadata": {"labels": {LABEL: "owned"}}}]
+    paid_worker.project(env, lock, docs)
+    scaled = next(doc for doc in docs if doc.get("kind") == "ScaledJob")
+    assert scaled["spec"]["jobTargetRef"]["activeDeadlineSeconds"] == 10800
+    assert scaled["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
+    for invalid in (10801, True, "10800"):
+        env["paid_worker"]["active_deadline_seconds"] = invalid
+        with pytest.raises(Refusal):
+            paid_worker.validate(env, lock)
+
+
 def test_lifecycle_projection_preserves_reviewed_mounts_and_separates_schemas(native):
     env, lock = native
     lifecycle_config(env)
@@ -226,7 +281,7 @@ def test_lifecycle_projection_preserves_reviewed_mounts_and_separates_schemas(na
         if doc["metadata"]["name"] != "superplane-paid-worker-binding"
     }
     job = by_kind["ScaledJob"]
-    assert job["spec"]["maxReplicaCount"] == 0
+    assert job["spec"]["maxReplicaCount"] == env["paid_worker"]["max_replica_count"]
     assert job["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
     pod = job["spec"]["jobTargetRef"]["template"]["spec"]
     volumes = {v["name"]: v for v in pod["volumes"]}
@@ -285,14 +340,17 @@ def test_native_activation_repeats_proof_before_worker_enable(native, monkeypatc
     monkeypatch.setattr(
         lifecycle_worker,
         "installed_snapshot",
-        lambda _, active=False: events.append(("snapshot", active))
-        or {"uid": "selected"},
+        lambda _, active=False: (
+            events.append(("snapshot", active)) or {"uid": "selected"}
+        ),
     )
     monkeypatch.setattr(
         lifecycle_worker,
         "proof",
-        lambda _, state: events.append(("proof", state))
-        or {"state": state, "binding_sha256": "a" * 64},
+        lambda _, state: (
+            events.append(("proof", state))
+            or {"state": state, "binding_sha256": "a" * 64}
+        ),
     )
     monkeypatch.setattr(
         lifecycle_worker,
@@ -405,8 +463,10 @@ def test_activation_keeps_exact_network_endpoints_and_inert_source(native):
     }
     assert (
         next(d for d in docs if d["kind"] == "ScaledJob")["spec"]["maxReplicaCount"]
-        == 0
+        == env["paid_worker"]["max_replica_count"]
     )
+    original = next(d for d in docs if d["kind"] == "ScaledJob")
+    assert original["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
 
 
 @pytest.mark.parametrize("worker_ready", [False, True])

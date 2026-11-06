@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "name": "superplane-paid-worker-config",
+    "namespace": "superplane",
+    "uid": "1fd8afe4-0681-46d8-9c60-d220adc0ef2a",
+    "resourceVersion": "8150644",
+    "creationTimestamp": "2026-10-28T18:22:50Z"
+  },
+  "data": {
+    "ADP_EXECUTION_AUTHORITY_ENDPOINT": "https://f9l5y8ojnb.execute-api.us-east-1.amazonaws.com/dev",
+    "AWS_REGION": "us-east-1",
+    "SKYPILOT_URL": "http://skypilot-api.skypilot.svc.cluster.local:46580",
+    "SUPERPLANE_DOMAIN_SCHEMA": "superplane",
+    "SUPERPLANE_DOMAIN_SCHEMA_HEAD": "055_sso_provider_ownership",
+    "SUPERPLANE_MANAGEMENT_API_SERVER": "https://D00D51AD318B1E0F372A0B5E7F2FD093.gr7.us-east-1.eks.amazonaws.com",
+    "SUPERPLANE_OPERATION_SCHEMA": "superplane_operations"
+  }
+}

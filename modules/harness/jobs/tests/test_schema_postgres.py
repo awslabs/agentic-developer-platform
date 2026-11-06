@@ -1184,3 +1184,16 @@ async def test_v8_recovery_upgrade_resumes_each_ddl_boundary(
     ):
         assert await connection.fetchval("SELECT to_regclass($1) IS NOT NULL", table)
     await check_schema_version(connection)
+
+
+@pytest.mark.parametrize("completed_statements", range(len(UPGRADES[17]) + 1))
+async def test_v17_settlement_upgrade_resumes_each_ddl_boundary(
+    connection, completed_statements
+):
+    await downgrade(connection, target=16)
+    for statement in UPGRADES[17][:completed_statements]:
+        await connection.execute(statement)
+    assert await current_version(connection) == 16
+    assert await apply(connection) == SCHEMA_VERSION
+    assert await apply(connection) == SCHEMA_VERSION
+    await check_schema_version(connection)

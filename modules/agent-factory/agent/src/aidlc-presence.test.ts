@@ -21,7 +21,7 @@ import {
   checkVersion,
   findPendingGateStage,
   buildHumanTurnEvent,
-  extractGateAnswerComment,
+  resolveVerifiedGateAnswer,
   KNOWN_AIDLC_VERSIONS,
   PresenceDeps,
   TriggerComment,
@@ -432,89 +432,72 @@ describe('buildHumanTurnEvent', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Tests: extractGateAnswerComment
-// ---------------------------------------------------------------------------
 
-describe('extractGateAnswerComment', () => {
-  const GATE_MARKER = '<!-- aidlc-gate:requirements-analysis -->';
+describe('SCN-07 verified hosted gate presence', () => {
+  const moment = Date.parse('2026-07-08T11:00:00Z');
+  const createdAt = (millis: number) => new Date(millis).toISOString();
+  const marker = { id: '50', author: 'agent[bot]', authorId: 9, authorType: 'Bot',
+    body: '<!-- aidlc-gate:requirements-analysis -->\n## Review needed',
+    createdAt: createdAt(moment - 1_000), updatedAt: createdAt(moment - 1_000) };
+  const answer = { id: '51', author: 'jane-dev', authorId: 42, authorType: 'User',
+    body: '@agent-aidlc approve', createdAt: createdAt(moment), updatedAt: createdAt(moment) };
+  const context = { owner: 'org', repo: 'repo', runId: 'current-run',
+    tokenProvider: async () => 'fixture-token', now: () => moment + 1000 };
+  const originalFetch = global.fetch;
+  afterEach(() => { global.fetch = originalFetch; });
+  const find = (comments = [marker, answer], id: string | undefined = '51', senderId = 42,
+    stage = 'requirements-analysis') => resolveVerifiedGateAnswer(
+      comments, stage, 'org', 'repo', 42, id, senderId, context);
 
-  it('finds the first human comment after the gate marker', () => {
-    const comments = [
-      { author: 'aws-e-adp-agent-dev', body: `${GATE_MARKER}\n## Gate`, createdAt: '2026-07-08T10:00:00Z' },
-      { author: 'aws-e-adp-agent-dev', body: 'Bot status update', createdAt: '2026-07-08T10:01:00Z' },
-      { author: 'jane-dev', body: '@agent-aidlc approve', createdAt: '2026-07-08T11:00:00Z' },
-    ];
-
-    const result = extractGateAnswerComment(comments, 'requirements-analysis', 'org', 'repo', '42');
-
-    expect(result).not.toBeNull();
-    expect(result!.author).toBe('jane-dev');
-    expect(result!.createdAt).toBe('2026-07-08T11:00:00Z');
+  it('writes a human turn only for the exact current trigger by a repository writer', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ permission: 'maintain', user: { id: 42 } }) });
+    const trigger = await find();
+    expect(trigger).toEqual({ author: 'jane-dev', createdAt: answer.createdAt,
+      url: 'https://github.com/org/repo/issues/42#issuecomment-51' });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const cwd = createTempDir();
+    try {
+      createValidAidlcWorkspace(cwd);
+      expect(mintSyntheticPresence(createMockDeps(cwd), trigger).written).toBe(true);
+      expect(fs.readFileSync(path.join(cwd, 'aidlc/spaces/default/audit.md'), 'utf8')).toContain('**Type**: HUMAN_TURN');
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
-  it('skips bot comments when looking for the answer', () => {
-    const comments = [
-      { author: 'aws-e-adp-agent-dev', body: `${GATE_MARKER}\n## Gate`, createdAt: '2026-07-08T10:00:00Z' },
-      { author: 'github-actions[bot]', body: 'CI passed', createdAt: '2026-07-08T10:30:00Z' },
-      { author: 'aws-e-adp-agent-aidlc', body: 'Status', createdAt: '2026-07-08T10:31:00Z' },
-      { author: 'real-human', body: 'approve', createdAt: '2026-07-08T11:00:00Z' },
-    ];
-
-    const result = extractGateAnswerComment(comments, 'requirements-analysis', 'org', 'repo', '42');
-
-    expect(result).not.toBeNull();
-    expect(result!.author).toBe('real-human');
+  it('rejects missing, stale, edited, mismatched and non-command triggers before checking permission', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ permission: 'write' }) });
+    expect(await find([answer])).toBeNull();
+    expect(await find(undefined, '')).toBeNull();
+    expect(await find(undefined, '51', 99)).toBeNull();
+    expect(await find(undefined, '51', 42, 'design')).toBeNull();
+    expect(await find([marker, { ...answer, body: '@agent-aidlc approval' }])).toBeNull();
+    expect(await find([marker, { ...answer, body: 'Thanks @agent-aidlc approve' }])).toBeNull();
+    expect(await find([marker, { ...answer, updatedAt: createdAt(moment + 2_000) }])).toBeNull();
+    expect(await find([marker, { ...answer, authorType: 'Bot' }])).toBeNull();
+    expect(await find([{ ...marker, authorType: 'User' }, answer])).toBeNull();
+    expect(await find([{ ...marker, createdAt: createdAt(moment + 1000) }, answer])).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('returns null when no human comment exists after marker', () => {
-    const comments = [
-      { author: 'aws-e-adp-agent-dev', body: `${GATE_MARKER}\n## Gate`, createdAt: '2026-07-08T10:00:00Z' },
-      { author: 'aws-e-adp-agent-aidlc', body: 'Status', createdAt: '2026-07-08T10:30:00Z' },
-    ];
-
-    const result = extractGateAnswerComment(comments, 'requirements-analysis', 'org', 'repo', '42');
-
-    expect(result).toBeNull();
+  it('denies read-only authors and unavailable permission without publishing a presence event', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ permission: 'read' }) });
+    expect(await find()).toBeNull();
+    global.fetch = jest.fn().mockRejectedValue(new Error('provider unavailable'));
+    expect(await find()).toBeNull();
   });
 
-  it('falls back to most recent non-bot comment when no gate marker found', () => {
-    const comments = [
-      { author: 'aws-e-adp-agent-dev', body: 'Some bot comment', createdAt: '2026-07-08T09:00:00Z' },
-      { author: 'jane-dev', body: '@agent-developer do the thing', createdAt: '2026-07-08T10:00:00Z' },
-      { author: 'aws-e-adp-agent-dev', body: 'Started working', createdAt: '2026-07-08T10:01:00Z' },
-    ];
-
-    const result = extractGateAnswerComment(comments, 'some-other-stage', 'org', 'repo', '42');
-
-    expect(result).not.toBeNull();
-    expect(result!.author).toBe('jane-dev');
+  it('routes the installed worker through verified trigger selection, never a history fallback', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'agent-worker.ts'), 'utf8');
+    expect(source).toContain('resolveVerifiedGateAnswer(comments, pendingStage');
+    expect(source).toContain('if (pendingStage && process.env.GITHUB_EVENT_PATH)');
+    expect(source).not.toContain('extractGateAnswerComment(');
   });
 
-  it('returns null when all comments are from bots', () => {
-    const comments = [
-      { author: 'aws-e-adp-agent-dev', body: 'Bot 1', createdAt: '2026-07-08T10:00:00Z' },
-      { author: 'github-actions[bot]', body: 'Bot 2', createdAt: '2026-07-08T10:01:00Z' },
-    ];
-
-    const result = extractGateAnswerComment(comments, 'requirements-analysis', 'org', 'repo', '42');
-
-    expect(result).toBeNull();
-  });
-
-  it('uses the LAST gate marker when multiple exist (edge case: re-gated)', () => {
-    const comments = [
-      { author: 'aws-e-adp-agent-dev', body: `${GATE_MARKER}\n## Gate (first)`, createdAt: '2026-07-08T09:00:00Z' },
-      { author: 'jane-dev', body: 'feedback: needs revision', createdAt: '2026-07-08T09:30:00Z' },
-      { author: 'aws-e-adp-agent-dev', body: `${GATE_MARKER}\n## Gate (second)`, createdAt: '2026-07-08T10:00:00Z' },
-      { author: 'jane-dev', body: 'approve', createdAt: '2026-07-08T11:00:00Z' },
-    ];
-
-    const result = extractGateAnswerComment(comments, 'requirements-analysis', 'org', 'repo', '42');
-
-    // Should find the answer after the LAST marker
-    expect(result).not.toBeNull();
-    expect(result!.author).toBe('jane-dev');
-    expect(result!.createdAt).toBe('2026-07-08T11:00:00Z');
+  it('accepts a same-second comment only when its ID follows the marker', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ permission: 'write' }) });
+    const same = { ...marker, createdAt: answer.createdAt, updatedAt: answer.createdAt };
+    expect(await find([same, answer])).not.toBeNull();
+    expect(await find([{ ...same, id: '52' }, answer])).toBeNull();
   });
 });

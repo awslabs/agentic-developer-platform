@@ -150,7 +150,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -189,7 +189,6 @@ from .command_attribution import (
     verify_row,
 )
 from .compile import ProposalRejectedError
-from .dispatch_pass import resolve_installation_id
 from .models import AmendmentRequestState, DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 
 # Issue #4529's store. The command pass is one of its two callers and holds no
@@ -251,14 +250,6 @@ ENGINE_COMMAND_INDEX = "engine-command-index"
 # read (`activity/service.py`), because it is the same table — a second var could
 # point the bridge at a different one from the UI that renders its rows.
 TABLE_ENV = "WEBHOOK_EVENTS_TABLE"
-
-# Issue #4529: the repository an authoring run works in. The SAME variable
-# `dispatch_pass` reads (`DispatchPassConfig.repo`), deliberately re-declared rather
-# than imported: an authoring run is engine work and must land where the engine
-# dispatches, and a second variable could point replan authoring at a repository the
-# engine cannot otherwise reach. Unset means no authoring job can be addressed, which
-# is reported to the commenter as retryable rather than as a successful replan.
-REPO_ENV = "BG_ORCH_DISPATCH_REPO"
 
 # Per-pass cap. A bound on how much a single wake will do, so a burst of comments
 # (or a stuck marker) cannot turn one tick into an unbounded run of GitHub API
@@ -380,14 +371,15 @@ class PendingEngineAck:
     intent is held as data between the two phases rather than being an accident of
     where the `await` happens.
 
-    `installation_id` is resolved during the pass, while a session is open, so the
-    flush needs no database at all.
+    The signed repository ID and installation are carried to the post-commit flush,
+    which revalidates them before posting a reply.
     """
 
     event_id: str
     arrived_at: str
     org_id: str
     repo: str
+    repo_id: int
     issue_number: int
     installation_id: int | None
     message: str
@@ -583,6 +575,9 @@ async def _resolve_target(
     *,
     org_id: str,
     issue_number: int,
+    repo: str | None = None,
+    repo_id: int | None = None,
+    installation_id: int | None = None,
 ) -> tuple[str, OrchestrationNode | None] | None:
     """The flow a command on this issue addresses, and the node if it is one.
 
@@ -611,19 +606,48 @@ async def _resolve_target(
       on a single flow, or the command is refused.
     """
     candidates = _issue_ref_candidates(issue_number)
+    qualified = repo is not None or repo_id is not None or installation_id is not None
+    if qualified and (not repo or not repo_id or not installation_id):
+        return None
 
-    nodes = list(
-        (
-            await session.execute(
-                select(OrchestrationNode).where(
-                    OrchestrationNode.org_id == org_id,
-                    OrchestrationNode.issue_ref.in_(candidates),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    node_query = select(OrchestrationNode).where(
+        OrchestrationNode.org_id == org_id,
+        OrchestrationNode.issue_ref.in_(candidates),
     )
+    if qualified:
+        node_query = node_query.where(
+            OrchestrationNode.provider_repository_id == repo_id,
+            func.lower(OrchestrationNode.repository_identity) == repo.casefold(),
+        )
+
+    nodes = list((await session.execute(node_query)).scalars().all())
+    if qualified:
+        nodes = [
+            node
+            for node in nodes
+            if isinstance(node.repository_connection, dict)
+            and node.repository_connection.get("provider") == "github"
+            and node.repository_connection.get("installation_id") == installation_id
+        ]
+    if qualified:
+        from .proposal import PlanningIssueReference
+
+        accepted_nodes = []
+        for node in nodes:
+            plan = await OrchestrationRepository(session).get_accepted_plan(org_id=org_id, flow_id=node.flow_id)
+            if plan is None:
+                continue
+            address = f"{(await session.get(OrchestrationFlow, node.flow_id)).slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}"
+            binding = next((item for item in plan.plan_document.get("nodes", []) if item.get("address") == address), None)
+            if binding and (
+                str(binding.get("issue_ref") or "").casefold() in {candidate.casefold() for candidate in candidates}
+                and binding.get("provider_repository_id") == repo_id
+                and isinstance(binding.get("repository_identity"), str)
+                and binding["repository_identity"].casefold() == repo.casefold()
+                and binding.get("repository_connection") == node.repository_connection
+            ):
+                accepted_nodes.append(node)
+        nodes = accepted_nodes
     if len(nodes) > 1:
         logger.warning(
             "orchestration engine commands: issue %s matches %d nodes in org %s — refusing as ambiguous",
@@ -633,18 +657,58 @@ async def _resolve_target(
         )
         return None
 
-    flows = list(
-        (
-            await session.execute(
-                select(OrchestrationFlow).where(
+    if qualified:
+        bound_flows = (
+            await session.scalars(
+                select(OrchestrationFlow)
+                .where(
                     OrchestrationFlow.org_id == org_id,
-                    OrchestrationFlow.intent_ref.in_(candidates),
+                    (OrchestrationFlow.origin_ref.is_not(None) | OrchestrationFlow.tracker_refs.is_not(None)),
+                )
+                .limit(257)
+            )
+        ).all()
+        if len(bound_flows) > 256:
+            return None
+        flows = []
+        for candidate in bound_flows:
+            plan = await OrchestrationRepository(session).get_accepted_plan(org_id=org_id, flow_id=candidate.id)
+            if (
+                plan is None
+                or candidate.origin_ref != plan.plan_document.get("origin_ref")
+                or candidate.tracker_refs != plan.plan_document.get("tracker_refs")
+            ):
+                continue
+            references = [plan.plan_document.get("origin_ref")]
+            references.extend(item.get("issue") for item in plan.plan_document.get("tracker_refs") or [])
+            for raw in references:
+                if not raw:
+                    continue
+                try:
+                    reference = PlanningIssueReference.model_validate(raw)
+                except ValueError:
+                    continue
+                if (
+                    reference.repository_id == repo_id
+                    and reference.repository.casefold() == repo.casefold()
+                    and reference.installation_id == installation_id
+                    and reference.issue_number == issue_number
+                ):
+                    flows.append(candidate)
+                    break
+    else:
+        flows = list(
+            (
+                await session.execute(
+                    select(OrchestrationFlow).where(
+                        OrchestrationFlow.org_id == org_id,
+                        OrchestrationFlow.intent_ref.in_(candidates),
+                    )
                 )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
     if len(flows) > 1:
         logger.warning(
             "orchestration engine commands: issue %s matches %d flows in org %s — refusing as ambiguous",
@@ -656,6 +720,8 @@ async def _resolve_target(
 
     node = nodes[0] if nodes else None
     flow = flows[0] if flows else None
+    if qualified and node is not None and flow is not None:
+        return None
 
     # The distinct flows this issue names, across both lookups. A node's parent
     # and a flow's own intent home may legitimately be the SAME flow (self-
@@ -676,6 +742,50 @@ async def _resolve_target(
     # intent issue is what matched, there is no single node and the command is
     # flow-scoped.
     return flow_id, (node if node is not None and node.flow_id == flow_id else None)
+
+
+async def _authoring_source(session: AsyncSession, *, org_id: str, flow_id: str) -> tuple[str, int, int, int] | None:
+    from .proposal import PlanningIssueReference
+    from .repository_binding import RepositoryBindingError, resolve_story_repository
+    from .tracker_projection import resolve_parent_reference
+
+    flow = await session.scalar(select(OrchestrationFlow).where(OrchestrationFlow.id == flow_id, OrchestrationFlow.org_id == org_id))
+    plan = await OrchestrationRepository(session).get_accepted_plan(org_id=org_id, flow_id=flow_id)
+    if (
+        flow is None
+        or plan is None
+        or flow.origin_ref != plan.plan_document.get("origin_ref")
+        or flow.tracker_refs != plan.plan_document.get("tracker_refs")
+    ):
+        return None
+    if flow.origin_ref is not None:
+        try:
+            reference = PlanningIssueReference.model_validate(plan.plan_document["origin_ref"])
+            verified = await resolve_story_repository(
+                session,
+                tenant_id=org_id,
+                name=reference.repository,
+                repository_id=reference.repository_id,
+                issue=reference.issue_number,
+                installation_id=reference.installation_id,
+                operation="replan",
+            )
+        except (ValueError, RepositoryBindingError):
+            return None
+        if (
+            verified.repository_id != reference.repository_id
+            or verified.installation_id != reference.installation_id
+            or verified.full_name.casefold() != reference.repository.casefold()
+        ):
+            return None
+    else:
+        epics = [item["address"].removeprefix(f"{flow.slug}/") for item in flow.tracker_refs or [] if item.get("scope") == "epic"]
+        if len(epics) != 1:
+            return None
+        verified = await resolve_parent_reference(session, org_id=org_id, flow_id=flow_id, epic_ref=epics[0], operation="replan")
+        if verified is None:
+            return None
+    return verified.full_name, verified.issue_number, verified.installation_id, verified.repository_id
 
 
 async def _resolve_gate(
@@ -873,7 +983,7 @@ async def _queue_authoring(
     *,
     org_id: str,
     request: Any,
-    source: tuple[str, int, int] | None,
+    source: tuple[str, int, int] | tuple[str, int, int, int] | None,
 ) -> Any | None:
     """Build the authoring assignment for a recorded request, or None.
 
@@ -883,7 +993,7 @@ async def _queue_authoring(
     and the correct outcome is a retryable reply rather than a rolled-back decision:
 
     * no `source` (the caller could not resolve repo/issue/installation),
-    * dispatch is unconfigured (no repository configured for the engine),
+    * the verified command source has no repository,
     * an author is already bound (a duplicated delivery — one human ask, one author).
 
     An unexpected failure is also None-and-logged, for the same reason: a bug here
@@ -891,11 +1001,11 @@ async def _queue_authoring(
     """
     if source is None:
         return None
-    repo, issue, installation_id = source
+    repo, issue, installation_id = source[:3]
+    repository_id = source[3] if len(source) == 4 else None
     if not repo:
         logger.warning(
-            "orchestration engine commands: %s is unset; replan request %s recorded but not assigned",
-            REPO_ENV,
+            "orchestration engine commands: no verified repository source; replan request %s recorded but not assigned",
             request.id,
         )
         return None
@@ -909,6 +1019,7 @@ async def _queue_authoring(
             repo=repo,
             issue=issue,
             installation_id=installation_id,
+            repository_id=repository_id,
         )
     except Exception:
         # Contained deliberately. The decision and the request row stay committed and
@@ -928,7 +1039,7 @@ async def _apply_command(
     flow_id: str,
     context: TokenContext,
     access: AccessControl,
-    source: tuple[str, int, int] | None = None,
+    source: tuple[str, int, int] | tuple[str, int, int, int] | None = None,
     publishes: list[Any] | None = None,
     command_id: str | None = None,
 ) -> tuple[bool, str]:
@@ -1255,6 +1366,7 @@ async def _handle_row(
                 arrived_at=arrived_at,
                 org_id=org_id,
                 repo=repo_full,
+                repo_id=verified.repo_id,
                 issue_number=issue_number,
                 installation_id=installation_id,
                 message=message,
@@ -1296,29 +1408,31 @@ async def _handle_row(
         _queue("", installation_id=None)
         return
 
-    # The org's installation, resolved server-side from the org record through the
-    # SAME fail-closed rule dispatch applies. Required before anything is applied:
-    # it both confirms the row's tenant against the installation that delivered it
-    # and is the credential the ack needs. A plan that can dispatch at all already
-    # satisfies this, so it refuses nothing that was ever going to work.
-    #
-    # Issue #4539 fixed two defects in this check at once. It compared against the
-    # ROW's `installation_id`, which whoever wrote the row chose — so the check
-    # confirmed the row against itself. And the `row_installation and` conjunct made
-    # it skip entirely when that attribute was absent or empty, so omitting the field
-    # was enough to bypass it. It now compares against the SIGNED installation, and
-    # there is no conditional: an empty signed value cannot equal a resolved id, so
-    # an absent installation refuses instead of passing.
-    installation_id = await resolve_installation_id(session, org_id=org_id) if org_id else None
+    from .repository_binding import RepositoryBindingError, resolve_story_repository
+
     signed_installation = verified.installation_id.strip()
-    if installation_id is None or str(installation_id) != signed_installation:
-        logger.warning(
-            "orchestration engine commands: org %r resolves to installation %r but event %s was delivered on %r — refusing",
-            org_id,
-            installation_id,
-            event_id,
-            signed_installation,
+    try:
+        installation_id = int(signed_installation)
+        if str(installation_id) != signed_installation or installation_id < 1:
+            raise ValueError("invalid installation")
+        event_target = await resolve_story_repository(
+            session,
+            tenant_id=org_id,
+            name=repo_full,
+            repository_id=verified.repo_id,
+            issue=issue_number,
+            installation_id=installation_id,
+            operation="command",
         )
+    except (RepositoryBindingError, ValueError):
+        report.record(org_id, "commands_refused")
+        _queue("", installation_id=None)
+        return
+    if (
+        event_target.installation_id != installation_id
+        or event_target.repository_id != verified.repo_id
+        or event_target.full_name.casefold() != repo_full.casefold()
+    ):
         report.record(org_id, "commands_refused")
         _queue("", installation_id=None)
         return
@@ -1335,13 +1449,27 @@ async def _handle_row(
 
     context, _team_id = resolved
 
-    target = await _resolve_target(session, org_id=org_id, issue_number=issue_number)
+    target = await _resolve_target(
+        session,
+        org_id=org_id,
+        issue_number=issue_number,
+        repo=event_target.full_name,
+        repo_id=event_target.repository_id,
+        installation_id=event_target.installation_id,
+    )
     if target is None:
         report.record(org_id, "commands_refused")
         _queue(_UNIFORM_REFUSAL, installation_id=installation_id)
         return
 
     flow_id, _node = target
+    source = None
+    if command.verb is CommandVerb.REPLAN:
+        source = await _authoring_source(session, org_id=org_id, flow_id=flow_id)
+        if source is None:
+            report.record(org_id, "commands_refused")
+            _queue(_UNIFORM_REFUSAL, installation_id=installation_id)
+            return
     applied, message = await _apply_command(
         session,
         command=command,
@@ -1349,11 +1477,7 @@ async def _handle_row(
         flow_id=flow_id,
         context=context,
         access=access,
-        # Resolved above from SIGNED values and from the org record — never from the
-        # row's mutable copies. `repo` is the engine's configured dispatch repository
-        # rather than the comment's, because an authoring run works where the engine
-        # dispatches, not wherever a comment happened to be written.
-        source=((os.environ.get(REPO_ENV) or "").strip(), issue_number, installation_id),
+        source=source,
         publishes=report.pending_authoring,
         command_id=verified.delivery_id,
     )
@@ -1668,6 +1792,30 @@ async def _post_ack(ack: PendingEngineAck) -> None:
     """
     from src.admin.connections.github_client import GitHubAppClient
     from src.knowledge.github_app_service import resolve_tenant_app_credentials
+    from src.shared.database import get_session_factory
+
+    from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+    if ack.installation_id is None:
+        raise RepositoryBindingError("connection_not_owned")
+    async with get_session_factory()() as session:
+        target = await resolve_story_repository(
+            session,
+            tenant_id=ack.org_id,
+            name=ack.repo,
+            repository_id=ack.repo_id,
+            issue=ack.issue_number,
+            installation_id=ack.installation_id,
+            operation="command_ack",
+        )
+    if (
+        target.provider != "github"
+        or target.repository_id != ack.repo_id
+        or target.installation_id != ack.installation_id
+        or target.issue_number != ack.issue_number
+        or target.full_name.casefold() != ack.repo.casefold()
+    ):
+        raise RepositoryBindingError("repository_identity_mismatch")
 
     app_id, private_key = await resolve_tenant_app_credentials(ack.org_id)
     client = GitHubAppClient(app_id, private_key)
@@ -1675,6 +1823,7 @@ async def _post_ack(ack: PendingEngineAck) -> None:
         await client.create_issue_comment(
             installation_id=ack.installation_id or 0,
             repo=ack.repo,
+            repository_id=ack.repo_id,
             issue_number=ack.issue_number,
             body=ack.message,
         )

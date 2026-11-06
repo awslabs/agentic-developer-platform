@@ -28,18 +28,19 @@ INCLUDE_DIRS=(platform/ modules/ environments/ libs/)
 [ -d codebuild ] && INCLUDE_DIRS+=(codebuild/)
 # Gateway staging and the worker Dockerfile both consume the shared validators.
 [ -d contracts ] && INCLUDE_DIRS+=(contracts/)
+[ -d docs/l5-services/contracts/v1 ] && INCLUDE_DIRS+=(docs/l5-services/contracts/v1/)
 
 # Include root-level config files needed by CodeBuild steps (e.g. grype scans).
 ROOT_CONFIGS=()
 [ -f .grype.yaml ] && ROOT_CONFIGS+=(.grype.yaml)
 
-# Keep package-lock.json files — `npm ci` needs them for reproducible
-# Docker builds (e.g. the TS agent image in modules/agent-factory/agent).
+# Keep package-lock.json and uv.lock files: npm ci and uv sync --frozen need
+# their committed dependency locks for reproducible Docker builds.
 zip -r "$OUTPUT" \
   "${INCLUDE_DIRS[@]}" \
   "${ROOT_CONFIGS[@]}" \
   -x '*/node_modules/*' '*/.terraform/*' '*/coverage/*' '*/__pycache__/*' \
-  '*.pyc' '*.tfstate*' '*/dist/*' '*/uv.lock' \
+  '*.pyc' '*.tfstate*' '*/dist/*' \
   > /dev/null 2>&1
 
 echo "$OUTPUT"

@@ -1,0 +1,58 @@
+{
+  "clock": "2026-10-20T12:00:00Z",
+  "source_revision": "catalog-r1",
+  "cases": [
+    {
+      "name": "commerce-portfolio", "schema": "portfolio", "valid": true,
+      "value": {"tenant_id":"example-tenant","id":"commerce","revision":"1","source_connection_id":"adp.example-catalog","recorded_at":"2026-10-20T10:00:00Z","data":{"name":"Commerce","owner_ref":{"kind":"user","id":"example-owner"},"lifecycle_status":"active"}}
+    },
+    {
+      "name": "shared-portfolio", "schema": "portfolio", "valid": true,
+      "value": {"tenant_id":"example-tenant","id":"shared","revision":"1","source_connection_id":"adp.example-catalog","recorded_at":"2026-10-20T10:00:00Z","data":{"name":"Shared services","owner_ref":{"kind":"user","id":"example-owner"},"lifecycle_status":"active"}}
+    },
+    {
+      "name": "initiative", "schema": "initiative", "valid": true,
+      "value": {"tenant_id":"example-tenant","id":"checkout-initiative","revision":"1","source_connection_id":"adp.example-catalog","recorded_at":"2026-10-20T10:00:00Z","data":{"name":"Faster checkout","status":"planned"}}
+    },
+    {
+      "name": "checkout-contribution", "schema": "contribution", "valid": true,
+      "value": {"tenant_id":"example-tenant","project_id":"project-checkout","id":"commit-checkout","revision":"1","source_connection_id":"adp.example-catalog","recorded_at":"2026-10-20T10:00:00Z","data":{"initiative_ref":{"tenant_id":"example-tenant","project_id":"project-checkout","source_connection_id":"adp.example-catalog","record_type":"initiative","record_id":"checkout-initiative","record_revision":"1"},"product_ref":{"tenant_id":"example-tenant","project_id":"project-checkout","source_connection_id":"adp.profile","record_type":"product","record_id":"checkout","record_revision":"1"},"objective":"Reduce checkout friction","owner_ref":{"kind":"user","id":"example-owner"},"valid_from":"2026-10-20T00:00:00Z"}}
+    },
+    {
+      "name": "commerce-checkout", "schema": "membership_version", "valid": true,
+      "value": {"tenant_id":"example-tenant","relationship_id":"membership-checkout","relationship_revision":"1","portfolio_ref":{"tenant_id":"example-tenant","project_id":"project-checkout","source_connection_id":"adp.example-catalog","record_type":"portfolio","record_id":"commerce","record_revision":"1"},"product_ref":{"tenant_id":"example-tenant","project_id":"project-checkout","source_connection_id":"adp.profile","record_type":"product","record_id":"checkout","record_revision":"1"},"valid_from":"2026-10-20T00:00:00Z","recorded_at":"2026-10-20T10:00:00Z","mapping_version":"catalog-1","source_connection_id":"adp.example-catalog","source_refs":[{"tenant_id":"example-tenant","project_id":"project-checkout","source_connection_id":"adp.example-catalog","record_type":"change","record_id":"change-1","record_revision":"1"}]}
+    },
+    {
+      "name": "commerce-accounts", "schema": "membership_version", "valid": true,
+      "value": {"tenant_id":"example-tenant","relationship_id":"membership-accounts-commerce","relationship_revision":"1","portfolio_ref":{"tenant_id":"example-tenant","project_id":"project-accounts","source_connection_id":"adp.example-catalog","record_type":"portfolio","record_id":"commerce","record_revision":"1"},"product_ref":{"tenant_id":"example-tenant","project_id":"project-accounts","source_connection_id":"adp.profile","record_type":"product","record_id":"accounts","record_revision":"1"},"valid_from":"2026-10-20T00:00:00Z","recorded_at":"2026-10-20T10:00:00Z","mapping_version":"catalog-1","source_connection_id":"adp.example-catalog","source_refs":[{"tenant_id":"example-tenant","project_id":"project-accounts","source_connection_id":"adp.example-catalog","record_type":"change","record_id":"change-2","record_revision":"1"}]}
+    },
+    {
+      "name": "shared-accounts", "schema": "membership_version", "valid": true,
+      "value": {"tenant_id":"example-tenant","relationship_id":"membership-accounts-shared","relationship_revision":"1","portfolio_ref":{"tenant_id":"example-tenant","project_id":"project-accounts","source_connection_id":"adp.example-catalog","record_type":"portfolio","record_id":"shared","record_revision":"1"},"product_ref":{"tenant_id":"example-tenant","project_id":"project-accounts","source_connection_id":"adp.profile","record_type":"product","record_id":"accounts","record_revision":"1"},"valid_from":"2026-10-20T00:00:00Z","recorded_at":"2026-10-20T10:00:00Z","mapping_version":"catalog-1","source_connection_id":"adp.example-catalog","source_refs":[{"tenant_id":"example-tenant","project_id":"project-accounts","source_connection_id":"adp.example-catalog","record_type":"change","record_id":"change-3","record_revision":"1"}]}
+    },
+    {
+      "name": "nested-portfolio-rejected", "schema": "membership_version", "valid": false,
+      "from": "commerce-checkout", "changes": {"product_ref.record_type":"portfolio"}
+    },
+    {
+      "name": "non-portfolio-source-rejected", "schema": "membership_version", "valid": false,
+      "from": "commerce-checkout", "changes": {"portfolio_ref.record_type":"initiative"}
+    },
+    {
+      "name": "extra-allocation-target-rejected", "schema": "portfolio", "valid": false,
+      "from": "commerce-portfolio", "changes": {"data.allocation_target":true}
+    }
+  ],
+  "transactions": [
+    {"name":"first-membership", "type":"membership", "from":"commerce-checkout", "expect":"accepted"},
+    {"name":"other-product-same-portfolio", "type":"membership", "from":"commerce-accounts", "expect":"accepted"},
+    {"name":"same-product-other-portfolio", "type":"membership", "from":"shared-accounts", "expect":"accepted"},
+    {"name":"duplicate-pair-different-projection", "type":"membership", "from":"commerce-checkout", "changes":{"relationship_id":"membership-duplicate","product_ref.project_id":"project-second-projection"}, "expect":"conflict"},
+    {"name":"close-membership", "type":"membership", "from":"commerce-checkout", "changes":{"relationship_revision":"2","supersedes_revision":"1","valid_to":"2026-11-01T00:00:00Z","recorded_at":"2026-10-21T10:00:00Z"}, "expect":"accepted"},
+    {"name":"stale-supersedes", "type":"membership", "from":"commerce-checkout", "changes":{"relationship_revision":"3","supersedes_revision":"1","valid_to":"2026-11-02T00:00:00Z","recorded_at":"2026-10-22T10:00:00Z"}, "expect":"conflict"},
+    {"name":"invalid-interval", "type":"membership", "from":"commerce-checkout", "changes":{"relationship_revision":"3","supersedes_revision":"2","valid_to":"2026-10-19T00:00:00Z","recorded_at":"2026-10-22T10:00:00Z"}, "expect":"invalid_request"},
+    {"name":"first-commitment", "type":"contribution", "from":"checkout-contribution", "expect":"accepted"},
+    {"name":"duplicate-current-commitment", "type":"contribution", "from":"checkout-contribution", "changes":{"id":"commit-duplicate"}, "expect":"conflict"},
+    {"name":"revise-commitment", "type":"contribution", "from":"checkout-contribution", "changes":{"revision":"2","recorded_at":"2026-10-21T11:00:00Z","data.objective":"Improve reliability"}, "expect":"accepted"}
+  ]
+}

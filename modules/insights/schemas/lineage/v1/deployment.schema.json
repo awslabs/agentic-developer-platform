@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Deployment (section 3.7)",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "type": "object",
+  "properties": {
+    "release_id": {"type": "string"},
+    "story_ids": {"type": "array", "items": {"type": "string"}},
+    "deployment_id": {"type": "string", "minLength": 1},
+    "environment": {"type": "string", "minLength": 1},
+    "result": {"type": "string", "enum": ["success", "failed", "rolled_back"]}
+  },
+  "required": ["deployment_id", "environment", "result"],
+  "unevaluatedProperties": false
+}

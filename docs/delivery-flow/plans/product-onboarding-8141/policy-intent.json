@@ -1,0 +1,55 @@
+{
+  "status": "owner_authorized_creation_registered_inert_not_execution_authorized",
+  "repository": "aws-e/adp",
+  "org_id": "example-org",
+  "environment_connection_ids": [],
+  "target": "one existing approved dev environment; exact binding unresolved",
+  "allowed_actions": [
+    "develop",
+    "review",
+    "repair",
+    "merge",
+    "operate",
+    "deploy",
+    "evaluate"
+  ],
+  "repository_evaluation_acceptance": "machine, using bound repository-evaluation/v1 predecessor checks",
+  "live_evaluation_acceptance": "One human evidence review per BOLT, owned by existing V stories; agents execute all required UI/CLI/API checks, optional reviewer reruns.",
+  "proposed_limits": {
+    "max_spend_usd": "2000",
+    "max_wall_clock_seconds": 604800,
+    "max_attempts_per_node": 3,
+    "max_concurrent_actions": 8,
+    "expires_at": null
+  },
+  "expiry_rule": "Resolve explicit UTC expiry at acceptance. Seven days is an initial engine execution window, not a delivery estimate; any extension is an explicit authorized revision of the same flow.",
+  "cost_boundary": "Shared agent execution ceiling; separate infrastructure, Actions, provider/model calls and fixture limits must be bound before their live stage.",
+  "concurrency_rule": "At most eight independent engine actions; serialize overlapping files and deployment to the shared target. B10 may build after B03; B06/B07 may build after B05.",
+  "deployment_boundary": "Automatically deploy/observe reviewed main within the initially accepted dev target/workflow/policy scope when machine conditions pass. Reuse controller or eligible automatic runs; operations-worker protected-dispatch restrictions remain. Qualify automatic receipt-derived verification bindings before activation; no per-release human amendment.",
+  "registration_conditions": [
+    "Owner authorized creation after review on 2026-10-19",
+    "Illustrative tenant example-org; the public source repository remains aws-e/adp",
+    "Registered bounded proposed policy; no active execution policy or authority granted",
+    "Read back plan version/hash, all nodes/edges, 11 machine and 11 human evaluation modes"
+  ],
+  "activation_conditions": [
+    "Bind the 11 repository machine evidence specifications to real provider/check/verifier identities; no human fallback",
+    "Deliver/qualify the bounded automatic verified-release handoff; reconcile its owner and budget",
+    "Bind actual dev environment, workflow/credential authority, repair scope and operations runtime evidence",
+    "Resolve runtime Project/catalog/executor/peer contracts and fixture availability for their dependent work",
+    "Refresh expiry if needed, preview the final revision, then obtain the single revision-bound initial acceptance"
+  ],
+  "owner_confirmed_acceptance_approach": "Humans review evidence of agent-executed UI/CLI journeys on existing verification stories; rerunning optional. Owner reviewed the proposal and authorized creation of this inert draft; activation remains separate.",
+  "code_review": "Built-in engine development/review/repair/merge lifecycle; no separate review or assessment stories.",
+  "owner_confirmed_budget_and_concurrency": "Owner selected a shared $2,000 flow budget and up to eight concurrent engine actions. These values must be carried into the bounded execution policy when the flow is created and accepted.",
+  "human_decisions": {
+    "initial_flow_approval": 1,
+    "bolt_evidence_reviews": 11,
+    "design_readiness_release_or_final_gates": 0,
+    "routine_total": 12
+  },
+  "completion_rule": "All 11 BOLT evidence evaluations accepted and parent criteria covered; roll up completion without a separate final human sign-off or closing whole peer epics.",
+  "proposed_expiry_at_registration": "2030-01-08T00:00:00Z",
+  "creation_receipt": "submission.json",
+  "public_copy": "Sanitized historical policy intent; consult private flow records for accepted authority and current state."
+}

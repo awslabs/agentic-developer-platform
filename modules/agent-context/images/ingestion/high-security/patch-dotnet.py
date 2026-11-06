@@ -48,4 +48,4 @@ def install(root, archive, licenses=pathlib.Path("/usr/share/licenses/dotnet-xml
 
 
 if __name__ == "__main__":
-    install(pathlib.Path("/usr/share/dotnet/sdk/8.0.425/DotnetTools/dotnet-format"), pathlib.Path("/tmp/xml.8.0.4.nupkg"))
+    install(pathlib.Path("/usr/share/dotnet/sdk/8.0.426/DotnetTools/dotnet-format"), pathlib.Path("/tmp/xml.8.0.4.nupkg"))

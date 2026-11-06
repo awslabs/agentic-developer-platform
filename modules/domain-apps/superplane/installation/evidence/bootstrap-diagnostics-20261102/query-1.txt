@@ -1,0 +1,4 @@
+from pathlib import Path; import json,os; from workspace_provisioning.terraform import operation_directory
+p=operation_directory(os.environ["SUPERPLANE_LIFECYCLE_STATE_DIR"],"a79914b7-45b6-4520-adeb-e09351267194","53125337-0501-5b0d-bdab-66c8d8d94ff7","d571ca63-73bc-543a-836e-a9e448b38a98")/"bootstrap-state.json"
+x=json.loads(p.read_text()) if p.exists() else {}
+print(json.dumps({"journal_exists":p.exists(),"state":{k:x.get(k) for k in ("namespace","crds_established","controller_installed","prerequisites_recorded","registration_reserved","taint_cleared","registration_finalized")}}))

@@ -13,8 +13,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -507,6 +509,11 @@ def get_sidebar_conversation_count(page) -> int:
 
 def take_failure_screenshot(page, name: str) -> str:
     """Take a screenshot for debugging. Returns the file path."""
-    path = f"/tmp/e2e-chat-{name}-{int(time.time())}.png"
+    directory = Path(os.environ.get("E2E_SCREENSHOT_DIR", "/tmp"))
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    label = re.sub(r"[^A-Za-z0-9_-]", "_", name)[:96]
+    descriptor, path = tempfile.mkstemp(prefix=f"e2e-chat-{label}-", suffix=".png", dir=directory)
+    os.close(descriptor)
     page.screenshot(path=path)
+    os.chmod(path, 0o600)
     return path

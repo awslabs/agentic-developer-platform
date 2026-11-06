@@ -1,0 +1,10 @@
+{
+  "scenario": "test_isolation",
+  "schema_manifest_sha256": "44bbfa76c120e37f90b132917114f2a2ec5794d341226b09789da20a0bc412ac",
+  "scope": "offline-contract-only",
+  "checks": [
+    "modules.insights.tests.devlake_poc.test_s02.CellRolePolicyTest.test_only_registered_cell_tables_receive_scoped_dml_and_read_grants",
+    "modules.insights.tests.devlake_poc.test_s02.CellRolePolicyTest.test_wrong_target_and_role_aliases_fail_before_sql",
+    "modules.insights.tests.devlake_poc.test_s02.MigrationReceiptTest.test_verified_tls_rejects_foreign_ca_and_wrong_hostname_without_retry"
+  ]
+}

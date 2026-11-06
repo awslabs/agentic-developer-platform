@@ -1,0 +1,27 @@
+# Regression fixture for tests/k8s/celcheck: a Pod policy that compares
+# resource.Quantity fields (emptyDir.sizeLimit, resources.requests/limits)
+# directly with strings. The apiserver compiles this, but its type checker
+# publishes "undefined field" errors to status.typeChecking because Quantity
+# has no CEL type in the Pod schema (observed on EKS 1.35, #7936). The
+# checked-in policies read those fields through dyn() instead.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fixture-quantity-string-comparison
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: Namespaced
+  validations:
+    - expression: >-
+        object.spec.volumes.exists_one(v, v.name == 'scratch' && has(v.emptyDir) && v.emptyDir.sizeLimit == '512Mi')
+      message: scratch size pinned by string comparison
+    - expression: >-
+        object.spec.containers[0].resources.requests.cpu == '500m' &&
+        object.spec.containers[0].resources.limits['ephemeral-storage'] == '4Gi'
+      message: resources pinned by string comparison

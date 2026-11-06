@@ -1,5 +1,14 @@
 # agent-codex-reviewer
 
+An authenticated human PR-comment request can inspect an already merged PR or a
+same-repository branch outside `agent/issue-*`. These requests use source-only
+review: the worker checks out the exact PR head without recreating its branch,
+runs offline inspection and regression tests, and submits the actual verdict
+through the reviewer identity. It does not repair, push, reopen or merge that PR.
+Repository, head, base and merge identity are checked again before publication;
+a fallback comment or unknown publication outcome is not approval. Ordinary
+open-agent PR reviews retain their existing repair and merge behavior.
+
 `agent-codex-reviewer` is a Codex SDK execution adapter packaged inside the
 standard `adp-agent-runtime` image. It has no image, queue, KEDA job, service
 account, or IAM role of its own.
@@ -44,7 +53,7 @@ Engine review and repair continuations select `agent-codex-reviewer` and use the
 protected `review_cycle_input`, without requiring a webhook payload or an
 `agent/issue-N` branch. Both protected and shared-worker flows default to reviewer-owned
 delivery. Assignments with repair permission let the reviewer
-fix against the story and acceptance criteria, then review the final descendant commit
+fix concrete defects in the accepted PR scope, then verify the repaired descendant commit
 before an exact-lease push. Reviews with no repair permission remain read-only.
 There is no mechanical file/line limit in this story repair path.
 
@@ -68,15 +77,21 @@ The gateway still enforces the flow's policy window, spend and claim on every
 observation and model call. A repair that makes no progress returns its real
 findings rather than repeating model calls on the same head.
 
-Repairs are worked as a code/test task board (`src/task-board.ts`), seeded from
-the developer's board in the PR body when present. The repair thread finishes up
-to `CODEX_REVIEWER_MILESTONES_PER_PUBLISH` tasks (default 3, or fewer once 60% of
-the model allowance is spent) before one scoped inspection, one commit named
-after the finished task ids and one push; a full inspection runs when the repair
-reports `complete`. The reviewer starts from `.adp/tasks/<issue>.json` when the
-developer left one, writes its finished tasks back into that file inside each batch
-commit, and keeps the PR body's rendered board and the issue checklist current. Set
-the variable to `1` for the former publish-every-milestone cadence.
+The reviewer fixes concrete current-PR defects in one batch, runs relevant tests,
+and independently inspects the fixes and affected behavior before publishing.
+Only unresolved defects, new regressions, failed required checks or merge conflicts
+can trigger further repair, with a maximum of three retries. Evidence notes in
+`validationGaps`, repair outcome labels and unfinished task-board entries cannot
+independently block approval or schedule another repair. Incomplete functional or
+security inspection still prevents merge; current-head CI and authorization are
+checked independently by the controller. Passing CI does not repeat an already
+completed source inspection unless the base changed or a concrete finding remains.
+
+The existing board in `.adp/tasks/<issue>.json` or the PR body remains a progress
+report. The reviewer preserves unfinished entries and records actual completed
+work and commits without inferring that story acceptance or live qualification
+passed. The former milestone batching knob is no longer used; every source repair
+batch is inspected before the controller decides whether more code work is needed.
 
 The TypeScript reviewer publishes its exact-head verdict through the existing
 Python evidence adapter, then checks current merge permission and repository

@@ -62,12 +62,14 @@ from datetime import UTC
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.products.models import Product
+from src.shared.identity.product_scope import owner_scope, product_member
 from src.shared.models.base import utcnow
 
 from .execution_policy import PolicyRejectedError, stamp_policy
 from .genesis import APPROVAL_DECISION_KINDS
-from .models import DecisionKind, OrchestrationAcceptedPlan, OrchestrationFlow
-from .proposal import LoopProposal, Violation, split_address, validate_proposal
+from .models import DecisionKind, OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
+from .proposal import LoopProposal, RepositoryConnection, Violation, split_address, validate_proposal
 from .repository import OrchestrationRepository
 from .state import ActorKind, NodeState
 
@@ -160,12 +162,61 @@ class ApprovalContext:
     org_id: str
     actor_id: str
     actor_role: str
+    username: str = ""
     # Approving a plan is a human act. Defaulted rather than required because the
     # overwhelming majority of callers are the gate-approval route; a service
     # actor must say so explicitly.
     actor_kind: ActorKind = ActorKind.HUMAN
     # Free-text justification, carried verbatim onto the decision record.
     reason: str | None = None
+
+
+async def require_accessible_product(session: AsyncSession, *, product_id: str, decision: ApprovalContext) -> None:
+    member = await product_member(
+        session,
+        user_id=decision.actor_id,
+        org_id=decision.org_id,
+        username=decision.username,
+        account_type="human" if ActorKind(decision.actor_kind) is ActorKind.HUMAN else "service",
+    )
+    product = (
+        (
+            await session.scalar(
+                select(Product).where(
+                    owner_scope(member, decision.org_id),
+                    Product.id == product_id,
+                    Product.archived_at.is_(None),
+                )
+            )
+        )
+        if member is not None
+        else None
+    )
+    if product is None and member is not None and ActorKind(decision.actor_kind) is ActorKind.HUMAN:
+        from fastapi import HTTPException
+
+        from src.shared.identity.product_authority import stored_product_actor
+        from src.shared.identity.product_scope import product_visibility_scope
+
+        # Match Product APIs and run attribution: teamless Products may be read
+        # by a current platform administrator. A recorded decision/display role
+        # is not authority; reconstruct the verified login and recheck it live.
+        try:
+            actor = await stored_product_actor(session, user_id=member.id, tenant_id=decision.org_id)
+        except HTTPException as error:
+            if error.status_code != 404:
+                raise
+        else:
+            if actor.is_admin:
+                product = await session.scalar(
+                    select(Product).where(
+                        product_visibility_scope(member, decision.org_id, is_platform_admin=True),
+                        Product.id == product_id,
+                        Product.archived_at.is_(None),
+                    )
+                )
+    if product is None:
+        raise ProposalRejectedError("Product is unknown or inaccessible")
 
 
 @dataclass(frozen=True)
@@ -204,7 +255,7 @@ HASH_EXCLUDED_FIELDS = frozenset({"description", "design_history", "wave_metadat
 # reconstruct "what the older code hashed" from this list instead of hardcoding one
 # key — a hardcoded key is how such a test starts failing the moment a second
 # omitted field is added, reporting a regression where the property still holds.
-HASH_OMITTED_WHEN_ABSENT = frozenset({"execution_policy", "proposed_execution_policy"})
+HASH_OMITTED_WHEN_ABSENT = frozenset({"execution_policy", "proposed_execution_policy", "product_id", "project_id", "origin_ref", "tracker_refs"})
 
 
 def plan_hash(proposal: LoopProposal) -> str:
@@ -400,6 +451,55 @@ def accept_execution_policy(
     return prepared
 
 
+async def is_legacy_acceptance(session: AsyncSession, in_force: OrchestrationAcceptedPlan | None) -> bool:
+    """Only previously approved Product-less work qualifies, not an incomplete draft."""
+    if in_force is None or (in_force.plan_document or {}).get("product_id") is not None:
+        return False
+    approval_id = await session.scalar(
+        select(OrchestrationDecision.id)
+        .where(
+            OrchestrationDecision.org_id == in_force.org_id,
+            OrchestrationDecision.flow_id == in_force.flow_id,
+            OrchestrationDecision.kind.in_(APPROVAL_DECISION_KINDS),
+        )
+        .limit(1)
+    )
+    return approval_id is not None
+
+
+async def verify_planning_references(session: AsyncSession, *, org_id: str, proposal: LoopProposal) -> None:
+    if not proposal.origin_ref and not proposal.tracker_refs:
+        return
+    from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+    async def verify_planning(reference):
+        try:
+            verified = await resolve_story_repository(
+                session,
+                tenant_id=org_id,
+                name=reference.repository,
+                repository_id=reference.repository_id,
+                issue=reference.issue_number,
+                operation="accept",
+                installation_id=reference.installation_id,
+            )
+        except RepositoryBindingError as exc:
+            violation = Violation(rule=exc.code, message="Planning reference could not be verified", where="flow")
+            raise ProposalRejectedError(str(violation), violations=[violation]) from exc
+        if (
+            verified.repository_id != reference.repository_id
+            or verified.full_name.casefold() != reference.repository.casefold()
+            or verified.installation_id != reference.installation_id
+        ):
+            violation = Violation(rule="repository_binding_changed", message="Planning reference identity changed", where="flow")
+            raise ProposalRejectedError(str(violation), violations=[violation])
+
+    if proposal.origin_ref is not None:
+        await verify_planning(proposal.origin_ref)
+    for tracker in proposal.tracker_refs or []:
+        await verify_planning(tracker.issue)
+
+
 async def compile_proposal(
     session: AsyncSession,
     proposal: LoopProposal,
@@ -483,6 +583,47 @@ async def compile_proposal(
     proposal = prepare_execution_policy(proposal, decision=decision, decision_kind=decision_kind)
     legacy_document_hash = legacy_naive_policy_plan_hash(submitted_proposal, decision=decision)
 
+    if decision_kind != DecisionKind.PLAN_DRAFTED and proposal.product_id is not None:
+        from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+        verified_nodes = []
+        for node in proposal.nodes:
+            if node.kind != "story" or not (node.repository_identity or node.repository_connection or node.provider_repository_id):
+                verified_nodes.append(node)
+                continue
+            try:
+                issue_number = int(str(node.issue_ref).lstrip("#"))
+                if not node.repository_identity:
+                    raise RepositoryBindingError("repository_invalid")
+                verified = await resolve_story_repository(
+                    session,
+                    tenant_id=decision.org_id,
+                    name=node.repository_identity,
+                    repository_id=node.provider_repository_id,
+                    issue=issue_number,
+                    operation="accept",
+                    installation_id=node.repository_connection.installation_id if node.repository_connection else None,
+                    permitted_names=tuple(proposal.execution_policy.repository_ids) if proposal.execution_policy else None,
+                )
+                if node.repository_connection and verified.installation_id != node.repository_connection.installation_id:
+                    raise RepositoryBindingError("repository_binding_changed")
+            except (RepositoryBindingError, ValueError, TypeError) as exc:
+                code = exc.code if isinstance(exc, RepositoryBindingError) else "repository_invalid"
+                violation = Violation(rule=code, message=f"Story repository could not be verified: {code}", where=node.address)
+                raise ProposalRejectedError(str(violation), violations=[violation]) from exc
+            verified_nodes.append(
+                node.model_copy(
+                    update={
+                        "provider_repository_id": verified.repository_id,
+                        "repository_connection": node.repository_connection
+                        or RepositoryConnection(provider="github", installation_id=verified.installation_id),
+                    }
+                )
+            )
+        proposal = proposal.model_copy(update={"nodes": verified_nodes})
+
+    await verify_planning_references(session, org_id=decision.org_id, proposal=proposal)
+
     repo = OrchestrationRepository(session)
     document = proposal.model_dump(mode="json")
     document_hash = plan_hash(proposal)
@@ -530,21 +671,6 @@ async def compile_proposal(
                 already_compiled=True,
             )
 
-        # Consult the clock only after the locked replay check. A request that
-        # committed before expiry but lost its response must return that result;
-        # genuinely new authority still fails before any plan mutation.
-        require_unexpired_execution_policy(proposal)
-
-        if proposal.execution_policy is not None and proposal.execution_policy.user_credentials is not None:
-            from src.shared.services.credential_resolver import CredentialNotFoundError
-
-            from .user_credentials import validate_user_credential_authority
-
-            try:
-                await validate_user_credential_authority(session, policy=proposal.execution_policy, user_id=decision.actor_id)
-            except CredentialNotFoundError as exc:
-                raise PolicyNotAcceptableError("selected user credential is unavailable to the plan owner") from exc
-
         # --- Gate 3: only an approval may rewrite the plan of record ----------
         # Checked *after* the idempotency return above, deliberately: an identical
         # document writes nothing at all, so a retry must stay a no-op rather than
@@ -571,6 +697,82 @@ async def compile_proposal(
 
         if decision_kind != DecisionKind.PLAN_DRAFTED:
             require_evaluation_acceptor(proposal, decision, in_force)
+            if proposal.product_id is None and not await is_legacy_acceptance(session, in_force):
+                raise ProposalRejectedError("new execution acceptance requires an accessible Product")
+            if proposal.product_id is not None:
+                await require_accessible_product(session, product_id=proposal.product_id, decision=decision)
+
+        if in_force is not None:
+            from .amend import binding_reservations, definition_change_refusal, projection_mismatches
+
+            existing = list(
+                (
+                    await session.scalars(
+                        select(OrchestrationNode)
+                        .where(OrchestrationNode.org_id == decision.org_id, OrchestrationNode.flow_id == flow.id)
+                        .order_by(OrchestrationNode.id)
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                ).all()
+            )
+            previous_document = in_force.plan_document or {}
+            mismatches = projection_mismatches(
+                flow,
+                previous_document,
+                existing,
+                allow_missing_legacy_repositories=await is_legacy_acceptance(session, in_force),
+            )
+            if mismatches:
+                raise ProposalRejectedError(f"accepted identity projection mismatch: {mismatches}; refresh before amending")
+            started, product_started = await binding_reservations(session, flow=flow, nodes=existing, document=previous_document)
+            if proposal.product_id != flow.product_id and product_started:
+                raise ProposalRejectedError("cannot retarget Product after execution reservation; use a new flow")
+            proposed_nodes = {node.address: node for node in proposal.nodes}
+            previous_nodes = {node["address"]: node for node in previous_document.get("nodes", [])}
+            for node in existing:
+                address = address_of(flow.slug, node)
+                proposed = proposed_nodes.get(address)
+                if proposed is None:
+                    continue
+                refusal = definition_change_refusal(
+                    address=address,
+                    state=node.state,
+                    attempts=node.attempts,
+                    current_kind=node.kind,
+                    current_issue_ref=node.issue_ref,
+                    proposed_kind=proposed.kind,
+                    proposed_issue_ref=proposed.issue_ref,
+                    current_document=previous_nodes.get(address),
+                    proposed_document=proposed.model_dump(mode="json"),
+                    reserved=node.id in started,
+                )
+                if refusal is not None:
+                    raise ProposalRejectedError(refusal)
+        if flow.product_id is not None and proposal.product_id != flow.product_id:
+            raise ProposalRejectedError("Product binding cannot be changed through flow creation")
+        from src.products.work_scope import assign_flow_project
+
+        await assign_flow_project(session, flow=flow, product_id=proposal.product_id, project_id=proposal.project_id)
+        flow.product_id = proposal.product_id
+        flow.origin_ref = proposal.origin_ref.model_dump(mode="json") if proposal.origin_ref else None
+        flow.tracker_refs = [ref.model_dump(mode="json") for ref in proposal.tracker_refs] if proposal.tracker_refs is not None else None
+
+        # Consult the clock only after the locked replay check. A request that
+        # committed before expiry but lost its response must return that result;
+        # genuinely new authority still fails before any plan mutation.
+        require_unexpired_execution_policy(proposal)
+
+        if proposal.execution_policy is not None and proposal.execution_policy.user_credentials is not None:
+            from src.shared.services.credential_resolver import CredentialNotFoundError
+
+            from .user_credentials import validate_user_credential_authority
+
+            try:
+                await validate_user_credential_authority(session, policy=proposal.execution_policy, user_id=decision.actor_id)
+            except CredentialNotFoundError as exc:
+                raise PolicyNotAcceptableError("selected user credential is unavailable to the plan owner") from exc
+
         node_ids, nodes_created = await upsert_nodes(
             repo,
             proposal=proposal,
@@ -659,6 +861,7 @@ async def _resolve_flow(repo: OrchestrationRepository, *, proposal: LoopProposal
         slug=proposal.flow_slug,
         title=proposal.title,
         intent_ref=proposal.intent_ref,
+        product_id=proposal.product_id,
         description=proposal.description,
         # Dumped to plain JSON, not handed over as the Pydantic model: this value
         # goes into a JSON column, and `mode="json"` is what turns the validated
@@ -702,6 +905,13 @@ async def upsert_nodes(
     for proposed in proposal.nodes:
         present = existing.get(proposed.address)
         if present is not None:
+            present.lineage = proposed.lineage.model_dump(mode="json") if proposed.lineage is not None else None
+            present.labels = proposed.labels
+            present.repository_identity = proposed.repository_identity
+            present.provider_repository_id = proposed.provider_repository_id
+            present.repository_connection = (
+                proposed.repository_connection.model_dump(mode="json") if proposed.repository_connection is not None else None
+            )
             node_ids[proposed.address] = present.id
             continue
 
@@ -716,8 +926,13 @@ async def upsert_nodes(
             kind=proposed.kind,
             title=proposed.title,
             issue_ref=proposed.issue_ref,
+            lineage=proposed.lineage.model_dump(mode="json") if proposed.lineage is not None else None,
+            labels=proposed.labels,
             state=override.value if override is not None else None,
         )
+        node.repository_identity = proposed.repository_identity
+        node.provider_repository_id = proposed.provider_repository_id
+        node.repository_connection = proposed.repository_connection.model_dump(mode="json") if proposed.repository_connection is not None else None
         node_ids[proposed.address] = node.id
         created += 1
 

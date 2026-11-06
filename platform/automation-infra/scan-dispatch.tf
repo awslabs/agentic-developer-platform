@@ -28,6 +28,14 @@ resource "aws_iam_role_policy" "scan" {
   role = aws_iam_role.scan.id
   policy = jsonencode({ Version = "2012-10-17", Statement = concat([
     {
+      Sid = "AuthenticatedScanEvidence", Effect = "Allow", Action = ["s3:PutObject"],
+      Resource = [
+        "arn:aws:s3:::${var.name_prefix}-deployment-evidence-${data.aws_caller_identity.current.account_id}/deployment-evidence/v1/*/*/*/context/security-scan.yml.json",
+        "arn:aws:s3:::${var.name_prefix}-deployment-evidence-${data.aws_caller_identity.current.account_id}/deployment-evidence/v1/*/*/*/repository-artifact/*"
+      ],
+      Condition = { StringEquals = { "s3:if-none-match" = "*", "s3:x-amz-server-side-encryption" = "AES256" } }
+    },
+    {
       Sid = "ScanEvidence", Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
       Resource = concat([for prefix in ["sarif", "sbom", "findings", "repository-scans", "security-agent"] : "${local.scan_bucket}/${prefix}/*"],
       ["${local.state_bucket}/repository-scans/*"], [for tool in ["grype", "syft"] : "${local.state_bucket}/codebuild/src/${var.name_prefix}-${tool}-scan/*"])

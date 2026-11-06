@@ -196,7 +196,7 @@ describe('callRecall', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain('/tools/call');
+    expect(url).toContain('/__run/knowledge/call');
     expect(options.method).toBe('POST');
     expect(options.redirect).toBe('error');
     const reqHeaders = options.headers as Record<string, string>;

@@ -12,6 +12,50 @@ variable "environment" {
   }
 }
 
+variable "portal_sso_enabled" {
+  type        = bool
+  default     = false
+  description = "Configure ADP portal SSO on a fresh instance after provisioning the public key. Existing instances use configure-portal-sso.py."
+}
+
+variable "gitlab_package_version" {
+  type        = string
+  default     = "19.5.1-ce.0"
+  description = "GitLab CE package version for new installations. Upgrade existing hosts through GitLab's required stops; a restore must use the backup's exact version."
+  validation {
+    condition     = can(regex("^[0-9][0-9A-Za-z.*+-]*$", var.gitlab_package_version))
+    error_message = "Use a package version, without shell metacharacters."
+  }
+}
+
+variable "portal_operator_role_arns" {
+  type        = list(string)
+  description = "Exact trusted IAM role ARNs allowed to seed and recover portal credentials. Required when portal IAM wiring is configured."
+  default     = []
+  validation {
+    condition     = alltrue([for arn in var.portal_operator_role_arns : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$", arn))])
+    error_message = "Use exact IAM role ARNs, without wildcards or STS session ARNs."
+  }
+}
+
+variable "gateway_role_name" {
+  type        = string
+  default     = ""
+  description = "Existing gateway IAM role to grant signing-key read access. The optional GitLab module owns this policy."
+}
+
+variable "eks_oidc_provider_arn" {
+  type        = string
+  default     = ""
+  description = "EKS OIDC provider ARN for the dedicated GitLab home reconciler."
+}
+
+variable "reconciler_database_resource_arn" {
+  type        = string
+  default     = ""
+  description = "Exact rds-db:connect dbuser ARN for the dedicated home reconciler."
+}
+
 variable "aws_region" {
   type        = string
   description = "AWS region for all resources"
@@ -122,4 +166,63 @@ variable "enable_cloudfront_vpc_origin_ingress" {
   type        = bool
   description = "Allow HTTP:80 ingress on the GitLab ALB from the CloudFront-VPCOrigins-Service-SG. Enable only after a CloudFront VPC origin exists in the VPC (the service SG is created with the first VPC origin)."
   default     = false
+}
+variable "secretsmanager_endpoint_security_group_ids" {
+  description = "Security groups on private Secrets Manager endpoints that must admit HTTPS from GitLab for reconciler credential bootstrap."
+  type        = set(string)
+  default     = []
+}
+
+variable "runner_group_ids" {
+  type        = set(number)
+  description = "Existing verified numeric tenant-parent GitLab group IDs eligible for operator registration"
+  default     = []
+  validation {
+    condition     = alltrue([for group_id in var.runner_group_ids : group_id > 0 && floor(group_id) == group_id])
+    error_message = "Runner group IDs must be positive integers."
+  }
+}
+
+variable "runner_registrar_role_name" {
+  type        = string
+  description = "Existing isolated registrar role, included in the admin operator allowlist."
+  default     = ""
+  validation {
+    condition     = var.runner_registrar_role_name == "" || can(regex("^[A-Za-z0-9_+=,.@-]+$", var.runner_registrar_role_name))
+    error_message = "Use an exact IAM role name."
+  }
+}
+
+variable "runner_registrar_admin_role_arns" {
+  description = "Explicit registrar-only admin-token authority, separate from portal signing-key operators. May contain only the configured registrar's existing ARN."
+  type        = list(string)
+  default     = []
+  validation {
+    condition = length(var.runner_registrar_admin_role_arns) <= 1 && alltrue([
+      for arn in var.runner_registrar_admin_role_arns : can(regex("^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$", arn))
+    ])
+    error_message = "Use at most one exact registrar role ARN, without wildcards."
+  }
+}
+
+variable "runner_ca_exporter_role_name" {
+  type        = string
+  description = "Existing isolated CA export role."
+  default     = ""
+  validation {
+    condition     = var.runner_ca_exporter_role_name == "" || can(regex("^[A-Za-z0-9_+=,.@-]+$", var.runner_ca_exporter_role_name))
+    error_message = "Use an exact IAM role name."
+  }
+}
+
+variable "runner_manager_role_arns" {
+  type        = map(string)
+  description = "Numeric group ID to exact runner manager IAM role ARN."
+  default     = {}
+  validation {
+    condition = alltrue([for group_id, arn in var.runner_manager_role_arns :
+      can(regex("^[1-9][0-9]*$", group_id)) && can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$", arn))
+    ])
+    error_message = "Map numeric group IDs to exact IAM role ARNs without wildcards."
+  }
 }

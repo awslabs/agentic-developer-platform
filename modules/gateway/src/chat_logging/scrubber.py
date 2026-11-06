@@ -9,9 +9,12 @@ Scrubbing Pipeline:
 """
 
 import logging
-import re
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Any
+
+import regex as re
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +49,7 @@ REGEX_PATTERNS: dict[str, tuple[str, str]] = {
     "jwt_token": (r"eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*", "[REDACTED:JWT_TOKEN]"),
     # Private keys: BEGIN ... PRIVATE KEY blocks
     "private_key": (
-        r"-----BEGIN\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----"
-        r"[\s\S]*?"
-        r"-----END\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----",
+        r"-----((?:BEGIN|END))\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----",
         "[REDACTED:PRIVATE_KEY]",
     ),
     # PostgreSQL connection strings
@@ -231,8 +232,13 @@ def redact_numeric_value(value: Any, path: tuple[str, ...]) -> tuple[str, str, s
 # Headers to scrub from logs
 SENSITIVE_HEADERS = {
     "authorization",
+    "x-adp-client-provenance",
+    "x-adp-edge-provenance",
     "x-adp-report-credential",
+    "x-adp-native-test-capability",
     "x-api-key",
+    "x-forge-oauth-system",
+    "x-forge-oauth-user",
     "cookie",
     "set-cookie",
     "x-auth-token",
@@ -283,161 +289,142 @@ class HeaderScrubber:
         )
 
 
+SCRUB_LIMIT_PLACEHOLDER = "[REDACTED:SCRUB_LIMIT]"
+
+
+@dataclass
+class _ScrubBudget:
+    deadline: float
+    chars: int
+    items: int
+
+    def remaining(self) -> float:
+        seconds = self.deadline - time.monotonic()
+        if seconds <= 0:
+            raise TimeoutError("scrub time limit")
+        return seconds
+
+
+class _ScrubLimitError(Exception):
+    pass
+
+
 class RegexScrubber:
-    """Scrubs sensitive data using regex patterns."""
+    """Redact with bounded traversal and interruptible regex matching.
+
+    The regex engine releases the GIL on immutable strings and enforces a real
+    matching timeout. A coroutine/thread timeout alone cannot stop stdlib re.
+    Each public call shares one budget across all nested values and patterns.
+    """
 
     def __init__(self, patterns: dict[str, tuple[str, str]] | None = None) -> None:
-        """Initialize the regex scrubber.
-
-        Args:
-            patterns: Dictionary of pattern_name -> (regex, replacement).
-                     Defaults to REGEX_PATTERNS.
-        """
         self._patterns = patterns or REGEX_PATTERNS
-        # Compile patterns for efficiency
-        self._compiled: dict[str, tuple[re.Pattern, str]] = {}
-        for name, (pattern, replacement) in self._patterns.items():
-            try:
-                self._compiled[name] = (re.compile(pattern, re.IGNORECASE | re.MULTILINE), replacement)
-            except re.error as e:
-                logger.warning(f"Failed to compile pattern '{name}': {e}")
+        self._compiled = {
+            name: (re.compile(pattern, re.IGNORECASE | re.MULTILINE), replacement) for name, (pattern, replacement) in self._patterns.items()
+        }
+        # Conservative hard ceilings prevent a configuration typo disabling bounds.
+        self.max_string_chars = max(1, min(400_000, int(os.getenv("BG_CHAT_SCRUB_MAX_STRING_CHARS", "128000"))))
+        self.max_total_chars = max(1, min(2_000_000, int(os.getenv("BG_CHAT_SCRUB_MAX_TOTAL_CHARS", "1000000"))))
+        self.max_items = max(1, min(10_000, int(os.getenv("BG_CHAT_SCRUB_MAX_ITEMS", "4096"))))
+        self.timeout_seconds = max(0.001, min(1.0, float(os.getenv("BG_CHAT_SCRUB_TIMEOUT_SECONDS", "0.2"))))
+
+    @staticmethod
+    def _limited(value: Any, reason: str) -> ScrubResult:
+        from src.chat_logging.scrub_executor import scrub_limits
+
+        scrub_limits.labels(reason=reason).inc()
+        content: Any = SCRUB_LIMIT_PLACEHOLDER
+        if isinstance(value, dict):
+            content = {"_redacted": SCRUB_LIMIT_PLACEHOLDER}
+        elif isinstance(value, list):
+            content = [SCRUB_LIMIT_PLACEHOLDER]
+        return ScrubResult(content=content, redactions_count=1, patterns_matched=["scrub_limit"])
+
+    def _private_keys(self, text, pattern, replacement, budget):
+        # One forward traversal of markers; never search the entire suffix again
+        # for each opener. An unterminated key redacts through the end of the value.
+        pieces, start, copied, count = [], None, 0, 0
+        for marker in pattern.finditer(text, timeout=budget.remaining()):
+            if marker.group(1).upper() == "BEGIN" and start is None:
+                start = marker.start()
+            elif marker.group(1).upper() == "END" and start is not None:
+                pieces.extend((text[copied:start], replacement))
+                copied, start = marker.end(), None
+                count += 1
+        if start is not None:
+            pieces.extend((text[copied:start], replacement))
+            copied = len(text)
+            count += 1
+        pieces.append(text[copied:])
+        return "".join(pieces), count
+
+    def _text(self, text: str, budget: _ScrubBudget) -> ScrubResult:
+        if len(text) > self.max_string_chars:
+            return self._limited(text, "string_size")
+        budget.chars -= len(text)
+        if budget.chars < 0:
+            raise _ScrubLimitError("total_size")
+        scrubbed, redactions, patterns = text, 0, []
+        for name, (pattern, replacement) in self._compiled.items():
+            if name == "private_key" and self._patterns[name] == REGEX_PATTERNS[name]:
+                scrubbed, count = self._private_keys(scrubbed, pattern, replacement, budget)
+            else:
+                scrubbed, count = pattern.subn(replacement, scrubbed, timeout=budget.remaining())
+            if count:
+                redactions += count
+                patterns.append(name)
+        return ScrubResult(content=scrubbed, redactions_count=redactions, patterns_matched=patterns)
+
+    def _walk(self, value, budget, depth, max_depth, path):
+        budget.remaining()
+        budget.items -= 1
+        if budget.items < 0:
+            raise _ScrubLimitError("items")
+        if depth > max_depth:
+            return self._limited(value, "depth")
+        if isinstance(value, str):
+            return self._text(value, budget)
+        if isinstance(value, dict | list):
+            if len(value) > budget.items:
+                raise _ScrubLimitError("items")
+            result = ScrubResult(content={} if isinstance(value, dict) else [])
+            values = value.items() if isinstance(value, dict) else enumerate(value)
+            for key, item in values:
+                item_path = (*path, str(key)) if isinstance(value, dict) else path
+                if isinstance(value, dict):
+                    budget.chars -= len(str(key))
+                    if budget.chars < 0:
+                        raise _ScrubLimitError("total_size")
+                child = self._walk(item, budget, depth + 1, max_depth, item_path)
+                if isinstance(value, dict):
+                    result.content[key] = child.content
+                else:
+                    result.content.append(child.content)
+                result.redactions_count += child.redactions_count
+                result.patterns_matched.extend(child.patterns_matched)
+            result.patterns_matched = list(dict.fromkeys(result.patterns_matched))
+            return result
+        if redaction := redact_numeric_value(value, path):
+            return ScrubResult(content=redaction[0], redactions_count=1, patterns_matched=[redaction[1]])
+        return ScrubResult(content=value)
+
+    def _scrub(self, value, depth=0, max_depth=10, path=()):
+        budget = _ScrubBudget(time.monotonic() + self.timeout_seconds, self.max_total_chars, self.max_items)
+        try:
+            return self._walk(value, budget, depth, max_depth, path)
+        except TimeoutError:
+            return self._limited(value, "timeout")
+        except _ScrubLimitError as error:
+            return self._limited(value, str(error))
 
     def scrub_text(self, text: str) -> ScrubResult:
-        """Scrub sensitive data from a text string.
+        return self._scrub(text)
 
-        Args:
-            text: Text to scrub
+    def scrub_dict(self, data: dict[str, Any], depth: int = 0, max_depth: int = 10, path: tuple[str, ...] = ()) -> ScrubResult:
+        return self._scrub(data, depth, max_depth, path)
 
-        Returns:
-            ScrubResult with scrubbed text and metadata
-        """
-        if not text:
-            return ScrubResult(content="")
-
-        scrubbed = text
-        redactions = 0
-        patterns_matched: list[str] = []
-
-        for name, (pattern, replacement) in self._compiled.items():
-            matches = pattern.findall(scrubbed)
-            if matches:
-                count = len(matches)
-                scrubbed = pattern.sub(replacement, scrubbed)
-                redactions += count
-                patterns_matched.append(name)
-
-        return ScrubResult(
-            content=scrubbed,
-            redactions_count=redactions,
-            patterns_matched=patterns_matched,
-        )
-
-    def scrub_dict(
-        self,
-        data: dict[str, Any],
-        depth: int = 0,
-        max_depth: int = 10,
-        path: tuple[str, ...] = (),
-    ) -> ScrubResult:
-        """Recursively scrub sensitive data from a dictionary.
-
-        Args:
-            data: Dictionary to scrub
-            depth: Current recursion depth
-            max_depth: Maximum recursion depth to prevent infinite loops
-
-        Returns:
-            ScrubResult with scrubbed dictionary and metadata
-        """
-        if depth > max_depth:
-            return ScrubResult(content=data)
-
-        scrubbed = {}
-        total_redactions = 0
-        all_patterns: list[str] = []
-
-        for key, value in data.items():
-            value_path = (*path, str(key))
-            if isinstance(value, str):
-                result = self.scrub_text(value)
-                scrubbed[key] = result.content
-                total_redactions += result.redactions_count
-                all_patterns.extend(result.patterns_matched)
-            elif isinstance(value, dict):
-                result = self.scrub_dict(value, depth + 1, max_depth, value_path)
-                scrubbed[key] = result.content
-                total_redactions += result.redactions_count
-                all_patterns.extend(result.patterns_matched)
-            elif isinstance(value, list):
-                result = self.scrub_list(value, depth + 1, max_depth, value_path)
-                scrubbed[key] = result.content
-                total_redactions += result.redactions_count
-                all_patterns.extend(result.patterns_matched)
-            elif redaction := redact_numeric_value(value, value_path):
-                scrubbed[key] = redaction[0]
-                total_redactions += 1
-                all_patterns.append(redaction[1])
-            else:
-                scrubbed[key] = value
-
-        return ScrubResult(
-            content=scrubbed,
-            redactions_count=total_redactions,
-            patterns_matched=list(set(all_patterns)),  # Deduplicate
-        )
-
-    def scrub_list(
-        self,
-        data: list[Any],
-        depth: int = 0,
-        max_depth: int = 10,
-        path: tuple[str, ...] = (),
-    ) -> ScrubResult:
-        """Recursively scrub sensitive data from a list.
-
-        Args:
-            data: List to scrub
-            depth: Current recursion depth
-            max_depth: Maximum recursion depth
-
-        Returns:
-            ScrubResult with scrubbed list and metadata
-        """
-        if depth > max_depth:
-            return ScrubResult(content=data)
-
-        scrubbed = []
-        total_redactions = 0
-        all_patterns: list[str] = []
-
-        for item in data:
-            if isinstance(item, str):
-                result = self.scrub_text(item)
-                scrubbed.append(result.content)
-                total_redactions += result.redactions_count
-                all_patterns.extend(result.patterns_matched)
-            elif isinstance(item, dict):
-                result = self.scrub_dict(item, depth + 1, max_depth, path)
-                scrubbed.append(result.content)
-                total_redactions += result.redactions_count
-                all_patterns.extend(result.patterns_matched)
-            elif isinstance(item, list):
-                result = self.scrub_list(item, depth + 1, max_depth, path)
-                scrubbed.append(result.content)
-                total_redactions += result.redactions_count
-                all_patterns.extend(result.patterns_matched)
-            elif redaction := redact_numeric_value(item, path):
-                scrubbed.append(redaction[0])
-                total_redactions += 1
-                all_patterns.append(redaction[1])
-            else:
-                scrubbed.append(item)
-
-        return ScrubResult(
-            content=scrubbed,
-            redactions_count=total_redactions,
-            patterns_matched=list(set(all_patterns)),
-        )
+    def scrub_list(self, data: list[Any], depth: int = 0, max_depth: int = 10, path: tuple[str, ...] = ()) -> ScrubResult:
+        return self._scrub(data, depth, max_depth, path)
 
 
 class ScrubPipeline:

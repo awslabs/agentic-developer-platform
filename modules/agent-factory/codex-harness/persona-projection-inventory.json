@@ -370,6 +370,28 @@
       "sharedPersonaSource": "modules/agent-factory/rules/personas/pm.md"
     },
     {
+      "registeredPersona": "agent-codex-operations",
+      "sourceStatus": "present",
+      "codexKey": "gpt-operations-story",
+      "definition": "modules/agent-factory/codex-harness/personas/operations-story.json",
+      "status": "engine-operations-executor",
+      "completionPolicy": "report",
+      "requiredCapabilities": [
+        "artifacts.publish",
+        "repository.read",
+        "actions.read",
+        "actions.write",
+        "repository.write",
+        "change.create",
+        "change.merge"
+      ],
+      "optionalCapabilities": [],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/agent-codex-operations.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/operations-story.md"
+    },
+    {
       "registeredPersona": "agent-codex-intent-refinement",
       "sourceStatus": "present",
       "codexKey": "gpt-intent-refinement",

@@ -64,7 +64,8 @@ describe('scoped model decision transport', () => {
 
   it('derives run and generation only from the exchange, then verifies the signed model selection', async () => {
     approved();
-    await expect(client.modelDecision()).resolves.toEqual({ modelId: model, runId: 'run-a', tenantId: 'tenant-a', generation: 1 });
+    await expect(client.modelDecision()).resolves.toEqual({ modelId: model, runId: 'run-a', tenantId: 'tenant-a', userId: 'human', generation: 1,
+      posture: 'enforcing', postureVerified: true });
     expect(fetchMock.mock.calls[1]).toEqual(['https://gateway.example.test/v1/chat/model/decision', expect.objectContaining({
       redirect: 'error', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.scoped.capability',
         'X-Adp-Workload-Token': 'sandbox.workload.token' },
@@ -84,12 +85,51 @@ describe('scoped model decision transport', () => {
     await expect(client.modelDecision()).rejects.toMatchObject({ code });
   });
 
+  // Chat model-policy posture (#7997): advisory and off decisions are decisions; the
+  // sandbox runs the resolved model and surfaces the posture, verification and reason.
+  const decisionUnder = (runtime_posture: string) => ({ runtime_posture, invocation_id: 'run-a', tenant_id: 'tenant-a',
+    principal_kind: 'human', principal_id: 'human', resolved_model_id: model });
+
+  it.each([
+    ['advisory', 'report_only', false, 'probing_disabled'],
+    ['advisory', 'report_only', false, 'evidence_stale'],
+    ['advisory', 'report_only', true, undefined],
+    ['off', 'disabled', true, undefined],
+    ['off', 'disabled', false, 'probing_disabled'],
+  ])('accepts a %s decision (runtime %s, verified %s, reason %s) and reports the posture', async (posture, runtime, verified, reason) => {
+    approved({ model_policy: { posture, posture_verified: verified, status: 'proposed', assertion: 'synthetic-inner-assertion',
+      ...(reason ? { rejection_reason: reason } : {}), decision: decisionUnder(runtime) } });
+    await expect(client.modelDecision()).resolves.toEqual({ modelId: model, runId: 'run-a', tenantId: 'tenant-a', userId: 'human', generation: 1,
+      posture, postureVerified: verified, ...(reason ? { rejectionReason: reason } : {}) });
+  });
+
+  it.each([
+    ['an unverified enforcing decision', { posture: 'enforcing', posture_verified: false, status: 'proposed', decision: decisionUnder('enforcing') }],
+    ['an advisory decision whose hop claims to be enforcing', { posture: 'advisory', posture_verified: true, status: 'proposed', decision: decisionUnder('enforcing') }],
+    ['an off decision whose hop claims report_only', { posture: 'off', posture_verified: true, status: 'proposed', decision: decisionUnder('report_only') }],
+    ['an advisory refusal dressed as a proposal', { posture: 'advisory', posture_verified: false, status: 'unavailable', reason: 'probing_disabled', decision: decisionUnder('report_only') }],
+    ['an advisory decision with free-text reason', { posture: 'advisory', posture_verified: false, status: 'proposed', rejection_reason: 'Traceback at db', decision: decisionUnder('report_only') }],
+    ['an unknown posture', { posture: 'permissive', posture_verified: true, status: 'proposed', decision: decisionUnder('disabled') }],
+  ])('refuses %s', async (_label, model_policy) => {
+    approved({ model_policy });
+    await expect(client.modelDecision()).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it('refuses a signed decision without a human owner', async () => {
+    approved({ model_policy: { posture: 'enforcing', posture_verified: true, status: 'proposed',
+      decision: { runtime_posture: 'enforcing', invocation_id: 'run-a', tenant_id: 'tenant-a',
+        principal_kind: 'service_account', principal_id: 'another-owner', resolved_model_id: model } } });
+    await expect(client.modelDecision()).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('accepts a second session lease bound to a fresh run attempt', async () => {
     const nextLease = { ...binding, lease_generation: 2 };
     fetchMock.mockResolvedValueOnce(json(nextLease)).mockImplementationOnce(async (_url, options) =>
       json(signedReply(JSON.parse(options!.body as string).nonce, { context: { lease_generation: 2 } })))
       .mockResolvedValueOnce(json(publishedKeys));
-    await expect(client.modelDecision()).resolves.toEqual({ modelId: model, runId: 'run-a', tenantId: 'tenant-a', generation: 2 });
+    await expect(client.modelDecision()).resolves.toEqual({ modelId: model, runId: 'run-a', tenantId: 'tenant-a', userId: 'human', generation: 2,
+      posture: 'enforcing', postureVerified: true });
   });
 
   it('refuses an absent signature and a wrong verification key', async () => {
@@ -127,10 +167,60 @@ describe('scoped model decision transport', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it('cancels an in-flight model readiness request without contacting a second route', async () => {
+    fetchMock.mockResolvedValueOnce(json(binding));
+    await client.sessionScope();
+    const cancellation = new AbortController();
+    fetchMock.mockImplementationOnce(async (_url, options) => {
+      expect(options?.signal).toBeDefined();
+      cancellation.abort();
+      options!.signal!.throwIfAborted();
+      throw new Error('unexpected request');
+    });
+    await expect(client.modelDecision(cancellation.signal)).rejects.toMatchObject({ code: 'unavailable' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('does not send a model request when the sandbox workload token disappears', async () => {
     workloadToken.mockResolvedValueOnce('sandbox.workload.token').mockRejectedValue(new Error('missing'));
     fetchMock.mockResolvedValueOnce(json(binding));
     await expect(client.modelDecision()).rejects.toMatchObject({ code: 'unavailable' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('refused or unavailable model-policy decision body (#7968)', () => {
+  let fetchMock: jest.SpiedFunction<typeof fetch>;
+  let client: ChatDataClient;
+
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    fetchMock = jest.spyOn(globalThis, 'fetch');
+    client = new ChatDataClient({ baseUrl: 'https://gateway.example.test', workloadToken: async () => 'sandbox.workload.token' });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('exposes the gateway reason, persona, model and retry hint on the unavailable error', async () => {
+    // The binding wrapper re-requests one unavailable answer before giving up; the refusal
+    // the sandbox finally sees is the gateway's own structured body, not an anonymous outage.
+    const detail = { error: 'chat_model_policy_unavailable', reason: 'probing_disabled', persona: 'developer', model_id: null, retryable: false };
+    fetchMock.mockResolvedValueOnce(json(binding)).mockImplementation(async () => json({ detail }, 503));
+    await expect(client.modelDecision()).rejects.toMatchObject({ code: 'unavailable', status: 503, policy: detail });
+    expect(fetchMock.mock.calls.slice(1).every(([url]) => String(url).endsWith('/v1/chat/model/decision'))).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    { detail: { error: 'chat_authority_unavailable' } },
+    { detail: { error: 'chat_model_policy_unavailable', reason: 'Traceback at db-internal', retryable: false } },
+    { detail: { error: 'chat_model_policy_unavailable', reason: 'probing_disabled', retryable: 'yes' } },
+    { detail: { error: 'chat_model_policy_unavailable', reason: 'probing_disabled', retryable: false, token: 'leak' } },
+    'not json',
+  ])('keeps an unstructured or malformed 503 as a plain outage: %j', async body => {
+    fetchMock.mockResolvedValueOnce(json(binding)).mockImplementation(async () => typeof body === 'string'
+      ? new Response(body, { status: 503, headers: { 'Content-Type': 'text/plain' } }) : json(body, 503));
+    const failure = await client.modelDecision().catch(error => error);
+    expect(failure).toMatchObject({ code: 'unavailable', status: 503 });
+    expect(failure.policy).toBeUndefined();
   });
 });

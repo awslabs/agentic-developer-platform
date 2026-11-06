@@ -73,7 +73,11 @@ async def test_live_increase_preserves_plan_assignments_and_all_meter_fields(bud
     plan = copy.deepcopy(b.s.plan.plan_document)
     original_hash = b.s.plan.plan_hash
     meter = await b.s.client.hgetall(b.s.target.key())
-    ttl = await b.s.client.pttl(b.s.target.key())
+    # Isolate amendment behavior from normal flow-retention renewal. A longer
+    # existing deadline must survive unchanged; compare the absolute expiry so
+    # elapsed wall-clock time cannot make this assertion flaky.
+    await b.s.client.expire(b.s.target.key(), 40 * 86400)
+    expiry = await b.s.client.pexpiretime(b.s.target.key())
     identity = (b.s.node.state, b.s.node.attempts, b.s.claim.active_run_id, b.s.claim.generation, b.s.plan.version)
     receipt, request = await accept(b)
     after = await effective(b)
@@ -86,7 +90,7 @@ async def test_live_increase_preserves_plan_assignments_and_all_meter_fields(bud
     assert b.s.plan.plan_document == plan and b.s.plan.plan_hash == original_hash
     assert identity == (b.s.node.state, b.s.node.attempts, b.s.claim.active_run_id, b.s.claim.generation, b.s.plan.version)
     assert await b.s.client.hgetall(b.s.target.key()) == meter
-    assert await b.s.client.pttl(b.s.target.key()) <= ttl
+    assert await b.s.client.pexpiretime(b.s.target.key()) == expiry
     row = await b.s.session.get(OrchestrationDecision, receipt["decision_id"])
     assert row.actor_id == b.actor.actor_id and row.actor_kind == "human"
     replay = await accept_budget_increase(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
@@ -122,7 +126,7 @@ async def test_invalid_increase_writes_no_financial_decision(budget, case):
     assert not list(await b.s.session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == "budget_increased")))
 
 
-@pytest.mark.parametrize("change", ["actor", "hash", "principal", "scope", "contract"])
+@pytest.mark.parametrize("change", ["actor", "hash", "principal", "scope", "contract", "missing_flow", "wrong_flow"])
 async def test_unverifiable_receipt_fails_closed(budget, change):
     b = budget
     receipt, _ = await accept(b)
@@ -135,6 +139,10 @@ async def test_unverifiable_receipt_fails_closed(budget, change):
         data["plan_hash"] = "a" * 64
     elif change == "principal":
         data["principal_id"] = "someone-else"
+    elif change == "missing_flow":
+        data.pop("flow_id")
+    elif change == "wrong_flow":
+        data["flow_id"] = "another-flow"
     elif change == "scope":
         doc = copy.deepcopy(b.s.plan.plan_document)
         doc["execution_policy"]["repository_ids"] = ["other/repo"]

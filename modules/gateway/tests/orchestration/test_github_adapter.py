@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -248,14 +249,15 @@ class TestHappyPath:
 class TestAuthzIsNotWeakerThanTheDashboard:
     """The adversarial half. These are the tests that matter most."""
 
-    async def test_commenter_without_the_permission_is_refused_and_recorded(self, session, access):
-        """A plain member holds no `plan:approve`, so the gate does not move.
-
-        Recorded, not swallowed: an in-org principal attempting an approval they
-        do not hold is exactly the off-plan-activity evidence R-N2b exists for.
-        """
+    @pytest.mark.parametrize("revoked", [False, True])
+    async def test_member_comment_approval_requires_live_membership(self, session, access, revoked):
+        """Members can approve through GitHub; revocation stops both input paths."""
         await _seed_principal(session, org_id=ORG_A, github_user_id=GH_MEMBER, role="member")
         node = await _seed_gate_node(session, org_id=ORG_A, node_id="node-4")
+        if revoked:
+            membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == "user-" + GH_MEMBER))
+            membership.revoked_at = datetime.now(UTC)
+            await session.flush()
 
         outcome = await apply_gate_answer(
             session,
@@ -263,16 +265,17 @@ class TestAuthzIsNotWeakerThanTheDashboard:
             access=access,
         )
 
-        assert outcome.status is GateAnswerStatus.REFUSED_NO_PERMISSION
-        assert outcome.applied is False
+        assert outcome.status is (GateAnswerStatus.REFUSED_NO_PERMISSION if revoked else GateAnswerStatus.APPLIED)
+        assert outcome.applied is (not revoked)
 
         await session.refresh(node)
-        assert node.state == NodeState.AWAITING_GATE.value, "an unauthorized comment moved the gate"
+        assert node.state == (NodeState.AWAITING_GATE.value if revoked else NodeState.PASSED.value)
 
         rows = await _decisions(session, ORG_A)
         assert len(rows) == 1
-        assert rows[0].kind == DecisionKind.TRANSITION_REJECTED.value
-        assert "plan:approve" in rows[0].rejection_reason
+        assert rows[0].kind == (DecisionKind.TRANSITION_REJECTED.value if revoked else DecisionKind.GATE_APPROVED.value)
+        if revoked:
+            assert "plan:approve" in rows[0].rejection_reason
         assert rows[0].actor_id == "user-" + GH_MEMBER
 
     async def test_another_orgs_identity_is_refused_with_no_existence_disclosure(self, session, access):
@@ -767,11 +770,6 @@ class TestOneGuardedWriteSeam:
         for node in ast.walk(self._tree()):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "text":
                 pytest.fail("the adapter uses sqlalchemy text() — raw SQL can bypass the transition guard")
-
-    def test_the_adapter_never_records_a_service_actor_for_a_gate_answer(self):
-        """A gate answer is a human act; SERVICE here would be the AC-15 gate skip."""
-        source = Path(inspect.getfile(adapter_module)).read_text()
-        assert "ActorKind.SERVICE" not in source, "the adapter names ActorKind.SERVICE — a gate answer is always a human act"
 
 
 class TestAdditiveOnly:

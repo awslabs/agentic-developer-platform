@@ -1,0 +1,48 @@
+{
+  "issue": 8446,
+  "status": "candidate-only; requires an accepted plan and verified release",
+  "bind_before_acceptance": {
+    "release_address": "REPLACE_WITH_ACCEPTED_GATEWAY_RELEASE_ADDRESS",
+    "repository_id": "REPLACE_WITH_INSTALLATION_REPOSITORY_ID",
+    "harness_sha256": "REPLACE_WITH_RUNTIME_HARNESS_DIGEST"
+  },
+  "evaluation": {
+    "evidence_schema": "repository-evaluation/v1",
+    "runner": {
+      "adapter": "engine-repository-evidence-v1",
+      "repository": "aws-e/adp",
+      "repository_id": 1,
+      "harness_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "predecessors": [{"address": "REPLACE_WITH_ACCEPTED_GATEWAY_RELEASE_ADDRESS"}],
+    "producer": null,
+    "workflows": [{
+      "criterion_id": "AC-01-proof-phase",
+      "path": ".github/workflows/gateway-deploy.yml",
+      "source": {"predecessor": "REPLACE_WITH_ACCEPTED_GATEWAY_RELEASE_ADDRESS"},
+      "definition": {"predecessor": "REPLACE_WITH_ACCEPTED_GATEWAY_RELEASE_ADDRESS"},
+      "dispatch_only": false,
+      "required_jobs": ["Build and Deploy Backend", "identity-proof"],
+      "artifacts": [{
+        "name": "atlassian-stage-{run_id}-{run_attempt}",
+        "path": "atlassian-stage-summary.json",
+        "bind_workflow_provenance": true,
+        "predicates": [
+          {"criterion_id": "AC-01-generated", "pointer": "/criterion_rows", "operation": "equals", "expected": [{"issue_number": 8446, "criterion_id": "AC-01", "scenario_id": "SCN-01", "controlled": "candidate", "live": "unproven"}, {"issue_number": 8446, "criterion_id": "AC-02", "scenario_id": "SCN-02", "controlled": "candidate", "live": "unproven"}, {"issue_number": 8446, "criterion_id": "AC-03", "scenario_id": "SCN-03", "controlled": "candidate", "live": "unproven"}]},
+          {"criterion_id": "AC-01-runtime", "pointer": "/runtime/verified", "operation": "equals", "expected": false},
+          {"criterion_id": "AC-01-cleanup", "pointer": "/cleanup/generated_verified", "operation": "equals", "expected": true},
+          {"criterion_id": "AC-01-remote-unproven", "pointer": "/cleanup/remote_verified", "operation": "equals", "expected": false},
+          {"criterion_id": "AC-01-cleanup-kind", "pointer": "/cleanup/status", "operation": "equals", "expected": "generated_only"},
+          {"criterion_id": "AC-01-unresolved", "pointer": "/unresolved_operations", "operation": "equals", "expected": []},
+          {"criterion_id": "AC-01-verification-level", "pointer": "/verification_level", "operation": "equals", "expected": "controlled_integration"},
+          {"criterion_id": "AC-01-fixture-source", "pointer": "/fixture_source", "operation": "equals", "expected": "generated"},
+          {"criterion_id": "AC-01-source-match", "pointer": "/test_source_matches_release", "operation": "equals", "expected": true},
+          {"criterion_id": "AC-01-observer", "pointer": "/independent_verification/private_phase_readback", "operation": "equals", "expected": true},
+          {"criterion_id": "AC-01-provider-unproven", "pointer": "/independent_verification/live_provider", "operation": "equals", "expected": false},
+          {"criterion_id": "AC-01-live", "pointer": "/live_status", "operation": "equals", "expected": "unproven"},
+          {"criterion_id": "AC-01-phase", "pointer": "/phase", "operation": "equals", "expected": "stage.identity-proof"}
+        ]
+      }]
+    }]
+  }
+}

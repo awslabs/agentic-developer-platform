@@ -12,13 +12,112 @@
 import { apiClient, buildQueryString } from './api';
 import type {
   FlowExecution,
+  FlowActivity,
   FlowExecutionParams,
   FlowGraph,
   FlowList,
   FlowListParams,
   GateDecisionResult,
   ResumeResult,
+  AmendmentAcceptance,
+  AmendmentDraft,
+  AmendmentImpact,
+  AmendmentProposalResult,
 } from '@/types/orchestration';
+
+export interface IntakeAcceptance {
+  session_id: string;
+  task_id: string;
+  retry_token: string;
+  enqueued_at: number;
+  thread_id: string;
+}
+
+export interface IntakeSession {
+  session_id: string;
+  working: boolean;
+  awaiting_answer: boolean;
+  open_questions: string[];
+  draft_available: boolean;
+  draft: Record<string, unknown>;
+  issue_ref: string;
+  last_response: string;
+  repository: string;
+  requested_issue: string;
+  product_id: string;
+  project_id?: string | null;
+}
+
+export interface DerivedIntakePlan {
+  session_id: string;
+  prerequisites: string[];
+  proposal: Record<string, unknown>;
+  wrote_nothing: boolean;
+}
+
+export interface IntakeStartRequest {
+  product_id: string;
+  project_id?: string | null;
+  repository: string;
+  issue: string;
+  message: string;
+  retry_token: string;
+}
+
+export const startFlowIntake = (input: IntakeStartRequest) =>
+  apiClient.post<IntakeAcceptance>('/orchestration/intake/sessions', input);
+
+export const getIntakeSession = (sessionId: string) =>
+  apiClient.get<IntakeSession>(`/orchestration/intake/sessions/${encodeURIComponent(sessionId)}`);
+
+export const sendIntakeTurn = (sessionId: string, input: { message: string; retry_token: string }) =>
+  apiClient.post<IntakeAcceptance>(`/orchestration/intake/sessions/${encodeURIComponent(sessionId)}/turns`, input);
+
+export const deriveIntakePlan = (sessionId: string) =>
+  apiClient.post<DerivedIntakePlan>(`/orchestration/intake/sessions/${encodeURIComponent(sessionId)}/plan`, {});
+
+const amendmentBase = (flowId: string) =>
+  `/orchestration/flows/${encodeURIComponent(flowId)}/amendments`;
+
+export async function listAmendments(flowId: string): Promise<AmendmentDraft[]> {
+  return apiClient.get<AmendmentDraft[]>(`${amendmentBase(flowId)}/drafts`);
+}
+
+export async function getAmendment(flowId: string, draftId: string): Promise<AmendmentDraft> {
+  return apiClient.get<AmendmentDraft>(`${amendmentBase(flowId)}/drafts/${encodeURIComponent(draftId)}`);
+}
+
+export async function previewAmendment(flowId: string, draftId: string): Promise<AmendmentImpact> {
+  return apiClient.post<AmendmentImpact>(`${amendmentBase(flowId)}/drafts/${encodeURIComponent(draftId)}/preview`, {});
+}
+
+export async function proposeAmendment(flowId: string, body: Record<string, unknown>): Promise<AmendmentProposalResult> {
+  return apiClient.post<AmendmentProposalResult>(`${amendmentBase(flowId)}/proposals`, body);
+}
+
+export async function editAmendment(flowId: string, draftId: string, proposal: Record<string, unknown>, reason?: string) {
+  return apiClient.post<AmendmentProposalResult>(`${amendmentBase(flowId)}/drafts/${encodeURIComponent(draftId)}/edit`, {
+    proposal,
+    reason: reason ?? null,
+  });
+}
+
+export async function rejectAmendment(flowId: string, draftId: string, reason?: string): Promise<AmendmentDraft> {
+  return apiClient.post<AmendmentDraft>(`${amendmentBase(flowId)}/drafts/${encodeURIComponent(draftId)}/reject`, { reason: reason ?? null });
+}
+
+export async function acceptAmendment(
+  flowId: string,
+  draft: Pick<AmendmentDraft, 'draft_id' | 'proposal_hash' | 'base_plan_version' | 'base_plan_hash'>,
+  reason?: string
+): Promise<AmendmentAcceptance> {
+  return apiClient.post<AmendmentAcceptance>(`${amendmentBase(flowId)}/drafts/${encodeURIComponent(draft.draft_id)}/accept`, {
+    expected_proposal_hash: draft.proposal_hash,
+    expected_base_plan_version: draft.base_plan_version,
+    expected_base_plan_hash: draft.base_plan_hash,
+    reason: reason ?? null,
+  });
+}
 
 /**
  * Fetch a whole flow for the graph view: every node including ones that have
@@ -27,8 +126,14 @@ import type {
  * A `flow_id` belonging to another org returns 404, not 403 — a 403 would confirm
  * the id exists somewhere and let a caller enumerate flows by status code.
  */
-export async function getFlowGraph(flowId: string): Promise<FlowGraph> {
-  return apiClient.get<FlowGraph>(`/orchestration/flows/${encodeURIComponent(flowId)}`);
+export async function getFlowGraph(flowId: string, signal?: AbortSignal): Promise<FlowGraph> {
+  return apiClient.get<FlowGraph>(`/orchestration/flows/${encodeURIComponent(flowId)}?include_activity=false`, signal);
+}
+
+export async function getFlowActivity(flowId: string, nodeIds: string[], signal?: AbortSignal): Promise<FlowActivity> {
+  const params = new URLSearchParams();
+  nodeIds.forEach((nodeId) => params.append('node_ids', nodeId));
+  return apiClient.get<FlowActivity>(`/orchestration/flows/${encodeURIComponent(flowId)}/activity?${params}`, signal, true);
 }
 
 /**
@@ -42,7 +147,7 @@ export async function getFlowGraph(flowId: string): Promise<FlowGraph> {
 export async function approveGate(gateId: string, reason?: string, expectedPlanHash?: string, executionPreview?: GateExecutionPreview): Promise<GateDecisionResult> {
   return apiClient.post<GateDecisionResult>(
     `/orchestration/gates/${encodeURIComponent(gateId)}/approve`,
-    { reason: reason ?? null, ...(expectedPlanHash ? { expected_plan_hash: expectedPlanHash } : {}), ...(executionPreview ? { execution_preview: { snapshot: executionPreview.snapshot, window_request: executionPreview.window_request } } : {}) }
+    { reason: reason ?? null, ...(expectedPlanHash ? { expected_plan_hash: expectedPlanHash } : {}), ...(executionPreview ? { execution_preview: { snapshot: executionPreview.snapshot, window_request: executionPreview.window_request, evidence_id: executionPreview.evidence_id } } : {}) }
   );
 }
 
@@ -55,9 +160,12 @@ export async function rejectGate(gateId: string, reason?: string, expectedPlanHa
 }
 
 export interface GateExecutionPreview {
+  product?: { required: boolean; product_id: string | null; project_id?: string | null; can_bind_draft: boolean; ready: boolean; problem: string | null };
   required: boolean;
   ready: boolean;
   snapshot?: string;
+  evidence_id?: string | null;
+  evidence?: Record<string, unknown> | null;
   problems: string[];
   window_request?: Record<string, unknown> | null;
   runs: { node_id: string; title: string; workflow: string; target: { account_id: string; region: string; resource_id: string }; acceptance: string; criteria: string[] }[];
@@ -75,6 +183,15 @@ export interface GatePlanPreview {
     execution_policy?: Record<string, unknown>;
     [key: string]: unknown;
   };
+}
+
+export async function bindDraftProduct(flowId: string, productId: string, plan: GatePlanPreview, projectId?: string): Promise<void> {
+  await apiClient.post(`/orchestration/flows/${encodeURIComponent(flowId)}/draft/product`, {
+    product_id: productId,
+    ...(projectId ? { project_id: projectId } : {}),
+    expected_plan_version: plan.version,
+    expected_plan_hash: plan.plan_hash,
+  });
 }
 
 export async function getGatePlanPreview(flowId: string, gateId?: string): Promise<GatePlanPreview> {
@@ -119,11 +236,13 @@ export async function resumeNode(nodeId: string, reason?: string): Promise<Resum
  * `limit` over 100 is a 422 rather than a silent clamp, so a caller cannot
  * believe it received 500 rows and page as though it had.
  */
-export async function listFlows(params: FlowListParams = {}): Promise<FlowList> {
+export async function listFlows(params: FlowListParams = {}, signal?: AbortSignal): Promise<FlowList> {
   // `buildQueryString` drops undefined/null/'' — so an unset filter is absent
   // from the URL rather than sent as an empty value the route would 422 on
   // (`status=` is not a member of the enum).
   const query = buildQueryString({
+    product_id: params.product_id,
+    project_id: params.project_id,
     limit: params.limit,
     offset: params.offset,
     q: params.q,
@@ -131,9 +250,16 @@ export async function listFlows(params: FlowListParams = {}): Promise<FlowList> 
     // Sent only when true: `needs_me=false` is the default server-side, and
     // omitting it keeps the shared-link URL to the filters actually applied.
     needs_me: params.needs_me ? true : undefined,
+    include_archived: params.include_archived ? true : undefined,
     sort: params.sort,
   });
-  return apiClient.get<FlowList>(`/orchestration/flows${query}`);
+  const result = await apiClient.get<FlowList>(`/orchestration/flows${query}`, signal);
+  // UI and API releases roll out independently. Older servers ignore unknown
+  // query parameters; never display their tenant-wide list inside a Product.
+  if ((params.product_id && result.product_id !== params.product_id) || (params.project_id && result.project_id !== params.project_id)) {
+    throw new Error('The server could not confirm this product’s delivery flows. Please retry shortly.');
+  }
+  return result;
 }
 
 /**
@@ -170,4 +296,9 @@ export async function getFlowExecution(
     `/orchestration/flows/${encodeURIComponent(flowId)}/execution${query}`,
     signal
   );
+}
+
+
+export async function getFlowTimeline(flowId: string, offset = 0, signal?: AbortSignal): Promise<import('@/types/orchestration').FlowTimeline> {
+  return apiClient.get(`/orchestration/flows/${encodeURIComponent(flowId)}/timeline${buildQueryString({ limit: 100, offset })}`, signal);
 }

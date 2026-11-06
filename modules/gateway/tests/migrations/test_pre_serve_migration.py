@@ -33,6 +33,14 @@ def test_job_uses_release_config_without_joining_service_or_starting_server():
     assert source == deployment()
 
 
+def test_job_pod_is_not_disrupted_by_node_consolidation():
+    """backoffLimit 0 means an evicted pod fails the release outright: gateway-deploy
+    38879894256 lost its migration pod to Karpenter ("Evicted pod: Underutilized")."""
+    job = script.migration_job(deployment(), "registry/gateway:reviewed", "adp-gateway", "migration-test")
+    assert job["spec"]["backoffLimit"] == 0
+    assert job["spec"]["template"]["metadata"]["annotations"]["karpenter.sh/do-not-disrupt"] == "true"
+
+
 def test_admission_verification_submits_the_rendered_job_as_server_dry_run(monkeypatch):
     calls = []
 
@@ -76,7 +84,7 @@ def test_workflow_gates_serving_and_engine_updates_on_migrations():
     steps = workflow["jobs"]["deploy-backend"]["steps"]
     rollout = next(s["run"] for s in steps if s.get("name") == "Migrate schema then roll out new image")
     assert "set -euo pipefail" in rollout
-    assert rollout.index("migrate-before-rollout.py") < rollout.index("kubectl apply")
+    assert rollout.index("migrate-before-rollout.py") < rollout.index("adp-gateway-control/apply-deployment.py")
     assert next(i for i, s in enumerate(steps) if s.get("name") == "Migrate schema then roll out new image") < next(
         i for i, s in enumerate(steps) if s.get("name") == "Update the scheduled orchestration engine"
     )

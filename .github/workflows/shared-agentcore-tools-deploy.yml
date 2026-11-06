@@ -9,21 +9,15 @@ on:
       target_environment:
         description: Protected deployment environment
         required: true
-        type: environment
+        type: choice
+        default: dev
+        options: [dev, prod]
       expected_account_id:
         description: Confirmed 12-digit AWS account
         required: true
         type: string
       aws_region:
         description: Approved AWS region
-        required: true
-        type: string
-      backend_config:
-        description: Repository-relative isolated tools S3 backend configuration
-        required: true
-        type: string
-      tfvars:
-        description: Repository-relative reviewed tools Terraform variables
         required: true
         type: string
       lambda_repository:
@@ -50,11 +44,11 @@ jobs:
   tools:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: arc-runner-org
-    environment: ${{ inputs.target_environment }}
+    environment: adp-shared-tools-deploy-${{ inputs.target_environment }}
     timeout-minutes: 90
     env:
-      STATE_BUCKET: ${{ vars.ADP_TOOLS_BUILD_BUCKET }}
-      CODEBUILD_PROJECT: ${{ vars.ADP_TOOLS_CODEBUILD_PROJECT }}
+      STATE_BUCKET: ${{ vars.ADP_SHARED_TOOLS_STATE_BUCKET }}
+      CODEBUILD_PROJECT: ${{ vars.ADP_SHARED_TOOLS_CODEBUILD_PROJECT }}
       ARTIFACT_KEY: codebuild/artifacts/shared-agentcore-tools/${{ github.run_id }}-${{ github.run_attempt }}.env
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +56,35 @@ jobs:
           ref: ${{ inputs.source_sha }}
           persist-credentials: false
           fetch-depth: 0
+      - name: Verify reviewed source before reading protected bindings
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          git merge-base --is-ancestor "$SOURCE_SHA" "origin/${{ github.event.repository.default_branch }}"
+      - name: Materialize protected existing state and reviewed variables
+        env:
+          BACKEND_HCL: ${{ secrets.ADP_SHARED_TOOLS_BACKEND_HCL }}
+          TFVARS_HCL: ${{ secrets.ADP_SHARED_TOOLS_TFVARS_HCL }}
+          STATE_KEY: ${{ vars.ADP_SHARED_TOOLS_STATE_KEY }}
+          STATE_LOCK_TABLE: ${{ vars.ADP_SHARED_TOOLS_LOCK_TABLE }}
+          EXPECTED_AWS_ACCOUNT_ID: ${{ inputs.expected_account_id }}
+          AWS_REGION: ${{ inputs.aws_region }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+        run: |
+          set -euo pipefail
+          umask 077
+          export BACKEND="$RUNNER_TEMP/shared-tools-backend.hcl"
+          export TFVARS="$RUNNER_TEMP/shared-tools.tfvars"
+          [[ -n "$BACKEND_HCL" && -n "$TFVARS_HCL" && -n "$STATE_KEY" ]] || {
+            echo 'Coordinator: configure the approved shared-tools backend, variables and existing state key in this protected environment' >&2
+            exit 2
+          }
+          printf '%s' "$BACKEND_HCL" > "$BACKEND"
+          printf '%s' "$TFVARS_HCL" > "$TFVARS"
+          python3 modules/tools/agentcore/infra/validate_private_config.py "$BACKEND" "$TFVARS"
+          printf 'BACKEND=%s\nTFVARS=%s\n' "$BACKEND" "$TFVARS" >> "$GITHUB_ENV"
       - name: Verify immutable reviewed source, build trust and isolated state
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -69,8 +92,6 @@ jobs:
           AWS_REGION: ${{ inputs.aws_region }}
           LAMBDA_REPO: ${{ inputs.lambda_repository }}
           BROWSER_REPO: ${{ inputs.browser_repository }}
-          BACKEND: ${{ inputs.backend_config }}
-          TFVARS: ${{ inputs.tfvars }}
           MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
@@ -78,22 +99,16 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_SHA" "origin/${{ github.event.repository.default_branch }}"
           [[ "$EXPECTED_AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ && "$AWS_REGION" =~ ^[a-z0-9-]+$ ]]
           [[ "$STATE_BUCKET" =~ ^[a-z0-9.-]+$ && "$CODEBUILD_PROJECT" =~ ^[a-zA-Z0-9_-]+$ ]]
+          [[ "$CODEBUILD_PROJECT" == "adp-${{ inputs.target_environment }}-shared-tools-build" ]]
           [[ "$MODE" == plan || "$MODE" == apply ]]
           for repo in "$LAMBDA_REPO" "$BROWSER_REPO"; do
             [[ "$repo" =~ ^${EXPECTED_AWS_ACCOUNT_ID}\.dkr\.ecr\.${AWS_REGION}\.amazonaws\.com/[a-zA-Z0-9_./-]+$ ]]
           done
-          for path in "$BACKEND" "$TFVARS"; do
-            [[ "$path" =~ ^[a-zA-Z0-9_./-]+$ && "$path" != /* && "$path" != *..* ]]
-            test -f "$path"
-            git ls-files --error-unmatch "$path" >/dev/null
-          done
-          grep -Eq '^[[:space:]]*key[[:space:]]*=[[:space:]]*"[^"[:space:]]*tools/agentcore/[^"[:space:]]+"' "$BACKEND"
-          backend_bucket=$(sed -n 's/^[[:space:]]*bucket[[:space:]]*=[[:space:]]*"\([^"[:space:]]*\)".*/\1/p' "$BACKEND")
-          [[ "$backend_bucket" == "$STATE_BUCKET" ]]
+          test -f "$BACKEND" && test -f "$TFVARS"
       - name: Establish protected deployment identity
         uses: ./.github/actions/trusted-deployment
         with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          role_arn: ${{ vars.ADP_SHARED_TOOLS_DEPLOY_ROLE_ARN }}
           region: ${{ inputs.aws_region }}
       - name: Confirm active AWS account and existing scoped CodeBuild project
         env:
@@ -106,7 +121,7 @@ jobs:
           command -v aws && command -v jq
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: '1.9.8'
+          terraform_version: '1.14.6'
           terraform_wrapper: false
       - name: Build images from source-pinned archive (publish only on apply)
         uses: ./.github/actions/codebuild-run
@@ -148,17 +163,55 @@ jobs:
           chmod 600 "$config"
           printf 'KUBE_CONFIG_PATH=%s\n' "$config" >> "$GITHUB_ENV"
       - name: Plan isolated state with no deletion or replacement
+        id: shared_plan
         env:
           EXPECTED_AWS_ACCOUNT_ID: ${{ inputs.expected_account_id }}
-          BACKEND: ${{ inputs.backend_config }}
-          TFVARS: ${{ inputs.tfvars }}
         run: bash modules/tools/agentcore/infra/deploy.sh plan "$BACKEND" "$TFVARS" "$RUNNER_TEMP/shared-tools.tfplan"
+      - name: Retain plan diagnostics in the protected state bucket
+        if: always() && (steps.shared_plan.outcome == 'failure' || (inputs.mode == 'plan' && steps.shared_plan.outcome == 'success'))
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          RELEASE_MODE: ${{ inputs.mode }}
+          EXPECTED_AWS_ACCOUNT_ID: ${{ inputs.expected_account_id }}
+          EXPECTED_DEPLOY_ROLE_ARN: ${{ vars.ADP_SHARED_TOOLS_DEPLOY_ROLE_ARN }}
+          AWS_REGION: ${{ inputs.aws_region }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          STATE_KEY: ${{ vars.ADP_SHARED_TOOLS_STATE_KEY }}
+          STATE_LOCK_TABLE: ${{ vars.ADP_SHARED_TOOLS_LOCK_TABLE }}
+          PLAN_OUTCOME: ${{ steps.shared_plan.outcome }}
+        run: |
+          set -euo pipefail
+          export SAVED_PLAN_FILE="$RUNNER_TEMP/shared-tools.tfplan"
+          python3 modules/tools/agentcore/infra/shared_plan_evidence.py
       - name: Explicitly apply the reviewed saved plan
         if: inputs.mode == 'apply'
         env:
           EXPECTED_AWS_ACCOUNT_ID: ${{ inputs.expected_account_id }}
-          BACKEND: ${{ inputs.backend_config }}
         run: bash modules/tools/agentcore/infra/deploy.sh apply "$BACKEND" "$RUNNER_TEMP/shared-tools.tfplan"
+      - name: Verify applied Lambda and Browser runtime and retain private receipt
+        if: inputs.mode == 'apply'
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          RELEASE_MODE: ${{ inputs.mode }}
+          EXPECTED_AWS_ACCOUNT_ID: ${{ inputs.expected_account_id }}
+          AWS_REGION: ${{ inputs.aws_region }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          LAMBDA_REPO: ${{ inputs.lambda_repository }}
+          BROWSER_REPO: ${{ inputs.browser_repository }}
+          STATE_KEY: ${{ vars.ADP_SHARED_TOOLS_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "${KUBE_CONFIG_PATH:-}" && -f "$KUBE_CONFIG_PATH" ]]
+          export KUBECONFIG="$KUBE_CONFIG_PATH"
+          export SHARED_RECEIPT_FILE="$RUNNER_TEMP/shared-tools-runtime-receipt.json"
+          python3 modules/tools/agentcore/infra/shared_receipt.py
+          receipt_key="codebuild/artifacts/shared-agentcore-tools/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.receipt.json"
+          aws s3api put-object --bucket "$STATE_BUCKET" --key "$receipt_key" \
+            --body "$SHARED_RECEIPT_FILE" --if-none-match '*' --region "$AWS_REGION" >/dev/null
+          echo 'Independent shared Lambda and Browser runtime receipt saved in protected state bucket'
       - name: Remove temporary deployment files
         if: always()
-        run: rm -f "$RUNNER_TEMP/shared-tools-kubeconfig" "$RUNNER_TEMP/shared-tools.tfplan" "$RUNNER_TEMP/shared-tools-images.env"
+        run: rm -f "$RUNNER_TEMP/shared-tools-kubeconfig" "$RUNNER_TEMP/shared-tools.tfplan" "$RUNNER_TEMP/shared-tools-images.env" "$RUNNER_TEMP/shared-tools-backend.hcl" "$RUNNER_TEMP/shared-tools.tfvars" "$RUNNER_TEMP/shared-tools-runtime-receipt.json" "$RUNNER_TEMP/shared-tools-plan-diagnostic.json" "$RUNNER_TEMP/shared-tools-plan-evidence.json"

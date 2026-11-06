@@ -22,6 +22,10 @@ from sqlalchemy.pool import StaticPool
 
 from src.shared.models.base import Base
 from src.shared.schemas.auth import TokenContext
+from tests.migrations.conftest_postgres import pg_head_url as pg_head_url
+from tests.sqlite_schema import SQLiteSchemas
+
+pytest_plugins = ["tests.ci_sharding"]
 
 # Set test environment variables before importing app modules
 os.environ["TESTING"] = "1"
@@ -61,8 +65,13 @@ def pytest_configure(config):
 # =============================================================================
 
 
+@pytest.fixture(scope="session")
+def sqlite_schemas(tmp_path_factory):
+    return SQLiteSchemas(tmp_path_factory.mktemp("sqlite-schemas"))
+
+
 @pytest.fixture
-async def test_engine():
+async def test_engine(sqlite_schemas):
     """Create a test database engine with SQLite."""
     engine = create_async_engine(
         TEST_DATABASE_URL,
@@ -72,8 +81,7 @@ async def test_engine():
     )
 
     # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    await sqlite_schemas.create_all(engine, Base.metadata)
 
     yield engine
 
@@ -557,3 +565,14 @@ async def clean_database(db_session: AsyncSession):
 
     await clear_test_data(db_session)
     yield db_session
+
+
+@pytest.fixture(autouse=True)
+def _fresh_tool_catalogue_cache():
+    """The gateway tool catalogue is cached per process for a short TTL (#8223 Dev Box tool latency);
+    tests fake different control planes, so each starts and ends with an empty cache."""
+    from src.internal import tools_catalogue
+
+    tools_catalogue.invalidate_catalogue_cache()
+    yield
+    tools_catalogue.invalidate_catalogue_cache()

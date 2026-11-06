@@ -1,0 +1,12 @@
+import json,pathlib,os
+rows=[]
+for path in pathlib.Path('/proc').iterdir():
+ if not path.name.isdigit():continue
+ try:
+  fields=(path/'stat').read_text().split();rows.append({'pid':int(path.name),'comm':(path/'comm').read_text().strip(),'state':fields[2],'parent':fields[3],'user_ticks':fields[13],'system_ticks':fields[14],'wait':(path/'wchan').read_text().strip()})
+ except (FileNotFoundError,PermissionError):pass
+values={}
+for name in ['cpu.stat','cpu.max','memory.current']:
+ p=pathlib.Path('/sys/fs/cgroup')/name
+ if p.exists():values[name]=p.read_text()
+print(json.dumps({'read_only':True,'processes':rows,'cgroup':values}))

@@ -718,3 +718,22 @@ def test_lost_root_acceptance_response_does_not_clear_the_recoverable_lock(mocke
     assert _send(handler, persona="intent-refinement")["statusCode"] == 503
     assert not any(call.args[-1] is None for call in clear.call_args_list)
     assert _drain_queue(mocked_aws_services["sqs"]) == []
+
+
+def test_retired_chat_reports_unavailable_without_accepting_or_queuing_work(mocked_aws_services, monkeypatch):
+    monkeypatch.setenv("ADP_CHAT_LEGACY_RETIRED", "true")
+    monkeypatch.setenv("ADP_CHAT_MODEL_POLICY_ENABLED", "false")
+    handler = _import_handler()
+    handler._send_ws_response = MagicMock()
+    handler.create_thread = MagicMock()
+    handler._register_chat_dispatch = MagicMock()
+    handler.sqs = MagicMock()
+    result = handler.handle_long_running("session", "task", "connection", MagicMock(),
+                                         MagicMock(), {}, 1, 1)
+    assert result["statusCode"] == 503
+    assert json.loads(result["body"])["status"] == "failed"
+    handler._send_ws_response.assert_called_once()
+    assert handler._send_ws_response.call_args.args[2]["status"] == "failed"
+    handler.create_thread.assert_not_called()
+    handler._register_chat_dispatch.assert_not_called()
+    handler.sqs.send_message.assert_not_called()

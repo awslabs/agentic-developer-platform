@@ -255,9 +255,11 @@ def test_discovery_uses_one_token_snapshot_for_cache_scope_and_transport(monkeyp
     monkeypatch.setattr(
         common,
         "authenticated_scope",
-        lambda supplied=None: {"identity": "identity-a", "tenant": "org-alpha", "tenant_claim": "org-alpha"}
-        if supplied == token
-        else pytest.fail("cache scope did not use the transport token"),
+        lambda supplied=None: (
+            {"identity": "identity-a", "tenant": "org-alpha", "tenant_claim": "org-alpha"}
+            if supplied == token
+            else pytest.fail("cache scope did not use the transport token")
+        ),
     )
 
     def recording(method, path, body=None, **kwargs):

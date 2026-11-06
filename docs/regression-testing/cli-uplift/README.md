@@ -230,3 +230,73 @@ For uncertain launches, the harness retains a stable EC2 client token and finds
 pending cleanup intents by both exact evaluation and attempt tags. It requires
 complete discovery, rejects mismatched tags and verifies termination before
 claiming cleanup. An AWS refusal is not evidence that an instance was launched.
+
+### Retained Product evaluator: additive rollout after review
+
+The existing dev evaluator roles and trust belong to the retained CLI evaluation,
+not to `platform/evaluator-infra/main.tf`. Do **not** point that new-role stack at
+these roles, replace their trust or base policies, or publish target identities
+and secrets to make the new stack fit. The separate
+`platform/evaluator-infra/legacy-existing/` configuration adds only one
+instance-to-Gateway retirement invocation, the orchestrator's read of that
+instance role, and namespace-scoped EKS View access to the **existing** access
+entry. The Gateway's regular managed-policy rollout separately adds an exact,
+tag-checked dev-only read of the retained instance role. Neither rollout gives
+pod exec, write access to Kubernetes, or permission to read the evaluator's
+credential secret from Actions.
+
+Only the authorized deployment operator performs the steps below **after PR
+review**, using approved private account, cluster, backend, role and API binding
+files. `LABEL` denotes the operator's connected AWS credential label;
+`PRIVATE_BACKEND`, `PRIVATE_VARS`, `PRIVATE_PREFLIGHT_CONFIG`, `PRIVATE_PLAN`,
+`PRIVATE_ITEM`, `PRIVATE_REGISTRY_KEY` and `PRIVATE_REGISTRY_TABLE` denote paths/table names held outside
+the repository in an access-controlled operator store. The Terraform `config`
+object contains the reviewed account, region, cluster, namespace, existing
+orchestrator and instance role names, registry table and regional internal
+invoke URL; the preflight JSON additionally contains `operator_role_arn`.
+The backend must be a separate, access-controlled state for this additive
+configuration, not the state managing newly created evaluator roles.
+
+First verify the **exact operator role and account** against the approved target;
+a matching account with a different role is a refusal. Read the current role
+trust, policies and tags, EKS access entry/associations, and the reserved
+registry key before proceeding. A prior registration or association owned by
+another state is a stop-and-reconcile condition, **not** permission to replace
+it. The read-only preflight may initially refuse with the missing association,
+policy or registration: that is the current mismatch, not evidence of success.
+
+```bash
+adp-cred assume --service aws --label "$LABEL" --exec aws sts get-caller-identity
+adp-cred assume --service aws --label "$LABEL" --exec env PYTHONPATH=. python3 platform/evaluator-infra/legacy-existing/preflight.py --config "$PRIVATE_PREFLIGHT_CONFIG"
+adp-cred assume --service aws --label "$LABEL" --exec aws dynamodb get-item --table-name "$PRIVATE_REGISTRY_TABLE" --key "file://$PRIVATE_REGISTRY_KEY" --consistent-read
+```
+
+Once the operator has checked the plan against those readbacks, use the selected
+connection **for each** Terraform operation. Preserve the base role policies,
+trust and existing access-entry groups. The registry item is deliberately not
+managed by Terraform, because `PutItem` without a condition could replace a
+foreign owner: generate the item from the verified instance identity and add it
+only when the reserved key is absent. Store the plan and item outside the repo
+with restricted permissions. Do not treat these commands as authorization to
+apply before review and the required operator approval.
+
+```bash
+umask 077
+adp-cred assume --service aws --label "$LABEL" --exec terraform -chdir=platform/evaluator-infra/legacy-existing init -backend-config="$PRIVATE_BACKEND"
+adp-cred assume --service aws --label "$LABEL" --exec terraform -chdir=platform/evaluator-infra/legacy-existing plan -var-file="$PRIVATE_VARS" -out="$PRIVATE_PLAN"
+adp-cred assume --service aws --label "$LABEL" --exec terraform -chdir=platform/evaluator-infra/legacy-existing apply "$PRIVATE_PLAN"
+adp-cred assume --service aws --label "$LABEL" --exec terraform -chdir=platform/evaluator-infra/legacy-existing output -raw registration_item > "$PRIVATE_ITEM"
+adp-cred assume --service aws --label "$LABEL" --exec aws dynamodb put-item --table-name "$PRIVATE_REGISTRY_TABLE" --item "file://$PRIVATE_ITEM" --condition-expression 'attribute_not_exists(agent_id)'
+```
+
+After the regular reviewed Gateway managed-policy apply and this additive
+rollout, rerun the same **read-only** preflight and confirm its zero exit status.
+Verify the actual protected evaluator can read the named Deployment and list
+ReplicaSets and Pods **only** in the reviewed Gateway namespace, while access to
+Secrets, pod exec and an unrelated namespace remains denied through read-only
+authorization checks. If the installed access or IAM capability cannot be
+observed through the reviewed roles, stop; do not broaden permissions. The
+preflight proves metadata and registration only, not a per-pod process/schema
+probe, protected actor setup, cleanup execution or live Product acceptance.
+Merge, role-policy apply, registry registration and live acceptance are separate
+milestones.

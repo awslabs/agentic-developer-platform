@@ -1,9 +1,33 @@
 import * as net from 'net';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ExplanationEvents, MAX_SUBSCRIBERS, HISTORY_EVENTS, EVENT_BYTES } from './explanation-events';
 import { ControlListener } from './control-listener';
 import { ControlStateStore } from './control-state';
 
 describe('bounded explanation history', () => {
+  it('retains the exact sanitized assignment board without replacing it with tool or inspection activity', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'story-board-'));
+    const previous = process.env.ADP_TASK_BOARD_SNAPSHOT_FILE;
+    const path = join(directory, 'board.json');
+    process.env.ADP_TASK_BOARD_SNAPSHOT_FILE = path;
+    try {
+      const hub = new ExplanationEvents('run', 2);
+      hub.publish('- ☐ Check recovery', { id: 'board', category: 'plan', state: 'running' });
+      const initial = readFileSync(path, 'utf8');
+      expect(JSON.parse(initial)).toEqual(hub.replay().events[0]);
+      hub.publish('- ☑ Inspect source', { id: 'inspect', category: 'plan', state: 'completed', plan_scope: 'inspection' });
+      expect(readFileSync(path, 'utf8')).toBe(initial);
+      hub.publish('AKIAABCDEFGHIJKLMNOP', { id: 'board', category: 'plan', state: 'running' });
+      expect(readFileSync(path, 'utf8')).not.toContain('AKIA');
+      expect(readFileSync(path, 'utf8')).toContain('omitted');
+    } finally {
+      if (previous === undefined) delete process.env.ADP_TASK_BOARD_SNAPSHOT_FILE;
+      else process.env.ADP_TASK_BOARD_SNAPSHOT_FILE = previous;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it('replays in order and identifies expired, foreign and future cursors', () => {
     const hub = new ExplanationEvents('run', 2);
     for (let n = 0; n < 200; n++) hub.publish(`explanation ${n}`);

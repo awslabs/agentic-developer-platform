@@ -35,6 +35,7 @@ screen, including rendering "unknown" as unknown rather than as a failure.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -103,7 +104,7 @@ SUBCODE_MESSAGES = {
 
 # The bounded default check set. Each is a READ of configuration or own-scope
 # state. `models` and `agents` resolve readiness, never invoke anything.
-ALL_CHECKS = ("auth", "api", "budget", "models", "agents")
+ALL_CHECKS = ("auth", "api", "budget", "models", "agents", "skills")
 
 # Anything matching these is never printed, in any mode, at any verbosity. The
 # doctor's output is pasted into tickets and chat by people trying to get help,
@@ -433,12 +434,35 @@ def _document_or_empty(client):
         return {}, "unavailable"
 
 
+def check_skills(client):
+    directory = Path(__file__).resolve().parent
+    candidates = [directory / "skills/MANIFEST.json"]
+    if directory.name == "bin":
+        candidates.append(directory.parent / "skills/MANIFEST.json")
+    candidates.append(Path(os.environ.get("ADP_HOME", str(Path.home() / ".adp"))) / "skills/MANIFEST.json")
+    manifest_path = next((path for path in candidates if path.is_file()), None)
+    if manifest_path is None:
+        return {"state": UNKNOWN, "finding": "Skills archive not installed.", "next": "adp update"}
+    try:
+        skills_version = json.loads(manifest_path.read_text())["version"]
+        declared = re.search(r'^readonly ADP_VERSION="([^"]+)"', (directory / "adp").read_text(), re.MULTILINE)
+        if not isinstance(skills_version, str) or not declared:
+            raise ValueError("invalid version metadata")
+    except (OSError, ValueError, KeyError):
+        return {"state": UNKNOWN, "finding": "Skills version unreadable.", "next": "adp update"}
+    cli_version = declared.group(1)
+    if skills_version != cli_version:
+        return {"state": "failed", "finding": f"{skills_version} (drift from CLI {cli_version})", "next": "adp update"}
+    return {"state": "ok", "finding": f"{skills_version} (matches CLI)"}
+
+
 CHECKS = {
     "auth": check_auth,
     "api": check_api,
     "budget": check_budget,
     "models": check_models,
     "agents": check_agents,
+    "skills": check_skills,
 }
 
 
@@ -586,6 +610,34 @@ def parser():
 
 
 def run(args, client=common.api):
+    if args.verb == COMMAND and args.checks == "tools-access":
+        report = client("GET", "/auth/tools/access", timeout=30)
+        if (not isinstance(report, dict) or report.get("schema_version") != "1.0"
+                or not isinstance(report.get("tools"), list) or len(report["tools"]) > 320
+                or any(not isinstance(tool, dict) or not isinstance(tool.get("name"), str)
+                       or not re.fullmatch(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*", tool["name"])
+                       or not isinstance(tool.get("ready"), bool)
+                       or tool.get("transport") not in (None, "chat", "tools_gateway")
+                       or (tool["ready"] and tool.get("reason") is not None)
+                       or (not tool["ready"] and (not isinstance(tool.get("reason"), str)
+                           or not re.fullmatch(r"[a-z_]+", tool["reason"])))
+                       or (tool.get("discovery_reason") is not None and
+                           (not isinstance(tool["discovery_reason"], str)
+                            or not re.fullmatch(r"[a-z_]+", tool["discovery_reason"]))) for tool in report["tools"])):
+            raise CliError("Tool access report is unavailable or unsupported.", "schema_unsupported", 5)
+        if args.json:
+            print(json.dumps(report, sort_keys=True))
+        else:
+            for tool in report["tools"]:
+                reason = tool.get("reason")
+                status = "policy ready" if tool["ready"] else reason.replace("_", " ")
+                if tool.get("transport") == "chat":
+                    status += "; ADP chat only"
+                if tool.get("discovery_reason"):
+                    status += f"; hidden from discovery: {tool['discovery_reason'].replace('_', ' ')}"
+                print(f"{tool['name']}: {status}")
+            print("Policy readiness does not verify live providers or remaining budget.")
+        return 4 if any(not tool["ready"] or tool.get("discovery_reason") for tool in report["tools"]) else 0
     if args.verb == CAPABILITIES_COMMAND:
         document, _ = fetch(refresh=args.refresh, request=client)
         return emit_capabilities(document, args)

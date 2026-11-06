@@ -1,0 +1,1 @@
+"""Tenant-scoped business catalog."""

@@ -643,19 +643,34 @@ class ControlService:
             ttl = int((session.expires_at - now).total_seconds())
             if ttl < 1:
                 raise ControlError(404, "run not found")
-            envelope = sign_envelope(
-                tenant_id=session.tenant_id,
-                principal=session.user_id,
-                authority_kind="human_session",
-                target_run_id=run_id,
-                target_generation=target.generation,
-                action=action,
-                command_id=command_id,
-                request_body=request_body,
-                ttl_seconds=ttl,
-                now=now,
-                env=self._env,
-            )
+            if action == "steer":
+                from src.agentauth.queued_human_control import issue_queued_steer
+
+                envelope = await run_in_threadpool(
+                    issue_queued_steer,
+                    self._authority_store,
+                    session=session,
+                    run_id=run_id,
+                    generation=target.generation,
+                    command_id=command_id,
+                    raw=request_body,
+                    env=config,
+                    now=now,
+                )
+            else:
+                envelope = sign_envelope(
+                    tenant_id=session.tenant_id,
+                    principal=session.user_id,
+                    authority_kind="human_session",
+                    target_run_id=run_id,
+                    target_generation=target.generation,
+                    action=action,
+                    command_id=command_id,
+                    request_body=request_body,
+                    ttl_seconds=ttl,
+                    now=now,
+                    env=self._env,
+                )
         except (BootstrapRefusedError, EnvelopeError, AuthorityStoreError):
             raise ControlError(404, "run not found") from None
         return await self.forward_command(target, action, request_body=request_body, envelope=envelope)

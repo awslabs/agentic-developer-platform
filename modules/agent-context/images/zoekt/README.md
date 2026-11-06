@@ -5,7 +5,7 @@ Publish the image and use its immutable digest for both the search Deployment's
 `ZOEKT_IMAGE` and ingestion's `--build-arg ZOEKT_IMAGE=...`.
 
 The upstream revision remains `153817f643cde8b229ee388c1dddbcf07f4798af`,
-matching the existing shard format. Go 1.26.8 and the checked-in module lockfiles
+matching the existing shard format. Go 1.26.9 and the checked-in module lockfiles
 replace vulnerable runtime and module versions. The final image is a static,
 nonroot search server with CA certificates. Indexing takes place in ingestion,
 which copies this image's matching binary and provides git and language tools.

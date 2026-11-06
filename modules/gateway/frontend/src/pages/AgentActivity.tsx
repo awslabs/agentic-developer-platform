@@ -1,3 +1,4 @@
+import { ActivityScopeContext, useActivityScope } from '@/contexts/ActivityScopeContext';
 import { TaskActivity } from '@/components/activity/TaskActivity';
 import './AgentActivity.css';
 /**
@@ -102,6 +103,7 @@ interface TriggerBadgeProps {
 }
 
 function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
+  const activityScope = useActivityScope();
   const triggerKind: TriggerKind = item.trigger_kind || 'human';
   const config = TRIGGER_CONFIG[triggerKind];
 
@@ -113,7 +115,7 @@ function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
         data-testid={`trigger-badge-${triggerKind}`}
       >
         <span aria-hidden="true">{config.icon}</span>
-        <span>{config.label}</span>
+        <span>{activityScope && triggerKind === 'human' ? 'Human-triggered' : config.label}</span>
       </span>
       {/* Show parent link for agent-triggered runs */}
       {triggerKind === 'agent' && item.triggered_by_topic && (
@@ -153,6 +155,7 @@ interface ChainRowProps {
 }
 
 function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick, liveStreamEnabled }: ChainRowProps) {
+  const activityScope = useActivityScope();
   const { root } = chain;
   const isSingleton = chain.descendant_count === 0;
 
@@ -213,9 +216,13 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
         {/* Status */}
         <StatusBadge status={root.status} skipReason={root.skip_reason} />
 
+        {root.channel === 'tool' && root.receipt_id && (
+          <span className="text-xs font-mono text-gray-500 dark:text-gray-400">Receipt {root.receipt_id}</span>
+        )}
+
         {/* Chain total cost */}
         <div className="flex-shrink-0 text-right min-w-[60px]">
-          <ChainCostBadge cost={chain.chain_total_cost_usd} />
+          {root.channel === 'tool' ? <CostBadge item={root} /> : <ChainCostBadge cost={chain.chain_total_cost_usd} />}
         </div>
 
         <LiveStreamLink enabled={liveStreamEnabled} status={root.status} onOpen={() => onDetailClick(root)} />
@@ -298,7 +305,7 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
                   </span>
                 </button>
                 <LiveStreamLink enabled={liveStreamEnabled} status={desc.status} onOpen={() => {
-                  void getMyInvocationDetail(desc.invocation_id).then(onDetailClick).catch(() => onNodeClick(desc.invocation_id));
+                  void (activityScope ? getMyInvocationDetail(desc.invocation_id, activityScope) : getMyInvocationDetail(desc.invocation_id)).then(onDetailClick).catch(() => onNodeClick(desc.invocation_id));
                 }} />
               </div>
             );
@@ -354,6 +361,7 @@ const STATUS_OPTIONS = [
   { value: 'skipped', label: 'Skipped' },
   // Issue #4187: filterable so "what did the spend caps stop?" is one click.
   { value: 'budget_stopped', label: 'Budget stopped' },
+  { value: 'tool_authorized', label: 'Tool authorized' },
   // Issue #3964: filterable so "which runs did we stop on purpose?" is one click —
   // the question an operator asks when reconciling a spike in ended runs against
   // deliberate intervention rather than breakage (AC-A11).
@@ -366,6 +374,7 @@ const CHANNEL_OPTIONS = [
   { value: 'slack', label: 'Slack' },
   { value: 'api', label: 'API' },
   { value: 'manual', label: 'Manual' },
+  { value: 'tool', label: 'Tool' },
 ];
 
 const PERSONA_OPTIONS = [
@@ -381,13 +390,20 @@ const PERSONA_OPTIONS = [
 // Main page component
 // ---------------------------------------------------------------------------
 
-export default function AgentActivity() {
+export default function AgentActivity({ productId, projectId, readerKey }: { productId?: string; projectId?: string; readerKey?: string } = {}) {
+  const scope = useMemo(() => productId && projectId ? { productId, projectId, readerKey } : undefined, [productId, projectId, readerKey]);
+  return <ActivityScopeContext.Provider value={scope}><AgentActivityView key={`${readerKey ?? ''}:${productId ?? 'global'}:${projectId ?? ''}`} /></ActivityScopeContext.Provider>;
+}
+
+function AgentActivityView() {
+  const activityScope = useActivityScope();
   const { isPlatformAdmin, isOrgAdmin } = usePermissions();
-  const isAdmin = isPlatformAdmin() || isOrgAdmin();
+  const isAdmin = !activityScope && (isPlatformAdmin() || isOrgAdmin());
 
   // Issue #3770: Responsive layout — card view below lg breakpoint
   const explanationFlags = useRevalidatingFeaturesQuery();
   const liveStreamEnabled = !explanationFlags.isPending && !explanationFlags.isError && explanationFlags.data?.agent_explanations === true;
+  const assistantEnabled = !explanationFlags.isPending && !explanationFlags.isError && explanationFlags.data?.assistant_ui === true;
   const isNarrowViewport = useMediaQuery('(max-width: 1023px)');
 
   // Issue #3632: URL query-param deep-linking
@@ -404,7 +420,7 @@ export default function AgentActivity() {
   const [groupBy, setGroupBy] = useState<'run' | 'chain'>(() => {
     const paramStatus = searchParams.get('status');
     const validStatus = paramStatus && STATUS_OPTIONS.some((opt) => opt.value === paramStatus);
-    return validStatus || searchParams.get('view') === 'runs' ? 'run' : 'chain';
+    return activityScope || validStatus || searchParams.get('view') === 'runs' ? 'run' : 'chain';
   });
 
   // Chain row expand/collapse state (issue #1662)
@@ -484,7 +500,7 @@ export default function AgentActivity() {
     if (!deepLinkId) return;
 
     let cancelled = false;
-    getMyInvocationDetail(deepLinkId)
+    (activityScope ? getMyInvocationDetail(deepLinkId, activityScope) : getMyInvocationDetail(deepLinkId))
       .then((item) => {
         if (!cancelled) {
           setDetailItem(item);
@@ -497,7 +513,7 @@ export default function AgentActivity() {
     return () => {
       cancelled = true;
     };
-  }, [searchParams]);
+  }, [searchParams, activityScope]);
 
   // Build query params
   // Issue #1658: include_non_triggering=true tells the backend to include
@@ -550,20 +566,21 @@ export default function AgentActivity() {
     refetchInterval: 30_000,
     refetchOnWindowFocus: 'always',
     placeholderData: keepPreviousData,
+    ...(activityScope ? { staleTime: 0, gcTime: 0 } : {}),
   } as const;
 
   // Flat list query (active when NOT in chain view)
   const flatQuery = useQuery({
-    queryKey: ['agent-activity', viewMode, 'runs', queryParams],
-    queryFn: () => flatFetchFn(queryParams),
+    queryKey: ['agent-activity', activityScope, viewMode, 'runs', queryParams],
+    queryFn: () => activityScope ? getMyInvocations(queryParams, activityScope) : flatFetchFn(queryParams),
     enabled: !isChainView,
     ...POLL_OPTIONS,
   });
 
   // Chain list query (active when in chain view)
   const chainQuery = useQuery({
-    queryKey: ['agent-activity', viewMode, 'chains', queryParams],
-    queryFn: () => getMyChains(queryParams),
+    queryKey: ['agent-activity', activityScope, viewMode, 'chains', queryParams],
+    queryFn: () => activityScope ? getMyChains(queryParams, activityScope) : getMyChains(queryParams),
     enabled: isChainView,
     ...POLL_OPTIONS,
   });
@@ -575,6 +592,25 @@ export default function AgentActivity() {
   const refetch = isChainView ? chainQuery.refetch : flatQuery.refetch;
   const isFetching = isChainView ? chainQuery.isFetching : flatQuery.isFetching;
   const dataUpdatedAt = isChainView ? chainQuery.dataUpdatedAt : flatQuery.dataUpdatedAt;
+
+  useEffect(() => {
+    if (activityScope && error) {
+      setDetailItem(null); setActiveChainId(null); setTranscriptInvocationId(null);
+    }
+  }, [activityScope, error]);
+
+  const detailInvocationId = detailItem?.invocation_id;
+  useEffect(() => {
+    if (!activityScope || !detailInvocationId) return;
+    let active = true;
+    const id = detailInvocationId;
+    const refresh = () => getMyInvocationDetail(id, activityScope).then(item => {
+      if (active) setDetailItem(item);
+    }).catch(() => { if (active) setDetailItem(null); });
+    void refresh();
+    const timer = setInterval(() => void refresh(), 30_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [activityScope, detailInvocationId]);
 
   // Issue #4022: with `placeholderData` in play, `data` is never `undefined`
   // during a cursor change — it holds the PREVIOUS page, so `data.last_key` is
@@ -821,7 +857,7 @@ export default function AgentActivity() {
             Agent Activity
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            {viewMode === 'mine'
+            {activityScope ? 'Runs in this project, shared with the current product team.' : viewMode === 'mine'
               ? <>Every run, filterable — summarized on your{' '}
                   <Link
                     to="/runs"
@@ -899,7 +935,7 @@ export default function AgentActivity() {
         </div>
       </div>
 
-      {viewMode === 'mine' && <TaskActivity onOpen={setDetailItem} />}
+      {!activityScope && viewMode === 'mine' && <TaskActivity onOpen={setDetailItem} />}
 
       {/* Filters */}
       <div className="blueprint-card activity-filters bg-white dark:bg-gray-800 rounded-lg shadow p-4">
@@ -1002,6 +1038,7 @@ export default function AgentActivity() {
         onClearAll={handleClearAllFilters}
       />
 
+      {activityScope && isChainView && <p className="text-sm text-gray-500">Grouped by chain on this page. Open a chain to see its recorded runs in this project.</p>}
       {/* Chain view (shown when a chain is selected) */}
       {activeChainId && (
         <InvocationChain
@@ -1017,6 +1054,7 @@ export default function AgentActivity() {
             // back to highlighting it in the chain.
             const found = flatData?.items.find((i: InvocationItem) => i.invocation_id === invocationId);
             if (found) setDetailItem(found);
+            else if (activityScope) void getMyInvocationDetail(invocationId, activityScope).then(setDetailItem).catch(() => setChainHighlightId(invocationId));
             else setChainHighlightId(invocationId);
           }}
         />
@@ -1027,6 +1065,7 @@ export default function AgentActivity() {
         item={detailItem}
         isOpen={detailItem !== null}
         onClose={() => setDetailItem(null)}
+        assistantHref={!activityScope && assistantEnabled && viewMode === 'mine' && detailItem ? `/assistant/activity/${encodeURIComponent(detailItem.invocation_id)}` : undefined}
         isAdmin={viewMode === 'all' && isAdmin}
         /*
           Issue #3966: re-read the open run after a live control command.
@@ -1040,7 +1079,7 @@ export default function AgentActivity() {
         onRefreshItem={() => {
           const openId = detailItem?.invocation_id;
           if (!openId) return;
-          getMyInvocationDetail(openId)
+          (activityScope ? getMyInvocationDetail(openId, activityScope) : getMyInvocationDetail(openId))
             .then((item) => {
               // Only apply if the same run is still open — the operator may have
               // closed or switched runs while this was in flight.
@@ -1245,7 +1284,9 @@ export default function AgentActivity() {
                               cell used to be a bare em-dash. The skip reason is the most
                               useful thing we can put there — it makes the board scannable
                               without opening every row. */}
-                          {item.summary ||
+                          {item.channel === 'tool' && item.receipt_id
+                            ? `Receipt ${item.receipt_id}`
+                            : item.summary ||
                             describeSkipReason(isNonRunStatus(item.status) ? item.skip_reason : null) || (
                               <span className="text-gray-400 italic">—</span>
                             )}
@@ -1312,15 +1353,15 @@ export default function AgentActivity() {
           ) ? (
             <div className="text-center py-12">
               <p className="text-gray-500 dark:text-gray-400 mb-2">
-                No agent runs yet
+                {activityScope ? 'No project runs match this view' : 'No agent runs yet'}
               </p>
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                Mention the developer agent on a GitHub issue to trigger your first run.{' '}
+                {activityScope ? 'Start work from this project’s delivery flows to keep its activity and spend together.' : 'Mention the developer agent on a GitHub issue to trigger your first run.'}{' '}
                 <Link
-                  to="/setup"
+                  to={activityScope ? `/products/${encodeURIComponent(activityScope.productId)}/projects/${encodeURIComponent(activityScope.projectId)}/build` : '/setup'}
                   className="text-primary-600 dark:text-primary-400 hover:underline"
                 >
-                  View setup guide
+                  {activityScope ? 'View project delivery flows' : 'View setup guide'}
                 </Link>
               </p>
             </div>

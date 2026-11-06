@@ -69,7 +69,7 @@ def tick_changes(enabled=False):
     policy = tick_policy()
     new_policy = copy.deepcopy(policy)
     new_policy["Statement"].append({"Sid": "ReadRunReportSigningMaterial", "Effect": "Allow", "Action": ["ssm:GetParameter"], "Resource": [guard.KEY_ARN]})
-    env = {"BG_ORCH_DISPATCH_QUEUE_URL": wiring()["dispatch_queue_url"], "BG_ORCH_DISPATCH_REPO": "aws-e/adp", "BG_ORCH_DISPATCH_PERSONA": "developer", "BG_ORCH_DISPATCH_MAX_PER_TICK": "10", "WEBHOOK_EVENTS_TABLE": "adp-dev-webhook-events", "AGENT_AUTHORITY_ENABLED": "false"}
+    env = {"BG_ORCH_DISPATCH_QUEUE_URL": wiring()["dispatch_queue_url"], "BG_ORCH_DISPATCH_PERSONA": "developer", "BG_ORCH_DISPATCH_MAX_PER_TICK": "10", "WEBHOOK_EVENTS_TABLE": "adp-dev-webhook-events", "AGENT_AUTHORITY_ENABLED": "false"}
     new_env = env | {"AGENT_WORKER_ROLE_ARN": guard.ROLE, "AGENT_RUN_CREDENTIAL_KEY_PARAMETER": guard.KEY_NAME, **{k: str(enabled).lower() for k in guard.FLAGS}}
     return [
         resource(guard.IAM_ADDRESS, {"policy": json.dumps(policy), "role": "existing-role"}, {"policy": json.dumps(new_policy), "role": "existing-role"}),

@@ -2,8 +2,15 @@
 
 from datetime import UTC, datetime, timedelta
 import json
+import ssl
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.request import (
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 from .errors import BootstrapRefused
 
@@ -21,7 +28,9 @@ class ManagementObservation:
     credential nor the response is written to component journals or artifacts.
     """
 
-    def __init__(self, *, origin, credential, binding, target, namespace, claim):
+    def __init__(
+        self, *, origin, credential, binding, target, namespace, claim, ca_pem=None
+    ):
         parsed = urlsplit(origin)
         if (
             parsed.scheme != "https"
@@ -39,6 +48,16 @@ class ManagementObservation:
                 "management observation requires scoped trusted transport"
             )
         self._origin, self._credential = origin.rstrip("/"), credential
+        try:
+            if ca_pem is not None and (
+                not isinstance(ca_pem, str) or not 1 <= len(ca_pem) <= 16384
+            ):
+                raise ValueError()
+            self._tls = ssl.create_default_context(cadata=ca_pem)
+        except (TypeError, ValueError, ssl.SSLError):
+            raise BootstrapRefused(
+                "management observation TLS trust is invalid"
+            ) from None
         self._binding = binding
         self._expected = {
             "workspace_id": target.workspace_id,
@@ -71,9 +90,9 @@ class ManagementObservation:
                 + "/bootstrap-observation",
                 headers={"Authorization": credential},
             )
-            with build_opener(ProxyHandler({}), _NoRedirect()).open(
-                request, timeout=5
-            ) as response:
+            with build_opener(
+                ProxyHandler({}), _NoRedirect(), HTTPSHandler(context=self._tls)
+            ).open(request, timeout=5) as response:
                 raw = response.read((1 << 16) + 1)
                 if len(raw) > 1 << 16:
                     raise ValueError("oversized observation")

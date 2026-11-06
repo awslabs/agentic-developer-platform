@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ADP task board version 2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "issue", "updated_at", "node_address", "flow_id", "tasks"],
+  "properties": {
+    "version": { "const": 2 },
+    "issue": { "type": "integer", "minimum": 1 },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "node_address": { "type": ["string", "null"] },
+    "flow_id": { "type": ["string", "null"] },
+    "scope_hash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "plan": { "type": "array", "items": { "type": "object", "required": ["id", "title", "status", "taskIds", "completed", "total"], "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "status": { "type": "string" }, "taskIds": { "type": "array", "items": { "type": "string" } }, "completed": { "type": "integer" }, "total": { "type": "integer" } } } },
+    "tasks": { "type": "array", "items": {
+      "type": "object",
+      "required": ["id", "kind", "criterion", "title", "status", "covers", "files", "note", "started_at", "finished_at", "run_id", "attempt", "checkpoint_note"],
+      "properties": {
+        "id": { "type": "string" }, "kind": { "enum": ["code", "test", "infra"] },
+        "criterion": { "type": "string" }, "title": { "type": "string" },
+        "status": { "enum": ["open", "in_progress", "done", "blocked"] },
+        "covers": { "type": "array", "items": { "type": "string" } },
+        "files": { "type": "array", "items": { "type": "string" } },
+        "note": { "type": "string" }, "planStep": { "type": "object", "required": ["id", "title"], "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+        "commits": { "type": "array", "items": { "type": "string" } },
+        "started_at": { "type": ["string", "null"], "format": "date-time" },
+        "finished_at": { "type": ["string", "null"], "format": "date-time" },
+        "run_id": { "type": ["string", "null"] },
+        "attempt": { "type": "integer", "minimum": 0 },
+        "checkpoint_note": { "type": "string", "maxLength": 400 },
+        "pattern_id": { "type": ["string", "null"] }
+      }
+    } }
+  }
+}

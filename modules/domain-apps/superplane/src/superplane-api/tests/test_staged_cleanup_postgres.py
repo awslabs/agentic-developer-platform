@@ -369,7 +369,7 @@ async def test_paid_cross_region_network_stage_recovers_original_graph(
 
     async def establish_peer_after_source(worker):
         nonlocal source_completed
-        result = await execute(worker)
+        result = await execute(worker, maintain_assignment=True)
         if not source_completed:
             source_completed = True
             assert worker.operation.request.action == "provision"

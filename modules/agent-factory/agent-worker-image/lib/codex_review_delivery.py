@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 from adp_review.client import ReviewError, mint_review_token, submit_review
-from lib import pr_binding, review_delivery, review_result, run_report, status_gateway_client
+from lib import pr_binding as pr_binding  # Retained public test/adapter seam.
+from lib import review_delivery, review_result, run_report, status_gateway_client
 
 
 class ReviewDeliveryBlocked(RuntimeError):
@@ -27,6 +28,17 @@ def require_delivery_success(output: str, envelope: dict) -> None:
         raise ReviewDeliveryBlocked("Reviewer returned no verifiable delivery result") from None
     if not isinstance(result, dict):
         raise ReviewDeliveryBlocked("Reviewer returned no verifiable delivery result")
+    if cycle is None and (envelope.get("payload") or {}).get("review_only") is True:
+        submission = result.get("submission") or {}
+        head = (envelope.get("source_ref") or {}).get("sha")
+        expected = {"approve": "APPROVED", "request-changes": "CHANGES_REQUESTED"}.get(result.get("verdict"))
+        if (result.get("status") != "read_only_reviewed" or result.get("sha") != head
+                or not re.fullmatch(r"[0-9a-f]{40}", str(head)) or not expected
+                or submission.get("verdict_recorded") is not True
+                or submission.get("commit_id") != head or submission.get("state") != expected
+                or type(submission.get("review_id")) is not int or submission["review_id"] <= 0):
+            raise ReviewDeliveryBlocked("Read-only review has no verified provider verdict")
+        return  # A source review never owns merge delivery.
     if cycle is not None:
         required = cycle.get("reviewer_owned_delivery") is True
         merged = result.get("merged") is True
@@ -124,8 +136,8 @@ def main():
         print(json.dumps({"recorded": True, "head_sha": value["result"]["sha"]}))
     except run_report.RunReportError as error:
         print(json.dumps({"error": error.code, "retryable": error.retryable}))
-    except status_gateway_client.StatusGatewayError:
-        print(json.dumps({"error": "Review evidence was not accepted", "retryable": False}))
+    except status_gateway_client.StatusGatewayError as error:
+        print(json.dumps({"error": error.code, "retryable": error.retryable}))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import { IssueContext, Plan, PlanStep } from '../types';
 import { Logger } from './Logger';
+import { wrapUntrusted } from '../utils/trust-boundary';
 import { resilientQuery, SDKStreamMessage } from '../utils/resilientQuery';
 
 interface ContentBlock {
@@ -97,7 +98,7 @@ export class PlanningAgent {
 ## RETRY GUIDANCE (from user after previous failure)
 The user has provided additional guidance after a previous attempt failed:
 
-${issueContext.retryGuidance}
+${wrapUntrusted(issueContext.retryGuidance)}
 
 Take this guidance into account when creating your plan.
 ` : '';
@@ -110,10 +111,10 @@ The repository has been scanned and contains ${repoContext.fileCount} relevant f
 ${repoContext.structure}
 
 ## GitHub Issue #${issueContext.issueNumber}
-**Title:** ${issueContext.issueTitle}
+**Title:** ${wrapUntrusted(issueContext.issueTitle)}
 
 **Description:**
-${issueContext.issueBody}
+${wrapUntrusted(issueContext.issueBody)}
 ${retrySection}
 ## Your Task
 Create a detailed implementation plan for this issue. The plan should:
@@ -164,16 +165,16 @@ The repository has been scanned and contains ${repoContext.fileCount} relevant f
 ${repoContext.structure}
 
 ## GitHub Issue #${issueContext.issueNumber}
-**Title:** ${issueContext.issueTitle}
+**Title:** ${wrapUntrusted(issueContext.issueTitle)}
 
 **Description:**
-${issueContext.issueBody}
+${wrapUntrusted(issueContext.issueBody)}
 
 ## Previous Plan
-${JSON.stringify(previousPlan, null, 2)}
+${wrapUntrusted(JSON.stringify(previousPlan, null, 2))}
 
 ## Rejection Feedback
-${feedback}
+${wrapUntrusted(feedback)}
 
 ## Your Task
 Revise the implementation plan based on the feedback. Address all concerns raised in the feedback.

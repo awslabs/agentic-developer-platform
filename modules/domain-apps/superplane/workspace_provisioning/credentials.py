@@ -3,9 +3,19 @@
 from .runtime_config import LifecycleRefused
 
 
-def assume_session(source, *, role_arn, region, verify, external_id=None, policy=None):
+def assume_session(
+    source,
+    *,
+    role_arn,
+    region,
+    verify,
+    external_id=None,
+    policy=None,
+    session_name="superplane-lifecycle",
+):
     import boto3
     import botocore.session
+    import re
     from botocore.config import Config
     from botocore.credentials import RefreshableCredentials
 
@@ -16,6 +26,10 @@ def assume_session(source, *, role_arn, region, verify, external_id=None, policy
         or not parts[5].startswith("role/")
     ):
         raise LifecycleRefused("lifecycle requires an exact AWS IAM role")
+    if not isinstance(session_name, str) or not re.fullmatch(
+        r"[A-Za-z0-9_+=,.@-]{2,64}", session_name
+    ):
+        raise LifecycleRefused("AWS role session name is invalid")
     sts = source.client(
         "sts",
         region_name=region,
@@ -34,7 +48,7 @@ def assume_session(source, *, role_arn, region, verify, external_id=None, policy
                 )
         arguments = {
             "RoleArn": role_arn,
-            "RoleSessionName": "superplane-lifecycle",
+            "RoleSessionName": session_name,
             "DurationSeconds": 900,
         }
         if external_id:
@@ -108,3 +122,83 @@ def canonical_role_identity(session, source, role_arn, *, verify):
             "bootstrap actor does not hold the exact approved IAM role"
         )
     return ProviderIdentity(account_id=identity["Account"], principal_arn=role_arn)
+
+
+def canonical_role_identity_snapshot(sessions, source, roles, *, verify):
+    """Fresh independent actor reads, bracketed once by live operation checks."""
+    read_results = _actor_identity_results_reader(sessions, source, roles)
+
+    def read():
+        verify()
+        values = read_results()
+        verify()
+        return _canonical_role_identities(values, roles)
+
+    return read
+
+
+def _bootstrap_actor_identity_reads(sessions, source, roles):
+    """Read-only batch for the enclosing BootstrapClients.verify proof.
+
+    That proof owns fresh operation checks before these actor reads and after
+    its EKS target read. Credential refresh still checks its own authority.
+    This private reader must not be used as a standalone authorization check.
+    """
+    read_results = _actor_identity_results_reader(sessions, source, roles)
+
+    def read():
+        return _canonical_role_identities(read_results(), roles)
+
+    return read
+
+
+def _actor_identity_results_reader(sessions, source, roles):
+    """Construct bounded SDK reads without caching any observed result.
+
+    Construct SDK clients on the owning thread. The returned reader uses only
+    thread-safe client calls and joins every started read, including on failure.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    if set(sessions) != set(roles):
+        raise LifecycleRefused("bootstrap actor sessions are incomplete")
+    sts = {actor: session.client("sts") for actor, session in sessions.items()}
+    iam = source.client("iam")
+
+    def read():
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            identities = {
+                actor: executor.submit(client.get_caller_identity)
+                for actor, client in sts.items()
+            }
+            observed = {
+                actor: executor.submit(iam.get_role, RoleName=arn.rsplit("/", 1)[1])
+                for actor, arn in roles.items()
+            }
+            values = {
+                actor: (identities[actor].result(), observed[actor].result()["Role"])
+                for actor in roles
+            }
+        return values
+
+    return read
+
+
+def _canonical_role_identities(values, roles):
+    from superplane_bootstrap.target import ProviderIdentity
+
+    result = {}
+    for actor, (identity, role) in values.items():
+        arn = roles[actor]
+        if (
+            role.get("Arn") != arn
+            or identity.get("Account") != arn.split(":")[4]
+            or identity.get("UserId", "").split(":", 1)[0] != role.get("RoleId")
+        ):
+            raise LifecycleRefused(
+                "bootstrap actor does not hold the exact approved IAM role"
+            )
+        result[actor] = ProviderIdentity(
+            account_id=identity["Account"], principal_arn=arn
+        )
+    return result

@@ -49,6 +49,10 @@ For a published release, the installer prints its retained checkout and receipt.
 Resume **inside that checkout**, using `./deploy.sh --resume` with the original
 `--update`, target and scope options, without `--release`. The selected release
 must contain checkpoint support. Repeating `--release` creates a new checkout.
+The launcher verifies the retained release receipt against the source, AWS account,
+region, environment and install/update mode, then restores its internal portable
+build settings. Operator overrides still have to match the saved checkpoint;
+credentials and arbitrary environment values are never restored from the receipt.
 
 ## Explicit recovery approvals
 

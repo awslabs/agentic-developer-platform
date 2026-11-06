@@ -1,0 +1,58 @@
+{
+  "issue": 8446,
+  "status": "accepted; the node binding selects the proof phase and the gateway supplies it on correlated dispatch",
+  "accepted_plan_version": 3,
+  "operational_release_binding_patch": {"proof_phase": "stage.identity-proof"},
+  "dispatch_rule": "Only the accepted node binding selects proof_phase. The checked-in workflow default stays 'none' so the gateway can qualify evidence; a tool argument must never select it, and a rerun reuses GitHub's recorded inputs and is refused.",
+  "preserve": {
+    "repository": "aws-e/adp",
+    "component": "gateway-backend",
+    "default_branch": "main",
+    "workflows": ["gateway-deploy.yml"],
+    "target": "existing-private-accepted-value",
+    "predecessors": "existing-verified-merge-predecessors",
+    "build_prerequisites": "existing-reviewed-values",
+    "required_input": "deployment_workflow:gateway-deploy.yml",
+    "runtime_expectation": "runtime_verified:gateway-backend"
+  },
+  "evidence_transport": {
+    "store": "s3-oidc-v1",
+    "workflow_env": "ADP_IDENTITY_PROOF_EVIDENCE_STORE=s3-oidc-v1",
+    "maintainer_owned": ["the s3-oidc-v1 identity-proof store", "the identity-proof job's id-token: write permission", "the trusted publication identity"],
+    "private_phase_evidence": "atlassian-identity-proof-{run_id}-{run_attempt} in the private CI evidence bucket, 14-day retention, independently read back in-job under the preserved scoped runner identity",
+    "published_summary": "deployment-evidence/v1/{repository_id}/{run_id}/{run_attempt}/repository-artifact/identity-proof.json: a GitHub-OIDC-signed descriptor, audience-bound to its exact bytes, over a write-once SSE-AES256 versioned archive of atlassian-stage-summary.json",
+    "publication_order": "the summary is staged and signed only after the private readback succeeds; a failed or missing readback publishes nothing",
+    "native_reader": "EvidenceStore.read_archive authenticates the signed descriptor, then reads that exact object version",
+    "unchanged": "the logical artifact name atlassian-stage-{run_id}-{run_attempt}, its atlassian-stage-summary.json path and all evaluator-amendment-8446.json predicates; only the transport moved off GitHub Actions artifact storage, whose quota failed the previous attempt's final upload"
+  },
+  "source_binding": {
+    "gateway_supplied_inputs": ["adp_correlation", "adp_source_revision", "adp_definition_revision"],
+    "required_equalities": "SOURCE_REVISION == GATEWAY_REVISION; GITHUB_SHA == github.workflow_sha == DEFINITION_REVISION == checked-out HEAD; the source must be an ancestor of that definition",
+    "identical_proof_bytes": ["tests/e2e/tools/atlassian_*", "tests/e2e/tools/test_atlassian_*", "docs/tools/atlassian-mcp/", ".github/workflows/gateway-deploy.yml"],
+    "advancement": "only a native checked repair merge to main advances these pins; a worker must not edit a pin, supply a reserved dispatch input or change workflow authority"
+  },
+  "verifier_repair": {
+    "issue": 8556,
+    "state": "installed and verified; a verifier repair only, not a new provider capability",
+    "effect": "binds the accepted proof_phase to the issued grant, the workflow observer and the recorded dispatch context, so a correlated proof run is no longer dropped from runtime verification when the selector is omitted during input comparison",
+    "comparator": "unchanged and strict: dispatch inputs must equal the accepted binding exactly, reserved selectors stay gateway-supplied, a mismatch fails closed with no receipt",
+    "preserved": ["reviewed gateway-deploy.yml authority", "all tests", "private readback", "signed S3 publication order", "runtime requirements"]
+  },
+  "prior_attempt": {
+    "run_id": 39725050613,
+    "run_attempt": 1,
+    "head_sha": "ba45c9f3c439feef899087ece2d7b651b8b33cd7",
+    "actions_conclusion": "success",
+    "observed": "112 controlled tests, private readback and signed S3 publication all passed; every deployment check passed",
+    "runtime_result": "no receipt: native runtime verification rejected the run because the accepted proof_phase was omitted during input comparison",
+    "handling": "preserved as observed; this green Actions run is not a runtime receipt and must not be cited as one"
+  },
+  "verification": {
+    "runtime": "from the native gateway-backend deployment receipt, never from a claim in the summary",
+    "green_run_insufficient": "a successful job graph only proves the workflow ran; runtime_verified:gateway-backend requires the native receipt the observer correlates to the issued grant by repository, component, source revision, definition revision, run id, run attempt and the accepted proof_phase",
+    "advancement_precondition": "the installed maintenance counts only once a native checked repair merge advances the selected source pins",
+    "cleanup": "generated_only: the generated owned-resource case is verified; remote grant revocation is not",
+    "unproven": ["real account consent", "Identity-managed refresh", "revocation", "authenticated catalogue schemas"]
+  },
+  "run": {"event": "workflow_dispatch", "environment": "dev", "product_cases": "none"}
+}

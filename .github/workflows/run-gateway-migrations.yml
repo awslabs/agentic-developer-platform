@@ -139,7 +139,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     steps:
       - name: Guard engine delivery revisions
         env:
@@ -155,7 +155,7 @@ jobs:
             test -z "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION"
           fi
           if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
-            [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
+            [[ "$ADP_CORRELATION" =~ ^([0-9a-f]{64}|orch:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]] || exit 1
             [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
             [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]] || exit 1
             test "$ACTUAL_DEFINITION" = "$ADP_DEFINITION"

@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
+import respx
 
 
 # ---------------------------------------------------------------------------
@@ -361,18 +363,16 @@ class TestBackendSubSpan:
                 "http://zoekt:6070", timeout=5.0, api_key="test-zoekt-tracing-key-with-32-characters"
             )
 
-            # Mock httpx to avoid real network calls
-            mock_response = MagicMock()
-            mock_response.json.return_value = {"Result": {"FileMatches": []}}
-            mock_response.raise_for_status = MagicMock()
-
-            mock_client = MagicMock()
-            mock_client.__aenter__ = MagicMock(return_value=mock_client)
-            mock_client.__aexit__ = MagicMock(return_value=False)
-            mock_client.post = MagicMock(return_value=mock_response)
-
-            with patch("httpx.AsyncClient", return_value=mock_client):
+            # Exercise the bounded streaming transport without network access.
+            with respx.mock as router:
+                request = router.post("http://zoekt:6070/api/search").mock(
+                    return_value=httpx.Response(200, json={"Result": {"FileMatches": []}})
+                )
                 await backend.search("test_query", limit=10)
+                assert request.call_count == 1
+                assert request.calls[0].request.headers["Authorization"] == (
+                    "Bearer test-zoekt-tracing-key-with-32-characters"
+                )
 
             # Verify span was created with expected attributes
             mock_tracer.start_as_current_span.assert_called_once_with(

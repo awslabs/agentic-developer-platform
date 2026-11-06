@@ -9,6 +9,12 @@ capacity subnets, the exact plan to expect before applying, and rollback.
 
 ---
 
+New deployments using the default `/16` VPC now allocate a `/20` private subnet
+per availability zone (4,091 usable addresses each). Existing subnet CIDRs are
+immutable and retained by Terraform; upgrades do not resize or replace them.
+Existing environments gain headroom through the additive expansion below.
+`private_subnet_cidrs` can set custom **initial** ranges when needed.
+
 ## Section 1 — Confirming the diagnosis
 
 The symptom is asymmetric, and that asymmetry is the tell: running workloads are
@@ -37,10 +43,9 @@ successfully and then be unable to hand out pod addresses.
 **Not the problem, and not the fix:**
 
 - Scaling the node pool. More nodes in an exhausted subnet get no more addresses.
-- The managed `default` NodeClass. On Auto Mode it exposes no
-  `subnetSelectorTerms` — it derives its subnets from the cluster's
-  `resourcesVpcConfig.subnetIds`. Editing it is not a fix and not safe: Auto Mode
-  reconciles such edits away. (`kubectl get nodeclass default -o yaml` to see
+- The managed `default` NodeClass derives its subnet selectors from the cluster's
+  `resourcesVpcConfig.subnetIds`. Editing those selectors directly is not a fix:
+  Auto Mode manages and reconciles them. (`kubectl get nodeclass default -o yaml` to see
   this; the `karpenter.k8s.aws/v1` `EC2NodeClass` CRD is not present on an Auto
   Mode cluster.)
 - Deleting pods to "free" addresses. That destroys running work and buys nothing
@@ -76,8 +81,8 @@ Properties of the change, so you know what you are and are not authorising:
 
 ## Section 3 — Choosing the subnets
 
-Pick one subnet per availability zone, in zones the cluster already has capacity
-in, each with a comfortable number of free addresses:
+Pick capacity subnets in availability zones the cluster already uses, each with
+a comfortable number of free addresses:
 
 ```bash
 VPC=$(aws eks describe-cluster --name "$CLUSTER" \
@@ -98,6 +103,31 @@ aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=<subn
 You do not have to get this right by inspection alone — the configuration
 re-checks all of it at plan time and refuses (§4). Checking first just means you
 find out before you are reading a failed plan.
+
+---
+
+### Provisioning private capacity when none is available
+
+`platform/infra/private-capacity` is a separate opt-in stack for creating capacity
+subnets. Keep its backend key separate from `dev/platform/terraform.tfstate` and
+keep its account-specific variables private. Supply `account_id`, `region`,
+`cluster_name`, and `capacity_by_az`, whose values contain `cidr_block` and an
+existing `route_table_id`. Confirm each CIDR lies within the VPC and overlaps no
+existing subnet before planning.
+
+The provider checks the target account. The stack accepts only existing cluster
+zones and private NAT route tables in the cluster VPC. It creates no NAT gateway,
+route table, security group, or endpoint and does not update the cluster. New
+subnets disable public IP assignment and have destruction protection. Review a
+saved plan: for two zones, expect exactly two subnet creations and two route-table
+associations, with no existing resource updates or deletions. Apply that file,
+then verify routing, network ACLs and free addresses independently.
+
+Its output contains only the newly provisioned subnets. Combine it with all live
+additions before following Sections 4–5; replacing an earlier capacity map with
+this output would be refused. Retain the independent remote state and the private
+configuration for subsequent management. Never destroy subnets while nodes or
+other resources still use them.
 
 ---
 
@@ -147,10 +177,24 @@ resolver, then export the result" is not one command: exporting straight from a
 command substitution reports export's exit status, so it hides the refusal and
 plans the additions away. §5.2 has the checked form.
 
-The map is keyed by the availability zone each subnet is expected to be in. That
-is what makes one-subnet-per-zone structural: a subnet pasted under the wrong
-zone is refused rather than quietly collapsing the added capacity into a single
-zone while the configuration claims two.
+The map is keyed by the availability zone each subnet is expected to be in.
+A value may be one subnet ID or a nonempty list of IDs. For another expansion
+in an already expanded zone, include **both the old and new additions**:
+
+```json
+{"us-east-1a": ["subnet-00000000000000001", "subnet-00000000000000002"],
+ "us-east-1b": "subnet-00000000000000003"}
+```
+
+Single-ID values remain compatible. Unset configuration retains every live
+addition, including multiple subnets in one zone. A partial list is refused;
+adding a new subnet never implicitly removes an exhausted one. Every list
+member receives the same VPC, AZ, public-IP and routing checks. New additions
+must have at least six free addresses. During updates, discovery supplies
+`capacity_existing_cluster`; Terraform reads that exact cluster from AWS to
+recognize retained subnets, which may already be exhausted. The name is checked
+against the deployment and its VPC is checked independently. A caller-supplied
+subnet list cannot bypass the minimum for a new addition.
 
 **The plan refuses**, before anything is applied, if a subnet is not in the
 cluster's VPC, is not really in the zone it is keyed by, is in a zone the cluster
@@ -165,10 +209,8 @@ any AWS lookup happens.
 
 ### 5.1 — Prerequisite: the provider/schema mismatch (#5831)
 
-**A full `terraform plan`/`apply` of `platform/infra` is not currently an
-available route on `000000000101/dev`, and this is a hard prerequisite rather
-than a caveat.** The platform source constrains AWS to `~> 5.0` and resolves
-provider 5.100.0, while existing state for `module.eks.aws_eks_addon.coredns`
+Older platform revisions constrained AWS to `~> 5.0` and resolved provider
+5.100.0, while existing state for `module.eks.aws_eks_addon.coredns`
 carries newer schema fields (`namespace_config`, and resource identity
 `account_id`/`addon_name`/`cluster_name`/`region`). The observable consequences:
 
@@ -181,7 +223,8 @@ The second one is what blocks rollout: if the saved plan cannot be rendered as
 JSON, it cannot be inspected, and the reviewed-plan requirement cannot be met.
 **Do not work around this** by stripping unsupported fields or identity from
 state, by forgetting/reimporting the add-on, or by applying without the saved-plan
-inspection. #5831 owns the durable repair; this change waits on it.
+inspection. #5831 repaired the provider floor; use the current qualified
+provider from `platform/infra/main.tf` and verify JSON export before applying.
 
 Also note the root module carries unrelated pending changes, so an ordinary full
 apply would sweep in collateral nobody reviewed. Target the cluster (§5.3).
@@ -320,8 +363,9 @@ Plan: 0 to add, 1 to change, 0 to destroy.
 - More than one resource changing, unless the extra changes have been separately
   reviewed as unrelated pre-existing drift.
 
-Applying the saved plan calls `UpdateClusterConfig`; the cluster stays `ACTIVE`
-and the API server is not interrupted. The change is also not instantaneous
+Applying the saved plan calls `UpdateClusterConfig`; the cluster may show
+`UPDATING` while the API server continues serving requests. Wait for the update
+to succeed and the cluster to return to `ACTIVE`. The change is also not instantaneous
 relief — see §2's "forward-looking only".
 
 ---

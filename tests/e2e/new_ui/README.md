@@ -61,7 +61,11 @@ establish deployed behavior; record actual run results and deployed SHA separate
 | **Simulated already-open-tab rollback** | Initially loads real flag-on preview, then controls only that browser's `/api/features` response to false. Requires bounded polling, preview exit, hidden entry and unchanged identity without document reload. Does not claim real SSM/deployment rollback. |
 
 Failure screenshots contain real UI data and are private local artifacts (mode
-0600); review before sharing. No HAR, trace, token storage state or raw API response
+0600); CI retains them in private S3 under the `e2e-new-ui-results` and, on failure,
+`e2e-new-ui-screenshots` manifests in the Actions job summary. Local runs default
+to `/tmp`; `E2E_SCREENSHOT_DIR` selects another directory. See
+[CI artifact storage](../../../docs/engineering-insights/ci-artifact-storage.md).
+Review before sharing. No HAR, trace, token storage state or raw API response
 body is persisted by this suite. API paths/statuses and simulation observations
 are included in JUnit properties. Rendered-record comparisons, populated multi-org
 coverage, and broader negative authorization checks remain coordinator work under

@@ -576,7 +576,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
     monkeypatch.setattr(
         task_model,
         "quote_request",
-        AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("0.01"))),
+        AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("0.01"), maximum_cost_usd=Decimal("0.01"))),
     )
     monkeypatch.setattr(task_model, "confirm_quote_spendable", AsyncMock(return_value=None))
     model = task_model.TaskModel(

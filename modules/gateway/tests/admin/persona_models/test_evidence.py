@@ -16,7 +16,9 @@ Operator review items addressed:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -321,9 +323,15 @@ class TestRequestShapeSha256:
     """The Gateway consumes, but never invents, the SDK-captured digest."""
 
     def test_reads_sdk_generated_digest(self):
+        # The digest is the SDK-generated manifest entry, never a gateway
+        # recomputation (#7993): read the expectation from the manifest file so
+        # a regeneration from the runtime image does not break this test.
+        manifest_path = Path(__file__).parents[3] / "src/admin/persona_models/request-shape-manifest.json"
+        expected = json.loads(manifest_path.read_text(encoding="utf-8"))["models"]["global.anthropic.claude-sonnet-4-6"]
+        assert len(expected) == 64 and set(expected) <= set("0123456789abcdef")
         a = compute_request_shape_sha256("global.anthropic.claude-sonnet-4-6")
         b = compute_request_shape_sha256("global.anthropic.claude-sonnet-4-6")
-        assert a == b == "114b5d665c28ea4b8c8a9cb3d5387cb9186d50aa948b3c1fe4784df39820996f"
+        assert a == b == expected
 
     def test_sdk_body_digest_can_differ_by_model(self):
         a = compute_request_shape_sha256("global.anthropic.claude-sonnet-4-6")

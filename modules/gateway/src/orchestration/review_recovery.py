@@ -11,6 +11,7 @@ import time
 import traceback
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -34,12 +35,18 @@ RECOVERY_ACTOR = "system:stalled-story-review"
 
 class ReviewRecoveryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    mode: Literal["review", "settle_merged", "review_existing_work", "review_released_reviewer", "resume_delivery", "settle_failed"] = "review"
+    source_run_id: str | None = Field(default=None, min_length=1, max_length=255)
+    renew_decision_id: str | None = Field(default=None, min_length=1, max_length=255)
     expected_attempt: int = Field(strict=True, ge=1)
     expected_plan_version: int = Field(strict=True, ge=1)
     expected_run_id: str = Field(min_length=1, max_length=255)
     expected_head_sha: str = Field(pattern=r"^[a-f0-9]{40}$")
     reason: str = Field(min_length=10, max_length=2000)
     expected_snapshot: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    # Only an explicit protected reviewer recovery can select its next launch.
+    # This is not a principal preference or an inherited flow setting.
+    reviewer_model: str | None = Field(default=None, strict=True, min_length=1, max_length=255, pattern=r"^\S+$")
 
 
 async def exited_run(run_id, org_id, resolver=None):
@@ -108,6 +115,12 @@ async def prepare_recovery(session, *, org_id, node_id, actor_id, actor_role, re
     binding = await active_binding_for_node(session, org_id=org_id, node_id=node_id, attempt=node.attempts)
     if binding is None or not binding_scope_matches(binding, node):
         raise CycleBlockedError("bound_delivery_missing")
+    if (
+        report.repo != binding.repo
+        or report.installation_id != binding.installation_id
+        or report.provider_repository_id != binding.provider_repository_id
+    ):
+        raise CycleBlockedError("report_assignment_changed")
     # Evaluate the proposed restoration in preview without writing graph state.
     proposed = SimpleNamespace(**{k: v for k, v in node.__dict__.items() if not k.startswith("_")})
     proposed.state = "running"
@@ -121,6 +134,7 @@ async def prepare_recovery(session, *, org_id, node_id, actor_id, actor_role, re
         remote.head_sha != request.expected_head_sha
         or remote.provider_repository_id != binding.provider_repository_id
         or remote.provider_pr_node_id != binding.provider_pr_node_id
+        or remote.repo.casefold() != binding.repo.casefold()
     ):
         raise CycleBlockedError("current_pr_changed")
     checkpoint_key = str(uuid5(NAMESPACE_URL, f"stalled-pr:{org_id}:{node.id}:{report.run_id}"))
@@ -163,6 +177,50 @@ async def prepare_recovery(session, *, org_id, node_id, actor_id, actor_role, re
 
 
 async def request_review_recovery(session, *, org_id, node_id, actor_id, actor_role, request, accept=False, resolver=None, autonomous=False):
+    if request.mode == "settle_failed":
+        if autonomous:
+            raise CycleBlockedError("human_plan_approver_required")
+        from .failed_review_settlement import request_settlement
+
+        return await request_settlement(
+            session, org_id=org_id, node_id=node_id, actor_id=actor_id, actor_role=actor_role, request=request, accept=accept
+        )
+    if request.mode == "review_released_reviewer":
+        if autonomous:
+            raise CycleBlockedError("human_plan_approver_required")
+        from .released_reviewer_recovery import request_recovery
+
+        return await request_recovery(
+            session, org_id=org_id, node_id=node_id, actor_id=actor_id, actor_role=actor_role, request=request, accept=accept
+        )
+    if request.mode == "review_existing_work":
+        if autonomous:
+            raise CycleBlockedError("human_plan_approver_required")
+        from .retained_work_recovery import request_recovery
+
+        return await request_recovery(
+            session, org_id=org_id, node_id=node_id, actor_id=actor_id, actor_role=actor_role, request=request, accept=accept
+        )
+    if request.source_run_id is not None or request.renew_decision_id is not None:
+        raise CycleBlockedError("retained_review_request_invalid")
+    if request.reviewer_model is not None and (request.mode != "review" or autonomous):
+        raise CycleBlockedError("reviewer_model_override_unsupported")
+    if request.mode == "resume_delivery":
+        if autonomous:
+            raise CycleBlockedError("human_plan_approver_required")
+        from .delivery_recovery import request_recovery
+
+        return await request_recovery(
+            session, org_id=org_id, node_id=node_id, actor_id=actor_id, actor_role=actor_role, request=request, accept=accept
+        )
+    if request.mode == "settle_merged":
+        if autonomous:
+            raise CycleBlockedError("human_plan_approver_required")
+        from .protected_merge_recovery import request_recovery
+
+        return await request_recovery(
+            session, org_id=org_id, node_id=node_id, actor_id=actor_id, actor_role=actor_role, request=request, accept=accept
+        )
     if autonomous:
         if actor_id != RECOVERY_ACTOR or actor_role != "engine":
             raise CycleBlockedError("recovery_actor_invalid")
@@ -191,6 +249,8 @@ async def request_review_recovery(session, *, org_id, node_id, actor_id, actor_r
             return await request_recovery(
                 session, org_id=org_id, node_id=node_id, actor_id=actor_id, actor_role=actor_role, request=request, accept=accept
             )
+    if request.reviewer_model is not None:
+        raise CycleBlockedError("reviewer_model_override_unsupported")
     actor_kind = "service" if autonomous else "human"
     decision_id = str(
         uuid5(NAMESPACE_URL, CONTRACT + ":" + digest({"org": org_id, "node": node_id, "actor": actor_id, "snapshot": request.expected_snapshot}))

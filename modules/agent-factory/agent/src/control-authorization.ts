@@ -6,6 +6,8 @@ export interface ControlOrigin {
 /** Private journal proof; never exposed in status responses. */
 export interface QueuedAuthorization {
   envelope: string;
+  /** Separate Gateway-owned authority, obtained only from a verified admission proof. */
+  queuedGrantRef?: string;
   action: string;
   command_id: string;
   body_base64: string;
@@ -42,4 +44,8 @@ export type RevalidationOutcome =
       allowed: boolean;
       /** The gateway-signed proof that this abort was accepted; `abort` only. */
       abortReceipt?: string | null;
+      /** One-use delivery decision was durably consumed; never retry a lost boundary. */
+      deliveryConsumed?: boolean;
+      /** The consume decision may have committed but no usable answer arrived. */
+      deliveryOutcomeUnknown?: boolean;
     };

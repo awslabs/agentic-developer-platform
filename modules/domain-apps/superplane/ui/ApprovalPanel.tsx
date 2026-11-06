@@ -39,6 +39,7 @@ export function ApprovalPanel({ approval, guard, onChange }: {
   return <section className="mt-4 rounded border p-4" aria-label="Operation approval">
     <h3 ref={headingRef} tabIndex={-1} className="font-semibold">Operation approval</h3>
     <p className="break-all">Approval reference: {approval.approval_id}</p>
+    {approval.requires_distinct_approver === false && <p>An authorized administrator can approve their own plan. No second approver is required.</p>}
     <p>Workspace: {approval.workspace_id}</p>
     <p>Action: {approval.action}</p>
     {Object.entries(approval.target).map(([key, value]) => <p key={key}>{key.replace(/_/g, ' ')}: {value}</p>)}

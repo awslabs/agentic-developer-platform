@@ -1,0 +1,1676 @@
+{
+  "source_revision": "55c340f5c5b949bbdf4f9ac2c5646a868e4886d2",
+  "project": {
+    "id": "470fb7f1-aa72-4544-a92d-b6cfedf1e761",
+    "name": "ADP Platform",
+    "verified_on": "2026-10-26"
+  },
+  "product": {
+    "id": "48b53e75-610f-4483-82df-ff1739be23af",
+    "name": "ADP Platform"
+  },
+  "stories": [
+    {
+      "key": "C01",
+      "title": "Version the four factory lifecycle contracts",
+      "stream": "contracts",
+      "batch": "R1",
+      "depends_on": [],
+      "reference": "modules/domain-apps/superplane/contracts/superplane_contracts/reconciliation.py",
+      "scope": "Define versioned account, network, cluster and application resource schemas: desired revision, observed generation, dependency binding, lifecycle intent, conditions, ownership and retention. Specify shared API/error and adapter capability contracts. Publish backend-derived examples and the resource/field-owner matrix; preserve existing workspace and operation IDs.",
+      "cases": [
+        "Validate one resource of each layer and a dependency DAG; every example resolves a single owner and current-generation Ready predicate.",
+        "Submit a cycle, cross-tenant dependency or stale observed generation; validation rejects the first two and never projects the stale generation as Ready.",
+        "Load existing workspace/operation references through the new contract; their original IDs and authority semantics remain unchanged."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5534",
+        "https://github.com/aws-e/adp/issues/5535"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-C01"
+    },
+    {
+      "key": "C02",
+      "title": "Extend provider environments and immutable provisioning profiles",
+      "stream": "contracts",
+      "batch": "R1",
+      "depends_on": [
+        "C01"
+      ],
+      "reference": "modules/domain-apps/superplane/src/superplane-api/app/models/cloud_account.py",
+      "scope": "Extend the existing cloud_accounts inventory with provider-aware scope/parent keys, ownership, baseline references and workspace bindings. Add immutable provisioning-profile revisions. Backfill canonical root scope and audit duplicates before replacing uniqueness; preserve legacy aws_account_id reads. Own this migration sequence only.",
+      "cases": [
+        "Migrate fixtures containing equal identifiers on different providers; provider-qualified environments and legacy workspace references resolve correctly.",
+        "Attempt a duplicate canonical environment or cross-organization binding; database constraints reject it without partially creating a profile.",
+        "Run the migration on a populated database and resume after its first checkpoint; all existing IDs, provider connections and bindings survive."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5530",
+        "https://github.com/aws-e/adp/issues/6127"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-C02"
+    },
+    {
+      "key": "C03",
+      "title": "Persist factory revisions, operations and observations",
+      "stream": "contracts",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C02"
+      ],
+      "reference": "modules/domain-apps/superplane/src/superplane-api/app/models/workspace.py",
+      "scope": "Add factory resources, immutable revisions, dependency edges, operation/object bindings, append-only observations and rebuildable status projections. Reference the existing provider inventory and execution ledger instead of copying them. Serialize the Alembic chain after C02; keep schema expansion compatible with current API readers.",
+      "cases": [
+        "Commit a desired revision and linked operation, then rebuild status from observations; IDs, ownership and current generation are retained.",
+        "Race two desired-revision updates and submit a foreign-tenant operation binding; one update wins and the foreign binding is rejected atomically.",
+        "Restart after committing intent but before status projection; replay produces one operation binding and the same projection."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5535"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-C03"
+    },
+    {
+      "key": "C04",
+      "title": "Bind factory changes to existing execution and service authority",
+      "stream": "authority",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C03"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/authority.py",
+      "scope": "Resolve each factory action through existing ADP approvals, budget reservation, scoped credentials and operation fencing. Separate ongoing reconciliation service authority from temporary bootstrap grants. Add typed action mappings for preview, approved change, bounded repair and retirement; no second attempt counter or approval system.",
+      "cases": [
+        "Dispatch an approved factory change through the real shared executor; the recorded operation references the exact plan, resource revision and authorized provider scope.",
+        "Revoke the service grant or change the plan digest before dispatch; mutation is denied and no credentials or duplicate paid admission are issued.",
+        "Repeat a committed dispatch and replace an expired worker; history and counters remain intact and stale holders cannot mutate."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/4912",
+        "https://github.com/aws-e/adp/issues/6484",
+        "https://github.com/aws-e/adp/issues/6485"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-C04"
+    },
+    {
+      "key": "C05",
+      "title": "Reconcile factory steps across worker loss and uncertain responses",
+      "stream": "runtime",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "C04"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/runtime.py",
+      "scope": "Implement the common controller/step executor around existing workers: observe, record intent, dispatch, retain provider request handle, observe outcome and schedule the next incomplete step. Use existing leases and fences. Represent uncertain operations and exhausted authority explicitly; controller lifetime is independent of one worker credential session.",
+      "cases": [
+        "Interrupt a multi-step fixture after step two; a fresh authorized worker verifies completed resources and dispatches only the remaining step.",
+        "Lose a create response and expire its worker lease; the successor observes the recorded target/request before deciding whether any new call is allowed.",
+        "Deliver duplicate events and race two controllers; exactly one mutation is admitted per stable step key."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5534",
+        "https://github.com/aws-e/adp/issues/7709"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-C05"
+    },
+    {
+      "key": "C06",
+      "title": "Expose fresh factory and workspace status through the API",
+      "stream": "api",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C03"
+      ],
+      "reference": "modules/domain-apps/superplane/src/superplane-api/app/services/provisioning_progress.py",
+      "scope": "Implement authorized factory-resource reads and a normalized workspace status view from C03. Return desired/observed revisions, observation age, dependency blockers, current operations, Argo state and provider drift separately. Retain last observations as stale/Unknown during outages; preserve existing lifecycle routes.",
+      "cases": [
+        "Read a workspace with a ready cluster and blocked application layer; the response identifies the failed dependency without claiming the whole workspace Ready.",
+        "Deliver an old Ready event or read through another tenant; the old event cannot unblock the new revision and the unauthorized read is denied.",
+        "Restart the projector and repeat paginated reads; the same trusted observations reconstruct status without altering operations."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5730",
+        "https://github.com/aws-e/adp/issues/7690"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-C06"
+    },
+    {
+      "key": "C07",
+      "title": "Publish approved desired-state bundles with a durable outbox",
+      "stream": "publication",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "C04"
+      ],
+      "reference": "modules/domain-apps/superplane/src/superplane-api/app/services/lifecycle_proposals.py",
+      "scope": "Publish immutable desired-state bundles and update their pinned Argo Application source through one publisher. Commit publication intent before registry/Kubernetes I/O; bind bundle digest, approval, resource revision and object UID. Keep credentials external. Rollback is a separately evaluated revision.",
+      "cases": [
+        "Approve a revision and publish it; the artifact digest, Application source and factory revision form one traceable chain.",
+        "Substitute a caller-supplied approval label or change the bundle after approval; publication is refused before application mutation.",
+        "Lose the response after publishing or updating the Application; reconcile the exact digest/revision and do not publish a second intent."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5535"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-C07"
+    },
+    {
+      "key": "C08",
+      "title": "Batch Superplane releases while Gateway continues rolling",
+      "stream": "release",
+      "batch": "R1",
+      "depends_on": [
+        "C01"
+      ],
+      "reference": ".github/workflows/superplane-api-build.yml",
+      "scope": "Add an explicit Superplane release-batch manifest and coalesced candidate build/rollout path using existing installer and release evidence. Keep ordinary story CI independent of full deployment. Build each changed Superplane component once per selected batch. Gateway auto-deploy remains active: verify current serving Gateway and scheduler source/schema/transport compatibility, recheck after concurrent rollout and retain unrelated changes. Do not freeze or downgrade shared Gateway.",
+      "cases": [
+        "Merge three fixture story revisions into one selected batch; one candidate per changed component and one Superplane rollout receipt cover the batch.",
+        "Roll Gateway between preflight and activation; the release revalidates actual serving processes and scheduler, deferring activation if incompatible.",
+        "Retry a completed batch dispatch; matching release evidence is reused and no duplicate rollout or stale Gateway restoration occurs."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5538",
+        "https://github.com/aws-e/adp/issues/6672"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-C08"
+    },
+    {
+      "key": "A01",
+      "title": "Onboard an existing AWS environment and verify its baseline",
+      "stream": "accounts",
+      "batch": "R1",
+      "depends_on": [
+        "C02",
+        "C04",
+        "C05"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/account-provisioning/account_provisioning/baseline.py",
+      "scope": "Implement the AWS existing-environment factory adapter using the existing baseline/ownership code. Resolve approved organization credentials, observe provider identity and baseline controls, and bind the environment without claiming account ownership. Baseline correction is limited to the selected approved profile.",
+      "cases": [
+        "Onboard a fixture account with the required baseline; return its stable environment binding and independent baseline observations.",
+        "Observe denied audit-trail access or a different account; report Unknown/refusal rather than Ready or silently modifying organization controls.",
+        "Repeat onboarding after an interrupted baseline write; read back the exact control, settle intent and retain the existing account identity."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5530",
+        "https://github.com/aws-e/adp/issues/5531"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-A01"
+    },
+    {
+      "key": "A02",
+      "title": "Create an AWS account through the factory controller",
+      "stream": "accounts",
+      "batch": "R1",
+      "depends_on": [
+        "A01"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/account-provisioning/account_provisioning/creation_runner.py",
+      "scope": "Compose Organizations account creation, request-handle polling, approved OU placement and existing child-account bootstrap behind the factory contract. Reuse generation fencing and payload digests. Account closure is not workspace cleanup; retain account exposure through uncertain creation and failed baseline.",
+      "cases": [
+        "Submit one approved new-account profile; persist the Organizations request and finish baseline/placement before environment Ready.",
+        "Receive a lost create response without a recoverable request handle; keep the operation Unknown and do not call CreateAccount again.",
+        "Restart while creation is IN_PROGRESS or baseline is partial; poll the same request and continue only missing baseline steps."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5531"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-A02"
+    },
+    {
+      "key": "N01",
+      "title": "Expose AWS workspace networking as an owned factory resource",
+      "stream": "networking",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "A01"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/workspaces/network.tf",
+      "scope": "Wrap existing Terraform VPC/subnet/endpoint/security-group resources in the network factory adapter. Record supplied versus created networking, profile revision, outputs and Terraform ownership. Observe routes and endpoint reachability before Ready; retain shared network resources during workspace deletion.",
+      "cases": [
+        "Create an owned network and onboard a supplied network in separate fixtures; outputs and cleanup ownership match their declared modes.",
+        "Return an incomplete route or denied endpoint observation; the network remains Unknown/Blocked and cannot unblock cluster readiness.",
+        "Reconcile a completed apply after worker loss; existing VPC/subnet/state identities are adopted and no duplicate network is created."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/7599",
+        "https://github.com/aws-e/adp/issues/5534"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-N01"
+    },
+    {
+      "key": "N02",
+      "title": "Establish private AWS management-to-workspace connectivity",
+      "stream": "networking",
+      "batch": "R1",
+      "depends_on": [
+        "N01"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/network.py",
+      "scope": "Implement the AWS private control-plane transport profile across selected accounts/regions using explicitly selected routing, DNS and TLS/identity checks. Determine TGW peering versus Cloud WAN from the target profile; keep Lattice service access separate. Configure management execution and observation paths, not only Argo.",
+      "cases": [
+        "Disable the workspace public API in a qualified fixture; authenticated management discovery and observations succeed through the declared private path.",
+        "Break the selected private route/DNS mapping or use a wrong-tenant principal; access fails visibly without public fallback.",
+        "Restore connectivity and reconcile; cluster identity and pending operations are preserved and observations become fresh."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/7598",
+        "https://github.com/aws-e/adp/issues/7599",
+        "https://github.com/aws-e/adp/issues/7600"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-N02"
+    },
+    {
+      "key": "N03",
+      "title": "Reconcile private workspace service access with VPC Lattice",
+      "stream": "networking",
+      "batch": "R1",
+      "depends_on": [
+        "N01",
+        "C05"
+      ],
+      "reference": "modules/domain-apps/superplane/executor/superplane_executor/network_runtime.py",
+      "scope": "Implement an AWS service-network adapter with scoped associations, backend readiness, service identity and resource inventory. Model Lattice as regional service access, not as an EKS API tunnel or cross-region router. Consume private routing from N02 when required.",
+      "cases": [
+        "Register a ready fixture service and invoke it through its authorized Lattice association; report the bound backend and service health.",
+        "Use another workspace identity or an unready backend; access/Ready is denied without widening the association.",
+        "Lose a registration/delete acknowledgement; reconcile the same service identity and verify only owned associations are removed."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/7601"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-N03"
+    },
+    {
+      "key": "K01",
+      "title": "Reconcile EKS clusters through the existing Terraform executor",
+      "stream": "clusters",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "N01"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/workspaces/eks.tf",
+      "scope": "Expose EKS create/adopt/observe through a stable cluster factory binding using the current reviewed Terraform plan/apply path. Preserve remote state and distinguish EKS ACTIVE from node, private reachability and scoped-access readiness. Revalidate dependencies before declaring the current generation Ready.",
+      "cases": [
+        "Apply a reviewed EKS profile; cluster readiness requires ACTIVE control plane, ready initial nodes and verified management/bootstrap access.",
+        "Interrupt after control-plane creation or deny node-group launch; preserve the partial inventory and report the exact incomplete prerequisite.",
+        "Resume from existing Terraform state under a fresh authorized operation; the cluster ARN, state lineage and completed resources remain unchanged."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5534",
+        "https://github.com/aws-e/adp/issues/5400"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-K01"
+    },
+    {
+      "key": "K02",
+      "title": "Reconcile every bootstrap grant and revocation state",
+      "stream": "bootstrap",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "K01"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_bootstrap/superplane_bootstrap/temporary_authority.py",
+      "scope": "Implement a versioned grant step contract covering all supported acquisition/revocation entries, including the retained 25-grant state. Reconcile durable intents and immutable identities under current authority. Preserve old image qualifications and histories; keep component installation in K03.",
+      "cases": [
+        "Acquire then revoke the complete declared grant recipe; all temporary entries are positively absent and retained namespace/workspace identities survive.",
+        "Inject interruption before/after every grant and revocation call, including acknowledgement loss; native recovery completes or reports a specific unresolved identity without unsafe deletion.",
+        "Recover the retained 25-grant fixture with fresh permitted authority; original attempts/fences/history survive and infrastructure apply is never replayed."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/7709",
+        "https://github.com/aws-e/adp/issues/7722",
+        "https://github.com/aws-e/adp/issues/5534"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-K02"
+    },
+    {
+      "key": "W01",
+      "title": "Install and upgrade the central Argo management service",
+      "stream": "applications",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C08"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Add an app-owned standard Argo installation profile, immutable release pins, restricted Projects, registry access, health checks and upgrade/rollback checks to the maintained installer. Management bootstrap must work without workspace factories. AWS-managed Argo remains an optional capability until separately qualified.",
+      "cases": [
+        "Install the selected pinned Argo profile in a clean management fixture; restricted application destinations/sources and controller health are verified.",
+        "Supply an unapproved source, broad destination or unavailable registry; installation/selection refuses the unsafe profile.",
+        "Upgrade then restart management controllers; existing Application IDs, pinned sources and factory bindings survive."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6672",
+        "https://github.com/aws-e/adp/issues/5538"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-W01"
+    },
+    {
+      "key": "W02",
+      "title": "Register workspace targets with scoped Argo service identity",
+      "stream": "applications",
+      "batch": "R1",
+      "depends_on": [
+        "W01",
+        "C04",
+        "N02",
+        "K01"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/cluster_clients.py",
+      "scope": "Establish and rotate ongoing Argo target access through a separate scoped service identity. Bind endpoint, CA, tenant/workspace, cluster generation and approved application destinations. Keep temporary bootstrap grants on their existing revocation path; direct observers retain their own connectivity.",
+      "cases": [
+        "Register a private target and sync an allowed namespaced fixture application through the declared Argo identity.",
+        "Rotate the CA, replace the cluster or revoke the service grant; sync stops and status identifies the mismatch without privileged fallback.",
+        "Retry target registration/rotation after response loss; retain one target binding and positively revoke superseded credentials."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6127",
+        "https://github.com/aws-e/adp/issues/6485"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-W02"
+    },
+    {
+      "key": "W03",
+      "title": "Package versioned workspace application profiles in OCI",
+      "stream": "applications",
+      "batch": "R1",
+      "depends_on": [
+        "C01"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_bootstrap/superplane_bootstrap/components.py",
+      "scope": "Produce immutable OCI/Helm profiles for the currently required workspace foundation, networking and observability components. Record dependencies, schema compatibility, resource requests, ownership and health checks. Preserve existing component controls; training applications belong to T04.",
+      "cases": [
+        "Render and install the minimal profile against its supported Kubernetes fixture; manifests and component versions match the selected digests.",
+        "Select conflicting component owners or incompatible versions; profile validation rejects the composition before publication.",
+        "Render the same profile twice and upgrade one component; unrelated resource identities and declared runtime-owned fields are preserved."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5533",
+        "https://github.com/aws-e/adp/issues/5538"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-W03"
+    },
+    {
+      "key": "W04",
+      "title": "Reconcile Application health and workspace platform readiness",
+      "stream": "applications",
+      "batch": "R1",
+      "depends_on": [
+        "C06",
+        "C07",
+        "W02",
+        "W03",
+        "K02",
+        "K03"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_bootstrap/superplane_bootstrap/readiness.py",
+      "scope": "Compose application publication and Argo observation into workload-layer status. Gate application dependencies and workspace registration on current-generation health, access and isolation checks. Keep provider drift, Argo sync and workspace readiness distinct; handle watch reconnect/relist.",
+      "cases": [
+        "Sync the selected profile and run actual platform readiness checks; the current workspace becomes Ready only when required components and registration succeed.",
+        "Receive Synced with an unhealthy pod, stale observation or failed isolation check; the workspace stays Blocked/Unknown with a reason.",
+        "Restart the observer during rollout; relist restores status and does not reinstall applications or repeat registration."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5730",
+        "https://github.com/aws-e/adp/issues/5535"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-W04"
+    },
+    {
+      "key": "U01",
+      "title": "Show factory progress, dependencies and recovery in the workspace UI",
+      "stream": "experience",
+      "batch": "R1",
+      "depends_on": [
+        "C06",
+        "C01"
+      ],
+      "reference": "modules/domain-apps/superplane/ui/WorkspaceDetails.tsx",
+      "scope": "Extend the Superplane workspace details view with four-layer progress, observed revision/age, dependency blockers, application health and permitted next actions. Preserve existing creation/approval flows and selected tenant. Generate fixtures from C01/C06 backend schemas; no fabricated browser-only statuses.",
+      "cases": [
+        "Open a workspace with network/cluster Ready and bootstrap Blocked; the UI shows completed layers, the precise blocker and the supported action.",
+        "Expire observations or revoke the user grant; show stale/denied state without retaining actionable privileged controls.",
+        "Reload and reenter the workspace during an operation; the same workspace, progress and operation IDs are shown."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5730",
+        "https://github.com/aws-e/adp/issues/7690"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-U01"
+    },
+    {
+      "key": "U02",
+      "title": "Expose factory discovery and status through the installed ADP CLI",
+      "stream": "experience",
+      "batch": "R1",
+      "depends_on": [
+        "C06",
+        "C02"
+      ],
+      "reference": "modules/gateway/cli/adp-superplane.py",
+      "scope": "Add the proposed factory capabilities/profiles/environments/list/show and workspace status/applications reads to the maintained CLI and Gateway proxy inventory. Reuse shared login and tenant selection, stable JSON output, pagination and existing lifecycle mutation commands.",
+      "cases": [
+        "Run installed CLI discovery and status against the same fixture used by the API; IDs, revisions, blockers and pagination agree.",
+        "Use an unauthorized resource, unsupported capability or unavailable API; return typed nonzero errors and no secret/provider-credential output.",
+        "Repeat commands after login refresh and workspace reentry; the same tenant/resource bindings are used without duplicate operations."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5638"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-U02"
+    },
+    {
+      "key": "L01",
+      "title": "Observe cloud drift and dispatch only policy-approved corrections",
+      "stream": "reconciliation",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "C06",
+        "K01",
+        "W04"
+      ],
+      "reference": "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_reconciler.py",
+      "scope": "Implement recurring bounded provider observations and governed drift correction for factory resources. Map selected differences to allowed service repairs or a new approval requirement. Preserve observed age and separate cloud drift from Argo sync. Avoid comparing caller-provided desired/actual blobs as proof.",
+      "cases": [
+        "Change a fixture cloud rule while Argo remains Synced; provider observation reports Drifted and dispatches only the profile-authorized correction.",
+        "Require replacement/destructive change or revoke repair authority; produce ApprovalRequired/Blocked and no mutation.",
+        "Restart after corrective dispatch; observe the original operation and prevent concurrent repair or duplicate paid admission."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6477",
+        "https://github.com/aws-e/adp/issues/5536"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-L01"
+    },
+    {
+      "key": "L02",
+      "title": "Retire factory resources with explicit ownership and retention",
+      "stream": "reconciliation",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "C04",
+        "N03",
+        "W04"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py",
+      "scope": "Implement retirement as a durable desired lifecycle: stop new admission/repair, follow dependency order, reconcile cleanup and finish only after deletion or an authorized retention handoff. Bind Argo prune/finalizers to existing ownership-aware retirement. Preserve shared accounts/networks, adopted clusters and retained data.",
+      "cases": [
+        "Retire an owned fixture workspace with shared environment/network bindings; owned resources disappear and independently inventoried survivors remain.",
+        "Lose a delete acknowledgement or keep a dependant active; retirement stays incomplete and does not drop the ownership record/finalizer.",
+        "Restart retirement after partial cleanup; already deleted resources remain absent and no controller recreates retired applications."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5534",
+        "https://github.com/aws-e/adp/issues/7602"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-L02"
+    },
+    {
+      "key": "M01",
+      "title": "Inventory and shadow-adopt existing Superplane workspaces",
+      "stream": "migration",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "K01"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/recovery_applied.py",
+      "scope": "Build an observation-only adoption command that captures current API/operation IDs, approvals, attempts/fences, Terraform keys/lineage/serials, provider bindings, namespace UIDs, grants and component ownership. Create shadow factory mappings with the old executor still authoritative. Include workspaces with completed infrastructure and interrupted bootstrap.",
+      "cases": [
+        "Shadow-adopt active and partially bootstrapped fixture workspaces; the adoption map preserves every existing identity and introduces no provider mutation.",
+        "Present mismatched state lineage, namespace UID or uncertain ownership; refuse activation and report the exact discrepancy.",
+        "Repeat inventory after controller restart; bind the same resources and append fresh observations without duplicate ownership."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6479",
+        "https://github.com/aws-e/adp/issues/6970"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-M01"
+    },
+    {
+      "key": "M02",
+      "title": "Transfer reconciliation ownership with a reversible cutover fence",
+      "stream": "migration",
+      "batch": "R1",
+      "depends_on": [
+        "M01",
+        "C04",
+        "C05",
+        "W04",
+        "L01"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/deployment_owner_recovery.py",
+      "scope": "Implement per-workspace cutover: quiesce the old writer, verify its expired/settled authority, compare fresh shadow observations, atomically select the new owner and activate it. Provide an evaluated fallback that restores the old writer only after fencing the new one. Preserve existing Terraform ownership initially; no destroy/recreate migration.",
+      "cases": [
+        "Cut over a shadow-adopted fixture; exactly one writer is enabled and the new controller retains all workspace/resource/operation identities.",
+        "Crash between quiesce and activation or detect changed inventory; both sides remain fenced until an owner can resume the recorded transition.",
+        "Exercise fallback after activation with a pending operation; no overlapping writer, lost journal or replayed successful cloud mutation occurs."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6479",
+        "https://github.com/aws-e/adp/issues/7603"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-M02"
+    },
+    {
+      "key": "M03",
+      "title": "Restore factory control-plane state before enabling mutation",
+      "stream": "migration",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "C07",
+        "M02"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Add versioned backup/restore for domain records, execution references, desired bundles, factory/Application objects and Terraform-state references. Restore identity and observations before enabling mutation. Include pending operations and incomplete publication/cleanup; controller upgrades are M04.",
+      "cases": [
+        "Restore a fixture management installation with pending operations; original IDs, revisions, outbox entries and remote state bindings are reconstructed.",
+        "Supply a partial backup or missing required artifact; mutation stays disabled with a named recovery prerequisite.",
+        "Restart restoration after record import but before observation; resume the same restore and reconcile inventory before enabling a writer."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6477"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-M03"
+    },
+    {
+      "key": "K03",
+      "title": "Checkpoint and resume workspace component installation",
+      "stream": "bootstrap",
+      "batch": "R1",
+      "depends_on": [
+        "K02",
+        "W03"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_bootstrap/superplane_bootstrap/components.py",
+      "scope": "Persist component-level desired/observed revisions and verification checkpoints. Resume the first incomplete application/bootstrap step after grant recovery. Revalidate earlier components when inputs change. Separate successful installation from access, isolation, interlock and final registration proofs.",
+      "cases": [
+        "Stop after installing the first component, then resume; only remaining component changes run and registration follows actual readiness checks.",
+        "Lose an installation response or change a dependency generation; observe the exact existing object and refuse stale readiness.",
+        "Restart before final registration; retain namespace/object UIDs and produce one registered workspace with released temporary grants."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5533",
+        "https://github.com/aws-e/adp/issues/5534"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-K03"
+    },
+    {
+      "key": "M04",
+      "title": "Upgrade factory controllers without losing pending work",
+      "stream": "migration",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "C05",
+        "M02"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Version CRDs, controllers, profiles and domain schema as a compatible release set. Add expand/activate compatibility checks and upgrade/fallback procedures for pending operations. Retain old consumers during expansion and reject downgrade that cannot interpret retained state.",
+      "cases": [
+        "Upgrade controllers while a fixture operation is pending; its operation ID, attempts, fences and desired revision remain intact.",
+        "Select incompatible CRD/schema/profile versions or an unsupported downgrade; preflight refuses before active-writer replacement.",
+        "Lose the upgrade acknowledgement and rerun; observe the selected release and avoid duplicate migration or controller ownership."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6477"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-M04"
+    },
+    {
+      "key": "T01",
+      "title": "Persist training requests, options and selected plan revisions",
+      "stream": "training-contracts",
+      "batch": "R2",
+      "depends_on": [
+        "C02",
+        "C03"
+      ],
+      "reference": "modules/domain-apps/superplane/src/superplane-api/app/models/workspace.py",
+      "scope": "Add the proposed training request/revision, evaluation, observation, option and selected-plan records with tenant-scoped keys. Freeze code/image/data references, hard constraints, evidence age, costs, cleanup and permitted fallbacks in the plan digest. Serialize migrations after C03.",
+      "cases": [
+        "Persist two evaluated options and freeze one selected plan; the digest binds request, evidence, placement and runtime constraints.",
+        "Edit the request or use another tenant option; the old plan cannot authorize the new request and cross-tenant foreign keys reject the binding.",
+        "Replay selection after a lost reply; return the original immutable plan and retain superseded plan history."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6470"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T01"
+    },
+    {
+      "key": "T02",
+      "title": "Compare capacity options without provisioning resources",
+      "stream": "planning",
+      "batch": "R2",
+      "depends_on": [
+        "T01",
+        "C02"
+      ],
+      "reference": "modules/domain-apps/superplane/executor/superplane_executor/skypilot.py",
+      "scope": "Implement read-only capacity evaluation using SkyPilot/provider observations and authorized existing inventory. Enforce hard region/data/runtime constraints before ranking; return zero, one or two-to-three feasible options with rejected reasons, evidence kind/age, setup/transfer/queue/run cost and time. Unknown quota/capacity remains explicit.",
+      "cases": [
+        "Evaluate a pinned fixture catalogue with three feasible and two forbidden options; return only the feasible ranked set with independently specified costs and evidence provenance.",
+        "Use stale availability, unknown new-account quota or an impossible region constraint; return conditional/zero options with reasons and make no provisioning or paid reservation call.",
+        "Repeat evaluation after evidence expiry; publish a new evaluation while preserving the previous options and selected plans."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6470"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T02"
+    },
+    {
+      "key": "T03",
+      "title": "Admit only the chosen current training plan",
+      "stream": "training-authority",
+      "batch": "R2",
+      "depends_on": [
+        "T01",
+        "T02",
+        "C04"
+      ],
+      "reference": "modules/domain-apps/superplane/src/superplane-api/app/services/lifecycle_proposals.py",
+      "scope": "Wire option selection, approval and submission through existing approval/budget authority. Revalidate capacity, price, scope, data access and dependency generations at admission. New workspace setup uses the approved factory graph; unselected options never dispatch.",
+      "cases": [
+        "Approve and submit one option through the API; one admitted run/setup graph references its exact plan and reserved spend envelope.",
+        "Change price, placement or availability outside approved bounds; return an actionable replan/approval response without starting compute.",
+        "Repeat submission with the same idempotency key after response loss; recover the same run and budget reservation."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/4912",
+        "https://github.com/aws-e/adp/issues/6470"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T03"
+    },
+    {
+      "key": "T04",
+      "title": "Package a compatible Trainer, JobSet and Kueue profile",
+      "stream": "training-platform",
+      "batch": "R2",
+      "depends_on": [
+        "W03",
+        "C01"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/controller_profiles.py",
+      "scope": "Add a pinned Kubernetes training profile for standalone Kubeflow Trainer v2, JobSet and Kueue with compatibility checks, scoped identities, queue defaults, resource requests and health predicates. Argo owns these platform applications; individual TrainJobs remain execution-owned.",
+      "cases": [
+        "Install the profile on a supported fixture cluster; CRDs/controllers/queues become healthy and admit a minimal supported workload.",
+        "Select incompatible versions or insufficient controller permissions; validation/readiness refuses before the profile is advertised available.",
+        "Upgrade/reconcile the profile with an existing completed job; platform health returns without recreating the job."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6470"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T04"
+    },
+    {
+      "key": "T05",
+      "title": "Dispatch one durable TrainJob through the workspace API",
+      "stream": "training-runtime",
+      "batch": "R2",
+      "depends_on": [
+        "T03",
+        "T04",
+        "W04"
+      ],
+      "reference": "modules/domain-apps/superplane/executor/superplane_executor/provider.py",
+      "scope": "Implement the governed training-run dispatcher with write-ahead intent, stable job identity, scoped workload credentials and cluster-generation binding. Submit TrainJob through Kubernetes API; persist UID/operation references and reconcile lost create responses. Argo must not own individual executions.",
+      "cases": [
+        "Submit one admitted run; exactly one TrainJob with the expected input/image/data references is created in the authorized workspace.",
+        "Revoke authority or replace the cluster between admission and create; dispatch refuses and retains a recoverable run state.",
+        "Lose the create response and redeliver the run; observe the original UID and never launch a second training job."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6470",
+        "https://github.com/aws-e/adp/issues/5536"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T05"
+    },
+    {
+      "key": "T06",
+      "title": "Expose training progress, logs and verified output artifacts",
+      "stream": "training-observation",
+      "batch": "R2",
+      "depends_on": [
+        "T05",
+        "C06"
+      ],
+      "reference": "modules/domain-apps/superplane/src/superplane-api/app/routers/cost.py",
+      "scope": "Add authorized training status/events/logs/results reads with resumable cursors. Correlate queue/job/pod/provider state, code revision and durable outputs. Separate execution success, verified artifacts, estimated/reserved/observed costs and observation freshness; redact private provider credentials.",
+      "cases": [
+        "Complete a fixture run and query status/results; the API reports the correct terminal state and verified output digests with source/run identity.",
+        "Lose observation or supply a missing/tampered output; retain last facts as stale or fail result verification instead of claiming success.",
+        "Reconnect logs/events after a cursor and restart the observer; no lost/duplicated logical events or unauthorized artifact access."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6470",
+        "https://github.com/aws-e/adp/issues/6471"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T06"
+    },
+    {
+      "key": "T07",
+      "title": "Cancel training and verify budget-related resource cleanup",
+      "stream": "training-runtime",
+      "batch": "R2",
+      "depends_on": [
+        "T05",
+        "T06",
+        "L02"
+      ],
+      "reference": "modules/domain-apps/superplane/executor/superplane_executor/recovery.py",
+      "scope": "Implement durable cancellation and deadline/budget-stop handling through existing execution authority. Stop pending acquisition and active jobs, reconcile provider allocation termination and retain partial-cleanup exposure. A stopped pod does not prove capacity release.",
+      "cases": [
+        "Cancel a queued and a running fixture run; job termination and owned allocation release are independently observed before cancellation completes.",
+        "Lose the provider terminate reply or partition the cluster; cancellation remains pending with owned resource exposure retained.",
+        "Repeat cancellation after a management restart; no resources are recreated and already released capacity is not billed as active in the projection."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5534",
+        "https://github.com/aws-e/adp/issues/6470"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T07"
+    },
+    {
+      "key": "T08",
+      "title": "Acquire SkyPilot capacity for approved queued demand",
+      "stream": "capacity",
+      "batch": "R2",
+      "depends_on": [
+        "T03",
+        "T05",
+        "C05"
+      ],
+      "reference": "modules/domain-apps/superplane/executor/superplane_executor/skypilot.py",
+      "scope": "Bind queued training demand to governed SkyPilot allocation operations, approved provider/region/fallback constraints and existing ownership inventory. Observe allocation progress and provider request IDs. Release idle or cancelled owned allocations under the run policy.",
+      "cases": [
+        "Admit a fixture run lacking capacity; create one approved allocation and bind it to the requesting run/workspace.",
+        "Lose selected capacity or encounter a quota failure; report/replan within approved fallbacks without switching location or forgetting partial resources.",
+        "Restart during allocation creation; reconcile its provider handle and avoid duplicate machines."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5536",
+        "https://github.com/aws-e/adp/issues/6473"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T08"
+    },
+    {
+      "key": "T09",
+      "title": "Join allocated machines and prove GPU node readiness",
+      "stream": "capacity",
+      "batch": "R2",
+      "depends_on": [
+        "T08",
+        "K03",
+        "N02"
+      ],
+      "reference": "modules/domain-apps/superplane/executor/superplane_executor/node_bootstrap_runner.py",
+      "scope": "Connect provider-created machines to their assigned cluster through the maintained node bootstrap adapter. Verify scoped join identity, private connectivity, node/provider binding, driver/device-plugin readiness and accelerator inventory before allowing queued training admission.",
+      "cases": [
+        "Join an approved fixture GPU machine; the node maps to the correct allocation/workspace and reports the expected allocatable accelerator.",
+        "Present a wrong-cluster join token, missing driver or unreachable node; training remains blocked and the failed machine stays tracked.",
+        "Repeat bootstrap after host restart; retain one node/allocation identity and do not clear workload isolation before readiness passes."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6473"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T09"
+    },
+    {
+      "key": "T10",
+      "title": "Add capacity comparison and plan approval to the UI",
+      "stream": "training-experience",
+      "batch": "R2",
+      "depends_on": [
+        "T02",
+        "T03",
+        "U01"
+      ],
+      "reference": "modules/domain-apps/superplane/ui/BatchPanel.tsx",
+      "scope": "Add a training request/option comparison journey with constraints, evidence freshness, conditional quota, setup/run cost, option selection and existing approval handoff. Handle zero/one/multiple options and changed plans. Derive fixtures from the backend training schemas.",
+      "cases": [
+        "Create a request, compare available options and approve one; the UI submits exactly that plan and displays its durable run reference.",
+        "Return zero options or invalidate an option before approval; show reasons/replan state and prevent silent fallback or provisioning.",
+        "Reload during approval/submission; recover the same request, plan and run without duplicate admission."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6470"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T10"
+    },
+    {
+      "key": "T11",
+      "title": "Add training planning and execution commands to the CLI",
+      "stream": "training-experience",
+      "batch": "R2",
+      "depends_on": [
+        "T02",
+        "T03",
+        "T06",
+        "T07"
+      ],
+      "reference": "modules/gateway/cli/adp-superplane.py",
+      "scope": "Implement proposed training request/evaluate/options/select/submit/status/logs/results/cancel commands over the shared API. Use existing login, tenant selection and approval flow; support stable JSON/cursors/idempotency and explicit nonzero error states. CLI performs no direct provider mutation.",
+      "cases": [
+        "Run the installed CLI from request through selected plan to verified results; response identifiers and output artifacts match the API.",
+        "Request an unavailable provider or unauthorized run and submit an expired plan; return typed errors without dispatch.",
+        "Reconnect after interrupted submission/log streaming; recover the existing run and resume from the saved cursor."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/5638",
+        "https://github.com/aws-e/adp/issues/6470"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T11"
+    },
+    {
+      "key": "T12",
+      "title": "Connect GitHub training intent to durable Superplane runs",
+      "stream": "agent-experience",
+      "batch": "R2",
+      "depends_on": [
+        "T03",
+        "T06",
+        "T07",
+        "T11"
+      ],
+      "reference": "modules/domain-apps/superplane/agent/personas/superplane-researcher.md",
+      "scope": "Provide the agent tool/skill contract for reading requirements, presenting capacity options, requesting existing approval, submitting the chosen plan and posting progress/results through durable deduplicated delivery. Bind issue identity to authenticated ADP authority; agent text cannot grant credentials or spend.",
+      "cases": [
+        "Process an authorized fixture issue through approved selection; associate one run and a traceable completion/result update with the originating issue.",
+        "Inject instructions to bypass approval or change location; tools enforce the recorded constraints and do not provision unapproved options.",
+        "Redeliver the issue event or stop the agent after submission; hosted execution continues and resumed reporting does not create another run or duplicate final update."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6470"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T12"
+    },
+    {
+      "key": "T13",
+      "title": "Attach optional MLflow tracking to training results",
+      "stream": "tracking",
+      "batch": "R2",
+      "depends_on": [
+        "T06"
+      ],
+      "reference": "modules/domain-apps/superplane/src/superplane-api/app/models/workspace.py",
+      "scope": "Add an optional tracking adapter with explicit placement, tenant/storage ownership and scoped artifact links. Correlate experiments/runs/metrics/model artifacts with durable Superplane runs. Basic status/output verification must work with tracking disabled or unavailable.",
+      "cases": [
+        "Run the same fixture with tracking enabled and disabled; both return verified outputs, while enabled mode links the correct experiment and metric history.",
+        "Deny the tracking store or use another tenant experiment; training status remains truthful and cross-tenant reads/writes are rejected.",
+        "Redeliver metrics/results after observer restart; tracking writes are deduplicated and the original training run identity is retained."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/4911",
+        "https://github.com/aws-e/adp/issues/6470"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T13"
+    },
+    {
+      "key": "T14",
+      "title": "Resume an approved run from a verified checkpoint",
+      "stream": "training-runtime",
+      "batch": "R2",
+      "depends_on": [
+        "T05",
+        "T06",
+        "T07"
+      ],
+      "reference": "modules/domain-apps/superplane/executor/superplane_executor/recovery_workload.py",
+      "scope": "Create an explicit continuation plan from a verified checkpoint with source run/version, compatible runtime/data references and authorized placement/data movement. Reuse existing approvals and execution accounting; preserve the failed/cancelled source run. This is checkpoint continuation, not live process migration.",
+      "cases": [
+        "Select a verified checkpoint and approve compatible continuation; the new run references its source and restores the expected recorded progress.",
+        "Use an incompatible runtime, changed checkpoint digest or forbidden data location; continuation is refused before capacity acquisition.",
+        "Repeat the continuation submission after response loss; return one successor run while preserving source history and cleanup."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6470",
+        "https://github.com/aws-e/adp/issues/6473"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T14"
+    },
+    {
+      "key": "T15",
+      "title": "Show run health, cancellation and results in the UI",
+      "stream": "training-experience",
+      "batch": "R2",
+      "depends_on": [
+        "T06",
+        "T07",
+        "T14",
+        "T10"
+      ],
+      "reference": "modules/domain-apps/superplane/ui/BatchPanel.tsx",
+      "scope": "Add run details with queue/capacity/training phases, freshness, logs, verified results, cost provenance, cancellation progress and explicit checkpoint continuation. Keep estimate and actual billing distinct; use backend-derived fixtures and ordinary workspace authorization.",
+      "cases": [
+        "Open queued, running and completed fixture runs; render their exact phase, current observations and authorized verified result links.",
+        "Lose observation or leave cleanup incomplete after cancellation; display stale/pending cleanup rather than a false completed state.",
+        "Reload/reenter and request checkpoint continuation; preserve the source run and show the same durable successor identity."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6471"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-T15"
+    },
+    {
+      "key": "P01",
+      "title": "Onboard Azure environments and verify their baseline",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "C02",
+        "C04",
+        "C05"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/account-provisioning/account_provisioning/ports.py",
+      "scope": "Implement the Azure environment adapter for an existing subscription: canonical provider/parent identity, approved baseline controls, ownership and scoped organization credentials. Advertise validated capabilities only. New Azure/GCP environment creation is P10/P11; Nebius creation remains explicitly unsupported unless a reviewed provider API is qualified.",
+      "cases": [
+        "Onboard a Azure fixture subscription; preserve its provider identity and produce fresh independently observed baseline conditions.",
+        "Use unsupported baseline controls, denied organization access or a foreign tenant; report explicit unsupported/Unknown/denied status and no fabricated Ready.",
+        "Restart during a baseline correction; reconcile the same environment and preserve shared ownership without duplicating the scope."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6475"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P01"
+    },
+    {
+      "key": "P04",
+      "title": "Onboard GCP environments and verify their baseline",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "C02",
+        "C04",
+        "C05"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/account-provisioning/account_provisioning/ports.py",
+      "scope": "Implement the GCP environment adapter for an existing project: canonical provider/parent identity, approved baseline controls, ownership and scoped organization credentials. Advertise validated capabilities only. New Azure/GCP environment creation is P10/P11; Nebius creation remains explicitly unsupported unless a reviewed provider API is qualified.",
+      "cases": [
+        "Onboard a GCP fixture project; preserve its provider identity and produce fresh independently observed baseline conditions.",
+        "Use unsupported baseline controls, denied organization access or a foreign tenant; report explicit unsupported/Unknown/denied status and no fabricated Ready.",
+        "Restart during a baseline correction; reconcile the same environment and preserve shared ownership without duplicating the scope."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6476"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P04"
+    },
+    {
+      "key": "P07",
+      "title": "Onboard Nebius environments and verify their baseline",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "C02",
+        "C04",
+        "C05"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/account-provisioning/account_provisioning/ports.py",
+      "scope": "Implement the Nebius environment adapter for an existing tenant: canonical provider/parent identity, approved baseline controls, ownership and scoped organization credentials. Advertise validated capabilities only. New Azure/GCP environment creation is P10/P11; Nebius creation remains explicitly unsupported unless a reviewed provider API is qualified.",
+      "cases": [
+        "Onboard a Nebius fixture tenant; preserve its provider identity and produce fresh independently observed baseline conditions.",
+        "Use unsupported baseline controls, denied organization access or a foreign tenant; report explicit unsupported/Unknown/denied status and no fabricated Ready.",
+        "Restart during a baseline correction; reconcile the same environment and preserve shared ownership without duplicating the scope."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6474"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P07"
+    },
+    {
+      "key": "P02",
+      "title": "Reconcile private Azure workspace networking",
+      "stream": "provider-networking",
+      "batch": "R3",
+      "depends_on": [
+        "P01",
+        "N01",
+        "C05"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/network.py",
+      "scope": "Implement the Azure network adapter and declared management-to-workspace private transport, DNS and service reachability. Reuse the common ownership/status contract while preserving provider-specific capabilities. Specify supported regional/cross-cloud topology in the profile; do not silently substitute a public endpoint.",
+      "cases": [
+        "Provision or adopt a Azure fixture network and verify private management API/service connectivity against its selected topology.",
+        "Break private DNS/routes or present an unauthorized peer; readiness fails visibly and no broad/public fallback is installed.",
+        "Resume partial network creation/deletion; retain provider request/resource bindings and preserve supplied/shared networking."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6475",
+        "https://github.com/aws-e/adp/issues/7597"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P02"
+    },
+    {
+      "key": "P05",
+      "title": "Reconcile private GCP workspace networking",
+      "stream": "provider-networking",
+      "batch": "R3",
+      "depends_on": [
+        "P04",
+        "N01",
+        "C05"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/network.py",
+      "scope": "Implement the GCP network adapter and declared management-to-workspace private transport, DNS and service reachability. Reuse the common ownership/status contract while preserving provider-specific capabilities. Specify supported regional/cross-cloud topology in the profile; do not silently substitute a public endpoint.",
+      "cases": [
+        "Provision or adopt a GCP fixture network and verify private management API/service connectivity against its selected topology.",
+        "Break private DNS/routes or present an unauthorized peer; readiness fails visibly and no broad/public fallback is installed.",
+        "Resume partial network creation/deletion; retain provider request/resource bindings and preserve supplied/shared networking."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6476",
+        "https://github.com/aws-e/adp/issues/7597"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P05"
+    },
+    {
+      "key": "P08",
+      "title": "Reconcile private Nebius workspace networking",
+      "stream": "provider-networking",
+      "batch": "R3",
+      "depends_on": [
+        "P07",
+        "N01",
+        "C05"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/network.py",
+      "scope": "Implement the Nebius network adapter and declared management-to-workspace private transport, DNS and service reachability. Reuse the common ownership/status contract while preserving provider-specific capabilities. Specify supported regional/cross-cloud topology in the profile; do not silently substitute a public endpoint.",
+      "cases": [
+        "Provision or adopt a Nebius fixture network and verify private management API/service connectivity against its selected topology.",
+        "Break private DNS/routes or present an unauthorized peer; readiness fails visibly and no broad/public fallback is installed.",
+        "Resume partial network creation/deletion; retain provider request/resource bindings and preserve supplied/shared networking."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6474",
+        "https://github.com/aws-e/adp/issues/7597"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P08"
+    },
+    {
+      "key": "P03",
+      "title": "Implement the Azure cluster factory adapter",
+      "stream": "provider-clusters",
+      "batch": "R3",
+      "depends_on": [
+        "P02",
+        "K01",
+        "K03",
+        "W02",
+        "P12"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/runtime.py",
+      "scope": "Implement AKS create/adopt/observe/retire through the approved provider adapter and existing execution owner. Bind cluster identity, initial capacity, private access and ongoing Argo identity to the common readiness contract. Provider-specific infrastructure mappings belong inside this adapter; do not reuse AWS readiness as evidence. Consume the reviewed P12 infrastructure recipe; do not introduce a second provider-infrastructure implementation.",
+      "cases": [
+        "Create a Azure fixture cluster and adopt a supplied cluster; both expose correct node/access/current-generation readiness and ownership.",
+        "Interrupt provider creation or deny management access; retain partial resources/handles and block workload publication.",
+        "Restart reconciliation and retire the owned fixture; avoid duplicate clusters and preserve adopted/shared resources."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6475"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P03"
+    },
+    {
+      "key": "P06",
+      "title": "Implement the GCP cluster factory adapter",
+      "stream": "provider-clusters",
+      "batch": "R3",
+      "depends_on": [
+        "P05",
+        "K01",
+        "K03",
+        "W02",
+        "P13"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/runtime.py",
+      "scope": "Implement GKE create/adopt/observe/retire through the approved provider adapter and existing execution owner. Bind cluster identity, initial capacity, private access and ongoing Argo identity to the common readiness contract. Provider-specific infrastructure mappings belong inside this adapter; do not reuse AWS readiness as evidence. Consume the reviewed P13 infrastructure recipe; do not introduce a second provider-infrastructure implementation.",
+      "cases": [
+        "Create a GCP fixture cluster and adopt a supplied cluster; both expose correct node/access/current-generation readiness and ownership.",
+        "Interrupt provider creation or deny management access; retain partial resources/handles and block workload publication.",
+        "Restart reconciliation and retire the owned fixture; avoid duplicate clusters and preserve adopted/shared resources."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6476"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P06"
+    },
+    {
+      "key": "P09",
+      "title": "Implement the Nebius cluster factory adapter",
+      "stream": "provider-clusters",
+      "batch": "R3",
+      "depends_on": [
+        "P08",
+        "K01",
+        "K03",
+        "W02",
+        "P14"
+      ],
+      "reference": "modules/domain-apps/superplane/workspace_provisioning/runtime.py",
+      "scope": "Implement managed Kubernetes create/adopt/observe/retire through the approved provider adapter and existing execution owner. Bind cluster identity, initial capacity, private access and ongoing Argo identity to the common readiness contract. Provider-specific infrastructure mappings belong inside this adapter; do not reuse AWS readiness as evidence. Consume the reviewed P14 infrastructure recipe; do not introduce a second provider-infrastructure implementation.",
+      "cases": [
+        "Create a Nebius fixture cluster and adopt a supplied cluster; both expose correct node/access/current-generation readiness and ownership.",
+        "Interrupt provider creation or deny management access; retain partial resources/handles and block workload publication.",
+        "Restart reconciliation and retire the owned fixture; avoid duplicate clusters and preserve adopted/shared resources."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6474"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P09"
+    },
+    {
+      "key": "P10",
+      "title": "Create Azure subscriptions through approved billing authority",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "P01"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/account-provisioning/account_provisioning/creation_runner.py",
+      "scope": "Add subscription creation for the explicitly supported Azure billing/tenant model, with approved placement, request handles and baseline handoff. First checkpoint qualifies the provider API/billing prerequisites and publishes the supported capability matrix; unavailable creation stays disabled. Keep account closure separate.",
+      "cases": [
+        "Submit an approved creation request under a qualified billing fixture; persist its request/subscription identity and hand off the same subscription to baseline onboarding.",
+        "Use an unsupported billing model or lose the response without resolvable identity; report unsupported/Unknown and never repeat creation blindly.",
+        "Resume an asynchronous create after controller restart; poll the original provider operation and retain the same subscription."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6475"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P10"
+    },
+    {
+      "key": "P11",
+      "title": "Create GCP projects through approved organization authority",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "P04"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/account-provisioning/account_provisioning/creation_runner.py",
+      "scope": "Add project creation under an approved organization/folder and billing binding, preserving asynchronous operation IDs and baseline handoff. Validate quotas, placement and billing prerequisites before dispatch. Project deletion/retention follows explicit ownership and lifecycle authority.",
+      "cases": [
+        "Create an approved fixture project and establish its billing/baseline; the environment binding references one provider project identity.",
+        "Deny folder/billing access or lose a creation acknowledgement; keep the partial operation visible and do not choose another parent or project ID.",
+        "Resume after creation succeeds but baseline fails; reuse the same project and continue only missing approved baseline steps."
+      ],
+      "legacy": [
+        "https://github.com/aws-e/adp/issues/6476"
+      ],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P11"
+    },
+    {
+      "key": "R01",
+      "title": "Deploy one compatible AWS factory release",
+      "stream": "release-acceptance",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C02",
+        "C03",
+        "C04",
+        "C05",
+        "C06",
+        "C07",
+        "C08",
+        "A01",
+        "A02",
+        "N01",
+        "N02",
+        "N03",
+        "K01",
+        "K02",
+        "W01",
+        "W02",
+        "W03",
+        "W04",
+        "U01",
+        "U02",
+        "L01",
+        "L02",
+        "M01",
+        "M02",
+        "M03",
+        "K03",
+        "M04"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Select the completed R1 implementation set, build/pin changed Superplane artifacts once, expand compatible schemas and deploy through the maintained installer. Run scoped rollout smoke checks. Adopt and verify current serving Gateway/scheduler compatibility despite concurrent shared releases. Keep strategic mutation disabled until readiness and authority checks pass.",
+      "cases": [
+        "Deploy one selected R1 batch to the authorized qualification environment; record source/image/schema/target and all component health in one release receipt.",
+        "Change serving Gateway or find an incompatible worker/schema during rollout; hold strategic activation, preserve current ADP service and report the actual blocker.",
+        "Rerun after response loss; reconcile the recorded release and do not replay migrations, apply infrastructure or restore an old shared Gateway."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-R01"
+    },
+    {
+      "key": "V01",
+      "title": "Qualify AWS creation, interruption and retirement on the deployed release",
+      "stream": "release-acceptance",
+      "batch": "R1",
+      "depends_on": [
+        "R01"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Run bounded ordinary API/UI/CLI acceptance against the R1 release, using isolated owned fixtures and existing approved target/budget. Cover create-to-Ready, one forced bootstrap interruption and ownership-aware retirement. Test drivers/procedures are delivered in this story; no second deployment unless a repair changes artifacts.",
+      "cases": [
+        "Create a dedicated AWS workspace through ordinary clients; verify all readiness checks, Fresh: Healthy, reload/reentry and matching API/CLI identities.",
+        "Interrupt a bootstrap worker at a recorded grant/component boundary; a supported authorized continuation reaches Ready on the same cluster with no counter reset or duplicate resource.",
+        "Retire the fixture and compare provider inventories; owned resources are absent while shared/supplied resources and main ADP remain healthy."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-V01"
+    },
+    {
+      "key": "R04",
+      "title": "Cut over the repaired existing workspace using the qualified release",
+      "stream": "release-acceptance",
+      "batch": "R1",
+      "depends_on": [
+        "V01",
+        "M01",
+        "M02",
+        "M03",
+        "M04"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Use the private adoption map produced by current-workspace recovery and the already qualified R1 artifacts. Refresh inventory and authority, shadow-compare, fence the old writer and activate strategic ownership for this one workspace. This is an activation/ownership operation, not a new build or cluster recreation. Require current workspace health before cutover.",
+      "cases": [
+        "Cut over the selected repaired workspace; its account/cluster/namespace/workspace IDs, Terraform lineage and complete operation history remain identical.",
+        "Inject a cutover failure after fencing or observe any identity/ownership mismatch; stop activation and complete the recorded fallback without two active writers.",
+        "Reload/reenter and restart strategic controllers after cutover; Ready/fresh observations persist and no existing infrastructure is recreated."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-R04"
+    },
+    {
+      "key": "R02",
+      "title": "Deploy one compatible training and capacity release",
+      "stream": "release-acceptance",
+      "batch": "R2",
+      "depends_on": [
+        "R01",
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T09",
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T15"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Build changed R2 components once, deploy their compatible schema/API/worker/UI/CLI/profile set and enable training only on qualified workspaces. Reuse the R1 platform and unchanged artifacts. Verify current Gateway/scheduler compatibility without pausing unrelated shared deployments.",
+      "cases": [
+        "Deploy the selected R2 batch and training profile; record exact artifacts and verify existing workspace flows still work.",
+        "Select an incompatible Trainer/profile/schema or observe Gateway drift; keep training disabled while retaining current workspace operation.",
+        "Rerun the release after acknowledgement loss; no duplicate migration, profile ownership transfer or active TrainJob is created."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-R02"
+    },
+    {
+      "key": "V02",
+      "title": "Qualify planning, training, recovery and verified cleanup",
+      "stream": "release-acceptance",
+      "batch": "R2",
+      "depends_on": [
+        "R02"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Exercise ordinary UI/CLI/API training flows on the R2 release with an approved small workload and bounded capacity. Include no-capacity planning, selected-plan approval, worker loss, verified output, cancellation and checkpoint continuation. Collect actual billing/resource observations separately from estimates.",
+      "cases": [
+        "Compare options, approve one, run the workload and download verified outputs; issue/UI/CLI/API refer to one durable run and selected plan.",
+        "Exercise stale capacity, duplicate submission, agent exit and cancellation during acquisition; no unapproved allocation or lost cleanup exposure occurs.",
+        "Resume from a verified checkpoint then clean up; output lineage is preserved and actual provider inventory shows released owned capacity."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-V02"
+    },
+    {
+      "key": "P12",
+      "title": "Define the reviewed Azure cluster infrastructure recipe",
+      "stream": "provider-infrastructure",
+      "batch": "R3",
+      "depends_on": [
+        "C01",
+        "P02"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/workspaces/README.md",
+      "scope": "Deliver a versioned minimal AKS infrastructure recipe that consumes the existing network binding and defines control plane, initial nodes and scoped access outputs. Use the selected provider Terraform/SDK mechanism and record supported settings and ownership. This story owns rendering/plan guards and offline provider contract checks; P03 owns execution/reconciliation.",
+      "cases": [
+        "Render/plan a minimal Azure cluster against fixed inputs; outputs expose stable cluster/access/node bindings and only declared resources are created.",
+        "Request unsupported settings or introduce deletion of supplied networking; validation rejects the plan before mutation.",
+        "Regenerate the recipe with the same inputs and then change initial capacity; unrelated network/cluster identities and ownership are preserved."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P12"
+    },
+    {
+      "key": "P13",
+      "title": "Define the reviewed GCP cluster infrastructure recipe",
+      "stream": "provider-infrastructure",
+      "batch": "R3",
+      "depends_on": [
+        "C01",
+        "P05"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/workspaces/README.md",
+      "scope": "Deliver a versioned minimal GKE infrastructure recipe that consumes the existing network binding and defines control plane, initial nodes and scoped access outputs. Use the selected provider Terraform/SDK mechanism and record supported settings and ownership. This story owns rendering/plan guards and offline provider contract checks; P06 owns execution/reconciliation.",
+      "cases": [
+        "Render/plan a minimal GCP cluster against fixed inputs; outputs expose stable cluster/access/node bindings and only declared resources are created.",
+        "Request unsupported settings or introduce deletion of supplied networking; validation rejects the plan before mutation.",
+        "Regenerate the recipe with the same inputs and then change initial capacity; unrelated network/cluster identities and ownership are preserved."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P13"
+    },
+    {
+      "key": "P14",
+      "title": "Define the reviewed Nebius cluster infrastructure recipe",
+      "stream": "provider-infrastructure",
+      "batch": "R3",
+      "depends_on": [
+        "C01",
+        "P08"
+      ],
+      "reference": "modules/domain-apps/superplane/infra/workspaces/README.md",
+      "scope": "Deliver a versioned minimal managed Kubernetes infrastructure recipe that consumes the existing network binding and defines control plane, initial nodes and scoped access outputs. Use the selected provider Terraform/SDK mechanism and record supported settings and ownership. This story owns rendering/plan guards and offline provider contract checks; P09 owns execution/reconciliation.",
+      "cases": [
+        "Render/plan a minimal Nebius cluster against fixed inputs; outputs expose stable cluster/access/node bindings and only declared resources are created.",
+        "Request unsupported settings or introduce deletion of supplied networking; validation rejects the plan before mutation.",
+        "Regenerate the recipe with the same inputs and then change initial capacity; unrelated network/cluster identities and ownership are preserved."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "implementation",
+      "source_requirement": "SPF-P14"
+    },
+    {
+      "key": "R03",
+      "title": "Deploy additional provider adapters as one compatible batch",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "R01",
+        "P01",
+        "P04",
+        "P07",
+        "P02",
+        "P05",
+        "P08",
+        "P03",
+        "P06",
+        "P09",
+        "P10",
+        "P11",
+        "P12",
+        "P13",
+        "P14"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Package Azure, GCP and Nebius adapters into one selected R3 release, reuse unchanged components and roll out once. Keep each provider capability disabled until its own live qualification passes. An unavailable external provider fixture does not require repeated shared deployment or block independent qualification.",
+      "cases": [
+        "Deploy the selected R3 artifact set once; existing AWS and enabled training flows remain compatible and provider capabilities are initially qualification-gated.",
+        "Remove one provider credential/fixture; that provider stays unavailable with an explicit reason while other enabled providers continue.",
+        "Retry the release or qualify providers at different times; reuse identical artifact receipts rather than redeploying the whole platform."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-R03"
+    },
+    {
+      "key": "V03",
+      "title": "Qualify the Azure workspace lifecycle",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "R03",
+        "P03",
+        "P10"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Build and run the Azure live acceptance driver against the R3 release: existing-environment onboarding, supported new-environment creation, private cluster access, application readiness, interrupted reconciliation and retirement. Use authorized provider-specific fixtures and independent inventory observations; unsupported capabilities remain disabled.",
+      "cases": [
+        "Create/adopt a Azure workspace through ordinary API/CLI and verify private access plus current-generation Ready across reload/reentry.",
+        "Interrupt provider creation/bootstrap and deny one capability; recovery preserves resource identity and the unsupported capability is truthfully unavailable.",
+        "Retire the owned fixture and rerun observation; owned resources are absent, supplied environments/shared networks survive, and no controller recreates them."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-V03"
+    },
+    {
+      "key": "V04",
+      "title": "Qualify the GCP workspace lifecycle",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "R03",
+        "P06",
+        "P11"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Build and run the GCP live acceptance driver against the R3 release: existing-environment onboarding, supported new-environment creation, private cluster access, application readiness, interrupted reconciliation and retirement. Use authorized provider-specific fixtures and independent inventory observations; unsupported capabilities remain disabled.",
+      "cases": [
+        "Create/adopt a GCP workspace through ordinary API/CLI and verify private access plus current-generation Ready across reload/reentry.",
+        "Interrupt provider creation/bootstrap and deny one capability; recovery preserves resource identity and the unsupported capability is truthfully unavailable.",
+        "Retire the owned fixture and rerun observation; owned resources are absent, supplied environments/shared networks survive, and no controller recreates them."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-V04"
+    },
+    {
+      "key": "V05",
+      "title": "Qualify the Nebius workspace lifecycle",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "R03",
+        "P09",
+        "P07"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Build and run the Nebius live acceptance driver against the R3 release: existing-environment onboarding, supported new-environment creation, private cluster access, application readiness, interrupted reconciliation and retirement. Use authorized provider-specific fixtures and independent inventory observations; unsupported capabilities remain disabled.",
+      "cases": [
+        "Create/adopt a Nebius workspace through ordinary API/CLI and verify private access plus current-generation Ready across reload/reentry.",
+        "Interrupt provider creation/bootstrap and deny one capability; recovery preserves resource identity and the unsupported capability is truthfully unavailable.",
+        "Retire the owned fixture and rerun observation; owned resources are absent, supplied environments/shared networks survive, and no controller recreates them."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-V05"
+    },
+    {
+      "key": "V06",
+      "title": "Qualify an explicitly approved cross-provider checkpoint continuation",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "V02",
+        "V04",
+        "T14"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Qualify the first AWS-to-GCP source/target pair from approved profiles, independently of Azure/Nebius qualification. Verify compatible checkpoint/runtime, explicit data-movement approval, location constraints, transfer cost and independently observed source/target cleanup. No live migration claim or automatic provider switching.",
+      "cases": [
+        "Approve continuation from a verified checkpoint to the selected qualified provider; the successor preserves lineage and produces verified results.",
+        "Deny data movement or change the target outside approved bounds; no transfer or capacity acquisition occurs.",
+        "Interrupt transfer/target dispatch and resume; retain one successor and verify source/target owned resource cleanup separately."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-V06"
+    },
+    {
+      "key": "V07",
+      "title": "Qualify new AWS account creation and baseline recovery",
+      "stream": "release-acceptance",
+      "batch": "R1",
+      "depends_on": [
+        "R01",
+        "A02"
+      ],
+      "reference": "modules/domain-apps/superplane/installation/README.md",
+      "scope": "Run the new-account factory path under explicitly approved organization/account-vending authority using a dedicated fixture. Verify request-handle recovery, approved placement and baseline before a workspace can depend on it. This acceptance runs independently of existing-account V01/R04; account closure remains separately authorized.",
+      "cases": [
+        "Create one approved fixture account and finish its baseline/placement; the provider request, account and environment identity remain traceable through the ordinary factory API.",
+        "Interrupt while account creation is pending or baseline fails; resume the same account without a second CreateAccount call.",
+        "Remove owned test workloads and record the account retention disposition; shared organization controls and unrelated accounts are unchanged."
+      ],
+      "legacy": [],
+      "size": "M",
+      "kind": "operations",
+      "source_requirement": "SPF-V07"
+    }
+  ]
+}

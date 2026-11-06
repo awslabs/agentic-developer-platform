@@ -15,10 +15,96 @@ import subprocess
 from pathlib import Path
 
 
+OWNED_RESOURCES = {
+    "aws_iam_role.installer",
+    "aws_iam_role_policy.installer",
+    "aws_eks_access_entry.installer",
+    "aws_eks_access_policy_association.installer",
+    "aws_eks_access_policy_association.read",
+}
+
+
+def retained_owner(state, role):
+    """An update needs the existing exact app state, never adoption by name."""
+    resources = {}
+    for resource in state.get("resources", []):
+        if resource.get("mode") != "managed":
+            continue
+        address = resource["type"] + "." + resource["name"]
+        if resource.get("module") or address in resources:
+            raise SystemExit("Retained installer state has unexpected ownership")
+        resources[address] = resource
+    if set(resources) != OWNED_RESOURCES or not state.get("lineage"):
+        raise SystemExit("Update requires the complete retained installer state")
+    instances = resources["aws_iam_role.installer"].get("instances", [])
+    if len(instances) != 1 or instances[0].get("deposed"):
+        raise SystemExit("Installer role state is not a single current instance")
+    attributes = instances[0]["attributes"]
+    if any(
+        attributes.get(key) != role[remote]
+        for key, remote in [
+            ("name", "RoleName"),
+            ("arn", "Arn"),
+            ("unique_id", "RoleId"),
+        ]
+    ):
+        raise SystemExit(
+            "Retained installer role differs from the live immutable identity"
+        )
+
+
+def inspect_changes(plan, *, update):
+    changes = [
+        {"address": r["address"], "actions": r["change"]["actions"]}
+        for r in plan.get("resource_changes", [])
+        if r.get("mode") == "managed"
+    ]
+    if (
+        len(changes) != len(OWNED_RESOURCES)
+        or {r["address"] for r in changes} != OWNED_RESOURCES
+    ):
+        raise SystemExit(
+            "Access plan must contain exactly the five app-owned resources"
+        )
+    for change in changes:
+        allowed = [["create"]] if not update else [["no-op"]]
+        if update and change["address"] == "aws_iam_role_policy.installer":
+            allowed.append(["update"])
+        if change["actions"] not in allowed:
+            raise SystemExit(
+                "Access update may change only the installer policy; creation, replacement, "
+                "deletion, trust and Kubernetes access changes require separate review"
+                if update
+                else "Initial access plan must create only the five app-owned resources"
+            )
+    return changes
+
+
+def planned_owner(plan, role):
+    """Refresh must not silently accept a recreated role after the state check."""
+    resource = next(
+        r for r in plan["resource_changes"] if r["address"] == "aws_iam_role.installer"
+    )
+    for side in ("before", "after"):
+        attributes = resource["change"].get(side) or {}
+        if (
+            attributes.get("arn") != role["Arn"]
+            or attributes.get("unique_id") != role["RoleId"]
+        ):
+            raise SystemExit(
+                "Refreshed plan differs from the retained immutable installer role"
+            )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--configuration", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Plan only an installer policy update after verifying retained state ownership",
+    )
     args = parser.parse_args()
     values = json.loads(args.configuration.read_text())
     expected = {
@@ -33,10 +119,16 @@ def main():
         "installer_policy_json",
         "namespace_bootstrap",
     }
-    if set(values) != expected:
+    if set(values) - {"native_runtime_state_access"} != expected:
         raise SystemExit(
             "Configuration must contain exactly the module's explicit inputs"
         )
+    values.setdefault("native_runtime_state_access", False)
+    if any(
+        type(values[key]) is not bool
+        for key in ("namespace_bootstrap", "native_runtime_state_access")
+    ):
+        raise SystemExit("Installer access selections must be booleans")
     if not re.fullmatch(r"[0-9]{12}", values["account_id"]) or not re.fullmatch(
         r"[a-f0-9]{24}", values["installation_id"]
     ):
@@ -75,7 +167,19 @@ def main():
         capture_output=True,
         check=False,
     )
-    if check.returncode == 0 or "NoSuchEntity" not in check.stderr:
+    existing_role = None
+    if args.update:
+        if check.returncode != 0:
+            raise SystemExit(
+                "Update requires the existing installer role; lookup failed"
+            )
+        existing_role = json.loads(check.stdout)["Role"]
+        if (
+            existing_role["Arn"]
+            != f"arn:aws:iam::{values['account_id']}:role/{target_role}"
+        ):
+            raise SystemExit("Existing installer role differs from the selected target")
+    elif check.returncode == 0 or "NoSuchEntity" not in check.stderr:
         raise SystemExit(
             "Target role exists or absence cannot be established; reconcile its state owner first"
         )
@@ -106,6 +210,7 @@ def main():
     for path in output.iterdir():
         path.chmod(0o600)
     tf = ["terraform", f"-chdir={output}"]
+    retained = None
     with (output / "terraform.log").open("w") as log:
         subprocess.run(
             [*tf, "init", "-input=false", "-backend-config=backend.json"],
@@ -113,6 +218,17 @@ def main():
             stderr=subprocess.STDOUT,
             check=True,
         )
+        if args.update:
+            state_bytes = subprocess.check_output([*tf, "state", "pull"])
+            state = json.loads(state_bytes)
+            retained_owner(state, existing_role)
+            retained = {
+                "lineage": state["lineage"],
+                "serial": state["serial"],
+                "state_sha256": hashlib.sha256(state_bytes).hexdigest(),
+                "role_arn": existing_role["Arn"],
+                "role_id": existing_role["RoleId"],
+            }
         # Planning is read-only: no remote state lock object is written. Apply
         # must use normal locking and reject changed source/state/plan bytes.
         subprocess.run(
@@ -124,27 +240,13 @@ def main():
     raw = subprocess.check_output([*tf, "show", "-json", "installation.tfplan"])
     (output / "plan.json").write_bytes(raw)
     plan = json.loads(raw)
-    changes = [
-        {"address": r["address"], "actions": r["change"]["actions"]}
-        for r in plan.get("resource_changes", [])
-        if r.get("mode") == "managed"
-    ]
-    allowed = {
-        "aws_iam_role.installer",
-        "aws_iam_role_policy.installer",
-        "aws_eks_access_entry.installer",
-        "aws_eks_access_policy_association.installer",
-        "aws_eks_access_policy_association.read",
-    }
-    if {r["address"] for r in changes} != allowed or any(
-        r["actions"] != ["create"] for r in changes
-    ):
-        raise SystemExit(
-            "Initial access plan must create only the five app-owned installer resources"
-        )
+    changes = inspect_changes(plan, update=args.update)
+    if args.update:
+        planned_owner(plan, existing_role)
     report = {
         "status": "planned-not-approved",
         "source_files": hashes,
+        "planner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "operator": {
             "account": caller["Account"],
             "role_arn": role["Arn"],
@@ -153,6 +255,9 @@ def main():
         "backend": backend,
         "changes": changes,
         "namespace_bootstrap": values["namespace_bootstrap"],
+        "native_runtime_state_access": values["native_runtime_state_access"],
+        "mode": "update" if args.update else "initial",
+        "retained_owner": retained,
         "plan_sha256": hashlib.sha256(
             (output / "installation.tfplan").read_bytes()
         ).hexdigest(),

@@ -15,6 +15,10 @@
 # Environment variables (optional):
 #   SOURCE_SHA    — Git SHA to use in the S3 key (default: HEAD)
 #   POLL_INTERVAL — Seconds between status polls (default: 15)
+#   CODEBUILD_BUILDSPEC_OVERRIDE — buildspec path inside the source zip to run
+#                   instead of the project's default (--buildspec-override)
+#   CODEBUILD_COMPUTE_TYPE_OVERRIDE — compute type for this build only, e.g.
+#                   BUILD_GENERAL1_MEDIUM (--compute-type-override)
 #
 # Each env-var-override is a CodeBuild format string:
 #   "name=KEY,value=VAL"
@@ -68,10 +72,21 @@ CMD=(aws codebuild start-build
     "name=ADP_SOURCE_SHA,value=${SOURCE_SHA},type=PLAINTEXT"
 )
 
-# Append caller-provided env var overrides
+# Append caller-provided env var overrides. They must directly follow the
+# --environment-variables-override list above: any other option in between ends
+# the list and the CLI rejects the rest as "Unknown options".
 for override in "$@"; do
   CMD+=("$override")
 done
+
+if [ -n "${CODEBUILD_BUILDSPEC_OVERRIDE:-}" ]; then
+  CMD+=(--buildspec-override "$CODEBUILD_BUILDSPEC_OVERRIDE")
+fi
+if [ -n "${CODEBUILD_COMPUTE_TYPE_OVERRIDE:-}" ]; then
+  [[ "$CODEBUILD_COMPUTE_TYPE_OVERRIDE" =~ ^BUILD_(GENERAL1|LAMBDA_[0-9]+GB)_[A-Z0-9]+$ ]] \
+    || { echo "CODEBUILD_COMPUTE_TYPE_OVERRIDE is not a CodeBuild compute type: $CODEBUILD_COMPUTE_TYPE_OVERRIDE" >&2; exit 2; }
+  CMD+=(--compute-type-override "$CODEBUILD_COMPUTE_TYPE_OVERRIDE")
+fi
 
 CMD+=(--query 'build.id' --output text)
 

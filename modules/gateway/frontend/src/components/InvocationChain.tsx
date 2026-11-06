@@ -8,6 +8,7 @@
  * Shows root human indicator and whether the chain is human-rooted.
  */
 
+import { useActivityScope } from '@/contexts/ActivityScopeContext';
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Button } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
@@ -42,6 +43,7 @@ const STATUS_GLYPHS: Record<InvocationStatus, { glyph: string; colorClass: strin
   blocked: { glyph: '✗', colorClass: 'text-gray-500' },
   skipped: { glyph: '✗', colorClass: 'text-gray-500' },
   budget_stopped: { glyph: '⊘', colorClass: 'text-amber-600 dark:text-amber-400' },
+  tool_authorized: { glyph: '✓', colorClass: 'text-blue-600 dark:text-blue-400' },
   // Issue #3964. The typing did its job: adding `aborted` to the union failed the
   // build here, which is the only reason this map is not now rendering a
   // deliberately stopped run as "✗ No-op" via the fallback below. Glyph and colour
@@ -168,18 +170,20 @@ export default function InvocationChain({
   onNodeClick,
   includeNonTriggering = false,
 }: InvocationChainProps) {
+  const activityScope = useActivityScope();
   const {
     data,
     isLoading,
     error,
     refetch,
   } = useQuery<InvocationChainResponse>({
-    queryKey: ['invocation-chain', correlationId, isAdmin, tenantId, includeNonTriggering],
+    queryKey: ['invocation-chain', activityScope, correlationId, isAdmin, tenantId, includeNonTriggering],
     queryFn: () =>
       isAdmin
         ? getAdminInvocationChain(correlationId, tenantId, includeNonTriggering)
-        : getMyInvocationChain(correlationId, includeNonTriggering),
+        : getMyInvocationChain(correlationId, includeNonTriggering, activityScope),
     enabled: !!correlationId,
+    ...(activityScope ? { staleTime: 0, gcTime: 0, refetchInterval: 30_000 } : {}),
   });
 
   if (isLoading) {

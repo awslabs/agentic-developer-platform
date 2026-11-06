@@ -15,10 +15,17 @@ from src.shared.models.organization import Department, ServiceAccount, Team
 from src.shared.models.persona_models import ServicePrincipalAlias
 
 
-def _refuse():
+def _refuse(detail: str | None = None):
+    """Refuse with the stable reason; ``detail`` names the condition for operators.
+
+    The reason is the machine-readable code every caller matches on. The detail
+    rides in ``str(error)`` (``<reason>: <detail>``), which the chat execution
+    journals as ``error_detail`` and surfaces to the user (#8048), so a refusal
+    says *why* the hierarchy is unavailable. Ids only; never request content.
+    """
     from src.agentauth.model_policy import ModelPolicyError
 
-    return ModelPolicyError("task_identity_hierarchy_unavailable")
+    return ModelPolicyError("task_identity_hierarchy_unavailable", detail=detail)
 
 
 async def _cognito_assignment(alias, tenant):
@@ -88,6 +95,12 @@ async def resolve_task_identity_context(db, context):
     try:
         assignments = []
         if context.account_type == "human":
+            # ``context.team_id`` comes from the tenant member row the chat launch
+            # bound (``chat_authority.tenant_member_principal``). A human whose
+            # principal is a home-org row has no team here; the refusal must say so
+            # rather than read as a generic hierarchy outage (#8011).
+            if not context.team_id:
+                raise _refuse(f"human principal has no team in tenant {context.org_id}")
             assignments.append((context.team_id, None))
         else:
             aliases = list(
@@ -102,7 +115,7 @@ async def resolve_task_identity_context(db, context):
                 )
             )
             if not aliases:
-                raise _refuse()
+                raise _refuse(f"service principal has no active alias in tenant {context.org_id}")
             registry = []
             for alias in aliases:
                 if alias.alias_source == "cognito_m2m":
@@ -129,7 +142,7 @@ async def resolve_task_identity_context(db, context):
         resolved = set()
         for team_id, department_id in assignments:
             if not team_id:
-                raise _refuse()
+                raise _refuse(f"identity record carries no team in tenant {context.org_id}")
             row = (
                 await db.execute(
                     select(Team.id, Department.id)
@@ -139,13 +152,13 @@ async def resolve_task_identity_context(db, context):
                 )
             ).first()
             if row is None:
-                raise _refuse()
+                raise _refuse(f"team {team_id} is not registered with a department in tenant {context.org_id}")
             current_team, current_department = row
             if department_id is not None and department_id != current_department:
-                raise _refuse()
+                raise _refuse(f"team {team_id} and its recorded department disagree in tenant {context.org_id}")
             resolved.add((current_team, current_department))
         if len(resolved) != 1:
-            raise _refuse()
+            raise _refuse(f"identity records resolve to {len(resolved)} hierarchies in tenant {context.org_id}")
         team_id, department_id = resolved.pop()
         return context.model_copy(update={"team_id": team_id, "department_id": department_id})
     except ModelPolicyError:

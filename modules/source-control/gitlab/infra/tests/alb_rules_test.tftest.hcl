@@ -19,6 +19,14 @@ variables {
 run "http_listener_default_action_is_forward" {
   command = plan
 
+  override_resource {
+    target          = aws_lb_target_group.gitlab
+    override_during = plan
+    values = {
+      arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/gitlab/0000000000000000"
+    }
+  }
+
   override_data {
     target = data.aws_caller_identity.current
     values = {

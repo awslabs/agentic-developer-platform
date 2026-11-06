@@ -118,7 +118,9 @@ def test_build_action_refuses_missing_or_wrong_role_without_aws_calls(role, allo
 )
 def test_eval_missing_role_guard_runs_before_credentials(job, role, allowed):
     document = workflow("eval-cli-uplift.yml")
-    assert document["jobs"][job]["environment"] == "${{ inputs.environment || 'dev' }}"
+    assert document["jobs"][job]["environment"] == (
+        "${{ inputs.target_environment || inputs.environment || 'dev' }}"
+    )
     steps = document["jobs"][job]["steps"]
     guard_at = next(
         i

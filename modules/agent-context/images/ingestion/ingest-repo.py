@@ -24,6 +24,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -40,7 +41,7 @@ from config import settings
 from lang_go import extract_go_func_name as _extract_go_func_name
 from lang_go import extract_go_type as _extract_go_type
 from repo_acl import resolve_allowed_principals
-from scope import IngestionScope, ScopeValidationError, compute_s3_prefix, parse_scope_from_env
+from scope import IngestionScope, ScopeValidationError, compute_s3_prefix, parse_scope_from_env, asset_storage_prefix, validate_ingestion_attempt
 from scip_indexer import index_repo as scip_index_repo, detect_languages, cleanup_indexing_artifacts
 from scip_ingester import ingest_scip, merge_graphs
 from scip_neptune_csv import (
@@ -154,7 +155,10 @@ class _S3WriterAdapter:
 
 
 def _get_dynamodb_table():
-    """Lazy-init DynamoDB table resource."""
+    """Lazy-init DynamoDB table resource for trusted legacy callers."""
+    from job_client import enabled
+    if enabled():
+        return None  # The parent reports state through the bound gateway sink.
     try:
         import boto3
 
@@ -170,7 +174,8 @@ def update_dynamo_state(org_repo: str, result: dict[str, Any], tags: dict[str, s
     if not table:
         return
 
-    pk = f"repo#{org_repo}"
+    identity = result.get("registry_asset_id") or org_repo
+    pk = f"repo#{identity}"
     now = datetime.now(timezone.utc).isoformat()
 
     item = {
@@ -452,11 +457,16 @@ def _scoped_code_index_dir(scope: IngestionScope) -> str:
 def _write_code_index_to_filesystem(
     code_index_json: str, safe_name: str, org_repo: str, *, scope: IngestionScope | None = None
 ) -> bool:
-    """Write code-index JSON to the shared filesystem (platform-data PVC).
+    """Publish admitted indexes to S3 and retain a local graph-stage copy.
 
-    This is the primary storage for structured code-index data, read by the
-    MCP server's understand and impact tools.
+    Legacy trusted callers can still use their configured filesystem. Isolated
+    workers mount only scratch here; Door and maintenance readers use S3.
     """
+    from job_client import enabled, ObjectClient
+    if enabled():
+        key = f"{compute_s3_prefix(scope or parse_scope_from_env(), 'code-indexes')}/{safe_name}.json"
+        ObjectClient().put_object(Bucket=S3_BUCKET_NAME, Key=key, Body=code_index_json,
+                                  ContentType="application/json")
     try:
         directory = _scoped_code_index_dir(scope or parse_scope_from_env())
         os.makedirs(directory, exist_ok=True)
@@ -535,11 +545,18 @@ def deepwiki_generate(org_repo: str) -> str | None:
     Uses /chat/completions/stream — the correct DeepWiki endpoint.
     The old /api/wiki/generate endpoint does not exist (404).
     """
+    from pathlib import Path
+
+    # This pod already minted the asset's installation token. DeepWiki clones in
+    # a separate service and cannot inherit our GIT_ASKPASS environment.
+    token_path = Path("/tmp/github-token")
+    credential = token_path.read_text().strip() if token_path.is_file() else None
     try:
         resp = requests.post(
             f"{DEEPWIKI_URL}/chat/completions/stream",
             json={
                 "repo_url": f"https://github.com/{org_repo}",
+                **({"token": credential} if credential else {}),
                 "messages": [
                     {
                         "role": "user",
@@ -555,6 +572,7 @@ def deepwiki_generate(org_repo: str) -> str | None:
                 "language": "en",
                 "type": "github",
             },
+            allow_redirects=False,  # Never forward the installation credential on redirect.
             timeout=900,  # Wiki generation can take 5-15 minutes
             stream=False,  # Get full response (not SSE chunks)
         )
@@ -576,17 +594,16 @@ def deepwiki_generate(org_repo: str) -> str | None:
             return wiki_text
         else:
             log.warning(
-                "DeepWiki returned HTTP %d for %s: %s",
+                "DeepWiki returned HTTP %d for %s",
                 resp.status_code,
                 org_repo,
-                resp.text[:200],
             )
             return None
     except requests.Timeout:
         log.warning("DeepWiki timed out for %s (15 min limit)", org_repo)
         return None
     except Exception as e:
-        log.warning("DeepWiki failed for %s: %s", org_repo, e)
+        log.warning("DeepWiki failed for %s (%s)", org_repo, type(e).__name__)
         return None
 
 
@@ -805,7 +822,8 @@ def graphrag_extract(
 
     # 3. Write to Neptune via HTTP API
     if entities or relationships:
-        _write_to_neptune(entities, relationships, org_repo)
+        if not _write_to_neptune(entities, relationships, org_repo):
+            return None
 
     return {
         "entities": len(entities),
@@ -836,14 +854,27 @@ def _get_neptune_signed_headers(method: str, url: str, body: str | None = None) 
     return headers
 
 
+def _gremlin_string(value: Any) -> str:
+    """Encode data as a complete string literal for Neptune's Gremlin grammar.
+
+    Neptune's HTTP API uses ANTLR, not Groovy, and does not support bindings.
+    JSON string escaping handles quotes, backslashes, control characters and
+    Unicode without allowing repository text to become traversal syntax.
+    """
+    return json.dumps(str(value), ensure_ascii=True)
+
+
 def _clear_repo_structural_graph(org_repo: str) -> bool:
     """Delete all code-index-sourced entities and relationships for a repo.
 
     Only deletes nodes with source='code-index', preserving LLM-extracted
     wiki entities (source='wiki') in the same graph.
     """
+    from job_client import enabled, call
+    if enabled():
+        return call("graph.clear")
     neptune_url = f"https://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin"
-    query = f"g.V().has('repo', '{org_repo}').has('source', 'code-index').drop()"
+    query = f"g.V().has('repo', {_gremlin_string(org_repo)}).has('source', 'code-index').drop()"
     body = json.dumps({"gremlin": query})
     headers = _get_neptune_signed_headers("POST", neptune_url, body)
     try:
@@ -862,6 +893,13 @@ def _clear_repo_structural_graph(org_repo: str) -> bool:
 
 def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo: str) -> bool:
     """Write entities and relationships to Neptune via Gremlin HTTP API with IAM auth."""
+    from job_client import enabled, call
+    if enabled():
+        for offset in range(0, len(entities), 100):
+            call("graph.put", {"entities": entities[offset:offset + 100], "relationships": []})
+        for offset in range(0, len(relationships), 200):
+            call("graph.put", {"entities": [], "relationships": relationships[offset:offset + 200]})
+        return True
     neptune_url = f"https://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin"
 
     try:
@@ -869,13 +907,13 @@ def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo:
         for ent in entities:
             props = {k: v for k, v in ent.items() if v and isinstance(v, (str, int, float))}
             prop_steps = "".join(
-                f".property('{k}', '{str(v).replace(chr(39), chr(92) + chr(39))}')"
+                f".property({_gremlin_string(k)}, {_gremlin_string(v)})"
                 for k, v in props.items()
                 if k != "entity_id"
             )
             query = (
-                f"g.V().has('entity_id', '{ent['entity_id']}').fold()"
-                f".coalesce(unfold(), addV('entity').property('entity_id', '{ent['entity_id']}'))"
+                f"g.V().has('entity_id', {_gremlin_string(ent['entity_id'])}).fold()"
+                f".coalesce(unfold(), addV('entity').property('entity_id', {_gremlin_string(ent['entity_id'])}))"
                 f"{prop_steps}"
             )
             body = json.dumps({"gremlin": query})
@@ -901,11 +939,11 @@ def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo:
             to_id = rel.get("to", "")
             rel_type = rel.get("type", "related_to")
             query = (
-                f"g.V().has('entity_id', '{from_id}').as('a')"
-                f".V().has('entity_id', '{to_id}').as('b')"
+                f"g.V().has('entity_id', {_gremlin_string(from_id)}).as('a')"
+                f".V().has('entity_id', {_gremlin_string(to_id)}).as('b')"
                 f".select('a').coalesce("
-                f"  outE('{rel_type}').where(inV().as('b')),"
-                f"  addE('{rel_type}').to('b')"
+                f"  outE({_gremlin_string(rel_type)}).where(inV().as('b')),"
+                f"  addE({_gremlin_string(rel_type)}).to('b')"
                 f")"
             )
             body = json.dumps({"gremlin": query})
@@ -1273,10 +1311,18 @@ def _run_zoekt_index(
     index_dir = tempfile.mkdtemp(prefix="zoekt-index-")
 
     try:
+        # Zoekt otherwise derives its repository name from the clone directory.
+        # Every isolated snapshot ends in "source", so that default both hides
+        # results from canonical repository filters and collides in the flat
+        # serving index. Bind metadata to the admitted asset, never its path.
+        metadata_path = os.path.join(index_dir, "repository.meta.json")
+        with open(metadata_path, "w") as metadata:
+            json.dump({"Name": org_repo, "URL": f"https://github.com/{org_repo}"}, metadata)
+
         # Step 1: Run zoekt-git-index
         try:
             subprocess.run(
-                ["zoekt-git-index", "-index", index_dir, clone_path],
+                ["zoekt-git-index", "-meta", metadata_path, "-index", index_dir, clone_path],
                 check=True,
                 capture_output=True,
                 timeout=zoekt_timeout,
@@ -1379,6 +1425,7 @@ def _run_embed_vectors(
     clone_path: str,
     org_repo: str,
     scope,
+    registry_asset_id: str | None = None,
 ) -> dict[str, Any]:
     """Embed a repo's source files into S3 Vectors for semantic code search.
 
@@ -1400,6 +1447,9 @@ def _run_embed_vectors(
         visibility=scope.visibility,
         tenant_id=scope.tenant_id,
         owner_sub=scope.owner_sub,
+        product_id=scope.product_id,
+        registry_asset_id=registry_asset_id,
+        ingestion_attempt_id=os.environ.get("INGESTION_ATTEMPT_ID"),
         shard_count=S3_VECTORS_SHARD_COUNT,
     )
 
@@ -1629,6 +1679,51 @@ def ingest_repo(
         )
 
 
+def _ingest_registered_repo(org_repo: str, clone_path: str, scope: IngestionScope) -> dict[str, Any]:
+    """Personal/Product registrations use isolated embeddings and registry stage keys.
+
+    No global repository ACL/catalog row, graph, Zoekt shard, or SBOM is created.
+    """
+    from ingestion_result import summarize
+    import db as stage_db
+
+    asset_id = os.environ.get("INGESTION_REGISTRY_ASSET_ID")
+    asset_storage_prefix(scope, S3_CONTENT_PREFIX, asset_id)  # Validate provenance before I/O.
+    validate_ingestion_attempt(os.environ.get("INGESTION_ATTEMPT_ID"))
+    conn = stage_db.get_connection()
+    result: dict[str, Any] = {"repo": org_repo, "registry_asset_id": asset_id, "product_id": scope.product_id}
+    stages: dict[str, str] = {}
+    try:
+        tracker = StageTracker(conn, asset_id, repo_id=None, commit_sha=None)
+        with tracker.stage("clone") as ctx:
+            if not git_clone(f"https://github.com/{org_repo}", clone_path):
+                ctx.fail("Repository clone failed")
+                stages["clone"] = "failed"
+            else:
+                ctx.set_artifact(clone_path)
+                verified = ctx.verify(lambda: os.path.exists(os.path.join(clone_path, ".git")))
+                stages["clone"] = "verified" if verified else "failed"
+        if stages["clone"] == "verified":
+            result["source_commit_sha"] = _get_commit_sha(clone_path)
+            with tracker.stage("embed_vectors") as ctx:
+                embedded = _run_embed_vectors(clone_path, org_repo, scope, registry_asset_id=asset_id)
+                result["embed_vectors"] = embedded.get("status", "failed")
+                if embedded.get("status") == "complete":
+                    ctx.set_artifact(f"s3vectors://{embedded['index']}/{asset_id}")
+                    ctx.set_metrics({"vectors": embedded.get("vectors", 0)})
+                    ctx.verify(lambda: embedded.get("vectors", 0) > 0)
+                    stages["embed_vectors"] = "verified"
+                else:
+                    ctx.fail(embedded.get("error") or f"Embedding unavailable: {embedded.get('status')}")
+                    stages["embed_vectors"] = "failed"
+        tracker.finalize()
+        result["run_id"] = tracker.run_id
+        result["worker_result"] = summarize({row.stage: row.status for row in tracker.results}, run_id=tracker.run_id)
+        return result
+    finally:
+        conn.close()
+
+
 def _ingest_repo_in_snapshot(
     org_repo: str,
     skip_cgc: bool = False,
@@ -1664,6 +1759,8 @@ def _ingest_repo_in_snapshot(
     except ScopeValidationError as e:
         log.error("Refusing ingestion with unsatisfiable scope: %s", e)
         sys.exit(1)
+    if scope.is_product or (scope.is_personal and os.environ.get("INGESTION_REGISTRY_ASSET_ID")):
+        return _ingest_registered_repo(org_repo, clone_path, scope)
     scoped_content_prefix = compute_s3_prefix(scope, S3_CONTENT_PREFIX)
     scoped_wiki_prefix = compute_s3_prefix(scope, WIKI_S3_PREFIX)
     scoped_code_index_prefix = compute_s3_prefix(scope, CODE_INDEX_S3_PREFIX)
@@ -1752,7 +1849,10 @@ def _ingest_repo_in_snapshot(
 
     # Step 1b: Zoekt indexing — build .zoekt shards and upload to S3 (#2361)
     if ZOEKT_INDEX_ENABLED:
-        skip_zoekt_stage = tracker and tracker.should_skip("zoekt_index")
+        skip_zoekt_stage = tracker and tracker.should_skip(
+            "zoekt_index",
+            artifact_prefix=f"{ZOEKT_SHARDS_S3_PREFIX}/{org_repo}/{quote(org_repo, safe='')}_",
+        )
         if skip_zoekt_stage:
             log.info("Skipping zoekt_index for %s — already verified at %s", org_repo, commit_sha)
             tracker.mark_skipped("zoekt_index", "already verified at current SHA")
@@ -2195,6 +2295,21 @@ def _ingest_repo_in_snapshot(
         except Exception:
             pass
 
+    from ingestion_result import stage_status, summarize
+
+    steps = {
+        stage: stage_status(result[key])
+        for key, stage in {
+            "clone": "clone", "zoekt_index": "zoekt_index", "embed_vectors": "embed_vectors",
+            "code_index": "cgc_structural", "s3_upload": "s3_upload", "deepwiki": "deepwiki",
+            "graphrag": "graphrag", "scip_structural": "scip_structural", "sbom_source": "sbom_source",
+        }.items()
+    }
+    if isinstance(result["graphrag"], str) and " entities," in result["graphrag"]:
+        steps["graphrag"] = "verified"
+    if tracker:
+        steps.update({stage.stage: stage.status for stage in tracker.results})
+    result["worker_result"] = summarize(steps, run_id=result.get("run_id"))
     # The outer source_snapshot context owns cleanup on success and every exit.
     return result
 
@@ -2228,7 +2343,13 @@ def main():
     # Update DynamoDB state (replaces repo-state.json)
     update_dynamo_state(args.repo, result, tags=tags)
 
+    from ingestion_result import publish, summarize
+
+    outcome = result.get("worker_result") or summarize({"clone": "failed"})
+    publish(outcome)
     print(json.dumps(result, indent=2))
+    if outcome["status"] == "failed":
+        sys.exit(1)
 
 
 if __name__ == "__main__":

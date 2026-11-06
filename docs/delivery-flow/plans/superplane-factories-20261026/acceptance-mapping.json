@@ -1,0 +1,659 @@
+{
+  "EC-01": {
+    "outcome": "Four factory layers preserve identity, authority, observations and restart-safe execution",
+    "stories": [
+      {
+        "alias": "C01",
+        "issue": "https://github.com/aws-e/adp/issues/8951",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "C02",
+        "issue": "https://github.com/aws-e/adp/issues/8952",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "C03",
+        "issue": "https://github.com/aws-e/adp/issues/8955",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "C04",
+        "issue": "https://github.com/aws-e/adp/issues/8958",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "C05",
+        "issue": "https://github.com/aws-e/adp/issues/8961",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "C06",
+        "issue": "https://github.com/aws-e/adp/issues/8959",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "C07",
+        "issue": "https://github.com/aws-e/adp/issues/8962",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "C08",
+        "issue": "https://github.com/aws-e/adp/issues/8953",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      }
+    ]
+  },
+  "EC-02": {
+    "outcome": "AWS account/workspace creation reaches verified Ready and recovers without duplication",
+    "stories": [
+      {
+        "alias": "A01",
+        "issue": "https://github.com/aws-e/adp/issues/8966",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "A02",
+        "issue": "https://github.com/aws-e/adp/issues/8971",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "N01",
+        "issue": "https://github.com/aws-e/adp/issues/8972",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "N02",
+        "issue": "https://github.com/aws-e/adp/issues/8977",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "N03",
+        "issue": "https://github.com/aws-e/adp/issues/8978",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "K01",
+        "issue": "https://github.com/aws-e/adp/issues/8976",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "K02",
+        "issue": "https://github.com/aws-e/adp/issues/8982",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "K03",
+        "issue": "https://github.com/aws-e/adp/issues/8988",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "W01",
+        "issue": "https://github.com/aws-e/adp/issues/8957",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "W02",
+        "issue": "https://github.com/aws-e/adp/issues/8987",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "W03",
+        "issue": "https://github.com/aws-e/adp/issues/8954",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "W04",
+        "issue": "https://github.com/aws-e/adp/issues/8992",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "U01",
+        "issue": "https://github.com/aws-e/adp/issues/8964",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "U02",
+        "issue": "https://github.com/aws-e/adp/issues/8965",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "V07",
+        "issue": "https://github.com/aws-e/adp/issues/9011",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "V01",
+        "issue": "https://github.com/aws-e/adp/issues/9010",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      }
+    ]
+  },
+  "EC-03": {
+    "outcome": "Drift, retirement, management restore and upgrades preserve owned/shared resources",
+    "stories": [
+      {
+        "alias": "L01",
+        "issue": "https://github.com/aws-e/adp/issues/8993",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "L02",
+        "issue": "https://github.com/aws-e/adp/issues/8994",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "M03",
+        "issue": "https://github.com/aws-e/adp/issues/8999",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "M04",
+        "issue": "https://github.com/aws-e/adp/issues/9000",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      }
+    ]
+  },
+  "EC-04": {
+    "outcome": "The repaired existing workspace cuts over with stable identities and one active writer",
+    "stories": [
+      {
+        "alias": "M01",
+        "issue": "https://github.com/aws-e/adp/issues/8983",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "M02",
+        "issue": "https://github.com/aws-e/adp/issues/8996",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "R04",
+        "issue": "https://github.com/aws-e/adp/issues/9013",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      }
+    ]
+  },
+  "EC-05": {
+    "outcome": "Chosen training plans produce verified results, recover/cancel and release owned capacity",
+    "stories": [
+      {
+        "alias": "T01",
+        "issue": "https://github.com/aws-e/adp/issues/8960",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T02",
+        "issue": "https://github.com/aws-e/adp/issues/8963",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T03",
+        "issue": "https://github.com/aws-e/adp/issues/8970",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T04",
+        "issue": "https://github.com/aws-e/adp/issues/8956",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T05",
+        "issue": "https://github.com/aws-e/adp/issues/8995",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T06",
+        "issue": "https://github.com/aws-e/adp/issues/8997",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T07",
+        "issue": "https://github.com/aws-e/adp/issues/9001",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T08",
+        "issue": "https://github.com/aws-e/adp/issues/8998",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T09",
+        "issue": "https://github.com/aws-e/adp/issues/9002",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T10",
+        "issue": "https://github.com/aws-e/adp/issues/8975",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T11",
+        "issue": "https://github.com/aws-e/adp/issues/9005",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T12",
+        "issue": "https://github.com/aws-e/adp/issues/9008",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T13",
+        "issue": "https://github.com/aws-e/adp/issues/9003",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T14",
+        "issue": "https://github.com/aws-e/adp/issues/9006",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "T15",
+        "issue": "https://github.com/aws-e/adp/issues/9009",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "V02",
+        "issue": "https://github.com/aws-e/adp/issues/9017",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      }
+    ]
+  },
+  "EC-06": {
+    "outcome": "Qualified Azure environments and private AKS workspaces support lifecycle/recovery",
+    "stories": [
+      {
+        "alias": "P01",
+        "issue": "https://github.com/aws-e/adp/issues/8967",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P02",
+        "issue": "https://github.com/aws-e/adp/issues/8979",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P03",
+        "issue": "https://github.com/aws-e/adp/issues/8989",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P10",
+        "issue": "https://github.com/aws-e/adp/issues/8973",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P12",
+        "issue": "https://github.com/aws-e/adp/issues/8984",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "V03",
+        "issue": "https://github.com/aws-e/adp/issues/9014",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      }
+    ]
+  },
+  "EC-07": {
+    "outcome": "Qualified GCP environments and private GKE workspaces support lifecycle/recovery",
+    "stories": [
+      {
+        "alias": "P04",
+        "issue": "https://github.com/aws-e/adp/issues/8968",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P05",
+        "issue": "https://github.com/aws-e/adp/issues/8980",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P06",
+        "issue": "https://github.com/aws-e/adp/issues/8990",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P11",
+        "issue": "https://github.com/aws-e/adp/issues/8974",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P13",
+        "issue": "https://github.com/aws-e/adp/issues/8985",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "V04",
+        "issue": "https://github.com/aws-e/adp/issues/9015",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      }
+    ]
+  },
+  "EC-08": {
+    "outcome": "Qualified Nebius workspaces support private lifecycle/recovery with truthful capabilities",
+    "stories": [
+      {
+        "alias": "P07",
+        "issue": "https://github.com/aws-e/adp/issues/8969",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P08",
+        "issue": "https://github.com/aws-e/adp/issues/8981",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P09",
+        "issue": "https://github.com/aws-e/adp/issues/8991",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "P14",
+        "issue": "https://github.com/aws-e/adp/issues/8986",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "V05",
+        "issue": "https://github.com/aws-e/adp/issues/9016",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      }
+    ]
+  },
+  "EC-09": {
+    "outcome": "Three grouped releases remain compatible with changing Gateway; approved cross-provider continuation preserves lineage",
+    "stories": [
+      {
+        "alias": "R01",
+        "issue": "https://github.com/aws-e/adp/issues/9004",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "R02",
+        "issue": "https://github.com/aws-e/adp/issues/9012",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "R03",
+        "issue": "https://github.com/aws-e/adp/issues/9007",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      },
+      {
+        "alias": "V06",
+        "issue": "https://github.com/aws-e/adp/issues/9018",
+        "criteria": [
+          "AC-01",
+          "AC-02",
+          "AC-03"
+        ]
+      }
+    ]
+  }
+}

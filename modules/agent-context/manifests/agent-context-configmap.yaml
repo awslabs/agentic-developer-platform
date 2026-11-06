@@ -32,6 +32,9 @@ data:
   S3_VECTORS_BUCKET_NAME: "${S3_VECTORS_BUCKET_NAME}"
   S3_VECTORS_REGION: "${S3_VECTORS_REGION}"
   S3_VECTORS_BUCKET: "${S3_VECTORS_BUCKET_NAME}"
+  # Registered personal and Product imports are retrieved from these vectors.
+  # Door still requires a configured bucket before initializing this reader.
+  SEMANTIC_SEARCH_ENABLED: "true"
 
   # --- S3 (content store + platform data) ---
   S3_BUCKET_NAME: "${S3_FILES_BUCKET}"

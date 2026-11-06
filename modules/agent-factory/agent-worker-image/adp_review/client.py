@@ -184,9 +184,16 @@ def mint_review_token(*, repo: str) -> tuple[str | None, str]:
             identity="review",
             purpose="formal PR review (adp-review)",
         )
-    except (GatewayCredentialError, ValueError) as exc:
+    except ValueError as exc:
         logger.info("Reviewer identity mint refused (%s); using the run's existing identity", type(exc).__name__)
         return None, "default"
+    except GatewayCredentialError as exc:
+        # A gateway that could not answer is not a gateway that said "no reviewer
+        # App is configured". Degrading here published verdict-less comments from
+        # the authoring identity during transient gateway failures, and the engine
+        # then stopped the story for a human (#7468). Fail the run instead: the
+        # engine's bounded review retry re-dispatches once the gateway answers.
+        raise ReviewError(f"reviewer identity unavailable: the credential gateway did not answer ({type(exc).__name__}); retry the review") from exc
 
     # A gateway that predates #5350 returns no `identity` field. Treat that as
     # "default": assuming "review" from silence is exactly the optimism that let

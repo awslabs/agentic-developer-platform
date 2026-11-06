@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { listAssets, getAssetDetail, createAsset, deleteAsset, reindexAsset, getAccessibleRepos } from '@/services/knowledge';
+import { listAssets, searchKnowledge, getAssetDetail, createAsset, deleteAsset, reindexAsset, getAccessibleRepos } from '@/services/knowledge';
 
 // Mock the API client
 vi.mock('@/services/api', () => ({
@@ -78,6 +78,30 @@ describe('knowledge service', () => {
       expect(result.total).toBe(1);
       expect(result.hasMore).toBe(false);
       expect(result.quota?.repos?.used).toBe(1);
+    });
+
+    it('sends Product identity and metadata search, not a delivery Project', async () => {
+      mockGet.mockResolvedValue({ items: [{ ...mockApiAsset, product_id: 'product-one', can_manage: true }], total: 1 });
+      const result = await listAssets({ scope: 'product', productId: 'product-one', search: 'manual' });
+      expect(mockGet).toHaveBeenCalledWith('/api/agent-context/assets?scope=product&product_id=product-one&search=manual&page=1&page_size=20');
+      expect(result.items[0]).toMatchObject({ productId: 'product-one', canManage: true });
+    });
+
+    it('does not grant management when the server omits permission', async () => {
+      mockGet.mockResolvedValue({ items: [mockApiAsset], total: 1 });
+      expect((await listAssets()).items[0].canManage).toBe(false);
+    });
+
+    it.each([
+      { product_id: undefined, owner_sub: null, project_id: null },
+      { product_id: 'another-product', owner_sub: null, project_id: null },
+      { product_id: 'product-one', owner_sub: 'personal-owner', project_id: null },
+      { product_id: 'product-one', owner_sub: null, project_id: 'delivery-project' },
+    ])('does not present unconfirmed ownership as shared Product information: %j', async (ownership) => {
+      mockGet.mockResolvedValue({ items: [{ ...mockApiAsset, ...ownership }], total: 1 });
+      await expect(listAssets({ scope: 'product', productId: 'product-one' })).rejects.toThrow(
+        "Could not confirm this Product's context",
+      );
     });
 
     it('handles empty response', async () => {
@@ -206,5 +230,28 @@ describe('knowledge service', () => {
       expect(result.repos).toHaveLength(0);
       expect(result.total).toBe(0);
     });
+  });
+});
+
+
+describe('content search', () => {
+  it('sends only collection scope and returns the cited asset and snippet', async () => {
+    mockPost.mockResolvedValue({ query: 'release process', items: [{ asset: { ...mockApiAsset, product_id: 'product-one' }, excerpt: 'Canary releases', heading: 'Release' }] });
+    const result = await searchKnowledge({ scope: 'product', productId: 'product-one', query: 'release process' });
+    expect(mockPost).toHaveBeenCalledWith('/agent-context/assets/search', { scope: 'product', product_id: 'product-one', query: 'release process', limit: 20 });
+    expect(result.items[0]).toMatchObject({ asset: { productId: 'product-one' }, excerpt: 'Canary releases', heading: 'Release' });
+  });
+
+  it.each([
+    { product_id: 'other', owner_sub: null },
+    { product_id: 'product-one', owner_sub: 'other-person' },
+  ])('rejects results with mismatched collection ownership: %j', async (ownership) => {
+    mockPost.mockResolvedValue({ query: 'q', items: [{ asset: { ...mockApiAsset, ...ownership }, excerpt: 'private', heading: '' }] });
+    await expect(searchKnowledge({ scope: 'product', productId: 'product-one', query: 'q' })).rejects.toThrow('Could not confirm search results');
+  });
+
+  it('does not treat an incompatible backend response as no matches', async () => {
+    mockPost.mockResolvedValue({});
+    await expect(searchKnowledge({ scope: 'personal', query: 'q' })).rejects.toThrow('Could not confirm search results');
   });
 });

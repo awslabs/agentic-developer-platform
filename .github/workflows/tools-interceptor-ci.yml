@@ -1,0 +1,31 @@
+name: Tools Interceptor CI
+on:
+  pull_request:
+    paths:
+      - 'modules/tools/interceptor/**'
+      - 'modules/tools/orchestrate.sh'
+      - 'modules/tools/deploy.sh'
+      - '.github/workflows/tools-interceptor-ci.yml'
+      - '.github/workflows/tools-interceptor-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install -e modules/tools/interceptor pytest==9.0.3 ruff==0.9.6 PyYAML==6.0.3
+      - name: Lint interceptor and contract tests
+        run: ruff check modules/tools/interceptor
+      - name: Validate deploy entrypoint syntax
+        run: bash -n modules/tools/deploy.sh modules/tools/orchestrate.sh
+      - name: Test interceptor and Gateway payload contract
+        run: python -m pytest -q modules/tools/interceptor/tests

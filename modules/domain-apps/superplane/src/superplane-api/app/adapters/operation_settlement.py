@@ -6,9 +6,11 @@ from contextlib import asynccontextmanager
 
 from harness_jobs.admission import BudgetDenied
 from harness_jobs.identity import (
-    OperationState,
     TERMINAL_STATES,
+    OperationState,
     decode_payload,
+)
+from harness_jobs.identity import (
     payload_digest as request_digest,
 )
 
@@ -21,7 +23,9 @@ def _document(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
-async def allocation_reservation(connection, original, accounting, identities):
+async def allocation_reservation(
+    connection, operation_connection, original, accounting, identities
+):
     """Only a teardown admitted against an immutable apply artifact can release it."""
     source_id = accounting.get("allocation_source_operation_id")
     if source_id is None:
@@ -56,7 +60,7 @@ async def allocation_reservation(connection, original, accounting, identities):
         )
     except Exception:
         raise BudgetDenied("retirement allocation artifact unavailable") from None
-    source = await connection.fetchrow(
+    source = await operation_connection.fetchrow(
         "SELECT * FROM harness_operations WHERE operation_id=$1 FOR UPDATE",
         source_id,
     )
@@ -83,16 +87,23 @@ async def allocation_reservation(connection, original, accounting, identities):
     ):
         raise BudgetDenied("retirement allocation is not the approved apply operation")
     reservation = await connection.fetchrow(
-        "SELECT r.*,c.reservation_id AS consumed_reservation_id,c.org_id AS consumed_org_id,"
-        "c.workspace_id AS consumed_workspace_id,c.max_resource_units AS approved_units,"
-        "c.max_runtime_seconds AS approved_runtime,c.max_cost_micros AS approved_cost, "
-        "c.plan_digest AS consumed_plan_digest,c.reservation_state AS consumed_state "
-        "FROM operation_budget_reservations r JOIN harness_approval_consumption c ON c.operation_id=$1 "
-        "WHERE r.job_id=$2 AND r.attempt_id=$3 FOR UPDATE OF r",
-        source_id,
+        "SELECT * FROM operation_budget_reservations "
+        "WHERE job_id=$1 AND attempt_id=$2 FOR UPDATE",
         source["job_id"],
         source["attempt_id"],
     )
+    consumption = await operation_connection.fetchrow(
+        "SELECT reservation_id AS consumed_reservation_id,org_id AS consumed_org_id,"
+        "workspace_id AS consumed_workspace_id,max_resource_units AS approved_units,"
+        "max_runtime_seconds AS approved_runtime,max_cost_micros AS approved_cost,"
+        "plan_digest AS consumed_plan_digest,reservation_state AS consumed_state "
+        "FROM harness_approval_consumption WHERE operation_id=$1",
+        source_id,
+    )
+    if reservation is not None and consumption is not None:
+        reservation = {**dict(reservation), **dict(consumption)}
+    else:
+        reservation = None
     if reservation is None or any(
         [
             reservation["reservation_id"] != reservation["consumed_reservation_id"],
@@ -115,6 +126,7 @@ async def allocation_reservation(connection, original, accounting, identities):
 async def accept_settlement(
     connection,
     *,
+    operation_connection=None,
     receipt_id,
     payload_digest,
     operation_id,
@@ -130,6 +142,7 @@ async def accept_settlement(
     the reservation. All replicas use that order, so concurrent delivery serializes
     before any budget effect. The sender may acknowledge only after commit.
     """
+    operation_connection = operation_connection or connection
     try:
         encoded = canonical(accounting)
     except (TypeError, ValueError):
@@ -137,7 +150,7 @@ async def accept_settlement(
     digest = hashlib.sha256(encoded.encode()).hexdigest()
     if payload_digest != digest or receipt_id != "recovery:" + digest:
         raise BudgetDenied("settlement receipt digest mismatch")
-    original = await connection.fetchrow(
+    original = await operation_connection.fetchrow(
         "SELECT o.state,o.job_id,o.attempt_id,o.org_id,o.workspace_id,o.request_payload,o.plan_digest,"
         "l.closed_at,l.closed_holder,l.closed_attempt_id,l.fence_token,"
         "l.org_id AS lease_org_id,l.workspace_id AS lease_workspace_id,"
@@ -147,8 +160,9 @@ async def accept_settlement(
         "r.attempt_id AS receipt_attempt_id "
         "FROM harness_operations o JOIN harness_operation_leases l USING(operation_id) "
         "JOIN harness_recovery_settlements r USING(operation_id) "
-        "WHERE o.operation_id=$1 FOR UPDATE OF o,l,r",
+        "WHERE o.operation_id=$1 AND r.receipt_id=$2 FOR UPDATE OF o,l,r",
         operation_id,
+        receipt_id,
     )
     identities = {
         "operation_id": operation_id,
@@ -160,9 +174,9 @@ async def accept_settlement(
     if original is None or not isinstance(accounting, dict):
         raise BudgetDenied("authoritative settlement receipt is unavailable")
     claim = {
-        "holder": original["closed_holder"],
-        "attempt_id": original["closed_attempt_id"],
-        "fence_token": original["fence_token"],
+        "holder": original["claim_holder"],
+        "attempt_id": original["claim_attempt_id"],
+        "fence_token": original["claim_fence_token"],
     }
     if (
         any(accounting.get(key) != value for key, value in identities.items())
@@ -176,24 +190,15 @@ async def accept_settlement(
         )
         or original["lease_org_id"] != org_id
         or original["lease_workspace_id"] != workspace_id
-        or original["closed_at"] is None
         or not claim["holder"]
         or not claim["attempt_id"]
         or accounting.get("claim") != claim
-        or {
-            "holder": original["claim_holder"],
-            "attempt_id": original["claim_attempt_id"],
-            "fence_token": original["claim_fence_token"],
-        }
-        != claim
         or original["receipt_id"] != receipt_id
         or original["payload_digest"] != digest
         or canonical(_document(original["accounting"])) != encoded
         or accounting.get("version") != 1
-        or accounting.get("action") != original["state"]
-        or OperationState(original["state"]) not in TERMINAL_STATES
     ):
-        raise BudgetDenied("settlement does not match the original closed claim")
+        raise BudgetDenied("settlement does not match its immutable recovery receipt")
     if accounting.get("budget") not in {"release", "retain", "settle"}:
         raise BudgetDenied("settlement budget disposition is invalid")
     # SETTLE means resources incurred cost; without provider billing evidence the
@@ -216,7 +221,7 @@ async def accept_settlement(
         job_id,
         attempt_id,
     )
-    consumption = await connection.fetchrow(
+    consumption = await operation_connection.fetchrow(
         "SELECT reservation_id,org_id,workspace_id,plan_digest,reservation_state, "
         "max_resource_units,max_runtime_seconds,max_cost_micros "
         "FROM harness_approval_consumption WHERE operation_id=$1",
@@ -242,12 +247,10 @@ async def accept_settlement(
         )
     ):
         raise BudgetDenied("settlement original reservation mismatch")
-    allocation = await allocation_reservation(
-        connection, original, accounting, identities
-    )
     accepted = await connection.fetchrow(
-        "SELECT * FROM operation_settlement_receipts WHERE operation_id=$1",
+        "SELECT * FROM operation_settlement_receipts WHERE operation_id=$1 AND receipt_id=$2",
         operation_id,
+        receipt_id,
     )
     if accepted is not None:
         if (
@@ -256,9 +259,28 @@ async def accept_settlement(
             or accepted["payload_json"] != encoded
             or accepted["disposition"] != disposition
             or accepted["reservation_id"] != reservation["reservation_id"]
+            or accepted["claim_fence_token"] != claim["fence_token"]
         ):
-            raise BudgetDenied("operation already has a different settlement receipt")
+            raise BudgetDenied("accepted recovery claim differs from its receipt")
+        # A previously committed effect remains acknowledgeable after a native
+        # reauthorization advances the operation. It never changes the current
+        # reservation or authorizes a new claim's settlement.
         return receipt_id
+    if (
+        original["closed_at"] is None
+        or {
+            "holder": original["closed_holder"],
+            "attempt_id": original["closed_attempt_id"],
+            "fence_token": original["fence_token"],
+        }
+        != claim
+        or accounting.get("action") != original["state"]
+        or OperationState(original["state"]) not in TERMINAL_STATES
+    ):
+        raise BudgetDenied("settlement does not match the current closed claim")
+    allocation = await allocation_reservation(
+        connection, operation_connection, original, accounting, identities
+    )
     if reservation["state"] == "released" and disposition != "released":
         raise BudgetDenied("reservation was released before authoritative settlement")
     await connection.execute(
@@ -281,12 +303,14 @@ async def accept_settlement(
         )
     await connection.execute(
         "INSERT INTO operation_settlement_receipts(receipt_id,operation_id,reservation_id,"
-        "payload_digest,payload_json,disposition,accepted_at) VALUES($1,$2,$3,$4,$5,$6,now())",
+        "payload_digest,payload_json,disposition,claim_fence_token,accepted_at) "
+        "VALUES($1,$2,$3,$4,$5,$6,$7,now())",
         receipt_id,
         operation_id,
         reservation["reservation_id"],
         digest,
         encoded,
         disposition,
+        claim["fence_token"],
     )
     return receipt_id

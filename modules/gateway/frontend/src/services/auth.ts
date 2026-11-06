@@ -32,7 +32,8 @@ const PKCE_VERIFIER_KEY = 'pkce_code_verifier';
 // session, mirroring what PKCE_VERIFIER_KEY does for the password path.
 const BROKER_STATE_KEY = 'github_broker_state';
 
-// Role to permissions mapping (matching backend)
+// Administrative role hints. Workflow permissions come from live workspace
+// membership in AuthContext, never from a role claim in the ID token.
 const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
   [AdminRole.PLATFORM_ADMIN]: [
     Permission.ORG_CREATE,
@@ -51,8 +52,7 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     Permission.USER_READ,
     Permission.USER_MANAGE,
     Permission.METRICS_READ,
-    // Issue #4200: mirrors ROLE_PERMISSIONS[PLATFORM_ADMIN] in src/admin/config.py.
-    Permission.PLAN_APPROVE,
+    Permission.TOOLS_MANAGE,
   ],
   [AdminRole.ORG_ADMIN]: [
     Permission.ORG_READ,
@@ -66,8 +66,7 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     Permission.LOGS_EXPORT,
     Permission.USER_READ,
     Permission.USER_MANAGE,
-    // Issue #4200: mirrors ROLE_PERMISSIONS[ORG_ADMIN] in src/admin/config.py.
-    Permission.PLAN_APPROVE,
+    Permission.TOOLS_MANAGE,
   ],
   [AdminRole.DEPT_ADMIN]: [
     Permission.BUDGET_READ,
@@ -165,12 +164,28 @@ export async function buildLoginUrl(): Promise<string> {
   // Store verifier for the callback
   storePKCEVerifier(pkce.verifier);
 
+  // An older deployment's Cognito client may not allow the session-check
+  // scope yet. Request it only after this same client advertises native approval.
+  let scopes = 'openid email profile';
+  try {
+    const response = await fetch(`${deploymentSetting('VITE_API_URL') || '/api'}/.well-known/cognito-config`, {
+      credentials: 'omit', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(3000),
+    });
+    if (response.ok) {
+      const discovery = await response.json();
+      if (discovery.client_id === config.clientId && discovery.user_pool_id === config.userPoolId
+          && discovery.native_credential_approval_enabled === true) {
+        scopes += ' aws.cognito.signin.user.admin';
+      }
+    }
+  } catch { /* Older or temporarily unavailable discovery preserves ordinary login. */ }
+
   // Build the authorization URL with PKCE
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: config.clientId,
     redirect_uri: config.redirectUri,
-    scope: 'openid email profile',
+    scope: scopes,
     code_challenge: pkce.challenge,
     code_challenge_method: 'S256',
   });

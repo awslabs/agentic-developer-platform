@@ -204,5 +204,8 @@ async def test_selected_tenant_model_and_budget_context_use_current_membership(d
     assert enforcement.check_budget_hierarchy.call_args.args[0].org_id == secondary
     member.is_active = False
     await db_session.commit()
+    await human.require_current_owner(db_session, tenant=secondary, principal=human.human_locator(USER))
+    member.revoked_at = datetime.now(UTC)
+    await db_session.commit()
     with pytest.raises(errors.TaskApiError):
         await human.require_current_owner(db_session, tenant=secondary, principal=human.human_locator(USER))

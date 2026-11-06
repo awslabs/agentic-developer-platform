@@ -254,7 +254,8 @@ describe('polling settings', () => {
     // invalidation shows five-minute-old state on a panel whose entire purpose is
     // "where are we right now" — and it looks live, because the data is real.
     expect(FLOW_EXECUTION_REFETCH_INTERVAL_MS).toBe(30_000);
-    expect(source).toMatch(/refetchInterval:\s*FLOW_EXECUTION_REFETCH_INTERVAL_MS/);
+    expect(source).toContain("useFlowPollInterval(FLOW_EXECUTION_REFETCH_INTERVAL_MS)");
+    expect(source).toMatch(/refetchInterval:\s*interval/);
   });
 
   it('forwards the query signal so navigating away cancels the request', () => {

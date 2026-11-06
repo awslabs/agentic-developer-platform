@@ -160,6 +160,7 @@ from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import PeriodType
 
 from .enforcement_service import _INFRASTRUCTURE_FAULTS
+from .metering_policy_gates import lock_policy_mutation
 from .person_ledger import (
     PersonLimit,
     PersonLimitSource,
@@ -385,6 +386,7 @@ async def _upsert_cap(
     ``created_at`` honest (when the person first set a limit, not when they last
     changed the number).
     """
+    await lock_policy_mutation(db, person_anchor=person_anchor)
     row = await _read_cap_row(db, person_anchor, period_type)
     _check_revision(row, expected_revision)
     if expected_revision is not None and row is not None:
@@ -634,6 +636,13 @@ async def _upsert_default(
     so the shared part would be the four lines of retry structure and the parameter
     list to abstract over it would be longer than the duplication.
     """
+    if scope_type == "team":
+        scope = f"team:{scope_id_org}:{scope_id_team}"
+    elif scope_type == "org":
+        scope = f"org:{scope_id_org}"
+    else:
+        scope = "platform"
+    await lock_policy_mutation(db, default_scope=scope)
     row = await _read_default_row(db, scope_type, scope_id_org, scope_id_team, period_type)
     _check_revision(row, expected_revision)
     if expected_revision is not None and row is not None:
@@ -967,6 +976,7 @@ async def delete_person_cap(
 
     try:
         resolved_anchor = await resolve_person_anchor(db, person_anchor)
+        await lock_policy_mutation(db, person_anchor=resolved_anchor)
         await _revision_delete(
             db,
             PersonBudgetConfig,
@@ -1135,6 +1145,7 @@ async def delete_person_default(
     scope_type, scope_id_org, scope_id_team = _parse_scope(scope)
 
     try:
+        await lock_policy_mutation(db, default_scope=scope)
         await _revision_delete(
             db,
             PersonBudgetDefault,

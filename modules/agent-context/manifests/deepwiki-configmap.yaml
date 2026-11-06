@@ -27,6 +27,9 @@ data:
     {
       "embedder": {
         "client_class": "OpenAIClient",
+        "initialize_kwargs": {
+          "base_url": "http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}/v1"
+        },
         "batch_size": 100,
         "model_kwargs": {
           "model": "bedrock/amazon.titan-embed-text-v2:0",

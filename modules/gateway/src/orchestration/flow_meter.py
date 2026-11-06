@@ -7,13 +7,15 @@ zero allowance. Admission holds and model charges use separate reservation keys.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from starlette.concurrency import run_in_threadpool
 
-from .execution_policy import ExecutionPolicy, flow_budget_binding
+from .execution_policy import MAX_WALL_CLOCK_SECONDS, ExecutionPolicy, flow_budget_binding
 from .flow_budget import get_flow_reservations
 from .models import NodeKind
 from .state import NodeState
@@ -30,9 +32,14 @@ def meter_target(*, org_id: str, flow_id: str, policy: ExecutionPolicy):
         period_type=PeriodType.RUN.value,
         period_start="lifetime",
         headroom_usd=policy.limits.max_spend_usd,
-        # The flow's wall-clock limit is at most 24h from its first dispatch.
-        # Two days cannot drop a settled charge while that flow can still act.
-        ttl_seconds=172800,
+        # Keep the earliest charge through any permitted window extension, not
+        # just the initial policy's duration. Renewal cannot exceed this shared
+        # wall-clock ceiling. The expiry also covers policies accepted in advance.
+        # This does not reconstruct or refresh an already-lost accumulator.
+        ttl_seconds=max(
+            MAX_WALL_CLOCK_SECONDS + 86400,
+            math.ceil((policy.expires_at - datetime.now(UTC)).total_seconds()) + 86400,
+        ),
         require_initialization=True,
     )
 
@@ -50,7 +57,9 @@ async def _claim_initialization(*, org_id: str, flow_id: str, allow_create: bool
     )
 
 
-async def prepare_flow_meter(*, org_id: str, flow_id: str, policy: ExecutionPolicy, nodes: list) -> bool:
+async def prepare_flow_meter(
+    *, org_id: str, flow_id: str, policy: ExecutionPolicy, nodes: list, unexecuted_eval_ids: frozenset[str] = frozenset()
+) -> bool:
     from src.budget.config import budget_config
 
     if not budget_config.budget_reservation_enabled:
@@ -62,8 +71,18 @@ async def prepare_flow_meter(*, org_id: str, flow_id: str, policy: ExecutionPoli
         fresh = await _claim_initialization(
             org_id=org_id,
             flow_id=flow_id,
+            # A flow may create its meter only while nothing has run. A node a plan
+            # revision superseded before its first attempt has not run either; it
+            # must not keep a never-dispatched flow from ever getting a meter (#7408).
+            # Evaluations can also finish before the first worker. Admission proves
+            # their absence of dispatch/usage evidence; state alone cannot.
             allow_create=all(
-                n.attempts == 0 and (n.kind == NodeKind.GATE.value or n.state in {NodeState.PENDING.value, NodeState.READY.value}) for n in nodes
+                (
+                    n.attempts == 0
+                    and (n.kind == NodeKind.GATE.value or n.state in {NodeState.PENDING.value, NodeState.READY.value, NodeState.SUPERSEDED.value})
+                )
+                or (n.kind == NodeKind.EVAL.value and n.id in unexecuted_eval_ids)
+                for n in nodes
             ),
         )
         target = meter_target(org_id=org_id, flow_id=flow_id, policy=policy)
@@ -71,6 +90,8 @@ async def prepare_flow_meter(*, org_id: str, flow_id: str, policy: ExecutionPoli
             outcome = await store.reserve("__initialized__", Decimal(0), [replace(target, require_initialization=False)])
             if outcome is None or not outcome.admitted:
                 return False
+        if not await store.extend_flow_retention(target):
+            return False
         return await store.snapshot(target) is not None
     except Exception:
         return False
@@ -104,6 +125,10 @@ async def reconcile_flow_meter(session, *, org_id: str, flow_id: str, policy: Ex
         return None
     target = meter_target(org_id=org_id, flow_id=flow_id, policy=policy)
     try:
+        # Upgrade old field/key deadlines before any receipt can prune a charge.
+        # This retains existing accounting only; an absent meter stays refused.
+        if not await store.extend_flow_retention(target):
+            return None
         ids = await store.unresolved_requests(target)
         # Batch IDs rather than limit matching rows: legacy/untrusted receipts
         # must not starve a later recoverable request.
@@ -117,7 +142,33 @@ async def reconcile_flow_meter(session, *, org_id: str, flow_id: str, policy: Ex
             )
             for receipt in receipts:
                 if target.key() in (receipt.reservation_scope_keys or []):
+                    # Repair the related lifetime counters before clearing the
+                    # flow marker that makes this receipt discoverable. Each key
+                    # was captured by the gateway with the original admission.
+                    import re
+
+                    from src.budget.reservations import ReservationTarget
+
+                    for key in receipt.reservation_scope_keys:
+                        match = re.fullmatch(rf"budget:resv:\{{{re.escape(org_id)}\}}:(run|chain):(.+):run:lifetime", key)
+                        if match:
+                            lifetime = ReservationTarget(org_id, match[1], match[2], "run", "lifetime", Decimal(0))
+                            await store.reconcile_receipt(receipt.request_id, receipt.cost_usd, lifetime, lifetime_receipt=True)
                     await store.reconcile_receipt(receipt.request_id, receipt.cost_usd, target)
+        # A strict marker that expired with no receipt (the proxy never reached
+        # _log_usage: pod rolled mid-stream, worker killed) is settled at its full
+        # reserved bound and recorded as an accounting gap, instead of leaving the
+        # whole meter unreadable and the flow refused forever (#7451).
+        from src.budget.enforcement_settings import BudgetAccountingGap
+
+        for request_id in await store.expired_pending_requests(target):
+            if await store.settle_expired_pending(request_id, target):
+                if await session.get(BudgetAccountingGap, request_id) is None:
+                    session.add(BudgetAccountingGap(request_id=request_id, scope_key=target.key()))
+                    await session.flush()
+                logging.getLogger(__name__).warning(
+                    "Flow meter settled an unreported request at its reserved bound org=%s flow=%s request_id=%s", org_id, flow_id, request_id
+                )
     except Exception:
         logging.getLogger(__name__).warning("Flow receipt reconciliation deferred; unreconciled reservations retained", exc_info=True)
     return await read_flow_meter(org_id=org_id, flow_id=flow_id, policy=policy)

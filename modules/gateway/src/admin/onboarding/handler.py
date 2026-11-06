@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from src.admin.access_control import AccessControl
 from src.admin.audit_operation import AuditedAdminRoute, current_operation, mark_admin_effects
@@ -280,7 +281,7 @@ async def _find_matching_tenants_for_user(
     if not candidates:
         return []
 
-    app_id, private_key = _get_github_app_credentials()
+    app_id, private_key = await run_in_threadpool(_get_github_app_credentials)
     if not app_id or not private_key:
         logger.warning("GitHub App credentials not configured; cannot verify org membership")
         return []
@@ -351,7 +352,7 @@ async def _determine_role_for_matched_user(
     if not re.fullmatch(r"[0-9]+", github_id):
         return "member"
     try:
-        app_id, private_key = _get_github_app_credentials()
+        app_id, private_key = await run_in_threadpool(_get_github_app_credentials)
         if not app_id or not private_key:
             return "member"
         client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
@@ -375,6 +376,19 @@ async def _determine_role_for_matched_user(
             await client.aclose()
     except Exception:
         logger.warning("role check failed for %s in %s; defaulting to member", github_login, org_login)
+    return "member"
+
+
+async def _determine_role_for_tenant(github_login: str, org: Organization, github_id: str) -> str:
+    """Derive administrator authority from the tenant's own GitHub organization.
+
+    A linked child proves membership in the parent workspace, not administrator
+    authority over it. Use the same role proof for initial attach and login sync.
+    """
+    for installation_id in org.github_installation_ids or []:
+        role = await _determine_role_for_matched_user(github_login, org.name, int(installation_id), github_id)
+        if role == "org_admin":
+            return role
     return "member"
 
 
@@ -405,8 +419,7 @@ async def _attach_user_to_existing_tenant(
         )
 
     # Determine role via GitHub API
-    install_id = int(org.github_installation_ids[0]) if org.github_installation_ids else 0
-    role = await _determine_role_for_matched_user(github_login, org.name, install_id, github_id)
+    role = await _determine_role_for_tenant(github_login, org, github_id)
 
     # Check approval policy
     auto_approve = org.member_approval_policy == "auto_approve_org_members"
@@ -531,8 +544,9 @@ async def _create_memberships_for_matches(
         if target_org is None or target_org.member_approval_policy != "auto_approve_org_members":
             continue
 
-        # D4: determine role from GitHub org membership
-        role = await _determine_role_for_matched_user(github_login, mt.org_name, mt.install_id, github_id)
+        # The matching org may be a linked child; its role cannot confer parent
+        # administrator authority. Membership evidence still comes from mt.
+        role = await _determine_role_for_tenant(github_login, target_org, github_id)
 
         # Set is_active on the first new membership only if user has no active one
         is_active = first_new and not has_active
@@ -546,6 +560,7 @@ async def _create_memberships_for_matches(
             github_org_id=mt.org_name,
         )
         db.add(membership)
+        existing_tenant_ids.add(mt.org_id)
         first_new = False
 
     # Flush to catch constraint violations within the transaction
@@ -684,12 +699,16 @@ async def get_access_status(
     current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     target_tenant: str | None = None,
+    sync_memberships: bool = True,
 ) -> AccessStatusResponse:
     """Check if the caller has a user row (registered) or needs to onboard.
 
     Issue #3017: For registered users, also syncs org-tenant memberships —
     creates TenantMembership rows for any org tenants the user belongs to
     (via GitHub org membership) that were created after their initial onboarding.
+    The browser requests sync_memberships=false for its route guard, then runs
+    discovery separately after loading existing workspaces. This flag skips only
+    discovery, never the authenticated user or tenant-membership checks.
     """
     cognito_sub = current_user.user_id
     if target_tenant is not None:
@@ -722,6 +741,8 @@ async def get_access_status(
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
     if user is not None:
+        if not sync_memberships:
+            return AccessStatusResponse(status="registered")
         # Issue #3017: Sync memberships for org tenants created post-onboarding.
         # Extract GitHub login from JWT claims first; fall back to Cognito lookup.
         # Access tokens don't carry custom:github_username (pre-token-gen Lambda
@@ -735,7 +756,7 @@ async def get_access_status(
             # self-writable ``name`` fallback; routing it through
             # resolve_trusted_github_identity means the trust decision cannot differ
             # between here and the access-request route.
-            identity = resolve_trusted_github_identity(claims, cognito_sub)
+            identity = await run_in_threadpool(resolve_trusted_github_identity, claims, cognito_sub)
             if identity.linked:
                 await sync_memberships_on_login(db, user, identity.login, github_id=identity.numeric_id, resolved_for_sub=cognito_sub)
             else:

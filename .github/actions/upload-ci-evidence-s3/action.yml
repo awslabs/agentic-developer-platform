@@ -5,8 +5,14 @@ inputs:
     description: Artifact name, unique within this job attempt
     required: true
   path:
-    description: File or directory inside the checkout or runner temporary directory
+    description: Newline-separated files, directories or globs inside the checkout or runner temporary directory
     required: true
+  if-no-files-found:
+    description: Missing path policy (error, warn, ignore); uploads and validation errors always fail
+    default: 'error'
+  source-directory:
+    description: Checkout whose revision the evidence describes, inside the workspace
+    default: ${{ github.workspace }}
   retention-days:
     description: Retention class (7, 14, or 90 days)
     default: '90'
@@ -26,4 +32,6 @@ runs:
         CI_EVIDENCE_NAME: ${{ inputs.name }}
         CI_EVIDENCE_PATH: ${{ inputs.path }}
         CI_EVIDENCE_RETENTION_DAYS: ${{ inputs.retention-days }}
+        CI_EVIDENCE_IF_NO_FILES_FOUND: ${{ inputs.if-no-files-found }}
+        CI_EVIDENCE_SOURCE_DIRECTORY: ${{ inputs.source-directory }}
       run: python3 "$GITHUB_ACTION_PATH/../../scripts/upload_ci_evidence_s3.py"

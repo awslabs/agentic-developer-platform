@@ -18,7 +18,8 @@ WORKER = "superplane-paid-worker"
 UNAVAILABLE = "paid-worker-binding-attestation-unavailable"
 
 
-def validate(env, lock):
+def validate(env, lock, *, retain_worker=False):
+    require(type(retain_worker) is bool, "retain_worker must be a boolean")
     if "paid_worker" not in env:
         return
     config = env["paid_worker"]
@@ -162,7 +163,11 @@ def validate(env, lock):
         ),
         "paid_worker scheduling must select explicit reviewed nodes",
     )
-    for key, maximum in (("max_replica_count", 4), ("active_deadline_seconds", 3600)):
+    deadline_ceiling = 10800 if lifecycle else 3600
+    for key, maximum in (
+        ("max_replica_count", 4),
+        ("active_deadline_seconds", deadline_ceiling),
+    ):
         require(
             type(config[key]) is int and 1 <= config[key] <= maximum,
             "paid_worker concurrency and deadline must be bounded",
@@ -213,7 +218,10 @@ def validate(env, lock):
     require(
         source.get("registry") == f"{account}.dkr.ecr.{region}.amazonaws.com"
         and source.get("repository") == "adp-" + COMPONENT
-        and source.get("source_revision") == lock.get("source_revision")
+        and (
+            retain_worker
+            or source.get("source_revision") == lock.get("source_revision")
+        )
         and re.fullmatch(r"[a-f0-9]{40}", str(source.get("source_revision", ""))),
         "paid_worker image must come from the exact reviewed release source and dedicated repository",
     )
@@ -250,7 +258,9 @@ def project(env, lock, docs):
         "adp.aws-e.io/preparation-only": UNAVAILABLE,
     }
     spec = scaled["spec"]
-    spec["maxReplicaCount"] = 0
+    # KEDA requires a positive maximum even while paused. The pause annotation
+    # and preparation deny-all policy prevent execution until live activation.
+    spec["maxReplicaCount"] = config["max_replica_count"]
     spec["jobTargetRef"]["activeDeadlineSeconds"] = config["active_deadline_seconds"]
     template = spec["jobTargetRef"]["template"]
     template["metadata"]["labels"] = dict(labels)

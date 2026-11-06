@@ -64,7 +64,6 @@ from src.orchestration.models import (
 )
 from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.state import ActorKind, NodeState
-from src.shared.models.base import Base
 from src.shared.schemas.auth import TokenContext
 
 ORG_A = "org-alpha"
@@ -130,8 +129,10 @@ async def session():
     def _emit_explicit_begin(connection):
         connection.exec_driver_sql("BEGIN")
 
+    from src.budget.enforcement_settings import BudgetEnforcementSetting
+
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(BudgetEnforcementSetting.metadata.create_all)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as s:
         yield s
@@ -637,6 +638,7 @@ class TestAC17OrgScopedPermissionRegistration:
                 # so — it is the only promotion-adjacent permission AdminRole.MEMBER
                 # holds, so it is the one where an empty-org bypass would actually be
                 # reachable by an ordinary principal.
+                Permission.TOOLS_MANAGE,
                 Permission.PLAN_DRAFT,
             }
         )
@@ -697,13 +699,12 @@ class TestFrontendPermissionMirrorParity:
             f"frontend/src/types/index.ts is missing these backend Permission members: {missing}. Both mirrors must be updated in the same PR."
         )
 
-    def test_the_gate_approval_permission_is_in_both_mirrors(self):
-        """The enum member AND the role map, which are different files."""
+    def test_gate_approval_uses_live_membership_instead_of_role_hints(self):
+        """The enum exposes approval, but a JWT role does not grant it."""
         types_ts, auth_ts = self._mirror_sources()
 
         assert f"PLAN_APPROVE = '{Permission.PLAN_APPROVE.value}'" in types_ts
-        # Exactly the two roles the backend grants it to.
-        assert auth_ts.count("Permission.PLAN_APPROVE") == 2
+        assert "Permission.PLAN_APPROVE" not in auth_ts
 
 
 class TestRO3fDeclaredSeam:
@@ -892,11 +893,20 @@ class TestRevisionBoundAcceptance:
 
     @staticmethod
     async def _plan(session, flow, *, document=None, plan_hash="a" * 64):
+        decision = await OrchestrationRepository(session).append_decision(
+            org_id=ORG_A,
+            flow_id=flow.id,
+            kind=DecisionKind.PLAN_ACCEPTED.value,
+            actor_id=USER_ID,
+            actor_role=ACTOR_ROLE,
+            actor_kind=ActorKind.HUMAN.value,
+        )
         return await OrchestrationRepository(session).record_accepted_plan(
             org_id=ORG_A,
             flow_id=flow.id,
             plan_document=document or {"flow_slug": FLOW_SLUG, "nodes": []},
             plan_hash=plan_hash,
+            accepted_by_decision_id=decision.id,
         )
 
     @pytest.mark.asyncio
@@ -1301,15 +1311,6 @@ class TestLegacyLaneAdoptionThroughResume:
             principal_id=USER_ID,
             org_id=ORG_A,
         )
-        session.add(
-            OrchestrationAcceptedPlan(
-                org_id=ORG_A,
-                flow_id=flow.id,
-                version=3,
-                plan_document={"execution_policy": policy.model_dump(mode="json")},
-                plan_hash=f"plan-{issue}",
-            )
-        )
         node = await seed_node(
             session,
             flow,
@@ -1318,6 +1319,31 @@ class TestLegacyLaneAdoptionThroughResume:
             state=NodeState.AWAITING_MERGE.value,
         )
         node.issue_ref = f"#{issue}"
+        node.repository_identity = "acme/work"
+        node.provider_repository_id = 987_654_321
+        node.repository_connection = {"provider": "github", "installation_id": 42}
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id=ORG_A,
+                flow_id=flow.id,
+                version=3,
+                plan_document={
+                    "execution_policy": policy.model_dump(mode="json"),
+                    "nodes": [
+                        {
+                            "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                            "kind": "story",
+                            "title": node.title,
+                            "issue_ref": node.issue_ref,
+                            "repository_identity": node.repository_identity,
+                            "provider_repository_id": node.provider_repository_id,
+                            "repository_connection": node.repository_connection,
+                        }
+                    ],
+                },
+                plan_hash=f"plan-{issue}",
+            )
+        )
         await OrchestrationRepository(session).append_decision(
             org_id=ORG_A,
             flow_id=flow.id,
@@ -1369,14 +1395,27 @@ class TestLegacyLaneAdoptionThroughResume:
         reason — the route would return early and never reach the transfer at all.
         """
         from src.orchestration.handoff import ADOPTION_ENABLED_ENV
+        from src.orchestration.repository_binding import VerifiedRepository
 
         monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
         monkeypatch.setenv(ADOPTION_ENABLED_ENV, "true")
         from unittest.mock import AsyncMock
 
-        monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "acme/work")
-        monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=42))
-        monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=987_654_321))
+        monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "fictional/wrong-target")
+        monkeypatch.setattr(
+            "src.orchestration.repository_binding.resolve_story_repository",
+            AsyncMock(
+                side_effect=lambda _session, **binding: VerifiedRepository(
+                    "github",
+                    binding["repository_id"],
+                    binding["name"],
+                    binding["installation_id"],
+                    binding["name"],
+                    binding["issue"],
+                    binding["operation"],
+                )
+            ),
+        )
 
     @pytest.mark.asyncio
     async def test_same_tenant_issue_in_another_repository_is_not_adopted(self, session, app_with_router):
@@ -1407,15 +1446,21 @@ class TestLegacyLaneAdoptionThroughResume:
         _, node, own = await self._held_story(session, run_id="own-run")
         from unittest.mock import AsyncMock
 
-        from httpx import ConnectError
+        from src.orchestration.repository_binding import RepositoryBindingError
 
         if failure == "missing_repo":
-            monkeypatch.delenv("BG_ORCH_DISPATCH_REPO")
+            node.repository_identity = None
+            await session.flush()
         elif failure == "missing_installation":
-            monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=None))
+            monkeypatch.setattr(
+                "src.orchestration.repository_binding.resolve_story_repository",
+                AsyncMock(side_effect=RepositoryBindingError("connection_not_owned")),
+            )
         else:
-            error = ValueError("credentials unavailable") if failure == "credentials_unavailable" else ConnectError("provider unavailable")
-            monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(side_effect=error))
+            monkeypatch.setattr(
+                "src.orchestration.repository_binding.resolve_story_repository",
+                AsyncMock(side_effect=RepositoryBindingError("repository_verification_unavailable")),
+            )
         response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
         assert response.status_code == 409, response.text
         assert (await session.get(OrchestrationWorkClaim, own.claim_id)).state == ClaimState.HELD.value
@@ -1816,3 +1861,76 @@ async def test_cli_recovery_read_rejects_missing_permission_and_foreign_flow(app
         assert client.get(f"/orchestration/nodes/{node.id}/recovery", params={"flow_id": flow.id}).status_code == 403
     with client_for(app_with_router) as client:
         assert client.get(f"/orchestration/nodes/{node.id}/recovery", params={"flow_id": "foreign"}).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_accepted_story_resume_adopts_only_its_repository_lane(session, app_with_router, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+
+    from src.orchestration import repository_binding
+    from src.orchestration.handoff import ADOPTION_ENABLED_ENV
+    from src.orchestration.models import ClaimState, OrchestrationAcceptedPlan, OrchestrationWorkClaim
+    from tests.orchestration.test_handoff_adoption import _exited_row
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv(ADOPTION_ENABLED_ENV, "true")
+    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "acme/other")
+    monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=None))
+    flow, node, receipt = await TestLegacyLaneAdoptionThroughResume._held_story(session, run_id="owned-run")
+    node.repository_identity = "acme/work"
+    node.provider_repository_id = 987_654_321
+    node.repository_connection = {"provider": "github", "installation_id": 42}
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id))
+    plan.plan_document = {
+        **plan.plan_document,
+        "nodes": [
+            {
+                "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                "kind": "story",
+                "title": node.title,
+                "issue_ref": node.issue_ref,
+                "repository_identity": node.repository_identity,
+                "provider_repository_id": node.provider_repository_id,
+                "repository_connection": node.repository_connection,
+            }
+        ],
+    }
+    await session.flush()
+
+    async def verified(_session, *, name, repository_id, installation_id, issue, **_kwargs):
+        assert (name, repository_id, installation_id, issue) == ("acme/work", 987_654_321, 42, 5144)
+        return repository_binding.VerifiedRepository("github", repository_id, name, installation_id, name, issue, "dispatch")
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", verified)
+    TestLegacyLaneAdoptionThroughResume._resolver(app_with_router, {"owned-run": _exited_row()})
+    response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+    assert response.status_code == 200, response.text
+    claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
+    assert (claim.provider_repository_id, claim.state, claim.generation) == (987_654_321, ClaimState.RELEASED.value, receipt.generation + 1)
+
+
+@pytest.mark.parametrize("account_type,auth_source,is_admin", [("service", "jwt", False), ("service", "iam", True), ("human", "iam", True)])
+async def test_nonhuman_gate_refusal_is_recorded_as_service(session, account_type, auth_source, is_admin):
+    from src.admin.access_control import AccessControl
+    from src.orchestration.adapters.github_comments import GateAnswerStatus, InputPath, apply_gate_answer_for_context
+
+    flow = await seed_flow(session)
+    gate = await seed_node(session, flow)
+    caller = _token_context(ORG_A).model_copy(update={"account_type": account_type, "auth_source": auth_source, "is_admin": is_admin})
+    outcome = await apply_gate_answer_for_context(
+        session,
+        context=caller,
+        node_id=gate.id,
+        approve=True,
+        reason="attempted approval",
+        access=AccessControl(session),
+        input_path=InputPath.DASHBOARD,
+    )
+    assert outcome.status == GateAnswerStatus.REFUSED_NO_PERMISSION
+    assert await state_of(session, gate.id) == NodeState.AWAITING_GATE.value
+    refusals = [row for row in await decisions_for(session, flow.id) if row.kind == DecisionKind.TRANSITION_REJECTED.value]
+    assert len(refusals) == 1
+    assert refusals[0].actor_kind == ActorKind.SERVICE.value
+    assert refusals[0].actor_id == caller.user_id

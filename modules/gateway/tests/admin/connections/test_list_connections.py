@@ -313,6 +313,15 @@ async def test_list_connections_returns_live_repos_from_github(db_session: Async
     # Mock GitHub client returns a DIFFERENT, up-to-date repo list
     mock_client = MagicMock()
     mock_client.list_installation_repository_names = AsyncMock(return_value=["fresh-org/old-repo", "fresh-org/new-repo"])
+    mock_client.list_installation_repositories_page = AsyncMock(
+        return_value={
+            "repositories": [
+                {"full_name": "fresh-org/old-repo", "id": 3001},
+                {"full_name": "fresh-org/new-repo", "id": 3002},
+                {"full_name": "another-org/secret", "id": 3003},
+            ]
+        }
+    )
 
     resp = await list_connections(
         caller_org_id="tenant-fresh",
@@ -326,6 +335,10 @@ async def test_list_connections_returns_live_repos_from_github(db_session: Async
     # Should have the LIVE list, not the stored snapshot
     assert conn.repositories == ["fresh-org/old-repo", "fresh-org/new-repo"]
     assert conn.repository_count == 2
+    assert conn.repository_details == [
+        {"full_name": "fresh-org/old-repo", "repository_id": 3001},
+        {"full_name": "fresh-org/new-repo", "repository_id": 3002},
+    ]
     # Verify the GitHub client was called
     mock_client.list_installation_repository_names.assert_called_once_with(88001)
 
@@ -425,6 +438,7 @@ async def test_list_connections_degrades_to_snapshot_on_github_failure(db_sessio
     conn = resp.connections[0]
     # Should fall back to stored snapshot
     assert conn.repositories == ["fallback-org/stored-repo"]
+    assert conn.repository_details == []
     assert conn.repository_count == 1
 
     _repo_list_cache.clear()

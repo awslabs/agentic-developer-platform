@@ -338,3 +338,47 @@ def test_path_qualified_roles_use_terminal_getrole_name_and_compare_full_arn(
     else:
         with pytest.raises(WorkspaceOwnershipError, match="principal"):
             kms.verify_provisioning_principal(plan)
+
+
+def test_cli_preflight_deadline_includes_governed_credential_delivery(monkeypatch):
+    # The outer subprocess previously expired at 45s while its credential
+    # process was still legitimately waiting within its own 55s bound.
+    import ast
+
+    helper = (
+        Path(__file__).resolve().parents[3]
+        / "workspace_provisioning/credential_process.py"
+    )
+    module = ast.parse(helper.read_text())
+    credential_timeout = next(
+        node.value.value
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "TIMEOUT_SECONDS" for t in node.targets
+        )
+    )
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert (
+            kwargs["timeout"]
+            >= credential_timeout
+            + kms.AWS_CONNECT_TIMEOUT_SECONDS
+            + kms.AWS_READ_TIMEOUT_SECONDS
+            + 5
+        )
+        assert command[command.index("--cli-connect-timeout") + 1] == str(
+            kms.AWS_CONNECT_TIMEOUT_SECONDS
+        )
+        assert command[command.index("--cli-read-timeout") + 1] == str(
+            kms.AWS_READ_TIMEOUT_SECONDS
+        )
+        return SimpleNamespace(returncode=0, stdout='{"Account":"111122223333"}')
+
+    monkeypatch.setattr(kms.subprocess, "run", run)
+    assert (
+        kms._aws("sts", "get-caller-identity", region="us-west-2")["Account"] == ACCOUNT
+    )
+    assert len(calls) == 1  # Credential issuance is never blindly retried.

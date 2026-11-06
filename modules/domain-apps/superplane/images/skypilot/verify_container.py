@@ -87,7 +87,7 @@ def main():
         )
         healthy()
         execute(
-            "import os,sys,ssl,sqlite3,bz2,lzma,ctypes,getpass; assert os.getuid()==1000; assert getpass.getuser()=='sky'; assert sys.version_info[:3]==(3,10,21)"
+            "import os,sys,ssl,sqlite3,bz2,lzma,ctypes,getpass; assert os.getuid()==1000; assert getpass.getuser()=='sky'; assert sys.version_info[:3]==(3,10,22)"
         )
         execute(
             "import sky; task=sky.Task.from_yaml_config({'name':'security-test','resources':{'cloud':'aws','cpus':'4+','memory':'16+'},'run':'echo ok'}); assert task.run=='echo ok'; assert str(next(iter(task.resources)).cloud).lower()=='aws'"
@@ -119,7 +119,7 @@ def main():
                     "status_request_roundtrip": "passed",
                     "task_parser": "passed",
                     "uid": 1000,
-                    "python": "3.10.21",
+                    "python": "3.10.22",
                     "kubectl": "v1.35.9",
                     "cloud_network": "disabled",
                     "live_postgres_and_provisioning": "not tested",

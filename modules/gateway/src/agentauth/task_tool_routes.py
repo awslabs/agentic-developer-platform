@@ -77,6 +77,11 @@ def authorize_tool(repo, policies, identity, tool, *, cleanup=False, env=None):
             raise HTTPException(403, "Task tool policy refused")
         if tool not in frozen or tool not in policy.get("allowed_tools", []) or tool not in persona_tools(task["persona"], env):
             raise HTTPException(403, "Task tool permission refused")
+        if tool.startswith("l5."):
+            from src.internal.tools_l5 import available_l5_catalogue
+
+            if tool not in {entry["name"] for entry in available_l5_catalogue()["tools"]}:
+                raise HTTPException(403, "Task L5 operation unavailable")
         if "repository_binding" in grant:
             from src.agentauth.task_repository_policy import require_current_repository
 

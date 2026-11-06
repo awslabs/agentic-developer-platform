@@ -19,6 +19,7 @@ const host: ToolHost = { async assertCurrent() {}, async execute() { return { st
 test("host catalogue requires capabilities and rejects duplicate definitions", async () => {
   await assert.rejects(startToolServer(tools, host, { ...policy(), capabilities: [] }), /not admitted/);
   await assert.rejects(startToolServer([...tools, ...tools], host, policy()), /Invalid host tool/);
+  await assert.rejects(startToolServer([{ ...tools[0]!, schemaDigest: '0'.repeat(64) }], host, policy()), /schema digest mismatch/);
 });
 
 test("bad token, tool and injected arguments never reach privileged execution", async () => {

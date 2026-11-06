@@ -162,8 +162,8 @@ jobs:
 
       - name: Install acceptance bootstrap dependency
         if: ${{ matrix.component == 'domain' }}
-        # Acceptance imports the maintained retirement/grant contracts directly.
-        run: python3 -m pip install -e modules/domain-apps/superplane/workspace_bootstrap
+        # Exercise discovery/authentication with the paid worker's real SDK range.
+        run: python3 -m pip install -e modules/domain-apps/superplane/workspace_bootstrap 'kubernetes>=31,<32'
 
       - name: Report selected coverage
         env:
@@ -277,7 +277,8 @@ jobs:
           # since "no tests ran" and "tests passed" share an exit code.
           if find modules/domain-apps/superplane -name 'test_*.py' -print -quit | grep -q .; then
             # Real-environment acceptance runs separately with explicit target/evidence inputs.
-            python3 -m pytest modules/domain-apps/superplane/ -m "not superplane_live" -v --tb=short \
+            python3 -m pytest modules/domain-apps/superplane/ -m "not superplane_live" -q --tb=short \
+              -n 4 --dist loadfile --durations=25 \
               --junitxml="$RUNNER_TEMP/superplane-domain.xml"
           else
             echo "No tests in modules/domain-apps/superplane/ yet — nothing to run."
@@ -286,6 +287,13 @@ jobs:
       - name: Require retirement PostgreSQL evidence
         if: ${{ matrix.component == 'domain' }}
         run: python3 .github/scripts/superplane_postgres_gate.py "$RUNNER_TEMP/superplane-domain.xml"
+
+      - name: Retain domain test timing and selection evidence
+        if: ${{ always() && matrix.component == 'domain' }}
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: superplane-domain-tests
+          path: ${{ runner.temp }}/superplane-domain.xml
 
       - name: Run migration, placement and handover tests with coverage
         if: ${{ matrix.component == 'domain' }}
@@ -374,7 +382,7 @@ jobs:
           # to install this too, and this is that step.
           # This isolated job cannot inherit the gateway's PostgreSQL fixture
           # dependency. API PostgreSQL tests import pgserver directly.
-          pip install 'pgserver>=0.1.4' -c ../../releases/transfer-constraints.txt
+          pip install 'pgserver>=0.1.4' 'pytest-xdist>=3.6,<4' -c ../../releases/transfer-constraints.txt
           pip install -e ../../auth
           pip install -e ".[dev]" \
             -c ../../releases/transfer-constraints.txt
@@ -405,7 +413,17 @@ jobs:
           fi
           COUNT=$(tail -1 /tmp/superplane-api-collection.log)
           echo "Collected: ${COUNT}"
-          python3 -m pytest tests/ -v --tb=short
+          # Workers have separate application globals and disposable PostgreSQL
+          # directories. Keep each file ordered within its worker.
+          python3 -m pytest tests/ -q --tb=short -n 4 --dist loadfile --durations=25 \
+            --junitxml="$RUNNER_TEMP/superplane-api.xml"
+
+      - name: Retain API test timing and selection evidence
+        if: ${{ always() && matrix.component == 'api' }}
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: superplane-api-tests
+          path: ${{ runner.temp }}/superplane-api.xml
 
       - name: Enforce coverage on the observation receiver
         if: ${{ matrix.component == 'api' }}

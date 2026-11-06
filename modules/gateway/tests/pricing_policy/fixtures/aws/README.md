@@ -12,3 +12,9 @@ The current cards revise GPT-5.4/5.5 to short/long commercial contexts and
 Daybreak to the Sol rates. These are adopted as source changes, not rejected
 merely because the source hash changed. Fixtures preserve raw decimals and the
 em-dash cache-write cells used by the explicit no-additional-fee policy.
+
+`gpt-56-terra-govcloud.md` and `gpt-56-luna-govcloud.md` preserve the complete
+Pricing sections retrieved from those same AWS model-card URLs on 2026-11-06.
+They publish equal GovCloud prices in separate `In-Region (bedrock-mantle)`
+and `Geo CRIS` rows. These fixtures retain the changed prices and 30-minute
+cache-write heading; trailing whitespace is trimmed and the earlier source fixtures remain unchanged.

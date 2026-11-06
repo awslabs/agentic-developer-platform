@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -15,10 +16,13 @@ import pytest
 
 from native_browser import open_native_browser
 
+from .fixtures.native_network import CHROMIUM_ARGS, FIXTURE_HOST, fixture_dns
+
 
 @pytest.fixture
-def site():
+def site(monkeypatch):
     posts = []
+    monkeypatch.setattr(socket, "getaddrinfo", fixture_dns)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -38,7 +42,7 @@ def site():
             )
             self.end_headers()
             pages = {
-                "/": """<title>Native fixture</title><body><h1 id="result">loading</h1>
+                "/": """<title>Native fixture</title><body><h1 id="result">Native fixture loaded</h1>
                   <a href="/next">Next</a><a href="/popup" target="_blank">Popup</a>
                   <iframe src="/frame"></iframe><script>
                   document.cookie='continuity=kept; path=/';
@@ -56,13 +60,15 @@ def site():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}", posts
+        yield f"http://{FIXTURE_HOST}:{server.server_port}", posts
     finally:
         server.shutdown()
+        server.server_close()
         thread.join()
 
 
-def test_native_requests_scripts_frames_workers_popups_and_cleanup(site):
+@pytest.mark.parametrize("read_only", [False, True])
+def test_native_requests_scripts_frames_workers_popups_and_cleanup(site, read_only):
     from playwright.sync_api import sync_playwright
 
     url, posts = site
@@ -70,16 +76,23 @@ def test_native_requests_scripts_frames_workers_popups_and_cleanup(site):
     client.start.return_value = "fixture-session"
     client.generate_ws_headers.return_value = ("fixture", {})
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=CHROMIUM_ARGS)
         runtime = SimpleNamespace(
             chromium=SimpleNamespace(connect_over_cdp=lambda *a, **k: browser)
         )
-        session = open_native_browser(url, runtime, client_factory=lambda **_: client)
+        session = open_native_browser(
+            url, runtime, client_factory=lambda **_: client, read_only=read_only
+        )
         try:
             session.goto(url, wait_until="domcontentloaded")
             session.wait_for_timeout(600)
-            assert "native fetch complete" in session.inner_text("body")
-            assert posts == ["/post"]
+            if read_only:
+                assert "Native fixture loaded" in session.inner_text("body")
+                assert posts == []
+                assert any(item["reason_code"] == "method_not_allowed" for item in session.refusals)
+            else:
+                assert "native fetch complete" in session.inner_text("body")
+                assert posts == ["/post"]
             assert any(
                 "Native iframe loaded" in f.inner_text("body") for f in session.frames
             )
@@ -87,7 +100,7 @@ def test_native_requests_scripts_frames_workers_popups_and_cleanup(site):
                 session.evaluate(
                     "async () => (await navigator.serviceWorker.getRegistrations()).length"
                 )
-                == 1
+                == (0 if read_only else 1)
             )
             before = session.evaluate("() => document.querySelectorAll('a')[1].target")
             session.click_observed(
@@ -131,7 +144,7 @@ def test_cdp_failure_stops_managed_session_and_retains_id():
 def test_continuity_across_cli_processes_and_idempotent_close(site, monkeypatch):
     import local_browser
 
-    url, _ = site
+    url, posts = site
     fixture = Path(__file__).with_name("fixtures") / "native_process.py"
     root = Path(tempfile.mkdtemp(prefix="adp-native-test-"))
     monkeypatch.setattr(local_browser, "_root", lambda: root)
@@ -170,6 +183,7 @@ print(json.dumps(local_browser.investigation_request(sys.argv[2],json.loads(sys.
 
     try:
         assert packet["manifest"]["browser_transport"] == "agentcore_native"
+        assert packet["observations"][0]["page_title"] == "Native fixture"
         choice = next(c for c in packet["choices"] if c["text"] == "Next")
         step = request(
             "step",
@@ -187,6 +201,7 @@ print(json.dumps(local_browser.investigation_request(sys.argv[2],json.loads(sys.
         closed = request("close", {})
     assert closed["cleanup_status"] == "stopped"
     assert request("close", {}) == closed
+    assert posts == []
 
 
 def test_native_is_default_even_with_stale_broker_url(monkeypatch):
@@ -207,7 +222,7 @@ def test_one_shot_capture_keeps_provenance_and_stops_session(site, monkeypatch):
     from evidence_items import validate_inventory
     from case_contract import content_digest
 
-    url, _ = site
+    url, posts = site
     original = direct_capture.ProcessActor
     fixture = Path(__file__).with_name("fixtures") / "native_process.py"
 
@@ -223,4 +238,7 @@ def test_one_shot_capture_keeps_provenance_and_stops_session(site, monkeypatch):
     for observation in bundle["observations"]:
         validate_inventory(observation)
         assert observation["content_sha256"] == content_digest(observation)
-    assert "native fetch complete" in bundle["observations"][-1]["visible_text"]
+    assert "Native fixture loaded" in bundle["observations"][-1]["visible_text"]
+    assert posts == []
+    assert any(item["reason_code"] == "method_not_allowed"
+               for item in bundle["observations"][-1]["blocked_requests"])

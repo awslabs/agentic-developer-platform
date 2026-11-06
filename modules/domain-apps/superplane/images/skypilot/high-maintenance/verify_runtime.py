@@ -2,7 +2,6 @@
 
 import hashlib
 import http.server
-import importlib.metadata as metadata
 import json
 import os
 import subprocess
@@ -10,6 +9,7 @@ import sys
 import tempfile
 import threading
 import zipfile
+from importlib import metadata
 from pathlib import Path
 
 import git
@@ -34,10 +34,38 @@ def crc32c(data):
 def main():
     if not __debug__:
         raise RuntimeError("Acceptance requires assertions")
+    assert sys.version_info[:3] == (3, 10, 22)
     root = Path(__file__).resolve().parent
+    run(sys.executable, str(root / "verify_critical.py"))
+    run(sys.executable, str(root / "verify_tls.py"))
+    run(sys.executable, str(root / "verify_brotli.py"))
     go = json.loads((root / "go-lock.json").read_text())
     uv = json.loads((root / "uv-lock.json").read_text())
-    for w in json.loads((root / "wheel-lock.json").read_text()):
+    assert (
+        hashlib.sha256(Path("/usr/local/bin/kubectl").read_bytes()).hexdigest()
+        == go["kubectl"]["sha256"]
+    )
+    kubectl = json.loads(run("kubectl", "version", "--client", "-o", "json"))
+    assert kubectl["clientVersion"]["gitVersion"] == "v1.35.9"
+    namespace = json.loads(
+        run(
+            "kubectl",
+            "--kubeconfig=/dev/null",
+            "create",
+            "namespace",
+            "maintenance-fixture",
+            "--dry-run=client",
+            "-o",
+            "json",
+        )
+    )
+    assert (
+        namespace["kind"] == "Namespace"
+        and namespace["metadata"]["name"] == "maintenance-fixture"
+    )
+    for w in json.loads((root / "wheel-lock.json").read_text()) + json.loads(
+        (root / "seed-wheel-lock.json").read_text()
+    ):
         assert metadata.version(w["name"]) == w["version"]
     for name, path in go["installed_paths"].items():
         assert (
@@ -98,13 +126,23 @@ def main():
             sys.executable,
             "-m",
             "virtualenv",
-            "--no-seed",
+            "--no-download",
+            "--no-periodic-update",
             "--python",
             sys.executable,
             str(venv),
             env=env,
         )
         assert run(str(venv / "bin/python"), "-c", "print(6*7)") == "42"
+        assert (
+            run(str(venv / "bin/python"), "-m", "pip", "--version").split()[1]
+            == "26.2.2"
+        )
+        run(
+            str(venv / "bin/python"),
+            "-c",
+            "from pip._vendor import certifi; assert certifi.__version__ == '2026.10.19'",
+        )
         uv_env = home / "uv-env"
         run("uv", "venv", "--offline", "--python", sys.executable, str(uv_env), env=env)
         wheel = home / "adp_local_fixture-1.0-py3-none-any.whl"

@@ -93,6 +93,113 @@ def sandbox_spec():
 
 
 @pytest.fixture
+def crew_verifier(verifier):
+    sandbox, state = verifier
+    state["account"] = "adp-crew-pod"
+    state["pod_account"] = "adp-crew-pod"
+    state["labels"] = {
+        "adp.io/owner-key": "a" * 52,
+        "adp.io/crew-pod": "true",
+    }
+    state["annotations"] = {
+        "adp.io/run-hash": "c" * 64,
+        "adp.io/session-hash": "d" * 64,
+    }
+    spec = state["spec"]
+    spec.pop("activeDeadlineSeconds")
+    spec["terminationGracePeriodSeconds"] = 120
+    spec["volumes"][1]["emptyDir"]["sizeLimit"] = "2Gi"
+    spec["volumes"].append({"name": "crew-home", "persistentVolumeClaim": {"claimName": f"crew-home-{'a' * 52}"}})
+    worker = spec["containers"][0]
+    worker["volumeMounts"].append({"name": "crew-home", "mountPath": "/tmp/workspace"})
+    worker["ports"] = [{"containerPort": 5476, "protocol": "TCP"}, {"containerPort": 5477, "protocol": "TCP"}]
+    worker["lifecycle"] = {
+        "preStop": {
+            "exec": {
+                "command": [
+                    "/bin/sh",
+                    "-c",
+                    "kill -TERM 1; while kill -0 1 2>/dev/null; do sleep 1; done",
+                ]
+            }
+        }
+    }
+    worker["resources"] = {
+        "requests": {"cpu": "500m", "memory": "1Gi", "ephemeral-storage": "256Mi"},
+        "limits": {"cpu": "2", "memory": "6Gi", "ephemeral-storage": "4Gi"},
+    }
+    worker["env"].extend(
+        {"name": name, "value": value}
+        for name, value in {
+            "ADP_EXECUTOR": "kirocrew",
+            "KIROCREW_HOME": "/tmp/workspace",
+            "ADP_RUN_ID": "00000000-0000-4000-8000-000000000001",
+            "ADP_CREW_CUSTODY_PORT": "5477",
+            "ADP_CREW_SESSION_MAP": "/tmp/workspace/adp-crew-session-map",
+        }.items()
+    )
+    worker["env"].append({"name": "ADP_CREW_POD_IP", "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}}})
+    crew = workload.KubernetesWorkloadVerifier(
+        client=sandbox._client,
+        image_digests=frozenset({DIGEST}),
+        namespace="adp-gateway-agents",
+        service_account="adp-crew-pod",
+        container_name="chat-agent",
+        authority_flag="ADP_CHAT_MODEL_POLICY_ENABLED",
+        gateway_token_path=sandbox._gateway_token_path,
+        chat_crew=True,
+    )
+    return crew, sandbox, state
+
+
+def test_crew_verifier_keeps_owner_identity_separate_from_session_sandbox(crew_verifier):
+    crew, sandbox, _ = crew_verifier
+    pod = crew.verify("crew-token")
+    assert pod.owner_key == "a" * 52
+    assert pod.session_hash == "d" * 64
+    assert pod.service_account == "adp-crew-pod"
+    with pytest.raises(workload.WorkloadRefusedError):
+        sandbox.verify("crew-token")
+
+
+def test_crew_discovery_and_exit_keep_the_crew_workload_contract(crew_verifier):
+    crew, sandbox, state = crew_verifier
+    expected = {"name": NAME, "run_hash": "c" * 64, "image_digest": DIGEST, "session_hash": "d" * 64}
+    assert crew.find_reserved_sandbox(**expected).uid == "pod-uid"
+    with pytest.raises(workload.WorkloadRefusedError):
+        crew.find_reserved_sandbox(**{**expected, "session_hash": "e" * 64})
+    assert not crew.has_exited(name=NAME, uid="pod-uid", image_digest=DIGEST)
+    state["phase"] = "Failed"
+    state["container_state"] = {"terminated": {"exitCode": 1}}
+    assert crew.has_exited(name=NAME, uid="pod-uid", image_digest=DIGEST)
+    assert not crew.has_exited(name=NAME, uid="pod-uid", image_digest=LEGACY_DIGEST)
+    assert not sandbox.has_exited(name=NAME, uid="pod-uid", image_digest=DIGEST)
+
+
+@pytest.mark.parametrize("changed", ["owner", "volume", "service_account", "image", "role", "sidecar", "host", "scope"])
+def test_crew_verifier_refuses_unsafe_workloads(crew_verifier, changed):
+    crew, _, state = crew_verifier
+    if changed == "owner":
+        state["labels"]["adp.io/owner-key"] = "b" * 51
+    elif changed == "volume":
+        state["spec"]["volumes"][-1]["persistentVolumeClaim"]["claimName"] = "crew-home-foreign"
+    elif changed == "service_account":
+        state["account"] = "adp-chat-sandbox"
+    elif changed == "image":
+        state["image"] = LEGACY_DIGEST
+    elif changed == "role":
+        state["spec"]["containers"][0]["env"].append({"name": "AWS_ROLE_ARN", "value": "foreign"})
+    elif changed == "sidecar":
+        state["spec"]["containers"].append(deepcopy(state["spec"]["containers"][0]))
+    elif changed == "host":
+        state["spec"]["hostNetwork"] = True
+    else:
+        state["spec"]["containers"][0]["env"][0]["value"] = "false"
+    with pytest.raises(workload.WorkloadRefusedError):
+        crew.verify("crew-token")
+
+
+@pytest.fixture
 def verifier(tmp_path, monkeypatch):
     state = {
         "account": "adp-chat-sandbox",
@@ -102,7 +209,9 @@ def verifier(tmp_path, monkeypatch):
         "phase": "Running",
         "container_state": {"running": {}},
         "spec": sandbox_spec(),
-        "labels": {"adp.io/run-hash": "c" * 64, "adp.io/chat-sandbox": "true"},
+        "labels": {"adp.io/chat-sandbox": "true"},
+        # Full sha256 digests exceed the 63-byte label limit; the trusted template carries them as annotations.
+        "annotations": {"adp.io/run-hash": "c" * 64},
     }
     (tmp_path / "token").write_text("gateway-token")
     monkeypatch.setattr(workload, "_SA_DIRECTORY", tmp_path)
@@ -135,10 +244,18 @@ def verifier(tmp_path, monkeypatch):
                 },
             )
         assert request.url.path == f"/api/v1/namespaces/adp-gateway-agents/pods/{NAME}"
+        if state.get("absent"):
+            return httpx.Response(404, json={"kind": "Status", "reason": "NotFound", "details": {"name": NAME, "kind": "pods"}})
         return httpx.Response(
             200,
             json={
-                "metadata": {"uid": "pod-uid", "name": NAME, "namespace": "adp-gateway-agents", "labels": state["labels"]},
+                "metadata": {
+                    "uid": "pod-uid",
+                    "name": NAME,
+                    "namespace": "adp-gateway-agents",
+                    "labels": state["labels"],
+                    "annotations": state["annotations"],
+                },
                 "spec": {**state["spec"], "serviceAccountName": state["pod_account"]},
                 "status": {
                     "phase": state["phase"],
@@ -165,8 +282,8 @@ def verifier(tmp_path, monkeypatch):
 def test_reserved_discovery_revalidates_running_pod_scope(verifier, changed):
     runtime, state = verifier
     state["spec"].pop("activeDeadlineSeconds")
-    state["labels"]["adp.io/session-hash"] = "d" * 64
-    expected = {"name": NAME, "run_hash": state["labels"]["adp.io/run-hash"], "image_digest": DIGEST, "session_hash": "d" * 64}
+    state["annotations"]["adp.io/session-hash"] = "d" * 64
+    expected = {"name": NAME, "run_hash": state["annotations"]["adp.io/run-hash"], "image_digest": DIGEST, "session_hash": "d" * 64}
     if changed in {"run", "session", "image"}:
         field = {"run": "run_hash", "session": "session_hash", "image": "image_digest"}[changed]
         expected[field] = "f" * 64 if changed != "image" else LEGACY_DIGEST
@@ -188,7 +305,7 @@ def test_reserved_discovery_creates_only_after_exact_absence(verifier, monkeypat
         json={"kind": "Status", "reason": "NotFound", "details": {"name": NAME if valid else "different", "kind": "pods"}},
     )
     monkeypatch.setattr(runtime._client, "get", lambda *args, **kwargs: response)
-    expected = {"name": NAME, "run_hash": state["labels"]["adp.io/run-hash"], "image_digest": DIGEST, "session_hash": "d" * 64}
+    expected = {"name": NAME, "run_hash": state["annotations"]["adp.io/run-hash"], "image_digest": DIGEST, "session_hash": "d" * 64}
     if valid:
         assert runtime.find_reserved_sandbox(**expected) is None
     else:
@@ -201,7 +318,7 @@ def test_sandbox_requires_fixed_service_account_and_distinct_image(verifier):
     pod = runtime.verify("sandbox-token")
     assert pod.service_account == "adp-chat-sandbox"
     assert pod.uid == "pod-uid"
-    assert pod.run_hash == state["labels"]["adp.io/run-hash"]
+    assert pod.run_hash == state["annotations"]["adp.io/run-hash"]
     assert runtime._digests == {DIGEST}
     state["account"] = "adp-agent"
     state["image"] = LEGACY_DIGEST
@@ -227,7 +344,7 @@ def test_persistent_sandbox_requires_session_label_when_deadline_is_omitted(veri
     state["spec"].pop("activeDeadlineSeconds")
     with pytest.raises(workload.WorkloadRefusedError):
         runtime.verify("unbound-pod")
-    state["labels"]["adp.io/session-hash"] = "a" * 64
+    state["annotations"]["adp.io/session-hash"] = "a" * 64
     assert runtime.verify("bound-pod").session_hash == "a" * 64
     state["spec"]["activeDeadlineSeconds"] = 900
     with pytest.raises(workload.WorkloadRefusedError):
@@ -252,7 +369,10 @@ def test_persistent_sandbox_requires_session_label_when_deadline_is_omitted(veri
         lambda state: state["spec"]["containers"][0]["securityContext"].update(privileged=True),
         lambda state: state["spec"]["containers"][0]["securityContext"].update(readOnlyRootFilesystem=False),
         lambda state: state["spec"]["containers"].append(deepcopy(state["spec"]["containers"][0])),
-        lambda state: state["labels"].update({"adp.io/run-hash": "a" * 64}),
+        lambda state: state["annotations"].update({"adp.io/run-hash": "a" * 64}),
+        lambda state: state["annotations"].pop("adp.io/run-hash"),
+        lambda state: state["labels"].update({"adp.io/run-hash": state["annotations"]["adp.io/run-hash"]}),
+        lambda state: state["labels"].update({"adp.io/session-hash": "d" * 63}),
     ],
     ids=[
         "host-network",
@@ -270,7 +390,10 @@ def test_persistent_sandbox_requires_session_label_when_deadline_is_omitted(veri
         "privileged",
         "writable-root",
         "sidecar",
-        "forged-run-label",
+        "forged-run-annotation",
+        "missing-run-annotation",
+        "run-digest-as-label",
+        "session-digest-as-label",
     ],
 )
 def test_valid_sandbox_token_cannot_admit_mutated_pod(verifier, mutate):
@@ -354,9 +477,9 @@ def test_sandbox_exit_requires_exact_terminated_uid_template_and_digest(verifier
     state["image"] = LEGACY_DIGEST
     assert not runtime.has_exited(name=NAME, uid="pod-uid", image_digest=DIGEST)
     state["image"] = DIGEST
-    state["labels"]["adp.io/run-hash"] = "d" * 64
+    state["annotations"]["adp.io/run-hash"] = "d" * 64
     assert not runtime.has_exited(name=NAME, uid="pod-uid", image_digest=DIGEST)
-    state["labels"]["adp.io/run-hash"] = "c" * 64
+    state["annotations"]["adp.io/run-hash"] = "c" * 64
     state["spec"]["containers"][0]["env"].append({"name": "AWS_ROLE_ARN", "value": "overbroad"})
     assert not runtime.has_exited(name=NAME, uid="pod-uid", image_digest=DIGEST)
 
@@ -435,4 +558,85 @@ def test_absence_timeout_and_invalid_name_are_not_evidence(verifier, monkeypatch
     assert not runtime.is_absent(name="../foreign")
     assert not calls
     assert not runtime.is_absent(name=NAME)
+    assert len(calls) == 1
+
+
+def test_crew_verifier_accepts_only_explicit_user_scope(crew_verifier):
+    crew, _, state = crew_verifier
+    worker = state["spec"]["containers"][0]
+    worker["env"].append({"name": "ADP_CREW_SCOPE", "value": "user"})
+    assert crew.verify("crew-token").owner_key == "a" * 52
+    worker["env"][-1]["value"] = "session"
+    with pytest.raises(workload.WorkloadRefusedError):
+        crew.verify("crew-token")
+
+
+def _terminating_document(**changes):
+    document = {
+        "metadata": {"uid": "pod-uid", "name": NAME, "namespace": "adp-gateway-agents", "deletionTimestamp": "2026-10-17T15:22:00Z"},
+        "spec": {"serviceAccountName": "adp-chat-sandbox"},
+        "status": {"phase": "Succeeded", "containerStatuses": [{"name": "chat-agent", "state": {"terminated": {"exitCode": 0}}}]},
+    }
+    for path, value in changes.items():
+        section, field = path.split(".")
+        if value is None:
+            document[section].pop(field, None)
+        else:
+            document[section][field] = value
+    return document
+
+
+@pytest.mark.parametrize("phase", ["Succeeded", "Failed"])
+def test_terminating_pod_after_exit_is_removal_evidence(verifier, monkeypatch, phase):
+    runtime, _ = verifier
+    calls = []
+
+    def get(path, **kwargs):
+        calls.append(path)
+        return httpx.Response(200, json=_terminating_document(**{"status.phase": phase}))
+
+    monkeypatch.setattr(runtime._client, "get", get)
+    assert runtime.is_terminating(name=NAME, uid="pod-uid") is True
+    assert calls == [f"/api/v1/namespaces/adp-gateway-agents/pods/{NAME}"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"metadata.deletionTimestamp": None},
+        {"metadata.deletionTimestamp": ""},
+        {"status.phase": "Running"},
+        {"status.phase": "Pending"},
+        {"status.phase": None},
+        {"metadata.uid": "replacement-uid"},
+        {"metadata.name": "other"},
+        {"metadata.namespace": "default"},
+    ],
+)
+def test_terminating_requires_deletion_timestamp_terminal_phase_and_bound_identity(verifier, monkeypatch, changes):
+    runtime, _ = verifier
+    monkeypatch.setattr(runtime._client, "get", lambda *args, **kwargs: httpx.Response(200, json=_terminating_document(**changes)))
+    assert runtime.is_terminating(name=NAME, uid="pod-uid") is False
+
+
+@pytest.mark.parametrize("code", [202, 401, 403, 404, 500])
+def test_terminating_requires_a_successful_pod_read(verifier, monkeypatch, code):
+    runtime, _ = verifier
+    monkeypatch.setattr(runtime._client, "get", lambda *args, **kwargs: httpx.Response(code, json=_terminating_document()))
+    assert runtime.is_terminating(name=NAME, uid="pod-uid") is False
+
+
+def test_terminating_timeout_invalid_name_and_missing_uid_are_not_evidence(verifier, monkeypatch):
+    runtime, _ = verifier
+    calls = []
+
+    def unavailable(*args, **kwargs):
+        calls.append(args)
+        raise httpx.ReadTimeout("unavailable")
+
+    monkeypatch.setattr(runtime._client, "get", unavailable)
+    assert not runtime.is_terminating(name="../foreign", uid="pod-uid")
+    assert not runtime.is_terminating(name=NAME, uid="")
+    assert not calls
+    assert not runtime.is_terminating(name=NAME, uid="pod-uid")
     assert len(calls) == 1

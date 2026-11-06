@@ -119,6 +119,18 @@ describe('AssetStatusChips', () => {
     vi.clearAllMocks();
   });
 
+  it.each(['repo', 'url', 'doc'])('shows only performed %s import stages, including indexing failure', async (assetType) => {
+    mockGetAssetStatus.mockResolvedValue({ ...fullStatusResponse, stages: [
+      { ...fullStatusResponse.stages[2], status: 'failed', error: 'Search indexing unavailable' },
+    ] });
+    render(<AssetStatusChips assetId="asset-001" assetType={assetType} reportedStagesOnly />);
+    expect(await screen.findByTestId('stage-chip-embed_vectors')).toHaveTextContent('Embeddings');
+    expect(screen.getByTestId('stage-chip-embed_vectors').className).toContain('bg-red-100');
+    expect(screen.queryByTestId('stage-chip-cgc_structural')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('stage-chip-graphrag')).not.toBeInTheDocument();
+    expect(screen.queryByText('not available')).not.toBeInTheDocument();
+  });
+
   it('shows loading state while fetching', () => {
     // Never resolve the promise
     mockGetAssetStatus.mockReturnValue(new Promise(() => {}));
@@ -213,6 +225,21 @@ describe('AssetStatusChips', () => {
     ).toBeInTheDocument();
   });
 
+  it.each(['doc', 'url'])('shows relevant ingestion stages for a %s asset', async (assetType) => {
+    mockGetAssetStatus.mockResolvedValue({
+      ...fullStatusResponse,
+      stages: [
+        { ...fullStatusResponse.stages[0], stage: 'fetch' },
+        { ...fullStatusResponse.stages[0], stage: 's3_upload' },
+      ],
+    });
+    render(<AssetStatusChips assetId="document-001" assetType={assetType} />);
+    expect(await screen.findByTestId('stage-chip-fetch')).toHaveTextContent('Fetch');
+    expect(screen.getByTestId('stage-chip-s3_upload')).toHaveTextContent('Content storage');
+    expect(screen.queryByTestId('stage-chip-clone')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('stage-chip-cgc_structural')).not.toBeInTheDocument();
+  });
+
   it('renders 4-state chips: verified, failed, skipped, not-available', async () => {
     mockGetAssetStatus.mockResolvedValue(fullStatusResponse);
 
@@ -221,18 +248,18 @@ describe('AssetStatusChips', () => {
       expect(screen.getByTestId('asset-status-chips')).toBeInTheDocument();
     });
 
-    // Verified stages render with ✓
+    // Status remains readable to assistive technology alongside decorative icons.
     const cloneChip = screen.getByTestId('stage-chip-clone');
-    expect(cloneChip).toHaveTextContent('✓');
+    expect(cloneChip).toHaveTextContent('verified:');
     expect(cloneChip).toHaveTextContent('Clone');
 
     const codeGraphChip = screen.getByTestId('stage-chip-cgc_structural');
-    expect(codeGraphChip).toHaveTextContent('✓');
+    expect(codeGraphChip).toHaveTextContent('verified:');
     expect(codeGraphChip).toHaveTextContent('Code Graph');
 
-    // Failed stage renders with ✗
+    // Failed stage has an accessible status label.
     const wikiChip = screen.getByTestId('stage-chip-deepwiki');
-    expect(wikiChip).toHaveTextContent('✗');
+    expect(wikiChip).toHaveTextContent('failed:');
     expect(wikiChip).toHaveTextContent('Wiki');
 
     // Skipped stage renders with "skipped" label
@@ -442,7 +469,7 @@ describe('AssetStatusChips — polling behavior', () => {
     expect(screen.queryByTestId('polling-indicator')).not.toBeInTheDocument();
   });
 
-  it('does not show polling indicator when enablePolling is false', async () => {
+  it('shows the fetched stages without polling when enablePolling is false', async () => {
     const indexingResponse = {
       ...fullStatusResponse,
       runStatus: 'indexing',
@@ -456,8 +483,11 @@ describe('AssetStatusChips — polling behavior', () => {
 
     await act(async () => { vi.advanceTimersByTime(0); });
 
-    // With enablePolling=false, the hook doesn't fetch at all, so we get loading/empty state
+    expect(screen.getByTestId('stage-chip-clone')).toHaveTextContent('Clone');
+    expect(screen.queryByText('Not yet indexed')).not.toBeInTheDocument();
     expect(screen.queryByTestId('polling-indicator')).not.toBeInTheDocument();
+    await act(async () => { vi.advanceTimersByTime(30_000); });
+    expect(mockGetAssetStatus).toHaveBeenCalledTimes(1);
   });
 
   it('calls onStatusChange when status transitions', async () => {

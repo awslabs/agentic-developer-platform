@@ -24,7 +24,7 @@ Phase 6 additions (issue #1461):
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.activity.liveness import LivenessVerdict
 
@@ -48,6 +48,7 @@ _LIVENESS_DESCRIPTION = (
 class InvocationItem(BaseModel):
     """A single agent invocation record."""
 
+    viewer_is_run_owner: bool = False
     invocation_id: str
     source_type: Literal["activity", "task"] = "activity"
     task_id: str | None = None
@@ -57,6 +58,17 @@ class InvocationItem(BaseModel):
     invoked_at: str
     channel: str | None = None
     status: str | None = None
+    tool_name: str | None = None
+    receipt_id: str | None = None
+    estimated_cost_usd: float | None = None
+    settled_cost_usd: float | None = None
+    accounting_status: str | None = None
+    observed_usage_status: str | None = None
+    reservation_status: str | None = None
+    request_id: str | None = None
+    execution_id: str | None = None
+    result_status: str | None = None
+    cleanup_status: str | None = None
     status_updated_at: str | None = None
     topic: str | None = None
     persona: str | None = None
@@ -136,6 +148,8 @@ class InvocationItem(BaseModel):
         description="S3 object key for the full run transcript. Null for runs before #3061 or if upload failed.",
     )
 
+    budget_usage: dict | None = Field(default=None, description="Current lifetime budget counter and outstanding reservations; null when unavailable")
+
     # Issue #1616: Per-run cost fields (enriched from Postgres usage_logs)
     total_cost_usd: float | None = Field(
         default=None,
@@ -151,6 +165,15 @@ class InvocationItem(BaseModel):
     )
 
 
+BUDGET_STOP_REASONS = {
+    "run_cap_exceeded": "per-run budget",
+    "chain_cap_exceeded": "invocation-chain budget",
+    "root_user_cap_exceeded": "originating user's budget",
+    "person_cap_exceeded": "person's platform-wide budget",
+    "hierarchy_cap_exceeded": "budget hierarchy limit",
+}
+
+
 class InvocationChainItem(BaseModel):
     """A node in the invocation chain tree."""
 
@@ -158,6 +181,9 @@ class InvocationChainItem(BaseModel):
     invoked_at: str
     channel: str | None = None
     status: str | None = None
+    stop_reason: str | None = None
+    model_admission_status: str | None = None
+    model_admission_updated_at: str | None = None
     topic: str | None = None
     persona: str | None = None
     parent_invocation_id: str | None = None
@@ -173,6 +199,13 @@ class InvocationChainItem(BaseModel):
     total_cost_usd: float | None = None
     total_tokens: int | None = None
     call_count: int | None = None
+
+    @field_validator("stop_reason", mode="before")
+    @classmethod
+    def known_stop_reason(cls, value):
+        # A chain observation exposes only runtime enum values, never arbitrary
+        # worker error text. Older and unknown writers remain readable.
+        return value if isinstance(value, str) and value in BUDGET_STOP_REASONS else None
 
 
 class InvocationChainResponse(BaseModel):

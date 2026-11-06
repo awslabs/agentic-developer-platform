@@ -397,3 +397,38 @@ def test_expired_session_cannot_accept_or_switch_mode(mailbox):
         store.accept(session_id="a", owner=OWNER, turn=turn("a2"), now=NOW + 90 * 24 * 60 * 60)
     with pytest.raises(ChatAuthorizationRefusedError):
         store.select_mode(session_id="a", owner=OWNER, mode="persistent", now=NOW + 90 * 24 * 60 * 60)
+
+
+def test_select_executor_stores_clears_and_holds_while_the_persistent_pod_is_alive(mailbox):
+    """#8115: the executor is a header property owned by the session owner, read back in state()."""
+    store, table = mailbox
+    with pytest.raises(ChatAuthorizationRefusedError):
+        store.select_executor(session_id="a", owner=OWNER, executor="claude-code", now=NOW)
+    assert store.select_mode(session_id="a", owner=OWNER, mode="persistent", now=NOW) == "persistent"
+    assert store.select_executor(session_id="a", owner=OWNER, executor="claude-code", now=NOW) == "claude-code"
+    assert store.state(session_id="a", owner=OWNER, now=NOW) == {"mode": "persistent", "sequence": 0, "health": "idle", "executor": "claude-code"}
+    assert store.select_executor(session_id="a", owner=OWNER, executor="claude-code", now=NOW) == "claude-code"
+    with pytest.raises(ChatAuthorizationRefusedError):
+        store.select_executor(session_id="a", owner=OWNER, executor="bogus", now=NOW)
+    with pytest.raises(ChatAuthorizationRefusedError):
+        store.select_executor(session_id="a", owner=("tenant", "team", "mallory"), executor="kirocrew", now=NOW)
+    assert table.get_item(Key={"PK": "session#a", "SK": "header"})["Item"]["sessionExecutor"] == "claude-code"
+    live = {"run_id": "run-1", "sandbox_uid": "uid-1", "generation": 1, "expires_at": NOW + 300}
+    table.update_item(Key={"PK": "session#a", "SK": "header"}, UpdateExpression="SET chatLease = :lease", ExpressionAttributeValues={":lease": live})
+    with pytest.raises(ChatAuthorizationRefusedError, match="must end before executor change"):
+        store.select_executor(session_id="a", owner=OWNER, executor="kirocrew", now=NOW)
+    # An expired lease is not a running pod.
+    table.update_item(
+        Key={"PK": "session#a", "SK": "header"}, UpdateExpression="SET chatLease.expires_at = :past", ExpressionAttributeValues={":past": NOW}
+    )
+    assert store.select_executor(session_id="a", owner=OWNER, executor="kirocrew", now=NOW) == "kirocrew"
+    assert store.select_executor(session_id="a", owner=OWNER, executor=None, now=NOW) is None
+    assert "sessionExecutor" not in table.get_item(Key={"PK": "session#a", "SK": "header"})["Item"]
+    assert "executor" not in store.state(session_id="a", owner=OWNER, now=NOW)
+    # An ephemeral turn in flight does not hold the choice: the pending persistent mode takes it.
+    assert store.select_mode(session_id="b", owner=OWNER, mode="ephemeral", now=NOW) == "ephemeral"
+    table.update_item(Key={"PK": "session#b", "SK": "header"}, UpdateExpression="SET chatLease = :lease", ExpressionAttributeValues={":lease": live})
+    assert store.select_mode(session_id="b", owner=OWNER, mode="persistent", now=NOW) == "ephemeral"
+    assert store.select_executor(session_id="b", owner=OWNER, executor="claude-code", now=NOW) == "claude-code"
+    assert store.state(session_id="b", owner=OWNER, now=NOW)["pending_mode"] == "persistent"
+    assert store.state(session_id="b", owner=OWNER, now=NOW)["executor"] == "claude-code"

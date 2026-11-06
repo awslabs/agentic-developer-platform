@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/internal/v1", tags=["internal-status-callback"])
 
 # Valid status values the worker can write (subset of the knowledge_assets lifecycle)
-_VALID_CALLBACK_STATUSES = frozenset({"indexing", "complete", "failed"})
+_VALID_CALLBACK_STATUSES = frozenset({"indexing", "complete", "partial", "failed"})
 
 # Issue #5663 (A09): route label for the identity-binding counters.
 _STATUS_CALLBACK_ROUTE = "knowledge-assets-status-callback"
@@ -49,7 +49,7 @@ class StatusCallbackRequest(BaseModel):
     """Body for POST /internal/v1/knowledge-assets/status-callback."""
 
     asset_id: str = Field(..., description="UUID of the knowledge_assets row")
-    status: str = Field(..., description="New status: indexing, complete, or failed")
+    status: str = Field(..., description="New status: indexing, complete, partial, or failed")
     status_detail: dict | None = Field(
         None,
         description="Compact projection of run-state (stage, summary counts, etc.)",

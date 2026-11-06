@@ -17,7 +17,7 @@ def prepare_unregistered_expiry(authority, previous, selected, envelope, thread,
     expiry = created + timedelta(hours=2)
     if expiry > datetime.fromtimestamp(now, UTC):
         return None
-    metadata = {"chat_delivery": protected_delivery(envelope, previous.user_id)}
+    metadata = {"chat_delivery": protected_delivery(envelope, previous.user_id, previous.team_id)}
     delivery = ChatDelivery.model_validate_json(metadata["chat_delivery"]["S"])
     fields = ("session_id", "thread_id", "tenant_id", "user_id", "team_id", "owner_principal", "session_generation")
     markers = [message for message in thread["messages"] if message.get("pending_id") == selected]

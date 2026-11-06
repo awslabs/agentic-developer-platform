@@ -23,6 +23,9 @@
 import { DISPLAY_STATES, toDisplayState, isCurrentPosition } from '@/utils/nodeState';
 import { CostFigureDisplay } from './CostFigureDisplay';
 import { StoryJourney } from './StoryJourney';
+import { StoryTaskBoard } from './StoryTaskBoard';
+import { DeliveryChecks } from './DeliveryChecks';
+import { NodeFilePlan } from './NodeFilePlan';
 import type { GraphNode } from '@/types/orchestration';
 import { Link } from 'react-router-dom';
 
@@ -45,6 +48,7 @@ export interface NodeChipProps {
    * `controls`: no query, no permission check, no client here.
    */
   execution?: React.ReactNode;
+  activityStatus?: React.ReactNode;
 }
 
 /**
@@ -56,7 +60,11 @@ export interface NodeChipProps {
  * loses the only information that tells an operator what to actually do.
  */
 function reasonBadge(node: GraphNode): string | null {
+  if (node.kind === 'eval' && node.delivery_progress?.stage === 'admission') return 'Admission refused';
+  if (node.kind === 'eval' && node.delivery_progress?.stage === 'evidence_wait') return 'Evidence needed';
   if (node.state === 'passed' || node.state === 'superseded') return null;
+  if (node.delivery_progress?.blocker === 'budget_exhausted') return 'Budget blocked';
+  if (['budget_wait', 'budget_reservations_pending', 'budget_unavailable'].includes(node.delivery_progress?.blocker ?? '')) return 'Budget waiting';
   if (node.state === 'halted') return 'Halted';
   if (node.stalled) return 'Stalled';
   if (node.state === 'rejected_at_gate') return 'Changes requested at gate';
@@ -65,8 +73,9 @@ function reasonBadge(node: GraphNode): string | null {
   return null;
 }
 
-export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTitle, controls, execution }: NodeChipProps) {
-  const display = toDisplayState(node);
+export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTitle, controls, execution, activityStatus }: NodeChipProps) {
+  const evaluationHold = node.kind === 'eval' && ['admission', 'evidence_wait'].includes(node.delivery_progress?.stage ?? '');
+  const display = evaluationHold ? 'stalled' : toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
   const resultSummary = node.kind === 'story'
@@ -87,6 +96,8 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
 
   return (
     <li
+      id={`flow-node-${node.id}`}
+      tabIndex={-1}
       data-testid={`node-${node.node_ref}`}
       data-node-kind={node.kind}
       data-display-state={display ?? 'none'}
@@ -95,7 +106,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
       className={[
         // Evidence paths and IDs must wrap inside the grid cell, including the
         // nested journey, execution details and dependency list.
-        'min-w-0 rounded-lg border p-3 text-left [overflow-wrap:anywhere]',
+        'min-w-0 scroll-mt-24 rounded-lg border p-3 text-left [overflow-wrap:anywhere]',
         // Dashed border for queued: "not yet real" is legible before any colour
         // is perceived, which also survives greyscale printing.
         isQueued ? 'border-dashed border-gray-400 dark:border-gray-600' : 'border-gray-200 dark:border-gray-700',
@@ -114,25 +125,44 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
         )}
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-            {node.kind === 'story' ? 'Implementation story' : node.kind === 'gate' ? 'Approval gate' : node.issue_ref?.trim() ? 'Evaluation story' : 'Evaluation checkpoint'}
+            {node.kind === 'story' ? node.executor?.role === 'operate' ? 'Operations story' : 'Implementation story' : node.kind === 'gate' ? 'Approval gate' : node.issue_ref?.trim() ? 'Evaluation story' : 'Evaluation checkpoint'}
           </p>
-          <div className="flex items-start gap-2">
+          {node.kind === 'story' && node.executor?.role === 'operate' && (
+            <span data-testid={`node-persona-${node.node_ref}`} className="inline-block rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-900">
+              {node.executor.persona}
+            </span>
+          )}
+          <div className="flex flex-wrap items-start gap-2">
             <span className="min-w-0 break-words font-medium text-gray-900 dark:text-gray-100">{node.title}</span>
-            {/* Pending tasks keep their issue number; a committed dispatch adds
-                the verified repository URL and run link below. */}
             {node.issue_ref && (
               <span
-                className="shrink-0 font-mono text-xs text-gray-500 dark:text-gray-400"
+                className="min-w-0 break-all font-mono text-xs text-gray-500 dark:text-gray-400"
                 data-testid={`node-issue-${node.node_ref}`}
               >
-                #{String(node.issue_ref).replace(/^#/, '')}
+                {node.kind === 'story' && node.repository_status === 'verified' && node.repository_identity
+                  ? node.issue_url
+                    ? <a href={node.issue_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">{node.repository_identity}#{String(node.issue_ref).replace(/^#/, '')}</a>
+                    : `${node.repository_identity}#${String(node.issue_ref).replace(/^#/, '')}`
+                  : `#${String(node.issue_ref).replace(/^#/, '')}`}
               </span>
             )}
           </div>
 
           {/* The projected state, as text. The fill is a second channel, never
               the only one. */}
-          {style && node.kind !== 'story' && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
+          {style && node.kind !== 'story' && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">
+            {node.kind === 'eval' && node.state === 'ready' && !evaluationHold ? 'Ready for evaluation' : style.label}
+          </p>}
+          {node.kind === 'eval' && evaluationHold && node.delivery_progress && (
+            <div className="mt-1 text-sm text-orange-900 dark:text-orange-200" data-testid={`node-eval-progress-${node.node_ref}`}>
+              <p>{node.delivery_progress.detail}</p>
+              {node.delivery_progress.actor !== 'none' && <p>Responsible: {node.delivery_progress.actor.replace(/-/g, ' ')}</p>}
+              {node.delivery_progress.required_input && <p>Required input: {node.delivery_progress.required_input}</p>}
+              {node.delivery_progress.next_action && <p>{node.delivery_progress.next_action}</p>}
+              {node.delivery_progress.observed_at && <p>Evidence recorded: <time dateTime={node.delivery_progress.observed_at}>{new Date(node.delivery_progress.observed_at).toLocaleString()}</time></p>}
+              {node.delivery_progress.next_check_at && <p>Next check {new Date(node.delivery_progress.next_check_at).toLocaleString()}</p>}
+            </div>
+          )}
           {node.state === 'waived' && (
             <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
               <p>Independent evaluation was not run.</p>
@@ -142,8 +172,21 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
               </>}
             </div>
           )}
+          {node.kind === 'story' && node.repository_status && (
+            <details open={node.repository_status !== 'verified' || Boolean(node.readiness_hold)} className="mt-1 text-xs" data-testid={`node-repository-${node.node_ref}`}>
+              <summary className="cursor-pointer py-1">Repository and publication details</summary>
+              <p>Story target: {node.repository_identity ?? 'unbound'} · provider ID {node.provider_repository_id ?? 'unbound'} · connection {node.repository_connection?.installation_id ?? 'unbound'}</p>
+              <p>Repository binding: {{ verified: 'verified binding', unbound: 'unbound', denied: 'denied by admission', stale: 'stale; review required' }[node.repository_status]}</p>
+              {node.issue_publication_status && <p>Issue publication: {{ issue_pending: 'not yet confirmed', issue_created: 'issue created; no planning epic', issue_created_link_pending: 'issue created; native epic link pending', linked: 'native epic link confirmed', unconfirmed: 'publication cannot be confirmed' }[node.issue_publication_status]}</p>}
+              {node.readiness_hold && <p>Execution hold: {{ amendment_issue_link_unconfirmed: 'native epic link unconfirmed', repository_verification_pending: 'repository verification pending', repository_execution_withheld: 'compatible execution readers not enabled' }[node.readiness_hold] ?? node.readiness_hold}</p>}
+            </details>
+          )}
+          {node.kind !== 'story' && !!node.delivery_progress?.validations?.length && <DeliveryChecks checks={node.delivery_progress.validations} />}
           {node.kind === 'story' && <StoryJourney node={node} execution={execution} />}
-          {node.configuration_problem && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
+          {node.kind === 'story' && node.run_insight && <StoryTaskBoard key={node.run_insight.run_id} insight={node.run_insight} accepted={node.state === 'passed'} />}
+          {node.kind === 'story' && <NodeFilePlan groups={node.file_groups} />}
+          {node.kind === 'story' && activityStatus && <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{activityStatus}</p>}
+          {node.configuration_problem && !evaluationHold && !node.delivery_progress?.validations?.some(check => check.code === 'required_inputs_unavailable') && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
           {resultSummary && !node.binding_hold && !node.delivery_progress && <p className="mt-1 text-sm">{resultSummary}</p>}
           <div className="mt-1 flex flex-wrap gap-3 text-xs">
             {node.issue_url && (
@@ -160,7 +203,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
               className="mt-1 inline-block rounded bg-orange-100 px-1.5 py-0.5 text-xs font-medium text-orange-900 dark:bg-orange-900/40 dark:text-orange-200"
               data-testid={`node-reason-${node.node_ref}`}
             >
-              {badge}
+              {node.kind === 'story' && 'Delivery state: '}<span>{badge}</span>
             </p>
           )}
 

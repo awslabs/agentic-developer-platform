@@ -38,6 +38,7 @@ from src.orchestration.models import (
     DecisionKind,
     NodeKind,
     NodeState,
+    OrchestrationAcceptedPlan,
     OrchestrationDecision,
     OrchestrationFlow,
     OrchestrationNode,
@@ -103,7 +104,6 @@ def _tick_environment(monkeypatch, journal):
     from unittest.mock import AsyncMock
 
     monkeypatch.setenv("FEATURE_ORCHESTRATION_ENGINE_ENABLED", "true")
-    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", REPO)
     monkeypatch.setenv("BG_ORCH_DISPATCH_QUEUE_URL", QUEUE_URL)
     monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
     monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=97_701))
@@ -240,9 +240,31 @@ async def _seed_ready_story(factory, *, approved: bool = True, kind: str = NodeK
             title="Attach a snapshot",
             state=NodeState.READY.value,
             issue_ref="5478",
+            repository_identity=REPO,
+            provider_repository_id=97_701,
         )
         session.add(node)
         await session.flush()
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id=ORG,
+                flow_id=flow.id,
+                version=1,
+                plan_hash="a" * 64,
+                plan_document={
+                    "nodes": [
+                        {
+                            "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                            "kind": node.kind,
+                            "title": node.title,
+                            "issue_ref": node.issue_ref,
+                            "repository_identity": REPO,
+                            "provider_repository_id": 97_701,
+                        }
+                    ]
+                },
+            )
+        )
         await session.commit()
         return node.id
 

@@ -43,7 +43,11 @@ class SQLSession:
 
     async def execute(self, query, params):
         self.executed.append((str(query), dict(params)))
-        rows = self.connection.execute(str(query), params).fetchall()
+        # SQLite has no PostgreSQL row-to-json conversion. This legacy fixture
+        # contains no Product rows; real Product/migration SQL is exercised in
+        # test_product_postgres.py.
+        sql = str(query).replace("to_jsonb(knowledge_assets)->>'product_id'", "NULL")
+        rows = self.connection.execute(sql, params).fetchall()
         return SimpleNamespace(
             scalar=lambda: rows[0][0],
             fetchall=lambda: [SimpleNamespace(**dict(row)) for row in rows],
@@ -85,12 +89,13 @@ async def test_explicit_scopes_keep_existing_visibility(visibility, scope, expec
     assert result.total == len(expected)
 
 
-async def test_admin_retains_tenant_personal_access_without_other_tenants(visibility):
+async def test_admin_cannot_read_another_users_personal_knowledge(visibility):
     _, user, _, query = visibility
     user.is_admin = True
     result = await query()
     found = {item.id for item in result.items}
-    assert {"own", "other-personal", "tenant", "shared"} <= found
+    assert {"own", "tenant", "shared"} <= found
+    assert "other-personal" not in found
     assert not {"other-tenant", "own-other-tenant", "removed"} & found
     assert result.total == len(found)
 

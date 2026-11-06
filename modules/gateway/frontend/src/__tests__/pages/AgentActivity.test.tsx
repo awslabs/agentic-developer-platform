@@ -223,6 +223,33 @@ describe('AgentActivity Page', () => {
     });
   });
 
+  it('shows tool identity, estimate and receipt in flat activity', async () => {
+    mockGetMine.mockResolvedValue({ items: [makeInvocation({
+      invocation_id: 'tool#receipt-one', channel: 'tool', status: 'tool_authorized', topic: 'websearch.search',
+      tool_name: 'websearch___search', estimated_cost_usd: 0.05, receipt_id: 'receipt-one',
+      total_cost_usd: null, summary: null, correlation_id: null,
+    })], last_key: null });
+    await renderAgentActivityFlat();
+    const table = within(screen.getByRole('table'));
+    expect(table.getByText('websearch.search')).toBeInTheDocument();
+    expect(table.getByText('Tool authorized')).toBeInTheDocument();
+    expect(table.getByText('Est. $0.05')).toBeInTheDocument();
+    expect(table.getByText('Receipt receipt-one')).toBeInTheDocument();
+  });
+
+  it('shows tool estimates and receipts in the default grouped activity view', async () => {
+    mockGetMyChains.mockResolvedValue({ chains: [{
+      chain_id: 'tool#receipt-one', root: makeInvocation({
+        invocation_id: 'tool#receipt-one', channel: 'tool', status: 'tool_authorized', topic: 'websearch.search',
+        estimated_cost_usd: 0.05, receipt_id: 'receipt-one', total_cost_usd: null, correlation_id: null,
+      }), descendant_count: 0, descendants: [], chain_total_cost_usd: null,
+    }], count: 1, last_key: null });
+    renderAgentActivity();
+    expect(await screen.findByText('websearch.search')).toBeInTheDocument();
+    expect(screen.getByText('Est. $0.05')).toBeInTheDocument();
+    expect(screen.getByText('Receipt receipt-one')).toBeInTheDocument();
+  });
+
   it('renders date-desc rows from mocked /me/agent-invocations', async () => {
     await renderAgentActivityFlat();
 

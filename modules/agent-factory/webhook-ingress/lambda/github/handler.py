@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+from decimal import Decimal
 from datetime import UTC, datetime
 import time
 import uuid
@@ -616,86 +617,81 @@ def _detect_sibling_app(payload: dict, repo: str) -> None:
         logger.warning("Sibling detection failed (non-fatal): %s", exc)
 
 
-# Issue #3134: Author association hierarchy for min_author_association enforcement.
-# Higher index = higher privilege. NONE < CONTRIBUTOR < COLLABORATOR < MEMBER < OWNER.
-_AUTHOR_ASSOCIATION_LEVELS = {
-    "NONE": 0,
-    "CONTRIBUTOR": 1,
-    "COLLABORATOR": 2,
-    "MEMBER": 3,
-    "OWNER": 4,
-}
-
-
-def _check_min_author_association(
-    *,
+def _authorize_github_dispatch(
     payload: dict,
     event_type: str,
-    installation_id: int,
-    tenant_item: dict | None = None,
-) -> str | None:
-    """Check author_association against the installation's min_author_association.
+    action: str,
+    resolved,
+    tenant_item: dict | None,
+    correlation_ctx: dict | None,
+    engine_command: bool,
+    context,
+):
+    """Require verified sender evidence before either dispatch or engine persistence."""
+    from common.github_actor_authority import LEVELS, ActorDecision, _account_id, check_actor
+    from intent_parser import DISPATCH_EVENTS
 
-    Issue #3134: When an installation row has min_author_association set, the
-    comment's author_association must meet or exceed that threshold. This check
-    uses the payload's comment.author_association field (present on every
-    issue_comment event) — zero extra API calls.
+    if (event_type, action) not in DISPATCH_EVENTS:
+        return ActorDecision(False, "event_unhandled")
+    if not isinstance(tenant_item, dict) or not tenant_item:
+        return ActorDecision(False, "eligibility_unavailable")
 
-    Issue #3134 fix: Accepts an optional tenant_item dict (the installation row
-    already fetched by the identity resolver) to avoid a duplicate DDB GetItem.
-    Falls back to a direct DDB read if tenant_item is not provided.
+    sender = payload.get("sender") or {}
+    if not isinstance(sender, dict):
+        return ActorDecision(False, "actor_evidence_invalid")
+    sender_id = _account_id(sender.get("id"))
+    if not sender_id:
+        return ActorDecision(False, "actor_evidence_invalid")
+    if event_type == "issue_comment":
+        subject = payload.get("comment") or {}
+        if not isinstance(subject, dict) or not isinstance(subject.get("user"), dict):
+            return ActorDecision(False, "actor_invalid")
+        if _account_id(subject["user"].get("id")) != sender_id:
+            return ActorDecision(False, "actor_invalid")
+    elif event_type == "issues":
+        subject = payload.get("issue") or {}
+    else:
+        subject = payload.get("pull_request") or {}
+    if not isinstance(subject, dict):
+        return ActorDecision(False, "actor_evidence_invalid")
 
-    Returns None if the check passes (no enforcement or sufficient association),
-    or the rejection reason string if the check fails.
-    """
-    # Only applies to issue_comment events (which carry author_association)
-    if event_type != "issue_comment":
-        return None
+    floor = tenant_item.get("min_author_association")
+    if floor is not None and (not isinstance(floor, str) or floor.upper() not in LEVELS):
+        return ActorDecision(False, "eligibility_policy_invalid")
 
-    try:
-        # Use caller-provided tenant_item, or fetch from DDB as fallback
-        if tenant_item is None:
-            resolver = _get_identity_resolver()
-            table = resolver._get_table()
-            tenant_resp = table.get_item(
-                Key={
-                    "identity_type": "github_installation_id",
-                    "identity_value": str(installation_id),
-                }
-            )
-            tenant_item = tenant_resp.get("Item")
+    if sender.get("type") == "Bot" or str(sender.get("login", "")).endswith("[bot]"):
+        if engine_command or resolved.user_kind != "bot":
+            return ActorDecision(False, "machine_author")
+        if (
+            correlation_ctx
+            and correlation_ctx.get("lineage_verified") is True
+            and not correlation_ctx.get("is_new_chain")
+            and correlation_ctx.get("parent_invocation_id")
+        ):
+            return ActorDecision(True, "allowed")
+        return ActorDecision(False, "lineage_unavailable")
+    if sender.get("type") != "User" or resolved.user_kind != "human":
+        return ActorDecision(False, "actor_invalid")
+    if not correlation_ctx or not correlation_ctx.get("is_human_rooted"):
+        return ActorDecision(False, "identity_unproven")
 
-        if not tenant_item:
-            return None
-
-        min_assoc = tenant_item.get("min_author_association")
-        if not min_assoc:
-            return None  # Not configured — no enforcement
-
-        # Get the comment's author_association from the payload
-        comment = payload.get("comment", {}) or {}
-        actual_assoc = comment.get("author_association", "NONE")
-
-        # Compare levels
-        min_level = _AUTHOR_ASSOCIATION_LEVELS.get(min_assoc.upper(), 0)
-        actual_level = _AUTHOR_ASSOCIATION_LEVELS.get(actual_assoc.upper(), 0)
-
-        if actual_level < min_level:
-            logger.info(
-                "Author association insufficient: installation_id=%d "
-                "requires=%s (level=%d), actual=%s (level=%d)",
-                installation_id,
-                min_assoc,
-                min_level,
-                actual_assoc,
-                actual_level,
-            )
-            return "insufficient_association"
-    except Exception as exc:
-        # Best-effort — never block on enforcement failure
-        logger.warning("min_author_association check failed (non-fatal): %s", exc)
-
-    return None
+    subject_user = subject.get("user") or {}
+    subject_user_id = (
+        _account_id(subject_user.get("id")) if isinstance(subject_user, dict) else None
+    )
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    timeout = min(10, max(0, remaining() / 1000 - 1)) if callable(remaining) else 10
+    return check_actor(
+        installation_id=(payload.get("installation") or {}).get("id"),
+        repository_id=(payload.get("repository") or {}).get("id"),
+        repository_full_name=(payload.get("repository") or {}).get("full_name", ""),
+        sender_id=sender_id,
+        floor=floor,
+        require_write=event_type == "issue_comment",
+        signed_association=subject.get("author_association"),
+        association_actor_id=subject_user_id,
+        timeout=timeout,
+    )
 
 
 _correlation_store_mod = None
@@ -1053,25 +1049,7 @@ def _resolve_pointer_provenance(
     if not is_human_rooted:
         root_human_id = root_human_id or fallback_root_human_id
 
-    chain_depth = chain.get("chain_depth")
-    if chain_depth is not None:
-        try:
-            chain_depth = int(chain_depth)
-        except (ValueError, TypeError):
-            logger.warning(
-                "Malformed chain_depth=%r on chain row correlation=%s — treating as unknown",
-                chain_depth,
-                pointer.get("correlation_id"),
-            )
-            chain_depth = None
-    if chain_depth is not None and chain_depth < 0:
-        # A negative depth would evade the runaway-chain guard on increment.
-        logger.warning(
-            "Negative chain_depth=%d on chain row correlation=%s — treating as unknown",
-            chain_depth,
-            pointer.get("correlation_id"),
-        )
-        chain_depth = None
+    chain_depth = _github_lineage_depth(chain.get("chain_depth"))
 
     return root_human_id, is_human_rooted, chain_depth
 
@@ -1142,6 +1120,91 @@ def _pr_marker_text_with_issue_fallback(
     )
 
 
+def _unresolved_github_lineage(correlation_id: str = "", depth: int | None = None) -> dict:
+    from intent_parser import MAX_CHAIN_DEPTH
+
+    return {
+        "correlation_id": correlation_id,
+        "root_human_id": "",
+        "is_human_rooted": False,
+        "is_new_chain": False,
+        "parent_invocation_id": None,
+        "chain_depth": max(MAX_CHAIN_DEPTH, depth or 0),
+        "lineage_verified": False,
+        "lineage_reason": "lineage_unavailable",
+    }
+
+
+def _github_lineage_depth(value) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, Decimal) and value.is_finite() and value >= 0:
+        return int(value) if value == value.to_integral_value() else None
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 12:
+        return int(value)
+    return None
+
+
+def _verify_github_lineage(correlation_ctx: dict | None, payload: dict, resolved) -> dict:
+    """Require the sender's proven identity or a tenant-bound server chain."""
+    sender = payload.get("sender") or {}
+    current = correlation_ctx or {}
+    if resolved.user_kind == "human":
+        if (
+            getattr(resolved, "identity_proven", False) is True
+            and sender.get("type") == "User"
+            and not str(sender.get("login", "")).endswith("[bot]")
+            and current.get("is_human_rooted") is True
+            and current.get("root_human_id") == resolved.user_id
+        ):
+            return {**current, "lineage_verified": True}
+        return _unresolved_github_lineage()
+
+    chain_id = current.get("correlation_id") or ""
+    inherited_depth = _github_lineage_depth(current.get("chain_depth"))
+    if not chain_id or current.get("is_new_chain") or not current.get("parent_invocation_id"):
+        return _unresolved_github_lineage(chain_id, inherited_depth)
+    chain = _resolve_chain_record(chain_id)
+    if not chain or _lineage_context_mismatch(chain, _job_lineage_context(payload, resolved)):
+        return _unresolved_github_lineage(chain_id, inherited_depth)
+    chain_repo = chain.get("repo") or ""
+    if chain_repo:
+        from agent_trigger import _repo_in_tenant
+
+        if not _repo_in_tenant(chain_repo, str(chain.get("tenant_id") or ""), {}):
+            return _unresolved_github_lineage(chain_id, inherited_depth)
+    server_depth = _github_lineage_depth(chain.get("chain_depth"))
+    if inherited_depth is None or server_depth is None:
+        return _unresolved_github_lineage(chain_id, server_depth or inherited_depth)
+    server_credential_depth = _github_lineage_depth(
+        chain.get("credential_chain_depth", chain.get("chain_depth"))
+    )
+    if server_credential_depth is None:
+        return _unresolved_github_lineage(chain_id, max(server_depth, inherited_depth))
+    inherited_credential_depth = _github_lineage_depth(
+        current.get("credential_chain_depth", current.get("chain_depth"))
+    )
+    if inherited_credential_depth is None:
+        return _unresolved_github_lineage(chain_id, max(server_depth, inherited_depth))
+    human_root = chain.get("root_human_id") if chain.get("is_human_rooted") is True else ""
+    if chain.get("is_human_rooted") is True and (
+        not isinstance(human_root, str) or not human_root
+    ):
+        return _unresolved_github_lineage(chain_id, max(server_depth, inherited_depth))
+    return {
+        **current,
+        "root_human_id": human_root or "",
+        "is_human_rooted": bool(human_root),
+        "chain_depth": max(server_depth, inherited_depth),
+        "credential_chain_depth": max(
+            server_depth, inherited_depth, server_credential_depth, inherited_credential_depth
+        ),
+        "lineage_verified": True,
+    }
+
+
 def determine_correlation(
     payload: dict,
     resolved_identity,
@@ -1151,12 +1214,12 @@ def determine_correlation(
 ) -> dict[str, Any]:
     """Determine correlation context for this event (read-only).
 
-    For human senders: always starts a new chain (overrides any stale pointer).
+    Proven human senders start a new chain (overrides any stale pointer).
     For bot senders: uses pointer-vs-marker precedence (issue #1696):
       - Pointer exists AND correlation_id matches marker → use pointer
       - Pointer exists but correlation_id differs from marker → use marker (cross-channel hop)
       - No pointer → use marker
-      - No marker and no pointer → new chain (fallback)
+      - No marker and no pointer → unresolved non-human lineage
 
     Args:
         marker_trusted: Issue #4128 — True only when ``marker_text`` was
@@ -1198,8 +1261,17 @@ def determine_correlation(
     """
     # Issue #5663 (A09): server-derived; see _job_lineage_context.
     job_context = _job_lineage_context(payload, resolved_identity)
-    # Human senders ALWAYS start a new chain
     if resolved_identity.user_kind == "human":
+        from common.github_actor_authority import _account_id
+
+        sender = payload.get("sender") or {}
+        if (
+            getattr(resolved_identity, "identity_proven", False) is not True
+            or _account_id(sender.get("id")) is None
+            or sender.get("type") != "User"
+            or str(sender.get("login", "")).endswith("[bot]")
+        ):
+            return _unresolved_github_lineage()
         return {
             "correlation_id": str(uuid.uuid4()),
             "root_human_id": resolved_identity.user_id,
@@ -1432,16 +1504,7 @@ def determine_correlation(
                 "chain_depth": inherited_depth,
             }
 
-    # No pointer, no marker — bot-initiated chain (e.g. cron-like, CI-triggered)
-    return {
-        "correlation_id": str(uuid.uuid4()),
-        "root_human_id": resolved_identity.user_id,
-        "triggered_by": None,
-        "is_human_rooted": False,
-        "is_new_chain": True,
-        "parent_invocation_id": None,
-        "chain_depth": 0,
-    }
+    return _unresolved_github_lineage()
 
 
 _rate_limiter = None
@@ -1557,8 +1620,8 @@ def handler(event: dict, context) -> dict:
 
         return handle_eventbridge(event, context)
 
-    # Issue #2152: dispatch /agent/trigger to the IAM-authenticated handler
-    # BEFORE HMAC validation (IAM auth is handled by API Gateway, not HMAC).
+    # Preserve the retired URL's actionable 410 response before GitHub HMAC
+    # validation. No feature flag can reopen shared-IAM agent dispatch.
     resource = event.get("resource", "")
     if resource == "/agent/trigger":
         from agent_trigger import handle_agent_trigger
@@ -1627,6 +1690,8 @@ def handler(event: dict, context) -> dict:
     except (json.JSONDecodeError, ValueError):
         print("DBG handler:invalid_json")
         return _response(400, {"error": "Invalid JSON body"})
+    if not isinstance(payload, dict):
+        return _response(400, {"error": "Invalid JSON body"})
 
     action = payload.get("action", "")
     print(f"DBG handler:event event_type={event_type!r} action={action!r}")
@@ -1670,9 +1735,13 @@ def handler(event: dict, context) -> dict:
         return _response(200, {"status": "no_op", "reason": "installation_event"})
 
     # 4. Extract installation_id + sender from payload
-    installation_id = payload.get("installation", {}).get("id", 0)
-    repo = payload.get("repository", {}).get("full_name", "")
-    sender = payload.get("sender", {})
+    installation = payload.get("installation") or {}
+    repository = payload.get("repository") or {}
+    sender = payload.get("sender") or {}
+    if not all(isinstance(value, dict) for value in (installation, repository, sender)):
+        return _response(403, {"error": "actor_evidence_invalid"})
+    installation_id = installation.get("id", 0)
+    repo = repository.get("full_name", "")
     sender_id = sender.get("id", 0)
     print(
         f"DBG handler:identity install_id={installation_id} repo={repo!r} sender_id={sender_id} sender_login={sender.get('login', '')!r}"
@@ -1769,38 +1838,6 @@ def handler(event: dict, context) -> dict:
 
     tenant_id = resolved.tenant_id
 
-    # 6b. Issue #3134: Enforce min_author_association from the installation row.
-    # The comment payload's comment.author_association field is checked against
-    # the installation's min_author_association threshold when set. Zero-cost:
-    # the field is already in every payload, currently ignored.
-    # Pass the already-fetched tenant_item to avoid a duplicate DDB GetItem.
-    resolver_mod = _get_identity_resolver()
-    min_assoc = _check_min_author_association(
-        payload=payload,
-        event_type=event_type,
-        installation_id=installation_id,
-        tenant_item=getattr(resolver_mod, "last_tenant_item", None),
-    )
-    if min_assoc is not None:
-        _log_outcome(
-            event_type=event_type,
-            action=action,
-            installation_id=installation_id,
-            tenant_id=tenant_id,
-            repo=repo,
-            persona=None,
-            outcome="insufficient_association",
-            start_time=start_time,
-        )
-        try:
-            _get_metrics().record_rejected(reason="insufficient_association")
-            _get_metrics().flush()
-        except Exception:
-            pass
-        return _response(
-            403, {"error": "insufficient_association", "outcome": "insufficient_association"}
-        )
-
     # 7. Check rate limit (class-based API — returns a RateLimitResult)
     rate_result = _get_rate_limiter().check_and_increment(tenant_id)
     allowed = rate_result.allowed
@@ -1838,12 +1875,12 @@ def handler(event: dict, context) -> dict:
         )
 
     # 9. Determine correlation context (read-only — no DDB writes here)
-    # Issue #1696: Build correlation for BOTH issue_comment AND pull_request events.
+    # Issue #1696: Build correlation for issue, comment and pull_request events.
     # For bot senders, pass the comment/PR body as marker_text for cross-channel
     # lineage inheritance.
     correlation_ctx = None
     channel_key_str = ""
-    if event_type == "issue_comment":
+    if event_type in ("issue_comment", "issues"):
         issue_number = payload.get("issue", {}).get("number")
         if issue_number and repo:
             store = _get_correlation_store()
@@ -1851,7 +1888,8 @@ def handler(event: dict, context) -> dict:
             # Extract marker text from comment body for bot senders
             marker_text = (
                 payload.get("comment", {}).get("body", "")
-                if sender.get("type") == "Bot" or sender.get("login", "").endswith("[bot]")
+                if event_type == "issue_comment"
+                and (sender.get("type") == "Bot" or sender.get("login", "").endswith("[bot]"))
                 else None
             )
             correlation_ctx = determine_correlation(
@@ -1894,11 +1932,41 @@ def handler(event: dict, context) -> dict:
     )
 
     print(f"DBG handler:intent intent={intent!r}")
+    from common import skip_reasons as skip_reasons_mod
+
+    engine_command = skip_reason == skip_reasons_mod.ENGINE_COMMAND
+    if intent is not None or engine_command:
+        correlation_ctx = _verify_github_lineage(correlation_ctx, payload, resolved)
+        decision = _authorize_github_dispatch(
+            payload, event_type, action, resolved,
+            getattr(_get_identity_resolver(), "last_tenant_item", None),
+            correlation_ctx, engine_command, context,
+        )
+        if not decision.allowed:
+            unavailable = decision.reason in {
+                "eligibility_unavailable", "actor_evidence_unavailable",
+                "permission_unavailable", "association_unavailable", "lineage_unavailable",
+            }
+            reason = (
+                decision.reason
+                if decision.reason == "lineage_unavailable" or not unavailable
+                else "eligibility_unavailable"
+            )
+            _log_outcome(
+                event_type=event_type, action=action, installation_id=installation_id,
+                tenant_id=tenant_id, repo=repo, persona=None,
+                outcome=reason, start_time=start_time,
+            )
+            try:
+                _get_metrics().record_rejected(reason=reason)
+                _get_metrics().flush()
+            except Exception:
+                logger.warning("GitHub admission rejection metric unavailable")
+            return _response(503 if unavailable else 403, {"error": reason, "outcome": reason})
+
     # 11. If no actionable intent → log + return 200 (no-op)
     # IMPORTANT: Do NOT write pointer or provenance here — prevents channel poisoning
     if intent is None:
-        from common import skip_reasons as skip_reasons_mod
-
         # Issue #4599: reuse the shared author-kind predicate rather than
         # re-deriving it. It is the same signal `spawn_persona` gates bot dispatch
         # on, so a comment that would not be allowed to spawn an agent also cannot
@@ -1911,7 +1979,7 @@ def handler(event: dict, context) -> dict:
         # the body and acts. Nothing is enqueued and no gateway is called from here —
         # this component holds no VPC, no DB and no gateway reach, and must never
         # gain any (#4303 closed-routes table).
-        is_engine_command = skip_reason == skip_reasons_mod.ENGINE_COMMAND
+        is_engine_command = engine_command
 
         _log_outcome(
             event_type=event_type,
@@ -2045,16 +2113,7 @@ def handler(event: dict, context) -> dict:
     tenant_item = getattr(resolver_mod_for_token, "last_tenant_item", None)
     token_source = tenant_item.get("token_source_override") if tenant_item else None
 
-    # Provide a default correlation_ctx if not available (e.g. issues.labeled
-    # events where we didn't compute correlation above).
-    effective_correlation_ctx = correlation_ctx or {
-        "correlation_id": "",
-        "root_human_id": resolved.user_id,
-        "is_human_rooted": True,
-        "is_new_chain": True,
-        "parent_invocation_id": None,
-        "chain_depth": 0,
-    }
+    effective_correlation_ctx = correlation_ctx
 
     trusted_human_event = None
     if (

@@ -100,8 +100,10 @@ _TIMEOUT = 60
 # gateway's slice size after base64 (4/3) plus envelope, so a slice the gateway was
 # willing to send is not then refused here for being exactly as large as we asked for.
 _MAX_ARCHIVE_RESPONSE_BYTES = 12 * 1024 * 1024
-# Total reassembled archive accepted, matching the gateway's own `MAX_ARCHIVE_BYTES`.
-_MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
+# Total reassembled archive accepted, matching the gateway's own `MAX_ARCHIVE_BYTES`
+# (64 MiB since #7860, when the repository's tarball outgrew 32 MiB) and the
+# host-owned `MAX_PROVIDER_ARCHIVE_BYTES`.
+_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 # Slice ceiling for the loop bound: enough responses to carry the largest archive at
 # the smallest slice the gateway is expected to serve, plus headroom for a short
 # final window. Bounds the loop so a gateway that stops advancing fails instead of
@@ -155,7 +157,9 @@ class LocalChange:
     def payload(self) -> dict:
         return {
             "path": self.path,
-            "content_base64": None if self.content is None else base64.b64encode(self.content).decode("ascii"),
+            "content_base64": None
+            if self.content is None
+            else base64.b64encode(self.content).decode("ascii"),
             "mode": self.mode,
             "deleted": self.deleted,
         }
@@ -213,12 +217,21 @@ def _sign(method: str, url: str, headers: dict, data: bytes) -> dict:
     if credentials is None:
         raise MediatedError("no AWS credentials available for SigV4 signing")
     request = botocore.awsrequest.AWSRequest(method=method, url=url, headers=headers, data=data)
-    signer = botocore.auth.SigV4Auth(credentials.get_frozen_credentials(), "execute-api", gateway_signing_region(url))
+    signer = botocore.auth.SigV4Auth(
+        credentials.get_frozen_credentials(), "execute-api", gateway_signing_region(url)
+    )
     signer.add_auth(request)
     return dict(request.headers)
 
 
-def _request(payload: dict, *, timeout: int = _TIMEOUT, max_response_bytes: int = _MAX_RESPONSE_BYTES) -> dict:
+def _request(
+    payload: dict,
+    *,
+    path: str = MEDIATED_OPERATION_PATH,
+    timeout: int = _TIMEOUT,
+    max_response_bytes: int = _MAX_RESPONSE_BYTES,
+    conflict_codes: frozenset[str] = frozenset(),
+) -> dict:
     """One mediated call: SigV4 plus both worker proofs, no redirects.
 
     HTTPS and SigV4 are required rather than preferred. The two identity headers
@@ -233,9 +246,16 @@ def _request(payload: dict, *, timeout: int = _TIMEOUT, max_response_bytes: int 
     endpoint = os.environ.get("ADP_GATEWAY_ENDPOINT", "").rstrip("/")
     if not endpoint:
         raise MediatedError("mediated GitHub operations require ADP_GATEWAY_ENDPOINT")
-    url = f"{endpoint}{MEDIATED_OPERATION_PATH}"
+    url = f"{endpoint}{path}"
     parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
         raise MediatedError("mediated GitHub operations require a clean HTTPS endpoint")
 
     # This is the exact wire serializer. Keep its ASCII and separator choices
@@ -251,17 +271,45 @@ def _request(payload: dict, *, timeout: int = _TIMEOUT, max_response_bytes: int 
 
     try:
         opener = build_opener(_NoRedirect()).open
-        with opener(Request(url, data=data, headers=headers, method="POST"), timeout=timeout) as response:
+        with opener(
+            Request(url, data=data, headers=headers, method="POST"), timeout=timeout
+        ) as response:
             body = response.read(max_response_bytes + 1)
         if len(body) > max_response_bytes:
             raise MediatedError("mediated response exceeded the accepted size")
         return json.loads(body.decode("utf-8"))
     except HTTPError as exc:
-        # The gateway's status codes carry the only distinction that matters here:
-        # 409 means reconcile, 503 means retry, everything else means stop. The
-        # body is deliberately not read or logged — it is not needed to decide,
-        # and this path handles content that may be sensitive.
+        if exc.code == 403 and path == MEDIATED_OPERATION_PATH:
+            # This one gateway code is disclosed only after own-assignment
+            # reauthorization. Never echo provider/body text or classify it as
+            # a moved-branch conflict that the agent should keep retrying.
+            try:
+                body = exc.read(1025)
+                detail = json.loads(body).get("detail") if len(body) <= 1024 else None
+            except (ValueError, AttributeError, OSError):
+                detail = None
+            if isinstance(detail, dict) and detail.get("code") == "repair_scope_not_accepted":
+                raise MediatedRefused(
+                    "repair_scope_not_accepted: The accepted plan has neither repair_paths nor "
+                    "repair_scope='repository'. Ask the flow owner to review and accept a supported plan "
+                    "amendment with explicit repair paths (or reviewed repository scope). Review approval "
+                    "changes and reapprove any invalidated budget/limit supplements before retrying. "
+                    "Retrying unchanged cannot resolve this."
+                ) from None
+        # Other GitHub errors expose only transport categories. Actions callers can
+        # opt into an explicit vocabulary of gateway-owned 409 codes so a
+        # missing repair merge is not misreported as a moved branch. Never
+        # return arbitrary provider text, even if it looks like a code.
         if exc.code == 409:
+            if conflict_codes:
+                try:
+                    body = exc.read(1025)
+                    detail = json.loads(body).get("detail") if len(body) <= 1024 else None
+                except (ValueError, AttributeError, OSError):
+                    detail = None
+                if isinstance(detail, str) and detail in conflict_codes:
+                    raise MediatedConflict(detail) from None
+                raise MediatedConflict("the Actions operation conflicted; inspect current repair and workflow state") from None
             raise MediatedConflict("the assigned branch or pull request moved") from None
         if exc.code == 503:
             raise MediatedUnavailable("the mediated operation service is unavailable") from None
@@ -330,7 +378,9 @@ def collect_changes(repo: str, *, base: str = "HEAD") -> list[LocalChange]:
         raise MediatedError(f"{len(changes)} changed files exceeds the mediated per-commit limit")
     total_content = sum(len(change.content) for change in changes if change.content is not None)
     if total_content > MAX_COMMIT_CONTENT_BYTES:
-        raise MediatedError(f"the proposed commit's {total_content} bytes of content exceeds the mediated per-commit total limit")
+        raise MediatedError(
+            f"the proposed commit's {total_content} bytes of content exceeds the mediated per-commit total limit"
+        )
     return changes
 
 
@@ -472,7 +522,9 @@ def publish_commit(
     )
 
 
-def upsert_pull_request(*, title: str, body: str, repository: str | None = None, branch: str | None = None) -> dict:
+def upsert_pull_request(
+    *, title: str, body: str, repository: str | None = None, branch: str | None = None
+) -> dict:
     """Open or update the pull request for the run's assigned branch.
 
     Head and base are not parameters. The gateway always uses the assigned branch
@@ -495,7 +547,14 @@ def publish_review(*, pull_number: int, body: str, event: str = "COMMENT") -> di
     the review a merge gate depends on. Reviewer runs approving someone else's work
     are the legitimate case.
     """
-    return _request({"operation": "publish_review", "pull_number": int(pull_number), "body": body, "review_event": event}).get("review", {})
+    return _request(
+        {
+            "operation": "publish_review",
+            "pull_number": int(pull_number),
+            "body": body,
+            "review_event": event,
+        }
+    ).get("review", {})
 
 
 def read_repository(*, repository: str | None = None) -> dict:
@@ -547,7 +606,9 @@ def _fetch_archive(*, ref: str | None, repository: str | None) -> tuple[bytes, d
         if repository:
             payload["repository"] = repository
 
-        result = _request(payload, timeout=_ARCHIVE_TIMEOUT, max_response_bytes=_MAX_ARCHIVE_RESPONSE_BYTES)
+        result = _request(
+            payload, timeout=_ARCHIVE_TIMEOUT, max_response_bytes=_MAX_ARCHIVE_RESPONSE_BYTES
+        )
 
         remote_head = result.get("commit_sha")
         encoded = result.get("archive_base64")
@@ -688,7 +749,13 @@ def materialize_repository(
     if result.get("repository"):
         _git(repo, "remote", "add", "origin", f"https://github.com/{result['repository']}")
     _git(repo, "add", "--all")
-    _git(repo, "commit", "--allow-empty", "-m", f"Materialized {remote_head} through mediated operations")
+    _git(
+        repo,
+        "commit",
+        "--allow-empty",
+        "-m",
+        f"Materialized {remote_head} through mediated operations",
+    )
     local_head = _git(repo, "rev-parse", "HEAD").strip()
 
     # The confirmed remote head, recorded so the first publication sends the

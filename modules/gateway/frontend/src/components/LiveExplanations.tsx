@@ -1,4 +1,5 @@
 import './run-workspace.css';
+import { useActivityScope } from '@/contexts/ActivityScopeContext';
 import './live-activity.css';
 import remarkGfm from 'remark-gfm';
 import { LiveTaskChecklist } from './LiveTaskChecklist';
@@ -48,6 +49,7 @@ const planComponents: Components = {
 export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal, workspace = false }: {
   invocationId: string; isOpen: boolean; terminal: boolean; onTerminal?: () => void; workspace?: boolean;
 }) {
+  const activityScope = useActivityScope();
   const [filter, setFilter] = useState<'all' | 'updates' | 'tools'>('all');
   const [selectedTask, setSelectedTask] = useState<string>();
   const historyView = useRef<HTMLDivElement>(null);
@@ -110,7 +112,7 @@ export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal, w
           }
           setEvents([...history]);
           setUpdates(n => n + 1);
-        });
+        }, activityScope);
       } catch (error) {
         if (closed || finished) return;
         if (error instanceof FeedError && error.terminal) {
@@ -125,7 +127,7 @@ export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal, w
     }
     void connect();
     return () => { closed = true; clearTimeout(retry); clearInterval(watchdog); controller?.abort(); };
-  }, [enabled, invocationId, isOpen, terminal]);
+  }, [enabled, invocationId, isOpen, terminal, activityScope]);
   const tasks = useMemo(() => plan ? parseLiveTasks(plan.payload.text ?? '') : undefined, [plan]);
   const references = useMemo(() => new Map(events.map(event => [event, tasks?.filter(task => mentionsTask(event, task.id)) ?? []])), [events, tasks]);
   useEffect(() => {
@@ -178,7 +180,7 @@ export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal, w
     {workspace && <nav aria-label="Activity filters" className="run-tabs">
       {(['all', 'updates', 'tools'] as const).map(value => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>{value === 'all' ? 'All activity' : value === 'updates' ? 'Updates' : 'Tools & logs'}</button>)}
     </nav>}
-    {tasks && <p className="live-muted task-link-help">Select a task to see updates that mention its ID. Updates without a task reference stay in All activity.</p>}
+    {tasks?.some(task => task.kind !== 'task') && <p className="live-muted task-link-help">Select a task to see updates that mention its ID. Updates without a task reference stay in All activity.</p>}
     {selection && <div className="task-selection" role="status">
       <p>Activity mentioning <strong>{selection.id}</strong></p>
       <p>{selection.description}</p>

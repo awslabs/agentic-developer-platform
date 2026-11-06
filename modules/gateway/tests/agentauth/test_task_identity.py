@@ -270,3 +270,24 @@ async def test_unresolvable_alias_cannot_silently_drop_hierarchy(identity_db):
     await identity_db.commit()
     with pytest.raises(ModelPolicyError, match="task_identity_hierarchy_unavailable"):
         await module.resolve_task_identity_context(identity_db, context())
+
+
+@pytest.mark.asyncio
+async def test_human_without_a_team_in_the_tenant_is_refused_by_name(identity_db):
+    """#8011: a human principal carrying ``team_id == ""`` (the Cognito-index row of
+    a person whose tenant member row is another users row) must not read as a
+    generic hierarchy outage. The reason stays the stable code; the detail names
+    the condition and is what #8048 journals and shows to the user."""
+    with pytest.raises(ModelPolicyError) as refusal:
+        await module.resolve_task_identity_context(identity_db, context("human", ""))
+    assert refusal.value.reason == "task_identity_hierarchy_unavailable"
+    assert refusal.value.detail == "human principal has no team in tenant tenant"
+    assert str(refusal.value) == "task_identity_hierarchy_unavailable: human principal has no team in tenant tenant"
+
+
+@pytest.mark.asyncio
+async def test_human_with_an_unregistered_team_is_refused_by_name(identity_db):
+    with pytest.raises(ModelPolicyError) as refusal:
+        await module.resolve_task_identity_context(identity_db, context("human", "missing"))
+    assert refusal.value.reason == "task_identity_hierarchy_unavailable"
+    assert refusal.value.detail == "team missing is not registered with a department in tenant tenant"

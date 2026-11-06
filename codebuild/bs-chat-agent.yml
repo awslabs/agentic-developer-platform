@@ -5,3 +5,4 @@ phases:
   build:
     commands:
       - bash platform/scripts/publish-shared-image.sh adp-chat-agent
+      - bash modules/agent-factory/agent/scripts/publish-chat-sandbox-image.sh

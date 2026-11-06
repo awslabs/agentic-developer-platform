@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 
 import anyio
 import rfc8785
@@ -10,6 +11,8 @@ from starlette.responses import StreamingResponse
 
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError
 from src.agentauth.chat_model_json import canonical_model_json
+
+logger = logging.getLogger(__name__)
 
 MEDIA_TYPE = "application/x-ndjson"
 MAX_FRAME_BYTES = 65_536
@@ -26,7 +29,7 @@ class ModelStreamingResponse(StreamingResponse):
                 await self.body_iterator.aclose()
 
 
-def model_stream_response(service, *, launch, operation_id, model_id, request, authorize, on_event=None):
+def model_stream_response(service, *, launch, operation_id, model_id, request, authorize, on_event=None, crew_identity=None, recalled_request=None):
     try:
         encoded = canonical_model_json(request)
     except rfc8785.CanonicalizationError as error:
@@ -66,14 +69,39 @@ def model_stream_response(service, *, launch, operation_id, model_id, request, a
             for offset in range(0, len(event["text"]), 1024):
                 await queue.put({**event, "text": event["text"][offset : offset + 1024]})
 
+        def error_frame(error):
+            # The response is already 200 and streaming, so the refusal cannot become a
+            # status code; name it in the operator log (class + bounded message, never
+            # the request or a token) and send the sandbox a terminal error frame (#7990).
+            # The same line covers the per-frame authority check failing below (#8048).
+            code = "denied" if isinstance(error, ChatAuthorizationRefusedError) else "incomplete"
+            logger.warning(
+                "Chat model stream ended with an error",
+                extra={
+                    "run_id": launch.run_id,
+                    "operation_id": operation_id,
+                    "error_class": type(error).__name__,
+                    "error_detail": str(error)[:300],
+                    "code": code,
+                },
+            )
+            return {"type": "error", "code": code}
+
         async def produce():
             try:
                 receipt = await service.execute(
-                    launch=launch, operation_id=operation_id, model_id=model_id, request=request, authorize=authorize, on_event=emit
+                    launch=launch,
+                    operation_id=operation_id,
+                    model_id=model_id,
+                    request=request,
+                    authorize=authorize,
+                    on_event=emit,
+                    crew_identity=crew_identity,
+                    **({"recalled_request": recalled_request} if recalled_request is not None else {}),
                 )
                 await queue.put({"type": "receipt", "receipt": receipt})
             except Exception as error:
-                await queue.put({"type": "error", "code": "denied" if isinstance(error, ChatAuthorizationRefusedError) else "incomplete"})
+                await queue.put(error_frame(error))
 
         def encode(event):
             return (
@@ -98,7 +126,7 @@ def model_stream_response(service, *, launch, operation_id, model_id, request, a
                     try:
                         await authorize()
                     except Exception as error:
-                        event = {"type": "error", "code": "denied" if isinstance(error, ChatAuthorizationRefusedError) else "incomplete"}
+                        event = error_frame(error)
                 try:
                     frame = encode(event)
                     if len(frame) > MAX_FRAME_BYTES or stream_bytes + len(frame) > MAX_STREAM_BYTES - MAX_FRAME_BYTES or sequence >= MAX_FRAMES - 1:

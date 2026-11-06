@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "chart": {
+    "version": "0.94.2",
+    "runner_version": "19.5.2",
+    "source": "https://gitlab-charts.s3.amazonaws.com/gitlab-runner-0.94.2.tgz",
+    "sha256": "6a63ce370db021252f4f6f0414a4ff1fb09f8105d683dd8539ee670263944f21"
+  },
+  "server_version_observed_by_operator": "19.5.1",
+  "compatibility_reviewed": false,
+  "manager_image": "gitlab/gitlab-runner:alpine-v19.5.2@sha256:800157105b792ed3f0c9bc0aa6bc6427d66889cafd2c8aae4c4c177194699144",
+  "upstream_helper_image": "gitlab/gitlab-runner-helper:x86_64-v19.5.2@sha256:072376a64c654169ef9de96b4b40740c10f1ef1a69f913644f56b25d1d894401",
+  "bootstrap_python_image": "python:3.12.12-slim@sha256:f3fa41d74a768c2fce8016b98c191ae8c1bacd8f1152870a3f9f87d350920b7c",
+  "bootstrap_requirements_sha256": "1c0c26a0d024472821f63c92bfbc48e6780a4610eac01c0684828df198821d38",
+  "fleeting_plugin": {
+    "version": "v1.3.1",
+    "source_commit": "bf5cbcc9183e164637cb4dae42e64e49365e8ade",
+    "upstream_source": "https://gitlab.com/api/v4/projects/39457165/packages/generic/releases/v1.3.1/fleeting-plugin-aws-linux-amd64",
+    "s3_key": "gitlab-runners/upstream/fleeting-plugin-aws-linux-amd64",
+    "sha256": "2090afe6b2a888d1e58990dbf7b731124956d27358ff8b8532180235d9d49ebb"
+  },
+  "host_ami": {},
+  "manager_guard_sha256": "066aa82311377155a608b7a029d1aa05f5481acc137e2c55b471b9d37735a54b",
+  "manager_prestart_sha256": "ec5ddff3955c0e04e9d4f4c5666752b2361cbc4a880b6089c6ee3b97b50a4ed0",
+  "plugin_installer_sha256": "5a417e694a8944de4a4bd0664f5ce8f523adfa30fa0a22e432afd44b6f8922bb",
+  "loader_source_sha256": "e0198f2f028169b3612973e3372cacee1b70771ff6e6347107f26d8318df60cb",
+  "image_verifier_sha256": "fa5f3a103491657c87369339df4bbeb9a7a3108477424061fe433d220912a9d2",
+  "test_runner_binary": {
+    "source": "https://gitlab-runner-downloads.s3.amazonaws.com/v19.5.2/binaries/gitlab-runner-linux-amd64",
+    "sha256": "1c1752101f5b0f212615ad2c674d8f3499de96d9377f31aed1e3eecdbd068de1"
+  }
+}

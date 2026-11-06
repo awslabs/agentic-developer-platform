@@ -3,6 +3,8 @@
 import copy
 import hashlib
 import json
+from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -172,6 +174,122 @@ def test_owned_create_and_replay_are_idempotent_and_pin_live_storage(setup):
     assert pod["automountServiceAccountToken"] is False
     assert pod["containers"][0]["image"].endswith("@sha256:" + "9" * 64)
     assert pod["nodeSelector"] == cluster.env["paid_worker"]["node_selector"]
+
+
+def test_binding_stage_needs_no_pv_read_but_normal_preparation_still_does(setup):
+    cluster = Cluster(*setup)
+    original = cluster.kube
+
+    def no_pv_read(*args, **kwargs):
+        if args[:2] == ("get", "pv"):
+            raise Refusal("PV read has not been provisioned")
+        return original(*args, **kwargs)
+
+    cluster.kube = no_pv_read
+    owner.prepare(cluster, verify_volume=False)
+    evidence = cluster.receipt[owner.KEY]
+    assert evidence["volume_read_request"] == {
+        "namespace": cluster.env["namespace"],
+        "name": cluster.env["paid_worker"]["lifecycle_state_claim"],
+        "uid": "uid-PersistentVolumeClaim",
+        "volume_name": "pv-fixture",
+        "storage_class": "reviewed-retained-ebs",
+    }
+    assert "retained" not in evidence and "PersistentVolume" not in evidence
+    owner.prepare(cluster, verify_volume=False)
+    assert len(cluster.writes) == 4
+    with pytest.raises(Refusal, match="PV read"):
+        owner.prepare(cluster)
+    cluster.kube = original
+    owner.prepare(cluster)
+    assert evidence["retained"] is True
+    assert evidence["PersistentVolume"]["uid"] == "pv-1"
+    assert len(cluster.writes) == 4
+
+
+@pytest.mark.parametrize("fault", ["foreign", "replaced", "unbound", "missing-volume"])
+def test_binding_stage_does_not_publish_an_untrusted_volume_request(setup, fault):
+    cluster = Cluster(*setup)
+    owner.prepare(cluster, verify_volume=False)
+    pvc = cluster.objects[
+        ("PersistentVolumeClaim", cluster.env["paid_worker"]["lifecycle_state_claim"])
+    ]
+    if fault == "foreign":
+        pvc["metadata"]["labels"][LABEL] = "another-installation"
+    elif fault == "replaced":
+        pvc["metadata"]["uid"] = "replacement"
+    elif fault == "unbound":
+        pvc["status"]["phase"] = "Pending"
+    else:
+        del pvc["spec"]["volumeName"]
+    with pytest.raises(Refusal):
+        owner.volume_read_request(cluster)
+
+
+def test_state_binding_execution_stops_before_migration_rollout_and_activation(
+    monkeypatch,
+):
+    from installation import lifecycle_worker
+    from installation.runner import Installer
+
+    calls = []
+    prepare = Mock()
+    monkeypatch.setattr(owner, "prepare", prepare)
+    monkeypatch.setattr(
+        lifecycle_worker, "quiescence_job", lambda _: calls.append("quiescence-probe")
+    )
+    installer = SimpleNamespace(
+        env={
+            "lifecycle_foundations": {"state": {}},
+            "paid_worker": {"mode": "native-lifecycle"},
+            "timeout_seconds": 60,
+        },
+        receipt={"plan_sha256": "reviewed"},
+        directory=Path("/private/plan"),
+        preflight=lambda: calls.append("preflight"),
+        exclusive=nullcontext,
+        disable_route=lambda: calls.append("route-disabled"),
+        foundations=lambda: calls.append("namespace-foundations"),
+        commands=SimpleNamespace(call=lambda *a, **k: calls.append("terraform")),
+        save=Mock(),
+    )
+    installer.phase = lambda name, action: (calls.append(name), action())[-1]
+    Installer.execute(installer, "reviewed", "real-token", prepare_lifecycle_state=True)
+    prepare.assert_called_once_with(installer, verify_volume=False)
+    assert installer.receipt["status"] == "awaiting-volume-read"
+    assert calls.index("quiescence-probe") < calls.index("lifecycle-state-binding")
+    assert calls[-1] == "lifecycle-state-binding"
+    assert not set(calls) & {
+        "migration",
+        "rollout",
+        "adapter-activation",
+        "public-route",
+    }
+
+
+def test_state_binding_flag_cannot_be_used_without_native_foundations():
+    from installation.runner import Installer
+
+    installer = SimpleNamespace(env={}, preflight=Mock())
+    with pytest.raises(Refusal, match="configured native"):
+        Installer.execute(
+            installer, "reviewed", "real-token", prepare_lifecycle_state=True
+        )
+    installer.preflight.assert_not_called()
+
+
+def test_waiting_for_volume_read_resumes_same_installation(setup, tmp_path):
+    from installation.runner import Installer
+
+    installer = Installer(*setup, tmp_path)
+    previous = copy.deepcopy(installer.receipt)
+    previous["status"] = "awaiting-volume-read"
+    installer.resume(previous)
+    assert installer.run_id == previous["run_id"]
+    changed = copy.deepcopy(previous)
+    changed["environment"]["namespace"] = "another-app"
+    with pytest.raises(Refusal, match="exact original"):
+        installer.resume(changed)
 
 
 @pytest.mark.parametrize(
@@ -374,3 +492,60 @@ def test_lock_recovery_waits_for_existing_storage_probe(setup):
     with pytest.raises(Refusal, match="nonterminal"):
         Installer.recover_lock(installer, installer.run_id)
     installer.release_lock.assert_not_called()
+
+
+def test_scoped_policy_retains_default_and_validates_worker_deadline(setup):
+    env, _ = setup
+    document = json.loads(env[owner.KEY]["policy_json"])
+    original = copy.deepcopy(document["tenants"][env["org_id"]])
+    profile = copy.deepcopy(original)
+    profile["permitted_regions"] = ["us-west-2"]
+    document["workspace_policies"] = {
+        env["org_id"]: {"00000000-0000-5000-8000-000000000001": profile}
+    }
+
+    def save():
+        raw = json.dumps(document)
+        env[owner.KEY]["policy_json"] = raw
+        env["paid_worker"]["lifecycle_policy_sha256"] = hashlib.sha256(
+            raw.encode()
+        ).hexdigest()
+
+    save()
+    owner.validate(env)
+    assert document["tenants"][env["org_id"]] == original
+    profile["operation_max_runtime_seconds"] = 7200
+    save()
+    with pytest.raises(Refusal, match="deadline"):
+        owner.validate(env)
+
+
+def test_recovery_observation_projects_only_exact_api_role(setup):
+    from installation.lifecycle_observation import validate, role_arn
+    from installation.lifecycle_worker import project_api
+
+    env, lock = setup
+    env["api_producer_role"] = {"api_id": "abcdefghij", "stage": "dev"}
+    env["recovery_transport"] = {
+        "tls_secret": "configured",
+        "credential_secret": "configured",
+    }
+    env["lifecycle_observation"] = {"regions": ["us-west-2"]}
+    validate(env)
+    docs = [
+        {
+            "kind": "Deployment",
+            "metadata": {"name": "superplane-api", "labels": {}},
+            "spec": {"template": {"spec": {"containers": [{"env": []}]}}},
+        }
+    ]
+    project_api(env, lock, docs)
+    values = docs[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert {
+        "name": "SUPERPLANE_RECOVERY_OBSERVATION_ROLE_ARN",
+        "value": role_arn(env),
+    } in values
+    for regions in [[], ["*"], ["us-west-2", "us-west-2"], "us-west-2"]:
+        env["lifecycle_observation"]["regions"] = regions
+        with pytest.raises(Refusal):
+            validate(env)

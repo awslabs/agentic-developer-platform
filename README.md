@@ -56,7 +56,7 @@ aws sts get-caller-identity --profile YOUR_PROFILE \
 
 Replace the placeholders with your profile and an existing ADP release tag. `deploy.sh` installs the platform, gateway, and cloud agent stack. Follow the [deployment quickstart](docs/adp-platform-deployment/deploy-quickstart.md) for prerequisites, installation, upgrades, and verification. An AI coding agent can follow the [agent deployment guide](docs/adp-platform-deployment/deploy-with-agent.md).
 
-After deployment, complete the GitHub App setup and approve developer accounts. To route a team's Bedrock usage to its own AWS account, follow the [Bedrock account routing guide](docs/runbook-bedrock-routing.md).
+After deployment, follow **Run coding agents in the cloud** below to add your users, connect GitHub, and run your first cloud agent. To route a team's Bedrock usage to its own AWS account, follow the [Bedrock account routing guide](docs/runbook-bedrock-routing.md).
 
 ### Run coding agents locally through ADP
 
@@ -95,16 +95,32 @@ The same ADP login works across your coding tools. For Claude Code, run `adp cla
 
 ### Run coding agents in the cloud
 
-After an administrator sets up the ADP GitHub App for your organization and grants you access, comment on an issue in a connected repository to start a cloud agent:
+After a full deployment including the cloud agent stack, follow the [first-run guide](docs/first-run.md) for exact clicks, commands, and success checks. Already assigned to an ADP organization with a connected repository? Start at [choose an agent](docs/first-run.md#choose-an-agent-and-trigger).
 
-```text
-@agent-developer please implement this issue.
-```
+1. **Sign in as the first administrator.** Retrieve the credentials from your deployment's AWS account:
 
-If your deployment enables the native Codex SDK agent, use `@agent-codex-developer` instead. Follow the agent's progress in GitHub.
+   ```bash
+   aws secretsmanager get-secret-value \
+     --profile YOUR_PROFILE \
+     --region us-east-1 \
+     --secret-id adp/dev/gateway/test-admin-credentials \
+     --query SecretString \
+     --output text
+   ```
 
-For a deeper view of the platform, see [ARCHITECTURE.md](ARCHITECTURE.md) and the [hosted agent catalogue](docs/agent-catalogue.md).
+   Replace the profile, region, and `dev` with your deployment values. Open the installer's **Frontend URL → Sign in with Email** and use the returned `username` and `password` (or your custom administrator credentials). **MFA is off by default** unless explicitly enabled by your operator.
+
+2. **Create your ADP organization and teams; assign yourself and teammates.** Open **Organizations → + Create organization**, then **Members → + Add member**. The existing-person picker requires an ADP user; the separate **GitHub username** option supports assignment before first sign-in. ADP roles and GitHub ownership are separate; see [people and access](docs/first-run.md#organizations-teams-and-people).
+3. **Connect GitHub.** Use **Settings → Connections → Set up GitHub App**, test **Sign in with GitHub** in a separate window, then select the intended ADP **Organization** and **Install on GitHub** for your test repository. See [GitHub setup and workspace checks](docs/first-run.md#connect-github-in-this-order).
+4. **Choose a persona and model.** Start with `@agent-developer`; inspect its model with `adp models explain --persona developer --json`. [Model setup](docs/first-run.md#choose-and-check-models) explains personal mappings, platform defaults, and Bedrock readiness.
+5. **Run a small issue and inspect the result.** Use the guide's [greeting-document task](docs/first-run.md#run-and-verify-a-small-task), follow **Agent Activity**, and inspect the resulting PR. A started run alone is not success; [run-linked usage](docs/first-run.md#check-which-model-actually-ran) shows the models recorded for the task.
 
 ## Contributing and license
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow. ADP is licensed under the [Apache License 2.0](LICENSE).
+
+## Architecture in development
+
+[Chief of Staff / ADP Assistant](docs/chief-of-staff/) contains the consolidated
+product, runtime, memory and managed Dev Box design for epic #7197, including
+remaining design decisions and required live verification.

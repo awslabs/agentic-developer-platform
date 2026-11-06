@@ -56,6 +56,13 @@ There is no `apply` subcommand, by design. See *Plan and apply* below.
 
 ## Ownership modes
 
+For an account outside AWS Organizations, `organization_id: "standalone"` is an
+explicit alternative to a real organization ID. It accepts only the two existing
+account modes, requires `target_account_id` to equal `management_account_id`, and
+forbids an OU. Trusted authorization must explicitly select the same standalone
+value and account; missing authorization is still reported as unchecked. This
+offline validation does not prove live AWS identity or permit account creation.
+
 The issue asks for three modes, and for the three ownership questions — organization,
 management cluster, workspace — to be distinguishable rather than conflated. Each mode is a
 different answer to "what does ADP own here", and that answer drives what gets rendered *and*

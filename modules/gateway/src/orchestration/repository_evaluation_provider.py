@@ -7,6 +7,7 @@ import base64
 import hashlib
 import io
 import json
+import re
 import zipfile
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
@@ -51,6 +52,24 @@ def parse_document(data):
     return json.loads(data, object_pairs_hook=pairs, parse_constant=invalid_constant)
 
 
+def artifact_predicate_outcomes(expected, payload, source, definition, run_id, attempt, *, s3_foundation=False):
+    if expected.bind_workflow_provenance:
+        require(
+            isinstance(payload, dict)
+            and payload.get("source_revision") == source
+            and payload.get("definition_revision") == definition
+            and (
+                isinstance(payload.get("gateway_revision"), str) and re.fullmatch(r"[0-9a-f]{40}", payload["gateway_revision"])
+                if s3_foundation
+                else payload.get("gateway_revision") == source
+            )
+            and payload.get("run_id") == str(run_id)
+            and payload.get("run_attempt") == str(attempt),
+            "artifact_workflow_provenance_mismatch",
+        )
+    return [dict(criterion_id=item.criterion_id, passed=predicate_passes(item, payload)) for item in expected.predicates]
+
+
 def verified_archive(artifact, content):
     require(0 < len(content) <= MAX_ARCHIVE, "artifact_size")
     digest = hashlib.sha256(content).hexdigest()
@@ -78,8 +97,8 @@ def verified_archive(artifact, content):
 class RepositoryEvidenceProvider(WorkflowProvider):
     """No provider mutations or worker credentials; one repository-scoped reader."""
 
-    def __init__(self, *, client=None, clock=lambda: datetime.now(UTC), reviews=None):
-        super().__init__(client=client, clock=clock)
+    def __init__(self, *, client=None, clock=lambda: datetime.now(UTC), reviews=None, evidence_store=None):
+        super().__init__(client=client, clock=clock, evidence_store=evidence_store)
         self.reviews = reviews or GitHubEvidenceSource()
         self._tokens = {}
 
@@ -124,11 +143,56 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             pr_number=source["pr_number"],
             read_token=await self.token(binding),
         )
-        require(review is not None and review.review_approved and review.head_sha == source["head_sha"], "review_missing_or_stale")
-        checks = await self.pages(binding, f"{prefix}/commits/{source['head_sha']}/check-runs", "check_runs", filter="latest")
-        receipts = []
+        require(review is not None and review.head_sha == source["head_sha"], "review_missing_or_stale")
+        # Only sources_for's verified, same-owner ledger decision can supply
+        # these fields; the external-PR contract cannot assert owner acceptance.
+        # It settles historical review objections, never later reviewer input.
+        owner_accepted = False
+        if source.get("accepted_merge_decision_id") and source.get("accepted_merge_at"):
+            accepted_at = timestamp(source["accepted_merge_at"])
+            reviewed_at = getattr(review, "review_updated_at", None)
+            owner_accepted = (
+                reviewed_at is not None
+                and getattr(review, "review_state", None) in {"changes_requested", "stale"}
+                and timestamp(pr["merged_at"]) <= accepted_at <= self.clock()
+                and timestamp(reviewed_at) <= accepted_at
+            )
+        # The reviewer App records the merge controller's CI snapshot as a later
+        # "changes requested" from its own identity, and GitHub refuses to dismiss
+        # a review once the PR is merged. The same rule the merge controller applies
+        # (merge_controller.app_snapshot_withdrawn, #7639): a merged head that the
+        # App itself formally approved, with no change request from anyone else, is
+        # approved; the required checks on that exact head are re-verified below.
+        own_snapshot_withdrawn = (
+            bool(getattr(review, "merged", False))
+            and getattr(review, "review_state", None) == "changes_requested"
+            and getattr(review, "foreign_changes_requested", None) is False
+            and getattr(review, "own_approval_on_head", None) is True
+        )
+        require(review.review_approved or owner_accepted or own_snapshot_withdrawn, "review_missing_or_stale")
+        receipts = await self.required_checks(binding, source)
+        return {
+            **{key: value for key, value in source.items() if key != "required_checks"},
+            "provider_pr_node_id": pr["node_id"],
+            "merged_at": pr["merged_at"],
+            "checks": receipts,
+            "provider_review_state": getattr(review, "review_state", None),
+            "review_acceptance": "provider" if review.review_approved else "owner_acceptance" if owner_accepted else "own_snapshot_withdrawn",
+        }
+
+    async def required_checks(self, binding, source):
+        """Every declared check must be the single latest run on the source revision, completed and green."""
+        if not source["required_checks"]:
+            return []
+        checks = await self.pages(binding, f"/repos/{binding.repo}/commits/{source['head_sha']}/check-runs", "check_runs", filter="latest")
+        receipts, suites, attempt_jobs, selected_suites = [], {}, {}, set()
         for expected in source["required_checks"]:
             matches = [check for check in checks if check.get("name") == expected["name"] and check.get("app", {}).get("id") == expected["app_id"]]
+            workflow = None
+            if expected.get("workflow") is not None:
+                check, workflow = await self.qualified_check(binding, source, expected, matches, suites, attempt_jobs)
+                selected_suites.add(workflow["check_suite_id"])
+                matches = [check]
             require(len(matches) == 1, "required_check_missing_or_ambiguous")
             check = matches[0]
             require(
@@ -138,13 +202,236 @@ class RepositoryEvidenceProvider(WorkflowProvider):
                 and type(check.get("id")) is int,
                 "required_check_not_successful",
             )
-            receipts.append(dict(name=expected["name"], app_id=expected["app_id"], check_run_id=check["id"], head_sha=source["head_sha"]))
-        return {
-            **{key: value for key, value in source.items() if key != "required_checks"},
-            "provider_pr_node_id": pr["node_id"],
-            "merged_at": pr["merged_at"],
-            "checks": receipts,
-        }
+            receipt = dict(name=expected["name"], app_id=expected["app_id"], check_run_id=check["id"], head_sha=source["head_sha"])
+            if workflow is not None:
+                receipt["workflow"] = workflow
+            receipts.append(receipt)
+        # Recheck every selected workflow after all checks have been read. This
+        # fences a rerun beginning while later checks are being collected, with
+        # one fresh read per workflow rather than one per check.
+        for suite in sorted(selected_suites):
+            run = suites[suite]
+            fresh = (await self.request(binding, "GET", f"/repos/{binding.repo}/actions/runs/{run['id']}")).json()
+            require(self.check_workflow_run(binding, source, suite, fresh) == run, "required_check_workflow_changed")
+        return receipts
+
+    async def verified_multi_source(self, binding, source, declared):
+        """Read one source through its selected repository token and provider identity."""
+        require(
+            binding.provider_repository_id == declared.repository_id == source.get("repository_id"),
+            "source_repository_identity",
+        )
+        if declared.evidence_kind == "merge":
+            require(bool(source.get("provider_pr_node_id")), "source_pull_identity_missing")
+        bare = {**source, "required_checks": []}
+        if declared.evidence_kind == "merge":
+            observed = await self.pull_request(binding, bare)
+        else:
+            observed = await self.deployed_revision(binding, bare)
+        checks = (
+            await self.pages(
+                binding,
+                f"/repos/{binding.repo}/commits/{source['head_sha']}/check-runs",
+                "check_runs",
+                filter="latest",
+            )
+            if declared.required_checks
+            else []
+        )
+        evidence = []
+        receipts = []
+        suites = {}
+        attempt_jobs = {}
+        selected_suites = set()
+        definitions = {}
+        for required in declared.required_checks:
+            matches = [check for check in checks if check.get("name") == required.name and check.get("app", {}).get("id") == required.app_id]
+            workflow = None
+            if required.workflow_path is not None:
+                candidates = []
+                for check in matches:
+                    suite = (check.get("check_suite") or {}).get("id")
+                    require(type(suite) is int and suite > 0, "required_check_workflow_identity")
+                    if suite not in suites:
+                        runs = await self.pages(
+                            binding,
+                            f"/repos/{binding.repo}/actions/runs",
+                            "workflow_runs",
+                            check_suite_id=suite,
+                            head_sha=source["head_sha"],
+                        )
+                        require(len(runs) == 1, "required_check_workflow_missing_or_ambiguous")
+                        suites[suite] = self.check_workflow_run(binding, source, suite, runs[0])
+                    if suites[suite]["path"] == required.workflow_path:
+                        candidates.append((check, suites[suite]))
+                require(len(candidates) == 1, "required_check_missing_or_ambiguous")
+                check, run = candidates[0]
+                check, workflow = await self.qualified_check(
+                    binding,
+                    source,
+                    {"name": required.name, "workflow": {"workflow_id": run["workflow_id"], "workflow_path": required.workflow_path}},
+                    [check],
+                    suites,
+                    attempt_jobs,
+                )
+                selected_suites.add(workflow["check_suite_id"])
+                if required.workflow_source_revision is not None:
+                    for revision in (source["head_sha"], required.workflow_source_revision, required.workflow_definition_revision):
+                        key = (required.workflow_path, revision)
+                        if key not in definitions:
+                            definitions[key] = (await self.definition_blob(binding, *key))[0]
+                    actual_blob = definitions[(required.workflow_path, source["head_sha"])]
+                    require(
+                        actual_blob
+                        == definitions[(required.workflow_path, required.workflow_source_revision)]
+                        == definitions[(required.workflow_path, required.workflow_definition_revision)],
+                        "required_check_workflow_run_definition_changed",
+                    )
+                    workflow["workflow_blob_sha"] = actual_blob
+                matches = [check]
+            require(len(matches) == 1, "required_check_missing_or_ambiguous")
+            check = matches[0]
+            require(
+                type(check.get("id")) is int
+                and check["id"] > 0
+                and check.get("head_sha") == source["head_sha"]
+                and check.get("status") == "completed"
+                and check.get("conclusion") == "success",
+                "required_check_not_successful",
+            )
+            receipts.append(
+                dict(
+                    name=required.name,
+                    app_id=required.app_id,
+                    head_sha=source["head_sha"],
+                    workflow_path=required.workflow_path,
+                    workflow_source_revision=required.workflow_source_revision,
+                    workflow_definition_revision=required.workflow_definition_revision,
+                    conclusion="success",
+                )
+            )
+            evidence.append(
+                dict(
+                    repository_id=binding.provider_repository_id,
+                    pr_node_id=observed.get("provider_pr_node_id"),
+                    check_run_id=check["id"],
+                    workflow=workflow,
+                )
+            )
+        for suite in sorted(selected_suites):
+            run = suites[suite]
+            fresh = (await self.request(binding, "GET", f"/repos/{binding.repo}/actions/runs/{run['id']}")).json()
+            require(self.check_workflow_run(binding, source, suite, fresh) == run, "required_check_workflow_changed")
+        return receipts, evidence
+
+    @staticmethod
+    def check_workflow_run(binding, source, suite, run):
+        require(
+            isinstance(run, dict)
+            and all(type(run.get(key)) is int and run[key] > 0 for key in ("id", "workflow_id", "check_suite_id", "run_attempt"))
+            and run["check_suite_id"] == suite
+            and run.get("head_sha") == source["head_sha"]
+            and isinstance(run.get("repository"), dict)
+            and run["repository"].get("id") == binding.provider_repository_id
+            and isinstance(run.get("head_repository"), dict)
+            and run["head_repository"].get("id") == binding.provider_repository_id
+            and isinstance(run.get("path"), str),
+            "required_check_workflow_identity",
+        )
+        return {key: run.get(key) for key in ("id", "workflow_id", "check_suite_id", "run_attempt", "head_sha", "path", "status", "conclusion")}
+
+    async def qualified_check(self, binding, source, expected, matches, suites, attempt_jobs):
+        """Resolve workflow identity from provider APIs, never a check's display URL.
+
+        GitHub documents check_suite_id on the repository workflow-runs endpoint.
+        Attempt jobs bind the selected check back to the current run attempt.
+        Caches belong to this source observation; required_checks fences every
+        selected run again after collecting all checks.
+        """
+        selected = []
+        prefix = f"/repos/{binding.repo}"
+        selector = expected["workflow"]
+        for check in matches:
+            suite = (check.get("check_suite") or {}).get("id")
+            require(
+                type(suite) is int and suite > 0 and type(check.get("id")) is int and check["id"] > 0 and check.get("head_sha") == source["head_sha"],
+                "required_check_workflow_identity",
+            )
+            if suite not in suites:
+                runs = await self.pages(binding, f"{prefix}/actions/runs", "workflow_runs", check_suite_id=suite, head_sha=source["head_sha"])
+                require(len(runs) == 1, "required_check_workflow_missing_or_ambiguous")
+                suites[suite] = self.check_workflow_run(binding, source, suite, runs[0])
+            run = suites[suite]
+            if (run["workflow_id"], run["path"]) == (selector["workflow_id"], selector["workflow_path"]):
+                selected.append((check, run))
+        require(len(selected) == 1, "required_check_missing_or_ambiguous")
+        check, run = selected[0]
+        require(
+            check.get("status") == run["status"] == "completed" and check.get("conclusion") == "success",
+            "required_check_not_successful",
+        )
+        attempt = run["id"], run["run_attempt"]
+        if attempt not in attempt_jobs:
+            attempt_jobs[attempt] = await self.pages(binding, f"{prefix}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", "jobs")
+        jobs = attempt_jobs[attempt]
+        matching_jobs = [job for job in jobs if job.get("check_run_url") == f"https://api.github.com{prefix}/check-runs/{check['id']}"]
+        require(len(matching_jobs) == 1, "required_check_job_missing_or_ambiguous")
+        job = matching_jobs[0]
+        require(
+            type(job.get("id")) is int
+            and job["id"] > 0
+            and type(job.get("run_id")) is int
+            and job["run_id"] == run["id"]
+            and type(job.get("run_attempt")) is int
+            and job["run_attempt"] == run["run_attempt"]
+            and job.get("head_sha") == source["head_sha"]
+            and job.get("name") == expected["name"]
+            and job.get("status") == "completed"
+            and job.get("conclusion") == "success",
+            "required_check_job_identity_or_result",
+        )
+        return check, dict(
+            workflow_id=run["workflow_id"],
+            workflow_path=run["path"],
+            check_suite_id=run["check_suite_id"],
+            run_id=run["id"],
+            run_attempt=run["run_attempt"],
+            job_id=job["id"],
+        )
+
+    async def deployed_revision(self, binding, source):
+        """An operations predecessor's source: the deployed revision must exist in the
+        evaluated repository, and any declared checks must be green on it (#7880)."""
+        commit = (await self.request(binding, "GET", f"/repos/{binding.repo}/commits/{source['head_sha']}", max_bytes=MAX_FILE)).json()
+        require(commit.get("sha") == source["head_sha"] == source["merge_sha"], "deployed_revision_missing")
+        return {**{key: value for key, value in source.items() if key != "required_checks"}, "checks": await self.required_checks(binding, source)}
+
+    async def multi_probe_receipt(self, binding, run, probe):
+        """Read one run/attempt-specific probe artifact through its scoped repository."""
+        name = f"{probe.artifact_name}-{run.run_id}-{run.run_attempt}"
+        rows = await self.pages(binding, f"/repos/{binding.repo}/actions/runs/{run.run_id}/artifacts", "artifacts")
+        matches = [row for row in rows if row.get("name") == name and not row.get("expired")]
+        require(len(matches) == 1, "probe_artifact_missing_or_ambiguous")
+        artifact = matches[0]
+        require(
+            type(artifact.get("id")) is int
+            and artifact["id"] > 0
+            and (artifact.get("workflow_run") or {}).get("id") == run.run_id
+            and isinstance(run.started_at, str)
+            and isinstance(artifact.get("created_at"), str)
+            and timestamp(artifact["created_at"]) >= timestamp(run.started_at)
+            and 0 < artifact.get("size_in_bytes", 0) <= MAX_ARCHIVE,
+            "probe_artifact_size_or_identity",
+        )
+        archive = await self.request(
+            binding, "GET", f"/repos/{binding.repo}/actions/artifacts/{artifact['id']}/zip", follow_redirects=True, max_bytes=MAX_ARCHIVE
+        )
+        _, files = verified_archive(artifact, archive.content)
+        require(set(files) == {probe.artifact_path}, "probe_artifact_contents_mismatch")
+        try:
+            return parse_document(files[probe.artifact_path])
+        except (ValueError, UnicodeDecodeError):
+            raise CycleBlockedError("repository_evaluation_probe_receipt_invalid") from None
 
     async def definition_blob(self, binding, path, revision):
         record = (await self.request(binding, "GET", f"/repos/{binding.repo}/contents/{path}", params={"ref": revision})).json()
@@ -172,9 +459,26 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         require(bool(candidates), "workflow_run_missing")
         return max(candidates, key=lambda run: (run.get("run_number", 0), run.get("id", 0)))
 
-    async def workflow(self, binding, workflow, *, revisions, max_age_seconds, bound_run=None, producer=None, qualification=None):
+    async def workflow(
+        self, binding, workflow, *, revisions, max_age_seconds, bound_run=None, producer=None, qualification=None, operation_source=None
+    ):
         source = workflow.source.revision or revisions[workflow.source.predecessor]
         definition = workflow.definition.revision or revisions[workflow.definition.predecessor]
+        operation_run = None
+        if operation_source is not None:
+            # These keys come from the accepted predecessor's scoped runtime
+            # receipt. Preserve its run and attempt instead of searching by the
+            # deployed SHA: workflow_dispatch executes at the current branch head.
+            match = re.fullmatch(r"operations-runtime:([1-9][0-9]*):([1-9][0-9]*)", operation_source.get("deployment_receipt_key", ""))
+            require(
+                match is not None
+                and bound_run is None
+                and producer is None
+                and operation_source.get("head_sha") == operation_source.get("merge_sha") == source
+                and operation_source.get("workflow_operation_keys") == [f"operations-workflow:{match[1]}:{match[2]}"],
+                "operation_workflow_binding_changed",
+            )
+            operation_run = int(match[1]), int(match[2])
         blob, content = await self.definition_blob(binding, workflow.path, definition)
         source_blob, source_content = await self.definition_blob(binding, workflow.path, source)
         require((blob, content) == (source_blob, source_content), "workflow_definition_changed")
@@ -202,12 +506,20 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             )
         allowed_events = {"workflow_dispatch", "schedule"} if qualification is not None and bound_run is None else {"workflow_dispatch"}
         chosen = (
-            {"id": bound_run.run_id}
+            {"id": operation_run[0]}
+            if operation_run is not None
+            else {"id": bound_run.run_id}
             if bound_run is not None
             else await self.latest_workflow_run(binding, workflow.path, source, events=allowed_events)
         )
         expected_head = bound_run.context.workflow_revision if bound_run is not None else source
         run = (await self.request(binding, "GET", f"/repos/{binding.repo}/actions/runs/{int(chosen['id'])}")).json()
+        if operation_run is not None:
+            expected_head = run.get("head_sha")
+            require(
+                isinstance(expected_head, str) and re.fullmatch(r"[0-9a-f]{40}", expected_head) and run.get("run_attempt") == operation_run[1],
+                "operation_workflow_run_changed",
+            )
         require(
             run.get("repository", {}).get("id") == binding.provider_repository_id
             and run.get("head_repository", {}).get("id") == binding.provider_repository_id
@@ -221,6 +533,24 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             and run["run_attempt"] > 0,
             "workflow_run_not_successful_or_changed",
         )
+        if operation_run is not None:
+            # A moving branch is allowed only when both accepted revisions are
+            # ancestors and the workflow bytes still match the approved definition.
+            actual_blob, actual_content = await self.definition_blob(binding, workflow.path, expected_head)
+            require((actual_blob, actual_content) == (blob, content), "workflow_definition_changed")
+            for pin in sorted({source, definition} - {expected_head}):
+                comparison = (
+                    await self.request(binding, "GET", f"/repos/{binding.repo}/compare/{pin}...{expected_head}", params={"per_page": 1})
+                ).json()
+                require(
+                    comparison.get("status") in {"ahead", "identical"}
+                    and comparison.get("base_commit", {}).get("sha") == pin
+                    and comparison.get("merge_base_commit", {}).get("sha") == pin,
+                    "workflow_missing_delivered_revision",
+                )
+            # Artifacts name the exact executed definition, not its identical
+            # ancestor. Keep source_revision bound to the deployed release.
+            definition = expected_head
         age = (self.clock() - timestamp(run["updated_at"])).total_seconds()
         require(0 <= age <= max_age_seconds, "workflow_run_stale")
         run_id, attempt = run["id"], run["run_attempt"]
@@ -236,23 +566,112 @@ class RepositoryEvidenceProvider(WorkflowProvider):
                 job.get("status") == "completed" and job.get("conclusion") == "success" and job.get("run_id") == run_id, "required_job_not_successful"
             )
             job_receipts.append(dict(name=name, job_id=job["id"]))
-        artifacts = await self.pages(binding, f"/repos/{binding.repo}/actions/runs/{run_id}/artifacts", "artifacts")
+        transport = document.get("env", {}).get("ADP_REPOSITORY_EVIDENCE_STORE", "github-artifact")
+        require(transport in {"github-artifact", "s3-oidc-v1"}, "artifact_transport_unknown")
+        s3_artifacts = transport == "s3-oidc-v1"
+        if s3_artifacts:
+            require(
+                workflow.path == ".github/workflows/security-scan.yml" and producer is not None and bound_run is not None,
+                "s3_artifacts_require_bound_scan_target",
+            )
+        proof_transport = document.get("env", {}).get("ADP_IDENTITY_PROOF_EVIDENCE_STORE", "github-artifact")
+        require(proof_transport in {"github-artifact", "s3-oidc-v1"}, "artifact_transport_unknown")
+        foundation_env = document.get("jobs", {}).get("adapter-foundation", {}).get("env", {})
+        foundation_transport = foundation_env.get("ADP_FOUNDATION_EVIDENCE_STORE", "github-artifact")
+        require(foundation_transport in {"github-artifact", "s3-oidc-v1"}, "artifact_transport_unknown")
+        artifacts = None
         artifact_receipts, outcomes, archives = [], [], {}
         for expected in workflow.artifacts:
             # An attempt suffix prevents a rerun reusing a prior attempt's archive.
             name = expected.name.replace("{run_id}", str(run_id)).replace("{run_attempt}", str(attempt))
-            matches = [artifact for artifact in artifacts if artifact.get("name") == name and artifact.get("expired") is False]
-            require(len(matches) == 1, "artifact_missing_or_ambiguous")
-            artifact = matches[0]
-            require(0 < artifact.get("size_in_bytes", 0) <= MAX_ARCHIVE, "artifact_size")
-            require(timestamp(artifact["created_at"]) >= timestamp(run["run_started_at"]), "artifact_prior_attempt")
-            response = await self.request(
-                binding, "GET", f"/repos/{binding.repo}/actions/artifacts/{int(artifact['id'])}/zip", max_bytes=MAX_ARCHIVE, follow_redirects=True
-            )
-            digest, files = verified_archive(artifact, response.content)
+            artifact_ref = None
+            s3_proof = proof_transport == "s3-oidc-v1" and expected.name == "atlassian-stage-{run_id}-{run_attempt}"
+            s3_foundation = foundation_transport == "s3-oidc-v1" and expected.name == "tools-live-evaluation-{run_id}-{run_attempt}"
+            if s3_artifacts or s3_proof or s3_foundation:
+                from deployment_evidence.store import EvidenceStore
+
+                if s3_foundation:
+                    from .repository_evaluation_contract import IdentityProofArtifactTarget
+
+                    require(
+                        workflow.path == ".github/workflows/tools-platform-deploy.yml"
+                        and operation_run is not None
+                        and attempt == 1
+                        and expected.path == "atlassian-stage-summary.json"
+                        and expected.bind_workflow_provenance
+                        and "adapter-foundation" in workflow.required_jobs,
+                        "s3_foundation_requires_bound_operation",
+                    )
+                    try:
+                        target = IdentityProofArtifactTarget.model_validate(operation_source.get("foundation_artifact_target"))
+                    except ValueError:
+                        raise CycleBlockedError("foundation_artifact_target_changed") from None
+                    account, environment, region = target.account_id, target.environment, target.region
+                    archive_name = "atlassian-foundation"
+                elif s3_proof:
+                    from .repository_evaluation_contract import IdentityProofArtifactTarget
+
+                    require(
+                        workflow.path == ".github/workflows/gateway-deploy.yml"
+                        and operation_run is not None
+                        and expected.path == "atlassian-stage-summary.json"
+                        and expected.bind_workflow_provenance
+                        and {"Build and Deploy Backend", "identity-proof"}.issubset(workflow.required_jobs),
+                        "s3_identity_proof_requires_bound_operation",
+                    )
+                    try:
+                        target = IdentityProofArtifactTarget.model_validate(operation_source.get("identity_proof_artifact_target"))
+                    except ValueError:
+                        raise CycleBlockedError("identity_proof_artifact_target_changed") from None
+                    account, environment, region = target.account_id, target.environment, target.region
+                    archive_name = "identity-proof"
+                else:
+                    names = {
+                        f"adp-repository-scan-{attempt}": "scan",
+                        f"adp-repository-scan-cleanup-{attempt}": "cleanup",
+                        f"security-reconciliation-{attempt}": "reconciliation",
+                    }
+                    require(name in names, "s3_artifact_name_unknown")
+                    account, environment, region = producer.target.account_id, producer.inputs.get("environment", "dev"), producer.target.region
+                    archive_name = names[name]
+                try:
+                    result = await asyncio.to_thread(
+                        (self.evidence_store or EvidenceStore()).read_archive,
+                        account=account,
+                        environment=environment,
+                        region=region,
+                        repository=binding.repo,
+                        repository_id=binding.provider_repository_id,
+                        run_id=run_id,
+                        attempt=attempt,
+                        kind="repository-artifact",
+                        name=archive_name,
+                        workflow_path=workflow.path,
+                        workflow_revision=expected_head,
+                        source_revision=source,
+                    )
+                except Exception:
+                    raise CycleBlockedError("repository_evaluation_s3_archive_unverifiable") from None
+                require(result is not None, "artifact_missing_or_ambiguous")
+                content, signed_digest, artifact_ref = result
+                artifact = {"id": None, "digest": "sha256:" + signed_digest}
+            else:
+                if artifacts is None:
+                    artifacts = await self.pages(binding, f"/repos/{binding.repo}/actions/runs/{run_id}/artifacts", "artifacts")
+                matches = [artifact for artifact in artifacts if artifact.get("name") == name and artifact.get("expired") is False]
+                require(len(matches) == 1, "artifact_missing_or_ambiguous")
+                artifact = matches[0]
+                require(0 < artifact.get("size_in_bytes", 0) <= MAX_ARCHIVE, "artifact_size")
+                require(timestamp(artifact["created_at"]) >= timestamp(run["run_started_at"]), "artifact_prior_attempt")
+                response = await self.request(
+                    binding, "GET", f"/repos/{binding.repo}/actions/artifacts/{int(artifact['id'])}/zip", max_bytes=MAX_ARCHIVE, follow_redirects=True
+                )
+                content = response.content
+            digest, files = verified_archive(artifact, content)
             require(expected.path in files, "artifact_file_missing")
             data = files[expected.path]
             payload = parse_document(data)
+            predicate_outcomes = artifact_predicate_outcomes(expected, payload, source, definition, run_id, attempt, s3_foundation=s3_foundation)
             if qualification is not None:
                 archives[(expected.name, expected.path)] = payload, files
             if (
@@ -275,9 +694,16 @@ class RepositoryEvidenceProvider(WorkflowProvider):
                     "scan_scope_coverage_images_or_cleanup_changed",
                 )
             artifact_receipts.append(
-                dict(artifact_id=artifact["id"], name=name, digest=digest, path=expected.path, sha256=hashlib.sha256(data).hexdigest())
+                dict(
+                    artifact_id=artifact["id"],
+                    name=name,
+                    digest=digest,
+                    path=expected.path,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    **({"artifact_ref": artifact_ref} if artifact_ref else {}),
+                )
             )
-            outcomes.extend(dict(criterion_id=item.criterion_id, passed=predicate_passes(item, payload)) for item in expected.predicates)
+            outcomes.extend(predicate_outcomes)
         qualified = None
         if qualification is not None:
             from .cli_live_evidence import validate_qualification
@@ -299,7 +725,7 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         )
         # The selected run can remain green while a newer run starts or fails.
         # Re-read selection too; rechecking only this run would accept stale success.
-        if bound_run is None:
+        if bound_run is None and operation_run is None:
             latest = await self.latest_workflow_run(binding, workflow.path, source, events=allowed_events)
             require(latest.get("id") == run_id and latest.get("run_attempt") == attempt, "workflow_latest_run_changed")
         return dict(
@@ -348,6 +774,8 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             return [task.result() for task in tasks]
 
         async def pull(source):
+            if source.get("deployment_receipt_key") and source.get("pr_number") is None:
+                return await self.deployed_revision(binding, source)
             return await self.pull_request(binding, source)
 
         qualification = getattr(spec, "qualification", None)
@@ -451,14 +879,27 @@ class RepositoryEvidenceProvider(WorkflowProvider):
     async def _observe(self, binding, spec, sources):
         require(spec.producer is None, "producer_requires_durable_execution")
         pulls, revisions = await self.verify_sources(binding, spec, sources)
+        operations = {
+            source["address"]: source
+            for source in sources
+            if source.get("address") and source.get("deployment_receipt_key", "").startswith("operations-runtime:")
+        }
         workflows = [
             await self.workflow(
                 binding,
                 item,
                 revisions=revisions,
                 max_age_seconds=spec.max_age_seconds,
+                **({"operation_source": operations[item.source.predecessor]} if item.source.predecessor in operations else {}),
                 **({"qualification": spec.qualification} if getattr(spec, "qualification", None) is not None else {}),
             )
             for item in spec.workflows
         ]
-        return dict(pull_requests=pulls, workflows=workflows, mandatory_passed=all(c["passed"] for row in workflows for c in row["criteria"]))
+        deployments = [item for item in pulls if item.get("deployment_receipt_key") and item.get("pr_number") is None]
+        pulls = [item for item in pulls if item not in deployments]
+        return dict(
+            pull_requests=pulls,
+            workflows=workflows,
+            mandatory_passed=all(c["passed"] for row in workflows for c in row["criteria"]),
+            **({"deployments": deployments} if deployments else {}),
+        )

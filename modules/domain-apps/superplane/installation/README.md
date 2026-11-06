@@ -6,6 +6,9 @@ its availability statements do not imply that pending design requirements are im
 For the governed workspace lifecycle release gate and evaluator evidence, see
 [the operator handoff](NATIVE-LIFECYCLE-HANDOFF.md).
 
+For bounded image/binding updates of an existing paused installation, use
+[runtime maintenance](RUNTIME-MAINTENANCE.md) and its separate saved-plan command.
+
 `modules/domain-apps/superplane/deploy.sh` plans, checks and executes an installation of the API, controller, platform monitor and pinned SkyPilot server on an **existing** ADP installation. It never calls a platform deployment script. Actual installation, database mutation, feature activation and workload operation remain subject to the accepted installation authorization.
 
 The explicit `control_plane_only: true` mode installs organization administration,
@@ -446,6 +449,33 @@ metadata negotiation is response minimization, not a separate RBAC capability.
 
 ### Optional native paid-worker source preparation
 
-The default offline plan can include a closed `paid_worker` projection with a separate paid-worker image. It remains paused at zero replicas; activation preflight refuses before external tools because authenticated shared binding attestation is unavailable. See [native paid-worker preparation](PAID-WORKER-PREPARATION.md) for the exact input and remaining image/identity/schema/network gates. This is preparation only and does not change [DESIGN.md](../DESIGN.md)'s story acceptance or live evidence.
+The default offline plan can include a closed `paid_worker` projection with a separate paid-worker image. It remains paused through KEDA’s pause annotation with a schema-valid positive maximum; activation preflight refuses before external tools because authenticated shared binding attestation is unavailable. See [native paid-worker preparation](PAID-WORKER-PREPARATION.md) for the exact input and remaining image/identity/schema/network gates. This is preparation only and does not change [DESIGN.md](../DESIGN.md)'s story acceptance or live evidence.
 
 The separate [domain runtime preparation source](RUNTIME-PREPARATION.md) provides a reviewed-plan entry point for the dedicated queue and IAM roles. It is not connected to the installer until the foreground owner reviews and wires it; shared registry/Gateway/database authority and real binding proof remain independent prerequisites.
+
+### Renew a provider authority as its installation owner
+
+When a deployment update changes the installed binding, first review
+`python -m installation.provider_authority --document SUCCESSOR.json --rotate-binding-from PREVIOUS.json`.
+Binding rotation changes only the installed digest and generation (+1), including
+for an expired active identity baseline. It retains the exact original expiry;
+normal provider consumption still refuses expired authority. All live owner,
+registry, role, policy, secret, boundary and installation checks remain required.
+Apply only the reviewed successor with `--write` and preserve both documents.
+Revoked records cannot be restored. Closed cleanup requires its own fresh permit;
+binding rotation does not issue credentials or admit or resume paid work.
+
+`python -m installation.provider_authority --document SUCCESSOR.json --renew-from PREVIOUS.json`
+performs a read-only renewal review. Add `--write` to apply that exact successor
+with a conditional generation update. Run with the original authorized operator
+and management-cluster kube context. Preserve both private owner documents and
+review/write receipts; never rewrite the predecessor document.
+
+Renewal changes only `generation` (exactly +1) and `expires_at` (later than the
+predecessor and no more than 24 hours from now). All identities, request/workspace,
+permissions, provider role, secret version, boundary, and installed binding must
+remain identical and pass the ordinary live owner checks. An expired active record
+can be renewed explicitly; revoked records cannot be restored. Lost-response
+retries are idempotent and concurrent updates refuse. Renewal does not approve a
+workspace operation or reuse stale validation: validate the new authority generation
+through the genuine beneficiary session before provisioning.

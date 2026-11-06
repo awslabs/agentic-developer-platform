@@ -39,7 +39,7 @@ def next_turn(runtime, run_id="run-b"):
         "source_ref": {"repo": "chat/session-a"},
         "arrived_at": now.isoformat(),
     }
-    provision_root(runtime[1].store, envelope, source="chat", human_id="human", now=now)
+    provision_root(runtime[1].store, envelope, source="chat", human_id="human", team_id="team", now=now)
     return {"run_id": run_id, "envelope_digest": envelope_digest(envelope), "pod_name": "chat-a", "pod_uid": f"pod-{run_id}"}
 
 

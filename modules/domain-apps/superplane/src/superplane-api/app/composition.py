@@ -401,7 +401,9 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     store = OperationStore()
     authority_source = GrantBackedAuthority(async_session_factory)
     ledger = OperationBudgetLedger(
-        domain_connect, limits_for=authority_source.budget_limits_for
+        domain_connect,
+        limits_for=authority_source.budget_limits_for,
+        operation_connect=connect,
     )
     execution = HarnessExecutionAuthority(
         connect, store=store, domain_connect=domain_connect
@@ -425,6 +427,8 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
             ProducerTransport,
         )
 
+        from app.adapters.recovery_settlement_delivery import RecoverySettlementDelivery
+
         result.dispatcher = OperationDispatcher(
             connect,
             domain_connect=domain_connect,
@@ -432,6 +436,9 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
                 endpoint, getattr(settings, "superplane_operation_gateway_region", "")
             ),
             enabled=result.dispatch_enabled,
+            settlement_delivery=RecoverySettlementDelivery(
+                connect, domain_connect, ledger
+            ),
         )
         result._closeables.append(result.dispatcher)
         execution._verify_run = result.dispatcher.verify_run

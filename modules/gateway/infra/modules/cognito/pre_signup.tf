@@ -36,12 +36,12 @@ data "archive_file" "pre_signup" {
   # it explicitly is exactly why this is a multi-source archive rather than
   # `source_file`, which would name the entry handler.py and break the handler string.
   source {
-    content  = file("${path.root}/../lambda/pre-signup/handler.py")
+    content  = file("${path.module}/../../../lambda/pre-signup/handler.py")
     filename = "pre_signup.py"
   }
 
   source {
-    content  = file("${path.root}/../lambda/shared/membership_eligibility.py")
+    content  = file("${path.module}/../../../lambda/shared/membership_eligibility.py")
     filename = "membership_eligibility.py"
   }
 }

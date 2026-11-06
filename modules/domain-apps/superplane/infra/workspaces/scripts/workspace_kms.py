@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import fnmatch
 import hashlib
 import json
 import subprocess
+from datetime import UTC, datetime
 
 from workspace_ownership import WorkspaceOwnershipError
+
+# The governed credential process may spend 75 seconds checking live authority.
+# Leave separate bounded time for the AWS connection/response and CLI startup.
+AWS_PREFLIGHT_TIMEOUT_SECONDS = 120
+AWS_CONNECT_TIMEOUT_SECONDS = 10
+AWS_READ_TIMEOUT_SECONDS = 30
 
 
 def _aws(service, operation, *flags, region):
@@ -23,10 +29,14 @@ def _aws(service, operation, *flags, region):
             "--output",
             "json",
             "--no-cli-pager",
+            "--cli-connect-timeout",
+            str(AWS_CONNECT_TIMEOUT_SECONDS),
+            "--cli-read-timeout",
+            str(AWS_READ_TIMEOUT_SECONDS),
         ],
         capture_output=True,
         text=True,
-        timeout=45,
+        timeout=AWS_PREFLIGHT_TIMEOUT_SECONDS,
         check=False,
     )
     if result.returncode:
@@ -176,6 +186,54 @@ def verify_provisioning_principal(plan, *, approved=None):
     return receipt
 
 
+def verify_destroy_principal(plan, *, approved=None):
+    """Bind delete-only execution without requiring outputs Terraform removes.
+
+    Creating KMS grants and proving provisioning permissions are creation checks.
+    A destroy still needs the exact artifact/ownership/backend guard and a stable,
+    authenticated operator in the selected account. Never use this for replacements.
+    """
+    changes = [
+        r["change"]["actions"]
+        for r in plan.get("resource_changes", [])
+        if r["change"]["actions"] not in (["no-op"], ["read"])
+    ]
+    if not changes or any(actions != ["delete"] for actions in changes):
+        raise WorkspaceOwnershipError(
+            "Destroy preflight requires a nonempty delete-only plan"
+        )
+    account = plan["variables"]["account_id"]["value"]
+    region = plan["variables"]["aws_region"]["value"]
+    observed = _aws("sts", "get-caller-identity", region=region)
+    arn = observed.get("Arn", "")
+    principal_id = observed.get("UserId", "").split(":", 1)[0]
+    if ":assumed-role/" in arn:
+        role = _aws(
+            "iam", "get-role", "--role-name", arn.rsplit("/", 2)[-2], region=region
+        )["Role"]
+        arn = role["Arn"]
+        if role.get("RoleId") != principal_id:
+            raise WorkspaceOwnershipError(
+                "Destroy operator RoleId differs from its STS session"
+            )
+    if (
+        observed.get("Account") != account
+        or not arn.startswith(f"arn:aws:iam::{account}:")
+        or not principal_id
+    ):
+        raise WorkspaceOwnershipError(
+            "Destroy operator is not a verified principal in the selected account"
+        )
+    receipt = {
+        "account_id": account,
+        "principal_arn": arn,
+        "principal_id": principal_id,
+    }
+    if approved is not None and receipt != approved:
+        raise WorkspaceOwnershipError("Destroy operator changed after plan review")
+    return receipt
+
+
 def verify_supplied_key(plan, *, approved=None):
     key_arn = plan.get("variables", {}).get("kms_key_arn", {}).get("value", "")
     if not key_arn:
@@ -273,10 +331,14 @@ def verify_supplied_key(plan, *, approved=None):
             "--region",
             region,
             "--no-cli-pager",
+            "--cli-connect-timeout",
+            str(AWS_CONNECT_TIMEOUT_SECONDS),
+            "--cli-read-timeout",
+            str(AWS_READ_TIMEOUT_SECONDS),
         ],
         capture_output=True,
         text=True,
-        timeout=45,
+        timeout=AWS_PREFLIGHT_TIMEOUT_SECONDS,
         check=False,
     )
     if not dry_run.returncode or "DryRunOperationException" not in dry_run.stderr:
@@ -292,7 +354,7 @@ def verify_supplied_key(plan, *, approved=None):
         ).hexdigest(),
         "identity_actions": ["kms:DescribeKey", "kms:CreateGrant"],
         "create_grant_dry_run": True,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_at": datetime.now(UTC).isoformat(),
     }
     if approved is not None and any(
         approved.get(name) != receipt[name]

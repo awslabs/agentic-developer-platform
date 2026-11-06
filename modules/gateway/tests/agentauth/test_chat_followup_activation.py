@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.concurrency import run_in_threadpool
 
+from src.agentauth.agentcore_governance import advance_owner_state
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError
 from src.agentauth.chat_history_store import ChatHistoryStore
 from src.agentauth.chat_model_journal import ChatModelJournal
@@ -55,6 +56,22 @@ async def activate(client, token, **changes):
         json={"run_id": "run-user", "session_id": "session-a", "after": 1, **changes},
         headers={"Authorization": f"Bearer {token}"},
     )
+
+
+@pytest.mark.parametrize("mailbox", ["persistent"], indirect=True)
+async def test_followup_admission_binds_its_own_epoch_and_rejects_stale_replay(mailbox):
+    client, runtime, token = await ready(mailbox)
+    owner = SimpleNamespace(tenant_id="tenant", user_id="human")
+    advance_owner_state(runtime[2], owner, "forgotten-record", "a" * 64, "forget")
+    response = await activate(client, token)
+    assert response.status_code == 200, response.text
+    key = {"PK": "session#session-a", "SK": "turn#run-followup"}
+    original = runtime[2].get_item(Key=key, ConsistentRead=True)["Item"]
+    assert original["ownerEpoch"] == 1
+    assert runtime[2].get_item(Key={"PK": "session#session-a", "SK": "turn#run-user"})["Item"]["ownerEpoch"] == 0
+    advance_owner_state(runtime[2], owner, "another-record", "b" * 64, "forget")
+    assert (await activate(client, token)).status_code == 404
+    assert runtime[2].get_item(Key=key, ConsistentRead=True)["Item"] == original
 
 
 @pytest.mark.parametrize("mailbox", ["persistent"], indirect=True)

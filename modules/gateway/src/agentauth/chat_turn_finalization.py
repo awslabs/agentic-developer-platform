@@ -5,8 +5,10 @@ from decimal import Decimal
 
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
+from pydantic import ValidationError
 
 from src.agentauth.chat_admission import _encoded
+from src.agentauth.chat_answer_evidence import AnswerEvidence
 from src.agentauth.chat_authority import ChatSessionLease
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, ChatLaunchStore
 from src.agentauth.chat_history_store import history_version
@@ -14,6 +16,7 @@ from src.agentauth.chat_history_write import ChatHistoryConflictError, ChatHisto
 from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.agentauth.chat_teardown import ChatTeardown
 from src.agentauth.chat_terminal_delivery import prepare_terminal_delivery, terminal_delivery_digest, verify_terminal_delivery
+from src.agentauth.chat_turn_result import TurnResult
 from src.orchestration.chat_data_migration import _owns_context_row
 
 
@@ -36,7 +39,9 @@ class ChatTurnFinalizer(ChatHistoryWriter):
             "attempt": launch.attempt,
             "credential_epoch": launch.credential_epoch,
             "lease_generation": launch.lease_generation,
-            "observation_scope": self.authority.workloads.observation_scope,
+            "observation_scope": (
+                self.authority.workloads.observation_scope if persistent else evidence.workloads_for_cleanup(launch.run_id).observation_scope
+            ),
         }
         if (
             dispatch.get("tenant_id") != {"S": launch.tenant_id}
@@ -154,6 +159,28 @@ class ChatTurnFinalizer(ChatHistoryWriter):
                 "message_id": candidate.get("message_id"),
                 "terminal": False,
             }
+            if candidate.get("outcome") == "failed" and "error_class" in candidate:
+                if candidate["error_class"] not in ("executor_not_wired", "executor_down"):
+                    raise ChatAuthorizationRefusedError("chat result candidate changed")
+                expected["error_class"] = candidate["error_class"]
+            if candidate.get("outcome") == "failed" and "error_message" in candidate:
+                try:
+                    TurnResult.model_validate({"outcome": "failed", "error_message": candidate["error_message"]})
+                except ValidationError:
+                    raise ChatAuthorizationRefusedError("chat result candidate changed") from None
+                expected["error_message"] = candidate["error_message"]
+            if "reply_granularity" in candidate:
+                if candidate.get("outcome") != "completed" or candidate["reply_granularity"] != "row":
+                    raise ChatAuthorizationRefusedError("chat result candidate changed")
+                expected["reply_granularity"] = candidate["reply_granularity"]
+            if "evidence" in candidate:
+                try:
+                    evidence_document = AnswerEvidence.model_validate(candidate["evidence"]).document()
+                except ValidationError:
+                    raise ChatAuthorizationRefusedError("chat result candidate changed") from None
+                if candidate.get("outcome") != "completed" or evidence_document != candidate["evidence"]:
+                    raise ChatAuthorizationRefusedError("chat result candidate changed")
+                expected["evidence"] = candidate["evidence"]
             if candidate != expected or candidate.get("outcome") not in {"completed", "failed"}:
                 raise ChatAuthorizationRefusedError("chat result candidate changed")
             outcome = candidate["outcome"]
@@ -179,6 +206,7 @@ class ChatTurnFinalizer(ChatHistoryWriter):
             "lease_generation": launch.lease_generation,
             "sandbox_uid": launch.sandbox_uid,
             "outcome": outcome,
+            **({"error_class": candidate["error_class"]} if outcome == "failed" and candidate and "error_class" in candidate else {}),
             "message_id": candidate["message_id"] if reply else None,
             "retryable": retryable,
             "automatic_replay_permitted": False,
@@ -215,7 +243,13 @@ class ChatTurnFinalizer(ChatHistoryWriter):
             mailbox_update["ExpressionAttributeNames"]["#status"] = "status"
             mailbox_update["ExpressionAttributeValues"].update(_encoded({":outcome": outcome, ":now": now}))
             checks.append({"Update": mailbox_update})
-        delivery = prepare_terminal_delivery(execution, launch, terminal, reply)
+        # A failed turn that named its own owner-visible reason delivers that text instead of
+        # the generic sentence; the terminal itself is unchanged, so supervisor receipts and
+        # the response consumer see the same shape as before.
+        delivery_reply = reply
+        if outcome == "failed" and candidate and isinstance(candidate.get("error_message"), str):
+            delivery_reply = {"content": candidate["error_message"]}
+        delivery = prepare_terminal_delivery(execution, launch, terminal, delivery_reply)
         if delivery is not None:
             from src.agentauth.chat_event_journal import terminal_event_writes
 

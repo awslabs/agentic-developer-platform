@@ -317,6 +317,24 @@ Postgres database `agent_context`, managed by Alembic (`alembic/versions/`):
 
 ## Deployment
 
+### Deploy Door from a reviewed source
+
+For a protected manual full-service deployment, pass `manual_source_revision`
+to `agent-context-deploy.yml` as a full commit SHA already on `main`. The source
+must contain the same deployment workflow as the dispatch revision, and the
+Context MCP image must already be published under that source SHA. The workflow
+resolves the image to an ECR digest and refuses missing or malformed image
+results before applying the Door manifest. Other services retain their existing
+image selectors; this input does not pin every service to the same source.
+
+Leave all three `adp_*` delivery identity inputs empty for this manual path.
+It cannot be combined with `deepwiki_only` or `ingestion_only`. Engine deliveries
+continue to require their genuine correlation, source and definition inputs;
+the definition must be an ancestor with an identical workflow file. A manual
+deployment does not publish an engine-correlated Knowledge release receipt.
+Verify the running Door digest and protected keyring independently before live
+qualification; a successful deployment does not establish tool acceptance.
+
 ### Deployment Cost Tiers
 
 | Mode | Relative Cost | What's Deployed |

@@ -175,6 +175,16 @@ def test_apply_rechecks_account_prerequisites_before_mutation(tmp_path, problem)
     assert not record.exists()
 
 
+def test_teardown_entrypoint_refuses_a_creation_artifact(tmp_path):
+    command, _, _, record = _apply_fixture(tmp_path)
+    result = subprocess.run(
+        command + ["--destroy-only"], capture_output=True, text=True
+    )
+    assert result.returncode != 0
+    assert "destroy-only authorization" in result.stderr
+    assert not record.exists()
+
+
 @pytest.mark.parametrize("mode", ["normal", "replace-source"])
 def test_applies_reviewed_copy_after_complete_verification(tmp_path, mode):
     command, artifact, _, record = _apply_fixture(tmp_path, mode=mode)

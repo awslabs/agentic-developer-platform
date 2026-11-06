@@ -32,6 +32,16 @@ class BudgetReadScope:
             EntityType(entity_type)
         except ValueError:
             return False
+        if entity_type == EntityType.PROJECT.value:
+            from src.products.budget_routes import accessible_project
+
+            try:
+                await accessible_project(self.db, self.context, entity_id)
+                return True
+            except HTTPException as exc:
+                if exc.status_code in (403, 404):
+                    return False
+                raise
         if entity_type == EntityType.ORGANIZATION.value:
             return entity_id == self.context.org_id  # Organization totals contain no individual breakdown.
         if entity_type in (EntityType.USER.value, EntityType.ROOT_USER.value) and entity_id in self.owner_ids:

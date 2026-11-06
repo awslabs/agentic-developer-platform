@@ -1,7 +1,9 @@
 """Explicit EKS-derived Kubernetes transport; no ambient kubeconfig or proxy state."""
 
 import base64
-import json
+from datetime import UTC, datetime, timedelta
+from threading import Lock
+from types import SimpleNamespace
 
 from .artifacts import canonical
 from .credentials import assume_session
@@ -82,46 +84,140 @@ def kubernetes_client(process, outputs, *, name):
     configuration.verify_ssl = True
     configuration.proxy = None
     configuration.api_key_prefix["authorization"] = "Bearer"
+    configuration.api_key_prefix["BearerToken"] = "Bearer"
+    token_lock = Lock()
+    cached_token = None
+    refresh_at = datetime.min.replace(tzinfo=UTC)
 
     def refresh(selected):
+        nonlocal cached_token, refresh_at
+        # Every request still checks its current operation authority. Signing a
+        # token uses the already scoped SDK session, without an AWS CLI process
+        # and its separate credential bridge for every discovery request.
         process.verify()
-        result = json.loads(
-            process.checked(
-                [
-                    "aws",
-                    "eks",
-                    "get-token",
-                    "--region",
+        with token_lock:
+            now = datetime.now(UTC)
+            if cached_token is None or now >= refresh_at:
+                from botocore.signers import RequestSigner
+
+                credentials = process.session.get_credentials()
+                if credentials is None:
+                    raise LifecycleRefused(
+                        "scoped Kubernetes credentials are unavailable"
+                    )
+                # Trigger the session's normal refresh before checking its expiry.
+                credentials.get_frozen_credentials()
+                expiry = getattr(credentials, "_expiry_time", None)
+                if expiry is None or expiry.tzinfo is None or expiry <= now:
+                    raise LifecycleRefused(
+                        "expiring Kubernetes credentials are required"
+                    )
+                sts = process.session.client(
+                    "sts",
+                    region_name=outputs["aws_region"],
+                    endpoint_url=f"https://sts.{outputs['aws_region']}.amazonaws.com",
+                )
+                signer = RequestSigner(
+                    sts.meta.service_model.service_id,
                     outputs["aws_region"],
-                    "--cluster-name",
-                    outputs["cluster_name"],
-                ]
-            )
-        )
-        token = result["status"]["token"]
-        if not isinstance(token, str) or not token.startswith("k8s-aws-v1."):
-            raise LifecycleRefused("EKS did not supply a scoped Kubernetes token")
-        selected.api_key["authorization"] = token
-        process.verify()
+                    "sts",
+                    "v4",
+                    credentials,
+                    sts.meta.events,
+                )
+                url = signer.generate_presigned_url(
+                    {
+                        "method": "GET",
+                        "url": sts.meta.endpoint_url.rstrip("/")
+                        + "/?Action=GetCallerIdentity&Version=2011-06-15",
+                        "body": {},
+                        "headers": {"x-k8s-aws-id": outputs["cluster_name"]},
+                        "context": {},
+                    },
+                    region_name=outputs["aws_region"],
+                    expires_in=60,
+                    operation_name="",
+                )
+                process.verify()
+                cached_token = "k8s-aws-v1." + base64.urlsafe_b64encode(
+                    url.encode()
+                ).decode().rstrip("=")
+                refresh_at = min(now + timedelta(minutes=14), expiry) - timedelta(
+                    seconds=60
+                )
+            selected.api_key["authorization"] = cached_token
 
     configuration.refresh_api_key_hook = refresh
 
+    class BoundedApiClient(client.ApiClient):
+        def call_api(self, *args, **kwargs):
+            if kwargs.get("_request_timeout") is None:
+                kwargs["_request_timeout"] = (5, 30)
+            return super().call_api(*args, **kwargs)
+
     class DeferredDiscovery:
         def __init__(self):
-            self.client = client.ApiClient(configuration)
+            self.client = BoundedApiClient(configuration)
             self._dynamic = None
+            self._discovery_lock = Lock()
+            self._resources = SimpleNamespace(get=self._get_resource)
+
+        def _get_resource(self, **kwargs):
+            # Discovery mutates its resource cache; individual resource HTTP
+            # reads may run concurrently once lookup has returned.
+            with self._discovery_lock:
+                return self._dynamic.resources.get(**kwargs)
+
+        def self_subject_access_review(self, body, *, target):
+            """Review this actor without CLI startup or Kubernetes discovery."""
+            from superplane_bootstrap.kube_grants import KubeGrants
+
+            transport = KubeGrants(self, target)
+            # Seed authentication before auth_settings() is evaluated. The hook
+            # still performs a fresh operation check for every HTTP request.
+            refresh(self.client.configuration)
+            result = self.client.call_api(
+                "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+                "POST",
+                header_params={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                body=body,
+                response_type="object",
+                auth_settings=["BearerToken"],
+                _return_http_data_only=True,
+                _request_timeout=(5, 30),
+            )
+            process.verify()
+            transport._verify_transport()
+            return result
 
         @property
         def resources(self):
             process.verify()
-            if self._dynamic is None:
-                self._dynamic = DynamicClient(self.client)
-            return self._dynamic.resources
+            with self._discovery_lock:
+                if self._dynamic is None:
+                    # Seed authentication before discovery's first request.
+                    refresh(self.client.configuration)
+                    self._dynamic = DynamicClient(
+                        self.client,
+                        cache_file=str(process.directory / (name + ".discovery.json")),
+                    )
+            return self._resources
 
     return DeferredDiscovery()
 
 
-def scoped_entry_client(source, *, role_arn, region, verify, external_id=None):
+def scoped_entry_client(
+    source,
+    *,
+    role_arn,
+    region,
+    verify,
+    external_id=None,
+    session_name="superplane-lifecycle",
+):
     """Return only exact immutable-entry revocation sessions required by EksGrants."""
 
     def resolve(entry_arn):
@@ -160,6 +256,7 @@ def scoped_entry_client(source, *, role_arn, region, verify, external_id=None):
             verify=verify,
             external_id=external_id,
             policy=policy,
+            session_name=session_name,
         ).client("eks", region_name=region)
 
     return resolve

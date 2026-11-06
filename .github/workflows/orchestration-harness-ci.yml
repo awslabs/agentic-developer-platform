@@ -2,8 +2,9 @@ name: Orchestration Harness CI
 
 # Network-free unit tests for the qualification harness (tests/e2e/orchestration/,
 # issue #5156). This is the ONLY orchestration job that runs on a pull request,
-# and it deliberately runs nothing that costs money or touches an account:
-# no AWS call, no browser, no deployed environment, no fixture provisioning.
+# and its tests make no AWS calls and use no browser, deployed environment or
+# fixture provisioning. The final evidence step alone writes reports to S3
+# with the existing runner identity.
 #
 # Paid qualification lives in orchestration-live-tests.yml, which is
 # workflow_dispatch-only. That split is the point: the harness enforces spend and
@@ -108,8 +109,10 @@ jobs:
 
       # E1 shares the normative Pydantic receipt validator with the gateway.
       # No AWS SDK or credentials are needed for these offline contract tests.
-      - name: Install pytest
-        run: pip install pytest==9.0.3 pydantic==2.12.5
+      - name: Install offline harness and gateway proposal dependencies
+        run: |
+          pip install pytest==9.0.3 pydantic==2.12.5 fastapi==0.136.3 \
+            'sqlalchemy[asyncio]==2.0.46' pyyaml==6.0.3
 
       # Selecting the package explicitly matters. tests/e2e/chat/conftest.py and
       # tests/e2e/infra/conftest.py skip EVERY collected item when their opt-in
@@ -151,6 +154,32 @@ jobs:
           errors = sum(int(s.get("errors", 0)) for s in suites)
           executed = total - skipped
 
+          required_refusals = (
+              "test_preflight_checks_product_and_all_three_repositories",
+              "test_refusal_precedes_issue_creation[product-missing-",
+              "test_refusal_precedes_issue_creation[wrong-owner-",
+              "test_refusal_precedes_issue_creation[unknown-installation-",
+              "test_refusal_precedes_issue_creation[unknown-target-",
+              "test_refusal_precedes_issue_creation[link-permission-",
+              "test_refusal_precedes_issue_creation[link-repository-",
+              "test_refusal_precedes_issue_creation[missing-epic-",
+              "test_missing_finite_limits_are_config_errors_before_preflight[bounds.max_usd]",
+              "test_missing_finite_limits_are_config_errors_before_preflight[bounds.max_duration_seconds]",
+          )
+          ran_refusals = {
+              case.get("name", "")
+              for case in root.findall(".//testcase")
+              if case.get("classname", "").endswith(".test_product_epic_preflight")
+              and case.find("skipped") is None
+          }
+          missing_refusals = [
+              selector for selector in required_refusals
+              if not any(name.startswith(selector) for name in ran_refusals)
+          ]
+          if missing_refusals:
+              sys.exit("::error::Offline Product/epic refusal cases not executed: "
+                       + ", ".join(missing_refusals))
+
           print(f"collected={total} skipped={skipped} executed={executed} "
                 f"failures={failures} errors={errors}")
 
@@ -170,7 +199,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: orchestration-harness-results
           path: test-results/

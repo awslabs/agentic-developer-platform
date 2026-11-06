@@ -14,7 +14,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException, Response
+from harness_jobs.identity import OperationRequest, encode_payload
 
+from src.agentauth.execution import ExecutionRecord, ExecutionStatus
 from src.domain_proxy import superplane as proxy
 from src.internal import domain_provider_authority as authority
 from src.internal import domain_provider_session as broker
@@ -123,6 +125,30 @@ def context(monkeypatch):
     secret = {"role_arn": ROLE, "account_id": ACCOUNT, "external_id": "owner-generated-external-id"}
     sm = SimpleNamespace(current_version_id=lambda arn: "d" * 32, get_secret_at_version=lambda arn, version: (json.dumps(secret), version))
     return SimpleNamespace(value=value, store=store, db=db, sm=sm, identity=identity, user=user, secret=secret)
+
+
+def test_transport_reuse_does_not_cache_active_provider_authority(context, monkeypatch):
+    from src.internal import domain_operation_store
+
+    domain_operation_store._aws_client.cache_clear()
+    clients = []
+
+    def client(*args, **kwargs):
+        clients.append(context.store)
+        return context.store
+
+    monkeypatch.setattr(domain_operation_store.boto3, "client", client)
+    monkeypatch.setattr(authority, "aws_client", domain_operation_store.aws_client)
+    try:
+        assert authority.read(context.value["credential_id"])["status"] == "active"
+        context.value["status"] = "revoked"
+        with pytest.raises(HTTPException) as refused:
+            authority.read(context.value["credential_id"])
+        assert refused.value.status_code == 403
+        assert context.store.reads == 2
+        assert len(clients) == 1
+    finally:
+        domain_operation_store._aws_client.cache_clear()
 
 
 @pytest.mark.parametrize(
@@ -379,7 +405,10 @@ account=RegisterAccountRequest.model_validate(data["account"])
 reference=CredentialReference(account.adp_credential_ids[0], "aws", data["evidence"]["label"])
 reader=AdpVaultClient(base_url="https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev", region="us-east-1")
 wire=data["evidence"]
-evidence=reader._evidence_from(wire, org_id=wire["org_id"], workspace_id=wire["workspace_id"], reference=reference, report_digest=None)
+evidence=reader._evidence_from(
+    wire, org_id=wire["org_id"], workspace_id=wire["workspace_id"],
+    reference=reference, principal="subject", report_digest=None,
+)
 assert evidence is not None
 for workspace, expected in ((wire["workspace_id"], True), ("foreign", False)):
     decision=authorize_delegation(principal="subject", workspace_id=workspace, ownership=evidence.ownership, reference=reference,
@@ -413,7 +442,8 @@ assert evidence.ownership.owner_principal.startswith("domain_app:superplane/")
     assert completed.returncode == 0, completed.stderr
 
 
-async def test_full_paid_broker_uses_governed_preflight_and_retains_final_fence_check(context, monkeypatch):
+@pytest.mark.parametrize("change", ["fence", "approval", "deadline", "requester", "generation", "membership", "disabled", "secret", "report"])
+async def test_full_paid_broker_preflight_rechecks_changes_during_report_read(context, monkeypatch, change):
     future = datetime.now(UTC) + timedelta(hours=1)
     operation = dict(
         requester="subject",
@@ -422,7 +452,7 @@ async def test_full_paid_broker_uses_governed_preflight_and_retains_final_fence_
         approval_expires_at=future,
         job_id="job",
         workspace_id=context.value["workspace_id"],
-        request_payload="sealed",
+        request_payload=encode_payload(OperationRequest("provision", "operation", {"lifecycle_phase": "prepare-infrastructure"})),
     )
     lease = dict(
         operation_id="operation",
@@ -433,7 +463,8 @@ async def test_full_paid_broker_uses_governed_preflight_and_retains_final_fence_
         fence_token=1,
         runtime_deadline=future,
     )
-    state = (Binding(), "run#1", "record", SimpleNamespace(expires_at=future), operation, lease)
+    record = ExecutionRecord("run", "tenant", 1, ExecutionStatus.ACTIVE, 1, 1, workload_binding="pod")
+    state = (Binding(), "run#1", record, SimpleNamespace(expires_at=future), operation, lease)
     monkeypatch.setattr(broker, "current", AsyncMock(return_value=state))
     monkeypatch.setattr(broker, "sealed_target", lambda *args: ((handle(ROLE), "aws", context.value["label"]), ACCOUNT))
     personal = AsyncMock(side_effect=AssertionError("governed handles must not use personal delivery"))
@@ -444,12 +475,59 @@ async def test_full_paid_broker_uses_governed_preflight_and_retains_final_fence_
     assert answer["admits_work"] is True
     personal.assert_not_awaited()
 
-    def changed_fence(*args):
-        lease["fence_token"] += 1
+    def changed_authority(*args):
+        if change == "fence":
+            lease["fence_token"] += 1
+        elif change == "approval":
+            operation["approval_expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
+        elif change == "deadline":
+            lease["runtime_deadline"] = datetime.now(UTC) - timedelta(seconds=1)
+        elif change == "requester":
+            operation["requester"] = "other"
+        elif change == "generation":
+            context.value["generation"] += 1
+        elif change == "membership":
+            context.identity["membership_id"] = "other"
+        elif change == "disabled":
+            context.identity["enabled"] = False
+        elif change == "secret":
+            context.sm.current_version_id = lambda arn: "rotated"
+        else:
+            raise HTTPException(403, "provider report withdrawn")
 
-    monkeypatch.setattr(authority, "read_report", changed_fence)
+    monkeypatch.setattr(authority, "read_report", changed_authority)
     with pytest.raises(HTTPException):
         await broker.provider_session(None, body, context.db, context.sm, preflight_only=True)
+
+
+async def test_provider_identity_reads_overlap_and_finish_before_refusal(context, monkeypatch):
+    import threading
+
+    barrier = threading.Barrier(3, timeout=5)
+    completed = set()
+
+    def registrations(*args):
+        barrier.wait()
+        completed.add("registrations")
+        raise HTTPException(403, "registration withdrawn")
+
+    def registration(**kwargs):
+        barrier.wait()
+        completed.add("installation")
+        return {"installation_id": "a" * 24, "namespace": "superplane-demo"}
+
+    def version(*args):
+        barrier.wait()
+        completed.add("version")
+        return "d" * 32
+
+    monkeypatch.setattr(authority, "current_registrations", registrations)
+    monkeypatch.setattr(proxy, "registration", registration)
+    context.sm.current_version_id = version
+    with pytest.raises(HTTPException, match="registration withdrawn"):
+        await authority.resolve(context.db, context.sm, handle(ROLE), subject="subject")
+    assert completed == {"registrations", "installation", "version"}
+    context.db.scalar.assert_awaited_once()
 
 
 @pytest.mark.parametrize("shorten", [False, True])
@@ -473,7 +551,7 @@ async def test_minted_session_near_deadline_uses_actual_expiry_and_still_recheck
         approval_expires_at=deadline,
         job_id="job",
         workspace_id=context.value["workspace_id"],
-        request_payload="sealed",
+        request_payload=encode_payload(OperationRequest("provision", "operation", {"lifecycle_phase": "prepare-infrastructure"})),
     )
     lease = dict(
         operation_id="operation",
@@ -484,7 +562,8 @@ async def test_minted_session_near_deadline_uses_actual_expiry_and_still_recheck
         fence_token=1,
         runtime_deadline=deadline,
     )
-    state = (Binding(), "run#1", "record", SimpleNamespace(expires_at=deadline), operation, lease)
+    record = ExecutionRecord("run", "tenant", 1, ExecutionStatus.ACTIVE, 1, 1, workload_binding="pod")
+    state = (Binding(), "run#1", record, SimpleNamespace(expires_at=deadline), operation, lease)
     monkeypatch.setattr(broker, "current", AsyncMock(return_value=state))
     monkeypatch.setattr(broker, "sealed_target", lambda *args: ((handle(ROLE), "aws", context.value["label"]), ACCOUNT))
     monkeypatch.setattr(authority, "read_report", lambda *args: datetime.now(UTC))
@@ -547,3 +626,38 @@ async def test_bedrock_account_is_not_installation_authority(context, monkeypatc
     monkeypatch.delenv("ADP_DOMAIN_PROVIDER_ACCOUNT_ID")
     with pytest.raises(HTTPException):
         await authority.resolve(context.db, context.sm, handle(ROLE), subject="subject")
+
+
+async def test_workspace_observation_authorizes_domain_then_resolves_exact_scope(context, monkeypatch):
+    ctx = context
+    metadata = dict(workspace_id=WORKSPACE, org_id=ORG, managed=True, credential_id=ctx.value["credential_id"], account_id=ACCOUNT)
+    forwarding = AsyncMock(return_value=Response(json.dumps(metadata), media_type="application/json"))
+    monkeypatch.setattr(proxy, "_proxy_to_domain", forwarding)
+    monkeypatch.setattr(proxy, "resolve_effective_org_id", AsyncMock(return_value="tenant"))
+    checked = datetime.now(UTC).isoformat()
+    report = dict(credential_valid=True, permissions_sufficient=False, quota_available=True, checked_at=checked)
+
+    def read_report(value, claimed, *, include_reading):
+        assert value == ctx.value and claimed is None and include_reading
+        return report
+
+    monkeypatch.setattr(authority, "read_report", read_report)
+    token = SimpleNamespace(user_id="subject", account_type="human")
+    result = await proxy.observe_workspace_provider(WORKSPACE, object(), token, ctx.db, ctx.sm)
+    assert result["validation"] == report
+    assert result["managed"] is True
+    assert "secret_arn" not in result and "role_arn" not in result
+    assert result["workspace_id"] == WORKSPACE
+    ctx.value["workspace_id"] = str(uuid.uuid4())
+    with pytest.raises(HTTPException):
+        await proxy.observe_workspace_provider(WORKSPACE, object(), token, ctx.db, ctx.sm)
+
+
+async def test_workspace_observation_never_resolves_before_domain_permission(context, monkeypatch):
+    denied = Response(status_code=403)
+    monkeypatch.setattr(proxy, "_proxy_to_domain", AsyncMock(return_value=denied))
+    resolver = AsyncMock()
+    monkeypatch.setattr(authority, "resolve", resolver)
+    token = SimpleNamespace(user_id="subject", account_type="human")
+    assert await proxy.observe_workspace_provider(WORKSPACE, object(), token, context.db, context.sm) is denied
+    resolver.assert_not_awaited()

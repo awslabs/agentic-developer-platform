@@ -4,7 +4,7 @@
 
 The existing installer's default offline plan can render an optional `paid_worker` projection. It uses the existing `superplane-paid-worker` entrypoint and Go controller sidecar. It does not introduce another task consumer or settlement engine. Omission preserves existing installations.
 
-**This is source preparation, not a runnable worker installation.** Both `--preflight` and `--execute` refuse with `paid-worker-binding-attestation-unavailable` before external commands. Direct adapter activation has the same guard. The renderer emits a paused ScaledJob with zero maximum replicas and no worker egress grants. These documents are for review; the installer does not apply them. Do not manually unpause them or treat a caller-authored receipt as shared authority.
+**This is source preparation, not a runnable worker installation.** Both `--preflight` and `--execute` refuse with `paid-worker-binding-attestation-unavailable` before external commands. Direct adapter activation has the same guard. The renderer emits a paused ScaledJob with the reviewed positive maximum replica count and no worker egress grants. These documents are for review; the installer does not apply them. Do not manually unpause them or treat a caller-authored receipt as shared authority.
 
 ## Closed input
 
@@ -24,7 +24,7 @@ The existing installer's default offline plan can render an optional `paid_worke
 | `management_api_server` | Exact HTTPS management API origin. Live EKS identity matching is still required. |
 | `node_selector` | Explicit reviewed node labels. Actual schedulability/native-sidecar compatibility remains unverified. |
 | `egress` | Exactly `gateway`, `sts`, `database`, `skypilot`, `workspace`, and `management`, each with one host `cidr` and TCP `port`. These are intent for review, not an installed allow policy or proof of endpoint identity. Link-local/metadata endpoints are refused. Host CIDRs do not verify Service or STS reachability and are not durable public DNS pins; actual selector/endpoint correspondence remains an activation prerequisite. |
-| `max_replica_count` | Intended eventual concurrency, 1–4. Rendered preparation stays at zero. |
+| `max_replica_count` | Bounded concurrency, 1–4. Preparation retains the KEDA pause annotation and deny-all egress. |
 | `active_deadline_seconds` | Explicit bound, 1–3600 seconds. |
 
 All fields are mandatory when selected; unknown fields, lifecycle modes, caller receipts, ambiguous queue identities and unresolved paid images are refused. The native projection omits lifecycle PVCs, policies and environment variables. Only the trusted worker mounts database/provider/workspace Secrets; the Go sidecar shares the scoped task socket/token volume.

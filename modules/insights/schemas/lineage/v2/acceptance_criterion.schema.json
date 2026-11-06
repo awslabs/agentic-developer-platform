@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "acceptance_criterion (section 11.3)",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "const": "acceptance_criterion"
+    },
+    "story_ref": {
+      "allOf": [
+        {
+          "$ref": "references.schema.json#/$defs/record_ref"
+        },
+        {
+          "properties": {
+            "record_type": {
+              "const": "story_revision"
+            }
+          }
+        }
+      ]
+    },
+    "criterion_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lifecycle_status": {
+      "enum": [
+        "active",
+        "retired"
+      ]
+    }
+  },
+  "required": [
+    "story_ref",
+    "criterion_key",
+    "text",
+    "lifecycle_status"
+  ],
+  "unevaluatedProperties": false
+}

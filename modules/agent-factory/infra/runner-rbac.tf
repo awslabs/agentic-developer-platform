@@ -67,11 +67,29 @@ resource "kubernetes_role_binding" "runner_deploy_gateway" {
 # -----------------------------------------------------------------------------
 # adp-gateway-evals: throwaway clean-room pods only
 # -----------------------------------------------------------------------------
+# The namespace itself is owned by platform/infra/modules/eks (applied in the
+# platform phase, before this root), which carries the same Pod Security labels.
+# #7389 briefly created it here too, so a fresh install failed with
+# `namespaces "adp-gateway-evals" already exists`. Environments that applied
+# #7389 drop it from this state without deleting the live namespace.
+# The deployment identity's access to this namespace is granted in
+# platform/automation-infra (AmazonEKSEditPolicy scoped to it).
+locals {
+  gateway_evals_namespace = "adp-gateway-evals"
+}
+
+removed {
+  from = kubernetes_namespace.gateway_evals
+
+  lifecycle {
+    destroy = false
+  }
+}
 
 resource "kubernetes_role" "runner_gateway_evals" {
   metadata {
     name      = "adp-runner-evals"
-    namespace = "adp-gateway-evals"
+    namespace = local.gateway_evals_namespace
 
     labels = {
       "app.kubernetes.io/managed-by" = "terraform"
@@ -96,7 +114,7 @@ resource "kubernetes_role" "runner_gateway_evals" {
 resource "kubernetes_role_binding" "runner_gateway_evals" {
   metadata {
     name      = "adp-runner-evals"
-    namespace = "adp-gateway-evals"
+    namespace = local.gateway_evals_namespace
 
     labels = {
       "app.kubernetes.io/managed-by" = "terraform"

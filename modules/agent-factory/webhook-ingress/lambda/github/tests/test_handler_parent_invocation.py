@@ -7,7 +7,7 @@ Coverage:
   - Human sender: parent_invocation_id is None (chain root)
   - Bot sender inheriting pointer with triggering_invocation_id: gets parent_invocation_id
   - Bot sender inheriting pointer without triggering_invocation_id (old pointer): None
-  - Bot sender with no pointer: parent_invocation_id is None (new bot chain)
+  - Bot sender with no pointer: parent_invocation_id is None (lineage unavailable)
 """
 
 import os
@@ -35,6 +35,7 @@ class _MockIdentity:
     def __init__(self, user_id: str, user_kind: str):
         self.user_id = user_id
         self.user_kind = user_kind
+        self.identity_proven = user_kind == "human"
 
 
 class TestDetermineCorrelationParentInvocation:
@@ -46,7 +47,7 @@ class TestDetermineCorrelationParentInvocation:
 
         identity = _MockIdentity(user_id="user-human-1", user_kind="human")
         result = determine_correlation(
-            payload={},
+            payload={"sender": {"id": 56, "type": "User", "login": "alice"}},
             resolved_identity=identity,
             channel_key="github:repo=org/repo,issue=1",
         )
@@ -108,7 +109,7 @@ class TestDetermineCorrelationParentInvocation:
         assert result["is_new_chain"] is False
 
     def test_bot_no_pointer_parent_is_none(self):
-        """Bot sender with no DDB pointer starts new bot chain with no parent."""
+        """Bot sender with no DDB pointer cannot start a chain or name a parent."""
         from handler import determine_correlation
 
         identity = _MockIdentity(user_id="user-bot-3", user_kind="bot")
@@ -122,5 +123,5 @@ class TestDetermineCorrelationParentInvocation:
             )
 
         assert result["parent_invocation_id"] is None
-        assert result["is_new_chain"] is True
+        assert result["is_new_chain"] is False
         assert result["is_human_rooted"] is False

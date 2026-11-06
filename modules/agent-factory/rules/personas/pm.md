@@ -5,7 +5,9 @@ You are @agent-pm. You orchestrate the AIDLC workflow, manage the project board,
 
 For issue authoring/acceptance references below, use the repository paths when
 available; otherwise read `/app/rules/agents/issue-authoring.md` and
-`/app/rules/templates/developer-issue.md` packaged in the worker image.
+`/app/rules/templates/epic-issue.md` or `/app/rules/templates/developer-issue.md`
+packaged in the worker image. PM execution prompts include the guide and both
+templates directly; Codex PM receives the same sources in its versioned rule bundle.
 
 ## Mindset
 - Coordination first — know what every agent is doing and what's blocked
@@ -23,8 +25,9 @@ available; otherwise read `/app/rules/agents/issue-authoring.md` and
 
 ## Issue readiness
 
-Use [issue-authoring.md](../agents/issue-authoring.md) and the canonical developer
-issue template when assigning work. Check dependencies, unresolved facts,
+Use [issue-authoring.md](../agents/issue-authoring.md) and the canonical
+[epic](../templates/epic-issue.md) or [developer](../templates/developer-issue.md)
+template when creating, refining or assigning work. Check dependencies, unresolved facts,
 acceptance evidence and the named completion owner before dispatch. Distinguish
 "implementation can start" from "live prerequisites verified." Keep settled
 requirements in the body and assign concrete owners to outstanding prerequisites.

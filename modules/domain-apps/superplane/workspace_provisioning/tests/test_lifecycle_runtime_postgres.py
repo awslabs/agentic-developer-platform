@@ -59,7 +59,19 @@ def harness(tmp_path_factory, request):
             dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output}
         )
         with Operations.context(context):
-            for name in ("019_lifecycle_artifacts", "020_lifecycle_effects"):
+            for name in (
+                "019_lifecycle_artifacts",
+                "020_lifecycle_effects",
+                "046_dispatch_reauthorization",
+                "047_provider_recovery",
+                "048_planning_recovery",
+                "049_planning_budget",
+                "050_planning_budget_confirmation",
+                "051_saved_plan_completion",
+                "052_partial_apply_repair",
+                "053_partial_preparation_refresh",
+                "054_unstarted_bootstrap",
+            ):
                 path = (
                     Path(__file__).resolve().parents[2]
                     / "src/superplane-api/alembic/versions"
@@ -79,7 +91,7 @@ def harness(tmp_path_factory, request):
 
 
 class Scenario:
-    def __init__(self, harness, tmp_path, monkeypatch, mode):
+    def __init__(self, harness, tmp_path, monkeypatch, mode, *, isolation="namespace"):
         self.harness, self.operations = harness, {}
         self.ledger, self.deliveries, self.process_calls = _Ledger(), [], []
         self.creates, self.bootstrap_calls = [], []
@@ -117,7 +129,7 @@ class Scenario:
             ),
             permitted_organizational_units=frozenset(),
         )
-        public = {"isolation_mode": "namespace"}
+        public = {"isolation_mode": isolation}
         capacity = {
             "max_resource_units": 1,
             "max_runtime_seconds": 900,
@@ -308,7 +320,9 @@ class Scenario:
                     review.mkdir()
                     files = {
                         "workspace.tfplan": "reviewed-binary-plan",
-                        "workspace-plan.json": "{}",
+                        "workspace-plan.json": canonical(scenario.repair_plan)
+                        if hasattr(scenario, "repair_plan")
+                        else "{}",
                         "workspace-authorization.proposed.json": "{}",
                         "workspace-inventory.json": '{"destructive_addresses":[]}',
                         "workspace-estimate.json": '{"bounded_monthly_usd":1}',
@@ -319,9 +333,17 @@ class Scenario:
                 elif "apply_workspace_plan.py" in argv[1]:
                     reviewed = Path(argv[argv.index("--plan-file") + 1])
                     assert reviewed.read_text() == "reviewed-binary-plan"
+                    if hasattr(scenario, "expected_apply_artifact"):
+                        assert (
+                            reviewed.parent.parent.name
+                            == scenario.expected_apply_artifact
+                        )
+                        assert self.directory.name.startswith("repair-")
                     if scenario.lose_apply_reply:
                         raise OSError("lost apply reply after provider allocation")
                 elif argv[:2] == ["terraform", "show"]:
+                    if hasattr(scenario, "applied_state"):
+                        return canonical(scenario.applied_state)
                     return canonical(
                         {
                             "format_version": "1.0",
@@ -546,12 +568,26 @@ def test_managed_preparation_and_apply_preserve_review_and_original_allocation(
     harness.run(run())
 
 
+@pytest.mark.parametrize("returned_refusal", [False, True])
 def test_adoption_handoff_uses_real_network_journal_before_bootstrap(
-    harness, tmp_path, monkeypatch
+    harness, tmp_path, monkeypatch, capsys, returned_refusal
 ):
     scenario = Scenario(
         harness, tmp_path, monkeypatch, OwnershipMode.BRING_EXISTING_CLUSTER
     )
+    if returned_refusal:
+        from superplane_bootstrap.errors import BootstrapRefused
+
+        def bootstrap(*args):
+            scenario.bootstrap_calls.append(args)
+            try:
+                raise ValueError("private-provider-body")
+            except ValueError as error:
+                refusal = BootstrapRefused("private-bootstrap-message")
+                refusal.__cause__ = error
+                return SimpleNamespace(ready=False, refusal=refusal)
+
+        monkeypatch.setattr(bootstrap_runtime, "bootstrap", bootstrap)
 
     async def run():
         prepared = await scenario.prepared()
@@ -582,6 +618,19 @@ def test_adoption_handoff_uses_real_network_journal_before_bootstrap(
             )
 
     harness.run(run())
+    logs = capsys.readouterr().err
+    assert "private-provider-body" not in logs
+    assert "private-bootstrap-message" not in logs
+    diagnostic = next(
+        json.loads(line)
+        for line in logs.splitlines()
+        if json.loads(line).get("event") == "lifecycle_provider_failed"
+    )
+    assert [error["exception_type"] for error in diagnostic["exceptions"]] == (
+        ["LifecycleRefused", "BootstrapRefused", "ValueError"]
+        if returned_refusal
+        else ["LifecycleRefused"]
+    )
 
 
 @pytest.mark.parametrize("fault", ["changed-plan", "lost-apply-reply"])
@@ -664,5 +713,178 @@ def test_lost_api_ingress_reply_keeps_intent_and_does_not_replay(
                 == 1
             )
         assert not scenario.ledger.released
+
+    harness.run(run())
+
+
+def test_saved_plan_completion_publishes_original_bytes_without_replanning(
+    harness, tmp_path, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+    from harness_jobs.provider_retry import recover_uncredentialed
+    from harness_jobs.leases import acquire
+    from workspace_provisioning.saved_plan_validation import (
+        SAVED_PLAN_FILES,
+        saved_plan_snapshot,
+    )
+
+    scenario = Scenario(
+        harness, tmp_path, monkeypatch, OwnershipMode.EXISTING_ACCOUNT_MANAGED
+    )
+    original_process = runtime.WorkerProcesses
+    completed = []
+
+    class InterruptedProcess(original_process):
+        def checked(self, argv, **kwargs):
+            if "workspace_provisioning.saved_plan_completion" in argv:
+                self.verify()
+                completed.append(tuple(argv))
+                review = self.directory / "review"
+                (review / "workspace-authorization.proposed.json").write_text(
+                    '{"final-preflights":"fixture"}'
+                )
+                (review / "workspace-backend.json").write_text("{}")
+                return ""
+            result = super().checked(argv, **kwargs)
+            if "prepare_workspace_plan.py" in argv[1]:
+                (self.directory / "review/workspace-backend.json").unlink()
+                raise OSError("source worker stopped after producing its plan")
+            return result
+
+    monkeypatch.setattr(runtime, "WorkerProcesses", InterruptedProcess)
+
+    async def run():
+        operation = await scenario.admit(scenario.parameters)
+        # The direct facade fixture omits the dispatcher that marks a real
+        # admitted delivery running before handing it to the worker.
+        async with harness.connect() as connection:
+            await connection.execute("UPDATE harness_operations SET state='running'")
+        with pytest.raises(Exception):
+            await runtime.run_lifecycle(operation, scenario.context)
+        lease = operation.grant.lease
+        directory = terraform.operation_directory(
+            scenario.context.state_root,
+            lease.org_id,
+            lease.workspace_id,
+            lease.operation_id,
+        )
+        snapshot = saved_plan_snapshot(directory)
+        variables = json.loads((directory / "workspace.tfvars.json").read_text())
+        observation = {
+            "offline_guard_passed": True,
+            "target": {
+                k: variables[k]
+                for k in (
+                    "account_id",
+                    "aws_region",
+                    "environment",
+                    "workspace_name",
+                    "org_id",
+                    "workspace_id",
+                )
+            },
+            "files": {
+                name: terraform.sha(directory / "review" / name)
+                for name in SAVED_PLAN_FILES
+            },
+        }
+
+        async def proof(*args):
+            return {
+                "evidence_kind": "saved-plan-finalization-v1",
+                "planning_started": True,
+                "apply_started": False,
+                "original_authority_expired": True,
+                "issued_sessions_expired": True,
+                "owner_evidence_id": "fixture-owner-proof",
+                "preparation_boundary": {
+                    "kind": "saved-plan-finalization-v1",
+                    "entries": snapshot,
+                    "sha256": digest(snapshot),
+                    "observation": observation,
+                },
+            }
+
+        async def authorize(*args):
+            return datetime.now(UTC) + timedelta(hours=1)
+
+        async with harness.connect() as connection:
+            original = dict(
+                await connection.fetchrow("SELECT * FROM harness_operations")
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM workspace_lifecycle_artifacts"
+                )
+                == 0
+            )
+            await connection.execute(
+                "UPDATE harness_operation_leases SET expires_at=now()-interval '1 second',runtime_deadline=now()-interval '1 second',attempts=9,max_attempts=10"
+            )
+            receipt = await recover_uncredentialed(
+                connection,
+                principal=_principal(),
+                operation_id=lease.operation_id,
+                expected_version=original["version"],
+                reauthorization_id="saved-plan-decision",
+                authorize=authorize,
+                prove_not_started=proof,
+                recovery_scope="saved-plan-completion",
+            )
+            current_lease = await acquire(
+                connection,
+                operation_id=lease.operation_id,
+                holder="completer",
+                attempt_id="completer",
+            )
+        current = SimpleNamespace(
+            **{
+                **vars(operation),
+                "grant": ExecutionGrant(_principal("completer"), current_lease),
+            }
+        )
+        scenario.operations[lease.operation_id] = current
+        result = await runtime.run_lifecycle(current, scenario.context)
+        row = await scenario.row(result["artifact_id"])
+        metadata = json.loads(row["artifact_metadata_json"])
+        assert len(scenario.process_calls) == 1 and len(completed) == 1
+        assert not scenario.creates and not scenario.bootstrap_calls
+        assert metadata["plan_file_sha256"] == observation["files"]["workspace.tfplan"]
+        assert metadata["saved_plan_completion"]["source_fence"] == lease.fence_token
+        assert (
+            metadata["saved_plan_completion"]["original_key"] == receipt["original_key"]
+        )
+        assert row["producer_fence_token"] == current_lease.fence_token
+        (archive,) = directory.parent.glob(directory.name + ".completed-from-*")
+        assert saved_plan_snapshot(archive) == snapshot
+        async with harness.connect() as connection:
+            final = dict(await connection.fetchrow("SELECT * FROM harness_operations"))
+            assert final["state"] == "succeeded"
+            for field in (
+                "request_payload",
+                "plan_digest",
+                "operation_id",
+                "job_id",
+                "attempt_id",
+            ):
+                assert final[field] == original[field]
+            assert dict(
+                await connection.fetchrow(
+                    "SELECT attempts,max_attempts FROM harness_operation_leases"
+                )
+            ) == {"attempts": 10, "max_attempts": 10}
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM workspace_lifecycle_artifacts"
+                )
+                == 1
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM harness_provider_call_intent"
+                )
+                == 2
+            )
+        assert result["status"] == "awaiting_plan_approval"
 
     harness.run(run())

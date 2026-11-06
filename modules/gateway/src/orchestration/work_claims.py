@@ -576,6 +576,162 @@ async def heartbeat(
     return ClaimReceipt(disposition=Disposition.ADMITTED, claim_id=claim.id, generation=claim.generation)
 
 
+async def _unfinished_bound_review(session: AsyncSession, claim: OrchestrationWorkClaim) -> bool:
+    """A modern story still owes review even if its handoff report did not land.
+
+    Called with the claim locked. This protects ownership only: a PR association
+    cannot mint a handoff receipt or stand in for review/merge evidence.
+    """
+    import json
+
+    from .execution_state import TERMINAL_EXECUTION_STATUSES
+    from .handoff import handoff_required
+    from .models import OrchestrationDecision, OrchestrationExecution, OrchestrationNode, OrchestrationPullRequestBinding
+    from .pr_bindings import binding_scope_matches
+
+    if claim.owner_kind != OwnerKind.ENGINE_FLOW.value:
+        return False
+    rows = await session.execute(
+        select(OrchestrationExecution, OrchestrationNode, OrchestrationPullRequestBinding)
+        .join(OrchestrationNode, OrchestrationNode.id == OrchestrationExecution.node_id)
+        .join(OrchestrationPullRequestBinding, OrchestrationPullRequestBinding.node_id == OrchestrationNode.id)
+        .where(
+            OrchestrationExecution.org_id == claim.org_id,
+            OrchestrationExecution.flow_id == claim.owner_ref,
+            OrchestrationExecution.claim_id == claim.id,
+            OrchestrationExecution.claim_generation == claim.generation,
+            OrchestrationExecution.handoff_receipt_ref.is_(None),
+            OrchestrationExecution.status.notin_([status.value for status in TERMINAL_EXECUTION_STATUSES]),
+            OrchestrationNode.org_id == claim.org_id,
+            OrchestrationNode.flow_id == claim.owner_ref,
+            OrchestrationNode.kind == "story",
+            OrchestrationNode.state.in_(["running", "awaiting_merge"]),
+            OrchestrationNode.attempts == OrchestrationExecution.cycle,
+            OrchestrationPullRequestBinding.org_id == claim.org_id,
+            OrchestrationPullRequestBinding.flow_id == claim.owner_ref,
+            OrchestrationPullRequestBinding.attempt == OrchestrationExecution.cycle,
+            OrchestrationPullRequestBinding.provider_repository_id == claim.provider_repository_id,
+            OrchestrationPullRequestBinding.role == "implementation",
+            OrchestrationPullRequestBinding.state == "active",
+        )
+        .execution_options(populate_existing=True)
+    )
+    for execution, node, binding in rows:
+        try:
+            scope = json.loads(binding.accepted_scope or "{}")
+            if not binding_scope_matches(binding, node) or scope.get("accepted_plan_version") != execution.accepted_plan_version:
+                continue
+            decision_id = scope.get("dispatch_decision_id")
+            if not isinstance(decision_id, str) or not decision_id:
+                continue
+            decision = await session.get(OrchestrationDecision, decision_id)
+            if (
+                decision is None
+                or decision.org_id != claim.org_id
+                or decision.flow_id != claim.owner_ref
+                or decision.node_id != node.id
+                or decision.kind != "node_dispatched"
+                or decision.actor_kind != "service"
+            ):
+                continue
+            dispatch = json.loads(decision.reason or "{}")
+            if (
+                handoff_required(dispatch)
+                and dispatch.get("attempt") == execution.cycle
+                and dispatch.get("run_id") == binding.run_id
+                and dispatch.get("issue") == claim.issue_number
+            ):
+                return True
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return False
+
+
+async def _unfinished_committed_reviewer(session: AsyncSession, claim: OrchestrationWorkClaim) -> bool:
+    """Retain exactly the current reviewer lane, including a missing handoff.
+
+    A failed developer must still release normally. Persona text alone is not
+    enough: the current SQL execution, action and trusted dispatch must all bind
+    the run which actually owns this claim generation (#8142).
+    """
+    import json
+
+    from .execution_state import TERMINAL_EXECUTION_STATUSES
+    from .models import OrchestrationAction, OrchestrationDecision, OrchestrationExecution, OrchestrationNode
+    from .pr_bindings import active_binding_for_node, binding_scope_matches
+    from .review_cycle_dispatch import ACTOR, continuation_run_id, receipt_id
+
+    if claim.owner_kind != OwnerKind.ENGINE_FLOW.value or not claim.active_run_id or claim.claim_event_id != claim.active_run_id:
+        return False
+    rows = await session.execute(
+        select(OrchestrationExecution, OrchestrationNode)
+        .join(OrchestrationNode, OrchestrationNode.id == OrchestrationExecution.node_id)
+        .where(
+            OrchestrationExecution.org_id == claim.org_id,
+            OrchestrationExecution.flow_id == claim.owner_ref,
+            OrchestrationExecution.claim_id == claim.id,
+            OrchestrationExecution.claim_generation == claim.generation,
+            OrchestrationExecution.status.notin_([s.value for s in TERMINAL_EXECUTION_STATUSES]),
+            OrchestrationNode.org_id == claim.org_id,
+            OrchestrationNode.flow_id == claim.owner_ref,
+            OrchestrationNode.kind == "story",
+            OrchestrationNode.state.in_(["running", "awaiting_merge"]),
+            OrchestrationNode.attempts == OrchestrationExecution.cycle,
+        )
+        .execution_options(populate_existing=True)
+    )
+    for execution, node in rows:
+        binding = await active_binding_for_node(session, org_id=claim.org_id, node_id=node.id, attempt=node.attempts)
+        if binding is None or not binding_scope_matches(binding, node) or binding.provider_repository_id != claim.provider_repository_id:
+            continue
+        actions = await session.scalars(
+            select(OrchestrationAction)
+            .where(
+                OrchestrationAction.org_id == claim.org_id,
+                OrchestrationAction.execution_id == execution.id,
+                OrchestrationAction.kind == "review_cycle_dispatch",
+            )
+            .order_by(OrchestrationAction.created_at.desc(), OrchestrationAction.id.desc())
+            .limit(101)
+        )
+        action = next((a for a in actions if continuation_run_id(a.operation_key) == claim.active_run_id), None)
+        if action is None:
+            continue
+        row = await session.get(OrchestrationDecision, receipt_id(action.operation_key))
+        try:
+            saved = json.loads(row.reason) if row else {}
+            expected = saved.get("envelope", {}).get("review_expect", {})
+            if (
+                row is not None
+                and row.org_id == claim.org_id
+                and row.flow_id == claim.owner_ref
+                and row.node_id == node.id
+                and row.actor_kind == "service"
+                and row.actor_id == ACTOR
+                and row.kind == "agent_dispatched"
+                and saved.get("run_id") == claim.active_run_id
+                and saved.get("operation_key") == action.operation_key
+                and saved.get("execution_id") == execution.id
+                and saved.get("accepted_plan_version") == execution.accepted_plan_version
+                and saved.get("claim_generation") == claim.generation
+                and saved.get("action") == action.detail.get("action")
+                and saved.get("action") in {"review", "repair"}
+                and saved.get("envelope", {}).get("persona") == "agent-codex-reviewer"
+                and expected.get("claim_id") == claim.id
+                and expected.get("claim_generation") == claim.generation
+                and expected.get("node_id") == node.id
+                and expected.get("cycle") == execution.cycle
+                and expected.get("execution_id") == execution.id
+                and action.detail.get("binding_id") == binding.id
+                and action.detail.get("accepted_scope") == binding.accepted_scope
+                and int(str(node.issue_ref).lstrip("#")) == claim.issue_number
+            ):
+                return True
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return False
+
+
 async def release_work(
     session: AsyncSession,
     *,
@@ -647,10 +803,21 @@ async def release_work(
     # Recheck after taking the claim lock. A handoff can commit while recovery
     # is reading Kubernetes, and an older observation must not release it.
     # Superseded generations must not hold a replacement owner's claim.
+    from .delivery_claim import unfinished_delivery
     from .handoff import outstanding_continuation
 
     pending = await outstanding_continuation(session, org_id=org_id, claim_id=claim.id, claim_generation=claim.generation)
-    if pending is not None:
+    # A successful developer report is not the end of a bound review lane. If
+    # handoff reporting failed, releasing would also remove its execution from
+    # the due scan. A committed reviewer must also retain its lane until the
+    # engine observes its outcome, including after a preserving plan amendment.
+    # Failed developers still use the existing failure recovery.
+    if (
+        pending is not None
+        or (reason is ReleaseReason.COMPLETED and await _unfinished_bound_review(session, claim))
+        or (reason is ReleaseReason.COMPLETED and await unfinished_delivery(session, claim))
+        or (reason in {ReleaseReason.COMPLETED, ReleaseReason.FAILED} and await _unfinished_committed_reviewer(session, claim))
+    ):
         return ClaimReceipt(
             disposition=Disposition.BLOCKED,
             claim_id=claim.id,
@@ -819,7 +986,18 @@ async def force_handover(
     return ClaimReceipt(disposition=Disposition.ADMITTED, claim_id=claim.id, generation=claim.generation)
 
 
-async def continue_run(session, *, identity, expected_run_id, run_id, operation_key, completed_execution, recovery_decision_id=None):
+async def continue_run(
+    session,
+    *,
+    identity,
+    expected_run_id,
+    run_id,
+    operation_key,
+    completed_execution,
+    recovery_decision_id=None,
+    developer_recovery_decision_id=None,
+    recovery_services=None,
+):
     """Move a held engine lane to its committed successor without a new generation.
 
     The same accepted execution and owner continue after a successful terminal
@@ -880,8 +1058,27 @@ async def continue_run(session, *, identity, expected_run_id, run_id, operation_
     bootstrap_retry = action.detail.get("bootstrap_retry_of") == expected_run_id and is_retryable_bootstrap_failure(prior)
     from .review_cycle_dispatch import failed_review
 
-    review_retry = action.detail.get("review_retry_of") == expected_run_id and action.detail.get("action") == "review" and failed_review(prior)
-    if recovery_decision_id:
+    # A failed reviewer may be followed by the bounded review retry or, when it
+    # left a classified open defect, by the developer repair that defect hands
+    # off to (#7482); both continue the same lane as sibling executions.
+    review_retry = (
+        action.detail.get("review_retry_of") == expected_run_id and action.detail.get("action") in {"review", "repair"} and failed_review(prior)
+    )
+    if developer_recovery_decision_id:
+        from .developer_review_protocol import verify_transfer
+
+        await verify_transfer(
+            session,
+            decision_id=developer_recovery_decision_id,
+            identity=identity,
+            execution=loaded.record,
+            action=action,
+            dispatch_decision=decision,
+            expected_run_id=expected_run_id,
+            completed_execution=prior,
+            services=recovery_services,
+        )
+    elif recovery_decision_id:
         from .execution_runner import RunnerContext
         from .models import OrchestrationNode
         from .pr_bindings import active_binding_for_node

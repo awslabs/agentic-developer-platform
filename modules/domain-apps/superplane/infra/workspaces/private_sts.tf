@@ -5,7 +5,7 @@ resource "aws_security_group" "private_sts" {
   count = local.owns_network ? 1 : 0
 
   name        = "${local.name_prefix}-private-sts"
-  description = "Private STS for this workspace's node security group only."
+  description = "Private STS for the workspace node security group only."
   vpc_id      = local.vpc_id
 }
 
@@ -30,7 +30,7 @@ resource "aws_vpc_security_group_ingress_rule" "private_sts_nodes" {
   ip_protocol                  = "tcp"
   from_port                    = 443
   to_port                      = 443
-  description                  = "This workspace's nodes may reach its private STS endpoint."
+  description                  = "Workspace nodes may reach the private STS endpoint."
 }
 
 data "aws_vpc_endpoint" "supplied_sts" {

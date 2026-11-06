@@ -1,0 +1,209 @@
+# ADP-managed alternative for a CUSTOMER connection (GitHub protected environment,
+# vaulted connection, ARC runner). The platform account is deployed by the
+# self-managed stage instead: deploy-all.sh --dev-box on / --dev-box-only ->
+# modules/user-services/dev-box/scripts/deploy-dev-box.sh (#7998), which needs no
+# GitHub environment. Both paths apply the same foundation (infra/main.tf) and
+# produce the same release manifest (release.create_manifest).
+name: Dev Box module deploy
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || '' }}
+on:
+  workflow_dispatch:
+    inputs:
+      adp_correlation:
+        description: Engine correlation digest
+        required: true
+        type: string
+      adp_source_revision:
+        description: Reviewed source commit
+        required: true
+        type: string
+      adp_definition_revision:
+        description: Reviewed workflow definition commit
+        required: true
+        type: string
+      customer_account_id:
+        description: Verified account of the selected connection
+        required: true
+        type: string
+      customer_aws_label:
+        description: Selected vaulted environment connection
+        required: true
+        type: string
+      customer_user_id:
+        description: Engine connection owner (not written into release artifact)
+        required: true
+        type: string
+      environment:
+        description: Approved protected environment
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: dev-box-${{ inputs.customer_account_id }}-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    environment: dev-box-${{ inputs.environment }}
+    runs-on: arc-runner-deploy
+    steps:
+      - name: Guard engine delivery revisions and selected environment
+        env:
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
+          SELECTED_LABEL: ${{ inputs.customer_aws_label }}
+          APPROVED_LABEL: ${{ vars.ADP_DEV_BOX_CONNECTION_LABEL }}
+          TARGET_ACCOUNT: ${{ inputs.customer_account_id }}
+          APPROVED_ACCOUNT: ${{ vars.ADP_DEV_BOX_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]]
+          test "$ADP_DEFINITION" = "$ACTUAL_DEFINITION"
+          test -n "$SELECTED_LABEL"
+          test "$SELECTED_LABEL" = "$APPROVED_LABEL"
+          test -n "$APPROVED_ACCOUNT"
+          test "$TARGET_ACCOUNT" = "$APPROVED_ACCOUNT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          persist-credentials: false
+      - name: Create immutable, bounded module release context
+        env:
+          DEV_BOX_ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          DEV_BOX_ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+          DEV_BOX_ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+          DEV_BOX_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label }}
+          DEV_BOX_CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id }}
+          DEV_BOX_ENVIRONMENT: ${{ inputs.environment }}
+          DEV_BOX_REGION: ${{ vars.ADP_DEV_BOX_REGION }}
+          DEV_BOX_IMAGE_ID: ${{ vars.ADP_DEV_BOX_IMAGE_ID }}
+          DEV_BOX_IMAGE_REVISION: ${{ vars.ADP_DEV_BOX_IMAGE_REVISION }}
+          DEV_BOX_CREW_PROFILE_REVISION: ${{ vars.ADP_DEV_BOX_CREW_PROFILE_REVISION || '' }}
+          DEV_BOX_CREW_MODEL_ID: ${{ vars.ADP_DEV_BOX_CREW_MODEL_ID || '' }}
+          # Crew bootstrap (#8055): image (default) or user-data with the pinned bundle.
+          DEV_BOX_CREW_BOOTSTRAP: ${{ vars.ADP_DEV_BOX_CREW_BOOTSTRAP || 'image' }}
+          DEV_BOX_CREW_BUNDLE_S3_URI: ${{ vars.ADP_DEV_BOX_CREW_BUNDLE_S3_URI || '' }}
+          DEV_BOX_CREW_BUNDLE_SHA256: ${{ vars.ADP_DEV_BOX_CREW_BUNDLE_SHA256 || '' }}
+          DEV_BOX_CREW_SOURCE_REVISION: ${{ vars.ADP_DEV_BOX_CREW_SOURCE_REVISION || '' }}
+          DEV_BOX_TEMPLATE_REVISION: ${{ vars.ADP_DEV_BOX_TEMPLATE_REVISION }}
+          DEV_BOX_INSTANCE_SIZE: ${{ vars.ADP_DEV_BOX_INSTANCE_SIZE }}
+          DEV_BOX_WORKSPACE_DISK_GB: ${{ vars.ADP_DEV_BOX_WORKSPACE_DISK_GB }}
+          DEV_BOX_ALLOWED_SIZES: ${{ vars.ADP_DEV_BOX_ALLOWED_SIZES_JSON }}
+          DEV_BOX_MAX_DISK_GB: ${{ vars.ADP_DEV_BOX_MAX_DISK_GB }}
+          DEV_BOX_PRIVATE_SUBNET_ID: ${{ vars.ADP_DEV_BOX_PRIVATE_SUBNET_ID }}
+          DEV_BOX_GATEWAY_SECURITY_GROUP_ID: ${{ vars.ADP_DEV_BOX_GATEWAY_SG_ID }}
+          DEV_BOX_SSM_ENDPOINT_SECURITY_GROUP_ID: ${{ vars.ADP_DEV_BOX_SSM_SG_ID }}
+          DEV_BOX_CONTROLLER_PRINCIPAL_ARN: ${{ vars.ADP_DEV_BOX_CONTROLLER_PRINCIPAL_ARN }}
+          DEV_BOX_DEPLOYMENT_ID: ${{ vars.ADP_DEV_BOX_DEPLOYMENT_ID }}
+          DEV_BOX_KMS_KEY_ARN: ${{ vars.ADP_DEV_BOX_KMS_KEY_ARN }}
+          DEV_BOX_DASHBOARD_ENABLED: ${{ vars.ADP_DEV_BOX_DASHBOARD_ENABLED || 'false' }}
+          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEV_BOX_ADP_SOURCE_REVISION"
+          tar -czf dev-box-module.tar.gz --exclude=".terraform*" --exclude="*.tfstate*" --exclude="__pycache__" --exclude="tests" -C modules/user-services/dev-box image infra controller release.py runtime.py engine_evidence.py deploy.sh
+          export DEV_BOX_INFRA_SHA256="$(sha256sum modules/user-services/dev-box/infra/main.tf | cut -d' ' -f1)"
+          export DEV_BOX_MODULE_SHA256="$(sha256sum dev-box-module.tar.gz | cut -d' ' -f1)"
+          export DEV_BOX_RUN_TABLE_ARN="${{ vars.ADP_DEV_BOX_RUN_TABLE_ARN }}"
+          export DEV_BOX_RUN_TABLE_KMS_KEY_ARN="${{ vars.ADP_DEV_BOX_RUN_TABLE_KMS_KEY_ARN }}"
+          export DEV_BOX_GATEWAY_EXECUTE_ARN="${{ vars.ADP_DEV_BOX_GATEWAY_EXECUTE_ARN }}"
+          python modules/user-services/dev-box/release.py --from-env \
+            --actual-source "$(git rev-parse HEAD)" \
+            --actual-definition "$ACTUAL_DEFINITION" \
+            --output dev-box-release.json
+      - name: Deploy approved foundation (controller readiness is not asserted)
+        env:
+          ADP_CONNECTION_LABEL: ${{ inputs.customer_aws_label }}
+          TARGET_ACCOUNT_ID: ${{ inputs.customer_account_id }}
+          EXPECTED_ASSUMED_ROLE_PREFIX: ${{ vars.ADP_DEV_BOX_ASSUMED_ROLE_PREFIX }}
+          ADP_STATE_BUCKET: ${{ vars.ADP_DEV_BOX_STATE_BUCKET }}
+          ADP_STATE_KEY: ${{ vars.ADP_DEV_BOX_STATE_KEY }}
+          TF_VAR_account_id: ${{ inputs.customer_account_id }}
+          TF_VAR_region: ${{ vars.ADP_DEV_BOX_REGION }}
+          TF_VAR_deployment_id: ${{ vars.ADP_DEV_BOX_DEPLOYMENT_ID }}
+          TF_VAR_vpc_id: ${{ vars.ADP_DEV_BOX_VPC_ID }}
+          TF_VAR_private_subnet_id: ${{ vars.ADP_DEV_BOX_PRIVATE_SUBNET_ID }}
+          TF_VAR_gateway_security_group_id: ${{ vars.ADP_DEV_BOX_GATEWAY_SG_ID }}
+          TF_VAR_ssm_endpoint_security_group_id: ${{ vars.ADP_DEV_BOX_SSM_SG_ID }}
+          TF_VAR_controller_principal_arn: ${{ vars.ADP_DEV_BOX_CONTROLLER_PRINCIPAL_ARN }}
+          TF_VAR_run_table_arn: ${{ vars.ADP_DEV_BOX_RUN_TABLE_ARN }}
+          TF_VAR_run_table_kms_key_arn: ${{ vars.ADP_DEV_BOX_RUN_TABLE_KMS_KEY_ARN }}
+          TF_VAR_gateway_execute_arn: ${{ vars.ADP_DEV_BOX_GATEWAY_EXECUTE_ARN }}
+          # Exact gateway IRSA role ARN in the customer account (#8049); empty keeps the
+          # SSH grant role absent and `adp devbox ssh` answering 503. Documented with the
+          # other ADP_DEV_BOX_* variables in modules/user-services/dev-box/README.md.
+          TF_VAR_gateway_principal_arn: ${{ vars.ADP_DEV_BOX_GATEWAY_PRINCIPAL_ARN }}
+          TF_VAR_image_id: ${{ vars.ADP_DEV_BOX_IMAGE_ID }}
+          TF_VAR_source_revision: ${{ inputs.adp_source_revision }}
+          TF_VAR_template_revision: ${{ vars.ADP_DEV_BOX_TEMPLATE_REVISION }}
+          TF_VAR_instance_size: ${{ vars.ADP_DEV_BOX_INSTANCE_SIZE }}
+          TF_VAR_workspace_disk_gb: ${{ vars.ADP_DEV_BOX_WORKSPACE_DISK_GB }}
+          TF_VAR_kms_key_arn: ${{ vars.ADP_DEV_BOX_KMS_KEY_ARN }}
+          TF_VAR_dashboard_enabled: ${{ vars.ADP_DEV_BOX_DASHBOARD_ENABLED || 'false' }}
+          # Same Crew pins the release context above carries, so the applied foundation and
+          # the manifest agree (runtime.py compares them).
+          TF_VAR_crew_profile_revision: ${{ vars.ADP_DEV_BOX_CREW_PROFILE_REVISION || '' }}
+          TF_VAR_crew_model_id: ${{ vars.ADP_DEV_BOX_CREW_MODEL_ID || '' }}
+          TF_VAR_crew_bootstrap: ${{ vars.ADP_DEV_BOX_CREW_BOOTSTRAP || 'image' }}
+          TF_VAR_crew_bundle_s3_uri: ${{ vars.ADP_DEV_BOX_CREW_BUNDLE_S3_URI || '' }}
+          TF_VAR_crew_bundle_sha256: ${{ vars.ADP_DEV_BOX_CREW_BUNDLE_SHA256 || '' }}
+          TF_VAR_crew_source_revision: ${{ vars.ADP_DEV_BOX_CREW_SOURCE_REVISION || '' }}
+        run: bash modules/user-services/dev-box/deploy.sh
+      - name: Verify deployed image, network, IAM and release identity
+        env:
+          ADP_CONNECTION_LABEL: ${{ inputs.customer_aws_label }}
+          AWS_DEFAULT_REGION: ${{ vars.ADP_DEV_BOX_REGION }}
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/dev-box-runtime-verifier
+          /tmp/dev-box-runtime-verifier/bin/pip install boto3==1.43.111
+          adp-cred assume --service aws --label "$ADP_CONNECTION_LABEL" --exec terraform \
+            -chdir=modules/user-services/dev-box/infra output -json > dev-box-outputs.json
+          adp-cred assume --service aws --label "$ADP_CONNECTION_LABEL" --exec \
+            /tmp/dev-box-runtime-verifier/bin/python modules/user-services/dev-box/runtime.py \
+            --manifest dev-box-release.json --outputs dev-box-outputs.json --receipt dev-box-runtime-receipt.json
+      - name: Publish immutable release artifacts after foundation apply
+        env:
+          ADP_CONNECTION_LABEL: ${{ inputs.customer_aws_label }}
+          ADP_RELEASE_BUCKET: ${{ vars.ADP_DEV_BOX_RELEASE_BUCKET }}
+        run: |
+          set -euo pipefail
+          test -n "$ADP_RELEASE_BUCKET"
+          digest="$(python -c 'import json; print(json.load(open("dev-box-release.json"))["manifest_sha256"])')"
+          DEV_BOX_MODULE_SHA256="$(sha256sum dev-box-module.tar.gz | cut -d' ' -f1)"
+          adp-cred assume --service aws --label "$ADP_CONNECTION_LABEL" --exec aws s3api put-object \
+            --bucket "$ADP_RELEASE_BUCKET" --key "dev-box/releases/$digest.json" \
+            --body dev-box-release.json --if-none-match '*' >/dev/null
+          adp-cred assume --service aws --label "$ADP_CONNECTION_LABEL" --exec aws s3api put-object \
+            --bucket "$ADP_RELEASE_BUCKET" --key "dev-box/modules/$DEV_BOX_MODULE_SHA256.tar.gz" \
+            --body dev-box-module.tar.gz --if-none-match '*' >/dev/null
+          adp-cred assume --service aws --label "$ADP_CONNECTION_LABEL" --exec aws s3api put-object \
+            --bucket "$ADP_RELEASE_BUCKET" --key "dev-box/receipts/$digest.json" \
+            --body dev-box-runtime-receipt.json --if-none-match '*' >/dev/null
+      - name: Bind provider-verified release to the engine run
+        env:
+          ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          INPUT_CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id }}
+          INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label }}
+          INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+        run: python modules/user-services/dev-box/engine_evidence.py --manifest dev-box-release.json --receipt dev-box-runtime-receipt.json --output engine-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adp-deployment-context-dev-box-deploy.yml-${{ github.run_attempt }}
+          path: engine-artifacts/context/deployment-context.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adp-release-dev-box-${{ github.run_attempt }}
+          path: engine-artifacts/release/release.json
+          if-no-files-found: error
+          retention-days: 7

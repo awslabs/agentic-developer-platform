@@ -23,6 +23,7 @@ def load(path, name):
 ROOT = Path(__file__).resolve().parents[2]
 state_tools = load(Path(__file__).with_name('upgrade-state.py'), 'upgrade_state_preflight')
 engine = load(ROOT / 'modules/gateway/scripts/sync-gateway-engine.py', 'upgrade_engine_preflight')
+dispatch = load(Path(__file__).with_name('product_dispatch_inputs.py'), 'upgrade_dispatch_preflight')
 
 
 def aws(region, *args):
@@ -194,6 +195,25 @@ def prepare(directory, account, region, environment, gateway=True, webhook=True,
         saved = state_tools.output(installed, 'release_configuration', {}) or {}
         evidence = directory / 'engine-before.json'
         original = json.loads(evidence.read_text()) if evidence.exists() else {}
+        # State can predate an operator's live dispatch choice. Retain the
+        # verified engine setting before any apply, then bind retries to it.
+        if tracked:
+            function = f'arn:aws:lambda:{region}:{account}:function:adp-{environment}-orchestration-tick'
+            live = aws(region, 'lambda', 'get-function-configuration', '--function-name', function)
+            if (live.get('FunctionArn') != function or live.get('State') != 'Active'
+                    or live.get('LastUpdateStatus') != 'Successful'):
+                raise ValueError('Cannot verify Product dispatch engine identity/readiness before upgrade')
+            product_dispatch = dispatch.runtime_setting(live.get('Environment', {}).get('Variables', {}))
+        else:
+            product_dispatch = preserved.get(dispatch.INPUT, False)
+        if type(product_dispatch) is not bool:
+            raise ValueError('Retained Product dispatch setting must be a boolean')
+        if 'product_story_dispatch_enabled' in original:
+            recorded = original['product_story_dispatch_enabled']
+            if type(recorded) is not bool or recorded != product_dispatch:
+                raise ValueError('Product dispatch changed since the upgrade snapshot; review the target before restarting this upgrade')
+            product_dispatch = recorded
+        preserved[dispatch.INPUT] = product_dispatch
         if 'desired_schedule_enabled' in original:
             desired = original['desired_schedule_enabled']
         elif state_tools.output(installed, 'orchestration_tick_upgrade_hold', False):
@@ -211,7 +231,8 @@ def prepare(directory, account, region, environment, gateway=True, webhook=True,
             raise ValueError('Retained engine schedule setting must be a boolean')
         preserved['orchestration_tick_schedule_enabled'] = desired
         state_tools.write_json(target, preserved)
-        state_tools.write_json(evidence, {'missing': digest is None, 'desired_schedule_enabled': desired})
+        state_tools.write_json(evidence, {'missing': digest is None, 'desired_schedule_enabled': desired,
+                                         'product_story_dispatch_enabled': product_dispatch})
 
 
 def verify_live_workers(directory):

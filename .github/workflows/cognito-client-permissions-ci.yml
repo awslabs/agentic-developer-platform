@@ -1,0 +1,58 @@
+name: Cognito client permissions
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'modules/source-control/gitlab/infra/**'
+      - 'modules/agent-factory/infra/modules/lambda-pentest-actor-token/**'
+      - 'modules/agent-factory/gateway/lambdas/pentest-actor-token/actors.json'
+      - '.github/workflows/cognito-client-permissions-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'modules/source-control/gitlab/infra/**'
+      - 'modules/agent-factory/infra/modules/lambda-pentest-actor-token/**'
+      - 'modules/agent-factory/gateway/lambdas/pentest-actor-token/actors.json'
+      - '.github/workflows/cognito-client-permissions-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cognito-client-permissions-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  client-permissions:
+    name: Cognito permissions (${{ matrix.client }})
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - client: gitlab
+            directory: modules/source-control/gitlab/infra
+            config: cognito.tf
+          - client: pentest
+            directory: modules/agent-factory/infra/modules/lambda-pentest-actor-token
+            config: main.tf
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - name: Validate client permissions with mock providers
+        run: |
+          terraform fmt -check ${{ matrix.config }} tests/cognito_attributes.tftest.hcl
+          terraform init -backend=false -input=false -no-color
+          terraform validate -no-color
+          terraform test -filter=tests/cognito_attributes.tftest.hcl -no-color

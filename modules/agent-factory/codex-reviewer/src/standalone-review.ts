@@ -4,14 +4,20 @@ import type { CodexPullRequestReviewEnvelope, CodexEngineReviewEnvelope } from '
 import { createReviewServices, runEngineReview, type EngineReviewServices } from './engine-review.js';
 import { GitHubClient } from './github.js';
 import { mergeEnabled, type ReviewRuntime, type ReviewRunResult } from './reviewer.js';
+import type { ReadOnlyReviewServices } from './read-only-review.js';
 
 export type StandaloneReviewServices = Pick<EngineReviewServices, 'review' | 'fix' | 'wait' | 'now' | 'deliveryTimeoutMs'> & {
   github: Pick<GitHubClient, 'getPullRequest' | 'getBranch' | 'getIssue' | 'checks' | 'commentOnce' | 'merge'>;
+  publish?: ReadOnlyReviewServices['publish'];
 };
 
 export async function runStandaloneReview(
   envelope: CodexPullRequestReviewEnvelope, runtime: ReviewRuntime, supplied?: StandaloneReviewServices,
 ): Promise<ReviewRunResult> {
+  if (envelope.pull_request.review_only) {
+    const { runReadOnlyReview } = await import('./read-only-review.js');
+    return runReadOnlyReview(envelope, runtime, supplied);
+  }
   const github = supplied?.github ?? new GitHubClient(envelope.repository,
     runtime.getGitHubToken ?? (async () => runtime.githubToken));
   const expected = envelope.pull_request.expected_head_sha;

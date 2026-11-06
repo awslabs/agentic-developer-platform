@@ -68,6 +68,8 @@ def client():
             "login": request.headers.get("x-github-login"),
             "teams": request.headers.get("x-github-teams"),
             "owner": request.headers.get("x-owner-sub"),
+            "asset_owner": request.headers.get("x-asset-owner-id"),
+            "product": request.headers.get("x-product-id"),
             "run_bound": request.headers.get("x-adp-run-service"),
             "body": (await request.body()).decode(),
         }
@@ -93,12 +95,14 @@ def test_verified_claims_replace_all_asserted_identity(client, identity, path):
             "x-github-login": "victim",
             "x-github-teams": "victim/admins",
             "x-owner-sub": "victim",
+            "x-asset-owner-id": "victim",
+            "x-product-id": "victim",
             "x-adp-run-service": "false",
         },
     )
     assert response.status_code == 200
     assert response.json() == dict(
-        tenant="tenant-a", login="alice", teams=None, owner="", run_bound="true", body="{}"
+        tenant="tenant-a", login="alice", teams=None, owner="", asset_owner="", product="", run_bound="true", body="{}"
     )
 
 
@@ -127,6 +131,9 @@ def test_shared_key_and_disable_flag_cannot_bypass(client, identity, monkeypatch
         {"sub": ""},
         {"github_login": "", "owner_sub": ""},
         {"kid": []},
+        {"product_id": ""},
+        {"product_id": "another/product"},
+        {"product_id": ["00000000-0000-0000-0000-000000000001"]},
     ],
 )
 def test_invalid_claims_denied(client, identity, changes):
@@ -149,6 +156,16 @@ def test_changed_body_and_forged_signature_denied(client, identity):
         client.post("/call", content=b"{}", headers={"x-adp-door-identity": forged}).status_code
         == 401
     )
+
+
+def test_signed_product_scope_replaces_forged_header(client, identity):
+    product = "00000000-0000-0000-0000-000000000001"
+    body = json.dumps({"name": "search", "arguments": {"product_id": product}}).encode()
+    signed = token(identity, body=body, product_id=product)
+    response = client.post("/call", content=body, headers={"x-adp-door-identity": signed, "x-product-id": "other"})
+    assert response.status_code == 200
+    assert response.json()["product"] == product
+    assert client.post("/call", content=b"{}", headers={"x-adp-door-identity": signed}).status_code == 401
 
 
 def test_key_rotation_missing_key_and_public_probe(client, identity, monkeypatch):
@@ -213,3 +230,24 @@ def test_unsigned_query_is_rejected(client, identity):
         ).status_code
         == 401
     )
+
+
+@pytest.mark.parametrize("path", ["/call", "/mcp/"])
+def test_signed_canonical_owner_does_not_change_memory_identity(client, identity, path):
+    login_subject = "11111111-1111-4111-8111-111111111111"
+    canonical_owner = "22222222-2222-4222-8222-222222222222"
+    response = client.post(path, content=b"{}", headers={
+        "x-adp-door-identity": token(identity, path, owner_sub=login_subject, asset_owner_id=canonical_owner),
+        "x-asset-owner-id": "other-user",
+    })
+    assert response.status_code == 200
+    assert response.json()["owner"] == login_subject
+    assert response.json()["asset_owner"] == canonical_owner
+
+
+@pytest.mark.parametrize("owner", [None, [], "", "../other", "owner/other", "a" * 257])
+def test_invalid_asset_owner_claim_is_refused(client, identity, owner):
+    response = client.post("/call", content=b"{}", headers={
+        "x-adp-door-identity": token(identity, asset_owner_id=owner),
+    })
+    assert response.status_code == 401

@@ -8,6 +8,8 @@ import type { OperationReceipt, WorkspaceSummary } from './contract';
 import type { ReceiptScope } from './operations';
 import { freshnessOf } from './readiness';
 import { ApproverAccessControl } from './ApproverAccessControl';
+import { DispatchRecoveryPanel } from './DispatchRecoveryPanel';
+import { WorkspaceDeploymentProgress } from './ProvisioningProgress';
 
 type DetailsState =
   | { phase: 'loading' }
@@ -20,8 +22,10 @@ type DetailsState =
       checkingOperation: boolean;
     };
 
-export function WorkspaceDetails({ workspaceId, scope, guard, sessionToken, now }: {
+export function WorkspaceDetails({ workspaceId, scope, guard, sessionToken, now, expectedOrgId }: {
   workspaceId: string;
+  /** Domain organization from the authenticated listing, distinct from the ADP scope key. */
+  expectedOrgId: string;
   scope: ReceiptScope;
   guard: ScopeGuard;
   sessionToken: string;
@@ -51,7 +55,7 @@ export function WorkspaceDetails({ workspaceId, scope, guard, sessionToken, now 
         return;
       }
       const workspace = detail.value;
-      if (workspace.id !== workspaceId || workspace.org_id !== scope.orgId) {
+      if (workspace.id !== workspaceId || workspace.org_id !== expectedOrgId) {
         setState({ phase: 'failed', detail: 'The workspace response did not match the selected organization and workspace.' });
         return;
       }
@@ -83,7 +87,7 @@ export function WorkspaceDetails({ workspaceId, scope, guard, sessionToken, now 
     };
     void refresh();
     return () => { active = false; };
-  }, [guard, workspaceId, scope.orgId, sessionToken, revision]);
+  }, [guard, workspaceId, scope.orgId, expectedOrgId, sessionToken, revision]);
 
   return (
     <section className="mt-6 rounded-lg border border-gray-200 p-4 dark:border-gray-700" aria-label="Workspace details">
@@ -92,13 +96,16 @@ export function WorkspaceDetails({ workspaceId, scope, guard, sessionToken, now 
       {state.phase === 'failed' && <Alert variant="error" title="Workspace details unavailable">{state.detail}</Alert>}
       {state.phase === 'loaded' && (
         <>
+          {state.workspace.provisioning_operation_id && <WorkspaceDeploymentProgress key={`${workspaceId}:${sessionToken}`} workspaceId={workspaceId} />}
           <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
             <div><dt>Workspace ID</dt><dd className="break-all">{state.workspace.id}</dd></div>
             <div><dt>Isolation</dt><dd>{state.workspace.isolation_mode || 'Unknown'}</dd></div>
             <div><dt>Registered status</dt><dd>{state.workspace.status}</dd></div>
             <div><dt>Workspace read access</dt><dd>Allowed for this request. Cluster and workload access are not established by reading workspace details.</dd></div>
-            <div><dt>Account and region</dt><dd>Not reported by the workspace detail API. Check the original reviewed plan; do not infer them from management location.</dd></div>
-            <div><dt>Cluster placement and provider</dt><dd>Not reported by the workspace detail API. Isolation mode does not establish cluster ownership or access.</dd></div>
+            <div><dt>AWS account</dt><dd>{state.workspace.account_id ?? 'Not reported'}</dd></div>
+            <div><dt>Requested region</dt><dd>{state.workspace.requested_region ?? 'Not reported'}</dd></div>
+            <div><dt>Registered cluster</dt><dd>{state.workspace.cluster_name ?? 'No cluster registered yet'}{state.workspace.cluster_region ? ` (${state.workspace.cluster_region})` : ''}</dd></div>
+            <div><dt>Cloud provider</dt><dd>{state.workspace.cloud_provider ?? 'Not reported'}</dd></div>
             <div><dt>Cluster observation</dt><dd>{clusterFreshness === 'fresh' && state.workspace.cluster_health
               ? `Fresh: ${state.workspace.cluster_health}`
               : clusterFreshness === 'stale'
@@ -112,8 +119,15 @@ export function WorkspaceDetails({ workspaceId, scope, guard, sessionToken, now 
               <p>Original request ID: <span className="break-all">{state.operation.idempotencyKey}</span></p>
               <p>Operation phase: {state.operation.phase ?? 'Unknown'}</p>
               <p>Operation state: {state.operation.state}</p>
+              {state.operation.reason && <p>{state.operation.reason}</p>}
               <p>Operation completion does not establish workspace readiness. Check the separate readiness readings.</p>
             </div>
+          )}
+          {state.operation && ['unknown', 'running'].includes(state.operation.state) && state.operation.version && (
+            <DispatchRecoveryPanel key={`${scope.orgId}:${workspaceId}:${state.operation.operationId}:${state.operation.version}:${state.operation.state}:${sessionToken}`}
+              workspaceId={workspaceId} orgId={scope.orgId} operation={state.operation}
+              mode={state.operation.state === 'running' ? 'provider' : 'undispatched'}
+              guard={guard} sessionToken={sessionToken} onResumed={() => setRevision((current) => current + 1)} />
           )}
           {state.operationProblem && (
             <Alert variant="warning" title="Operation status unavailable">{state.operationProblem} Keep the original operation identity when recovering.</Alert>

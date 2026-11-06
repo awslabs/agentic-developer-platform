@@ -33,7 +33,49 @@ def sign_door_identity(*, principal: str, tenant_id: str, identity: dict[str, st
         "iat": now,
         "exp": now + 30,
     }
+    if "x-asset-owner-id" in identity:
+        payload["asset_owner_id"] = identity["x-asset-owner-id"]
+    if identity.get("x-product-id"):
+        payload["product_id"] = identity["x-product-id"]
     encoded = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).rstrip(b"=")
     signed = b"adpd1." + encoded
+    signature = base64.urlsafe_b64encode(_signing_key(source).sign(signed)).rstrip(b"=")
+    return (signed + b"." + signature).decode()
+
+
+def sign_door_catalogue(*, body: bytes, env=None) -> str:
+    """Sign only a native schema listing, never a user or data capability.
+
+    The private mediator calls this only after verified AgentCore IAM transport.
+    Separate audience/version keep this token unusable by the human verifier.
+    """
+    packet = json.loads(body)
+    if (
+        not isinstance(packet, dict)
+        or set(packet) != {"jsonrpc", "id", "method", "params"}
+        or packet["jsonrpc"] != "2.0"
+        or packet["method"] != "tools/list"
+        or packet["params"] != {}
+        or type(packet["id"]) not in {str, int}
+        or len(str(packet["id"])) > 256
+    ):
+        raise EnvelopeError("Invalid Door catalogue request")
+    source = os.environ if env is None else env
+    kid = source.get(SIGNING_KEY_ID_ENV, "")
+    if not kid:
+        raise EnvelopeError("Door signing identity unavailable")
+    now = int(time.time())
+    payload = {
+        "iss": "adp-gateway",
+        "aud": "adp-knowledge-catalogue",
+        "kid": kid,
+        "method": "POST",
+        "path": "/mcp/",
+        "body_sha256": hashlib.sha256(body).hexdigest(),
+        "iat": now,
+        "exp": now + 30,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).rstrip(b"=")
+    signed = b"adpdm1." + encoded
     signature = base64.urlsafe_b64encode(_signing_key(source).sign(signed)).rstrip(b"=")
     return (signed + b"." + signature).decode()

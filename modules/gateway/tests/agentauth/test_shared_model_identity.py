@@ -373,6 +373,7 @@ async def test_platform_budget_increase_reaches_model_path_and_preserves_tenant_
                 reason=json.dumps(
                     {
                         "contract": CONTRACT,
+                        "flow_id": shared.plan.flow_id,
                         "plan_version": shared.plan.version,
                         "plan_hash": shared.plan.plan_hash,
                         "original_policy_hash": model_path.policy.policy_hash,

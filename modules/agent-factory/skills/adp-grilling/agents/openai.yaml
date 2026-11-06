@@ -1,0 +1,4 @@
+interface:
+  display_name: ADP Grilling
+  short_description: Interview decisions in rounds until the next steps are clear.
+  default_prompt: Ask the seeded interview questions with recommended answers, then work through the remaining decisions.

@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,8 @@ GATEWAY_ROOT = Path(__file__).resolve().parents[2]
 # migration tests with it on any interpreter without pgserver. A skip must apply to
 # the tests that actually need a PostgreSQL server, and nothing else.
 _UNAVAILABLE = "real-PostgreSQL migration tests require the pgserver package (Python <= 3.12); see tests/migrations/README-postgres.md"
+_SESSION_SERVERS = pytest.StashKey[dict]()
+_SESSION_SCHEMAS = pytest.StashKey[dict]()
 
 
 def _require_pgserver():
@@ -134,36 +137,34 @@ class _ExternalServer:
 
 
 @pytest.fixture(scope="session")
-def pg_server(tmp_path_factory):
+def pg_server(request, tmp_path_factory):
     """One PostgreSQL 16 instance for the whole session.
 
     Session-scoped because initdb costs a few seconds; per-test isolation comes
     from creating a separate database on it rather than a separate server.
     """
+    # Re-exporting a fixture from a test module gives it another FixtureDef and
+    # therefore another session cache. Keep the server on the actual Session so
+    # all aliases share it, including under xdist (one Session per worker).
+    servers = request.session.stash.setdefault(_SESSION_SERVERS, {})
     external = os.environ.get("BG_TEST_POSTGRES_URI")
-    if external:
+    if external not in servers:
         _require_psycopg2()
-        yield _ExternalServer(external)
-        return
-    pgserver = _require_pgserver()
-    _require_psycopg2()
-    _ensure_pgcrypto_shim(pgserver)
-    data_dir = tmp_path_factory.mktemp("pgdata")
-    server = pgserver.get_server(str(data_dir))
-    try:
-        yield server
-    finally:
-        server.cleanup()
+        if external:
+            server = _ExternalServer(external)
+        else:
+            pgserver = _require_pgserver()
+            _ensure_pgcrypto_shim(pgserver)
+            data_dir = tmp_path_factory.mktemp("pgdata")
+            server = pgserver.get_server(str(data_dir))
+        servers[external] = server
+        request.session.addfinalizer(server.cleanup)
+    return servers[external]
 
 
-@pytest.fixture
-def pg_url(pg_server):
-    """A fresh empty database, dropped afterwards.
-
-    Each test gets its own database so trigger state, sequences and identity
-    counters cannot leak between tests — identity values in particular are part of
-    what the generation-id tests assert on.
-    """
+@contextmanager
+def postgres_database(pg_server, *, template=None):
+    """An owned database; never drop or terminate connections to its template."""
     psycopg2 = _require_psycopg2()
     name = f"t{uuid.uuid4().hex[:16]}"
     admin = pg_server.get_uri()
@@ -172,25 +173,55 @@ def pg_url(pg_server):
     connection.autocommit = True
     try:
         with connection.cursor() as cursor:
-            cursor.execute(f'CREATE DATABASE "{name}"')
+            from psycopg2 import sql
+
+            statement = sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name))
+            if template:
+                statement += sql.SQL(" TEMPLATE {}").format(sql.Identifier(template))
+            cursor.execute(statement)
     finally:
         connection.close()
 
-    yield pg_server.get_uri(database=name)
-
-    connection = psycopg2.connect(admin)
-    connection.autocommit = True
     try:
-        with connection.cursor() as cursor:
-            # Terminate stragglers so DROP cannot hang the suite on a leaked
-            # connection from a failed test.
-            cursor.execute(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid()",
-                (name,),
-            )
-            cursor.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        yield pg_server.get_uri(database=name)
     finally:
-        connection.close()
+        connection = psycopg2.connect(admin)
+        connection.autocommit = True
+        try:
+            with connection.cursor() as cursor:
+                # Terminate stragglers before dropping only this owned database.
+                cursor.execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid()",
+                    (name,),
+                )
+                cursor.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        finally:
+            connection.close()
+
+
+@pytest.fixture
+def pg_url(pg_server):
+    """Fresh empty database for tests which exercise migrations or custom DDL."""
+    with postgres_database(pg_server) as url:
+        yield url
+
+
+@pytest.fixture
+def pg_head_url(request, pg_server):
+    """Fresh clone of a migrated schema for business tests, with no shared data.
+
+    Migration tests keep using pg_url and the real upgrade/downgrade helpers.
+    Template ownership follows the actual pytest Session, including fixture aliases.
+    """
+    from tests.postgres_schema import PostgresSchemas
+
+    schemas = request.session.stash.setdefault(_SESSION_SCHEMAS, {})
+    key = pg_server.get_uri()
+    if key not in schemas:
+        schemas[key] = PostgresSchemas(pg_server, GATEWAY_ROOT, postgres_database, upgrade)
+        request.session.addfinalizer(schemas[key].close)
+    with schemas[key].database() as url:
+        yield url
 
 
 def to_async_url(url: str) -> str:
@@ -216,6 +247,18 @@ def run_alembic(url: str, *args: str) -> subprocess.CompletedProcess:
     # it a runner can load a different libpython and lose the installed packages.
     # Preserve interpreter configuration without inheriting production DB/AWS env.
     runtime_env = {name: os.environ[name] for name in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "PYTHONHOME", "PYTHONUSERBASE") if name in os.environ}
+    python_paths = [GATEWAY_ROOT]
+    # Packaged qualification mounts tests at /app/tests and uses installed
+    # dependencies. Add sibling sources only for the repository checkout layout.
+    if GATEWAY_ROOT.name == "gateway" and GATEWAY_ROOT.parent.name == "modules":
+        python_paths.extend(
+            path
+            for path in (
+                GATEWAY_ROOT.parent / "L5-services/src",
+                GATEWAY_ROOT.parent.parent / "libs/python/adp-common/src",
+            )
+            if path.is_dir()
+        )
     return subprocess.run(
         [sys.executable, "-m", "alembic", *args],
         cwd=GATEWAY_ROOT,
@@ -226,7 +269,7 @@ def run_alembic(url: str, *args: str) -> subprocess.CompletedProcess:
             "PATH": "/usr/bin:/bin:/usr/local/bin",
             "BG_DATABASE_URL": to_async_url(url),
             "BG_RDS_IAM_AUTH": "false",
-            "PYTHONPATH": str(GATEWAY_ROOT),
+            "PYTHONPATH": os.pathsep.join(map(str, python_paths)),
         },
         check=False,
     )

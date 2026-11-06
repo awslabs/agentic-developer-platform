@@ -1,0 +1,20 @@
+{
+  "image_files": {
+    "Dockerfile.check-base": "bc3a06775b03654a034949e7f286961f85808efe89d3c7c034c925616ab83a23",
+    "requirements.lock": "91426e7e337e3a6368c50adceea2165b374421619eb0c5ebe045599797d341ef",
+    "transform_fixture_dependencies.py": "f31178ad055150f82ee25742103828a63b7c0b95ec7aed6e508ea58c117506d3",
+    "wheelhouse-lock.json": "91a231da9d7442713ab9984b0802b90e39b8e0460dfefdf48d70d6cc6cdb5466",
+    "wheelhouse.sha256": "59f2da01e0174703915aafe75a43e4c564a30c0cc48887d8d7f40806635529d7"
+  },
+  "purpose": "disposable Transform release qualification tests",
+  "schema_version": 1,
+  "source_tests": {
+    "archive-receipts": {
+      "test_dependency_runtime.py": "1d8e690862c169914a1639caaf58b745a9ca2ce836584981a79ba2aba0ee389d",
+      "test_receipt.py": "dc9188735071a8f86cabbbab32a2aa862999748aa2b92583ee55255b6ee9c672"
+    },
+    "queue-worker": {
+      "index.test.mjs": "6e4cc3a9ff9809f7d6389caf1771571a3fb6273fe24b7a869f7cc2e7b3f50f7b"
+    }
+  }
+}

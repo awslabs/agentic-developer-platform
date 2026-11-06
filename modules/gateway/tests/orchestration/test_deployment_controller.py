@@ -104,6 +104,23 @@ async def finish(ctx):
     assert result.advanced == 1, ((await state(ctx))[0].block_detail, result)
 
 
+async def test_grouped_release_without_shared_lease_cannot_be_verified(runtime):
+    ctx = runtime
+    ctx.entry = replace(
+        ctx.entry,
+        release_group="atlassian-foundation",
+        mutation_role_arn=f"arn:aws:iam::{ctx.target.account_id}:role/adp-test-trusted-deployment",
+    )
+    await tick(ctx)
+    execution = (await state(ctx))[0]
+    assert execution.phase == "awaiting_runtime_verification"
+    assert execution.status == "blocked"
+    assert execution.block_detail == "deployment_shared_release_admission_unavailable"
+    async with ctx.factory() as db:
+        assert (await db.scalar(select(OrchestrationEnvironmentLease))).state == "held"
+        assert await db.scalar(select(OrchestrationAction).where(OrchestrationAction.kind == DEPLOYMENT_KIND)) is None
+
+
 async def test_verified_release_releases_lease_and_advances_only_to_evaluation(runtime):
     ctx = runtime
     await finish(ctx)
@@ -117,6 +134,11 @@ async def test_verified_release_releases_lease_and_advances_only_to_evaluation(r
         final = next(a.detail["deployment_receipt"] for a in receipts if a.detail["deployment_receipt"]["delivery_complete"])
         assert final["source_revision"] == final["actual_revision"] == SOURCE
         assert final["components"][0]["tick_digest"] == DIGEST
+        from src.orchestration.story_acceptance import current_story_acceptance
+
+        records = await current_story_acceptance(db, org_id=node.org_id, executions={node.id: execution})
+        assert records[execution.id].deployment_verified_at is not None
+        assert records[execution.id].completed_at is None
     assert ctx.dispatches == []
 
 

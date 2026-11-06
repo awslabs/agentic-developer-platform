@@ -25,6 +25,10 @@ Scope: this module owns the boundary and ports the existing full-context
 Anthropic text bound behind it without reducing its safety margin. The Responses
 adapter (#5226) and the media/history/tool capabilities (#5227) implement
 ``ProviderQuoteAdapter``; they are not defined here.
+
+Responses text admission may use a conservative request estimate. In that case
+``total_usd`` is the reservation and ``maximum_cost_usd`` remains the independent
+provider ceiling. Neither callers nor settlement may confuse these amounts.
 """
 
 from __future__ import annotations
@@ -195,7 +199,7 @@ class QuoteRequest:
 
 @dataclass(frozen=True)
 class ProviderQuote:
-    """An immutable upper bound on one request's total cost.
+    """An immutable reservation quote and its independently retained cost ceiling.
 
     Frozen so a quote cannot be edited between admission and spend. The three
     identity fields — ``request_sha256``, ``billing_model_id``,
@@ -219,6 +223,13 @@ class ProviderQuote:
     max_cache_write_tokens: int
     total_usd: Decimal
     evidence_source: str
+    input_count_method: str = "full_context"
+    upper_bound_usd: Decimal | None = None
+
+    @property
+    def maximum_cost_usd(self) -> Decimal:
+        """Provider ceiling, distinct from a request-sized admission estimate."""
+        return self.upper_bound_usd if self.upper_bound_usd is not None else self.total_usd
 
     def __post_init__(self) -> None:
         if self.currency != "USD":
@@ -227,6 +238,10 @@ class ProviderQuote:
             # A non-finite or non-positive bound is not a cheap request; it is an
             # absent bound wearing a number's clothes.
             raise ValueError("quote total must be a finite positive amount")
+        if self.input_count_method not in {"full_context", "request_bytes_with_margin"}:
+            raise ValueError("unsupported input count method")
+        if self.upper_bound_usd is not None and (not self.upper_bound_usd.is_finite() or self.upper_bound_usd < self.total_usd):
+            raise ValueError("cost ceiling must cover the reservation estimate")
         if self.expires_at <= self.issued_at:
             raise ValueError("quote must expire after it is issued")
         for name in ("max_input_tokens", "max_output_tokens", "max_tool_tokens", "max_cache_write_tokens"):

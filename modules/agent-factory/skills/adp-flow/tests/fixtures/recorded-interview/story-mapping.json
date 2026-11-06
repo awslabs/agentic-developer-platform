@@ -1,0 +1,11 @@
+{
+  "issues": {
+    "epic": {"repository": "example/home", "number": 500, "title": "Example epic", "url": "https://github.com/example/home/issues/500"},
+    "story-one": {"repository": "example/home", "number": 501, "title": "Foundation story", "url": "https://github.com/example/home/issues/501"},
+    "story-two": {"repository": "example/component", "number": 502, "title": "Integration story", "url": "https://github.com/example/component/issues/502"},
+    "story-three": {"repository": "example/component", "number": 503, "title": "Qualification story", "url": "https://github.com/example/component/issues/503"},
+    "eval-one": {"repository": "example/home", "number": 504, "title": "Foundation evaluation", "url": "https://github.com/example/home/issues/504"},
+    "eval-two": {"repository": "example/home", "number": 505, "title": "Integration evaluation", "url": "https://github.com/example/home/issues/505"},
+    "eval-three": {"repository": "example/home", "number": 506, "title": "Qualification evaluation", "url": "https://github.com/example/home/issues/506"}
+  }
+}

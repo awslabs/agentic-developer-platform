@@ -222,6 +222,16 @@ def test_dedicated_role_does_not_accept_worker_or_wildcard_authority(adapters):
     policy["Statement"][0]["Resource"].append(
         prefix.removesuffix("controller-execution/") + "credential-evidence"
     )
+    policy["Statement"][0]["Resource"].append(prefix + "recover-undispatched")
+    policy["Statement"][0]["Resource"].append(prefix + "recover-uncredentialed")
+    policy["Statement"][0]["Resource"].append(prefix + "recover-unstarted-planning")
+    policy["Statement"][0]["Resource"].append(prefix + "recover-interrupted-planning")
+    policy["Statement"][0]["Resource"].append(prefix + "recover-unstarted-bootstrap")
+    policy["Statement"][0]["Resource"].append(prefix + "recover-settled-bootstrap")
+    policy["Statement"][0]["Resource"].append(prefix + "complete-saved-plan")
+    policy["Statement"][0]["Resource"].extend(
+        [prefix + "partial-apply-observation", prefix + "repair-partial-apply"]
+    )
     verify_role(adapters, role, [policy], "https://" + issuer)
     policy["Statement"][0]["Resource"].append("*")
     with pytest.raises(Refusal):
@@ -385,10 +395,28 @@ def test_snapshot_refuses_different_cluster_before_role_lookup(adapters, monkeyp
     [
         (3, True, True),
         (6, True, True),
-        (7, False, True),
+        (16, False, True),
+        (16, True, False),
+        (15, False, False),
+        (14, False, False),
+        (13, False, False),
+        (11, False, False),
+        (12, False, False),
+        (12, True, False),
+        (13, True, True),
+        (14, True, True),
+        (15, True, True),
+        (10, False, False),
+        (8, False, False),
+        (7, True, True),
+        (7, False, False),
         (3, False, False),
         (6, False, False),
-        (7, True, False),
+        (8, True, True),
+        (9, True, True),
+        (9, False, False),
+        (10, True, True),
+        (11, True, True),
         (4, True, False),
         (5, True, False),
     ],

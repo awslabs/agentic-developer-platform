@@ -52,6 +52,12 @@
       "sts get-caller-identity"
     ]
   },
+  "dev-box-deploy.yml/deploy": {
+    "authority": "selected-connection",
+    "operations": [
+      "s3api put-object"
+    ]
+  },
   "eval-cli-uplift.yml/evaluate": {
     "authority": "existing-oidc",
     "operations": [
@@ -65,6 +71,12 @@
       "sts get-caller-identity"
     ]
   },
+  "gateway-live-tests.yml/recover_product": {
+    "authority": "existing-oidc",
+    "operations": [
+      "sts get-caller-identity"
+    ]
+  },
   "gateway-ci.yml/build": {
     "authority": "runtime",
     "operations": [
@@ -72,6 +84,12 @@
       "codebuild batch-get-projects",
       "codebuild start-build",
       "s3 cp",
+      "sts get-caller-identity"
+    ]
+  },
+  "gitlab-runners-reconcile.yml/orphan-cleanup": {
+    "authority": "existing-oidc",
+    "operations": [
       "sts get-caller-identity"
     ]
   },
@@ -100,6 +118,28 @@
       "dynamodb get-item",
       "ecr describe-images",
       "examples literal"
+    ]
+  },
+  "tools-ci.yml/adapter-smoke-build": {
+    "authority": "runtime",
+    "operations": [
+      "codebuild batch-get-builds",
+      "codebuild batch-get-projects",
+      "codebuild start-build",
+      "codebuild stop-build",
+      "s3 cp",
+      "sts get-caller-identity"
+    ]
+  },
+  "tools-ci.yml/smoke-build": {
+    "authority": "runtime",
+    "operations": [
+      "codebuild batch-get-builds",
+      "codebuild batch-get-projects",
+      "codebuild start-build",
+      "codebuild stop-build",
+      "s3 cp",
+      "sts get-caller-identity"
     ]
   }
 }

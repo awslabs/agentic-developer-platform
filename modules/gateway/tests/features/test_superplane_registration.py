@@ -156,12 +156,12 @@ class TestUndeployRegistration:
         body = _UNDEPLOY_WORKFLOW.read_text()
         assert "bash platform/scripts/undeploy.sh" in body
         assert "--skip" in body
-        assert f"{PHASE},agent-context" in body
+        assert f"{PHASE},insights,tools,agent-context" in body
         assert "teardown.py" in _UNDEPLOY.read_text()
 
     def test_workflow_summary_matches_shared_phase_order(self):
         body = _UNDEPLOY_WORKFLOW.read_text()
-        labels = re.findall(r'echo "[1-6]\. ([a-z-]+)"', body)
+        labels = re.findall(r'echo "\d+\. ([a-z-]+)"', body)
         assert labels == [phase.replace("_", "-") for phase in _teardown_engine().ORDER]
 
 

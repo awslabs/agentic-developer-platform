@@ -14,6 +14,7 @@ from src.orchestration.models import OrchestrationFlow
 from src.orchestration.registration import register_draft_proposal
 from tests.migrations.conftest_postgres import pg_server, pg_url, to_async_url  # noqa: F401
 from tests.orchestration import test_registration as reg
+from tests.orchestration.product_fixture import seed_product
 from tests.orchestration.test_draft_revision import operator, request_for  # noqa: F401
 
 pytestmark = pytest.mark.integration
@@ -30,8 +31,9 @@ async def database(pg_url, registrar, operator):  # noqa: F811
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as db:
         await reg.seed_org(db)
-        await reg.seed_principal(db, org_id=reg.ORG_A, role=AdminRole.ORG_ADMIN.value)
-        authored = reg.gateless_proposal()
+        user_id = await reg.seed_principal(db, org_id=reg.ORG_A, role=AdminRole.ORG_ADMIN.value)
+        await seed_product(db, org_id=reg.ORG_A, actor_id=reg.HUMAN_USER_ID, user_id=user_id)
+        authored = reg.gateless_proposal(product_id=f"product-{reg.ORG_A}")
         result, _ = await register_draft_proposal(db, authored, registrar)
         await db.commit()
         request = request_for((result, authored))
@@ -50,18 +52,34 @@ async def wait_until_locked(factory, pid):
 
 
 @pytest.mark.parametrize("scenario", ["same_save", "different_save", "approval_first", "save_first"])
-async def test_save_and_approval_races(database, operator, scenario):  # noqa: F811
+@pytest.mark.parametrize("operation", ["revision", "product"])
+async def test_save_and_approval_races(database, operator, scenario, operation):  # noqa: F811
     factory, original, request, gate_id = database
+    save = revision.save_draft_revision
+    if operation == "product":
+        async with factory() as db:
+            for product_id in ("replacement-product", "competing-product"):
+                await seed_product(db, org_id=reg.ORG_A, actor_id=operator.actor_id, user_id=f"user-{reg.HUMAN_USER_ID}", product_id=product_id)
+            await db.commit()
+        request = revision.BindDraftProductRequest(
+            product_id="replacement-product",
+            expected_plan_version=original.plan_version,
+            expected_plan_hash=original.plan_hash,
+        )
+        save = revision.bind_draft_product
     loser_request = request
     if scenario == "different_save":
-        proposal = request.proposal.model_copy(update={"title": "Competing edit"})
-        effective, _ = revision.transform_for_registration(proposal)
-        loser_request = request.model_copy(update={"proposal": proposal, "expected_proposal_hash": revision.draft_hash(effective)})
+        if operation == "product":
+            loser_request = request.model_copy(update={"product_id": "competing-product"})
+        else:
+            proposal = request.proposal.model_copy(update={"title": "Competing edit"})
+            effective, _ = revision.transform_for_registration(proposal)
+            loser_request = request.model_copy(update={"proposal": proposal, "expected_proposal_hash": revision.draft_hash(effective)})
 
     async def approve(db):
         return await apply_gate_answer_for_context(
             db,
-            context=reg.token_context(reg.ORG_A, user_id=reg.HUMAN_USER_ID),
+            context=reg.token_context(reg.ORG_A, user_id=reg.HUMAN_USER_ID, account_type="human"),
             node_id=gate_id,
             approve=True,
             reason="Review original draft",
@@ -79,11 +97,7 @@ async def test_save_and_approval_races(database, operator, scenario):  # noqa: F
 
         async def contend():
             try:
-                result = (
-                    await approve(second)
-                    if scenario == "save_first"
-                    else await revision.save_draft_revision(second, original.flow_id, loser_request, operator)
-                )
+                result = await approve(second) if scenario == "save_first" else await save(second, original.flow_id, loser_request, operator)
                 await second.commit()
                 return result
             except revision.DraftRevisionConflictError as exc:
@@ -93,11 +107,7 @@ async def test_save_and_approval_races(database, operator, scenario):  # noqa: F
         task = asyncio.create_task(contend())
         try:
             await wait_until_locked(factory, pid)
-            winner = (
-                await approve(first)
-                if scenario == "approval_first"
-                else await revision.save_draft_revision(first, original.flow_id, request, operator)
-            )
+            winner = await approve(first) if scenario == "approval_first" else await save(first, original.flow_id, request, operator)
             await first.commit()
             loser = await asyncio.wait_for(task, timeout=5)
         finally:
@@ -122,3 +132,46 @@ async def test_save_and_approval_races(database, operator, scenario):  # noqa: F
                 assert isinstance(loser, revision.DraftRevisionConflictError) and loser.code == "stale_draft_revision"
             else:
                 assert loser.status.value == "refused_stale_plan"
+
+
+async def test_product_binding_survives_request_session_close(database, operator):  # noqa: F811
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from src.auth.dependencies import get_current_user
+    from src.orchestration.draft_revision_routes import router
+    from src.shared.database import get_db
+
+    factory, original, _, gate_id = database
+    async with factory() as db:
+        await seed_product(db, org_id=reg.ORG_A, actor_id=operator.actor_id, user_id=f"user-{reg.HUMAN_USER_ID}", product_id="selected-product")
+        await db.commit()
+
+    async def request_db():
+        async with factory() as db:
+            yield db
+
+    app = FastAPI()
+    app.include_router(router, prefix="/orchestration")
+    app.dependency_overrides[get_db] = request_db
+    app.dependency_overrides[get_current_user] = lambda: reg.token_context(reg.ORG_A, user_id=reg.HUMAN_USER_ID, account_type="human")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+        response = await http.post(
+            f"/orchestration/flows/{original.flow_id}/draft/product",
+            json={
+                "product_id": "selected-product",
+                "expected_plan_version": original.plan_version,
+                "expected_plan_hash": original.plan_hash,
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["plan_version"] == 2 and not response.json()["execution_authorized"]
+    # Request teardown must not roll back a save that was reported as successful.
+    async with factory() as reader:
+        flow = await reader.get(OrchestrationFlow, original.flow_id)
+        plans = await revision.OrchestrationRepository(reader).list_plan_versions(org_id=reg.ORG_A, flow_id=original.flow_id)
+        assert flow.product_id == "selected-product"
+        assert len(plans) == 2 and plans[-1].plan_document["product_id"] == "selected-product"
+        assert plans[-1].plan_hash == response.json()["plan_hash"]
+        assert (await reg.nodes_by_ref(reader))["accept"].id == gate_id
+        assert (await reg.nodes_by_ref(reader))["accept"].state == "awaiting_gate"

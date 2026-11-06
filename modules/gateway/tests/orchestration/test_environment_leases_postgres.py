@@ -36,6 +36,7 @@ means **"not tested"**, and this PR reports it as such rather than as a pass.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -50,10 +51,14 @@ from src.orchestration.environment_leases import (
     LeaseState,
     ReleaseReason,
     acquire_lease,
+    begin_shared_publication,
     reconcile_lease,
+    record_shared_publication_absence,
+    recover_shared_publication,
     release_lease,
 )
 from src.orchestration.models import OrchestrationEnvironmentLease
+from src.orchestration.operations_publication_recovery import ImageAbsence, ImageReadback
 
 # `pg_server` is session-scoped, so a run that also touches the migration tests
 # shares one server. Imported explicitly because this file lives in
@@ -757,3 +762,507 @@ class TestUniqueIndexIsGlobal:
             assert "unique" in str(exc.value).lower() or "duplicate" in str(exc.value).lower()
 
         assert await _row_count(pg_session_factory, target.canonical_key) == 1
+
+
+async def test_shared_release_scope_fences_different_surfaces_and_isolates_phase_fixtures(pg_session_factory, record_property):
+    from src.orchestration.environment_leases import isolated_release_fixture, shared_release_target
+
+    gateway = shared_release_target(_target(resource_id="cluster-a/gateway"), environment="dev", group="tool-connectors")
+    facade = shared_release_target(_target(resource_id="cluster-a/facade"), environment="dev", group="tool-connectors")
+    other_environment = shared_release_target(_target(resource_id="cluster-a/facade"), environment="stage", group="tool-connectors")
+    assert gateway.canonical_key == facade.canonical_key
+    assert gateway.canonical_key != other_environment.canonical_key
+    assert isolated_release_fixture(gateway, owner="phase-one") != isolated_release_fixture(facade, owner="phase-two")
+    owner = _holder(ORG_A, "phase-one")
+    successor = _holder(ORG_B, "phase-two")
+    first = await _acquire_committed(pg_session_factory, gateway, owner)
+    assert first.applied
+    competing = await _acquire_committed(pg_session_factory, facade, successor)
+    assert competing.kind is LeaseOutcomeKind.CONFLICT
+    async with pg_session_factory() as session:
+        lease = await session.scalar(select(OrchestrationEnvironmentLease))
+        lease.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    expired = await _acquire_committed(pg_session_factory, facade, successor)
+    assert expired.kind is LeaseOutcomeKind.CONFLICT
+    async with pg_session_factory() as session:
+        recorded = await reconcile_lease(
+            session,
+            canonical_target_key=gateway.canonical_key,
+            expected_revision=first.lease.revision,
+            terminal_evidence=EVIDENCE_TEXT,
+            holder=owner,
+        )
+        assert recorded.applied
+        await session.commit()
+    handed_off = await _acquire_committed(pg_session_factory, facade, successor)
+    assert handed_off.applied
+    async with pg_session_factory() as session:
+        stale = await release_lease(
+            session,
+            canonical_target_key=gateway.canonical_key,
+            holder=owner,
+            reason=ReleaseReason.COMPLETED,
+            terminal_evidence=EVIDENCE_TEXT,
+        )
+        assert stale.kind is LeaseOutcomeKind.CONFLICT
+    record_property(
+        "foundation_observation",
+        json.dumps(
+            {
+                "competing": competing.kind.value,
+                "expired": expired.kind.value,
+                "stale": stale.kind.value,
+                "successor_applied": handed_off.applied,
+                "fixture_one": isolated_release_fixture(gateway, owner="phase-one"),
+                "fixture_two": isolated_release_fixture(facade, owner="phase-two"),
+            }
+        ),
+    )
+
+
+def test_shared_release_scope_rejects_unreviewed_or_ambiguous_names():
+    from src.orchestration.environment_leases import isolated_release_fixture, shared_release_target
+
+    with pytest.raises(LeaseError, match="reviewed group"):
+        shared_release_target(_target(), environment="dev/other", group="tool-connectors")
+    with pytest.raises(LeaseError, match="release group"):
+        isolated_release_fixture(_target(), owner="phase-one")
+
+
+async def test_foundation_receipt_requires_current_scoped_owner_and_pinned_source(pg_session_factory):
+    from src.orchestration.environment_leases import shared_release_held, shared_release_target
+
+    group = shared_release_target(_target(), environment="dev", group="atlassian-foundation")
+    prior = _holder(ORG_B, "foreign-stage")
+    current = _holder(ORG_A, "foundation-stage")
+
+    async def held(session, *, release_ref="b" * 40, manifest_entry_id=ENTRY, generation=1, started_at=None):
+        return await shared_release_held(
+            session,
+            target=group,
+            org_id=ORG_A,
+            action_id=current.action_id,
+            release_ref=release_ref,
+            manifest_entry_id=manifest_entry_id,
+            generation=generation,
+            started_at=started_at or datetime.now(UTC),
+        )
+
+    assert (await _acquire_committed(pg_session_factory, group, prior, release_ref="a" * 40)).applied
+    async with pg_session_factory() as session:
+        assert not await held(session, release_ref="a" * 40)
+    async with pg_session_factory() as session:
+        assert (
+            await release_lease(
+                session,
+                canonical_target_key=group.canonical_key,
+                holder=prior,
+                reason=ReleaseReason.COMPLETED,
+                terminal_evidence="prior stage evaluated",
+            )
+        ).applied
+        await session.commit()
+    assert (await _acquire_committed(pg_session_factory, group, current, release_ref="b" * 40)).applied
+    async with pg_session_factory() as session:
+        assert not await held(session, started_at=datetime.now(UTC) + timedelta(minutes=1))
+    created_before_acquisition = datetime.now(UTC) - timedelta(minutes=1)
+    async with pg_session_factory() as session:
+        assert not await held(session, release_ref="a" * 40)
+        assert not await held(session, manifest_entry_id="different")
+        assert not await held(session, generation=2)
+        assert not await held(session, started_at=created_before_acquisition)
+        assert await held(session)
+    async with pg_session_factory() as session:
+        row = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == group.canonical_key)
+        )
+        row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    async with pg_session_factory() as session:
+        assert not await held(session)
+
+
+async def test_foundation_components_and_revisions_compete_for_one_target(pg_session_factory):
+    from types import SimpleNamespace
+
+    from src.orchestration.environment_leases import foundation_release_scope, isolated_release_fixture
+
+    flow = SimpleNamespace(id="release-flow", org_id=ORG_A, slug="atlassian-adapters-8445-parallel")
+    node = SimpleNamespace(id="release-node", flow_id=flow.id, org_id=ORG_A, wave_ref="w03b-foundation-release")
+    entry = SimpleNamespace(release_group="atlassian-foundation", covers=lambda component: component in {"gateway-backend", "tool-adapters"})
+
+    def scoped(component, revision):
+        return foundation_release_scope(
+            node=node, flow=flow, entry=entry, component=component, target=_target(), environment="dev", source_revision=revision
+        )
+
+    target, gateway_owner = scoped("gateway-backend", "a" * 40)
+    _, adapter_owner = scoped("tool-adapters", "a" * 40)
+    _, changed_owner = scoped("gateway-backend", "b" * 40)
+    assert len({gateway_owner, adapter_owner, changed_owner}) == 3
+    assert isolated_release_fixture(target, owner=gateway_owner) != isolated_release_fixture(target, owner=adapter_owner)
+    assert (await _acquire_committed(pg_session_factory, target, _holder(ORG_A, gateway_owner), release_ref="a" * 40)).applied
+    for owner, revision in ((adapter_owner, "a" * 40), (changed_owner, "b" * 40)):
+        refused = await _acquire_committed(pg_session_factory, target, _holder(ORG_A, owner), release_ref=revision)
+        assert refused.kind is LeaseOutcomeKind.CONFLICT
+    assert (await _fetch(pg_session_factory, target.canonical_key)).release_ref == "a" * 40
+
+
+async def test_shared_receipt_refuses_cached_owner_after_committed_handoff(pg_session_factory):
+    from src.orchestration.environment_leases import shared_release_held, shared_release_target
+
+    group = shared_release_target(_target(), environment="dev", group="atlassian-foundation")
+    first = _holder(ORG_A, "release-a")
+    second = _holder(ORG_B, "release-b")
+    assert (await _acquire_committed(pg_session_factory, group, first, release_ref="a" * 40)).applied
+    async with pg_session_factory() as reader:
+        cached = await reader.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == group.canonical_key)
+        )
+        assert cached.owner_action_id == first.action_id
+        async with pg_session_factory() as writer:
+            released = await release_lease(
+                writer,
+                canonical_target_key=group.canonical_key,
+                holder=first,
+                reason=ReleaseReason.COMPLETED,
+                terminal_evidence="first release completed",
+            )
+            assert released.applied
+            await writer.commit()
+        assert (await _acquire_committed(pg_session_factory, group, second, release_ref="b" * 40)).applied
+        assert not await shared_release_held(
+            reader,
+            target=group,
+            org_id=ORG_A,
+            action_id=first.action_id,
+            manifest_entry_id=ENTRY,
+            release_ref="a" * 40,
+            generation=1,
+            started_at=datetime.now(UTC),
+        )
+        assert cached.owner_action_id == second.action_id
+
+
+async def test_same_release_renewal_preserves_dispatch_start_fence(pg_session_factory):
+    from src.orchestration.environment_leases import shared_release_held, shared_release_target
+
+    group = shared_release_target(_target(), environment="dev", group="atlassian-foundation")
+    holder = _holder(ORG_A, "release-a")
+    first = await _acquire_committed(pg_session_factory, group, holder, release_ref="a" * 40)
+    assert first.applied
+    run_created_at = datetime.now(UTC)
+    renewed = await _acquire_committed(pg_session_factory, group, holder, release_ref="a" * 40)
+    assert renewed.applied and renewed.lease.acquired_at == first.lease.acquired_at
+    async with pg_session_factory() as session:
+        assert await shared_release_held(
+            session,
+            target=group,
+            org_id=ORG_A,
+            action_id=holder.action_id,
+            release_ref="a" * 40,
+            manifest_entry_id=ENTRY,
+            generation=1,
+            started_at=run_created_at,
+        )
+
+
+async def test_shared_release_handoff_is_atomic_against_competing_releases(pg_session_factory, monkeypatch):
+    import src.orchestration.environment_leases as leases
+
+    group = leases.shared_release_target(_target(), environment="dev", group="atlassian-foundation")
+    gateway = _holder(ORG_A, "gateway-release")
+    adapter = _holder(ORG_A, "adapter-release")
+    contender = _holder(ORG_B, "other-release")
+    assert (await _acquire_committed(pg_session_factory, group, gateway, release_ref="a" * 40)).applied
+    reached_handoff = asyncio.Event()
+    permit_successor = asyncio.Event()
+    contender_started = asyncio.Event()
+    original_acquire = leases.acquire_lease
+
+    async def pause_successor(session, *, holder, **kwargs):
+        if holder.action_id == adapter.action_id:
+            reached_handoff.set()
+            await asyncio.wait_for(permit_successor.wait(), timeout=5)
+        return await original_acquire(session, holder=holder, **kwargs)
+
+    async def compete():
+        contender_started.set()
+        return await _acquire_committed(pg_session_factory, group, contender, release_ref="b" * 40)
+
+    monkeypatch.setattr(leases, "acquire_lease", pause_successor)
+    async with pg_session_factory() as session:
+        handoff = asyncio.create_task(
+            leases.handoff_shared_release(
+                session,
+                target=group,
+                holder=gateway,
+                successor=adapter,
+                current_entry_id=ENTRY,
+                next_entry_id="adapter-entry",
+                current_revision="a" * 40,
+                next_revision="a" * 40,
+                terminal_evidence="verified gateway receipt",
+            )
+        )
+        await asyncio.wait_for(reached_handoff.wait(), timeout=5)
+        competing = asyncio.create_task(compete())
+        await asyncio.wait_for(contender_started.wait(), timeout=5)
+        await asyncio.sleep(0.05)
+        assert not competing.done()
+        permit_successor.set()
+        outcome = await asyncio.wait_for(handoff, timeout=5)
+        assert outcome.applied and outcome.lease.owner_action_id == adapter.action_id
+        await session.commit()
+        refused = await asyncio.wait_for(competing, timeout=5)
+        assert refused.kind is LeaseOutcomeKind.CONFLICT
+    async with pg_session_factory() as session:
+        stale = await leases.handoff_shared_release(
+            session,
+            target=group,
+            holder=gateway,
+            successor=_holder(ORG_A, "late-release"),
+            current_entry_id=ENTRY,
+            next_entry_id="contender-entry",
+            current_revision="a" * 40,
+            next_revision="b" * 40,
+            terminal_evidence="late predecessor receipt",
+        )
+        assert stale.kind is LeaseOutcomeKind.CONFLICT and stale.lease is None
+    row = await _fetch(pg_session_factory, group.canonical_key)
+    assert row.state == LeaseState.HELD.value and row.owner_action_id == adapter.action_id
+
+
+async def test_expired_shared_release_refuses_handoff_until_owner_renews(pg_session_factory):
+    from src.orchestration.environment_leases import handoff_shared_release, shared_release_target
+
+    group = shared_release_target(_target(), environment="dev", group="atlassian-foundation")
+    owner = _holder(ORG_A, "gateway-release")
+    successor = _holder(ORG_A, "adapter-release")
+    assert (await _acquire_committed(pg_session_factory, group, owner, release_ref="a" * 40)).applied
+    async with pg_session_factory() as session:
+        lease = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == group.canonical_key)
+        )
+        lease.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    async with pg_session_factory() as session:
+        refused = await handoff_shared_release(
+            session,
+            target=group,
+            holder=owner,
+            successor=successor,
+            current_entry_id=ENTRY,
+            next_entry_id="adapter-entry",
+            current_revision="a" * 40,
+            next_revision="b" * 40,
+            terminal_evidence="verified gateway completion",
+        )
+        assert refused.kind is LeaseOutcomeKind.CONFLICT
+        await session.commit()
+    unchanged = await _fetch(pg_session_factory, group.canonical_key)
+    assert unchanged.owner_action_id == owner.action_id and unchanged.state == LeaseState.HELD.value
+    assert (await _acquire_committed(pg_session_factory, group, owner, release_ref="a" * 40)).applied
+    async with pg_session_factory() as session:
+        admitted = await handoff_shared_release(
+            session,
+            target=group,
+            holder=owner,
+            successor=successor,
+            current_entry_id=ENTRY,
+            next_entry_id="adapter-entry",
+            current_revision="a" * 40,
+            next_revision="b" * 40,
+            terminal_evidence="verified gateway completion",
+        )
+        assert admitted.applied
+        await session.commit()
+    updated = await _fetch(pg_session_factory, group.canonical_key)
+    assert updated.owner_action_id == successor.action_id and updated.state == LeaseState.HELD.value
+
+
+async def test_shared_release_handoff_rollback_keeps_prior_holder(pg_session_factory, monkeypatch):
+    import src.orchestration.environment_leases as leases
+
+    group = leases.shared_release_target(_target(), environment="dev", group="atlassian-foundation")
+    first = _holder(ORG_A, "gateway-release")
+    second = _holder(ORG_A, "adapter-release")
+    assert (await _acquire_committed(pg_session_factory, group, first, release_ref="a" * 40)).applied
+
+    async def failed_next_acquisition(*args, **kwargs):
+        raise RuntimeError("second mutation failed")
+
+    monkeypatch.setattr(leases, "acquire_lease", failed_next_acquisition)
+    async with pg_session_factory() as session:
+        with pytest.raises(RuntimeError, match="second mutation failed"):
+            await leases.handoff_shared_release(
+                session,
+                target=group,
+                holder=first,
+                successor=second,
+                current_entry_id=ENTRY,
+                next_entry_id="adapter-entry",
+                current_revision="a" * 40,
+                next_revision="a" * 40,
+                terminal_evidence="verified gateway receipt",
+            )
+        await session.commit()
+    row = await _fetch(pg_session_factory, group.canonical_key)
+    assert row.state == LeaseState.HELD.value and row.owner_action_id == first.action_id
+
+
+async def test_unsettled_publication_survives_restart_and_blocks_terminal_handoff(pg_session_factory):
+    from src.orchestration.environment_leases import shared_release_target
+
+    target = shared_release_target(_target(), environment="dev", group="adapter-foundation")
+    first = _holder(ORG_A, "native-run")
+    source = "a" * 40
+    digest = "sha256:" + "b" * 64
+    assert (await _acquire_committed(pg_session_factory, target, first, release_ref=source)).applied
+    async with pg_session_factory() as session:
+        assert await begin_shared_publication(
+            session,
+            target=target,
+            holder=first,
+            manifest_entry_id=ENTRY,
+            release_ref=source,
+            digest=digest,
+        )
+        await session.commit()
+    async with pg_session_factory() as session:
+        row = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == target.canonical_key)
+        )
+        assert row.publication_pending_digest == digest
+        row.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        row.reconciled_terminal_evidence = EVIDENCE_TEXT
+        await session.commit()
+    async with pg_session_factory() as session:
+        contender = await acquire_lease(
+            session,
+            target=target,
+            holder=_holder(ORG_B, "next-release"),
+            manifest_entry_id=ENTRY,
+            release_ref="c" * 40,
+        )
+        assert contender.kind is LeaseOutcomeKind.CONFLICT and contender.lease is None
+        row = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == target.canonical_key)
+        )
+        assert row.publication_pending_digest == digest
+        assert row.owner_action_id == first.action_id
+    image = ImageReadback(target.account_id, target.region, "adp-tools-dev-adapters", source, digest, datetime.now(UTC))
+    async with pg_session_factory() as session:
+        assert not await recover_shared_publication(
+            session,
+            target=target,
+            holder=first,
+            manifest_entry_id=ENTRY,
+            release_ref=source,
+            digest=digest,
+            terminal_evidence=EVIDENCE_TEXT,
+            image_readback=ImageReadback(target.account_id, target.region, image.repository, source, "sha256:" + "c" * 64, image.observed_at),
+        )
+        await session.commit()
+    assert (await _fetch(pg_session_factory, target.canonical_key)).publication_pending_digest == digest
+    async with pg_session_factory() as session:
+        assert await recover_shared_publication(
+            session,
+            target=target,
+            holder=first,
+            manifest_entry_id=ENTRY,
+            release_ref=source,
+            digest=digest,
+            terminal_evidence=EVIDENCE_TEXT,
+            image_readback=image,
+        )
+        await session.commit()
+    row = await _fetch(pg_session_factory, target.canonical_key)
+    assert row.publication_pending_digest is None and row.reconciled_terminal_evidence == EVIDENCE_TEXT
+    assert (await _acquire_committed(pg_session_factory, target, _holder(ORG_B, "next-release"), release_ref="c" * 40)).applied
+
+
+async def test_restart_reacquires_only_original_release_without_clearing_pending_image(pg_session_factory):
+    from src.orchestration.environment_leases import shared_release_target
+
+    target = shared_release_target(_target(), environment="dev", group="adapter-foundation")
+    first = _holder(ORG_A, "native-run")
+    revision = "a" * 40
+    digest = "sha256:" + "b" * 64
+    assert (await _acquire_committed(pg_session_factory, target, first, release_ref=revision)).applied
+    async with pg_session_factory() as session:
+        assert await begin_shared_publication(session, target=target, holder=first, manifest_entry_id=ENTRY, release_ref=revision, digest=digest)
+        await session.commit()
+    async with pg_session_factory() as session:
+        row = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == target.canonical_key)
+        )
+        row.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        await session.commit()
+    async with pg_session_factory() as session:
+        changed_release = await acquire_lease(session, target=target, holder=first, manifest_entry_id=ENTRY, release_ref="c" * 40)
+        assert changed_release.kind is LeaseOutcomeKind.CONFLICT
+        renewed = await acquire_lease(session, target=target, holder=first, manifest_entry_id=ENTRY, release_ref=revision)
+        assert renewed.applied
+        row = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == target.canonical_key)
+        )
+        assert row.publication_pending_digest == digest
+        assert row.reconciled_terminal_evidence is None
+        await session.commit()
+    async with pg_session_factory() as session:
+        contender = await acquire_lease(session, target=target, holder=_holder(ORG_B, "next-release"), manifest_entry_id=ENTRY, release_ref="c" * 40)
+        assert contender.kind is LeaseOutcomeKind.CONFLICT and contender.lease is None
+        row = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == target.canonical_key)
+        )
+        assert row.publication_pending_digest == digest
+
+
+async def test_terminal_absence_does_not_let_a_competing_postgres_session_take_over(pg_session_factory):
+    from src.orchestration.environment_leases import shared_release_target
+
+    target = shared_release_target(_target(), environment="dev", group="adapter-foundation")
+    holder = _holder(ORG_A, "native-run")
+    source = "a" * 40
+    digest = "sha256:" + "b" * 64
+    assert (await _acquire_committed(pg_session_factory, target, holder, release_ref=source)).applied
+    async with pg_session_factory() as session:
+        assert await begin_shared_publication(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=source, digest=digest)
+        await session.commit()
+    absence = ImageAbsence(target.account_id, target.region, "adp-tools-dev-adapters", source, digest, datetime.now(UTC))
+    async with pg_session_factory() as session:
+        assert await record_shared_publication_absence(
+            session,
+            target=target,
+            holder=holder,
+            manifest_entry_id=ENTRY,
+            release_ref=source,
+            digest=digest,
+            terminal_evidence=EVIDENCE_TEXT,
+            image_absence=absence,
+        )
+        row = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == target.canonical_key)
+        )
+        row.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        await session.commit()
+    async with pg_session_factory() as session:
+        refreshed = await acquire_lease(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=source)
+        assert refreshed.applied
+        displaced = await acquire_lease(session, target=target, holder=_holder(ORG_A, "native-run", 2), manifest_entry_id=ENTRY, release_ref=source)
+        assert displaced.kind is LeaseOutcomeKind.CONFLICT
+        row = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == target.canonical_key)
+        )
+        row.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        await session.commit()
+    async with pg_session_factory() as session:
+        contender = await acquire_lease(session, target=target, holder=_holder(ORG_B, "next"), manifest_entry_id=ENTRY, release_ref="c" * 40)
+        assert contender.kind is LeaseOutcomeKind.CONFLICT and contender.lease is None
+        row = await session.scalar(
+            select(OrchestrationEnvironmentLease).where(OrchestrationEnvironmentLease.canonical_target_key == target.canonical_key)
+        )
+        assert row.publication_pending_digest == digest
+        assert row.reconciled_terminal_evidence == EVIDENCE_TEXT

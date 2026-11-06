@@ -4,12 +4,16 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 import sys
 
 spec = importlib.util.spec_from_file_location("actions", Path(__file__).with_name("plan-delete-actions.py"))
 actions = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(actions)
+chat_spec = importlib.util.spec_from_file_location("chat_retirement", Path(__file__).with_name("upgrade-chat.py"))
+chat = importlib.util.module_from_spec(chat_spec)
+chat_spec.loader.exec_module(chat)
 
 # The reviewed gateway rollout change in #6729 only extends its bounded wait.
 # Keep this migration explicit: another script change must review the gate again.
@@ -48,6 +52,43 @@ def legacy_worker_upgrade(plan, account):
     return (rollout.get('actions') in (['no-op'], ['update'])
             and old.get('active') is new.get('active') is False
             and old.get('paused') is new.get('paused') is False)
+
+
+def retained_dispatch_repository(resource, plan, account):
+    """Forget only #8650's retired global setting, keeping its live value intact.
+
+    The first infrastructure pass precedes gateway/schema cutover. Even a
+    populated parameter must survive for old readers and migration evidence;
+    neither deletion nor deriving accepted bindings from its value is safe.
+    The removed block keeps the remote SecureString without reading its value.
+    """
+    change = resource['change']
+    before = change.get('before') or {}
+    variables = plan.get('variables', {})
+    environment = variables.get('environment', {}).get('value')
+    region = variables.get('aws_region', {}).get('value')
+    if (environment not in ('dev', 'staging', 'prod')
+            or not re.fullmatch(r'[0-9]{12}', account or '')
+            or not re.fullmatch(r'[a-z]{2}-[a-z]+-[0-9]', region or '')):
+        return False
+    address = 'aws_ssm_parameter.orchestration_dispatch_repo'
+    name = f'/adp/{environment}/gateway/orchestration-dispatch-repo'
+    provenance = {'Project': 'adp', 'Environment': environment, 'Module': 'gateway',
+                  'ManagedBy': 'terraform', 'Owner': 'gateway-team'}
+    tags = before.get('tags') or {}
+    return (resource.get('address') == address
+            and resource.get('mode') == 'managed'
+            and resource.get('type') == 'aws_ssm_parameter'
+            and resource.get('provider_name') == 'registry.terraform.io/hashicorp/aws'
+            and resource.get('module_address') is None and resource.get('deposed') is None
+            and sum(item.get('address') == address for item in plan['resource_changes']) == 1
+            and change['actions'] == ['forget'] and change.get('after') is None
+            and before.get('name') == before.get('id') == name
+            and before.get('arn') == f'arn:aws:ssm:{region}:{account}:parameter{name}'
+            and before.get('region') in (None, region)
+            and before.get('type') == 'SecureString'
+            and isinstance(tags, dict)
+            and all(tags.get(key) == value for key, value in provenance.items()))
 
 
 def retired_internal_key_mirror(resource, plan, account):
@@ -179,10 +220,58 @@ def agent_factory_retirement(resource, plan, account):
         if not isinstance(new_statements, list) or any(not isinstance(item, dict) for item in new_statements):
             return False
         new_by_sid = {item.get("Sid"): item for item in new_statements}
-        if (set(old_by_sid) != {"IntakeSessionsRead", "IntakeDraftRead", "IntakeTablesKMSDecrypt", "IntakeDispatchInvoke"}
-                or set(new_by_sid) != set(old_by_sid) | {"HostedTaskChatSessionsWrite"}
+        legacy_sids = {"IntakeSessionsRead", "IntakeDraftRead", "IntakeTablesKMSDecrypt", "IntakeDispatchInvoke"}
+        current_sids = legacy_sids | {"HostedTaskChatSessionsWrite"}
+        # Delegated chat (#7899) adds one bounded write grant on the chat-context
+        # table (retained chat input + session mailbox partitions). It is accepted
+        # only with exactly these actions (the #7983 shape adds the transaction
+        # ConditionCheck and partition Query), resource and leading-key condition.
+        chat_data_sids = current_sids | {"ChatDataPlaneWrite"}
+        # The delegated chat memory and artifact stores (#8028) add three bounded
+        # grants together: the agent-memory and chat-artifacts tables under their
+        # key prefixes, and the per-session artifact object path. Accepted only as a
+        # complete set with exactly these actions, resources and conditions.
+        chat_store_sids = chat_data_sids | {"ChatMemoryStore", "ChatArtifactCatalog", "ChatArtifactObjects"}
+        # Crew on an EC2 Dev Box (#8223) adds one bounded lease grant on the chat-context
+        # table's crew# partition; accepted with or without the chat stores.
+        lease_sids = {"CrewHostLeaseWrite"}
+        accepted_sids = (legacy_sids, current_sids, chat_data_sids, chat_store_sids,
+                         chat_data_sids | lease_sids, chat_store_sids | lease_sids)
+        if (set(old_by_sid) not in accepted_sids
+                or len(old_by_sid) != len(statements) or len(new_by_sid) != len(new_statements)
+                or set(new_by_sid) not in accepted_sids[1:]
+                or set(old_by_sid) - set(new_by_sid)
                 or replacement.get("Version") != document["Version"]):
             return False
+        chat_context = f"arn:aws:dynamodb:{region}:{account}:table/adp-{environment}-chat-context"
+        agent_memory = f"arn:aws:dynamodb:{region}:{account}:table/adp-{environment}-agent-memory"
+        chat_artifacts = f"arn:aws:dynamodb:{region}:{account}:table/adp-{environment}-chat-artifacts"
+        artifact_objects = f"arn:aws:s3:::adp-{environment}-chat-artifacts-{account}/o/*/t/*/u/*/s/*/*"
+        chat_store_grants = {
+            "ChatMemoryStore": ({"dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"}, [agent_memory],
+                                {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["memory#*", "memory-owner#*"]}}),
+            "ChatArtifactCatalog": ({"dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"},
+                                    [chat_artifacts], {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["session#*"]}}),
+            "ChatArtifactObjects": ({"s3:GetObject", "s3:PutObject"}, [artifact_objects], None),
+            # Crew host lease on the chat-context table (#8223): exactly the conditional put
+            # and the retiring delete under the owner's crew# partition.
+            "CrewHostLeaseWrite": ({"dynamodb:PutItem", "dynamodb:DeleteItem"}, [chat_context],
+                                   {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["crew#*"]}}),
+        }
+        for sid, (actions, resource, condition) in chat_store_grants.items():
+            grant = new_by_sid.get(sid)
+            if grant is not None and (grant.get("Effect") != "Allow" or set(grant.get("Action", [])) != actions
+                                      or grant.get("Resource") != resource or grant.get("Condition") != condition):
+                return False
+        if "ChatDataPlaneWrite" in new_by_sid:
+            grant = new_by_sid["ChatDataPlaneWrite"]
+            if (grant.get("Effect") != "Allow"
+                    or set(grant.get("Action", [])) not in ({"dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"},
+                                                     {"dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
+                                                      "dynamodb:ConditionCheckItem", "dynamodb:Query"})
+                    or grant.get("Resource") != [chat_context]
+                    or grant.get("Condition") != {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["chat-input#*", "session#*"]}}):
+                return False
         for sid, old in old_by_sid.items():
             new = new_by_sid[sid]
             if (new.get("Effect") != "Allow" or new.get("Resource") != old.get("Resource")
@@ -197,7 +286,7 @@ def agent_factory_retirement(resource, plan, account):
             "IntakeDispatchInvoke": {"lambda:InvokeFunction"},
         }
         if any(set(new_by_sid[sid].get("Action", [])) != actions
-               for sid, actions in expected_actions.items()):
+               for sid, actions in expected_actions.items() if sid in new_by_sid):
             return False
         kms_resource = new_by_sid["IntakeTablesKMSDecrypt"].get("Resource") or []
         return (
@@ -262,6 +351,131 @@ def agent_factory_retirement(resource, plan, account):
     return False
 
 
+GATEWAY_ROLE_POLICY_GROUPS = ("identity", "data", "agents")
+
+
+def _statement_list(value):
+    if value is None:
+        return []
+    return list(value) if isinstance(value, list) else [value]
+
+
+def _statement_covered(replacement, retired):
+    """A retired statement survives when the replacement carries it unchanged (actions may only grow)."""
+    for candidate in replacement.get("Statement", []):
+        if not isinstance(candidate, dict) or candidate.get("Effect") != "Allow":
+            continue
+        if retired.get("Sid") and candidate.get("Sid") != retired["Sid"]:
+            continue
+        if sorted(_statement_list(candidate.get("Resource"))) != sorted(_statement_list(retired.get("Resource"))):
+            continue
+        if candidate.get("Condition") != retired.get("Condition"):
+            continue
+        if set(_statement_list(retired.get("Action"))) <= set(_statement_list(candidate.get("Action"))):
+            return True
+    return False
+
+
+def gateway_role_policy_consolidation(resource, plan, account):
+    """Retire a gateway-role grant only once its consolidated replacement is attached (#7944).
+
+    modules/gateway/infra/gateway-role-policies.tf replaces this module's inline
+    policies and its two separate managed policies with adp-<env>-policy-gateway-
+    {identity,data,agents}. Pass 2 of that cutover destroys the retained legacy
+    grants. Each destroy is routine only when a consolidated policy is already
+    attached to the gateway role (attachment no-op; policy no-op or an update
+    whose before and after both preserve the retired grants)
+    and contains every retired statement: same Sid where one exists, Effect
+    Allow, identical Resource and Condition, and at least the same Actions. Any
+    other difference keeps the destroy gate closed.
+    """
+    change = resource["change"]
+    before = change.get("before") or {}
+    if (change["actions"] != ["delete"] or change.get("after") is not None
+            or resource.get("deposed") is not None):
+        return False
+    environment = plan.get("variables", {}).get("environment", {}).get("value")
+    if environment not in ("dev", "staging", "prod") or not re.fullmatch(r"[0-9]{12}", account or ""):
+        return False
+    gateway_role = f"adp-{environment}-role-gateway-service"
+    address = resource["address"]
+    kind = resource.get("type")
+    retired_managed = {
+        "aws_iam_policy.gateway_tools_catalogue_read[0]": f"bedrockgw-{environment}-gateway-tools-catalogue-read",
+        "aws_iam_policy.gateway_cognito_lifecycle[0]": f"bedrockgw-{environment}-policy-gateway-cognito-lifecycle",
+    }
+    if kind == "aws_iam_role_policy":
+        legacy = re.fullmatch(r'aws_iam_role_policy\.gateway_role_legacy\["([a-z0-9-]+)"\]', address)
+        if (not legacy or before.get("role") != gateway_role
+                or not re.fullmatch(rf"bedrockgw-{environment}-(?:policy-)?gateway-{re.escape(legacy.group(1))}", before.get("name") or "")
+                or before.get("id") != f"{gateway_role}:{before.get('name')}"):
+            return False
+        source = before
+    elif kind == "aws_iam_policy":
+        if address not in retired_managed or before.get("name") != retired_managed[address]:
+            return False
+        if before.get("arn") != f"arn:aws:iam::{account}:policy/{before['name']}":
+            return False
+        source = before
+    elif kind == "aws_iam_role_policy_attachment":
+        retired_attachments = {
+            "aws_iam_role_policy_attachment.gateway_tools_catalogue_read[0]": "aws_iam_policy.gateway_tools_catalogue_read[0]",
+            "aws_iam_role_policy_attachment.gateway_cognito_lifecycle[0]": "aws_iam_policy.gateway_cognito_lifecycle[0]",
+        }
+        if address not in retired_attachments or before.get("role") != gateway_role:
+            return False
+        policy = next((item for item in plan["resource_changes"]
+                       if item["address"] == retired_attachments[address]), None)
+        if (not policy or policy.get("type") != "aws_iam_policy" or policy.get("deposed") is not None
+                or policy["change"]["actions"] != ["delete"] or policy["change"].get("after") is not None):
+            return False
+        source = policy["change"].get("before") or {}
+        name = retired_managed[policy["address"]]
+        if (source.get("arn") != before.get("policy_arn") or source.get("name") != name
+                or source.get("arn") != f"arn:aws:iam::{account}:policy/{name}"):
+            return False
+    else:
+        return False
+    try:
+        document = json.loads(source["policy"])
+    except (ValueError, TypeError, KeyError):
+        return False
+    statements = document.get("Statement")
+    if (document.get("Version") != "2012-10-17" or not isinstance(statements, list) or not statements
+            or any(not isinstance(item, dict) or item.get("Effect") != "Allow" for item in statements)):
+        return False
+
+    replacements = []
+    for group in GATEWAY_ROLE_POLICY_GROUPS:
+        name = f"adp-{environment}-policy-gateway-{group}"
+        managed = next((item for item in plan["resource_changes"]
+                        if item["address"] == f'aws_iam_policy.gateway_role["{group}"]'), None)
+        attachment = next((item for item in plan["resource_changes"]
+                           if item["address"] == f'aws_iam_role_policy_attachment.gateway_role["{group}"]'), None)
+        if (not managed or not attachment or managed["change"]["actions"] not in (["no-op"], ["update"])
+                or attachment["change"]["actions"] != ["no-op"]):
+            continue
+        managed_before = managed["change"].get("before") or {}
+        attached_before = attachment["change"].get("before") or {}
+        if (managed_before.get("name") != name
+                or managed_before.get("arn") != f"arn:aws:iam::{account}:policy/{name}"
+                or attached_before.get("role") != gateway_role
+                or attached_before.get("policy_arn") != managed_before["arn"]):
+            continue
+        documents = [managed_before.get("policy")]
+        if managed["change"]["actions"] == ["update"]:
+            documents.append((managed["change"].get("after") or {}).get("policy"))
+        try:
+            replacements.append([json.loads(item) for item in documents])
+        except (ValueError, TypeError):
+            continue
+    if not replacements:
+        return False
+    return all(any(all(_statement_covered(version, statement) for version in versions)
+                   for versions in replacements)
+               for statement in statements)
+
+
 def routine(resource, module, account, plan):
     change = resource["change"]
     before, after = change.get("before") or {}, change.get("after") or {}
@@ -270,6 +484,8 @@ def routine(resource, module, account, plan):
     if module == "webhook-ingress" and retired_internal_key_mirror(resource, plan, account):
         return True
     if module == "agent-factory" and agent_factory_retirement(resource, plan, account):
+        return True
+    if module in ("gateway", "gateway-alb-wire", "gateway-final") and gateway_role_policy_consolidation(resource, plan, account):
         return True
     if module == "platform" and address == "null_resource.aggressive_packer_nodepool":
         # This marker has no destroy provisioner. Its delete-first replacement
@@ -287,6 +503,8 @@ def routine(resource, module, account, plan):
                 and all(re.fullmatch(r"[0-9a-f]{64}", value)
                         for value in (old["manifest_sha"], new["manifest_sha"])))
     if module in ("gateway", "gateway-alb-wire", "gateway-final"):
+        if retained_dispatch_repository(resource, plan, account):
+            return True
         if address in ("module.lambda_authorizer[0].aws_lambda_layer_version.pyjwt",
                        "module.budget_lambda[0].aws_lambda_layer_version.psycopg2"):
             # A release publishes a new immutable version of the same layer.
@@ -475,6 +693,73 @@ def retained_operator_version(resource, plan, module, account):
                     for field in set(old) | set(new) if field not in permitted_metadata))
 
 
+def evals_namespace_forget(resource):
+    """Only #7651's state-only removal of the duplicate namespace owner."""
+    change = resource["change"]
+    before = change.get("before") or {}
+    metadata = before.get("metadata") or []
+    return (resource.get("address") == "kubernetes_namespace.gateway_evals"
+            and resource.get("mode") == "managed"
+            and resource.get("type") == "kubernetes_namespace"
+            and resource.get("deposed") is None
+            and change["actions"] == ["forget"] and change.get("after") is None
+            and before.get("id") == "adp-gateway-evals"
+            and len(metadata) == 1 and metadata[0].get("name") == "adp-gateway-evals"
+            and isinstance(metadata[0].get("uid"), str) and bool(metadata[0]["uid"]))
+
+
+def namespace_target(plan, account):
+    values = plan.get("variables", {})
+    environment = values.get("environment", {}).get("value")
+    region = values.get("aws_region", {}).get("value")
+    if (environment not in ("dev", "staging", "prod")
+            or not re.fullmatch(r"[0-9]{12}", account or "")
+            or not re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", region or "")):
+        raise ValueError("Invalid namespace migration target")
+    return environment, region
+
+
+def read_namespace_owner(plan, account):
+    """Read the platform state after its apply, without exposing its contents."""
+    environment, region = namespace_target(plan, account)
+    result = subprocess.run([
+        "aws", "s3", "cp",
+        f"s3://adp-terraform-state-{account}/{environment}/platform/terraform.tfstate",
+        "-", "--region", region, "--only-show-errors",
+    ], capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        raise ValueError("Cannot read platform namespace ownership")
+    return json.loads(result.stdout)
+
+
+def platform_owns_evals_namespace(resource, plan, account, state):
+    if not evals_namespace_forget(resource) or not isinstance(state, dict):
+        return False
+    environment, region = namespace_target(plan, account)
+
+    def owned(kind, name):
+        matches = [r for r in state.get("resources", [])
+                   if r.get("mode") == "managed" and r.get("module") == "module.eks"
+                   and r.get("type") == kind and r.get("name") == name]
+        if len(matches) != 1:
+            return {}
+        instances = matches[0].get("instances", [])
+        if len(instances) != 1 or instances[0].get("deposed") is not None:
+            return {}
+        return instances[0].get("attributes") or {}
+
+    cluster = owned("aws_eks_cluster", "main")
+    namespace = owned("kubernetes_namespace", "gateway_evals")
+    metadata = namespace.get("metadata") or []
+    return (cluster.get("name") == f"adp-{environment}-eks-cluster"
+            and bool(re.fullmatch(
+                rf"arn:aws(?:-[a-z]+)*:eks:{region}:{account}:cluster/adp-{environment}-eks-cluster",
+                cluster.get("arn", "")))
+            and namespace.get("id") == "adp-gateway-evals"
+            and len(metadata) == 1 and metadata[0].get("name") == "adp-gateway-evals"
+            and metadata[0].get("uid") == resource["change"]["before"]["metadata"][0]["uid"])
+
+
 def protected_change(resource):
     change = resource["change"]
     before, after = change.get("before"), change.get("after")
@@ -538,7 +823,7 @@ def migration_rollout(resource, authorized):
             and bool(re.fullmatch('[0-9a-f]{64}', after.get('configuration', ''))))
 
 
-def evaluate(plan, module, account, migration=None):
+def evaluate(plan, module, account, migration=None, chat_retirement=None, platform_state=None):
     actions.deletions(plan)
     allowed, blocked, protected = [], [], []
     cutover = worker_migration_plan(plan, module, account, migration)
@@ -561,6 +846,8 @@ def evaluate(plan, module, account, migration=None):
             protected.append(resource["address"])
         if set(resource["change"]["actions"]) & {"delete", "forget"}:
             (allowed if retained_version or migration_rollout(resource, cutover)
+             or (module == "agent-factory" and platform_owns_evals_namespace(resource, plan, account, platform_state))
+             or (module == 'agent-factory' and chat.permitted_deletion(resource, plan, account, chat_retirement))
              or routine(resource, module, account, plan) else blocked).append(resource["address"])
     return {"routine": allowed, "blocked": blocked, "protected": protected}
 
@@ -568,13 +855,21 @@ def evaluate(plan, module, account, migration=None):
 if __name__ == "__main__":
     try:
         migration = None
+        chat_retirement = None
+        if os.environ.get('ADP_CHAT_RETIREMENT_DIR'):
+            chat_retirement = json.loads((Path(os.environ['ADP_CHAT_RETIREMENT_DIR']) / 'chat-retirement.json').read_text())
         if os.environ.get('ADP_WORKER_MIGRATION_EVIDENCE') and os.environ.get('UPGRADE_RUN_DIR'):
             migration = json.loads((Path(os.environ['UPGRADE_RUN_DIR']) / 'worker-migration.json').read_text())
-        result = evaluate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3], migration)
+        plan = json.loads(Path(sys.argv[1]).read_text())
+        actions.deletions(plan)
+        platform_state = None
+        if sys.argv[2] == "agent-factory" and any(evals_namespace_forget(r) for r in plan["resource_changes"]):
+            platform_state = read_namespace_owner(plan, sys.argv[3])
+        result = evaluate(plan, sys.argv[2], sys.argv[3], migration, chat_retirement, platform_state)
         if result["protected"]:
             sys.exit("Upgrade would change protected infrastructure, account settings, credentials, worker admission or installation mappings: " + ", ".join(result["protected"]))
         for address in result["routine"]:
             print("Routine deployment replacement: " + address, file=sys.stderr)
         print("\n".join(result["blocked"]))
-    except (ValueError, KeyError, TypeError, OSError, IndexError):
+    except (ValueError, KeyError, TypeError, OSError, IndexError, subprocess.TimeoutExpired):
         sys.exit("Cannot validate Terraform upgrade plan")

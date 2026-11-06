@@ -1,0 +1,1 @@
+"""Scoped Security configuration API."""

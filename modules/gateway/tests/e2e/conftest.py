@@ -8,6 +8,8 @@ Live mode: tests hit the deployed gateway via real HTTP.
 from __future__ import annotations
 
 import json as _json
+import os
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -179,7 +181,8 @@ def jwt_for_agent() -> str:
         import boto3
 
         sm = boto3.client("secretsmanager", region_name=cfg.aws_region)
-        secret = _json.loads(sm.get_secret_value(SecretId=f"bedrockgw-{cfg.environment}-agent-cognito-credentials")["SecretString"])
+        secret_id = os.environ.get("GATEWAY_M2M_SECRET", f"bedrockgw-{cfg.environment}-agent-cognito-credentials")
+        secret = _json.loads(sm.get_secret_value(SecretId=secret_id)["SecretString"])
         resp = httpx.post(
             secret["token_endpoint"],
             data={
@@ -299,6 +302,7 @@ def _build_sigv4_headers(
     body: bytes | None = None,
     region: str = "us-east-1",
     service: str = "execute-api",
+    credentials=None,
 ) -> dict[str, str]:
     """Sign a request using SigV4 with current boto3 session credentials.
 
@@ -308,11 +312,12 @@ def _build_sigv4_headers(
     from botocore.auth import SigV4Auth
     from botocore.awsrequest import AWSRequest
 
-    session = boto3.Session()
-    credentials = session.get_credentials()
+    if credentials is None:
+        credentials = boto3.Session().get_credentials()
     if credentials is None:
         raise RuntimeError("No AWS credentials available for SigV4 signing")
-    credentials = credentials.get_frozen_credentials()
+    if hasattr(credentials, "get_frozen_credentials"):
+        credentials = credentials.get_frozen_credentials()
 
     aws_request = AWSRequest(
         method=method,
@@ -327,17 +332,15 @@ def _build_sigv4_headers(
 class IAMSignedClient:
     """Wrapper around httpx.AsyncClient that signs every request with SigV4.
 
-    In live mode, uses real AWS credentials (typically from the environment
-    or IRSA) to sign requests against the API Gateway endpoint.
-
-    The IAM principal used should be registered in the gateway's agent
-    registry (e.g. ``adp-dev-agent-runner-role``) so the Lambda authorizer
-    can map it to an org/team for RBAC.
+    The live fixture supplies credentials for the dedicated registered test
+    role and an API base URL ending in /agent. Unit transport tests can supply
+    inert credentials without calling AWS.
     """
 
-    def __init__(self, inner: httpx.AsyncClient, region: str = "us-east-1") -> None:
+    def __init__(self, inner: httpx.AsyncClient, region: str = "us-east-1", credentials=None) -> None:
         self._inner = inner
         self._region = region
+        self._credentials = credentials
 
     async def request(
         self,
@@ -349,21 +352,24 @@ class IAMSignedClient:
         **kwargs: Any,
     ) -> httpx.Response:
         """Send a SigV4-signed request."""
-        full_url = str(self._inner._base_url) + url  # noqa: SLF001
-        body = _json.dumps(json).encode() if json else None
+        body = _json.dumps(json).encode() if json is not None else None
         extra_headers = dict(headers or {})
-        if json:
+        if json is not None:
             extra_headers.setdefault("Content-Type", "application/json")
 
+        # Let HTTPX join the stage/path and encode query parameters before signing.
+        # Concatenating base_url + /path signed a double slash that was never sent.
+        request = self._inner.build_request(method, url, content=body, headers=extra_headers, **kwargs)
         signed_headers = _build_sigv4_headers(
             method=method.upper(),
-            url=full_url,
-            headers=extra_headers,
+            url=str(request.url),
+            headers=dict(request.headers),
             body=body,
             region=self._region,
+            credentials=self._credentials,
         )
-        merged = {**extra_headers, **signed_headers}
-        return await self._inner.request(method, url, content=body, headers=merged, **kwargs)
+        request.headers.update(signed_headers)
+        return await self._inner.send(request)
 
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
         return await self.request("GET", url, **kwargs)
@@ -377,23 +383,29 @@ class IAMSignedClient:
     async def delete(self, url: str, **kwargs: Any) -> httpx.Response:
         return await self.request("DELETE", url, **kwargs)
 
-    def stream(self, method: str, url: str, *, json: dict | None = None, headers: dict[str, str] | None = None, **kwargs: Any):
+    @asynccontextmanager
+    async def stream(self, method: str, url: str, *, json: dict | None = None, headers: dict[str, str] | None = None, **kwargs: Any):
         """Return an async context-manager that streams a SigV4-signed request."""
-        full_url = str(self._inner._base_url) + url  # noqa: SLF001
-        body = _json.dumps(json).encode() if json else None
+        body = _json.dumps(json).encode() if json is not None else None
         extra_headers = dict(headers or {})
-        if json:
+        if json is not None:
             extra_headers.setdefault("Content-Type", "application/json")
 
+        request = self._inner.build_request(method, url, content=body, headers=extra_headers, **kwargs)
         signed_headers = _build_sigv4_headers(
             method=method.upper(),
-            url=full_url,
-            headers=extra_headers,
+            url=str(request.url),
+            headers=dict(request.headers),
             body=body,
             region=self._region,
+            credentials=self._credentials,
         )
-        merged = {**extra_headers, **signed_headers}
-        return self._inner.stream(method, url, content=body, headers=merged, **kwargs)
+        request.headers.update(signed_headers)
+        response = await self._inner.send(request, stream=True)
+        try:
+            yield response
+        finally:
+            await response.aclose()
 
 
 class _UnitIAMSignedClient:
@@ -449,10 +461,9 @@ class _UnitIAMSignedClient:
 async def iam_signed_client() -> AsyncGenerator[IAMSignedClient | _UnitIAMSignedClient, None]:
     """HTTP client that signs every request with IAM SigV4.
 
-    **Live mode**: Uses real AWS credentials (from the environment, instance
-    profile, or IRSA) to SigV4-sign requests against the REST API Gateway.
-    The IAM principal must be registered in the gateway agent registry --
-    typically ``adp-dev-agent-runner-role``.
+    **Live mode**: Assumes the reviewed account-local regression role and signs
+    the REST API Gateway's /agent route. The role must be registered to the owned
+    fixture tenant; platform administration roles are not fixture identities.
 
     **Unit mode**: Wraps the ASGI transport client with fake SigV4-like
     headers. No real AWS credentials needed.
@@ -466,9 +477,21 @@ async def iam_signed_client() -> AsyncGenerator[IAMSignedClient | _UnitIAMSigned
     """
     if is_live():
         cfg = load_live_config()
-        base = cfg.api_gateway_url.rstrip("/")
+        import boto3
+        from botocore.credentials import Credentials
+
+        role_arn = os.environ.get("GATEWAY_IAM_ROLE_ARN", "")
+        if not role_arn:
+            pytest.fail("IAM regression requires a dedicated registered GATEWAY_IAM_ROLE_ARN fixture")
+        session = boto3.Session(region_name=cfg.aws_region)
+        account = session.client("sts").get_caller_identity()["Account"]
+        if not role_arn.startswith(f"arn:aws:iam::{account}:role/eval-regression-"):
+            pytest.fail("IAM fixture must be an account-local eval-regression-* role")
+        values = session.client("sts").assume_role(RoleArn=role_arn, RoleSessionName="gateway-regression", DurationSeconds=900)["Credentials"]
+        credentials = Credentials(values["AccessKeyId"], values["SecretAccessKey"], values["SessionToken"])
+        base = cfg.api_gateway_url.rstrip("/") + "/agent"
         async with httpx.AsyncClient(base_url=base, timeout=60.0) as inner:
-            yield IAMSignedClient(inner, region=cfg.aws_region)
+            yield IAMSignedClient(inner, region=cfg.aws_region, credentials=credentials)
     else:
         from httpx import ASGITransport
 

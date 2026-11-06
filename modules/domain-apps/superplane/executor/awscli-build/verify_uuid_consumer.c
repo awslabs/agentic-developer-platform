@@ -22,12 +22,12 @@ int main(void) {
     if (!initialize || !run || !finalize) return 1;
     initialize(0);
     int result = run("import sys, _uuid\n"
-                     "assert sys.version_info[:3] == (3, 14, 7)\n"
+                     "assert sys.version_info[:3] == (3, 14, 8)\n"
                      "assert _uuid.__file__.startswith('/opt/awscli-adp/lib/aws-cli/')\n"
                      "value, status = _uuid.generate_time_safe()\n"
                      "assert len(value) == 16 and value[6] >> 4 == 1\n"
                      "assert status in (0, -1)\n"
-                     "print('Bundled Python 3.14.7 _uuid.generate_time_safe: PASS')\n");
+                     "print('Bundled Python 3.14.8 _uuid.generate_time_safe: PASS')\n");
     void *uuid = dlopen(library, RTLD_NOW | RTLD_NOLOAD);
     void *symbol = uuid ? dlvsym(uuid, "uuid_generate_time_safe", "UUID_2.20") : NULL;
     Dl_info info;

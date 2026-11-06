@@ -38,8 +38,10 @@ terraform {
     # 6.41.0 still fails with the message above; 6.42.0 decodes and exports.
     # Do not lower this floor below 6.42.0.
     aws = {
-      source  = "hashicorp/aws"
-      version = ">= 6.42.0, < 7.0.0"
+      source = "hashicorp/aws"
+      # Keep the full install on its qualified provider. 6.69.0 breaks inline
+      # Lambda uploads (hashicorp/terraform-provider-aws#50474).
+      version = "6.68.0"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -185,9 +187,10 @@ module "networking" {
   name_prefix = local.name_prefix
   common_tags = local.common_tags
 
-  vpc_cidr           = var.vpc_cidr
-  az_count           = var.az_count
-  single_nat_gateway = var.single_nat_gateway
+  vpc_cidr             = var.vpc_cidr
+  az_count             = var.az_count
+  single_nat_gateway   = var.single_nat_gateway
+  private_subnet_cidrs = var.private_subnet_cidrs
 }
 
 # -----------------------------------------------------------------------------
@@ -217,6 +220,9 @@ module "iam" {
 # EKS Cluster (Auto Mode)
 # -----------------------------------------------------------------------------
 module "eks" {
+  tools_agentcore_gateway_arn         = var.tools_agentcore_gateway_arn
+  tools_internal_authorize_api_arn    = var.tools_internal_authorize_api_arn
+  tools_execution_table_arn           = var.tools_execution_table_arn
   gateway_customer_role_arns          = var.gateway_customer_role_arns
   automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
   source                              = "./modules/eks"
@@ -235,6 +241,7 @@ module "eks" {
   # module refuse a subnet in a zone the cluster has no existing capacity in,
   # without an extra API read.
   additional_private_subnet_ids_by_az = var.additional_private_subnet_ids_by_az
+  capacity_existing_cluster           = var.capacity_existing_cluster
   private_subnet_availability_zones   = module.networking.private_subnet_availability_zones
 
   eks_cluster_role_arn         = module.iam.eks_cluster_role_arn
@@ -334,6 +341,7 @@ module "codebuild" {
   account_id                 = data.aws_caller_identity.current.account_id
   aws_region                 = var.aws_region
   ecr_registry               = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
+  enable_gitlab_runner_build = var.enable_gitlab_runner_build
 }
 
 # -----------------------------------------------------------------------------

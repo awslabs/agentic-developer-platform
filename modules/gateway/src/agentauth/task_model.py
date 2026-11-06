@@ -499,6 +499,24 @@ class TaskModel:
         error_code = "model_access_denied"
         context = policy.context
         try:
+            work_scope = grant["input"].get("work_scope")
+            if work_scope is not None:
+                from src.products.work_scope import ProjectAttribution, authorize_project_selection, bind_run
+
+                await authorize_project_selection(
+                    self.db,
+                    user_id=identity.canonical_principal.removeprefix("human:"),
+                    tenant_id=identity.tenant,
+                    product_id=work_scope["product_id"],
+                    project_id=work_scope["project_id"],
+                )
+                context._project_attribution = await bind_run(
+                    self.db,
+                    scope=ProjectAttribution(**work_scope),
+                    run_id=identity.invocation_id,
+                    owner_user_id=identity.canonical_principal.removeprefix("human:"),
+                )
+                await self.db.commit()
             quote_body = json.dumps({"model": binding["model_id"], **request}, separators=(",", ":")).encode()
             quote = await quote_request(quote_body, "/openai/v1/responses" if responses_request else "/v1/messages")
             budget_target = replace(self.budget._target(scope="task:" + identity.task_id, cap=grant["limits"]["max_usd"]), entity_type="run")
@@ -524,8 +542,8 @@ class TaskModel:
             measured_cost = Decimal(decision.ledger_cost_usd)
             # Missing pricing facts retain the full upper bound, never a guessed
             # zero. The stored pricing decision explicitly records its confidence.
-            charged = measured_cost if decision.confidence == "verified" else quote.total_usd
-            if charged > quote.total_usd or charged < 0:
+            charged = measured_cost if decision.confidence == "verified" else quote.maximum_cost_usd
+            if charged > quote.maximum_cost_usd or charged < 0:
                 raise TaskStoreError("provider price exceeds reserved bound")
             receipt_usage = {**result["usage"], "estimated_usd": float(charged)}
             operation = await run_in_threadpool(
@@ -555,6 +573,7 @@ class TaskModel:
                 request_id=turn_id,
                 agent_run_id=identity.invocation_id,
                 pricing_decision=decision,
+                reservation_usage_known=True,
                 provider_request_id=result["provider_request_id"],
                 bedrock_account_id=target.account_id,
                 destination_region=target.region or get_settings().aws_region,

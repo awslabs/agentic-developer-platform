@@ -61,6 +61,11 @@ async def verify_materialized_issues(*, tenant_id, installation_id, body):
             follow_redirects=False,
             headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
         ) as http:
+            repository = await http.get(f"/repos/{body.repo}")
+            repository.raise_for_status()
+            repository_id = repository.json().get("id")
+            if type(repository_id) is not int or repository_id <= 0 or repository.json().get("full_name") != body.repo:
+                raise BootstrapRefusedError("delivery repository identity is unavailable")
             for issue in (body.orchestrator_issue, body.evaluation_issue):
                 response = await http.get(f"/repos/{body.repo}/issues/{issue}/parent")
                 response.raise_for_status()
@@ -70,6 +75,7 @@ async def verify_materialized_issues(*, tenant_id, installation_id, body):
                     or parent.get("repository_url") != f"https://api.github.com/repos/{body.repo}"
                 ):
                     raise BootstrapRefusedError("delivery issue is outside the approved epic")
+        return repository_id
     except BootstrapRefusedError:
         raise
     except Exception:
@@ -109,14 +115,53 @@ async def lock_wave(session, *, tenant_id, flow_id, epic_ref, wave_ref):
     return flow, nodes, evaluations[0]
 
 
+async def wave_repository(session, *, nodes, repo):
+    from src.orchestration.accepted_node import accepted_node_contract
+
+    if any(
+        node.kind == NodeKind.STORY.value and not (node.repository_identity and node.provider_repository_id and node.repository_connection)
+        for node in nodes
+    ):
+        raise BootstrapRefusedError("wave repository is outside the accepted graph")
+    matching = [node for node in nodes if node.kind == NodeKind.STORY.value and node.repository_identity == repo]
+    if matching:
+        bindings = set()
+        for node in matching:
+            contract = await accepted_node_contract(session, node)
+            if (
+                contract is None
+                or contract.node.issue_ref != node.issue_ref
+                or contract.node.repository_identity != repo
+                or contract.node.provider_repository_id != node.provider_repository_id
+                or not node.provider_repository_id
+                or contract.node.repository_connection is None
+                or contract.node.repository_connection.model_dump() != node.repository_connection
+            ):
+                raise BootstrapRefusedError("wave repository is outside the accepted graph")
+            bindings.add((node.provider_repository_id, contract.node.repository_connection.installation_id))
+        if len(bindings) != 1:
+            raise BootstrapRefusedError("wave repository is ambiguous")
+        return bindings.pop()
+    raise BootstrapRefusedError("wave repository is outside the accepted graph")
+
+
 def _reserve_mapping(service, *, mapping, caller, grant):
     pk = f"TENANT#{caller.tenant_id}"
     key = wave_key(grant.flow_id, mapping["epic_ref"], mapping["wave_ref"])
     item = {**_key(pk, key), "mapping_json": {"S": json.dumps(mapping, sort_keys=True)}, "digest": {"S": envelope_digest(mapping)}}
-    aliases = [
-        {**_key(pk, issue_key(mapping["repo"], mapping[role + "_issue"])), "wave_key": {"S": key}, "role": {"S": role}, "digest": item["digest"]}
-        for role in ("orchestrator", "evaluation")
-    ]
+    aliases = []
+    for role in ("orchestrator", "evaluation"):
+        issue = mapping[role + "_issue"]
+        alias = {
+            **_key(pk, issue_key(mapping["repo"], issue)),
+            "wave_key": {"S": key},
+            "role": {"S": role},
+            "digest": item["digest"],
+        }
+        if repository_id := mapping.get("provider_repository_id"):
+            alias["provider_repository_id"] = {"N": str(repository_id)}
+            aliases.append({**alias, "sk": {"S": issue_key(repository_id, issue)}})
+        aliases.append(alias)
     transaction = [service.store._put(row) for row in [item, *aliases]] + [
         service.store._grant_check(grant, service.now()),
         service.store._authority_check(grant),
@@ -146,7 +191,7 @@ def _reserve_mapping(service, *, mapping, caller, grant):
             raise PolicyError(409, "wave binding conflicts or could not be confirmed") from None
 
 
-async def register_wave(*, service, session_factory, body, credential_token, workload_binding, configured_repo, verifier=None):
+async def register_wave(*, service, session_factory, body, credential_token, workload_binding, verifier=None):
     from src.agentauth.engine import validate_engine_authority
 
     caller = service.policy.resolve_caller(credential_token)
@@ -165,7 +210,6 @@ async def register_wave(*, service, session_factory, body, credential_token, wor
         or grant.authority.kind != AUTHORITY_GATE_DECISION
         or parent.get("parent_principal")
         or parent.get("coordinator_flow_id") != {"S": grant.flow_id}
-        or body.repo != configured_repo
         or body.repo not in grant.repo_scope
     ):
         raise BootstrapRefusedError("wave binding requires the approved flow coordinator")
@@ -178,6 +222,31 @@ async def register_wave(*, service, session_factory, body, credential_token, wor
         flow, nodes, evaluation = await lock_wave(
             session, tenant_id=caller.tenant_id, flow_id=grant.flow_id, epic_ref=body.epic_ref, wave_ref=body.wave_ref
         )
+        previous = await run_in_threadpool(service.store._read, f"TENANT#{caller.tenant_id}", wave_key(flow.id, body.epic_ref, body.wave_ref))
+        try:
+            saved = json.loads(previous["mapping_json"]["S"]) if previous else None
+        except (KeyError, TypeError, ValueError):
+            raise BootstrapRefusedError("wave assignment is unavailable") from None
+        legacy_replay = (
+            isinstance(saved, dict)
+            and saved.get("repo") == body.repo
+            and "provider_repository_id" not in saved
+            and parent.get("repo") == {"S": body.repo}
+            and all(node.repository_identity is None and node.provider_repository_id is None and node.repository_connection is None for node in nodes)
+        )
+        if legacy_replay:
+            try:
+                installation_id = int(parent["installation_id"]["N"])
+            except (KeyError, ValueError, TypeError):
+                raise BootstrapRefusedError("wave assignment is unavailable") from None
+            repository_id = None
+        else:
+            repository_id, installation_id = await wave_repository(session, nodes=nodes, repo=body.repo)
+        from src.orchestration.policy_admission import load_in_force_policy
+
+        inputs = await load_in_force_policy(session, org_id=caller.tenant_id, flow_id=grant.flow_id)
+        if inputs.refusal is not None or inputs.policy is not None and body.repo not in inputs.policy.repository_ids:
+            raise BootstrapRefusedError("wave repository is outside accepted policy")
         await validate_engine_authority(session=session, execution=parent, grant=grant, store=service.store)
         numbers = {str(body.orchestrator_issue), str(body.evaluation_issue)}
         refs = numbers | {"#" + number for number in numbers}
@@ -188,6 +257,15 @@ async def register_wave(*, service, session_factory, body, credential_token, wor
                 )
             ).scalars()
         )
+        conflicts = [
+            node
+            for node in conflicts
+            if node.repository_identity == body.repo
+            or node.provider_repository_id is not None
+            and node.provider_repository_id == repository_id
+            or node.repository_identity is None
+            and node.provider_repository_id is None
+        ]
         intent = (
             await session.execute(
                 select(OrchestrationFlow.id).where(OrchestrationFlow.org_id == caller.tenant_id, OrchestrationFlow.intent_ref.in_(refs))
@@ -199,7 +277,12 @@ async def register_wave(*, service, session_factory, body, credential_token, wor
             raise BootstrapRefusedError("delivery issue is already assigned to different work")
         if evaluation.issue_ref and evaluation.issue_ref not in {str(body.evaluation_issue), f"#{body.evaluation_issue}"}:
             raise BootstrapRefusedError("evaluation already has a different issue")
-        await (verifier or verify_materialized_issues)(tenant_id=caller.tenant_id, installation_id=int(parent["installation_id"]["N"]), body=body)
+        verified_id = await (verifier or verify_materialized_issues)(tenant_id=caller.tenant_id, installation_id=installation_id, body=body)
+        if repository_id and type(verified_id) is int and verified_id != repository_id:
+            raise BootstrapRefusedError("wave repository identity changed")
+        if repository_id and type(verified_id) is not int:
+            raise BootstrapRefusedError("wave repository identity is unavailable")
+        repository_id = repository_id or (verified_id if type(verified_id) is int else None)
         mapping = {
             **body.model_dump(),
             "flow_id": flow.id,
@@ -213,6 +296,18 @@ async def register_wave(*, service, session_factory, body, credential_token, wor
         }
         receipt_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"adp-wave:{caller.tenant_id}:{wave_key(flow.id, body.epic_ref, body.wave_ref)}"))
         mapping["receipt_id"] = receipt_id
+        if previous and previous.get("mapping_json") == {"S": json.dumps(mapping, sort_keys=True)}:
+            if any(
+                node.repository_identity is not None or node.provider_repository_id is not None or node.repository_connection is not None
+                for node in nodes
+            ):
+                raise BootstrapRefusedError("legacy wave repository is ambiguous")
+        elif repository_id:
+            mapping.update(
+                node_snapshot=node_snapshot(nodes, repository_qualified=True),
+                provider_repository_id=repository_id,
+                installation_id=installation_id,
+            )
         await run_in_threadpool(_reserve_mapping, service, mapping=mapping, caller=caller, grant=grant)
         # Lost transaction replies cannot stand in for current authority.
         await run_in_threadpool(
@@ -273,6 +368,16 @@ async def load_issue_wave(*, service, session, tenant_id, flow_id, repo, issue):
             or mapping[alias["role"]["S"] + "_issue"] != issue
         ):
             raise ValueError("scope mismatch")
+        repository_id = mapping.get("provider_repository_id")
+        if repository_id is not None:
+            canonical = await run_in_threadpool(service.store._read, f"TENANT#{tenant_id}", issue_key(repository_id, issue))
+            if (
+                type(repository_id) is not int
+                or repository_id <= 0
+                or alias.get("provider_repository_id") != {"N": str(repository_id)}
+                or canonical != {**alias, "sk": {"S": issue_key(repository_id, issue)}}
+            ):
+                raise ValueError("repository-qualified wave alias changed")
         receipt = await session.get(OrchestrationDecision, mapping["receipt_id"])
         if (
             receipt is None
@@ -287,15 +392,24 @@ async def load_issue_wave(*, service, session, tenant_id, flow_id, repo, issue):
         _, nodes, evaluation = await lock_wave(
             session, tenant_id=tenant_id, flow_id=flow_id, epic_ref=mapping["epic_ref"], wave_ref=mapping["wave_ref"]
         )
-        if node_snapshot(nodes) != mapping["node_snapshot"] or evaluation.id != mapping["evaluation_node_id"]:
+        if repository_id is None and any(node.provider_repository_id for node in nodes):
+            raise ValueError("legacy wave repository is ambiguous")
+        if (
+            node_snapshot(nodes, repository_qualified=repository_id is not None) != mapping["node_snapshot"]
+            or evaluation.id != mapping["evaluation_node_id"]
+        ):
             raise ValueError("wave changed")
         return mapping, alias["role"]["S"], nodes, evaluation
     except (KeyError, ValueError, TypeError):
         raise BootstrapRefusedError("wave assignment is unavailable") from None
 
 
-def node_snapshot(nodes):
-    return sorted([node.id, node.kind, node.epic_ref, node.wave_ref, node.node_ref, node.issue_ref] for node in nodes)
+def node_snapshot(nodes, *, repository_qualified=False):
+    return sorted(
+        [node.id, node.kind, node.epic_ref, node.wave_ref, node.node_ref, node.issue_ref]
+        + ([node.repository_identity, node.provider_repository_id, node.repository_connection] if repository_qualified else [])
+        for node in nodes
+    )
 
 
 async def validate_wave_coordinator(*, session, execution, grant, store):

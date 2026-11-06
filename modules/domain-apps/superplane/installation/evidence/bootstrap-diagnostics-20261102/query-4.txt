@@ -1,0 +1,19 @@
+
+from pathlib import Path
+import json, os
+from workspace_provisioning.terraform import operation_directory
+p = operation_directory(os.environ["SUPERPLANE_LIFECYCLE_STATE_DIR"], "a79914b7-45b6-4520-adeb-e09351267194", "53125337-0501-5b0d-bdab-66c8d8d94ff7", "d571ca63-73bc-543a-836e-a9e448b38a98") / "bootstrap-state.json"
+x = json.loads(p.read_text()) if p.exists() else {}
+rows = []
+for f in Path("/proc").glob("[0-9]*/cmdline"):
+    try:
+        a = f.read_bytes().decode().strip("\0").split("\0")
+        name = Path(a[0]).name
+        if name == "aws":
+            service = next((i for i, v in enumerate(a) if v in ("sts", "eks", "iam", "ec2")), None)
+            rows.append({"executable": name, "service": a[service] if service is not None else None, "method": a[service + 1] if service is not None else None})
+        elif name == "kubectl":
+            rows.append({"executable": name})
+    except (OSError, UnicodeError, IndexError):
+        pass
+print(json.dumps({"journal_exists": p.exists(), "state": {k: x.get(k) for k in ("namespace", "crds_established", "controller_installed", "prerequisites_recorded", "registration_reserved", "taint_cleared", "registration_finalized")}, "processes": rows}))

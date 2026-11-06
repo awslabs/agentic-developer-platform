@@ -28,6 +28,18 @@ data "aws_kms_key" "gateway_backend_lambda" {
   key_id = "alias/aws/lambda"
 }
 
+# The agent-authority SecureString parameters the gateway deploy renders into the
+# ConfigMap (/adp/<env>/gateway/agent-authority-*, agent-task-source-*,
+# run-report-signing-key) are encrypted with webhook-ingress's DynamoDB CMK
+# (agent-authority-bootstrap.tf). Without decrypt on that key every ADP-managed
+# gateway deploy silently fell back to the renderer's defaults — authority disabled,
+# envelope key id "disabled" — and a ready Crew host could not be handed off (dev
+# 2026-10-19, #8223). Decrypt is bounded to SSM in this region.
+data "aws_kms_key" "gateway_backend_parameters" {
+  count  = var.enable_gateway_backend_deployment ? 1 : 0
+  key_id = "alias/adp-${var.environment}-webhook-dynamodb"
+}
+
 locals {
   gateway_backend_account = data.aws_caller_identity.current.account_id
   gateway_backend_cluster = "arn:aws:eks:${var.aws_region}:${local.gateway_backend_account}:cluster/${var.cluster_name}"
@@ -49,17 +61,50 @@ locals {
     "kms:ViaService"                  = "secretsmanager.${var.aws_region}.amazonaws.com"
     "kms:EncryptionContext:SecretARN" = local.gateway_backend_secret_arns
   } }
+  gateway_backend_parameter_key       = var.enable_gateway_backend_deployment ? data.aws_kms_key.gateway_backend_parameters[0].arn : ""
+  gateway_backend_parameter_condition = { StringEquals = { "kms:ViaService" = "ssm.${var.aws_region}.amazonaws.com" } }
+  # Deployment and profile selection serialize on one target-specific item.
+  # This grants no Terraform state-lock, table-management or tenant-data access.
+  gateway_capacity_actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+  gateway_capacity_table   = "arn:aws:dynamodb:${var.aws_region}:${local.gateway_backend_account}:table/adp-terraform-locks"
+  gateway_capacity_key     = "adp-gateway-capacity/${local.gateway_backend_account}/${var.aws_region}/${var.environment}/${var.cluster_name}/adp-gateway"
+  gateway_capacity_grant = {
+    Sid = "GatewayCapacityLock", Effect = "Allow", Action = local.gateway_capacity_actions, Resource = local.gateway_capacity_table,
+    Condition = {
+      "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = [local.gateway_capacity_key] }
+      Null                        = { "dynamodb:LeadingKeys" = "false" }
+    }
+  }
   gateway_backend_api_id = var.enable_gateway_backend_deployment ? try(
     regex("^https://([a-z0-9]+)\\.execute-api\\.", nonsensitive(data.aws_ssm_parameter.gateway_backend_api_url[0].value))[0],
     "",
   ) : ""
   gateway_backend_api_arn = "arn:aws:apigateway:${var.aws_region}::/restapis/${local.gateway_backend_api_id}/*"
+  # The shared release observes these existing components after publication.
+  # Keep reads separate from deploy authority and bound them in the ceiling too.
+  gateway_observer_api          = "arn:aws:execute-api:${var.aws_region}:${local.gateway_backend_account}:${local.gateway_backend_api_id}/${var.environment}/POST/internal/v1/runtime-proof/schema"
+  gateway_observer_bucket       = "arn:aws:s3:::adp-${var.environment}-deployment-evidence-${local.gateway_backend_account}"
+  gateway_observer_prefix       = "deployment-evidence/v1/"
+  gateway_observer_distribution = "arn:aws:cloudfront::${local.gateway_backend_account}:distribution/${local.frontend_cloudfront_id}"
+  gateway_observer_actions      = ["execute-api:Invoke", "s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket", "cloudfront:GetDistribution"]
+  gateway_observer_resources    = [local.gateway_observer_api, local.gateway_observer_bucket, "${local.gateway_observer_bucket}/${local.gateway_observer_prefix}*", local.gateway_observer_distribution]
   gateway_backend_ssm_read = [
     "arn:aws:ssm:${var.aws_region}:${local.gateway_backend_account}:parameter/adp/${var.environment}/gateway/*",
     "arn:aws:ssm:${var.aws_region}:${local.gateway_backend_account}:parameter/adp/${var.environment}/agent-context/ingestion-queue-url",
     "arn:aws:ssm:${var.aws_region}:${local.gateway_backend_account}:parameter/adp/${var.environment}/agent-gateway/*",
     "arn:aws:ssm:${var.aws_region}:${local.gateway_backend_account}:parameter/adp/${var.environment}/webhook-ingress/*",
+    # Dev Box (#7998, optional module): the ConfigMap render reads the module's
+    # published values; without this grant every ADP-managed gateway deploy
+    # rendered BG_DEV_BOX_* empty and disabled admission on dev (2026-10-17).
+    "arn:aws:ssm:${var.aws_region}:${local.gateway_backend_account}:parameter/adp/${var.environment}/dev-box/*",
     "arn:aws:ssm:${var.aws_region}:${local.gateway_backend_account}:parameter/adp/${var.environment}/gitlab/oidc-client-id",
+    # The tools release publishes the façade/gateway roles and assertion key here;
+    # the gateway configmap renders them into ADP_TOOLS_* so the gateway can
+    # verify the façade identity on /internal/v1/tools/authorize.
+    "arn:aws:ssm:${var.aws_region}:${local.gateway_backend_account}:parameter/adp/${var.environment}/tools/*",
+    # The clean-room evaluations run as this identity and bind themselves to the
+    # dev account before touching anything.
+    "arn:aws:ssm:${var.aws_region}:${local.gateway_backend_account}:parameter/adp/${var.environment}/platform/account-id",
   ]
   gateway_backend_ssm_write = [for name in [
     "internal-alb-arn", "internal-alb-dns", "internal-alb-security-group-ids",
@@ -84,6 +129,9 @@ locals {
     "cloudwatch:DescribeAlarms", "cloudfront:GetDistributionConfig",
     "elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeTags",
     "apigateway:GET",
+    # Direct token counting is the evaluation's independent reference for the
+    # gateway's count_tokens answer; it reads nothing and writes nothing.
+    "bedrock:CountTokens",
   ]
 }
 
@@ -92,17 +140,33 @@ resource "aws_iam_policy" "gateway_backend_ceiling" {
   name        = "${var.name_prefix}-gateway-backend-ceiling"
   description = "Finite API ceiling for the gateway backend publisher"
   policy = jsonencode({ Version = "2012-10-17", Statement = [
-    { Sid = "AllowDeclaredAPIs", Effect = "Allow", Action = local.gateway_backend_actions, Resource = "*" },
-    { Sid = "DenyOtherAPIs", Effect = "Deny", NotAction = concat(local.gateway_backend_actions, ["kms:Decrypt", "kms:DescribeKey"]), Resource = "*" },
+    # DenyOtherAPIs provides the finite non-KMS action ceiling. Avoid repeating
+    # its action list here so the managed boundary stays below IAM's 6144 bytes.
+    # KMS is excluded here and still needs the conditioned grants below.
+    { Sid = "AllowDeclaredAPIs", Effect = "Allow", NotAction = "kms:*", Resource = "*" },
+    { Sid = "DenyOtherAPIs", Effect = "Deny", NotAction = concat(local.gateway_backend_actions, local.gateway_capacity_actions, local.gateway_observer_actions, ["kms:Decrypt", "kms:DescribeKey"]), Resource = "*" },
+    { Sid = "DenyOtherObservations", Effect = "Deny", Action = local.gateway_observer_actions, NotResource = concat(local.gateway_observer_resources, local.gateway_l5_release_objects) },
+    { Sid       = "DenyOtherEvidencePrefixes", Effect = "Deny", Action = "s3:ListBucket", Resource = local.gateway_observer_bucket,
+      Condition = { StringNotLike = { "s3:prefix" = "${local.gateway_observer_prefix}*" } },
+    },
+    # Explicit denies keep attached/resource policies from admitting other keys.
+    { Sid = "DenyOtherCapacityTables", Effect = "Deny", Action = "dynamodb:*", NotResource = local.gateway_capacity_table },
+    { Sid       = "DenyOtherCapacityKeys", Effect = "Deny", Action = "dynamodb:*", Resource = "*",
+      Condition = { "ForAnyValue:StringNotEquals" = { "dynamodb:LeadingKeys" = [local.gateway_capacity_key] } },
+    },
+    { Sid       = "DenyMissingCapacityKey", Effect = "Deny", Action = "dynamodb:*", Resource = "*",
+      Condition = { Null = { "dynamodb:LeadingKeys" = "true" } },
+    },
     # The AWS-managed Secrets Manager key is shared across the account. Limit
     # decrypt to this key, this service, and the three stable gateway secrets.
     { Sid = "AllowGatewaySecretDecrypt", Effect = "Allow", Action = "kms:Decrypt", Resource = local.gateway_backend_kms_key, Condition = local.gateway_backend_kms_condition },
+    { Sid = "AllowGatewayParameterDecrypt", Effect = "Allow", Action = "kms:Decrypt", Resource = local.gateway_backend_parameter_key, Condition = local.gateway_backend_parameter_condition },
     { Sid = "AllowLambdaKeyDescription", Effect = "Allow", Action = "kms:DescribeKey", Resource = local.gateway_backend_lambda_key },
     { Sid = "DenyOtherSecrets", Effect = "Deny", Action = "secretsmanager:GetSecretValue", NotResource = local.gateway_backend_secret_arns },
     { Sid = "DenyOtherExecutables", Effect = "Deny", Action = ["lambda:UpdateFunctionCode", "lambda:InvokeFunction"], NotResource = local.gateway_backend_lambdas },
-    { Sid = "DenyOtherBuilds", Effect = "Deny", Action = "codebuild:StartBuild", NotResource = local.gateway_backend_project },
-    # BatchGetBuilds evaluates against its project, even when called with a build ID.
-    { Sid = "DenyOtherBuildEvidence", Effect = "Deny", Action = "codebuild:BatchGetBuilds", NotResource = local.gateway_backend_project },
+    # Both APIs evaluate against the same project, even when polling a build ID.
+    # One equivalent statement leaves room for the opt-in L5 object scope.
+    { Sid = "DenyOtherBuilds", Effect = "Deny", Action = ["codebuild:StartBuild", "codebuild:BatchGetBuilds"], NotResource = local.gateway_backend_project },
     { Sid = "DenyOtherClusters", Effect = "Deny", Action = "eks:DescribeCluster", NotResource = local.gateway_backend_cluster },
     { Sid = "DenyOtherParameterWrites", Effect = "Deny", Action = "ssm:PutParameter", NotResource = local.gateway_backend_ssm_write },
     { Sid = "DenyOtherSchedules", Effect = "Deny", Action = ["events:DisableRule", "events:EnableRule"], NotResource = local.gateway_backend_pricing_rule },
@@ -110,6 +174,7 @@ resource "aws_iam_policy" "gateway_backend_ceiling" {
       ["arn:aws:s3:::adp-terraform-state-${local.gateway_backend_account}/codebuild/src/${var.name_prefix}-gateway-build/*"],
       ["arn:aws:s3:::adp-${var.environment}-deployment-evidence-${local.gateway_backend_account}/deployment-evidence/v1/*"],
       local.gateway_backend_cfn_objects,
+      local.gateway_l5_release_objects,
     ) },
   ] })
 }
@@ -146,12 +211,23 @@ resource "aws_iam_role_policy" "gateway_backend" {
   }
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     { Effect = "Allow", Action = "sts:GetCallerIdentity", Resource = "*" },
+    local.gateway_capacity_grant,
+    { Effect = "Allow", Action = "execute-api:Invoke", Resource = local.gateway_observer_api },
+    { Effect = "Allow", Action = ["s3:GetObject", "s3:GetObjectVersion"], Resource = "${local.gateway_observer_bucket}/${local.gateway_observer_prefix}*" },
+    { Effect    = "Allow", Action = "s3:ListBucket", Resource = local.gateway_observer_bucket,
+      Condition = { StringLike = { "s3:prefix" = "${local.gateway_observer_prefix}*" } },
+    },
+    { Effect = "Allow", Action = "cloudfront:GetDistribution", Resource = local.gateway_observer_distribution },
+    # The clean-room evaluation's independent reference for the gateway's
+    # count_tokens answer; reads nothing and writes nothing.
+    { Effect = "Allow", Action = "bedrock:CountTokens", Resource = "*" },
     { Effect = "Allow", Action = "eks:DescribeCluster", Resource = local.gateway_backend_cluster },
     { Effect = "Allow", Action = "iam:GetRole", Resource = "arn:aws:iam::${local.gateway_backend_account}:role/adp-${var.environment}-role-gateway-service" },
     { Effect = "Allow", Action = "ssm:GetParameter", Resource = local.gateway_backend_ssm_read },
     { Effect = "Allow", Action = "ssm:PutParameter", Resource = local.gateway_backend_ssm_write },
     { Effect = "Allow", Action = "secretsmanager:GetSecretValue", Resource = local.gateway_backend_secret_arns },
     { Effect = "Allow", Action = "kms:Decrypt", Resource = local.gateway_backend_kms_key, Condition = local.gateway_backend_kms_condition },
+    { Effect = "Allow", Action = "kms:Decrypt", Resource = local.gateway_backend_parameter_key, Condition = local.gateway_backend_parameter_condition },
     { Effect = "Allow", Action = "kms:DescribeKey", Resource = local.gateway_backend_lambda_key },
     { Effect = "Allow", Action = "s3:PutObject", Resource = concat(
       ["arn:aws:s3:::adp-terraform-state-${local.gateway_backend_account}/codebuild/src/${var.name_prefix}-gateway-build/*"],
@@ -190,6 +266,30 @@ resource "aws_eks_access_policy_association" "gateway_backend" {
   access_scope {
     type       = "namespace"
     namespaces = ["adp-gateway"]
+  }
+  depends_on = [aws_eks_access_entry.gateway_backend]
+}
+
+# The eval workflows (.github/workflows/eval-*.yml) run as this same deployment
+# identity and spawn throwaway clean-room pods in `adp-gateway-evals` (namespace
+# manifest: modules/gateway/k8s/eval-namespace.yaml; intended pod-only Role:
+# modules/agent-factory/infra/runner-rbac.tf, bound to Group
+# `adp:trusted-deployment`). This entry carries no Kubernetes groups, so that
+# Role grants it nothing, and the Admin policy above is scoped to `adp-gateway`
+# only. Grant namespace-scoped Edit in the evals namespace instead of adding the
+# group: the group is also bound in adp-gateway, adp-agents and agent-context,
+# which this identity must not gain. Edit covers the pod lifecycle, exec and log
+# verbs the harnesses use and nothing cluster-wide. Observed 2026-10-11 on flow
+# claude-desktop-6850-v2 (#7349 prerequisites) when the live qualification
+# could not reach the namespace.
+resource "aws_eks_access_policy_association" "gateway_backend_evals" {
+  count         = var.enable_gateway_backend_deployment ? 1 : 0
+  cluster_name  = var.cluster_name
+  principal_arn = aws_iam_role.gateway_backend[0].arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+  access_scope {
+    type       = "namespace"
+    namespaces = ["adp-gateway-evals"]
   }
   depends_on = [aws_eks_access_entry.gateway_backend]
 }

@@ -11,10 +11,12 @@
 # =============================================================================
 
 name: Agent Context Deploy
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || '' }}
 
 on:
-  # Auto-deploy: chain off a successful image build on main so a merge that
-  # rebuilds context-mcp / ingestion images actually rolls out to the cluster.
+  # Auto-deploy service images after a successful build on main. Single-image
+  # ingestion or DeepWiki builds require explicit guarded image promotion and
+  # must not rewrite Door or other service configuration.
   # (Previously deploy was manual-only, so new images sat in ECR un-deployed.)
   # workflow_run carries no inputs, so the deploy job falls back to config /
   # IRSA for the account and "latest built image" for tags — the dev default.
@@ -24,6 +26,26 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      adp_correlation:
+        description: 'Engine delivery correlation; empty for manual operation.'
+        required: false
+        default: ''
+        type: string
+      adp_source_revision:
+        description: 'Engine-approved immutable source commit.'
+        required: false
+        default: ''
+        type: string
+      adp_definition_revision:
+        description: 'Expected workflow definition revision.'
+        required: false
+        default: ''
+        type: string
+      manual_source_revision:
+        description: 'Reviewed main commit for an uncorrelated full deployment; Door image must exist at this exact source.'
+        required: false
+        default: ''
+        type: string
       customer_account_id:
         description: 'Target AWS account ID (12 digits). Overrides config file.'
         required: false
@@ -40,9 +62,13 @@ on:
         default: ''
         type: string
       environment:
+        # Declared default = the value the job resolves to. The engine's correlated-context
+        # identity check compares the inputs a run recorded with the workflow's declared
+        # defaults, so an empty default here while the job used 'dev' refused every
+        # Knowledge Door receipt (#7829). The manifest entry admits only 'dev'.
         description: 'Deployment environment (dev/staging/prod). Overrides config.'
         required: false
-        default: ''
+        default: 'dev'
         type: string
       skip_litellm_verify:
         description: 'Skip LiteLLM endpoint verification (faster, for re-deploys)'
@@ -88,15 +114,39 @@ concurrency:
 
 env:
   NAMESPACE: agent-context
+  # Engine-dispatched runs publish their deployment context and release receipt to
+  # the private per-account evidence bucket (#7829, transport contract #7624) rather
+  # than GitHub Actions artifacts, whose org-wide storage quota blocked TLS-X02-door
+  # on 2026-10-15. The engine reads this marker from the approved definition.
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
 
 jobs:
+  select-deployment:
+    name: Select deployment scope
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: arc-runner-deploy
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      full_deployment: ${{ steps.select.outputs.full_deployment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Select actual built services
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 modules/agent-context/scripts/select-auto-deployment.py
+
   deploy:
     name: Deploy Services
-    runs-on: arc-runner-org
+    needs: select-deployment
+    runs-on: arc-runner-deploy
     environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 30
     # Manual dispatch always runs; auto (workflow_run) only on a successful build.
-    if: github.ref == 'refs/heads/main' && inputs.deepwiki_only != true && inputs.ingestion_only != true && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    if: needs.select-deployment.outputs.full_deployment == 'true' && github.ref == 'refs/heads/main' && (inputs.manual_source_revision != '' || (inputs.deepwiki_only != true && inputs.ingestion_only != true)) && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
 
     permissions:
       contents: read
@@ -104,14 +154,67 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
+      - name: Guard engine delivery inputs
+        env:
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision || '' }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation || '' }}
+          ADP_SOURCE: ${{ inputs.adp_source_revision || '' }}
+          ADP_DEFINITION: ${{ inputs.adp_definition_revision || '' }}
+          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
+          ADP_DEEPWIKI_ONLY: ${{ inputs.deepwiki_only || false }}
+          ADP_INGESTION_ONLY: ${{ inputs.ingestion_only || false }}
         run: |
           set -euo pipefail
+          if [ -n "${ADP_MANUAL_SOURCE:-}" ]; then
+            [[ "$ADP_MANUAL_SOURCE" =~ ^[0-9a-f]{40}$ ]]
+            test -z "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION"
+            test "${ADP_DEEPWIKI_ONLY:-false}" = false
+            test "${ADP_INGESTION_ONLY:-false}" = false
+          fi
+          if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
+            # Same correlation vocabulary as modules/tools/platform/scripts/guard_dispatch.sh:
+            # the engine's operations dispatch correlates runs by run id ("orch:<uuid>"),
+            # legacy callers by a 64-hex digest.
+            [[ "$ADP_CORRELATION" =~ ^([0-9a-f]{64}|orch:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+            [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]]
+            # The pinned definition need not be the exact dispatch revision: the
+            # "Verify source belongs to reviewed main history" step below proves it is
+            # an ancestor of the dispatched revision AND that this workflow file is
+            # byte-identical at both, which is the reviewed-definition guarantee the
+            # pin exists for (same rule as the tools workflows, #7740). Exact
+            # equality refused every engine dispatch made after any unrelated commit
+            # landed on main.
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify source belongs to reviewed main history
+        env:
+          ADP_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          ADP_DEFINITION: ${{ github.workflow_sha }}
+          ADP_EXPECTED_DEFINITION: ${{ inputs.adp_definition_revision || '' }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$ADP_SOURCE"
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
+          git fetch --no-tags origin "$DEFAULT_BRANCH" "$ADP_DEFINITION"
+          git merge-base --is-ancestor "$ADP_SOURCE" "origin/$DEFAULT_BRANCH"
+          git merge-base --is-ancestor "$ADP_DEFINITION" "$GITHUB_SHA"
+          git show "$ADP_DEFINITION:.github/workflows/agent-context-deploy.yml" | cmp - .github/workflows/agent-context-deploy.yml
+          if [ -n "${ADP_EXPECTED_DEFINITION:-}" ]; then
+            [[ "$ADP_EXPECTED_DEFINITION" =~ ^[0-9a-f]{40}$ ]]
+            git fetch --no-tags origin "$ADP_EXPECTED_DEFINITION"
+            git merge-base --is-ancestor "$ADP_EXPECTED_DEFINITION" "$ADP_DEFINITION"
+            git show "$ADP_EXPECTED_DEFINITION:.github/workflows/agent-context-deploy.yml" | cmp - .github/workflows/agent-context-deploy.yml
+          fi
 
       - name: Establish trusted deployment identity
         uses: ./.github/actions/trusted-deployment
@@ -433,6 +536,11 @@ jobs:
           fi
 
       - name: Deploy Context MCP Server (Door)
+        env:
+          ADP_DOOR_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || '' }}
+          DOOR_MCP_HOST: ${{ vars.ADP_DOOR_MCP_HOST }}
+          DOOR_MCP_CERTIFICATE_ARN: ${{ vars.ADP_DOOR_MCP_CERTIFICATE_ARN }}
+          DOOR_MCP_ALB_SOURCE_CIDR: ${{ vars.ADP_DOOR_MCP_ALB_SOURCE_CIDR }}
         run: |
           cd modules/agent-context
           source scripts/_common.sh
@@ -441,15 +549,23 @@ jobs:
           # Resolve context-mcp image from ECR (same pattern as LiteLLM)
           CONTEXT_MCP_REPO="adp-${ENVIRONMENT}-agent-context-context-mcp"
           CONTEXT_MCP_ECR="${ECR_REGISTRY}/${CONTEXT_MCP_REPO}"
-          LATEST_TAG=$(aws ecr describe-images --repository-name "${CONTEXT_MCP_REPO}" \
-            --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
-            --output text 2>/dev/null || echo "")
-          if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
-            export CONTEXT_MCP_IMAGE="${CONTEXT_MCP_ECR}:${LATEST_TAG}"
-            echo "Using ECR image: ${CONTEXT_MCP_IMAGE}"
+          if [ -n "$ADP_DOOR_SOURCE" ]; then
+            DIGEST=$(aws ecr describe-images --repository-name "$CONTEXT_MCP_REPO" \
+              --image-ids "imageTag=$ADP_DOOR_SOURCE" --region "$AWS_REGION" \
+              --query 'imageDetails[0].imageDigest' --output text)
+            [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            export CONTEXT_MCP_IMAGE="${CONTEXT_MCP_ECR}@${DIGEST}"
           else
-            echo "::warning::No ECR image found for context-mcp. Using default: ${CONTEXT_MCP_IMAGE}"
-            echo "Run the images-build workflow to build the context-mcp image first."
+            LATEST_TAG=$(aws ecr describe-images --repository-name "${CONTEXT_MCP_REPO}" \
+              --region "$AWS_REGION" --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+              --output text 2>/dev/null || echo "")
+            if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
+              export CONTEXT_MCP_IMAGE="${CONTEXT_MCP_ECR}:${LATEST_TAG}"
+              echo "Using ECR image: ${CONTEXT_MCP_IMAGE}"
+            else
+              echo "::warning::No ECR image found for context-mcp. Using default: ${CONTEXT_MCP_IMAGE}"
+              echo "Run the images-build workflow to build the context-mcp image first."
+            fi
           fi
 
           DOOR_VERIFICATION_KEYS_SHA256=$(python3 scripts/ensure-door-identity.py --namespace "${NAMESPACE}")
@@ -466,6 +582,7 @@ jobs:
           # behind the DOOR_API_KEY check in door/auth.py — see the header
           # comment in the manifest for why this is the weaker of the two.
           template_file manifests/networkpolicy.yaml | kubectl apply -f -
+          bash scripts/deploy-door-gateway-ingress.sh
           echo "NetworkPolicy context-mcp-ingress applied"
 
       - name: Deploy Ingestion CronJob + KEDA ScaledJob
@@ -516,7 +633,12 @@ jobs:
 
           # Deploy CronJob
           export NAMESPACE SERVICE_ACCOUNT INGESTION_REFRESH_SCHEDULE SQS_QUEUE_URL DYNAMO_TABLE
+          resolve_ingestion_authority_config
+          verify_ingestion_control_ready
+          template_file manifests/ingestion-serviceaccounts.yaml | kubectl apply -f -
+          template_file manifests/ingestion-networkpolicy.yaml | kubectl apply -f -
           template_file manifests/repo-refresh-cronjob.yaml | kubectl apply -f -
+          template_file manifests/knowledge-maintenance-cronjob.yaml | kubectl apply -f -
           echo "Ingestion CronJob deployed"
 
           if [ "${VULN_SCAN_ENABLED:-true}" = true ]; then
@@ -611,10 +733,48 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Record bounded knowledge-door release and context
+        if: github.event_name == 'workflow_dispatch' && inputs.adp_correlation != ''
+        env:
+          ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          ADP_INPUT_CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id || '' }}
+          ADP_INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label || '' }}
+          ADP_INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
+        run: python3 modules/agent-context/scripts/door_release_evidence.py
+
+      - name: Load deployment evidence publisher from workflow revision
+        if: github.event_name == 'workflow_dispatch' && inputs.adp_correlation != ''
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${ADP_WORKFLOW_REVISION}^{commit}"
+          git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"
+          for file in scripts/publish-deployment-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_WORKFLOW_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+
+      - name: Publish knowledge-door deployment context to S3
+        if: github.event_name == 'workflow_dispatch' && inputs.adp_correlation != ''
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context agent-context-deploy.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
+
+      - name: Publish knowledge-door release to S3
+        if: github.event_name == 'workflow_dispatch' && inputs.adp_correlation != ''
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" release knowledge-door "$RUNNER_TEMP/adp-release-knowledge-door/release.json"
+
   promote-deepwiki:
     name: Promote DeepWiki image only
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.deepwiki_only == true && inputs.ingestion_only != true
-    runs-on: arc-runner-org
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.deepwiki_only == true && inputs.ingestion_only != true && inputs.manual_source_revision == '' && inputs.adp_correlation == '' && inputs.adp_source_revision == '' && inputs.adp_definition_revision == ''
+    runs-on: arc-runner-deploy
     environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 15
     permissions:
@@ -655,7 +815,7 @@ jobs:
           export DEEPWIKI_IMAGE
           python3 modules/agent-context/scripts/promote-deepwiki-image.py
       - name: Retain promotion receipt
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: deepwiki-promotion-receipt
           path: deepwiki-promotion-receipt.json
@@ -663,8 +823,8 @@ jobs:
 
   promote-ingestion:
     name: Promote ingestion image only
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.ingestion_only == true && inputs.deepwiki_only != true
-    runs-on: arc-runner-org
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.ingestion_only == true && inputs.deepwiki_only != true && inputs.manual_source_revision == '' && inputs.adp_correlation == '' && inputs.adp_source_revision == '' && inputs.adp_definition_revision == ''
+    runs-on: arc-runner-deploy
     environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 15
     permissions:
@@ -705,7 +865,7 @@ jobs:
           export INGESTION_IMAGE
           python3 modules/agent-context/scripts/promote-ingestion-image.py
       - name: Retain promotion receipt
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: ingestion-promotion-receipt
           path: ingestion-promotion-receipt.json

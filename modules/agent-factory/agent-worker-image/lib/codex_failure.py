@@ -59,3 +59,63 @@ def failure_details(result, *, aborted=False) -> dict:
                 break
     # Do not duplicate arbitrary model/tool text (or credentials) in SQL receipts.
     return {"category": category, "exit_code": int(result.returncode)}
+
+
+def _unique_object(pairs):
+    document = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("ambiguous failure diagnostic")
+        document[key] = value
+    return document
+
+
+def budget_stop_reason(result) -> str | None:
+    """Read a native SDK's terminal HTTP denial, never model/tool or stderr text.
+
+    Developers use the private failure-report file; reviewers emit the same
+    bounded envelope as their final stdout line. Parse the gateway body before
+    display truncation, and only read its exact scope field. This restricts
+    scheduling; it grants no budget, claim, or additional attempt.
+    """
+    if result.returncode <= 0 or result.returncode == 124 or not isinstance(result.stdout, str):
+        return None
+    # The producers cap error.message at 8192 characters. Bound both JSON reads
+    # and require the terminal envelope, rather than searching earlier output.
+    line = result.stdout[-16385:].rstrip().rsplit("\n", 1)[-1]
+    if not line or len(line) > 16384:
+        return None
+    try:
+        document = json.loads(line, object_pairs_hook=_unique_object)
+        if not isinstance(document, dict) or document.get("status") not in {"agent_failed", "review_failed"}:
+            return None
+        error = document.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        if not isinstance(message, str) or len(message) > 8192:
+            return None
+        prefix = re.match(r"^(?:unexpected status )?402 Payment Required:\s*", message)
+        if prefix is None:
+            return None
+        body, _ = json.JSONDecoder(object_pairs_hook=_unique_object).raw_decode(message, prefix.end())
+    except (ValueError, TypeError, RecursionError):
+        return None
+    if not isinstance(body, dict) or body.get("error") != "budget_exceeded":
+        return None
+    details = body.get("details", {})
+    if not isinstance(details, dict):
+        return None
+    scope = details.get("scope")
+    if scope is None:
+        # Older hierarchy denials have no scope discriminator.
+        return "hierarchy_cap_exceeded"
+    if not isinstance(scope, str):
+        return None
+    return {
+        "run": "run_cap_exceeded",
+        "chain": "chain_cap_exceeded",
+        "root_user": "root_user_cap_exceeded",
+        "person": "person_cap_exceeded",
+        "org": "hierarchy_cap_exceeded",
+        "team": "hierarchy_cap_exceeded",
+        "user": "hierarchy_cap_exceeded",
+    }.get(scope)

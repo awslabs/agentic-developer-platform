@@ -50,7 +50,7 @@ def _quota_group(instance_type):
     if re.fullmatch(r"p[0-9]+[a-z-]*", family):
         return "L-417A185B"
     if re.fullmatch(r"[acdhimrtz][0-9]+[a-z-]*", family):
-        return "L-1216C47"
+        return "L-1216C47A"
     return None
 
 

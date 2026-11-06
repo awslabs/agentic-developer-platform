@@ -1,4 +1,4 @@
-FROM public.ecr.aws/lambda/python:3.12@sha256:9d05e09dee76e344595bc017f9efd7359d353ee6f1018b17b722b048f6033ab8
+FROM public.ecr.aws/lambda/python:3.12@sha256:37fe9ca4183c36ec57e4c5eabb8893cd9fbc9c0f3053b903d9a57eb2bd6bafcc
 RUN dnf install -y git && dnf clean all
 RUN pip install --no-cache-dir boto3==1.36.0 requests==2.34.2 fastapi==0.136.3 pydantic==2.12.5 rfc8785==0.1.4
 COPY modules/tools/adp_tools ${LAMBDA_TASK_ROOT}/adp_tools

@@ -38,6 +38,14 @@ def fixture(directory):
     return manifest
 
 
+# Deploy/apply workflows (and the reusable workflows only they call) run on the
+# dedicated pool; .github/runner-pools.json is the single pin shared with the
+# automation trust contract and the CI evidence test.
+RUNNER_POOLS = json.loads((ROOT / '.github/runner-pools.json').read_text())
+DEPLOY_POOL_WORKFLOWS = frozenset(RUNNER_POOLS['arc-runner-deploy'])
+DEPLOY_POOL_JOBS = RUNNER_POOLS['arc-runner-deploy-jobs']
+
+
 class ReleaseContracts(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -403,10 +411,23 @@ class ReleaseContracts(unittest.TestCase):
                     self.assertIn('steps', job, 'job must define steps or call a reusable workflow')
                     self.assertIn('runs-on', job, 'executable job must select a self-hosted runner')
                     if path.name == 'automation-trust-ci.yml' and name == 'public-workflow-contracts':
-                        self.assertEqual(job['runs-on'], 'ubuntu-latest')
+                        self.assertEqual(job["runs-on"], "${{ github.repository == 'aws-e/adp' && 'arc-runner-org' || 'ubuntu-latest' }}")
                         self.assertEqual(job['permissions'], {'contents': 'read'})
                         self.assertNotIn('environment', job)
                         self.assertNotIn('secrets.', yaml.safe_dump(job))
+                    elif path.name == 'l5-services-release.yml' and name == 'publish':
+                        # Transform alone needs an isolated Docker daemon; its
+                        # protected authority and private ARC stages are unchanged.
+                        self.assertEqual(job['runs-on'], "${{ inputs.service == 'transform' && 'ubuntu-24.04' || 'arc-runner-org' }}")
+                        self.assertEqual(job['if'], "github.ref == 'refs/heads/main'")
+                        self.assertEqual(job['environment'], 'adp-gateway-deploy-${{ inputs.environment }}')
+                        self.assertEqual(job['permissions'], {'contents': 'read', 'id-token': 'write'})
+                        self.assertEqual(job['timeout-minutes'], 30)
+                    elif path.name in DEPLOY_POOL_WORKFLOWS or name in DEPLOY_POOL_JOBS.get(path.name, []):
+                        # Deploy/apply workflows (and the reusable workflows only they
+                        # call) run on the dedicated pool so a rollout tail never
+                        # queues behind CI shards (modules/deploy-runner-pool).
+                        self.assertEqual(job['runs-on'], 'arc-runner-deploy')
                     else:
                         self.assertEqual(job['runs-on'], 'arc-runner-org')
 

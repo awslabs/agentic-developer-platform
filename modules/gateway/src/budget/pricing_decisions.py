@@ -19,7 +19,7 @@ from pricing_policy import (
 from pricing_policy.policy import model_rate_candidates, staleness_reasons
 from pricing_policy.storage import utc_now_iso
 from src.budget import pricing_v2_reader
-from src.shared.database import get_session_factory
+from src.shared.database import get_accounting_session_factory, get_session_factory
 from src.shared.metrics import _emit_emf
 
 PRICING_READ_TIMEOUT_SECONDS = 5.0
@@ -122,7 +122,7 @@ async def price_completed_usage(*, request_id, org_id, raw_usage, evidence, sess
     # The read is after completion, before either persistence output. A failed
     # session acquisition keeps the reader's last good generation or bootstrap.
     try:
-        factory = session_factory or get_session_factory()
+        factory = session_factory or get_accounting_session_factory()
         async with asyncio.timeout(PRICING_READ_TIMEOUT_SECONDS):
             async with factory() as session:
                 state = await pricing_v2_reader.get_rate_state(session)

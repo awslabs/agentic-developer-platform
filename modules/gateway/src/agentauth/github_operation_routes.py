@@ -37,8 +37,9 @@ adopted. There is no method field, no URL field, and no way to name another run.
 
 Refusals collapse to one 404 for the same reason as the rest of this router: a
 caller able to tell "not authorized" from "does not exist" learns what exists.
-Conflicts are the exception — a 409 is information the worker needs to reconcile,
-and it is only reachable after full authorization.
+Conflicts and missing repair scope are exceptions reachable only after full
+authorization. Missing scope is a fixed diagnostic about the caller's own
+accepted plan, reauthorized again before disclosure; it grants no write access.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ from src.agentauth.github_operations import (
     MAX_OPERATION_REQUEST_BYTES,
     GitHubOperation,
     OperationRefusedError,
+    RepairScopeMissingError,
     idempotency_key,
     request_hash,
 )
@@ -140,6 +142,10 @@ class OperationRequest(BaseModel):
     changes: list[FileChangeRequest] = Field(default_factory=list, max_length=_MAX_FILES)
     message: str | None = Field(default=None, max_length=_MAX_TEXT_CHARS)
     expected_head: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    task_cycle: int = Field(default=1, ge=1, le=1000)
+    task_stage: str | None = Field(default=None, pattern=r"^(diagnose|repair|test|publish|deploy|verify)$")
+    task_state: str | None = Field(default=None, pattern=r"^(in_progress|done|blocked)$")
+    diagnosis_code: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
 
     title: str | None = Field(default=None, max_length=_MAX_TEXT_CHARS)
     body: str | None = Field(default=None, max_length=_MAX_TEXT_CHARS)
@@ -261,7 +267,51 @@ async def perform_github_operation(
                 )
 
         authorized = await authorize()
-        result = await _perform(body, authorized, authorize, now=now)
+        try:
+            result = await _perform(body, authorized, authorize, now=now)
+        except RepairScopeMissingError:
+            # An own-assignment policy prerequisite is actionable, but a stale,
+            # revoked or foreign assignment must still look exactly like 404.
+            # Reauthorize before returning only gateway-owned static guidance.
+            current = await authorize()
+            if current != authorized or not current.operations_repair:
+                raise OperationRefusedError("repair authority changed before diagnosis") from None
+            raise HTTPException(
+                403,
+                detail={
+                    "code": "repair_scope_not_accepted",
+                    "message": "The accepted plan has neither repair_paths nor repair_scope='repository'.",
+                    "next_action": (
+                        "Ask the flow owner to review and accept a supported plan amendment with explicit repair paths "
+                        "(or reviewed repository scope). Review approval changes and reapprove any invalidated budget/limit "
+                        "supplements before retrying. Retrying unchanged cannot resolve this."
+                    ),
+                },
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        if authorized.operations_repair and body.operation is GitHubOperation.READ_REPOSITORY and body.pull_number is not None:
+            from src.orchestration.operations_tasks import record_repair_pr
+
+            if await authorize() != authorized:
+                raise OperationRefusedError("repair authority changed before recording PR")
+            async with get_session_factory()() as session:
+                observation = await record_repair_pr(session, authorized.assignment, result["repair"])
+                await session.commit()
+            result["repair"].update(observation)
+        if authorized.operations_repair and body.operation is GitHubOperation.MERGE_PULL_REQUEST:
+            from src.orchestration.operations_repair import record_repair_merge
+
+            await authorize()
+            async with get_session_factory()() as session:
+                await record_repair_merge(
+                    session,
+                    authorized.assignment,
+                    pull_number=body.pull_number,
+                    head=body.expected_head,
+                    merged=result["merge"],
+                    authorized=authorized,
+                )
+                await session.commit()
 
         logger.info(
             "Mediated GitHub operation performed",
@@ -281,10 +331,10 @@ async def perform_github_operation(
         raise HTTPException(409, "the assigned branch or pull request moved") from None
     except ProviderUnavailableError:
         raise HTTPException(503, "the provider is unavailable") from None
-    except OperationRefusedError:
+    except OperationRefusedError as exc:
         # One shape for every authorization failure. The reason is logged, not
         # returned; see the module docstring.
-        logger.info("Mediated GitHub operation refused", extra={"operation": body.operation.value})
+        logger.info("Mediated GitHub operation refused", extra={"operation": body.operation.value, "reason": str(exc)})
         raise HTTPException(404, "not found") from None
     except (BootstrapRefusedError, WorkloadRefusedError, CredentialError, ExecutionStateError):
         raise HTTPException(404, "not found") from None
@@ -301,23 +351,130 @@ async def _perform(body: OperationRequest, authorized, authorize, *, now: dateti
     the control, not an omission.
     """
     assignment = authorized.assignment
+    if body.operation is GitHubOperation.RECONCILE_WORK_BRANCH:
+        # A first start or an already-current branch needs no write credential,
+        # especially for installations that do not grant workflow editing.
+        token = await installation_token(
+            org_id=assignment.tenant_id,
+            installation_id=assignment.installation_id,
+            repository=assignment.repository,
+            permissions=operation_permissions(GitHubOperation.READ_REPOSITORY),
+        )
+        async with GitHubProvider(token=token, assignment=assignment) as provider:
+            reconciliation = await provider.inspect_work_branch()
+        if await authorize() != authorized:
+            raise OperationRefusedError("the protected assignment changed during reconciliation")
+        if reconciliation["status"] != "needs_merge":
+            return {"reconciliation": reconciliation}
+    if authorized.operations_repair and body.operation in {
+        GitHubOperation.VALIDATE_REPAIR_EDIT,
+        GitHubOperation.RECONCILE_WORK_BRANCH,
+        GitHubOperation.PUBLISH_COMMIT,
+        GitHubOperation.UPSERT_PULL_REQUEST,
+        GitHubOperation.MERGE_PULL_REQUEST,
+    }:
+        from src.agentauth.operations_repair import ensure_repair_readiness
+
+        await ensure_repair_readiness(authorized, authorize)
+    if body.operation in {GitHubOperation.READ_REPAIR_TASKS, GitHubOperation.RECORD_REPAIR_TASK}:
+        from src.orchestration.operations_tasks import read_operations_tasks, record_operations_task
+        from src.shared.database import get_session_factory
+
+        if not authorized.operations_repair:
+            raise OperationRefusedError("operations task requires an operations executor")
+        if body.operation is GitHubOperation.RECORD_REPAIR_TASK and (body.task_stage is None or body.task_state is None):
+            raise OperationRefusedError("operations task update requires stage and state")
+        if body.operation is GitHubOperation.READ_REPAIR_TASKS and any((body.task_stage, body.task_state, body.diagnosis_code)):
+            raise OperationRefusedError("operations task read cannot change progress")
+        if await authorize() != authorized:
+            raise OperationRefusedError("operations task authority changed")
+        async with get_session_factory()() as session:
+            if body.operation is GitHubOperation.RECORD_REPAIR_TASK:
+                await record_operations_task(
+                    session,
+                    assignment,
+                    stage=body.task_stage,
+                    state=body.task_state,
+                    diagnosis_code=body.diagnosis_code,
+                    repair_cycle=body.task_cycle,
+                )
+                await session.commit()
+            tasks = await read_operations_tasks(session, assignment)
+            tasks["repair_paths"] = sorted(authorized.policy.repair_paths)
+            if getattr(authorized.policy, "repair_scope", None) is not None:
+                tasks["repair_scope"] = authorized.policy.repair_scope
+            from src.orchestration.story_checkpoints import read_story_checkpoint
+
+            checkpoint = await read_story_checkpoint(session, assignment)
+            return {"operations_tasks": tasks, "story_checkpoint": checkpoint}
+    if body.operation is GitHubOperation.VALIDATE_REPAIR_EDIT:
+        from hashlib import sha256
+
+        from src.agentauth.operations_repair import check_paths, check_proposed_workflows
+
+        if not authorized.operations_repair:
+            raise OperationRefusedError("repair editing requires an operations story")
+        changes = body.file_changes()
+        if len(changes) != 1 or changes[0].deleted or changes[0].mode != "100644" or changes[0].content is None:
+            raise OperationRefusedError("repair edit must be one regular file")
+        # The agent submits small exact replacements, while policy validation
+        # must inspect the whole prospective source file, including workflows.
+        if len(changes[0].content) > 256 * 1024:
+            raise OperationRefusedError("repair edit exceeds workspace bound")
+        check_paths([changes[0].path], authorized)
+        if changes[0].path.startswith(".github/workflows/"):
+            token = await installation_token(
+                org_id=assignment.tenant_id,
+                installation_id=assignment.installation_id,
+                repository=assignment.repository,
+                permissions=operation_permissions(GitHubOperation.READ_REPOSITORY),
+            )
+            async with GitHubProvider(token=token, assignment=assignment) as provider:
+                await check_proposed_workflows(provider, changes)
+        current = await authorize()
+        if current != authorized:
+            raise OperationRefusedError("repair scope changed during validation")
+        return {"path": changes[0].path, "sha256": sha256(changes[0].content).hexdigest()}
+    permissions = operation_permissions(body.operation)
+    if authorized.operations_repair and (
+        body.operation is GitHubOperation.MERGE_PULL_REQUEST or body.operation is GitHubOperation.READ_REPOSITORY and body.pull_number is not None
+    ):
+        # Repair readiness reads both check runs and the combined commit status.
+        # GitHub's checks permission does not grant access to commit statuses.
+        permissions = {**permissions, "statuses": "read"}
+    if authorized.operations_repair and (
+        body.operation is GitHubOperation.MERGE_PULL_REQUEST
+        or body.operation is GitHubOperation.PUBLISH_COMMIT
+        and any(c.path.startswith(".github/workflows/") for c in body.changes)
+    ):
+        permissions = {**permissions, "workflows": "write"}
     token = await installation_token(
         org_id=assignment.tenant_id,
         installation_id=assignment.installation_id,
         repository=assignment.repository,
-        permissions=operation_permissions(body.operation),
+        permissions=permissions,
     )
     key = idempotency_key(assignment=assignment, operation=body.operation, request_hash=request_hash(body.model_dump(mode="json")))
 
     async def reauthorize() -> None:
         current = await authorize()
-        if current.assignment != assignment:
+        if current.assignment != assignment or (authorized.operations_repair and current != authorized):
             raise OperationRefusedError("the protected assignment changed during publication")
 
     async with GitHubProvider(token=token, assignment=assignment) as provider:
+        if body.operation is GitHubOperation.READ_REPOSITORY and authorized.operations_repair and body.pull_number is not None:
+            from src.agentauth.operations_repair import repair_status
+
+            return {
+                "repair": await repair_status(provider, body.pull_number, required_checks=getattr(authorized.policy, "repair_required_checks", ())),
+                "idempotency_key": key,
+            }
+
         if body.operation is GitHubOperation.READ_REPOSITORY:
             return {"repository": await provider.read_repository(), "branch": assignment.branch, "idempotency_key": key}
 
+        if body.operation is GitHubOperation.RECONCILE_WORK_BRANCH:
+            return {"reconciliation": await provider.reconcile_work_branch(reauthorize=reauthorize), "idempotency_key": key}
         if body.operation is GitHubOperation.FETCH_REPOSITORY_ARCHIVE:
             # Base64 in JSON keeps one response shape for every operation, so the
             # worker's transport, signing and error handling stay identical rather
@@ -353,6 +510,10 @@ async def _perform(body: OperationRequest, authorized, authorize, *, now: dateti
         if body.operation is GitHubOperation.PUBLISH_COMMIT:
             changes = body.file_changes()
             _refuse_escalating_content(changes, authorized)
+            if authorized.operations_repair:
+                from src.agentauth.operations_repair import check_proposed_workflows
+
+                await check_proposed_workflows(provider, changes)
             try:
                 published = await provider.publish_commit(
                     changes=changes,
@@ -411,6 +572,11 @@ async def _perform(body: OperationRequest, authorized, authorize, *, now: dateti
             # it does not decide or schedule one — that is #5130's controller.
             if body.pull_number is None or body.expected_head is None:
                 raise OperationRefusedError("a merge must name the pull request and the head it was reviewed at")
+            if authorized.operations_repair:
+                from src.agentauth.operations_repair import merge_repair
+
+                merged = await merge_repair(provider, body, authorized, reauthorize)
+                return {"merge": merged, "idempotency_key": key}
             merged = await provider.merge_pull_request(
                 pull_number=body.pull_number,
                 expected_head=body.expected_head,
@@ -433,6 +599,11 @@ def _refuse_escalating_content(changes: list[FileChange], authorized) -> None:
     """
     from src.agentauth.github_operations import escalating_paths
 
+    if authorized.operations_repair:
+        from src.agentauth.operations_repair import check_paths
+
+        check_paths([change.path for change in changes], authorized)
+        return
     offending = escalating_paths([change.path for change in changes], policy=authorized.policy)
     if offending:
         logger.info("Mediated commit refused for automation content", extra={"paths": list(offending)})

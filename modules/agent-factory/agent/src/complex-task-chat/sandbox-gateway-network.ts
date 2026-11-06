@@ -16,14 +16,15 @@ export type NetworkPolicySpec = {
 
 const GATEWAY_SELECTOR = { 'app.kubernetes.io/name': 'chat-sandbox-gateway' };
 const SANDBOX_SELECTOR = { matchLabels: { 'adp.io/chat-sandbox': 'true' } };
+const CREW_SELECTOR = { matchLabels: { 'adp.io/crew-pod': 'true' } };
 
 export function isPrivateIPv4(address: unknown): address is string {
   return typeof address === 'string' && isIPv4(address) &&
     (address.startsWith('10.') || address.startsWith('192.168.') || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(address));
 }
 
-export function isGatewayEgress(spec: NetworkPolicySpec | undefined): boolean {
-  return isDeepStrictEqual(spec?.podSelector, SANDBOX_SELECTOR) &&
+function isGatewayEgressFor(spec: NetworkPolicySpec | undefined, selector: NonNullable<NetworkPolicySpec["podSelector"]>): boolean {
+  return isDeepStrictEqual(spec?.podSelector, selector) &&
     isDeepStrictEqual(spec?.policyTypes, ['Egress']) &&
     (spec?.ingress?.length ?? 0) === 0 &&
     isDeepStrictEqual(spec?.egress, [{
@@ -33,6 +34,30 @@ export function isGatewayEgress(spec: NetworkPolicySpec | undefined): boolean {
       }],
       ports: [{ protocol: 'TCP', port: 8443 }],
     }]);
+}
+
+export function isGatewayEgress(spec: NetworkPolicySpec | undefined): boolean {
+  return isGatewayEgressFor(spec, SANDBOX_SELECTOR);
+}
+
+export function isCrewGatewayEgress(spec: NetworkPolicySpec | undefined): boolean {
+  return isGatewayEgressFor(spec, CREW_SELECTOR);
+}
+
+export function isCrewDashboardIngress(spec: NetworkPolicySpec | undefined): boolean {
+  return isDeepStrictEqual(spec?.podSelector, CREW_SELECTOR) &&
+    isDeepStrictEqual(spec?.policyTypes, ['Ingress']) && (spec?.egress?.length ?? 0) === 0 &&
+    isDeepStrictEqual(spec?.ingress, [{
+      from: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'adp-gateway' } },
+        podSelector: { matchLabels: { 'app.kubernetes.io/name': 'bedrockgateway' } } }],
+      ports: [{ protocol: 'TCP', port: 5476 }, { protocol: 'TCP', port: 5477 }],
+    }]);
+}
+
+export function isCrewDeny(spec: NetworkPolicySpec | undefined): boolean {
+  return isDeepStrictEqual(spec?.podSelector, CREW_SELECTOR) &&
+    isDeepStrictEqual(spec?.policyTypes, ['Ingress', 'Egress']) &&
+    (spec?.ingress?.length ?? 0) === 0 && (spec?.egress?.length ?? 0) === 0;
 }
 
 export function isSandboxDeny(spec: NetworkPolicySpec | undefined): boolean {

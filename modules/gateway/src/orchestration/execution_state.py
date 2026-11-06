@@ -171,6 +171,7 @@ class BlockCode(StrEnum):
     CREDENTIAL_UNAVAILABLE = "credential_unavailable"  # Scoped credential absent; no broad fallback
     BUDGET_EXHAUSTED = "budget_exhausted"  # Existing policy limit reached
     ATTEMPTS_EXHAUSTED = "attempts_exhausted"  # Attempt bound reached; recovery is authorized-only
+    REVIEW_BOOTSTRAP_FAILING = "review_bootstrap_failing"  # Repeated fenced reviewer startup failures
     PROVIDER_UNAVAILABLE = "provider_unavailable"  # External provider is failing; retryable
     OWNERSHIP_LOST = "ownership_lost"  # The claim generation moved on; this run is stale
 

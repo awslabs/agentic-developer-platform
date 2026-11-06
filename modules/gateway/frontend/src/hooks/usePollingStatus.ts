@@ -29,7 +29,7 @@ function getPollingInterval(runStatus: string | null): number {
 export interface UsePollingStatusOptions {
   /** Asset ID to poll. Polling restarts when this changes. */
   assetId: string;
-  /** Whether polling is enabled. Defaults to true. */
+  /** Whether to poll after the initial fetch. Status is always fetched once. */
   enabled?: boolean;
   /** Called when the run status transitions (oldStatus, newStatus). */
   onStatusChange?: (oldStatus: string | null, newStatus: string | null) => void;
@@ -71,13 +71,14 @@ export function usePollingStatus({
   }, []);
 
   const fetchStatus = useCallback(
-    async (isInitial: boolean) => {
+    async (isInitial: boolean, isActive: () => boolean) => {
       if (isInitial) {
         setIsLoading(true);
         setError(null);
       }
       try {
         const result = await getAssetStatus(assetId);
+        if (!isActive()) return null;
         setStatus(result);
         setError(null);
 
@@ -95,13 +96,13 @@ export function usePollingStatus({
 
         return result;
       } catch (err) {
-        if (isInitial) {
+        if (isInitial && isActive()) {
           setError(err instanceof Error ? err.message : 'Failed to load status');
         }
         // On poll errors, silently continue — don't break the interval
         return null;
       } finally {
-        if (isInitial) {
+        if (isInitial && isActive()) {
           setIsLoading(false);
         }
       }
@@ -117,24 +118,19 @@ export function usePollingStatus({
     lastRunStatusRef.current = null;
     stopPolling();
 
-    if (!enabled) {
-      setIsLoading(false);
-      return;
-    }
-
     let cancelled = false;
 
     async function init() {
-      const result = await fetchStatus(true);
+      const result = await fetchStatus(true, () => !cancelled);
       if (cancelled) return;
 
       // Start polling only if not terminal
       const runStatus = result?.runStatus ?? null;
-      if (!runStatus || !TERMINAL_STATUSES.has(runStatus)) {
+      if (enabled && (!runStatus || !TERMINAL_STATUSES.has(runStatus))) {
         const interval = getPollingInterval(runStatus);
         setIsPolling(true);
         intervalRef.current = setInterval(() => {
-          if (!cancelled) fetchStatus(false);
+          if (!cancelled) fetchStatus(false, () => !cancelled);
         }, interval);
       }
     }

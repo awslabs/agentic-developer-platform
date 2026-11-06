@@ -17,7 +17,7 @@ from test_plan_safety import (
 )
 
 
-def prepare_fixture(tmp_path):
+def prepare_fixture(tmp_path, *, plan=None):
     module = tmp_path / "module"
     module.mkdir()
     variables = tmp_path / "input.json"
@@ -32,7 +32,7 @@ def prepare_fixture(tmp_path):
     variables.write_text(json.dumps(target))
     record = tmp_path / "calls.json"
     executable = tmp_path / "terraform"
-    plan = _plan(_cluster(["create"]))
+    plan = _plan(_cluster(["create"])) if plan is None else plan
     executable.write_text(
         f"#!{sys.executable}\n"
         "import json,sys,zipfile\nfrom pathlib import Path\n"
@@ -42,6 +42,7 @@ def prepare_fixture(tmp_path):
         "calls=json.loads(record.read_text()) if record.exists() else [];calls.append(sys.argv[1:]);record.write_text(json.dumps(calls))\n"
         "if sys.argv[1]=='version': print(json.dumps({'terraform_version':'1.9.8'}))\n"
         "elif sys.argv[1]=='init':\n"
+        "    assert '-lockfile=readonly' in sys.argv\n"
         "    path=next(x.split('=',1)[1] for x in sys.argv if x.startswith('-backend-config='))\n"
         "    initialize(Path.cwd(),json.loads(Path(path).read_text()))\n"
         "elif sys.argv[1]=='plan':\n"
@@ -74,6 +75,35 @@ def prepare_fixture(tmp_path):
         str(executable),
     ]
     return with_account_cli(command, tmp_path, ACCOUNT), module, target, record
+
+
+@pytest.mark.parametrize("review_only", [False, True])
+def test_replacement_proposal_never_implies_apply_authority(tmp_path, review_only):
+    command, _, _, record = prepare_fixture(
+        tmp_path, plan=_plan(_cluster(["delete", "create"]))
+    )
+    if review_only:
+        command.append("--review-only")
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode == (0 if review_only else 1), result.stdout + result.stderr
+    document = json.loads(
+        (tmp_path / "review/workspace-authorization.proposed.json").read_text()
+    )
+    assert document["destroy"]
+    assert document["destroy_identities"]
+    assert all(call[0] != "apply" for call in json.loads(record.read_text()))
+    if review_only:
+        assert "Destruction remains unapproved" in result.stdout
+
+
+def test_review_only_still_rejects_foreign_resources(tmp_path):
+    cluster = _cluster(["delete", "create"])
+    cluster["change"]["before"]["name"] = "foreign"
+    command, _, _, record = prepare_fixture(tmp_path, plan=_plan(cluster))
+    result = subprocess.run(command + ["--review-only"], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert not (tmp_path / "review/workspace-authorization.proposed.json").exists()
+    assert all(call[0] != "apply" for call in json.loads(record.read_text()))
 
 
 def test_preparation_derives_and_binds_actual_backend_without_applying(tmp_path):

@@ -46,20 +46,68 @@ resource "aws_iam_role_policy" "chat_worker_queue_depth" {
 }
 
 resource "aws_iam_role_policy" "chat_worker_deny_direct_authority" {
-  name = "deny-direct-chat-authority"
-  role = aws_iam_role.chat_worker.id
+  count = length(var.chat_legacy_upgrade_policies) == 0 || var.chat_legacy_upgrade_deny_ready ? 1 : 0
+  name  = "deny-direct-chat-authority"
+  role  = aws_iam_role.chat_worker.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect = "Deny"
       Action = [
-        "bedrock:*", "dynamodb:*", "s3:*", "secretsmanager:*", "kms:*",
+        "bedrock:*", "bedrock-agentcore:*", "dynamodb:*", "s3:*", "secretsmanager:*", "kms:*",
         "execute-api:Invoke", "sts:AssumeRole", "iam:PassRole",
         "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:SendMessage"
       ]
       Resource = "*"
     }]
   })
+}
+
+moved {
+  from = aws_iam_role_policy.chat_worker_deny_direct_authority
+  to   = aws_iam_role_policy.chat_worker_deny_direct_authority[0]
+}
+
+# The full upgrade first publishes the unavailable-chat ingress response while
+# preserving the observed legacy grants. After the script has drained jobs it
+# removes this temporary input and applies the normal retired identity above.
+# Never populate this from defaults or use it to activate the legacy runtime.
+variable "chat_legacy_upgrade_policies" {
+  type        = map(string)
+  default     = {}
+  description = "Transient, observed inline policies for the ordered legacy chat retirement."
+  validation {
+    condition = alltrue([for name in keys(var.chat_legacy_upgrade_policies) : contains([
+      "sqs", "sessions", "secrets", "bootstrap_logs", "gateway_invoke",
+      "chat_data", "chat_artifacts", "chat_queue", "deny-direct-bedrock"
+    ], name)])
+    error_message = "Only the known legacy chat inline policies may be retained."
+  }
+}
+
+variable "chat_legacy_upgrade_deny_ready" {
+  type        = bool
+  default     = false
+  description = "Transient retirement stage: legacy jobs have drained and the broader denial may be attached before old policies are removed."
+}
+
+resource "aws_iam_role_policy" "chat_worker_runtime" {
+  for_each = { for name, document in var.chat_legacy_upgrade_policies : name => document if name != "deny-direct-bedrock" }
+  name     = "chat-${each.key}"
+  role     = aws_iam_role.chat_worker.id
+  policy   = each.value
+}
+
+moved {
+  from = aws_iam_role_policy.chat_worker_deny_direct_bedrock
+  to   = aws_iam_role_policy.chat_worker_deny_direct_bedrock[0]
+}
+
+resource "aws_iam_role_policy" "chat_worker_deny_direct_bedrock" {
+  count  = contains(keys(var.chat_legacy_upgrade_policies), "deny-direct-bedrock") ? 1 : 0
+  name   = "deny-direct-bedrock"
+  role   = aws_iam_role.chat_worker.id
+  policy = var.chat_legacy_upgrade_policies["deny-direct-bedrock"]
 }
 
 # A separate trusted queue supervisor may read the registered dispatch and ask
@@ -101,18 +149,29 @@ resource "aws_iam_role_policy" "chat_supervisor" {
         Resource = aws_sqs_queue.chat_agent_tasks_fifo.arn
       },
       {
+        # Every route the supervisor calls (sandbox-supervisor-admission.ts), as
+        # reached through the gateway API's AWS_IAM `/internal/{proxy+}` method:
+        # <stage>/internal/v1/agent/chat/... is forwarded to the internal-plane ALB
+        # with the path preserved. The `/agent/{proxy+}` method strips its prefix
+        # and targets the edge ALB, so `/agent/internal/...` is not the form the
+        # supervisor signs. The gateway still verifies the body-bound producer
+        # proof on each route; this grant only lets the request through API Gateway.
         Sid    = "AdmitVerifiedChatSandbox"
         Effect = "Allow"
         Action = ["execute-api:Invoke"]
         Resource = [
-          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/admit",
-          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/exit",
-          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/reserve",
-          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/resume",
-          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/teardown",
-          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/finalize",
-          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/complete",
-          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/session/commit"
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/reserve",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/admit",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/exit",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/teardown",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/finalize",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/complete",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/resume",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/session/commit",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/crew-run",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/crew-run/lease",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/crew-run/activate",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/crew-run/ready"
         ]
       },
       {

@@ -22,11 +22,23 @@ def _payload(value):
 
 
 def _fields(body):
-    return {
+    fields = {
         k: v
         for k, v in body.items()
         if k not in {"apiVersion", "kind", "metadata", "status"}
     }
+    if body.get("kind") == "Namespace" and isinstance(fields.get("spec", {}), dict):
+        # The API adds this finalizer when creating a Namespace. Canonicalize
+        # only that built-in default; retain custom finalizers and other fields
+        # so unexpected changes still fail the pinned-object check.
+        spec = dict(fields.get("spec", {}))
+        if spec.get("finalizers") == ["kubernetes"]:
+            spec.pop("finalizers")
+        if spec:
+            fields["spec"] = spec
+        else:
+            fields.pop("spec", None)
+    return fields
 
 
 def _digest(body):
@@ -47,13 +59,22 @@ def _digest(body):
 
 
 class KubeGrants:
-    def __init__(self, client, target):
+    def __init__(self, client, target, *, owner_tls_proxy=None):
+        from .owner_tls_transport import PinnedOwnerTlsProxy
         from .target import VerifiedTarget
 
         if not isinstance(target, VerifiedTarget):
             raise BootstrapRefused("Kubernetes grants require a verified target")
         self.client = client
         self.target = target
+        if (
+            owner_tls_proxy is not None
+            and type(owner_tls_proxy) is not PinnedOwnerTlsProxy
+        ):
+            raise BootstrapRefused(
+                "Kubernetes owner route requires a pinned TLS transport"
+            )
+        self.owner_tls_proxy = owner_tls_proxy
         self._verify_transport()
 
     def _verify_transport(self):
@@ -69,7 +90,11 @@ class KubeGrants:
                 and config.verify_ssl is True
                 and config.assert_hostname is None
                 and config.tls_server_name is None
-                and not config.proxy
+                and (
+                    not config.proxy
+                    if self.owner_tls_proxy is None
+                    else self.owner_tls_proxy.verify(self.client.client, self.target)
+                )
                 and expected
                 and compare_digest(actual, expected)
             )

@@ -1,0 +1,14 @@
+{
+  "inspected_source_revision":"ad4d0e96a60896e8d639bee8de27618473bcabdc",
+  "requirements_revision":"6c875c6b5a29f54bbd94a98dda9a37bc8e411db5",
+  "source_assertions":[
+    {"path":"modules/gateway/src/app.py","contains":["UNIT_MODULES", "app.include_router(module.router)"]},
+    {"path":"modules/gateway/alembic/env.py","contains":["run_migrations_online", "context.run_migrations()"]},
+    {"path":".github/workflows/gateway-ci.yml","contains":["modules/gateway/src/**", "modules/gateway/alembic/versions/**"]},
+    {"path":".github/workflows/gateway-deploy.yml","contains":["modules/gateway/src/", "modules/gateway/alembic/versions/", "migrate-before-rollout.py", "run-gateway-migrations.yml", "refs/heads/main"]},
+    {"path":"modules/gateway/scripts/migrate-before-rollout.py","contains":["\"alembic\"", "\"upgrade\", \"head\"", "backoffLimit", "activeDeadlineSeconds"]},
+    {"path":".github/workflows/gateway-frontend-deploy.yml","contains":["modules/gateway/frontend/", "workflow_dispatch"]},
+    {"path":".github/workflows/eval-cli-uplift.yml","contains":["workflow_dispatch"]},
+    {"path":".github/workflows/e2e-new-ui-playwright.yml","contains":["workflow_dispatch"]}
+  ]
+}

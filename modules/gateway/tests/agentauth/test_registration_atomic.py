@@ -492,3 +492,21 @@ def test_incomplete_agent_dispatch_reservation_still_refused(registered_context)
     with pytest.raises(AuthorityStoreError, match="reservation metadata"):
         report(ctx)
     assert ctx.store._read("TENANT#tenant", "EXEC#run-a")["status"] == {"S": "active"}
+
+
+def test_budget_stop_is_atomic_protected_terminal_evidence_and_replay_keeps_time(registered_context):
+    ctx = registered_context
+    register(ctx)
+    report(ctx, status="budget_stopped", stop_reason="budget_cap_exceeded")
+    protected = ctx.store._read("TENANT#tenant", "EXEC#run-a")
+    assert protected["status"] == {"S": "completed"}
+    assert protected["terminal_outcome"] == {"S": "budget_stopped"}
+    assert protected["terminal_recorded_at"] == event(ctx)["status_updated_at"]
+    assert event(ctx)["stop_reason"] == {"S": "budget_cap_exceeded"}
+    assert "control_token" not in event(ctx)
+    report(ctx, status="budget_stopped", stop_reason="budget_cap_exceeded")
+    assert ctx.store._read("TENANT#tenant", "EXEC#run-a") == protected
+    with pytest.raises(RegistrationRefusedError):
+        report(ctx, status="complete")
+    with pytest.raises(RegistrationRefusedError):
+        report(ctx, status="in_progress")

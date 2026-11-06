@@ -307,6 +307,16 @@ class TestBrokeredWorkspaceAssume:
         assert credentials["AccessKeyId"] == "ASIAIOSFODNN7EXAMPLE"
 
     @pytest.mark.asyncio
+    async def test_workspace_session_policy_reaches_sts(self):
+        client, stub = self._client_with_stub()
+        policy = '{"Version":"2012-10-17","Statement":[]}'
+        await client.assume_workspace_role(
+            self._stored_account(), "l5-work", user_id="user-a", agent_id="l5-worker", task_id="work-a", session_policy=policy
+        )
+        assert stub.assume_role.call_args.kwargs["Policy"] == policy
+        assert stub.assume_role.call_args.kwargs["DurationSeconds"] == 900
+
+    @pytest.mark.asyncio
     async def test_two_tenants_produce_two_different_external_ids(self):
         """Per-tenant, not a shared constant: two records send two distinct values."""
         client, stub = self._client_with_stub()
@@ -437,7 +447,7 @@ class TestAssumeRoleExternalIdRegression:
         assert params == {
             "RoleArn": "arn:aws:iam::123456789012:role/legacy",
             "RoleSessionName": "legacy-session",
-            "DurationSeconds": 3600,
+            "DurationSeconds": 900,
         }
 
     @pytest.mark.asyncio

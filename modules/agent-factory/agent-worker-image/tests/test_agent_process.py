@@ -134,3 +134,23 @@ def test_inherited_persona_uses_six_hour_deadline(monkeypatch):
     monkeypatch.setattr("lib.agent_process.time.monotonic", lambda: 100)
     run_agent(["agent"])
     child.communicate.assert_called_once_with(None, timeout=21600)
+
+
+@pytest.mark.parametrize("persona,admitted,expected", [
+    ("operations", "true", 21600),
+    ("agent-codex-operations", "true", 21600),
+    ("operations", "false", 7200),
+    ("operations", "", 7200),
+    ("agent-codex-operations", "", 7200),
+    ("architect", "true", 7200),
+])
+@pytest.mark.parametrize("explicit_timeout", [None, 12])
+def test_admitted_operations_story_has_delivery_deadline(monkeypatch, persona, admitted, expected, explicit_timeout):
+    child = MagicMock()
+    child.__enter__.return_value = child
+    child.communicate.return_value = ("finished", "")
+    child.returncode = 0
+    monkeypatch.setattr("lib.agent_process.subprocess.Popen", lambda *args, **kwargs: child)
+    monkeypatch.setattr("lib.agent_process.time.monotonic", lambda: 100)
+    run_agent(["agent"], env={"AGENT_TYPE": persona, "ADP_ENGINE_OPERATIONS_STORY": admitted}, timeout=explicit_timeout)
+    child.communicate.assert_called_once_with(None, timeout=expected if explicit_timeout is None else explicit_timeout)

@@ -47,9 +47,11 @@ async def fixture(db_session, monkeypatch):
         assert kwargs["headers"] == {"PRIVATE-TOKEN": "synthetic-pat"}
         return Mock(
             status_code=200,
-            json=lambda: {"id": 7, "username": "human"}
-            if url.endswith("/user")
-            else {"id": 42, "path_with_namespace": "group/project", "permissions": {"project_access": {"access_level": 40}}},
+            json=lambda: (
+                {"id": 7, "username": "human"}
+                if url.endswith("/user")
+                else {"id": 42, "path_with_namespace": "group/project", "permissions": {"project_access": {"access_level": 40}}}
+            ),
         )
 
     client.get.side_effect = get
@@ -148,9 +150,11 @@ async def test_owner_can_reconcile_verified_rename_of_same_numeric_project(db_se
     def renamed(url, **kwargs):
         return Mock(
             status_code=200,
-            json=lambda: {"id": 7, "username": "human"}
-            if url.endswith("/user")
-            else {"id": 42, "path_with_namespace": binding.repo, "permissions": {"project_access": {"access_level": 40}}},
+            json=lambda: (
+                {"id": 7, "username": "human"}
+                if url.endswith("/user")
+                else {"id": 42, "path_with_namespace": binding.repo, "permissions": {"project_access": {"access_level": 40}}}
+            ),
         )
 
     client.get.side_effect = renamed

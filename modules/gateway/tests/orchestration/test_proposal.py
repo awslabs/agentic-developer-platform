@@ -18,8 +18,10 @@ from src.orchestration.proposal import (
     ADDRESS_PATTERN,
     INITIAL_NODE_STATE,
     LoopProposal,
+    NamedInputPrerequisite,
     ProposedEdge,
     ProposedNode,
+    RepositoryConnection,
     Violation,
     split_address,
     validate_proposal,
@@ -60,6 +62,92 @@ def make_proposal(*, nodes=None, edges=None, **overrides) -> LoopProposal:
 
 def rules(violations: list[Violation]) -> set[str]:
     return {violation.rule for violation in violations}
+
+
+class TestNodeMetadata:
+    @pytest.mark.parametrize("selector", [{"provider": "gitlab", "installation_id": 1}, {"provider": "github", "installation_id": 0}])
+    def test_repository_connection_selector_refuses_unsupported_or_missing_authority(self, selector):
+        with pytest.raises(ValidationError):
+            ProposedNode(address=address("story-a"), kind="story", title="Story A", repository_connection=selector)
+
+    def test_repository_connection_serializes_only_when_present(self):
+        proposal = make_proposal()
+        assert "repository_connection" not in proposal.model_dump(mode="json")["nodes"][0]
+        proposal.nodes[0].repository_connection = RepositoryConnection(provider="github", installation_id=901)
+        assert proposal.model_dump(mode="json")["nodes"][0]["repository_connection"] == {"provider": "github", "installation_id": 901}
+
+    def test_optional_lineage_and_labels_round_trip_without_changing_legacy_documents(self):
+        baseline = make_proposal()
+        assert "lineage" not in baseline.model_dump()["nodes"][0]
+        assert "labels" not in baseline.model_dump()["nodes"][0]
+
+        payload = baseline.model_dump(mode="json")
+        payload["nodes"][0]["lineage"] = {
+            "story_id": "EI-S02",
+            "size": "M",
+            "type": "feature",
+            "risk_class": "engineering-insights",
+            "fixes_story_id": "EI-S01",
+            "team_id": "delivery",
+            "cohort": "wave-1",
+        }
+        payload["nodes"][0]["labels"] = {"source": "issue"}
+        proposal = LoopProposal.model_validate(payload)
+        assert proposal.nodes[0].lineage.story_id == "EI-S02"
+        assert proposal.model_dump(mode="json")["nodes"][0]["labels"] == {"source": "issue"}
+        assert validate_proposal(proposal) == []
+
+    def test_sixteen_controlled_labels_are_accepted_but_seventeen_are_refused(self):
+        keys = (
+            "source",
+            "component",
+            "workstream",
+            "domain",
+            "priority",
+            "product",
+            "initiative",
+            "repository",
+            "stage",
+            "scope",
+            "tracking",
+            "experiment",
+            "team",
+            "cohort",
+            "risk",
+            "delivery",
+        )
+        story = ProposedNode(address=address("story-a"), kind="story", title="A", labels=dict.fromkeys(keys, "value"))
+        assert validate_proposal(make_proposal(nodes=[story, ProposedNode(address=address("eval"), kind="eval", title="Eval")])) == []
+        story = story.model_copy(update={"labels": {**story.labels, "extra": "value"}})
+        proposal = make_proposal(nodes=[story, ProposedNode(address=address("eval"), kind="eval", title="Eval")])
+        assert "labels_too_many" in rules(validate_proposal(proposal))
+
+    @pytest.mark.parametrize("key", ["not-controlled", "x" * 33])
+    def test_unknown_or_overlong_key_is_refused_on_its_own(self, key):
+        story = ProposedNode(address=address("story-a"), kind="story", title="A", labels={key: "value"})
+        proposal = make_proposal(nodes=[story, ProposedNode(address=address("eval"), kind="eval", title="Eval")])
+        assert "label_key_unknown" in rules(validate_proposal(proposal))
+
+    @pytest.mark.parametrize("lineage", [{"story_id": "  "}, {"cohort": "x" * 129}])
+    def test_blank_or_overlong_lineage_gets_named_violation(self, lineage):
+        proposal = make_proposal()
+        payload = proposal.model_dump(mode="json")
+        payload["nodes"][0]["lineage"] = lineage
+        assert "lineage_invalid" in rules(validate_proposal(LoopProposal.model_validate(payload)))
+
+    @pytest.mark.parametrize("lineage", [{"unknown": "x"}, ["story"], {"story_id": 42}])
+    def test_malformed_lineage_has_named_schema_error(self, lineage):
+        payload = make_proposal().model_dump(mode="json")
+        payload["nodes"][0]["lineage"] = lineage
+        with pytest.raises(ValidationError) as exc:
+            LoopProposal.model_validate(payload)
+        assert exc.value.errors()[0]["type"] == "lineage_invalid"
+
+    @pytest.mark.parametrize("labels", [{"source": "x" * 129}, {"source": ""}])
+    def test_invalid_label_values_are_refused(self, labels):
+        payload = make_proposal().model_dump(mode="json")
+        payload["nodes"][0]["labels"] = labels
+        assert "labels_invalid" in rules(validate_proposal(LoopProposal.model_validate(payload)))
 
 
 class TestWellFormed:
@@ -352,6 +440,41 @@ class TestRule6SameIssueOrdering:
         only at the eval, so nothing decides which of them runs first."""
         violations = validate_proposal(self._wave("5127", "5127", self._to_eval()))
         assert "unordered_same_issue" in rules(violations)
+
+    def test_same_number_in_distinct_repositories_is_independent(self):
+        proposal = self._wave("42", "#42", self._to_eval())
+        proposal.nodes[0].repository_identity = "example/repo-a"
+        proposal.nodes[0].provider_repository_id = 101
+        proposal.nodes[1].repository_identity = "example/repo-b"
+        proposal.nodes[1].provider_repository_id = 202
+
+        assert validate_proposal(proposal) == []
+
+    def test_same_repository_id_rejects_unordered_work_even_after_rename(self):
+        proposal = self._wave("42", "#42", self._to_eval())
+        proposal.nodes[0].repository_identity = "example/old-name"
+        proposal.nodes[0].provider_repository_id = 101
+        proposal.nodes[1].repository_identity = "example/new-name"
+        proposal.nodes[1].provider_repository_id = 101
+
+        violations = [violation for violation in validate_proposal(proposal) if violation.rule == "unordered_same_issue"]
+        assert len(violations) == 1
+        assert violations[0].where == f"{address('story-a')} | {address('story-b')}"
+
+    def test_same_repository_id_allows_reachable_follow_up(self):
+        proposal = self._wave(
+            "42",
+            "#42",
+            [
+                ProposedEdge(from_address=address("story-a"), to_address=address("story-b")),
+                ProposedEdge(from_address=address("story-b"), to_address=address("eval")),
+            ],
+        )
+        for node in proposal.nodes[:2]:
+            node.repository_identity = "example/repo-a"
+            node.provider_repository_id = 101
+
+        assert validate_proposal(proposal) == []
 
     def test_the_violation_names_both_unordered_nodes_and_the_issue(self):
         """An author fixing this needs to know which two nodes to sequence."""
@@ -702,6 +825,33 @@ class TestValidationCollectsEverything:
             "dangling_edge",
             "wave_eval_cardinality",
         } <= found
+
+
+class TestCriterionCoverage:
+    def test_validation_criteria_require_an_executable_evidence_producer(self):
+        proposal = make_proposal()
+        evaluation = next(node for node in proposal.nodes if node.kind == "eval")
+        evaluation.criteria = ["live-cleanup"]
+        evaluation.evidence_expectations = ["trusted-live-observation"]
+
+        assert "criterion_producer_missing" in rules(validate_proposal(proposal))
+
+    def test_validation_cannot_be_placed_behind_its_same_wave_result_gate(self):
+        proposal = make_proposal()
+        evaluation = next(node for node in proposal.nodes if node.kind == "eval")
+        evaluation.criteria = ["live-cleanup"]
+        evaluation.evidence_expectations = ["trusted-live-observation"]
+        gate = ProposedNode(address=address("acceptance"), kind="gate", title="Acceptance")
+        proposal.nodes.append(gate)
+        proposal.edges.append(ProposedEdge(from_address=gate.address, to_address=evaluation.address))
+
+        assert "validation_behind_result_gate" in rules(validate_proposal(proposal))
+
+    def test_unresolvable_named_input_sources_are_rejected(self):
+        proposal = make_proposal()
+        proposal.nodes[0].required_inputs = [NamedInputPrerequisite(name="live account", source="secret-value")]
+
+        assert "required_input_source_unsupported" in rules(validate_proposal(proposal))
 
 
 class TestVocabularyReuse:

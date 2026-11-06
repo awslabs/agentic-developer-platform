@@ -11,9 +11,13 @@ JWT validation stubbed at the dependency seams.
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
+import jwt
 import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -27,7 +31,7 @@ from src.auth.cli_login import (
     get_token_minter,
     router,
 )
-from src.auth.cognito_jwt import CognitoTokenClaims
+from src.auth.cognito_jwt import CognitoJWTValidator, CognitoTokenClaims
 from src.shared.database import get_db
 from src.shared.models.cli_auth import CliAuthRequest
 
@@ -84,6 +88,7 @@ class StubMinter:
 
 
 class StubSettings:
+    cognito_client_id = "spa-client"
     cognito_cli_client_id = CLI_CLIENT_ID
     cognito_user_pool_id = USER_POOL_ID
     aws_region = "us-east-1"
@@ -120,6 +125,141 @@ def _configured_settings(monkeypatch):
 @pytest.fixture
 def minter() -> StubMinter:
     return StubMinter()
+
+
+@pytest.fixture(scope="module")
+def browser_signing_key():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.fixture
+def browser_auth(monkeypatch, browser_signing_key):
+    """Real JWT validation and route dependency; only Cognito transport is fake."""
+    validator = CognitoJWTValidator(user_pool_id=USER_POOL_ID, client_id="spa-client", allowed_client_ids=[CLI_CLIENT_ID], region="us-east-1")
+    validator._jwk_client = MagicMock()
+    validator._jwk_client.get_signing_key_from_jwt.return_value.key = browser_signing_key.public_key()
+    monkeypatch.setattr("src.auth.cli_login.get_cognito_validator", lambda: validator)
+    cognito = MagicMock()
+    cognito.get_user.return_value = {"Username": "github_777", "UserAttributes": [{"Name": "sub", "Value": "sub-777"}]}
+    monkeypatch.setattr("src.auth.cli_login.boto3.client", lambda *args, **kwargs: cognito)
+
+    def bearer(**changes):
+        now = int(time.time())
+        claims = {
+            "sub": "sub-777",
+            "iss": validator.issuer,
+            "client_id": "spa-client",
+            "token_use": "access",
+            "exp": now + 3600,
+            "iat": now,
+            "auth_time": now - 86400,
+            "jti": "browser-session",
+            "username": "github_777",
+            "custom:account_type": "human",
+        }
+        claims.update(changes)
+        return {"Authorization": "Bearer " + jwt.encode(claims, browser_signing_key, algorithm="RS256")}
+
+    return cognito, bearer
+
+
+def _browser_client(db_session, minter):
+    client = _make_app(db_session, minter)
+    del client.app.dependency_overrides[_get_cognito_claims]
+    return client
+
+
+@pytest.mark.parametrize("account_type", ["human", None])
+def test_live_browser_session_can_approve_and_redeem_without_workspace_or_recent_login(db_session, minter, browser_auth, account_type):
+    cognito, bearer = browser_auth
+    client = _browser_client(db_session, minter)
+    pending = _start(client)
+    response = client.post(
+        "/auth/cli/approve",
+        json={"user_code": pending["user_code"], "action": "approve"},
+        headers=bearer(**{"custom:account_type": account_type}),
+    )
+    assert response.status_code == 200
+    cognito.get_user.assert_called_once()
+    tokens = client.post("/auth/cli/token", json={"device_code": pending["device_code"]})
+    assert tokens.status_code == 200
+    assert tokens.json()["refresh_token"] == "minted-refresh"
+    assert minter.calls == [("github_777", CLI_CLIENT_ID)]
+
+
+@pytest.mark.parametrize("action,status", [("deny", 200), ("approve", 403)])
+def test_password_browser_user_can_deny_but_cannot_mint_cli_credentials(db_session, minter, browser_auth, action, status):
+    cognito, bearer = browser_auth
+    client = _browser_client(db_session, minter)
+    pending = _start(client)
+    response = client.post(
+        "/auth/cli/approve", json={"user_code": pending["user_code"], "action": action}, headers=bearer(username="person@example.test")
+    )
+    assert response.status_code == status
+    cognito.get_user.assert_not_called()
+    assert not minter.calls
+
+
+@pytest.mark.parametrize("action", ["approve", "deny"])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"token_use": "id", "aud": "spa-client"},
+        {"client_id": CLI_CLIENT_ID},
+        {"custom:account_type": "service"},
+        {"auth_time": 0},
+        {"jti": ""},
+        {"username": ""},
+        {"exp": 1},
+    ],
+)
+async def test_cli_consent_rejects_non_browser_session_before_mutating_request(db_session, minter, browser_auth, changes, action):
+    cognito, bearer = browser_auth
+    client = _browser_client(db_session, minter)
+    pending = _start(client)
+    response = client.post("/auth/cli/approve", json={"user_code": pending["user_code"], "action": action}, headers=bearer(**changes))
+    assert response.status_code == 401
+    cognito.get_user.assert_not_called()
+    row = await _get_row(db_session, pending["user_code"])
+    assert row.status == "pending"
+    assert row.approved_username is None
+    assert not minter.calls
+
+
+@pytest.mark.parametrize(
+    "failure,status",
+    [
+        (ClientError({"Error": {"Code": "NotAuthorizedException"}}, "GetUser"), 401),
+        (ClientError({"Error": {"Code": "TooManyRequestsException"}}, "GetUser"), 503),
+        (EndpointConnectionError(endpoint_url="https://cognito.invalid"), 503),
+    ],
+)
+async def test_cli_consent_requires_live_session_and_keeps_failed_attempt_pending(db_session, minter, browser_auth, failure, status):
+    cognito, bearer = browser_auth
+    cognito.get_user.side_effect = failure
+    client = _browser_client(db_session, minter)
+    pending = _start(client)
+    response = client.post("/auth/cli/approve", json={"user_code": pending["user_code"], "action": "approve"}, headers=bearer())
+    assert response.status_code == status
+    assert (await _get_row(db_session, pending["user_code"])).status == "pending"
+    assert not minter.calls
+
+
+@pytest.mark.parametrize(
+    "user",
+    [
+        {"Username": "github_777", "UserAttributes": [{"Name": "sub", "Value": "different-sub"}]},
+        {"Username": "github_other", "UserAttributes": [{"Name": "sub", "Value": "sub-777"}]},
+    ],
+)
+def test_cli_consent_binds_live_session_to_signed_identity(db_session, minter, browser_auth, user):
+    cognito, bearer = browser_auth
+    cognito.get_user.return_value = user
+    client = _browser_client(db_session, minter)
+    pending = _start(client)
+    response = client.post("/auth/cli/approve", json={"user_code": pending["user_code"], "action": "approve"}, headers=bearer())
+    assert response.status_code == 401
+    assert not minter.calls
 
 
 async def _get_row(db_session: AsyncSession, user_code: str) -> CliAuthRequest | None:
@@ -589,3 +729,34 @@ class TestRefreshRoute:
         client, seen = _endpoint_app(db_session, lambda _r: _token_response())
         assert self._refresh(client).status_code == 200
         assert len(seen) == 1  # exactly one outbound call: the token endpoint
+
+
+class TestRevokeRoute:
+    def test_revoke_uses_cli_client_and_refresh_token_without_aws(self, db_session: AsyncSession) -> None:
+        from urllib.parse import parse_qs
+
+        client, seen = _endpoint_app(db_session, lambda _r: httpx.Response(200))
+        response = client.post("/auth/cli/revoke", json={"refresh_token": "temporary-fake-refresh-token"})
+        assert response.status_code == 200, response.text
+        assert response.json() == {"revoked": True}
+        assert len(seen) == 1
+        assert str(seen[0].url) == TOKEN_ENDPOINT.removesuffix("/token") + "/revoke"
+        assert parse_qs(seen[0].content.decode()) == {
+            "token": ["temporary-fake-refresh-token"],
+            "client_id": [CLI_CLIENT_ID],
+            "token_type_hint": ["refresh_token"],
+        }
+        assert "authorization" not in seen[0].headers
+
+    def test_failed_revoke_does_not_claim_logout(self, db_session: AsyncSession) -> None:
+        client, _ = _endpoint_app(db_session, lambda _r: httpx.Response(503))
+        response = client.post("/auth/cli/revoke", json={"refresh_token": "temporary-fake-refresh-token"})
+        assert response.status_code == 502
+        assert response.json()["detail"]["error"] == "revoke_failed"
+        assert "temporary-fake-refresh-token" not in response.text
+
+    def test_short_refresh_token_rejected_before_provider(self, db_session: AsyncSession) -> None:
+        client, seen = _endpoint_app(db_session, lambda _r: httpx.Response(200))
+        response = client.post("/auth/cli/revoke", json={"refresh_token": "short"})
+        assert response.status_code == 422
+        assert not seen

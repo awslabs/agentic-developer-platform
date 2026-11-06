@@ -223,6 +223,14 @@ ${local.agent_worker_pause_annotation}
               - name: agent-worker
                 image: ${local.agent_image}
                 env:
+                  - name: ADP_ENGINE_OPERATIONS_EXECUTOR
+                    value: "${var.engine_operations_executor_enabled}"
+                  # Upper bound on Claude Code turns for one operations story run
+                  # (operations-story-entry.ts). An operations loop dispatches a
+                  # deployment, polls it, reads evidence and may repair; 60 turns
+                  # ran out twice on TLS-X01 (2026-10-14) before the loop finished.
+                  - name: ADP_OPERATIONS_MAX_TURNS
+                    value: "${var.operations_max_turns}"
                   - name: AWS_REGION
                     value: ${var.aws_region}
                   # Issue #4028: without this the worker falls back to "dev" in

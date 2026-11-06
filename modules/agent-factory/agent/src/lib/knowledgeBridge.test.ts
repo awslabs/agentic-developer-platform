@@ -54,6 +54,15 @@ describe('protected Knowledge Door bridge', () => {
     expect(getDoorHeaders({ 'X-Owner-Sub': 'victim', 'X-Tenant-Id': 'victim' })).toEqual({});
   });
 
+  it('never falls back to a direct Door call for unprotected workers', async () => {
+    process.env.ADP_AGENT_AUTHORITY_ENABLED = 'false';
+    process.env.CONTEXT_MCP_SERVER_URL = 'https://legacy.example';
+    expect(getKnowledgeLayerMcpConfig()).toEqual({ type: 'http', url: knowledgeBridgeUrl() + '/mcp/', headers: {} });
+    const response = await nativeFetch(local + '/__run/knowledge/mcp/', { method: 'POST', body: '{}' });
+    expect(response.status).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, '8181'])('uses the configured proxy port %s for every protected Door client', async port => {
     if (port === undefined) delete process.env.SIGV4_PROXY_PORT;
     else process.env.SIGV4_PROXY_PORT = port;

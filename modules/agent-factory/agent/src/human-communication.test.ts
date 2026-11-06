@@ -1,3 +1,4 @@
+import { withIssueAuthoring } from './issue-authoring';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -29,9 +30,9 @@ describe('shared communication policy assembly', () => {
     const compiled = ts.transpileModule(source.slice(start, source.indexOf('\n}', end) + 2), {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    const prompt = new Function('fs', 'path', 'CWD', 'AGENT_TYPE', 'loadHumanCommunication', 'loadCodingGuidelines',
+    const prompt = new Function('fs', 'path', 'CWD', 'AGENT_TYPE', 'loadHumanCommunication', 'loadCodingGuidelines', 'withIssueAuthoring',
       'beadsPrimeContext', 'agentMemoryContext', `${compiled}; return loadRules();`)(
-      fs, path, cwd, 'pm', loadHumanCommunication, loadCodingGuidelines, '', '',
+      fs, path, cwd, 'pm', loadHumanCommunication, loadCodingGuidelines, withIssueAuthoring, '', '',
     );
     expect(prompt).toContain('REPOSITORY PERSONA');
     expect(prompt).not.toContain('DEFAULT PERSONA');

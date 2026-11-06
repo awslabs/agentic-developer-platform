@@ -6,7 +6,7 @@ Issue #134: Vault Phase 1 — schema + secret-store substrate
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, false
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from src.shared.identity.providers import SUPPORTED_PROVIDERS, IdentityProvider
@@ -172,6 +172,7 @@ class UserCredential(Base, TenantMixin):
     credential_type: Mapped[str] = mapped_column(String(20), nullable=False)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     secret_arn: Mapped[str] = mapped_column(String(512), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(32))
     operation_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Written only by the AWS connect endpoints, never by generic vault input.
     aws_external_id: Mapped[str | None] = mapped_column(String(36))
@@ -186,6 +187,7 @@ class UserCredential(Base, TenantMixin):
     # Use this for high-sensitivity credentials where an agent should only
     # get the credential when it explicitly owns the right scope.
     strict: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+    agent_consent: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=utcnow)
 
@@ -399,6 +401,37 @@ class CredentialWorkspaceDelegation(Base, TenantMixin):
         return self.revoked_at is None
 
 
+class CredentialServiceDelegation(Base):
+    __tablename__ = "credential_service_delegations"
+    __table_args__ = (
+        Index("ix_service_delegations_principal", "service_id", "tenant_id", "product_id", "project_id"),
+        CheckConstraint("(credential_id IS NOT NULL) != (installation_id IS NOT NULL)", name="ck_service_delegation_source"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    credential_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("user_credentials.id", ondelete="CASCADE"))
+    installation_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("channel_tenant_map.id", ondelete="CASCADE"))
+    service_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    product_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    operations: Mapped[list] = mapped_column(JSON, nullable=False)
+    sources: Mapped[list] = mapped_column(JSON, nullable=False)
+    capabilities: Mapped[list] = mapped_column(JSON, nullable=False)
+    visibility: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    operation_id: Mapped[str | None] = mapped_column(String(255))
+    attempt_id: Mapped[str | None] = mapped_column(String(255))
+    lease_fence: Mapped[int | None] = mapped_column(Integer)
+    binding_generation: Mapped[int | None] = mapped_column(Integer)
+    parent_delegation_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("credential_service_delegations.id"))
+    # Retained consent is authorization data, not an optional audit receipt.
+    execution_scope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CredentialValidationEvidence(Base, TenantMixin):
     """The provider-validation readings the Gateway itself holds for a credential.
 
@@ -462,3 +495,61 @@ class CredentialValidationEvidence(Base, TenantMixin):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=utcnow)
+
+
+class OAuthConnectionAttempt(Base, TenantMixin):
+    """Short-lived, single-use binding between user consent and its Identity session."""
+
+    __tablename__ = "oauth_connection_attempts"
+
+    state_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    session_uri: Mapped[str] = mapped_column(String(2048), nullable=False)
+    requested_scopes: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    connection_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    identity_completion_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    identity_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OAuthConnectionBinding(Base, TenantMixin):
+    """Observed provider identity for an exact owner-owned credential revision."""
+
+    __tablename__ = "oauth_connection_bindings"
+
+    credential_id: Mapped[str] = mapped_column(String(36), ForeignKey("user_credentials.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    revision: Mapped[str] = mapped_column(String(36), nullable=False)
+    credential_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    observed_scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    observed_resources: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    selected_site_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OAuthToolReceipt(Base):
+    """Durable one-use vendor receipt or short-lived adapter admission."""
+
+    __tablename__ = "oauth_tool_receipts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    authorization: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ToolAdapterActivation(Base):
+    """Durable release fence; absent groups never authorize tool execution."""
+
+    __tablename__ = "tool_adapter_activations"
+    __table_args__ = (CheckConstraint("status IN ('legacy','fenced','active')", name="ck_tool_adapter_activation_status"),)
+
+    group: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    release: Mapped[dict] = mapped_column(JSON, nullable=False)
+    transition: Mapped[dict | None] = mapped_column(JSON, nullable=True)

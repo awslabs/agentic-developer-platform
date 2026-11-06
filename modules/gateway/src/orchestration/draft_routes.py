@@ -95,13 +95,14 @@ from src.orchestration.compile import ApprovalContext, NonApprovalSupersedeError
 from src.orchestration.draft_binding import DraftBindingError, resolve_draft_tenant
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.executor_assignment import ExecutorAssignment
+from src.orchestration.node_files import NodeFileGroup
 from src.orchestration.pending_amendments import (
     AmendmentRequestNotFoundError,
     register_amendment_draft,
     resolve_authoring_request,
 )
 from src.orchestration.preview import ConclusionAuthority, derive_nodes, derive_waves
-from src.orchestration.proposal import EpicMetadata, LoopProposal, validate_proposal
+from src.orchestration.proposal import EpicMetadata, LoopProposal, NodeLineage, validate_proposal
 from src.orchestration.registration import DraftFlowConflictError, register_draft_proposal, transform_for_registration
 from src.orchestration.state import ActorKind
 from src.shared.database import get_db
@@ -210,6 +211,9 @@ class PreviewNode(BaseModel):
     address: str
     kind: str
     title: str
+    lineage: NodeLineage | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    file_groups: list[NodeFileGroup] = Field(default_factory=list)
     # True for a node the registration transforms ADD — the acceptance gate, and any
     # per-wave gate. Flagged explicitly because these are precisely the nodes absent
     # from the document the operator wrote, so a preview that did not distinguish
@@ -724,6 +728,8 @@ async def register_amendment(
             },
         )
 
+    # An agent publishes nothing. New work stays unbound in the draft; a human's
+    # revision-bound acceptance is the only path that creates issues for it.
     try:
         draft = await register_amendment_draft(
             db,
@@ -829,6 +835,9 @@ async def preview_draft(
             address=node.address,
             kind=node.kind,
             title=node.title,
+            lineage=node.lineage,
+            labels=node.labels,
+            file_groups=node.file_groups,
             inserted_by_server=node.address not in authored_addresses,
             issue_ref=node.issue_ref or "",
             executor=node.executor,

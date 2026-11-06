@@ -205,6 +205,10 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
         return pod
 
     api_env = [
+        variable(
+            "SUPERPLANE_REQUIRE_DISTINCT_APPROVER",
+            "true" if env.get("require_distinct_approver", False) else "false",
+        ),
         variable("SUPERPLANE_SECURITY_PROFILE", "production"),
         variable("DOMAIN_AUTH_ENFORCED", "true"),
         variable("COGNITO_ENABLED", "true"),
@@ -267,6 +271,30 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
     ]
     if control_plane_only:
         api_env.append(variable("SUPERPLANE_MANAGEMENT_ONLY", "true"))
+    if env.get("dedicated_readers"):
+        api_env.extend(
+            [
+                variable(
+                    "SUPERPLANE_PROVIDER_HEALTH_URL",
+                    f"http://skypilot-api.{sky_ns}.svc.cluster.local:46580",
+                ),
+                variable("SUPERPLANE_PROVIDER_HEALTH_ORG_ID", env["org_id"]),
+                variable(
+                    "SUPERPLANE_PROVIDER_HEALTH_WORKSPACE_IDS",
+                    json.dumps(
+                        sorted(
+                            w["workspace_id"]
+                            for w in env["dedicated_readers"]["workspaces"]
+                        )
+                    ),
+                ),
+                secret(
+                    "SUPERPLANE_PROVIDER_HEALTH_TOKEN",
+                    "superplane-skypilot-auth",
+                    "health-token",
+                ),
+            ]
+        )
     api_pod = deployment("superplane-api", ns, 8000, "/health", api_env)
     from .controller_profiles import DIRECTORY, FILENAME, PATH, projection
 
@@ -518,7 +546,18 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
                                 "SKYPILOT_SERVICE_TOKEN",
                                 "superplane-skypilot-auth",
                                 "token",
-                            )
+                            ),
+                            *(
+                                [
+                                    secret(
+                                        "SKYPILOT_HEALTH_TOKEN",
+                                        "superplane-skypilot-auth",
+                                        "health-token",
+                                    )
+                                ]
+                                if env.get("dedicated_readers")
+                                else []
+                            ),
                         ],
                         "resources": {
                             "requests": {"cpu": "100m", "memory": "128Mi"},
@@ -680,12 +719,19 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
         from .credential_controller import documents
 
         docs.extend(documents(env, lock))
+    if env.get("dedicated_readers"):
+        from .dedicated_readers import documents
+
+        docs.extend(documents(env, lock))
     from .api_adapters import project as project_api_adapters
 
     project_api_adapters(env, docs)
     from .paid_worker import project as project_paid_worker
 
     project_paid_worker(env, lock, docs)
+    from .recovery_transport import render as render_recovery_transport
+
+    render_recovery_transport(env, lock, docs)
     return docs
 
 
@@ -698,11 +744,27 @@ def migration_job(env: dict, lock: dict, run_id: str) -> dict:
     )
     pod = api["spec"]["template"]
     container = pod["spec"]["containers"][0]
+    # A finite Job must not inherit the Deployment's serving sidecars.
+    # In particular, recovery-transport otherwise outlives successful migration
+    # and bootstrap commands and prevents Kubernetes Job completion.
+    pod["spec"]["containers"] = [container]
+    mounts = {mount["name"] for mount in container.get("volumeMounts", [])}
+    pod["spec"]["volumes"] = [
+        volume for volume in pod["spec"].get("volumes", []) if volume["name"] in mounts
+    ]
+    pod["metadata"].get("annotations", {}).pop(
+        "eks.amazonaws.com/skip-containers", None
+    )
     container["name"] = "migrate"
     container["command"] = ["python", "-m", "app.installation", "migrate"]
     container.pop("ports")
     for key in ("readinessProbe", "livenessProbe", "startupProbe"):
         container.pop(key)
+    # Keep API NetworkPolicy labels without joining its Service endpoints.
+    # Job completion follows the main process exit, independently of readiness.
+    container["readinessProbe"] = {
+        "exec": {"command": ["python", "-S", "-c", "raise SystemExit(1)"]}
+    }
     container["env"] = [
         {
             "name": "DATABASE_URL",

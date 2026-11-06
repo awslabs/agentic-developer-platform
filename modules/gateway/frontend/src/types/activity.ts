@@ -22,6 +22,7 @@ export type InvocationStatus =
   // Issue #4187: a per-run or per-chain spend cap ended the run. Deliberately
   // not 'failed' — the run was stopped on purpose by a limit that was working.
   | 'budget_stopped'
+  | 'tool_authorized'
   // Issue #3964: an operator stopped the run on purpose and the worker confirmed
   // the abort finalized. Terminal, and deliberately not 'failed' for the same
   // reason `budget_stopped` is not: nothing went wrong.
@@ -54,13 +55,14 @@ export type InvocationStatus =
 export type LivenessVerdict = 'live' | 'unverifiable' | 'exited';
 
 /** Channel through which the invocation was triggered. */
-export type InvocationChannel = 'github' | 'slack' | 'api' | 'manual';
+export type InvocationChannel = 'github' | 'slack' | 'api' | 'manual' | 'tool';
 
 /** How the invocation was triggered (Phase 6 lineage). */
 export type TriggerKind = 'human' | 'agent' | 'bot';
 
 /** A single agent invocation row from the API. */
 export interface InvocationItem {
+  viewer_is_run_owner?: boolean;
   source_type?: 'activity' | 'task';
   task_id?: string | null;
   task_snapshot?: { task_id: string; invocation_id: string; status: string } | null;
@@ -93,6 +95,9 @@ export interface InvocationItem {
   total_cost_usd: number | null;
   total_tokens: number | null;
   call_count: number | null;
+  tool_name?: string | null;
+  receipt_id?: string | null;
+  estimated_cost_usd?: number | null;
   // Error detail surfaced in the row-detail view for failed invocations
   error_message: string | null;
   /**
@@ -108,6 +113,11 @@ export interface InvocationItem {
    * `describeStopReason()` — never show the raw enum to the user.
    */
   stop_reason: string | null;
+  budget_usage?: {
+    counter_total_usd: number;
+    outstanding_reservations_usd: number;
+    observed_at: string;
+  } | null;
   // Issue #1653: Run log link (Tier 2 — null until worker persists it)
   run_log_url: string | null;
   // Issue #3069: S3 transcript key (null for pre-#3061 runs or upload failures)

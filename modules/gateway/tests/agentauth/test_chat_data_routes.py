@@ -6,11 +6,12 @@ import os
 from datetime import UTC, datetime
 
 import httpx
+import jwt
 import pytest
 from botocore.exceptions import EndpointConnectionError
 from fastapi import FastAPI
 from httpx import AsyncClient
-from sqlalchemy import update
+from sqlalchemy import delete, update
 
 from src.agentauth import chat_data_routes, chat_model
 from src.agentauth.bootstrap import envelope_digest
@@ -18,6 +19,7 @@ from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.agentauth.workload import VerifiedPod
 from src.shared.database import get_db
 from src.shared.models.onboarding import TenantMembership
+from src.shared.models.organization import Organization, Team, TeamMembership, User
 from tests.agentauth.test_chat_authority import runtime as runtime_fixture
 from tests.agentauth.test_chat_authority import store as store_fixture
 from tests.agentauth.test_work_producer import ROLE, proof
@@ -300,3 +302,135 @@ async def test_supervisor_role_still_requires_body_bound_proof_and_correct_pod(c
     sts["role"] = "worker"
     assert (await admit(client, runtime)).status_code == 403
     assert runtime[1].store._read("CHAT-LAUNCH#run-a", "LAUNCH") is None
+
+
+async def test_crew_writer_requires_supervisor_and_persistent_human_session(client, runtime, sts, monkeypatch):
+    import boto3
+
+    bindings = json.loads(os.environ["ADP_MODEL_ROOT_BINDINGS"])
+    bindings[0]["chat_supervisor_role"] = SUPERVISOR_ROLE
+    monkeypatch.setenv("ADP_MODEL_ROOT_BINDINGS", json.dumps(bindings))
+    table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName="crew-run-test",
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+    )
+    monkeypatch.setattr(chat_data_routes, "current_crew_store", lambda: chat_data_routes.CrewRunStore(table))
+    monkeypatch.setattr(chat_data_routes, "_get_context_table", lambda: runtime[2])
+    runtime[2].put_item(
+        Item={
+            "PK": "session#session-a",
+            "SK": "header",
+            "tenantId": "tenant",
+            "ownerUserId": "human",
+            "sessionMode": "persistent",
+            "sessionState": "idle",
+            "status": "active",
+            "ttl": runtime[-1] + 600,
+        }
+    )
+    body = {"session_id": "session-a", "target_kind": "eks-pod", "target_ref": "chat-pod"}
+    path = "/internal/v1/agent/chat/crew-run"
+    headers = {"X-Adp-Producer-Proof": proof(envelope_digest(body))}
+    human_token = jwt.encode({"sub": "human", "token_use": "access"}, "synthetic-test-key", algorithm="HS256")
+    assert (await client.post(path, json=body, headers={"Authorization": f"Bearer {human_token}"})).status_code == 403
+    sts["role"] = "worker"
+    assert (await client.post(path, json=body, headers={**headers, "Authorization": "Bearer sandbox-capability"})).status_code == 403
+    sts["role"] = "webhook"
+    assert (await client.post(path, json=body, headers=headers)).status_code == 403
+    sts["role"] = "chat-supervisor"
+    assert (await client.post(path, json=body, headers={"X-Adp-Producer-Proof": proof("other-request")})).status_code == 403
+    assert (await client.post(path, json=body, headers={"X-Adp-Producer-Proof": proof(envelope_digest(body), signed=False)})).status_code == 403
+    assert table.scan()["Count"] == 0
+    bindings[0]["tenant_id"] = "tenant-other"
+    monkeypatch.setenv("ADP_MODEL_ROOT_BINDINGS", json.dumps(bindings))
+    assert (await client.post(path, json=body, headers=headers)).status_code == 403
+    bindings[0]["tenant_id"] = "tenant"
+    monkeypatch.setenv("ADP_MODEL_ROOT_BINDINGS", json.dumps(bindings))
+    created = await client.post(path, json=body, headers=headers)
+    assert created.status_code == 201, created.text
+    assert chat_data_routes.CrewRunStore(table).read_run(created.json()["run_id"])["root_human_id"] == "human"
+    assert (await client.post(path, json=body, headers=headers)).status_code == 409
+    runtime[2].update_item(
+        Key={"PK": "session#session-a", "SK": "header"},
+        UpdateExpression="SET chatLease = :lease",
+        ExpressionAttributeValues={":lease": {"generation": 1}},
+    )
+    renewed = await client.post(path, json=body, headers=headers)
+    assert renewed.status_code == 201, renewed.text
+    assert renewed.json()["lease_generation"] == 2
+    run_id = renewed.json()["run_id"]
+    delete_headers = {"X-Adp-Producer-Proof": proof(envelope_digest({"run_id": run_id}))}
+    assert (await client.delete(f"{path}/{run_id}", headers={"Authorization": f"Bearer {human_token}"})).status_code == 403
+    sts["role"] = "worker"
+    assert (await client.delete(f"{path}/{run_id}", headers={**delete_headers, "Authorization": "Bearer sandbox-capability"})).status_code == 403
+    sts["role"] = "webhook"
+    assert (await client.delete(f"{path}/{run_id}", headers=delete_headers)).status_code == 403
+    sts["role"] = "chat-supervisor"
+    assert (await client.delete(f"{path}/{run_id}", headers={"X-Adp-Producer-Proof": proof(envelope_digest(body))})).status_code == 403
+    assert chat_data_routes.CrewRunStore(table).read_run(run_id) is not None
+    bindings[0]["tenant_id"] = "tenant-other"
+    monkeypatch.setenv("ADP_MODEL_ROOT_BINDINGS", json.dumps(bindings))
+    assert (await client.delete(f"{path}/{run_id}", headers=delete_headers)).status_code == 403
+    bindings[0]["tenant_id"] = "tenant"
+    monkeypatch.setenv("ADP_MODEL_ROOT_BINDINGS", json.dumps(bindings))
+    stale_id = "old-crew-run"
+    table.put_item(
+        Item={"event_id": stale_id, "arrived_at": "crew", "kind": "crew", "tenant_id": "tenant", "session_id": "session-a", "lease_generation": 2}
+    )
+    stale_proof = {"X-Adp-Producer-Proof": proof(envelope_digest({"run_id": stale_id}))}
+    assert (await client.delete(f"{path}/{stale_id}", headers=stale_proof)).status_code == 409
+    assert chat_data_routes.CrewRunStore(table).read_run(run_id) is not None
+    assert (await client.delete(f"{path}/{run_id}", headers=delete_headers)).status_code == 204
+    assert chat_data_routes.CrewRunStore(table).read_run(run_id) is None
+    assert (await client.post(path, json=body, headers=headers)).status_code == 201
+
+
+async def relocate_home_org(db_session_factory):
+    """Dev shape: a GitHub-login human's users.org_id is their personal org; the chat
+    tenant is held only through tenant_memberships (is_active False, revoked_at null)."""
+    async with db_session_factory() as db:
+        db.add(Organization(id="personal", name="Personal"))
+        db.add(Team(id="personal-team", org_id="personal", department_id="department", name="Own"))
+        await db.execute(update(User).where(User.id == "human").values(org_id="personal", team_id="personal-team"))
+        await db.commit()
+
+
+async def test_admission_resolves_a_tenant_member_whose_own_org_differs(client, runtime, db_session_factory):
+    await relocate_home_org(db_session_factory)
+    admitted = await admit(client, runtime)
+    assert admitted.status_code == 200, admitted.text
+    header = runtime[2].get_item(Key={"PK": "session#session-a", "SK": "header"})["Item"]
+    assert (header["ownerUserId"], header["tenantId"], header["teamId"]) == ("human", "tenant", "team")
+    assert (await exchange(client)).status_code == 200
+
+
+async def test_admission_resolves_the_team_from_tenant_rows_not_the_home_org_pointer(client, runtime, db_session_factory):
+    await relocate_home_org(db_session_factory)
+    async with db_session_factory() as db:
+        await db.execute(delete(TeamMembership).where(TeamMembership.user_id == "human"))
+        await db.commit()
+    admitted = await admit(client, runtime)
+    assert admitted.status_code == 200, admitted.text
+    header = runtime[2].get_item(Key={"PK": "session#session-a", "SK": "header"})["Item"]
+    assert (header["tenantId"], header["teamId"]) == ("tenant", "")
+    assert (await exchange(client)).status_code == 200
+
+
+@pytest.mark.parametrize("membership", ["none", "revoked", "other_tenant_only"])
+async def test_admission_refuses_a_foreign_org_human_without_live_membership(client, runtime, db_session_factory, membership):
+    await relocate_home_org(db_session_factory)
+    async with db_session_factory() as db:
+        if membership == "revoked":
+            await db.execute(update(TenantMembership).where(TenantMembership.user_id == "human").values(revoked_at=datetime.now(UTC)))
+        else:
+            await db.execute(delete(TenantMembership).where(TenantMembership.user_id == "human"))
+            if membership == "other_tenant_only":
+                db.add(TenantMembership(user_id="human", tenant_id="personal", role="org_admin", is_active=True))
+        await db.commit()
+    refused = await admit(client, runtime)
+    assert refused.status_code == 404, refused.text
+    assert refused.json()["detail"] == {"error": "chat_scope_refused"}
+    assert runtime[1].store._read("CHAT-LAUNCH#run-a", "LAUNCH") is None
+    assert (await exchange(client)).status_code == 404

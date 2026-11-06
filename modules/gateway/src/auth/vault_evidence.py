@@ -44,6 +44,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,6 +55,9 @@ from src.shared.models.vault import (
     UserCredential,
 )
 from src.shared.services.secrets_manager import SecretsManagerHelper
+
+if TYPE_CHECKING:
+    from src.internal.vault_metadata_authority import VaultMetadataAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -329,12 +333,10 @@ async def read_credential_evidence(
     session: AsyncSession,
     sm: SecretsManagerHelper,
     *,
-    org_id: str,
-    workspace_id: str,
+    authority: VaultMetadataAuthority,
     credential_id: str,
     service: str | None,
     label: str | None,
-    principal: str,
     report_digest: str | None,
 ) -> VaultCredentialEvidence | None:
     """Current vault evidence for one credential in one workspace, or ``None``.
@@ -345,9 +347,19 @@ async def read_credential_evidence(
     credential, or a claimed attestation that does not match the Gateway's own
     record. See the module docstring for why a raise would be wrong here.
     """
+    from src.internal.vault_metadata_authority import VaultMetadataAuthority
     from src.shared.domain_provider_contract import reserved
 
-    if reserved(credential_id):
+    if not isinstance(authority, VaultMetadataAuthority) or not authority.tenant_id or not authority.workspace_id:
+        return None
+    provider_reference = reserved(credential_id)
+    if provider_reference and not authority.domain_org_id:
+        return None
+    org_id = authority.domain_org_id if provider_reference else authority.tenant_id
+    workspace_id = authority.workspace_id
+    principal = authority.acting_principal if provider_reference else authority.owner_principal or authority.acting_principal
+
+    if provider_reference:
         from src.internal.domain_provider_authority import evidence
 
         return await evidence(
@@ -360,6 +372,7 @@ async def read_credential_evidence(
             label=label,
             principal=principal,
             report_digest=report_digest,
+            adp_org_id=authority.tenant_id,
         )
     if not workspace_id or not workspace_id.strip() or not principal or not principal.strip():
         return None

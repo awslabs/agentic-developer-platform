@@ -28,6 +28,8 @@ logger = logging.getLogger("bedrockgateway.activity.cost")
 async def get_cost_by_run_ids(
     db: AsyncSession,
     run_ids: list[str],
+    *,
+    tenant_id: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Batch-fetch cost aggregates for a list of agent_run_id values.
 
@@ -51,6 +53,9 @@ async def get_cost_by_run_ids(
         .where(UsageLog.agent_run_id.in_(run_ids))
         .group_by(UsageLog.agent_run_id)
     )
+
+    if tenant_id is not None:
+        query = query.where(UsageLog.org_id == tenant_id)
 
     result = await db.execute(query)
     rows = result.all()

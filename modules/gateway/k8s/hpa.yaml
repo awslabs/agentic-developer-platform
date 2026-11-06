@@ -7,15 +7,13 @@
 # rather than scale anything. The chain is HPA adds pods → Auto Mode adds
 # nodes if they don't fit.
 #
-# Metric choice: MEMORY leads. The gateway is an async proxy that spends its
-# life awaiting Bedrock — measured CPU under full agent traffic is 8-17m
-# (1-2% of the limit), so a CPU-based HPA would never trigger. Memory is what
-# actually climbs (streaming buffers + chat-logging copies across 4 uvicorn
-# workers; 769Mi observed under normal load). CPU is included anyway as a
-# cheap backstop against a future CPU-bound regression.
+# Metric choice: MEMORY leads, with CPU as a backstop. Historical four-worker
+# measurements showed 8-17m CPU and 769Mi memory under agent traffic. Retain the
+# selected metrics while the single-worker default receives load qualification;
+# those older measurements do not establish its idle or throughput baseline.
 #
-# Utilization targets are computed against REQUESTS (1.5Gi / 250m — see
-# deployment.yaml), not limits: memory 75% ≈ 1152Mi. The request must stay
+# Utilization targets are computed against REQUESTS (2Gi / 250m — see
+# deployment.yaml), not limits: memory 75% = 1.5Gi. The request must stay
 # comfortably ABOVE the idle baseline or this HPA inverts: when the 75% line
 # falls below baseline, idle reads as "over target" and the fleet pins at
 # maxReplicas doing nothing, with zero burst headroom left. That has bitten

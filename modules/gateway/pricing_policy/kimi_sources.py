@@ -26,17 +26,19 @@ def parse_kimi_card(content, templates, *, verified_at):
     def cells(line):
         return [part.strip() for part in line.strip().strip("|").split("|")]
 
-    if len(table) != 4 or cells(table[0]) != header or not all(re.fullmatch(r":?-+:?", x) for x in cells(table[1])):
+    if len(table) not in (4, 5) or cells(table[0]) != header or not all(re.fullmatch(r":?-+:?", x) for x in cells(table[1])):
         raise SourceValidationError("Kimi pricing table changed")
     for line in table[2:]:
         row = cells(line)
-        if len(row) != 5 or row[0] not in ("Global CRIS", "US CRIS") or row[0] in prices:
+        if len(row) != 5 or row[0] not in ("Global CRIS", "US CRIS", "IN CRIS") or row[0] in prices:
             raise SourceValidationError("Kimi pricing geography changed")
         rates = tuple(_money(x) for x in row[1:])
         if any(x is None or x <= 0 for x in rates):
             raise SourceValidationError("Kimi price missing")
         prices[row[0]] = rates
-    if set(prices) != {"Global CRIS", "US CRIS"}:
+    # AWS also publishes India CRIS. Validate it, but keep endpoint coverage
+    # restricted to the reviewed templates; no India Geo routes are added here.
+    if not {"Global CRIS", "US CRIS"} <= set(prices):
         raise SourceValidationError("Kimi pricing incomplete")
     if not re.search(r"Priority is billed at 1\.75x", pricing) or not re.search(r"Flex at 0\.5x", pricing):
         raise SourceValidationError("Kimi tier multipliers changed; review required")

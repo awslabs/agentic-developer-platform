@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: crew-pod-dashboard-ingress
+  namespace: adp-gateway-agents
+spec:
+  podSelector:
+    matchLabels:
+      adp.io/crew-pod: 'true'
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: adp-gateway
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bedrockgateway
+      ports:
+        - protocol: TCP
+          port: 5476
+        - protocol: TCP
+          port: 5477

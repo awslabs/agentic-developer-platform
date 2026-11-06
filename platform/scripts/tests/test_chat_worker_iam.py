@@ -28,23 +28,13 @@ class ChatWorkerIamTests(unittest.TestCase):
 
     def test_chat_has_no_bedrock_allow_and_explicit_deny(self):
         runtime = resource(self.chat, "aws_iam_role_policy", "chat_worker_runtime")
-        inherited = re.findall(r'aws_iam_role_policy\.(\w+)\.policy', runtime)
-        self.assertEqual(set(inherited), {
-            "gateway_agent_execute_api", "gateway_agent_chat_dynamodb",
-            "gateway_agent_chat_s3", "gateway_agent_chat_sqs_fifo",
-        })
-        self.assertNotIn("gateway_agent_sqs", inherited)
-        self.assertNotIn("gateway_agent_bootstrap_logs", inherited)
-        sources = self.gateway + (INFRA / "chat-agent-infra.tf").read_text()
-        fifo = resource(sources, "aws_iam_role_policy", "gateway_agent_chat_sqs_fifo")
-        self.assertIn("sqs:ReceiveMessage", fifo)
-        self.assertIn("sqs:SendMessage", fifo)
-        for name in inherited:
-            self.assertNotIn('bedrock:', resource(sources, "aws_iam_role_policy", name))
-        deny = resource(self.chat, "aws_iam_role_policy", "chat_worker_deny_direct_bedrock")
+        self.assertNotRegex(runtime, r'aws_iam_role_policy\.(\w+)\.policy')
+        self.assertIn('var.chat_legacy_upgrade_policies', runtime)
+        self.assertRegex(self.chat, r'variable "chat_legacy_upgrade_policies"[^}]+default\s*=\s*\{\}')
+        deny = resource(self.chat, "aws_iam_role_policy", "chat_worker_deny_direct_authority")
+        for action in ('"bedrock:*"', '"sqs:ReceiveMessage"', '"dynamodb:*"'):
+            self.assertIn(action, deny)
         self.assertIn('"Deny"', deny)
-        self.assertIn('"bedrock:InvokeModel"', deny)
-        self.assertIn('"bedrock:InvokeModelWithResponseStream"', deny)
         self.assertIn('aws_iam_role.chat_worker.id', deny)
 
     def test_workloads_use_separate_roles_and_keda_can_poll_both(self):
@@ -72,6 +62,34 @@ class ChatWorkerIamTests(unittest.TestCase):
         self.assertNotIn('adp-chat-sandbox', resource(self.chat, "aws_iam_role", "chat_worker"))
         self.assertNotIn('adp-chat-sandbox', resource(self.gateway, "aws_iam_role", "gateway_agent"))
         self.assertIn('serviceAccountName: adp-agent', (ROOT / "modules/agent-factory/agent/k8s/chat-scaledjob.yaml").read_text())
+
+    def test_supervisor_scaler_uses_existing_queue_depth_only_role(self):
+        outputs = (INFRA / "chat-agent-infra.tf").read_text()
+        self.assertRegex(outputs, r'output "chat_scaler_role_arn" \{[^}]+value\s*=\s*aws_iam_role.chat_worker.arn')
+        polling = resource(self.chat, "aws_iam_role_policy", "chat_worker_queue_depth")
+        self.assertIn('Action   = ["sqs:GetQueueAttributes"]', polling)
+        self.assertIn('Resource = aws_sqs_queue.chat_agent_tasks_fifo.arn', polling)
+        self.assertIn('role = aws_iam_role.chat_worker.id', polling)
+        trust = resource(self.chat, "aws_iam_role", "chat_worker")
+        self.assertIn('Principal = { AWS = data.aws_iam_role.keda_operator.arn }', trust)
+        self.assertIn('Action    = "sts:AssumeRole"', trust)
+        operator = resource(self.gateway, "aws_iam_role_policy", "keda_operator_gateway_sqs")
+        self.assertIn('aws_iam_role.chat_worker.arn', operator)
+        self.assertNotIn('aws_iam_role.chat_supervisor.arn', operator)
+
+    def test_supervisor_may_invoke_exactly_the_internal_chat_routes_it_calls_through_the_api_stage(self):
+        policy = resource(self.chat, "aws_iam_role_policy", "chat_supervisor")
+        supervisor = (ROOT / "modules/agent-factory/agent/src/complex-task-chat/sandbox-supervisor-admission.ts").read_text()
+        called = set(re.findall(r"'(/internal/v1/agent/chat/[a-z/-]+)'", supervisor))
+        self.assertIn("/internal/v1/agent/chat/data/admit", called)
+        self.assertIn("/internal/v1/agent/chat/crew-run/ready", called)
+        granted = re.findall(r'"arn:aws:execute-api:\$\{var\.aws_region\}:\$\{data\.aws_caller_identity\.current\.account_id\}:\*/\*/(\w+)(/[^"]+)"', policy)
+        self.assertEqual({method for method, _ in granted}, {"POST"})
+        # The API's /internal/{proxy+} method preserves the path; /agent/{proxy+} strips
+        # its prefix, so a grant on /agent/internal/... never matches a signed request.
+        self.assertEqual({path for _, path in granted}, called)
+        self.assertNotIn("/POST/agent/internal/", policy)
+        self.assertNotIn('"arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/*', policy)
 
 
 if __name__ == "__main__":

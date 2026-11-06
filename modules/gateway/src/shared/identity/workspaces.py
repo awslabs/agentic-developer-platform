@@ -10,6 +10,7 @@ workspace access.
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.shared.identity.person_anchor import PERSON_ANCHOR_PROVIDER_PRECEDENCE
 from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.base import utcnow
 from src.shared.models.onboarding import TenantMembership
@@ -41,8 +42,9 @@ async def primary_team_for_workspace(db: AsyncSession, user: User, org_id: str) 
     return team
 
 
-async def login_user(db: AsyncSession, subject: str) -> User | None:
-    return (await db.execute(select(User).where(or_(User.cognito_sub == subject, User.id == subject)))).scalar_one_or_none()
+async def login_user(db: AsyncSession, subject: str, *, refresh: bool = False) -> User | None:
+    query = select(User).where(or_(User.cognito_sub == subject, User.id == subject)).execution_options(populate_existing=refresh)
+    return (await db.execute(query)).scalar_one_or_none()
 
 
 async def linked_user_ids(db: AsyncSession, user: User, *, username: str = "") -> set[str]:
@@ -79,15 +81,59 @@ async def linked_user_ids(db: AsyncSession, user: User, *, username: str = "") -
     return {user.id, *rows.all()}
 
 
+async def person_user_ids(db: AsyncSession, user: User, *, username: str = "") -> set[str]:
+    """Every ``users.id`` provably held by the same person as ``user`` (#8011).
+
+    One person can own several ``users`` rows (GitHub onboarding, Cognito first
+    login and admin invite each create one). The rows are fused on the same
+    evidence ``budget.person_ledger.resolve_person_identity`` uses, never on email:
+
+    * the platform's own ``org_placement`` link to the row's Cognito login
+      (``linked_user_ids``; ``users.cognito_sub`` itself is unique per row), and,
+      when the caller holds a token, the SIGNED Cognito ``username``
+      (``GitHub_<id>``) -- the same proof ``workspace_user`` accepts, so an owner
+      check with a token and chat admission with only the subject fuse the same
+      rows whenever the GitHub id is also linked on the login row;
+    * a *proven* external identity in a person-anchor namespace
+      (``PERSON_ANCHOR_PROVIDER_PRECEDENCE``: GitHub, directory) that another row
+      holds too -- the GitHub numeric id is the cross-org join key.
+
+    The result always contains ``user.id``. Which of the rows is *the* principal in
+    a given tenant is the caller's decision (``chat_authority.tenant_member_principal``).
+    """
+    ids = await linked_user_ids(db, user, username=username)
+    anchors = (
+        await db.execute(
+            select(UserIdentity.provider, UserIdentity.provider_user_id)
+            .where(
+                UserIdentity.user_id.in_(ids),
+                UserIdentity.provider.in_([provider.value for provider in PERSON_ANCHOR_PROVIDER_PRECEDENCE]),
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
+            )
+            .distinct()
+        )
+    ).all()
+    if anchors:
+        same_anchor = [(UserIdentity.provider == provider) & (UserIdentity.provider_user_id == external_id) for provider, external_id in anchors]
+        shared = await db.scalars(select(UserIdentity.user_id).where(or_(*same_anchor), UserIdentity.verification_method.in_(PROVEN_METHODS)))
+        ids |= set(shared.all())
+    return ids
+
+
 async def memberships_for_login(
-    db: AsyncSession, subject: str, *, username: str = ""
+    db: AsyncSession, subject: str, *, username: str = "", refresh: bool = False
 ) -> tuple[User | None, dict[str, tuple[User, TenantMembership | None]]]:
-    user = await login_user(db, subject)
+    user = await login_user(db, subject, refresh=refresh)
     if user is None:
         return None, {}
     ids = await linked_user_ids(db, user, username=username)
     rows = (
-        await db.execute(select(User, TenantMembership).join(TenantMembership, TenantMembership.user_id == User.id).where(User.id.in_(ids)))
+        await db.execute(
+            select(User, TenantMembership)
+            .join(TenantMembership, TenantMembership.user_id == User.id)
+            .where(User.id.in_(ids))
+            .execution_options(populate_existing=refresh)
+        )
     ).all()
     by_org: dict[str, tuple[User, TenantMembership | None]] = {}
     revoked_orgs = {membership.tenant_id for member, membership in rows if membership.revoked_at is not None}
@@ -114,7 +160,8 @@ async def memberships_for_login(
     return user, by_org
 
 
-async def workspace_user(db: AsyncSession, subject: str, org_id: str, *, username: str = "") -> User | None:
+async def workspace_user(db: AsyncSession, subject: str, org_id: str, *, username: str = "", refresh: bool = False) -> User | None:
+    """Resolve workspace membership; authority revalidation can request fresh ORM rows."""
     # Keep the common single-org/FK lookup to one query on model-call paths.
     revoked = (
         select(TenantMembership.id)
@@ -125,29 +172,36 @@ async def workspace_user(db: AsyncSession, subject: str, org_id: str, *, usernam
         )
         .exists()
     )
-    local = (await db.execute(select(User, revoked).where(User.org_id == org_id, or_(User.cognito_sub == subject, User.id == subject)))).one_or_none()
+    local = (
+        await db.execute(
+            select(User, revoked)
+            .where(User.org_id == org_id, or_(User.cognito_sub == subject, User.id == subject))
+            .execution_options(populate_existing=refresh)
+        )
+    ).one_or_none()
     if local is not None:
         return None if local[1] else local[0]
-    _, memberships = await memberships_for_login(db, subject, username=username)
+    _, memberships = await memberships_for_login(db, subject, username=username, refresh=refresh)
     pair = memberships.get(org_id)
     return pair[0] if pair else None
 
 
-async def login_subject_for_user(db: AsyncSession, user: User) -> str | None:
+async def login_subject_for_user(db: AsyncSession, user: User, *, lock: bool = False) -> str | None:
+    """Resolve only the platform's login link; optionally hold it through use.
+
+    Callers requesting a lock must also hold the user row in their transaction.
+    """
     if user.cognito_sub:
         return user.cognito_sub
-    subjects = set(
-        (
-            await db.scalars(
-                select(UserIdentity.provider_user_id).where(
-                    UserIdentity.user_id == user.id,
-                    UserIdentity.org_id == user.org_id,
-                    UserIdentity.provider == "cognito",
-                    UserIdentity.verification_method == PLACEMENT_VERIFICATION,
-                )
-            )
-        ).all()
+    query = select(UserIdentity.provider_user_id).where(
+        UserIdentity.user_id == user.id,
+        UserIdentity.org_id == user.org_id,
+        UserIdentity.provider == "cognito",
+        UserIdentity.verification_method == PLACEMENT_VERIFICATION,
     )
+    if lock:
+        query = query.with_for_update(read=True, of=UserIdentity)
+    subjects = set((await db.scalars(query)).all())
     if len(subjects) > 1:
         raise ValueError("Multiple logins own this organization's account")
     return next(iter(subjects), None)

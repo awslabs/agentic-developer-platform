@@ -1075,24 +1075,13 @@ def _assert_unchanged_vs_main(path: str):
 
 def _assert_only_typed_scan_artifacts_are_uploaded():
     workflow = yaml.safe_load(SECURITY_SCAN_WORKFLOW.read_text(encoding="utf-8"))
-    uploads = [
-        step
-        for job in workflow["jobs"].values()
-        for step in job.get("steps", [])
-        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
-    ]
-    assert {step["with"]["name"] for step in uploads} == {
-        "adp-deployment-context-security-scan.yml-${{ github.run_attempt }}",
-        "adp-repository-scan-cleanup-${{ github.run_attempt }}",
-        "adp-repository-scan-${{ github.run_attempt }}",
-        "security-reconciliation-${{ github.run_attempt }}",
-    }
-    forbidden = ("findings", "summary.json", "detect-secrets", "npm-audit", ".sarif")
-    for step in uploads:
-        path = str(step["with"].get("path", "")).lower()
-        assert not any(token in path for token in forbidden), (
-            f"raw findings must remain in private S3, not artifact path {path!r}"
-        )
+    steps = [step for job in workflow["jobs"].values() for step in job.get("steps", [])]
+    assert not any("actions/upload-artifact@" in step.get("uses", "") for step in steps)
+    signed = [step["run"] for step in steps if "publish-deployment-evidence.py" in step.get("run", "")]
+    assert len(signed) == 4
+    for command in ("context security-scan.yml", "repository-artifact cleanup", "repository-artifact scan", "repository-artifact reconciliation"):
+        assert sum(command in script for script in signed) == 1
+    assert all(".sarif" not in script and "findings/" not in script for script in signed)
 
 
 def test_the_scan_pipeline_keeps_the_properties_this_unit_relies_on():

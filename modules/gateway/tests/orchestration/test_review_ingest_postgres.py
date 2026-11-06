@@ -70,7 +70,7 @@ from src.orchestration.models import (
 )
 from src.orchestration.pr_bindings import PullRequestIdentity
 from src.orchestration.pr_identity import PrIdentityError
-from src.orchestration.review_evidence import ReviewEvidenceRefusal
+from src.orchestration.review_evidence import ReviewEvidenceError, ReviewEvidenceRefusal
 from src.orchestration.review_ingest import ingest_review_result, resolve_review_context, verified_artifact_refs
 from src.orchestration.work_claims import OwnerKind
 from tests.agentauth.test_artifact_service import artifacts as artifacts_fixture
@@ -367,6 +367,35 @@ class TestTheAuthoringRunComesFromProtectedState:
 
 
 class TestTheReviewedAttemptMustStillBeCurrent:
+    @pytest.mark.parametrize("failure", ["foreign_installation", "foreign_repository", "foreign_pr_node"])
+    async def test_colliding_pr_number_from_other_connection_cannot_record_review(self, story, sessions, failure):
+        if failure == "foreign_installation":
+            with provider():
+                async with sessions() as session:
+                    with pytest.raises(ReviewEvidenceError) as exc:
+                        await resolve_review_context(
+                            session,
+                            org_id=ORG,
+                            node_id=story["node_id"],
+                            attempt=1,
+                            reviewer_run_id=REVIEWER_RUN,
+                            installation_id=INSTALLATION + 1,
+                        )
+            assert exc.value.code is ReviewEvidenceRefusal.REPOSITORY_MISMATCH
+        else:
+            remote = PullRequestIdentity(
+                provider_repository_id=REPO_ID if failure == "foreign_pr_node" else REPO_ID + 1,
+                provider_pr_node_id="PR_foreign" if failure == "foreign_pr_node" else PR_NODE,
+                repo=REPO,
+                pr_number=PR_NUMBER,
+                head_sha=HEAD,
+            )
+            with provider(), patch("src.orchestration.pr_identity.resolve_pr_identity", new=AsyncMock(return_value=remote)):
+                outcome = await ingest(story, sessions, document(story))
+            assert outcome.refusal is ReviewEvidenceRefusal.REPOSITORY_MISMATCH
+        async with sessions() as session:
+            assert (await session.scalars(select(OrchestrationAction))).all() == []
+
     async def test_a_superseded_attempt_is_refused_not_repointed(self, story, sessions):
         """The node moved to attempt 2 while the review ran.
 

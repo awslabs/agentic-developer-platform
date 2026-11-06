@@ -1,0 +1,26 @@
+{
+  "anthropic_version": "bedrock-2023-05-31",
+  "max_tokens": 128,
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "Add 2 and 3"}]},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "tool_1", "name": "add", "input": {"a": 2, "b": 3}}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tool_1", "content": [{"type": "text", "text": "5"}], "is_error": false}]}
+  ],
+  "tools": [
+    {
+      "name": "add",
+      "description": "Add two numbers",
+      "input_schema": {
+        "type": "object",
+        "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
+        "required": ["a", "b"]
+      },
+      "cache_control": {"type": "ephemeral"}
+    }
+  ],
+  "tool_choice": {"type": "tool", "name": "add"},
+  "thinking": {"type": "adaptive"},
+  "output_config": {"effort": "high"},
+  "metadata": {"user_id": "example-user"},
+  "anthropic_beta": ["body-beta", "header-beta"]
+}

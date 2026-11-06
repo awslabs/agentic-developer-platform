@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "status": "owner-selected; implementation and live qualification pending",
+  "selected_on": "2026-11-01",
+  "providers": [
+    "sonarqube",
+    "jenkins",
+    "argocd",
+    "gitlab",
+    "pagerduty",
+    "linear",
+    "slack"
+  ],
+  "primary_connections": 7,
+  "primary_leaf_scopes": 7,
+  "disposable_instances_approved": true,
+  "native_regressions": [
+    "github",
+    "jira"
+  ],
+  "epic_criterion": "EC-11",
+  "implementation_design": "stories/s14.md",
+  "baseline_acceptance_count": 44,
+  "runtime_contract_migration_required": true,
+  "description": "S14 must migrate producer/consumer contracts before live admission. This is scope metadata, not execution authority or a test result.",
+  "implementation_issue": "https://github.com/aws-e/adp/issues/9449",
+  "expanded_on": "2026-11-04",
+  "disposable_providers": [
+    "sonarqube",
+    "jenkins",
+    "argocd"
+  ],
+  "consented_test_sources": [
+    "gitlab",
+    "pagerduty",
+    "linear",
+    "slack"
+  ]
+}

@@ -1,0 +1,45 @@
+name: install-aidlc tests
+
+# Issue #9539: the AIDLC installer is exercised end to end against temporary git
+# repositories (no network: a local bare repository stands in for upstream). It
+# must install from a valid tag, a checkout and an alternate git source, and it
+# must refuse a missing tag or the upstream harness layout without writing to
+# the target.
+
+on:
+  pull_request:
+    paths:
+      - 'platform/scripts/install-aidlc.sh'
+      - 'platform/scripts/tests/install-aidlc.test.sh'
+      - 'platform/scripts/tests/fixtures/aidlc-settings.json'
+      - 'platform/scripts/tests/fixtures/existing-repo-settings.json'
+      - 'modules/agent-factory/skills/aidlc-emit-issues/**'
+      - '.github/ISSUE_TEMPLATE/aidlc-intent.yml'
+      - '.github/workflows/install-aidlc-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'platform/scripts/install-aidlc.sh'
+      - 'platform/scripts/tests/install-aidlc.test.sh'
+      - '.github/workflows/install-aidlc-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: Installer end-to-end
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tool versions
+        run: |
+          bash --version | head -n 1
+          git --version
+          command -v jq >/dev/null || { echo "jq is required by install-aidlc.sh"; exit 1; }
+          jq --version
+      - name: Shell syntax
+        run: bash -n platform/scripts/install-aidlc.sh platform/scripts/tests/install-aidlc.test.sh
+      - name: Run installer tests
+        run: bash platform/scripts/tests/install-aidlc.test.sh

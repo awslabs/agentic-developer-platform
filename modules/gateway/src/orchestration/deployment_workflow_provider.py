@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import hashlib
 import io
 import zipfile
@@ -24,7 +25,52 @@ SOURCE_INPUT = "adp_source_revision"
 DEFINITION_INPUT = "adp_definition_revision"
 TRANSPORT_INPUTS = frozenset({CORRELATION_INPUT, SOURCE_INPUT, DEFINITION_INPUT})
 MAX_CONTEXT_BYTES = 65536
+# Maintained workflow YAML can exceed the context-artifact cap. Bound its decoded
+# file independently, with room for GitHub's base64, line wrapping and JSON envelope.
+MAX_WORKFLOW_BYTES = 128 * 1024
+MAX_WORKFLOW_RESPONSE_BYTES = 256 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024
+#: Listing pages (workflow runs, artifacts, PR files) are provider-shaped JSON whose
+#: per-item size the engine does not control; a repository with a busy day of
+#: deploys returned >1 MiB for a 100-run page and every runtime verification held
+#: on deployment_provider_response_limit (tools flow TLS-X05, 2026-10-15). Bounded
+#: still — four pages of that size is a bug, not a busy day.
+MAX_LISTING_BYTES = 4 * 1024 * 1024
+RUNS_PAGE_SIZE = 30
+
+
+def decode_workflow_content(record):
+    """Decode a bounded GitHub contents file; its declared size must be exact."""
+    if (
+        not isinstance(record, dict)
+        or record.get("type") != "file"
+        or record.get("encoding") != "base64"
+        or type(record.get("size")) is not int
+        or not 0 <= record["size"] <= MAX_WORKFLOW_BYTES
+        or not isinstance(record.get("content"), str)
+    ):
+        raise ValueError("workflow definition is unavailable")
+    try:
+        encoded = record["content"].encode("ascii").translate(None, b" \t\r\n\v\f")
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, UnicodeEncodeError):
+        raise ValueError("workflow definition is invalid") from None
+    if len(content) != record["size"]:
+        raise ValueError("workflow definition is invalid")
+    return content
+
+
+def workflow_input_defaults(fields, *, generic_delivery=False):
+    """V2 uses GitHub boolean strings; preserve legacy evidence serialization."""
+    if not isinstance(fields, dict) or any(not isinstance(field, dict | type(None)) for field in fields.values()):
+        raise CycleBlockedError("deployment_workflow_inputs_invalid")
+    values = {}
+    for name, field in fields.items():
+        value = (field or {}).get("default", "")
+        if not isinstance(value, str | int | float | bool | type(None)):
+            raise CycleBlockedError("deployment_workflow_inputs_invalid")
+        values[name] = str(value).lower() if generic_delivery and isinstance(value, bool) else "" if value is None else str(value)
+    return values
 
 
 class WorkflowContext(BaseModel):
@@ -42,7 +88,7 @@ class WorkflowContext(BaseModel):
     region: str = Field(min_length=1, max_length=64)
     resource_kind: str = Field(min_length=1, max_length=64)
     resource_id: str = Field(min_length=1, max_length=512)
-    inputs: dict[str, str] = Field(max_length=20)
+    inputs: dict[str, str] = Field(max_length=36)
     correlation: str = Field(max_length=64)
 
 
@@ -58,6 +104,7 @@ class WorkflowDefinition:
     caller_path: str | None = None
     caller_blob_sha: str | None = None
     evidence_transport: str = "github-artifact"
+    delivery_evidence_transport: str = "github-artifact"
 
 
 @dataclass(frozen=True)
@@ -72,6 +119,8 @@ class WorkflowRun:
     artifact_digest: str
     observed_at: str
     artifact_ref: str | None = None
+    started_at: str | None = None
+    delivery_evidence_transport: str = "github-artifact"
 
 
 class WorkflowProvider:
@@ -86,17 +135,23 @@ class WorkflowProvider:
             key,
             binding.installation_id,
             repositories=[binding.repo.split("/", 1)[1]],
-            permissions={"actions": "write" if write else "read", "contents": "read", "metadata": "read"},
+            # `pull_requests: read` is what GitHub gates `GET /pulls/{n}/files` behind;
+            # without it `changed_files` answered 403 and every deployment phase
+            # blocked on evidence (#7452). Same read scope the activity and mediated
+            # GitHub paths already mint.
+            permissions={"actions": "write" if write else "read", "contents": "read", "metadata": "read", "pull_requests": "read"},
         )
         deadline = datetime.fromisoformat(expires.replace("Z", "+00:00"))
         if deadline.tzinfo is None or deadline <= self.clock():
             raise CycleBlockedError("deployment_scoped_credential_expired")
         return token
 
-    async def request(self, binding, method, path, *, token=None, max_bytes=MAX_ARCHIVE_BYTES, **kwargs):
+    async def request(self, binding, method, path, *, token=None, max_bytes=MAX_ARCHIVE_BYTES, allow_download_redirect=False, **kwargs):
         token = token or await self.token(binding)
         owned = self.client is None
         client = self.client or httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False)
+        if allow_download_redirect:
+            kwargs["follow_redirects"] = False
         try:
             async with client.stream(
                 method,
@@ -104,7 +159,8 @@ class WorkflowProvider:
                 headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
                 **kwargs,
             ) as response:
-                response.raise_for_status()
+                if not (allow_download_redirect and response.status_code == 302):
+                    response.raise_for_status()
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     if len(body) + len(chunk) > max_bytes:
@@ -121,17 +177,19 @@ class WorkflowProvider:
             if owned:
                 await client.aclose()
 
-    async def pages(self, binding, path, key=None, **params):
+    async def pages(self, binding, path, key=None, *, per_page=100, max_bytes=MAX_LISTING_BYTES, **params):
         values = []
         token = await self.token(binding)
         for page in range(1, 11):
-            response = await self.request(binding, "GET", path, token=token, params={**params, "page": page, "per_page": 100})
+            response = await self.request(
+                binding, "GET", path, token=token, max_bytes=max_bytes, params={**params, "page": page, "per_page": per_page}
+            )
             data = response.json()
             items = data.get(key) if key else data
             if not isinstance(items, list):
                 raise CycleBlockedError("deployment_provider_response_invalid")
             values.extend(items)
-            if len(items) < 100:
+            if len(items) < per_page:
                 return values
         raise CycleBlockedError("deployment_provider_history_limit")
 
@@ -146,7 +204,21 @@ class WorkflowProvider:
             raise CycleBlockedError("deployment_changed_paths_unverifiable")
         return tuple(sorted(set(paths)))
 
-    async def definition(self, binding, workflow, source_revision, *, for_dispatch=True):
+    async def workflow_content_matches(self, binding, workflow, revision, other):
+        """True when the workflow file is byte-identical at two revisions (#7662)."""
+        blobs = []
+        for ref in (revision, other):
+            response = await self.request(
+                binding, "GET", f"/repos/{binding.repo}/contents/{workflow.path}", max_bytes=MAX_WORKFLOW_RESPONSE_BYTES, params={"ref": ref}
+            )
+            record = response.json()
+            try:
+                blobs.append(decode_workflow_content(record))
+            except ValueError:
+                raise CycleBlockedError("deployment_workflow_definition_unverifiable") from None
+        return blobs[0] == blobs[1]
+
+    async def definition(self, binding, workflow, source_revision, *, for_dispatch=True, generic_delivery=False):
         import yaml
 
         repository = (await self.request(binding, "GET", f"/repos/{binding.repo}")).json()
@@ -161,13 +233,25 @@ class WorkflowProvider:
             dispatch_revision = branch.get("commit", {}).get("sha")
             if not isinstance(dispatch_revision, str) or len(dispatch_revision) != 40:
                 raise CycleBlockedError("deployment_dispatch_revision_missing")
+        # A generic contract approves the workflow independently of the artifact
+        # source. The approved workflow owns artifact compatibility checks; a
+        # deployment-only repair must not require rebuilding a verified artifact.
+        # The workflow actually dispatched must still match the approved bytes.
+        revisions = [workflow.definition_revision]
+        if not generic_delivery:
+            revisions.append(source_revision)
+        if for_dispatch:
+            revisions.append(dispatch_revision)
         blobs = []
-        for revision in (workflow.definition_revision, source_revision, dispatch_revision):
-            response = await self.request(binding, "GET", f"/repos/{binding.repo}/contents/{workflow.path}", params={"ref": revision})
+        for revision in revisions:
+            response = await self.request(
+                binding, "GET", f"/repos/{binding.repo}/contents/{workflow.path}", max_bytes=MAX_WORKFLOW_RESPONSE_BYTES, params={"ref": revision}
+            )
             record = response.json()
-            if record.get("type") != "file" or record.get("encoding") != "base64" or record.get("size", MAX_CONTEXT_BYTES + 1) > MAX_CONTEXT_BYTES:
-                raise CycleBlockedError("deployment_workflow_definition_unverifiable")
-            content = base64.b64decode(record["content"])
+            try:
+                content = decode_workflow_content(record)
+            except ValueError:
+                raise CycleBlockedError("deployment_workflow_definition_unverifiable") from None
             # Git's blob object ID, not a security digest: SHA-1 over "blob <len>\0<bytes>" IS
             # the name GitHub reports in `sha`, so the algorithm is fixed by Git's object format
             # and a stronger hash would match nothing. Authorization comes from the approved
@@ -186,9 +270,9 @@ class WorkflowProvider:
         dispatch = events.get("workflow_dispatch") if isinstance(events, dict) else None
         dispatchable = isinstance(events, dict) and "workflow_dispatch" in events
         fields = (dispatch or {}).get("inputs", {}) if isinstance(dispatch, dict) or dispatch is None else {}
-        defaults = {name: str((field or {}).get("default", "")) for name, field in fields.items()}
+        defaults = workflow_input_defaults(fields, generic_delivery=generic_delivery)
         caller_path, caller_blob = None, None
-        if workflow.path == ".github/workflows/run-gateway-migrations.yml":
+        if not generic_delivery and workflow.path == ".github/workflows/run-gateway-migrations.yml":
             # A reusable workflow's artifact shares the caller run. Pin the one
             # supported caller too, so another workflow cannot forge its context.
             from dataclasses import replace
@@ -197,7 +281,8 @@ class WorkflowProvider:
             caller = await self.definition(binding, replace(workflow, path=caller_path), source_revision, for_dispatch=for_dispatch)
             caller_blob = caller.blob_sha
         transport = doc.get("env", {}).get("ADP_DEPLOYMENT_EVIDENCE_STORE", "github-artifact")
-        if transport not in {"github-artifact", "s3-oidc-v1"}:
+        delivery_transport = doc.get("env", {}).get("ADP_DELIVERY_EVIDENCE_STORE", "github-artifact")
+        if any(value not in {"github-artifact", "s3-oidc-v1"} for value in (transport, delivery_transport)):
             raise CycleBlockedError("deployment_evidence_transport_unknown")
         return WorkflowDefinition(
             workflow.definition_revision,
@@ -210,11 +295,16 @@ class WorkflowProvider:
             caller_path,
             caller_blob,
             transport,
+            delivery_transport,
         )
 
     async def runs(self, binding, source_revision, correlation=None):
-        params = {} if correlation else {"head_sha": source_revision}
-        return await self.pages(binding, f"/repos/{binding.repo}/actions/runs", "workflow_runs", **params)
+        # A correlated observation only ever matches workflow_dispatch runs (see
+        # observe()), so ask the provider for just those; an uncorrelated one is
+        # keyed by the source revision. Smaller pages keep each response inside the
+        # listing bound even when the repository has had a busy day of runs.
+        params = {"event": "workflow_dispatch"} if correlation else {"head_sha": source_revision}
+        return await self.pages(binding, f"/repos/{binding.repo}/actions/runs", "workflow_runs", per_page=RUNS_PAGE_SIZE, **params)
 
     async def context(self, binding, run, workflow_path):
         """Only download an artifact through the API for the verified bound run."""
@@ -293,7 +383,11 @@ class WorkflowProvider:
             if definition.evidence_transport == "s3-oidc-v1":
                 result = await self.s3_evidence(
                     account=target.account_id,
-                    environment=inputs.get("environment", definition.defaults.get("environment", "dev")),
+                    # A workflow may declare `environment` with an empty default and
+                    # resolve it inside the job (agent-context-deploy.yml: `|| 'dev'`);
+                    # an empty string here named a bucket that cannot exist and made
+                    # every S3 receipt read "unverifiable" (#7829, door4 2026-10-15).
+                    environment=inputs.get("environment") or definition.defaults.get("environment") or "dev",
                     region=target.region,
                     repository=binding.repo,
                     repository_id=binding.provider_repository_id,
@@ -335,10 +429,16 @@ class WorkflowProvider:
                 if run_id:
                     raise CycleBlockedError(mismatch)
                 continue
-            actual_inputs = {name: value for name, value in context.inputs.items() if name not in TRANSPORT_INPUTS}
             effective_inputs = {**definition.defaults, **inputs}
             for name in TRANSPORT_INPUTS:
                 effective_inputs.pop(name, None)
+            # A context that omits an input can only have run with that input's
+            # declared default: GitHub applies the default before the workflow starts,
+            # and the publisher records what it was given. Fill omitted inputs from
+            # the reviewed definition so a publisher that records only the inputs it
+            # received (tools-facade-deploy) compares like one that records them all.
+            recorded_inputs = {name: value for name, value in context.inputs.items() if name not in TRANSPORT_INPUTS}
+            actual_inputs = {**{name: value for name, value in effective_inputs.items() if name not in inputs}, **recorded_inputs}
             if run.get("event") == "push":
                 # Automatic runs can use approved defaults rather than the
                 # registered-connection inputs needed for manual dispatch.
@@ -370,6 +470,8 @@ class WorkflowProvider:
                     digest,
                     self.clock().isoformat(),
                     artifact_ref,
+                    run.get("run_started_at"),
+                    definition.delivery_evidence_transport,
                 )
             )
         if len(matches) > 1:

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">
+  <title>Agentic Developer Platform</title>
+  <!-- Matches the existing .blueprint-brand-mark in src/index.css. -->
+  <rect width="30" height="30" rx="5" fill="#245ac4" />
+  <text x="15" y="15" dy=".35em" text-anchor="middle" fill="#fff"
+        font-family="Inter, system-ui, Avenir, Helvetica, Arial, sans-serif" font-size="10"
+        font-weight="700" letter-spacing="-.6">ADP</text>
+</svg>

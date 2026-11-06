@@ -44,6 +44,8 @@ contract published in `docs/security/mediated-github-operations.md`.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -58,9 +60,11 @@ from src.agentauth.github_operations import (
     operation_action,
     operation_permitted_for_action,
 )
+from src.orchestration.execution_policy import Action
 
 if TYPE_CHECKING:  # Import only for typing: at runtime this would be a cycle,
     # because `runtime_policy` imports the operation contract.
+    from src.orchestration.delivery_contract import DeliveryContract
     from src.orchestration.execution_policy import ExecutionPolicy
 
 logger = logging.getLogger("bedrockgateway.agentauth.github_operation_service")
@@ -79,6 +83,165 @@ class AuthorizedOperation:
     operation: GitHubOperation
     policy: ExecutionPolicy
     plan_version: int | None
+    operations_repair: bool = False
+    workflow_allowlist: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class OperationsGrant:
+    kind: str
+    repository: str
+    workflow_allowlist: frozenset[str]
+    permissions: dict[str, str]
+    node_id: str
+    plan_version: int
+    product_cases: str = "none"
+    proof_phase: str = "none"
+    delivery_contract: DeliveryContract | None = None
+
+
+async def authorize_operations_grant(session, *, execution: dict, grant, decision) -> OperationsGrant:
+    """Issue an audited, repository-bound gateway capability, never a worker token."""
+    from sqlalchemy import select
+
+    from src.orchestration.accepted_node import accepted_node_contract
+    from src.orchestration.models import NodeKind, OrchestrationNode
+    from src.shared.models.audit import AuditLog
+
+    if os.getenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "").lower() not in {"1", "true"}:
+        raise OperationRefusedError("operations executor is disabled")
+    node_id = execution.get("orchestration_node_id", {}).get("S")
+    repository = execution.get("repo", {}).get("S")
+    persona = execution.get("persona", {}).get("S")
+    if (
+        not decision.permitted
+        or str(decision.action) != "operate"
+        or persona not in {"operations", "agent-codex-operations"}
+        or not repository
+        or repository not in grant.repo_scope
+        or decision.policy is None
+        or repository not in decision.policy.repository_ids
+    ):
+        raise OperationRefusedError("operations grant is not authorized")
+    node = await session.scalar(
+        select(OrchestrationNode).where(
+            OrchestrationNode.id == node_id,
+            OrchestrationNode.org_id == grant.tenant_id,
+            OrchestrationNode.flow_id == grant.flow_id,
+        )
+    )
+    if node is None or node.kind != NodeKind.STORY.value:
+        raise OperationRefusedError("operations grant requires a story")
+    contract = await accepted_node_contract(session, node)
+    if (
+        contract is None
+        or contract.plan_version != decision.plan_version
+        or contract.node.executor is None
+        or contract.node.executor.role != "operate"
+        or contract.node.executor.persona != persona
+        # A node-level repository identity is optional in the plan schema. When the
+        # node names one it must be this repository; when it names none, the
+        # repository was already bounded above by the grant scope and the accepted
+        # policy's repository_ids, exactly as dispatch admission reads it (#7349).
+        or (contract.node.repository_identity is not None and contract.node.repository_identity != repository)
+    ):
+        raise OperationRefusedError("operations executor is not in the accepted plan")
+    workflows = frozenset(
+        item.source.removeprefix("deployment_workflow:") for item in contract.node.required_inputs if item.source.startswith("deployment_workflow:")
+    )
+    if not workflows or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.ya?ml", workflow) for workflow in workflows):
+        raise OperationRefusedError("operations grant has no valid workflow allowlist")
+    if getattr(contract.node, "operational_release_binding", None) is not None:
+        from src.orchestration.models import OrchestrationExecution
+        from src.orchestration.operations_release_resolution import operational_execution_pins
+
+        cycle = int(execution.get("orchestration_node_attempt", {}).get("N", "0"))
+        row = await session.scalar(
+            select(OrchestrationExecution).where(
+                OrchestrationExecution.org_id == node.org_id,
+                OrchestrationExecution.flow_id == node.flow_id,
+                OrchestrationExecution.node_id == node.id,
+                OrchestrationExecution.cycle == cycle,
+                OrchestrationExecution.accepted_plan_version == contract.plan_version,
+            )
+        )
+        if (
+            row is None
+            or row.status in {"concluded", "superseded"}
+            or row.cycle != node.attempts
+            or await operational_execution_pins(
+                session, node=node, execution=row, contract=contract, run_id=execution.get("invocation_id", {}).get("S")
+            )
+            is None
+        ):
+            raise OperationRefusedError("operations release binding changed")
+    result = OperationsGrant(
+        kind="operations",
+        repository=repository,
+        workflow_allowlist=workflows,
+        permissions={"actions": "write", "metadata": "read"},
+        node_id=node.id,
+        plan_version=contract.plan_version,
+        product_cases=getattr(getattr(contract.node, "operational_release_binding", None), "product_cases", "none"),
+        proof_phase=getattr(getattr(contract.node, "operational_release_binding", None), "proof_phase", "none"),
+        delivery_contract=getattr(getattr(contract.node, "operational_release_binding", None), "delivery_contract", None),
+    )
+    session.add(
+        AuditLog(
+            org_id=grant.tenant_id,
+            event_type="operations_grant_issued",
+            actor_id=grant.principal,
+            details={
+                "node_id": node.id,
+                "plan_version": contract.plan_version,
+                "repository": repository,
+                "workflows": sorted(workflows),
+                "permissions": result.permissions,
+            },
+        )
+    )
+    await session.flush()
+    return result
+
+
+async def authorize_actions_read_grant(session, *, execution: dict, grant, decision) -> OperationsGrant:
+    """Authorize gateway-held, read-only Actions access on this worker's repository."""
+    from src.shared.models.audit import AuditLog
+
+    repository = execution.get("repo", {}).get("S")
+    node_id = execution.get("orchestration_node_id", {}).get("S")
+    if (
+        os.getenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "").lower() not in {"1", "true"}
+        or not decision.permitted
+        or decision.action is None
+        or decision.policy is None
+        or not decision.plan_version
+        or not isinstance(decision.provider_repository_id, int)
+        or decision.provider_repository_id <= 0
+        or not node_id
+        or not repository
+        or repository not in grant.repo_scope
+        or repository not in decision.policy.repository_ids
+    ):
+        raise OperationRefusedError("Actions read grant is not authorized")
+    result = OperationsGrant(
+        kind="operations_read",
+        repository=repository,
+        workflow_allowlist=frozenset(),
+        permissions={"actions": "read", "metadata": "read"},
+        node_id=node_id,
+        plan_version=decision.plan_version,
+    )
+    session.add(
+        AuditLog(
+            org_id=grant.tenant_id,
+            event_type="operations_grant_issued",
+            actor_id=grant.principal,
+            details={"node_id": node_id, "plan_version": decision.plan_version, "repository": repository, "permissions": result.permissions},
+        )
+    )
+    await session.flush()
+    return result
 
 
 async def authorize_operation(
@@ -185,11 +348,21 @@ async def authorize_operation(
     if not operation_permitted_for_action(decision.action, operation):
         raise OperationRefusedError("operation is not currently authorized")
 
+    operations_repair = decision.action is Action.OPERATE
+    workflows = frozenset()
+    if operations_repair:
+        issued = await authorize_operations_grant(session, execution=execution, grant=grant, decision=decision)
+        workflows = issued.workflow_allowlist
+        if operation in MUTATING_OPERATIONS and not policy.permits(Action.REPAIR):
+            raise OperationRefusedError("operations repair is not accepted")
+
     return AuthorizedOperation(
         assignment=assignment,
         operation=operation,
         policy=policy,
         plan_version=decision.plan_version,
+        operations_repair=operations_repair,
+        workflow_allowlist=workflows,
     )
 
 
@@ -355,6 +528,13 @@ def operation_permissions(operation: GitHubOperation) -> dict[str, str]:
         # at it. In particular no `contents: write`, so the credential minted to
         # materialize a work tree cannot push or merge even inside the gateway.
         return read
+    if operation is GitHubOperation.VALIDATE_REPAIR_EDIT:
+        return {}
+    if operation is GitHubOperation.RECONCILE_WORK_BRANCH:
+        # GitHub requires this when the trusted base contains workflow updates.
+        # The fixed operation cannot author content or choose either branch;
+        # this short-lived credential stays inside the Gateway.
+        return {**read, "contents": "write", "workflows": "write"}
     if operation is GitHubOperation.PUBLISH_COMMIT:
         return {**read, "contents": "write"}
     if operation is GitHubOperation.UPSERT_PULL_REQUEST:
@@ -370,6 +550,9 @@ def operation_permissions(operation: GitHubOperation) -> dict[str, str]:
 
 __all__ = [
     "AuthorizedOperation",
+    "OperationsGrant",
+    "authorize_operations_grant",
+    "authorize_actions_read_grant",
     "authorize_operation",
     "build_assignment",
     "checkpoint_ownership",

@@ -1,9 +1,9 @@
 # Maintenance layer over the verified SkyPilot release; application/provider
 # versions remain pinned except for the explicitly tested dependencies below.
 ARG BASE_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a
-FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:0a5115d0840164c9cf9b17d5c455322bda2c35f68902f28f91ef6d9dd84214c2 AS high-maintenance
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:7b3df072a13b928bddbf70d71735fdc8572006442048868914627ebc8e635b68 AS high-maintenance
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9cf0a78c494248b3c03adc65658de9e76438e34d8089b417965dfb20d3f42352 AS os-security
-FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:65e92431d58468d1a662591c0158a0c623e11915304eb3a9ac2a1728037b9164 AS go-security
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:ca5fe2fbf4836112563ae1eee8bac8ba829109f741dd838474c3d7718c37c56e AS go-security
 FROM ${BASE_IMAGE} AS expat-builder
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
@@ -92,4 +92,5 @@ RUN --network=none python -m pip list --format=json > /tmp/jwt-before.json \
 # The installer rejects unreviewed inputs and checks the full provider environment.
 RUN --network=none --mount=type=bind,from=high-maintenance,source=/,target=/maintenance-input \
     python3 /maintenance-input/maintenance/install.py /maintenance-input
+ENV PYTHON_VERSION=3.10.22 PYTHON_SHA256=c61fe9b1a1a7ec2a0b0388e664187c378a5325a89e3606d220abf5bdfccb2543
 USER 1000:1000

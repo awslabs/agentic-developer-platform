@@ -22,6 +22,9 @@ node_modules/
 *.tfstate
 *.tfstate.*
 *.tfvars.json
+# Committed, non-secret per-environment pipeline inputs (#7457). Secrets stay in
+# repository secrets and are merged on top at plan/deploy time.
+!environments/*/modules/*.tfvars.json
 crash.log
 override.tf
 override.tf.json
@@ -83,10 +86,23 @@ test-results/
 # the single source of truth; this is a per-build copy, gated inside the built image
 # by `python -m src.orchestration.review_contract_selfcheck`.
 modules/gateway/contracts/
+modules/gateway/skills-source/
+modules/gateway/.l5-release/
+modules/gateway/l5-wheel/
+modules/gateway/common-wheel/
 
 # Local deployment checkpoints and target locks (distinct from agent phase notes).
 .adp-deploy-checkpoints/
+# Dev Box stage working directory (release manifest, outputs, receipt, plans)
+.adp-dev-box/
 
 # Private teardown plans, state backups and target binding
 .adp-teardown/
 **/adp_teardown_target_override.tf.json
+
+.adp-deploy-state.json
+.adp-deploy-state.json.lock
+
+# Private tools stage ledger written by modules/tools/orchestrate.sh
+.adp-tools-deploy-state.json
+.adp-tools-deploy-state.json.lock

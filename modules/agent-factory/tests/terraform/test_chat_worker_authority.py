@@ -31,7 +31,7 @@ def test_worker_has_no_model_owner_store_gateway_or_response_grants():
     assert 'Effect = "Deny"' in denied
     assert 'Resource = "*"' in denied
     for action in (
-        "bedrock:*", "dynamodb:*", "s3:*", "secretsmanager:*", "kms:*",
+        "bedrock:*", "bedrock-agentcore:*", "dynamodb:*", "s3:*", "secretsmanager:*", "kms:*",
         "execute-api:Invoke", "sts:AssumeRole", "iam:PassRole",
         "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:SendMessage",
     ):
@@ -50,15 +50,17 @@ def test_worker_entrypoint_refuses_before_queue_receipt_and_direct_store_fallbac
     assert "buildArtifactStore(env);" not in builder
 
 
-def test_retired_scaledjob_launcher_refuses_before_aws_or_kubernetes_access():
+def test_supervisor_launcher_requires_explicit_configuration_before_cloud_access():
     script = ROOT / "agent/k8s/deploy-chat-scaledjob.sh"
     result = subprocess.run(
         ["bash", str(script)], capture_output=True, text=True, check=False,
         env={"PATH": os.environ["PATH"]},
     )
     assert result.returncode == 1
-    assert "Credentialed chat ScaledJob retired" in result.stderr
-    assert "ENVIRONMENT is required" not in result.stderr
+    assert "environment required" in result.stderr
     source = script.read_text()
-    assert source.index("exit 1") < source.index("aws ssm get-parameter")
-    assert source.index("exit 1") < source.index("kubectl apply")
+    assert "chat-scaledjob.yaml" not in source
+    assert "SIGV4_PROXY_TARGET" not in source
+    rollout = source.split('NAMESPACE="${NAMESPACE:-adp-gateway-agents}"', 1)[1]
+    assert rollout.index("SUPERVISOR_IMAGE:?") < rollout.index("kubectl ")
+    assert rollout.index("SANDBOX_IMAGE:?") < rollout.index("kubectl ")

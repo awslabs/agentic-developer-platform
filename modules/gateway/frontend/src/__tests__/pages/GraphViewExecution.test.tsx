@@ -1,4 +1,5 @@
 vi.mock('@/components/budget/BudgetEnforcementControl', () => ({ BudgetEnforcementControl: () => <div data-testid="budget-enforcement-control" /> }));
+vi.mock('@/services/flowBudget', () => ({ getFlowBudget: vi.fn(() => new Promise(() => {})), getNodeBudget: vi.fn() }));
 /**
  * Integration: the delivery ledger reaching the existing graph page — issue #5145.
  *
@@ -15,7 +16,7 @@ vi.mock('@/components/budget/BudgetEnforcementControl', () => ({ BudgetEnforceme
  * cannot blank the plan. Resolving the ledger there would erase that guarantee.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import GraphView from '@/pages/GraphView';
@@ -24,11 +25,13 @@ import type {
   FlowExecution,
   FlowGraph,
   GraphNode,
+  StoryExecution,
 } from '@/types/orchestration';
 
 vi.mock('@/services/orchestration', () => ({
   getFlowGraph: vi.fn(),
   getFlowExecution: vi.fn(),
+  getFlowActivity: vi.fn(),
   approveGate: vi.fn(),
   rejectGate: vi.fn(),
   resumeNode: vi.fn(),
@@ -38,8 +41,11 @@ vi.mock('@/services/orchestration', () => ({
 vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: () => ({ hasPermission: () => false }),
 }));
+vi.mock('@/hooks/useAuth', () => ({
+  useAuth: () => ({ user: { id: 'reader', orgId: 'tenant-a', role: 'member' }, isLoading: false }),
+}));
 
-import { getFlowGraph, getFlowExecution } from '@/services/orchestration';
+import { getFlowGraph, getFlowExecution, getFlowActivity } from '@/services/orchestration';
 
 const mockGetFlowGraph = getFlowGraph as ReturnType<typeof vi.fn>;
 const mockGetFlowExecution = getFlowExecution as ReturnType<typeof vi.fn>;
@@ -118,10 +124,9 @@ function ledger(executions: ExecutionSummary[], overrides: Partial<FlowExecution
   };
 }
 
-function renderGraph() {
-  const client = new QueryClient({
+function renderGraph(client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 5 * 60 * 1000 } },
-  });
+  })) {
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={['/flows/flow-1']}>
@@ -137,6 +142,44 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGetFlowGraph.mockResolvedValue(makeGraph());
   mockGetFlowExecution.mockResolvedValue(ledger([summary()]));
+});
+
+it('shows and clears a runtime budget wait through the actual lazy activity query', async () => {
+  const node = makeNode({
+    run_id: 'current-attempt', attempts: 2, state: 'awaiting_merge',
+    delivery_progress: {
+      stage: 'awaiting_review', actor: 'reviewer', detail: 'Review is running', automation: 'engine', blockers: [],
+      next_check_at: '2026-10-18T02:01:00Z', scheduled_action: 'Reconcile execution',
+    },
+  });
+  const graph = makeGraph({ nodes: [node], activity_included: false });
+  const history: StoryExecution = {
+    run_id: node.run_id!, runs: [], history_complete: true,
+    activity: {
+      invocation_id: 'reviewer', persona: 'agent-codex-reviewer', status: 'in_progress', liveness: 'live',
+      runtime_budget_wait: {
+        blocker: 'budget_reservations_pending', observed_at: new Date().toISOString(),
+        detail: 'Model admission is waiting for another request\'s budget reservation to settle.',
+        next_action: 'Wait for budget reconciliation; inspect the budget if the wait continues.',
+      },
+    },
+  };
+  const activityResponse = () => ({ flow_id: graph.flow_id, items: [{
+    node_id: node.id, attempt: node.attempts, run_id: node.run_id!, availability: 'available' as const,
+    execution_history: history,
+  }] });
+  mockGetFlowGraph.mockResolvedValue(graph);
+  vi.mocked(getFlowActivity).mockImplementation(async () => activityResponse());
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderGraph(client);
+  expect(await screen.findByText('Budget waiting')).toBeVisible();
+  expect(screen.getByText(history.activity!.runtime_budget_wait!.detail)).toBeVisible();
+  expect(screen.getByText(history.activity!.runtime_budget_wait!.next_action)).toBeVisible();
+  expect(screen.getByText(/Reconcile execution/)).toBeVisible();
+  history.activity = { ...history.activity!, runtime_budget_wait: null };
+  await act(async () => { await client.invalidateQueries({ queryKey: ['orchestration', 'flow-graph'] }); });
+  await waitFor(() => expect(screen.queryByText('Budget waiting')).not.toBeInTheDocument());
+  expect(screen.getByText('Review is running')).toBeVisible();
 });
 
 describe('the ledger panel lands inside the existing story journey', () => {

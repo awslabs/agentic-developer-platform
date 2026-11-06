@@ -1,0 +1,11 @@
+# Apply only after GitLab SSO and Product reconciliation have been verified.
+# This optional module owns activation; gateway releases only reference it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: adp-gitlab-runtime
+  namespace: adp-gateway
+  labels:
+    app.kubernetes.io/part-of: adp-gitlab
+data:
+  FEATURE_GITLAB_ENABLED: "true"

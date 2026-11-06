@@ -1,0 +1,17 @@
+label_keys:
+  - source
+  - component
+  - workstream
+  - domain
+  - priority
+  - product
+  - initiative
+  - repository
+  - stage
+  - scope
+  - tracking
+  - experiment
+  - team
+  - cohort
+  - risk
+  - delivery

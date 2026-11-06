@@ -28,3 +28,9 @@ are1/5, and the policy lacks a latency-mode dimension. Legacy 3.5 Sonnet static
 extended-access pricing differs from normal widgets; no current card exists in
 this audited inventory, so those compatibility policies remain estimated.
 No cache ratio or geography multiplier is inferred.
+
+`long-context-widgets.html` preserves the two separate long-context widget
+markups from the same AWS pricing page, retrieved on 7 October 2026. Their
+complete headers explicitly label long-context rates per one million tokens.
+They exercise exclusion from the flat-context refresh: their prices must never
+replace flat-context rates, and unknown headers must still reject publication.

@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.org/insights/devlake-poc/campaign/1",
+  "title": "Private DevLake POC operating campaign",
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "instant": {"type": "string", "format": "date-time"},
+    "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "update": {
+      "type": "object",
+      "required": ["update_id", "provider", "revision", "source_at"],
+      "properties": {
+        "update_id": {"$ref": "#/$defs/text"},
+        "provider": {"$ref": "#/$defs/text"},
+        "revision": {"$ref": "#/$defs/text"},
+        "source_at": {"$ref": "#/$defs/instant"}
+      }
+    },
+    "read": {
+      "type": "object",
+      "required": ["update_id", "revision", "authorized", "read_at", "observer", "evidence_ref"],
+      "properties": {
+        "update_id": {"$ref": "#/$defs/text"},
+        "revision": {"$ref": "#/$defs/text"},
+        "authorized": {"type": "boolean"},
+        "read_at": {"oneOf": [{"$ref": "#/$defs/instant"}, {"type": "null"}]},
+        "observer": {"$ref": "#/$defs/text"},
+        "evidence_ref": {"$ref": "#/$defs/text"}
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "required": ["attempt_id", "observer", "evidence_ref", "data"],
+      "properties": {
+        "attempt_id": {"$ref": "#/$defs/text"},
+        "observer": {"$ref": "#/$defs/text"},
+        "evidence_ref": {"$ref": "#/$defs/text"},
+        "data": {"type": "object"}
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "properties": {
+        "query_seconds": {"type": "array", "items": {"type": "number", "minimum": 0}},
+        "jobs": {"type": "array", "items": {"type": "object", "required": ["vcpu", "memory_mib"], "properties": {
+          "vcpu": {"type": "number", "minimum": 0}, "memory_mib": {"type": "number", "minimum": 0}}}},
+        "storage_gib_per_cell": {"type": "array", "items": {"type": "number", "minimum": 0}},
+        "cost_usd": {"oneOf": [{"type": "null"}, {"type": "object", "properties": {
+          "estimate": {"type": ["number", "null"], "minimum": 0},
+          "billed": {"type": ["number", "null"], "minimum": 0},
+          "basis": {"$ref": "#/$defs/text"}}}]}
+      }
+    },
+    "launch": {
+      "type": "object",
+      "required": ["campaign_id", "revision", "frozen_sha256", "limits_sha256",
+                   "planned_start_at", "engine_until", "workflow_until", "authority_until", "expires_at",
+                   "source_consent_ref", "runner_capacity_ref", "authority_ref", "engine_qualification_ref"],
+      "properties": {
+        "campaign_id": {"$ref": "#/$defs/text"},
+        "revision": {"$ref": "#/$defs/text"},
+        "frozen_sha256": {"$ref": "#/$defs/digest"},
+        "limits_sha256": {"$ref": "#/$defs/digest"},
+        "planned_start_at": {"$ref": "#/$defs/instant"},
+        "engine_until": {"$ref": "#/$defs/instant"},
+        "workflow_until": {"$ref": "#/$defs/instant"},
+        "authority_until": {"$ref": "#/$defs/instant"},
+        "expires_at": {"$ref": "#/$defs/instant"},
+        "source_consent_ref": {"$ref": "#/$defs/text"},
+        "runner_capacity_ref": {"$ref": "#/$defs/text"},
+        "authority_ref": {"$ref": "#/$defs/text"},
+        "engine_qualification_ref": {"$ref": "#/$defs/text"}
+      }
+    },
+    "frozen": {
+      "type": "object",
+      "required": ["sample_revision", "updates"],
+      "properties": {
+        "sample_revision": {"$ref": "#/$defs/text"},
+        "updates": {"type": "array", "minItems": 20, "maxItems": 20, "items": {"$ref": "#/$defs/update"}},
+        "required_db_clients": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+        "upgrade": {"type": "object"},
+        "isolation": {"type": "object"}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["approved", "limits"],
+      "properties": {
+        "approved": {"type": "boolean"},
+        "limits": {"type": "object", "required": ["controlled_updates", "minimum_observation_hours",
+          "freshness_p95_minutes", "worker_vcpu_per_job", "worker_memory_mib_per_job",
+          "incremental_storage_gib_per_cell", "total_incremental_budget_usd"],
+          "properties": {
+            "controlled_updates": {"const": 20},
+            "minimum_observation_hours": {"type": "number", "minimum": 48},
+            "freshness_p95_minutes": {"type": "number", "minimum": 0, "maximum": 15},
+            "worker_vcpu_per_job": {"type": "number", "exclusiveMinimum": 0},
+            "worker_memory_mib_per_job": {"type": "number", "exclusiveMinimum": 0},
+            "incremental_storage_gib_per_cell": {"type": "number", "minimum": 0},
+            "total_incremental_budget_usd": {"type": "number", "minimum": 0}
+          }}
+      }
+    },
+    "batch": {
+      "type": "object",
+      "required": ["batch_id", "reads"],
+      "properties": {
+        "batch_id": {"$ref": "#/$defs/text"},
+        "reads": {"type": "array", "items": {"$ref": "#/$defs/read"}},
+        "measurements": {"$ref": "#/$defs/measurements"},
+        "recovery": {"type": "object", "additionalProperties": {"$ref": "#/$defs/receipt"}},
+        "upgrade": {"$ref": "#/$defs/receipt"},
+        "isolation": {"$ref": "#/$defs/receipt"},
+        "continuation": {"type": "object", "additionalProperties": {"$ref": "#/$defs/receipt"}}
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": ["frozen_sha256", "limits_sha256", "batches", "reads", "query_seconds",
+                   "jobs", "storage_gib_per_cell", "cost_usd", "recovery", "upgrade", "isolation"],
+      "properties": {
+        "frozen_sha256": {"$ref": "#/$defs/digest"},
+        "limits_sha256": {"$ref": "#/$defs/digest"},
+        "batches": {"type": "object", "additionalProperties": {"$ref": "#/$defs/digest"}},
+        "reads": {"type": "array", "items": {"$ref": "#/$defs/read"}},
+        "query_seconds": {"type": "array", "items": {"type": "number", "minimum": 0}},
+        "jobs": {"type": "array", "items": {"type": "object"}},
+        "storage_gib_per_cell": {"type": "array", "items": {"type": "number", "minimum": 0}},
+        "cost_usd": {"oneOf": [{"type": "null"}, {"type": "object"}]},
+        "recovery": {"type": "object", "additionalProperties": {"$ref": "#/$defs/receipt"}},
+        "upgrade": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/receipt"}]},
+        "isolation": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/receipt"}]},
+        "continuation": {"type": "object", "additionalProperties": {"$ref": "#/$defs/receipt"}}
+      }
+    },
+    "pilot_summary": {
+      "type": "object",
+      "required": ["scope", "phase", "status", "independent_verification", "criteria",
+                   "required_passed", "required_failed", "required_skipped", "required_not_run",
+                   "source_revision", "definition_revision", "run_id", "run_attempt", "component_digests"],
+      "properties": {
+        "scope": {"enum": ["offline-evidence-evaluation", "live-evidence-evaluation"]},
+        "phase": {"const": "pilot"},
+        "status": {"enum": ["pass", "fail"]},
+        "independent_verification": {"enum": ["offline-only", "confirmed"]},
+        "criteria": {"type": "object", "minProperties": 41, "additionalProperties": {
+          "type": "object", "required": ["outcome"],
+          "properties": {"outcome": {"enum": ["pass", "fail", "skipped", "not-run"]},
+                         "scenario_id": {"$ref": "#/$defs/text"}, "evidence_ref": {"$ref": "#/$defs/text"}}
+        }},
+        "required_passed": {"type": "integer", "minimum": 0},
+        "required_failed": {"type": "integer", "minimum": 0},
+        "required_skipped": {"type": "integer", "minimum": 0},
+        "required_not_run": {"type": "integer", "minimum": 0},
+        "source_revision": {"$ref": "#/$defs/text"},
+        "definition_revision": {"$ref": "#/$defs/text"},
+        "run_id": {"$ref": "#/$defs/text"},
+        "run_attempt": {"$ref": "#/$defs/text"},
+        "component_digests": {"type": "object", "required": ["gateway", "connector", "collector",
+          "schema", "mapper", "configuration"], "additionalProperties": {"$ref": "#/$defs/digest"}}
+      }
+    },
+    "pilot_artifact": {
+      "allOf": [
+        {"$ref": "#/$defs/pilot_summary"},
+        {"type": "object", "required": ["gateway_revision", "provider_evidence_verified", "provider_revisions_digest", "unresolved_operations",
+            "authority_snapshot_valid", "requirements_snapshot_matches", "human_interventions",
+            "live_profile_contract_verified", "unattended"], "properties": {
+          "scope": {"const": "live-evidence-evaluation"},
+          "status": {"const": "pass"},
+          "independent_verification": {"const": "confirmed"},
+          "gateway_revision": {"$ref": "#/$defs/text"},
+          "provider_evidence_verified": {"const": true},
+          "provider_revisions_digest": {"$ref": "#/$defs/digest"},
+          "unresolved_operations": {"type": "array"},
+          "authority_snapshot_valid": {"type": "boolean"},
+          "requirements_snapshot_matches": {"type": "boolean"},
+          "human_interventions": {"type": "integer", "minimum": 0},
+          "live_profile_contract_verified": {"type": "boolean"},
+          "unattended": {"type": "object", "required": ["resume_qualified", "repair_qualified"],
+            "properties": {"resume_qualified": {"type": "boolean"},
+                           "repair_qualified": {"type": "boolean"}}}
+        }}
+      ]
+    },
+    "report": {
+      "type": "object",
+      "required": ["scope", "sample_sha256", "batch_count", "freshness", "bounds",
+                   "recovery", "compatibility", "isolation", "recovery_receipts",
+                   "upgrade_receipt", "isolation_receipt", "status"],
+      "properties": {
+        "scope": {"enum": ["offline-evidence-evaluation", "live-evidence-evaluation"]},
+        "sample_sha256": {"$ref": "#/$defs/digest"},
+        "batch_count": {"type": "integer", "minimum": 1},
+        "status": {"enum": ["pass", "fail", "incomplete", "unavailable"]},
+        "freshness": {"type": "object", "required": ["status"]},
+        "bounds": {"type": "object", "required": ["status"]},
+        "recovery": {"type": "object", "required": ["status"]},
+        "compatibility": {"type": "object", "required": ["status"]},
+        "isolation": {"type": "object", "required": ["status"]},
+        "recovery_receipts": {"type": "object"},
+        "upgrade_receipt": {"type": ["object", "null"]},
+        "isolation_receipt": {"type": ["object", "null"]},
+        "unattended": {"type": "object", "required": ["status", "missing"]},
+        "continuation_receipts": {"type": "object"}
+      }
+    }
+  }
+}

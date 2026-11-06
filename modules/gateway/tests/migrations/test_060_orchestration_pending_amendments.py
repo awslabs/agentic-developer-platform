@@ -950,6 +950,8 @@ class TestModelMigrationParity:
     async def migrated(self):
         engine = await _bare_engine()
         await _upgrade(engine)
+        async with engine.begin() as conn:
+            await conn.run_sync(_run_migration, _load_migration("127_authoring_assignment.py").upgrade)
         async with engine.connect() as conn:
             tables = {
                 table: await conn.run_sync(lambda c, t=table: {x["name"]: x for x in sa_inspect(c).get_columns(t)}) for table in (REQUESTS, DRAFTS)

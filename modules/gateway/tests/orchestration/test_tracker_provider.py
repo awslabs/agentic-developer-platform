@@ -41,13 +41,23 @@ def provider(monkeypatch):
     monkeypatch.setattr("src.knowledge.github_app_service.resolve_tenant_app_credentials", credentials)
     monkeypatch.setattr("src.knowledge.github_app_service.mint_installation_token_with_expiry", token)
 
-    state = {"body": "## Intent\n\nbody text", "status": 200}
+    state = {"body": "## Intent\n\nbody text", "status": 200, "repository_id": 3003, "sub_issues": []}
     requests: list[httpx.Request] = []
 
     def respond(request):
         requests.append(request)
         if request.method == "GET":
-            return httpx.Response(state["status"], json={"body": state["body"]})
+            if request.url.path.endswith("/sub_issues"):
+                return httpx.Response(state["status"], json=state["sub_issues"])
+            if str(request.url).endswith(f"/repos/{REPO}"):
+                return httpx.Response(state["status"], json={"id": state["repository_id"], "full_name": REPO})
+            return httpx.Response(
+                state["status"],
+                json={
+                    "body": state["body"],
+                    "sub_issues_summary": {"total": state.get("child_count", len(state["sub_issues"]))},
+                },
+            )
         return httpx.Response(state["status"], json={})
 
     real = httpx.AsyncClient
@@ -62,6 +72,102 @@ def provider(monkeypatch):
 
     monkeypatch.setattr("src.orchestration.tracker_provider.httpx.AsyncClient", client)
     return GitHubTrackerProvider(), state, requests, credentials, token
+
+
+async def test_native_children_are_read_through_the_parent_with_bounded_identity(provider):
+    subject, state, requests, _, token = provider
+    state["sub_issues"] = [{"id": 17, "number": 11, "repository_url": "https://api.github.com/repos/acme/child"}]
+    children = await subject.read_sub_issues(org_id=ORG, installation_id=INSTALLATION, repo=REPO, issue_number=ISSUE, repository_id=3003)
+    assert children == state["sub_issues"]
+    assert [request.url.path for request in requests] == [
+        f"/repos/{REPO}",
+        f"/repos/{REPO}/issues/{ISSUE}",
+        f"/repos/{REPO}/issues/{ISSUE}/sub_issues",
+    ]
+    assert token.await_args.kwargs == {"repositories": ["adp"], "permissions": {"issues": "read", "metadata": "read"}}
+
+
+async def test_native_child_token_includes_only_explicit_readable_repositories(provider):
+    subject, state, _, _, token = provider
+    state["sub_issues"] = [{"id": 17, "number": 11, "repository_url": "https://api.github.com/repos/aws-e/private-child"}]
+    await subject.read_sub_issues(
+        org_id=ORG,
+        installation_id=INSTALLATION,
+        repo=REPO,
+        issue_number=ISSUE,
+        repository_id=3003,
+        readable_repositories=[REPO, "aws-e/private-child", REPO],
+    )
+    assert token.await_args.kwargs == {
+        "repositories": ["adp", "private-child"],
+        "permissions": {"issues": "read", "metadata": "read"},
+    }
+    await subject.write_issue_body(org_id=ORG, installation_id=INSTALLATION, repo=REPO, issue_number=ISSUE, body="updated")
+    assert token.await_args.kwargs == {"repositories": ["adp"], "permissions": {"issues": "write", "metadata": "read"}}
+
+
+@pytest.mark.parametrize("children,total", [([], 2), ([{"id": 1}], 2), ([{"id": 1}, {"id": 1}], 2), ([{"id": "1"}], 1)])
+async def test_hidden_or_duplicate_children_refuse_instead_of_becoming_a_parent_story(provider, children, total):
+    subject, state, *_ = provider
+    state.update(sub_issues=children, child_count=total)
+    with pytest.raises(TrackerProviderError, match="incomplete"):
+        await subject.read_sub_issues(org_id=ORG, installation_id=INSTALLATION, repo=REPO, issue_number=ISSUE, repository_id=3003)
+
+
+@pytest.mark.parametrize("total", [None, "2", -1, True])
+async def test_unknown_parent_child_count_refuses(provider, total):
+    subject, state, *_ = provider
+    state["child_count"] = total
+    with pytest.raises(TrackerProviderError, match="count"):
+        await subject.read_sub_issues(org_id=ORG, installation_id=INSTALLATION, repo=REPO, issue_number=ISSUE, repository_id=3003)
+
+
+@pytest.mark.parametrize("scope", [["other/adp"], ["aws-e/.."], [f"aws-e/repo-{i}" for i in range(501)]])
+async def test_invalid_discovery_scope_refuses_before_token_mint(provider, scope):
+    subject, _, requests, _, token = provider
+    with pytest.raises(TrackerProviderError):
+        await subject.read_sub_issues(
+            org_id=ORG,
+            installation_id=INSTALLATION,
+            repo=REPO,
+            issue_number=ISSUE,
+            repository_id=3003,
+            readable_repositories=scope,
+        )
+    token.assert_not_awaited()
+    assert requests == []
+
+
+async def test_incomplete_or_oversized_native_children_are_never_returned(provider):
+    subject, state, _, _, _ = provider
+    state["sub_issues"] = [{}] * 41
+    with pytest.raises(TrackerProviderError, match="limit"):
+        await subject.read_sub_issues(org_id=ORG, installation_id=INSTALLATION, repo=REPO, issue_number=ISSUE, repository_id=3003)
+
+
+async def test_repository_name_reuse_refuses_provider_read_and_write(provider):
+    subject, state, requests, *_ = provider
+    state["repository_id"] = 9999
+    with pytest.raises(TrackerProviderError, match="identity changed"):
+        await subject.read_issue_body(org_id=ORG, installation_id=INSTALLATION, repo=REPO, issue_number=ISSUE, repository_id=3003)
+    with pytest.raises(TrackerProviderError, match="identity changed"):
+        await subject.write_issue_body(org_id=ORG, installation_id=INSTALLATION, repo=REPO, issue_number=ISSUE, repository_id=3003, body="new body")
+    assert [request.method for request in requests] == ["GET", "GET"]
+
+
+async def test_repository_id_is_rechecked_on_both_provider_calls(provider):
+    subject, state, requests, *_ = provider
+    await subject.read_issue_body(org_id=ORG, installation_id=INSTALLATION, repo=REPO, issue_number=ISSUE, repository_id=state["repository_id"])
+    await subject.write_issue_body(
+        org_id=ORG, installation_id=INSTALLATION, repo=REPO, issue_number=ISSUE, repository_id=state["repository_id"], body="new body"
+    )
+    assert [request.method for request in requests] == ["GET", "GET", "GET", "PATCH"]
+    assert [request.url.path for request in requests] == [
+        f"/repos/{REPO}",
+        f"/repos/{REPO}/issues/{ISSUE}",
+        f"/repos/{REPO}",
+        f"/repos/{REPO}/issues/{ISSUE}",
+    ]
 
 
 async def test_read_fetches_the_issue_body(provider):

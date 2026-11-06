@@ -121,6 +121,28 @@ def test_observed_exit_and_cleanup_precede_success(execution):
     assert pod["metadata"]["finalizers"] == [FINALIZER]
 
 
+def test_transform_candidate_source_and_host_boundary(execution):
+    executor, api, args = execution
+    assert args["check"].timeout_seconds == 120
+    assert args["archive_sha256"] == hashlib.sha256(args["archive"].read_bytes()).hexdigest()
+    args["archive_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="digest mismatch"):
+        executor.run(**args)
+    assert not any(method == "POST" and path.endswith("/pods") for method, path, _ in api.calls)
+    assert api.pod is None and not api.maps
+
+    pod = executor._pod("adp-validation-example", ["pinned-source"], args["check"])
+    spec = pod["spec"]
+    container = spec["containers"][0]
+    assert spec["automountServiceAccountToken"] is False
+    assert not any(spec[key] for key in ("hostNetwork", "hostPID", "hostIPC"))
+    assert spec["nodeSelector"] == {"adp.dev/validation-isolation": "v1"}
+    assert {mount["mountPath"] for mount in container["volumeMounts"]} == {
+        "/input", "/work", "/tmp"}
+    assert all("hostPath" not in volume and "secret" not in volume for volume in spec["volumes"])
+    assert {entry["name"] for entry in container["env"]} == {"HOME", "BG_CONFIG_DIR", "TMPDIR"}
+
+
 @pytest.mark.parametrize("mode,reason", [("failure", "process_failed"), ("output", "output_limit"), ("timeout", "timeout"), ("cancel", "cancelled")])
 def test_failed_and_interrupted_checks_never_pass(execution, mode, reason):
     executor, api, args = execution

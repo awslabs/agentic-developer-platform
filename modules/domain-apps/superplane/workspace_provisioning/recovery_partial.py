@@ -1,12 +1,12 @@
 """Classify interrupted mutations from maintained journals without replay or cleanup."""
 
-import json
 import hashlib
+import json
 import re
 
 from harness_jobs.execution import CallOutcome, read_call
-from harness_jobs.execution_plan import step_key
 from harness_jobs.identity import OperationRefused
+from harness_jobs.provider_retry import active_call_rows, effective_step_key
 from harness_jobs.recovery_grant import RecoveryGrant, lock_recovery_grant
 from harness_jobs.store import OperationStore
 from superplane_executor.recovery_authority import same_recovery_claim
@@ -48,13 +48,14 @@ class PartialLifecycleRecovery:
                 "SELECT idempotency_key FROM harness_provider_call_intent WHERE operation_id=$1",
                 lease.operation_id,
             )
+            keys = await active_call_rows(connection, lease.operation_id, keys)
             if (
                 record is None
                 or call is None
                 or [item["idempotency_key"] for item in keys] != [key]
                 or (record.job_id, record.plan_digest, record.request_payload)
                 != (operation.job_id, operation.plan_digest, operation.request_payload)
-                or key != step_key(record, step)
+                or key != await effective_step_key(connection, record, step)
                 or call.fence_token >= lease.fence_token
                 or (
                     call.operation_id,

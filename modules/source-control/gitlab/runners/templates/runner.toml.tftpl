@@ -1,0 +1,53 @@
+[[runners]]
+  name = "gitlab-group-${group_id}"
+  clone_url = "https://${gitlab_host}/gitlab"
+  tls-ca-file = "/secrets/ca.pem"
+  executor = "docker-autoscaler"
+  limit = 2
+  request_concurrency = 1
+  debug_trace_disabled = true
+  [runners.docker]
+    image = "${image}"
+    allowed_images = ["${image}"]
+    helper_image = "${helper_image}"
+    pull_policy = "never"
+    allowed_pull_policies = ["never"]
+    user = "10001:10001"
+    allowed_users = ["10001:10001"]
+    disable_entrypoint_overwrite = true
+    volumes = ["/builds", "/cache"]
+    extra_hosts = ["${gitlab_host}:${gitlab_ip}", "s3.${aws_region}.amazonaws.com:${cache_ip}"]
+    privileged = false
+    services_privileged = false
+    services_limit = 0
+    cap_drop = ["ALL"]
+    services_cap_drop = ["ALL"]
+    security_opt = ["no-new-privileges:true"]
+    services_security_opt = ["no-new-privileges:true"]
+    memory = "4g"
+    memory_swap = "4g"
+    cpus = "1"
+  [runners.cache]
+    Type = "s3"
+    Path = "group/${group_id}"
+    Shared = false
+    [runners.cache.s3]
+      BucketName = "${cache_bucket}"
+      BucketLocation = "${aws_region}"
+      AuthenticationType = "iam"
+      ServerAddress = "s3.${aws_region}.amazonaws.com"
+      PathStyle = true
+  [runners.autoscaler]
+    plugin = "fleeting-plugin-aws"
+    capacity_per_instance = 1
+    max_use_count = 1
+    max_instances = 2
+    [runners.autoscaler.plugin_config]
+      name = "${asg_name}"
+      region = "${aws_region}"
+    [runners.autoscaler.connector_config]
+      username = "ec2-user"
+      use_external_addr = false
+    [[runners.autoscaler.policy]]
+      idle_count = 0
+      idle_time = "0s"

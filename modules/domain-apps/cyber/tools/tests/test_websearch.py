@@ -223,16 +223,34 @@ def test_handler_durable_authority_artifact_and_unknown_no_replay(monkeypatch, f
     )
     client = TaskRunClient()
 
-    def signed_route(action, request, **kwargs):
-        assert action == "cyber" and kwargs["tool_endpoint"].endswith(
-            "/tools/websearch"
-        )
-        routed = {**event, "body": json.dumps(request)}
-        answer = handler.lambda_handler(routed, None)
-        assert answer["statusCode"] == 200
-        return json.loads(answer["body"])
+    def gateway_route(action, request, **kwargs):
+        assert action == "cyber"
+        assert kwargs == {
+            "tool_endpoint": "https://api.example/agent/tools/call",
+            "run_bound": True,
+            "gateway_tool": True,
+        }
+        assert request == {
+            "tool": "websearch___search",
+            "arguments": body["payload"],
+            "request_id": body["operation_id"],
+        }
+        return {
+            "request_id": request["request_id"],
+            "root_human_id": "human-fixture",
+            "status": "confirmed",
+            "result": {"jsonrpc": "2.0", "result": receipt["result"]},
+        }
 
-    monkeypatch.setattr(client, "_post", signed_route)
+    published = []
+
+    def publish_tool_result(owner, *, attempt, result):
+        assert owner is client and attempt == body["attempt"]
+        published.append(result)
+        return receipt["artifact"]
+
+    monkeypatch.setattr(client, "_post", gateway_route)
+    monkeypatch.setattr("lib.task_tool_artifacts.publish_tool_result", publish_tool_result)
     host = TaskHost.__new__(TaskHost)
     host.client = client
     host._report_renderer = render_report
@@ -253,6 +271,7 @@ def test_handler_durable_authority_artifact_and_unknown_no_replay(monkeypatch, f
     assert delivered["operation_status"] == "confirmed" and delivered["artifact"][
         "artifact_id"
     ].startswith("art_")
+    assert published == [receipt["result"]]
     html = render_report(
         report={
             "summary": "Verdict: inconclusive",
@@ -311,6 +330,8 @@ def test_gateway_transport_signs_exact_region_and_refuses_untrusted_endpoint():
     from fastapi import HTTPException
 
     class Response:
+        status_code = 200
+
         def iter_content(self, chunk_size):
             yield self.content
 
@@ -404,6 +425,8 @@ def test_gateway_accepts_bounded_mcp_event_stream_without_replay():
     from botocore.credentials import Credentials
 
     class Response:
+        status_code = 200
+
         def iter_content(self, chunk_size):
             yield self.content
 
@@ -495,7 +518,7 @@ def test_discovery_follows_cursor_before_invoking_target():
 def test_snippet_truncation_is_disclosed():
     result = websearch.search(
         {"query": "example"},
-        call=provider([], results=[{"text": "x" * 1300}]),
+        call=provider([], results=[{"url": "https://source.example/report", "text": "x" * 1300}]),
         environ=CONFIG,
     )
     assert result["results_truncated"] is True
@@ -526,6 +549,7 @@ def test_stream_response_limit_stops_reading_and_closes_response():
     closed = []
 
     class Response:
+        status_code = 200
         headers = {"Content-Type": "application/json"}
 
         def raise_for_status(self):

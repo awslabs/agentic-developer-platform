@@ -84,7 +84,7 @@ source_access:
 # Private installation inputs bind source_revision to the selected clean merged
 # checkout. Individual image revisions below retain their actual build identity.
 images:
-  skypilot-api: sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4
+  skypilot-api: sha256:398c9bf405f449c9fcc51a2752e830c329e02c211cbc8bdf114b67c76a100851
   superplane-controller: sha256:cb5dbf14eff53e665e00f7810f67a7a063dcb7f99fa7693853d35676aa769635
   superplane-api: sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2
   superplane-platform-monitor: sha256:0b62e74cb32b93519476f85a6f7d10792c7084315f9b046ff1c21765bef32792
@@ -106,11 +106,12 @@ image_sources:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-skypilot
     ecr_repository: adp-superplane-skypilot
-    source_revision: a7b50c90da7df1e9ae8a7251234bae09fd0f6792
-    tag: skypilot-7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4
-    resolved_by: Published qualified OCI platform and config bytes unchanged; exact registry readback verified
-    publication_receipt: docs/security/runs/2026-10-06/demo-image-pins/skypilot-publication.json
-    selected_because: Independently reviewed image gate and packaged runtime checks passed; live installation remains separate
+    source_revision: e589e06d171587a49daa2d2aeb51a4fd552394b2
+    tag: system-ca-skypilot-d6d040f86c15
+    maintenance_source_revision: d6d040f86c1580959954ec4398d73cb9f0f858fb
+    resolved_by: Exact tested configuration/rootfs and immutable registry manifest readback
+    publication_receipt: docs/security/runs/2026-10-25/system-ca/skypilot-publication.json
+    selected_because: Same SkyPilot application with persistent system CA distrust; exact published-image TLS and preserved backport checks passed
   superplane-controller:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-controller
@@ -281,12 +282,12 @@ schema:
     # Explicit cluster scope children preserve maintained organization grant authority.
     # #5927 adds the original-instance native command journal.
     # #5928 records cleanup ownership and exact pre-POST workload specifications.
-    version_files: 58
+    version_files: 72
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 044_organization_grant_changes
+    head: 058_interrupted_planning
     base: 001_initial
   compatible_with: null
   blocked_by:

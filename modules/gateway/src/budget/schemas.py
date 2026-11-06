@@ -755,6 +755,7 @@ UnknownReasonValue = Literal[
     "not_started",
     "not_costable",
     "non_gateway_path",
+    "cost_refresh_unavailable",
     "cost_store_unavailable",
     "lineage_unavailable",
 ]

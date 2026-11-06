@@ -31,6 +31,28 @@ declare -A ALLOWLIST=(
   # (none currently — all placeholders must be rendered by both implementations)
 )
 
+# The adapter uses a shared JSON-safe renderer because its release value is JSON.
+# Exercise that renderer against the actual template before counting its keys;
+# these are verified substitutions, not an exemption from parity.
+ADAPTER_PLACEHOLDERS=$(python3 - "$ROOT_DIR" <<'PYCODE'
+import runpy, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+helper = runpy.run_path(str(root / "modules/gateway/scripts/tool-adapter-config.py"))
+values = helper["bindings"](None, "123456789012", "us-east-1")
+rendered = helper["render"]((root / "modules/gateway/k8s/configmap.yaml").read_text(), values)
+for name in values:
+    placeholder = "__" + name + "__"
+    assert placeholder not in rendered
+    print(placeholder)
+PYCODE
+)
+
+adapter_renders() {
+  grep -Fq 'tool-adapter-config.py"' "$2" || grep -Fq 'tool-adapter-config.py ' "$2" || return 1
+  grep -Fxq "$1" <<< "$ADAPTER_PLACEHOLDERS"
+}
+
 FAILURES=0
 PASSES=0
 
@@ -79,6 +101,8 @@ for placeholder in $PLACEHOLDERS; do
   # Look for the sed substitution pattern: s|__PLACEHOLDER__|...|g
   if grep -q "s|${placeholder}|" "$DEPLOY_ALL" 2>/dev/null; then
     pass "$placeholder — found in deploy-all.sh sed block"
+  elif adapter_renders "$placeholder" "$DEPLOY_ALL"; then
+    pass "$placeholder — verified shared adapter renderer in deploy-all.sh"
   else
     fail_test "$placeholder — NOT found in deploy-all.sh sed block"
     DEPLOY_ALL_MISSING+=("$placeholder")
@@ -100,6 +124,8 @@ for placeholder in $PLACEHOLDERS; do
   # Look for the sed substitution pattern: s|__PLACEHOLDER__|...|g
   if grep -q "s|${placeholder}|" "$WORKFLOW" 2>/dev/null; then
     pass "$placeholder — found in gateway-deploy.yml sed block"
+  elif adapter_renders "$placeholder" "$WORKFLOW"; then
+    pass "$placeholder — verified shared adapter renderer in gateway-deploy.yml"
   else
     fail_test "$placeholder — NOT found in gateway-deploy.yml sed block"
     WORKFLOW_MISSING+=("$placeholder")
@@ -117,6 +143,8 @@ echo "--- Checking for hardcoded empty/literal sed substitutions in deploy-all.s
 HARDCODED_DIVERGENCE=0
 for placeholder in $PLACEHOLDERS; do
   if [ -n "${ALLOWLIST[$placeholder]:-}" ]; then continue; fi
+
+  if adapter_renders "$placeholder" "$DEPLOY_ALL" && adapter_renders "$placeholder" "$WORKFLOW"; then continue; fi
 
   # Extract what deploy-all.sh substitutes for this placeholder
   DEPLOY_ALL_VALUE=$(grep "s|${placeholder}|" "$DEPLOY_ALL" 2>/dev/null | \

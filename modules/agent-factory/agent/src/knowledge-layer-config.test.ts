@@ -43,47 +43,12 @@ describe('knowledge-layer-config', () => {
       expect(headers).toEqual({});
     });
 
-    it('includes X-GitHub-Login when ADP_GITHUB_LOGIN is set', () => {
-      process.env.ADP_GITHUB_LOGIN = 'testuser';
-
-      const headers = buildKnowledgeLayerHeaders();
-      expect(headers['X-GitHub-Login']).toBe('testuser');
-    });
-
-    it('includes X-GitHub-Teams when ADP_GITHUB_TEAMS is set', () => {
-      process.env.ADP_GITHUB_TEAMS = 'team-a,team-b';
-
-      const headers = buildKnowledgeLayerHeaders();
-      expect(headers['X-GitHub-Teams']).toBe('team-a,team-b');
-    });
-
-    it('includes X-Owner-Sub when ADP_OWNER_SUB is set', () => {
-      process.env.ADP_OWNER_SUB = 'cognito-sub-123';
-
-      const headers = buildKnowledgeLayerHeaders();
-      expect(headers['X-Owner-Sub']).toBe('cognito-sub-123');
-    });
-
-    it('includes X-Tenant-Id when ADP_TENANT_ID is set', () => {
-      process.env.ADP_TENANT_ID = 'user-12345';
-
-      const headers = buildKnowledgeLayerHeaders();
-      expect(headers['X-Tenant-Id']).toBe('user-12345');
-    });
-
-    it('includes all headers when all env vars are set', () => {
-      process.env.ADP_GITHUB_LOGIN = 'testuser';
+    it('never passes dispatch identity to the Door, even when configured', () => {
+      process.env.ADP_GITHUB_LOGIN = 'victim';
       process.env.ADP_GITHUB_TEAMS = 'team-a';
-      process.env.ADP_OWNER_SUB = 'sub-123';
-      process.env.ADP_TENANT_ID = 'tenant-456';
-
-      const headers = buildKnowledgeLayerHeaders();
-      expect(headers).toEqual({
-        'X-GitHub-Login': 'testuser',
-        'X-GitHub-Teams': 'team-a',
-        'X-Owner-Sub': 'sub-123',
-        'X-Tenant-Id': 'tenant-456',
-      });
+      process.env.ADP_OWNER_SUB = 'victim-sub';
+      process.env.ADP_TENANT_ID = 'victim-tenant';
+      expect(buildKnowledgeLayerHeaders()).toEqual({});
     });
 
     it('does not include empty-string env vars', () => {
@@ -105,13 +70,13 @@ describe('knowledge-layer-config', () => {
       expect(typeof config.headers).toBe('object');
     });
 
-    it('builds headers from current env vars', () => {
+    it('uses the gateway bridge without mutable identity headers', () => {
       process.env.ADP_GITHUB_LOGIN = 'myuser';
       process.env.ADP_OWNER_SUB = 'mysub';
 
       const config = getKnowledgeLayerMcpConfig();
-      expect(config.headers['X-GitHub-Login']).toBe('myuser');
-      expect(config.headers['X-Owner-Sub']).toBe('mysub');
+      expect(config.headers).toEqual({});
+      expect(config.url).toContain('/__run/knowledge/mcp/');
     });
 
     it('has correct type shape for McpHttpServerConfig', () => {

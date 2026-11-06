@@ -22,6 +22,8 @@ export async function readTaskEvents(taskId: string, cursor: string | undefined,
   if (!token) throw new TaskStreamError(401);
   const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' };
   if (cursor) headers['Last-Event-ID'] = cursor;
+  // Browser-only event request to the deployment API with an encoded task ID.
+  // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
   const response = await fetch(`${deploymentSetting('VITE_API_URL') || '/api'}/v1/tasks/${encodeURIComponent(taskId)}/events`,
     { headers, signal, cache: 'no-store', redirect: 'error' });
   if (!response.ok) throw new TaskStreamError(response.status);

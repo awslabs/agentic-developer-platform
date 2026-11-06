@@ -18,7 +18,10 @@
  * see DEFAULT_CONFIG below and issue #4184.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { workerAwsEnvironment, workerAwsRegion } from './lib/runIdentity';
 
 // ============================================================================
@@ -136,15 +139,14 @@ function log(level: string, message: string, context?: Record<string, unknown>):
  * Execute a bd command and return the result
  */
 async function bd(
-  args: string,
+  args: string[],
   options: { json?: boolean; cwd?: string } = {}
 ): Promise<string> {
   const { json = true, cwd = process.cwd() } = options;
-  const jsonFlag = json ? ' --json' : '';
-  const command = `bd ${args}${jsonFlag}`;
+  const commandArgs = json ? ['--json', ...args] : args;
 
   try {
-    const result = execSync(command, {  // nosemgrep: detect-child-process
+    const result = execFileSync('bd', commandArgs, {
       cwd,
       encoding: 'utf-8',
       env: {
@@ -157,7 +159,7 @@ async function bd(
     return result;
   } catch (error) {
     const err = error as { stderr?: string; message?: string };
-    log('ERROR', `bd command failed: ${command}`, { error: err.stderr || err.message });
+    log('ERROR', `bd command failed: ${args[0]}`, { error: err.stderr || err.message });
     throw error;
   }
 }
@@ -167,7 +169,7 @@ async function bd(
  */
 export async function isBeadsAvailable(): Promise<boolean> {
   try {
-    execSync('bd version', { encoding: 'utf-8', stdio: 'pipe' });
+    execFileSync('bd', ['version'], { encoding: 'utf-8', stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -190,7 +192,7 @@ export async function isBeadsInitialized(cwd: string = process.cwd()): Promise<b
 
       // Verify bd can read the database by running a simple command
       try {
-        execSync('bd ready --json', { cwd, encoding: 'utf-8', stdio: 'pipe' });
+        execFileSync('bd', ['ready', '--json'], { cwd, encoding: 'utf-8', stdio: 'pipe' });
         log('INFO', 'isBeadsInitialized: bd ready succeeded, Beads is working');
         return true;
       } catch {
@@ -221,7 +223,7 @@ export async function initializeBeads(cwd: string = process.cwd()): Promise<void
   log('INFO', 'Initializing beads...');
 
   // Initialize with stealth mode (don't commit .beads to git)
-  await bd('init --stealth --quiet', { json: false, cwd });
+  await bd(['init', '--stealth', '--quiet'], { json: false, cwd });
 
   // Configure S3 remote if bucket is set
   if (config.s3Bucket) {
@@ -230,7 +232,7 @@ export async function initializeBeads(cwd: string = process.cwd()): Promise<void
 
     try {
       // Add S3 remote using bd dolt wrapper (not raw dolt)
-      await bd(`dolt remote add origin ${remoteUrl}`, { json: false, cwd });
+      await bd(['dolt', 'remote', 'add', 'origin', remoteUrl], { json: false, cwd });
     } catch (error) {
       // Remote might already exist
       log('WARN', 'Remote may already exist, continuing...');
@@ -252,7 +254,7 @@ export async function syncPull(cwd: string = process.cwd()): Promise<void> {
 
   log('INFO', 'Pulling latest state from S3...');
   try {
-    await bd('dolt pull', { json: false, cwd });
+    await bd(['dolt', 'pull'], { json: false, cwd });
     log('INFO', 'Sync pull complete');
   } catch (error) {
     log('WARN', `Sync pull failed (may be first run): ${(error as Error).message}`);
@@ -271,7 +273,7 @@ export async function syncPush(cwd: string = process.cwd()): Promise<void> {
 
   log('INFO', 'Pushing state to S3...');
   try {
-    await bd('dolt push', { json: false, cwd });
+    await bd(['dolt', 'push'], { json: false, cwd });
     log('INFO', 'Sync push complete');
   } catch (error) {
     log('WARN', `Sync push failed: ${(error as Error).message}`);
@@ -286,7 +288,7 @@ export async function syncPush(cwd: string = process.cwd()): Promise<void> {
  * Get all ready (unblocked) tasks
  */
 export async function getReadyTasks(cwd: string = process.cwd()): Promise<BeadsTask[]> {
-  const result = await bd('ready', { cwd });
+  const result = await bd(['ready'], { cwd });
   const data = JSON.parse(result);
   return data.issues || data.tasks || [];
 }
@@ -296,7 +298,7 @@ export async function getReadyTasks(cwd: string = process.cwd()): Promise<BeadsT
  */
 export async function getTask(taskId: string, cwd: string = process.cwd()): Promise<BeadsTask | null> {
   try {
-    const result = await bd(`show ${taskId}`, { cwd });
+    const result = await bd(['show', '--', taskId], { cwd });
     return JSON.parse(result);
   } catch {
     return null;
@@ -310,10 +312,10 @@ export async function listTasks(
   filter?: { status?: string; assignee?: string; type?: string },
   cwd: string = process.cwd()
 ): Promise<BeadsTask[]> {
-  let args = 'list';
-  if (filter?.status) args += ` --status ${filter.status}`;
-  if (filter?.assignee) args += ` --assignee ${filter.assignee}`;
-  if (filter?.type) args += ` --type ${filter.type}`;
+  const args = ['list'];
+  if (filter?.status) args.push('--status', filter.status);
+  if (filter?.assignee) args.push('--assignee', filter.assignee);
+  if (filter?.type) args.push('--type', filter.type);
 
   const result = await bd(args, { cwd });
   const data = JSON.parse(result);
@@ -336,21 +338,24 @@ export async function createTask(
   } = {},
   cwd: string = process.cwd()
 ): Promise<BeadsTask> {
-  let args = `create "${title}"`;
-
-  if (options.priority !== undefined) args += ` -p ${options.priority}`;
-  if (options.type) args += ` -t ${options.type}`;
-  if (options.assignee) args += ` --assignee ${options.assignee}`;
-  if (options.labels?.length) args += ` --labels ${options.labels.join(',')}`;
-  if (options.description) {
-    // Write description to temp file to avoid shell escaping issues
-    const fs = require('fs');
-    const tmpFile = `/tmp/bd-desc-${Date.now()}.txt`;
-    fs.writeFileSync(tmpFile, options.description);
-    args += ` --description-file ${tmpFile}`;
+  const args = ['create'];
+  if (options.priority !== undefined) args.push('-p', String(options.priority));
+  if (options.type) args.push('-t', options.type);
+  if (options.assignee) args.push('--assignee', options.assignee);
+  if (options.labels?.length) args.push('--labels', options.labels.join(','));
+  let descriptionDir: string | undefined;
+  let result: string;
+  try {
+    if (options.description) {
+      descriptionDir = mkdtempSync(join(tmpdir(), 'adp-bd-description-'));
+      const descriptionFile = join(descriptionDir, 'description.txt');
+      writeFileSync(descriptionFile, options.description, { mode: 0o600 });
+      args.push('--description-file', descriptionFile);
+    }
+    result = await bd([...args, '--', title], { cwd });
+  } finally {
+    if (descriptionDir) rmSync(descriptionDir, { recursive: true, force: true });
   }
-
-  const result = await bd(args, { cwd });
   const task = JSON.parse(result);
 
   // Add dependencies if specified
@@ -362,7 +367,7 @@ export async function createTask(
 
   // Store GitHub issue reference in metadata
   if (options.githubIssue) {
-    await bd(`update ${task.id} --metadata github_issue=${options.githubIssue}`, { cwd });
+    await bd(['update', '--metadata', `github_issue=${options.githubIssue}`, '--', task.id], { cwd });
   }
 
   return task;
@@ -424,8 +429,9 @@ export async function claimTask(
   assignee?: string,
   cwd: string = process.cwd()
 ): Promise<BeadsTask> {
-  let args = `update ${taskId} --claim`;
-  if (assignee) args += ` --assignee ${assignee}`;
+  const args = ['update', '--claim'];
+  if (assignee) args.push('--assignee', assignee);
+  args.push('--', taskId);
 
   const result = await bd(args, { cwd });
   return JSON.parse(result);
@@ -439,7 +445,7 @@ export async function updateTaskStatus(
   status: 'open' | 'in_progress' | 'closed',
   cwd: string = process.cwd()
 ): Promise<BeadsTask> {
-  const result = await bd(`update ${taskId} --status ${status}`, { cwd });
+  const result = await bd(['update', '--status', status, '--', taskId], { cwd });
   return JSON.parse(result);
 }
 
@@ -451,7 +457,7 @@ export async function closeTask(
   reason: string,
   cwd: string = process.cwd()
 ): Promise<BeadsTask> {
-  const result = await bd(`close ${taskId} --reason "${reason}"`, { cwd });
+  const result = await bd(['close', '--reason', reason, '--', taskId], { cwd });
   return JSON.parse(result);
 }
 
@@ -464,7 +470,7 @@ export async function addDependency(
   type: 'blocks' | 'related' | 'parent-child' | 'discovered-from' = 'blocks',
   cwd: string = process.cwd()
 ): Promise<void> {
-  await bd(`dep add ${fromId} ${toId} --type ${type}`, { json: false, cwd });
+  await bd(['dep', 'add', '--type', type, '--', fromId, toId], { json: false, cwd });
 }
 
 /**
@@ -475,7 +481,7 @@ export async function removeDependency(
   toId: string,
   cwd: string = process.cwd()
 ): Promise<void> {
-  await bd(`dep remove ${fromId} ${toId}`, { json: false, cwd });
+  await bd(['dep', 'remove', '--', fromId, toId], { json: false, cwd });
 }
 
 // ============================================================================
@@ -513,7 +519,7 @@ export async function findTaskByGitHubIssue(
  */
 export async function getPrimeContext(cwd: string = process.cwd()): Promise<string> {
   try {
-    const result = await bd('prime', { json: false, cwd });
+    const result = await bd(['prime'], { json: false, cwd });
     return result;
   } catch {
     // Fallback: construct context manually
@@ -626,9 +632,9 @@ export async function reportFailure(
 
   try {
     // Add failure label
-    await bd(`update ${taskId} --labels +agent-failed`, { cwd });
+    await bd(['update', '--labels', '+agent-failed', '--', taskId], { cwd });
     // Add comment with error
-    await bd(`comment ${taskId} "Agent failed: ${errorMessage}"`, { json: false, cwd });
+    await bd(['comment', '--', taskId, `Agent failed: ${errorMessage}`], { json: false, cwd });
     // Sync
     if (config.syncOnComplete) {
       await syncPush(cwd);

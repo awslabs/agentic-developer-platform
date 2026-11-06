@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -104,8 +105,12 @@ async def graph_context(store, child_dispatch, session, session_factory, monkeyp
     await _make_org(session, org_id="tenant", installations=[123])
     flow = await _make_flow(session, org_id="tenant")
     flow.intent_ref = "42"
+    flow.origin_ref = {"provider": "github", "repository_id": 987, "repository": "org/repo", "installation_id": 123, "issue_number": 42}
     approval = await _make_approval(session, flow, actor_id="human")
     node = await _make_node(session, flow, issue_ref="43")
+    node.repository_identity = "org/repo"
+    node.provider_repository_id = 987
+    node.repository_connection = {"provider": "github", "installation_id": 123}
     await session.commit()
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: session_factory)
     monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", AsyncMock())
@@ -113,7 +118,7 @@ async def graph_context(store, child_dispatch, session, session_factory, monkeyp
         "root-pod-proof": VerifiedPod("pod-a", "worker-a", "adp-agents", "agent-scaledjob-sa", "10.0.1.2"),
         "child-pod-proof": VerifiedPod("pod-b", "worker-b", "adp-agents", "agent-scaledjob-sa", "10.0.1.3"),
     }
-    env = {CREDENTIAL_KEY_ENV: "gateway-test-key-not-shared-with-workers", "BG_ORCH_DISPATCH_REPO": "org/repo"}
+    env = {CREDENTIAL_KEY_ENV: "gateway-test-key-not-shared-with-workers"}
     runtime = AgentRuntime(store=store, workloads=SimpleNamespace(verify=lambda token: pods[token]), env=env, dispatcher=child_dispatch.service)
     app = FastAPI()
     app.include_router(router)
@@ -143,7 +148,45 @@ async def graph_context(store, child_dispatch, session, session_factory, monkeyp
         )
 
 
+async def accept_launch(ctx):
+    async with ctx.session_factory() as session:
+        node = await session.get(OrchestrationNode, ctx.node.id)
+        accepted_node = {
+            "address": f"{ctx.flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+            "kind": node.kind,
+            "title": node.title,
+            "issue_ref": node.issue_ref,
+            "repository_identity": node.repository_identity,
+            "provider_repository_id": node.provider_repository_id,
+            "repository_connection": node.repository_connection,
+        }
+        plan = await session.scalar(
+            select(OrchestrationAcceptedPlan).where(
+                OrchestrationAcceptedPlan.flow_id == ctx.flow.id, OrchestrationAcceptedPlan.superseded_at.is_(None)
+            )
+        )
+        if plan is None:
+            session.add(
+                OrchestrationAcceptedPlan(
+                    org_id="tenant",
+                    flow_id=ctx.flow.id,
+                    version=1,
+                    plan_hash="a" * 64,
+                    accepted_by_decision_id=ctx.approval.id,
+                    plan_document={"origin_ref": ctx.flow.origin_ref, "nodes": [accepted_node]},
+                )
+            )
+        else:
+            plan.plan_document = {
+                **plan.plan_document,
+                "origin_ref": ctx.flow.origin_ref,
+                "nodes": plan.plan_document.get("nodes") or [accepted_node],
+            }
+        await session.commit()
+
+
 async def enroll(ctx):
+    await accept_launch(ctx)
     response = await ctx.client.post("/internal/v1/agent/bootstrap", json=ctx.bootstrap, headers=ctx.headers)
     assert response.status_code == 200, response.text
     ctx.headers["X-Adp-Run-Credential"] = response.json()["credential"]
@@ -162,6 +205,218 @@ async def node_state(ctx):
     async with ctx.session_factory() as session:
         node = await session.get(OrchestrationNode, ctx.node.id)
         return node.state, node.attempts
+
+
+async def test_repository_qualified_story_assignment_uses_accepted_identity(graph_context):
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.graph_dispatch import _lock_assignment
+
+    ctx = graph_context
+    async with ctx.session_factory() as session:
+        first = await session.get(OrchestrationNode, ctx.node.id)
+        first.issue_ref = "42"
+        second = await _make_node(session, ctx.flow, node_ref="other-story", issue_ref="42")
+        nodes = [(first, "example/a", 1001, 123), (second, "example/b", 1002, 124)]
+        accepted = []
+        for node, name, repository_id, installation_id in nodes:
+            node.repository_identity = name
+            node.provider_repository_id = repository_id
+            node.repository_connection = {"provider": "github", "installation_id": installation_id}
+            accepted.append(
+                {
+                    "address": f"{ctx.flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                    "kind": "story",
+                    "title": node.title,
+                    "issue_ref": "42",
+                    "repository_identity": name,
+                    "provider_repository_id": repository_id,
+                    "repository_connection": node.repository_connection,
+                }
+            )
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id="tenant",
+                flow_id=ctx.flow.id,
+                version=1,
+                plan_hash="a" * 64,
+                accepted_by_decision_id=ctx.approval.id,
+                plan_document={"nodes": accepted},
+            )
+        )
+        await session.commit()
+
+    grant = SimpleNamespace(tenant_id="tenant", flow_id=ctx.flow.id)
+    async with ctx.session_factory() as session:
+        for node, name, _, _ in nodes:
+            flow, selected = await _lock_assignment(session, grant=grant, issue=42, repo=name)
+            assert flow.id == ctx.flow.id
+            assert selected.id == node.id
+        with pytest.raises(BootstrapRefusedError):
+            await _lock_assignment(session, grant=grant, issue=42, repo="example/c")
+        selected.provider_repository_id = 9999
+        await session.flush()
+        with pytest.raises(BootstrapRefusedError, match="accepted story repository changed"):
+            await _lock_assignment(session, grant=grant, issue=42, repo="example/b")
+
+
+async def test_scn_03_global_free_multi_repository_dispatch_bootstrap_and_replay(graph_context):
+    ctx = graph_context
+    assert "BG_ORCH_DISPATCH_REPO" not in ctx.runtime.env
+    async with ctx.session_factory() as session:
+        flow = await session.get(OrchestrationFlow, ctx.flow.id)
+        flow.product_id = "product-fixture"
+        first = await session.get(OrchestrationNode, ctx.node.id)
+        first.issue_ref = "42"
+        second = await _make_node(session, flow, node_ref="other-story", issue_ref="42")
+        targets = [(first, "example/a", 1001, 123), (second, "example/b", 1002, 124)]
+        accepted = []
+        for node, name, repository_id, installation_id in targets:
+            node.repository_identity = name
+            node.provider_repository_id = repository_id
+            node.repository_connection = {"provider": "github", "installation_id": installation_id}
+            accepted.append(
+                {
+                    "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                    "kind": "story",
+                    "title": node.title,
+                    "issue_ref": node.issue_ref,
+                    "repository_identity": name,
+                    "provider_repository_id": repository_id,
+                    "repository_connection": node.repository_connection,
+                }
+            )
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id="tenant",
+                flow_id=flow.id,
+                version=1,
+                plan_hash="a" * 64,
+                accepted_by_decision_id=ctx.approval.id,
+                plan_document={"product_id": flow.product_id, "nodes": accepted},
+            )
+        )
+        await session.commit()
+
+    await enroll(ctx)
+    ctx.store.client.update_item(
+        TableName=ctx.store.table,
+        Key={"pk": {"S": "TENANT#tenant"}, "sk": {"S": f"GRANT#{ctx.child.invocation}#1"}},
+        UpdateExpression="SET repo_scope = :scope",
+        ExpressionAttributeValues={":scope": {"SS": ["org/repo", "example/a", "example/b"]}},
+    )
+    for index, (node, name, repository_id, installation_id) in enumerate(targets):
+        body = {**ctx.body, "target": {"repo": name, "issue": 42}, "request_id": f"cross-repo-{index}"}
+        response = await send(ctx, body)
+        assert response.status_code == 202, response.text
+        invocation = response.json()["invocation_id"]
+        execution = ctx.store._read("TENANT#tenant", f"EXEC#{invocation}")
+        assert execution["repo"] == {"S": name}
+        assert execution["provider_repository_id"] == {"N": str(repository_id)}
+        assert execution["installation_id"] == {"N": str(installation_id)}
+        assert execution["orchestration_node_id"] == {"S": node.id}
+        grant = ctx.store.live_grant(invocation_id=invocation, tenant_id="tenant", attempt=1, now=datetime.now(UTC))
+        assert grant.repo_scope == frozenset({name})
+        assert grant.flow_id == flow.id
+        assert (await send(ctx, body)).json() == response.json()
+
+    async with ctx.session_factory() as session:
+        assert (await session.get(OrchestrationFlow, flow.id)).product_id == "product-fixture"
+    queued = messages(ctx)
+    assert len(queued) == 2
+    from src.agentauth.workload import WORKLOAD_HEADER
+
+    original_verify = ctx.runtime.workloads.verify
+    ctx.runtime.workloads.verify = lambda token: (
+        VerifiedPod("pod-c", "worker-c", "adp-agents", "agent-scaledjob-sa", "10.0.1.4")
+        if token == "second-child-pod-proof"
+        else original_verify(token)
+    )
+    for index, (message, (_, name, repository_id, installation_id)) in enumerate(zip(queued, targets, strict=True)):
+        envelope = json.loads(message["Body"])
+        assert envelope["source_ref"] == {
+            "repo": name,
+            "issue": 42,
+            "installation_id": installation_id,
+            "provider_repository_id": repository_id,
+        }
+        boot = await ctx.client.post(
+            "/internal/v1/agent/bootstrap",
+            json={"invocation_id": envelope["message_id"], "envelope_digest": envelope_digest(envelope)},
+            headers={"X-Caller-Identity": "shared-role", WORKLOAD_HEADER: "child-pod-proof" if index == 0 else "second-child-pod-proof"},
+        )
+        assert boot.status_code == 200, (name, boot.text)
+        status = await ctx.client.get("/internal/v1/agent/status", params={"run": envelope["message_id"]}, headers=ctx.headers)
+        assert status.status_code == 200, (name, status.text)
+
+    assert messages(ctx) == []
+
+
+@pytest.mark.parametrize("excluded_by", ["parent", "policy"])
+async def test_out_of_scope_repository_refused_before_child_creation(graph_context, excluded_by):
+    from src.orchestration.execution_policy import Action, ExecutionPolicy, PolicyLimits, stamp_policy
+
+    ctx = graph_context
+    target_repo = "example/b"
+    async with ctx.session_factory() as session:
+        node = await session.get(OrchestrationNode, ctx.node.id)
+        node.repository_identity = target_repo
+        node.provider_repository_id = 1002
+        node.repository_connection = {"provider": "github", "installation_id": 123}
+        policy = stamp_policy(
+            ExecutionPolicy(
+                org_id="tenant",
+                repository_ids=["org/repo" if excluded_by == "policy" else target_repo],
+                allowed_actions=[Action.DEVELOP],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                limits=PolicyLimits(
+                    max_wall_clock_seconds=3600,
+                    max_spend_usd=Decimal("10"),
+                    max_attempts_per_node=3,
+                    max_concurrent_actions=2,
+                ),
+            ),
+            principal_id="human",
+            org_id="tenant",
+        )
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id="tenant",
+                flow_id=ctx.flow.id,
+                version=1,
+                plan_hash="a" * 64,
+                accepted_by_decision_id=ctx.approval.id,
+                plan_document={
+                    "execution_policy": policy.model_dump(mode="json"),
+                    "nodes": [
+                        {
+                            "address": f"{ctx.flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                            "kind": "story",
+                            "title": node.title,
+                            "issue_ref": node.issue_ref,
+                            "repository_identity": target_repo,
+                            "provider_repository_id": 1002,
+                            "repository_connection": node.repository_connection,
+                        }
+                    ],
+                },
+            )
+        )
+        await session.commit()
+
+    await enroll(ctx)
+    if excluded_by == "policy":
+        ctx.store.client.update_item(
+            TableName=ctx.store.table,
+            Key={"pk": {"S": "TENANT#tenant"}, "sk": {"S": f"GRANT#{ctx.child.invocation}#1"}},
+            UpdateExpression="SET repo_scope = :scope",
+            ExpressionAttributeValues={":scope": {"SS": ["org/repo", target_repo]}},
+        )
+    body = {**ctx.body, "target": {"repo": target_repo, "issue": 43}, "request_id": "out-of-scope"}
+    assert (await send(ctx, body)).status_code == 404
+    reservation = envelope_digest({"principal": f"{ctx.child.invocation}#1", "request_id": body["request_id"]})
+    assert ctx.store._read("TENANT#tenant", f"DISPATCH#{reservation}") is None
+    assert messages(ctx) == []
+    assert await node_state(ctx) == ("ready", 0)
 
 
 async def test_bootstrap_assigns_only_approved_intent_and_preserves_ceilings(graph_context):
@@ -183,6 +438,7 @@ async def test_bootstrap_assigns_only_approved_intent_and_preserves_ceilings(gra
 
 async def test_coordinator_dispatch_commit_retry_child_bootstrap_and_monitor(graph_context):
     ctx = graph_context
+    assert "BG_ORCH_DISPATCH_REPO" not in ctx.runtime.env
     await enroll(ctx)
     first = await send(ctx)
     assert first.status_code == 202, first.text
@@ -218,7 +474,7 @@ async def test_coordinator_dispatch_commit_retry_child_bootstrap_and_monitor(gra
         assert ctx.body["reason"] not in receipts[0].reason
 
 
-@pytest.mark.parametrize("change", ["wrong_issue", "wrong_repo", "reviewer_before_developer", "gate", "halted", "ambiguous_issue"])
+@pytest.mark.parametrize("change", ["wrong_issue", "wrong_repo", "reviewer_before_developer", "gate", "halted", "ambiguous_issue", "unbound"])
 async def test_ineligible_graph_work_is_refused_without_reservation(graph_context, change):
     ctx = graph_context
     await enroll(ctx)
@@ -233,6 +489,13 @@ async def test_ineligible_graph_work_is_refused_without_reservation(graph_contex
         async with ctx.session_factory() as session:
             if change == "ambiguous_issue":
                 await _make_node(session, ctx.flow, issue_ref="43", node_ref="duplicate")
+            elif change == "unbound":
+                ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = "org/repo"
+                await session.execute(
+                    update(OrchestrationNode)
+                    .where(OrchestrationNode.id == ctx.node.id)
+                    .values(repository_identity=None, provider_repository_id=None, repository_connection=None)
+                )
             else:
                 await session.execute(
                     update(OrchestrationNode)
@@ -433,20 +696,35 @@ async def test_bootstrap_does_not_assign_unapproved_or_unrelated_flow(graph_cont
     assert (await send(ctx)).status_code == 404
 
 
-async def test_flow_issue_number_in_the_configured_repository_does_not_block_another_repository(graph_context):
-    """Numeric graph references belong only to the engine's configured repo."""
+async def test_bound_flow_ignores_unrelated_global_repository(graph_context):
+    """A stale global setting cannot change the accepted launch repository."""
     ctx = graph_context
     ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = "another/repo"
     await enroll(ctx)
     grant = ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant")
-    assert grant.authority.kind == "github_event"
-    assert TargetRelationship.FLOW_NODE not in grant.target_relationships
+    assert grant.authority.kind == "gate_decision"
+    assert TargetRelationship.FLOW_NODE in grant.target_relationships
 
     response = await send(ctx)
     assert response.status_code == 202, response.text
     envelope = json.loads(messages(ctx)[0]["Body"])
     assert envelope["source_ref"]["repo"] == "org/repo"
-    assert "orchestration" not in envelope
+    assert envelope["orchestration"]["flow_id"] == ctx.flow.id
+
+
+async def test_mismatched_accepted_origin_cannot_enroll_even_with_global_repository(graph_context):
+    ctx = graph_context
+    await accept_launch(ctx)
+    ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = "org/repo"
+    async with ctx.session_factory() as session:
+        plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == ctx.flow.id))
+        plan.plan_document = {**plan.plan_document, "origin_ref": {**ctx.flow.origin_ref, "repository_id": 999}}
+        await session.commit()
+    response = await ctx.client.post("/internal/v1/agent/bootstrap", json=ctx.bootstrap, headers=ctx.headers)
+    assert response.status_code == 200
+    grant = ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant")
+    assert grant.authority.kind == "github_event"
+    assert "coordinator_flow_id" not in ctx.store._read("TENANT#tenant", f"EXEC#{ctx.child.invocation}")
 
 
 async def test_coordinator_assignment_lost_reply_recovers_committed_grant(graph_context, monkeypatch):
@@ -466,6 +744,7 @@ async def test_coordinator_assignment_lost_reply_recovers_committed_grant(graph_
 
 async def test_racing_grant_reduction_is_not_overwritten_by_coordinator_assignment(graph_context, monkeypatch):
     ctx = graph_context
+    await accept_launch(ctx)
     original = ctx.store.client.transact_write_items
 
     def reduce_grant(**kwargs):

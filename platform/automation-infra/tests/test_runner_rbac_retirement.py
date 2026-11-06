@@ -24,9 +24,11 @@ def test_no_literal_shared_runner_subject_in_terraform_bindings():
 
 def test_legacy_template_variables_cannot_restore_runner_binding():
     source = (ROOT / 'modules/agent-context/manifests/ingestion-rbac.yaml').read_text()
+    # ENVIRONMENT names the runtime verifier group in the same manifest (#7870); it
+    # is not a runner variable and must not be able to restore the runner binding.
     rendered = Template(source).substitute(
         NAMESPACE='agent-context', RUNNER_NAMESPACE='arc-runners',
-        RUNNER_SERVICE_ACCOUNT='github-runner-sa',
+        RUNNER_SERVICE_ACCOUNT='github-runner-sa', ENVIRONMENT='dev',
     )
     binding = next(x for x in yaml.safe_load_all(rendered) if x['kind'] == 'RoleBinding')
     assert binding['subjects'] == [{

@@ -2,7 +2,7 @@
 
 The Dockerfile starts from the published S03 SkyPilot 0.12.3 image, preserving
 its setuptools repair and provider support. It applies Debian updates, pinned
-compatible Python dependency fixes, official CPython 3.10.21 on the same Trixie
+compatible Python dependency fixes, official CPython 3.10.22 on the same Trixie
 ABI, and checksum-pinned kubectl 1.35.9 (compatible with EKS 1.35).
 The official Python stage excludes site-packages; existing cp310 provider
 wheels remain installed and `pip check` must pass. The complete old stdlib is

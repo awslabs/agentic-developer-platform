@@ -805,6 +805,7 @@ class TestTheAbortReachesTheEndOfTheRun:
             entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="a" * 40, returncode=0))
         )
         # Not a handoff resume: that path returns before the terminal sequence.
+        monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", MagicMock(return_value={"status": "up_to_date"}))
         monkeypatch.setattr(entrypoint, "resume_pr_handoff", lambda: False)
         monkeypatch.setattr(
             entrypoint, "_receive_one_message", lambda *_: (json.dumps(envelope), "receipt")

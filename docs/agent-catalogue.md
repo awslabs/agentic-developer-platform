@@ -37,6 +37,7 @@ deterministic GitHub Actions pipeline (see [Label triggers](#label-triggers) bel
 | `agent-codex-architect` | `@agent-codex-architect` | *(none)* | *(none)* | Audits the repository with native Codex workspace tools and publishes Markdown designs and implementation backlogs in a ready PR. Can create requested GitHub stories using gh. | Design an issue or decompose it into linked implementation stories. |
 | `agent-codex-product` | `@agent-codex-product` | *(none)* | *(none)* | Produces requirements, user stories and acceptance criteria, preserving source requirements and explicit amendments. | Turn a vague request into a testable specification; Task API supports clarification and continuation. |
 | `agent-codex-pm` | `@agent-codex-pm` | *(none)* | *(none)* | Plans work and schedules eligible GitHub issues, respecting blockers and avoiding duplicate dispatch. | Dispatch ready work and leave dependent work blocked until its prerequisites are met. |
+| `agent-codex-operations` | `@agent-codex-operations` | *(none)* | *(none)* | Engine-dispatched operations story worker for `operate` nodes: deploys through the accepted workflow, diagnoses failures, publishes and merges scoped repair PRs through the gateway, and verifies runtime evidence. Requires `ADP_ENGINE_OPERATIONS_EXECUTOR`. | Deploy and verify a component in an environment as part of an accepted plan; not normally summoned by mention. |
 | `agent-codex-intent-refinement` | `@agent-codex-intent-refinement` | *(none)* | *(none)* | Refines an intent into a structured draft with requirements, assumptions and unresolved questions. | Clarify scope before implementation; Task API supports clarification and continuation. |
 | `architect` | `@agent-architect` | `agent-architect` | `agent-architect` | Designs systems, defines interfaces, makes technology decisions — always validated against the live codebase, not assumptions. | Design review of an issue before implementation; design docs. |
 | `product` | `@agent-product` | *(none)* | `agent-product` | Gathers requirements, writes user stories and acceptance criteria. Represents the user's perspective. | Turning a vague ask into a testable, prioritized spec. |
@@ -50,6 +51,19 @@ deterministic GitHub Actions pipeline (see [Label triggers](#label-triggers) bel
 The automatic-only `intent-refinement` persona is also registered. It has no
 mention or standard label mapping; the platform selects it for intent refinement.
 It is distinct from the explicitly mentionable Codex Intent Refinement persona.
+
+For Agent Chat, the persona text is **rendered by the gateway**, not by the sandbox
+(#8113): `/v1/chat/turn/next` returns a `system_prompt` composed of a fixed ADP
+platform preamble (`modules/gateway/src/agentauth/chat_persona_prompt.py`) and the
+run's persona markdown from `modules/agent-factory/rules/personas/`, staged into the
+gateway image by `modules/gateway/scripts/stage-contracts.sh`. The `prompt_revision`
+is content-addressed and recorded on the run's EXEC record for audit. The preamble
+tells the model what ADP is, which `platform___*` tools read the owner's platform
+state, and that platform questions are answered from tool results before any
+intake-style interviewing; the persona's `update_draft` expectation is met by the
+sandbox's gateway-backed draft tool rather than stripped from the text. Editing a
+persona file therefore changes the chat prompt on the next gateway build, with a new
+revision.
 
 **Note on the two label columns:** the webhook label and the ARC label are *different
 names for different dispatch systems* and they do not agree. See

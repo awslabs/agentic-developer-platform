@@ -1,0 +1,125 @@
+name: Standalone Product Profile Regression
+run-name: ${{ format('Standalone Product regression {0}', inputs.release_id || 'scheduled') }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Named immutable Product release
+        type: string
+        required: true
+      manifest_sha256:
+        description: Published manifest SHA256 for the named release
+        type: string
+        required: true
+  schedule:
+    - cron: '31 4 * * 2'
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: cli-live-eval-dev
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  regression:
+    name: Product regression (standalone)
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 180
+    environment: adp-gateway-deploy-dev
+    env:
+      ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+      GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      EXPECTED_SOURCE_REVISION: ${{ github.sha }}
+      ENVIRONMENT: dev
+      GH_TOKEN: ${{ github.token }}
+      PYTHONPATH: ${{ github.workspace }}/modules/gateway
+      PRODUCT_TARGET_REGION: ${{ vars.ADP_DEPLOY_REGION }}
+      GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+      ADP_CHECKS_ROLE_ARN: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+      PRODUCT_RELEASE_ID: ${{ github.event_name == 'schedule' && vars.PRODUCT_PROFILE_RELEASE_ID || inputs.release_id }}
+      PRODUCT_RELEASE_MANIFEST_SHA256: ${{ github.event_name == 'schedule' && vars.PRODUCT_PROFILE_RELEASE_MANIFEST_SHA256 || inputs.manifest_sha256 }}
+    steps:
+      - name: Require explicit live browser authorization
+        id: live-browser-policy
+        shell: bash
+        env:
+          LIVE_BROWSER_AUTHORIZED: ${{ vars.ADP_LIVE_BROWSER_AUTOMATION_ENABLED }}
+        run: |
+          if [ "$LIVE_BROWSER_AUTHORIZED" != true ]; then
+            echo "::error::live_browser_not_authorized: browser checks were not run. The target owner must explicitly authorize live browser automation in the selected protected GitHub environment."
+            echo 'BLOCKED: live browser automation is not authorized for this target. No browser acceptance evidence was produced. After target-owner authorization, set ADP_LIVE_BROWSER_AUTOMATION_ENABLED=true in the selected protected GitHub environment and rerun. Keep it false when automation is prohibited.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install live browser and gateway dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install ./modules/gateway pytest pytest-timeout playwright requests 'PyJWT[crypto]'
+          python -m playwright install chromium --with-deps
+      - name: Refuse engine transport on an independent regression
+        run: python3 -c 'import os; from tests.e2e.product_onboarding.product_completion_regression import guard_standalone; guard_standalone(os.environ)'
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION }}
+      - name: Resolve the authorized evidence account
+        env:
+          EXPECTED_ROLE: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$account" = "$(cut -d: -f5 <<< "$EXPECTED_ROLE")"
+          echo "ACCOUNT_ID=$account" >> "$GITHUB_ENV"
+      - name: Download the authenticated named release manifest
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/product-profile-regression"
+          chmod 700 "$RUNNER_TEMP/product-profile-regression"
+          python3 -m tests.e2e.product_onboarding.product_completion_manifest \
+            "$RUNNER_TEMP/product-profile-regression/release-manifest.json"
+      - name: Select a named, verified shared release
+        run: |
+          set -euo pipefail
+          python3 -m tests.e2e.product_onboarding.product_completion_regression standalone \
+            --manifest "$RUNNER_TEMP/product-profile-regression/release-manifest.json" \
+            --release-id "$PRODUCT_RELEASE_ID" --manifest-sha256 "$PRODUCT_RELEASE_MANIFEST_SHA256" \
+            --output "$RUNNER_TEMP/product-profile-regression/required-checks.json"
+      - name: Establish trusted browser fixture identity
+        uses: ./.github/actions/trusted-checks
+        with:
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION }}
+          duration_seconds: '10800'
+      - name: Bind live fixtures to the selected Product release
+        run: python3 -m tests.e2e.product_onboarding.product_completion_setup
+      - name: Execute both live Product regression passes
+        run: python3 -m tests.e2e.product_onboarding.product_completion_attempt "$RUNNER_TEMP/product-profile-regression"
+      - name: Restore deployment identity for signed evidence publication
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION }}
+      - name: Retain verified standalone results without engine correlation
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py workflow-artifact product-regression "$RUNNER_TEMP/product-profile-regression/standalone-results.json"
+      - name: Retain private attempt diagnostics
+        if: always() && steps.live-browser-policy.outcome == 'success'
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: product-profile-standalone-attempt
+          path: ${{ runner.temp }}/product-profile-regression/
+          if-no-files-found: warn
+          retention-days: 14

@@ -20,6 +20,8 @@ WINDOW = {"from": "2026-10-01T00:00:00Z", "to": "2026-10-04T00:00:00Z", "timezon
 
 
 def test_delegated_work_uses_verified_identity_and_retains_lineage(monkeypatch):
+    now = 1_800_000_000
+    monkeypatch.setattr(chat_data_routes, "clock", lambda: now)
     monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
     monkeypatch.delenv("ADP_TASK_API_READ_ENABLED", raising=False)
     capabilities = MagicMock()
@@ -69,7 +71,7 @@ def test_delegated_work_uses_verified_identity_and_retains_lineage(monkeypatch):
         assert _decode_cursor(response.json()["last_key"])["direct"] == "next"
         assert service.query_work_by_user.call_args.args == ("owner",)
         assert service.query_work_by_user.call_args.kwargs["tenant_id"] == "tenant-a"
-        capabilities.verify_run.assert_called_with("delegated", run_id="run-a", operation="activity.read", now=chat_data_routes.clock())
+        capabilities.verify_run.assert_called_with("delegated", run_id="run-a", operation="activity.read", now=now)
         for forged in ({"user_id": "victim"}, {"tenant_id": "tenant-b"}):
             assert client.post(URL, headers=HEADERS, json={**WINDOW, "run_id": "run-a", **forged}).status_code == 422
         capabilities.verify_run.side_effect = ChatAuthorizationRefusedError("scope refused")

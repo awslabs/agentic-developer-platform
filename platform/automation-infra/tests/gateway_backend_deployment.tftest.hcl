@@ -45,6 +45,10 @@ run "gateway_backend_profile_is_bounded" {
     target = data.aws_kms_key.gateway_backend_lambda[0]
     values = { arn = "arn:aws:kms:us-east-1:123456789012:key/87654321-4321-4321-4321-210987654321" }
   }
+  override_data {
+    target = data.aws_kms_key.gateway_backend_parameters[0]
+    values = { arn = "arn:aws:kms:us-east-1:123456789012:key/0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a" }
+  }
   assert {
     condition = jsondecode(aws_iam_role.gateway_backend[0].assume_role_policy).Statement[0].Condition.StringEquals == {
       "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
@@ -64,6 +68,47 @@ run "gateway_backend_profile_is_bounded" {
     error_message = "Gateway profile exceeds IAM policy size limits."
   }
   assert {
+    condition = alltrue([for policy in [aws_iam_role_policy.gateway_backend[0].policy] :
+      try(one([for s in jsondecode(policy).Statement : s if try(s.Sid, "") == "GatewayCapacityLock"]).Resource == "arn:aws:dynamodb:us-east-1:123456789012:table/adp-terraform-locks" &&
+        toset(one([for s in jsondecode(policy).Statement : s if try(s.Sid, "") == "GatewayCapacityLock"]).Action) == toset(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]) &&
+        one([for s in jsondecode(policy).Statement : s if try(s.Sid, "") == "GatewayCapacityLock"]).Condition["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"] == ["adp-gateway-capacity/123456789012/us-east-1/test/adp-test-eks-cluster/adp-gateway"] &&
+      one([for s in jsondecode(policy).Statement : s if try(s.Sid, "") == "GatewayCapacityLock"]).Condition.Null["dynamodb:LeadingKeys"] == "false", false)
+    ])
+    error_message = "The role must admit only item operations on the exact target's capacity lock."
+  }
+  assert {
+    condition = (
+      alltrue([for action in ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"] :
+        contains(jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement[1].NotAction, action)
+      ]) &&
+      jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement[0].NotAction == "kms:*" &&
+      try(one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "DenyOtherCapacityTables"]).NotResource == "arn:aws:dynamodb:us-east-1:123456789012:table/adp-terraform-locks", false) &&
+      try(one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "DenyOtherCapacityKeys"]).Condition["ForAnyValue:StringNotEquals"]["dynamodb:LeadingKeys"] == ["adp-gateway-capacity/123456789012/us-east-1/test/adp-test-eks-cluster/adp-gateway"], false) &&
+      try(one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "DenyMissingCapacityKey"]).Condition.Null["dynamodb:LeadingKeys"] == "true", false) &&
+      alltrue([for sid in ["DenyOtherCapacityTables", "DenyOtherCapacityKeys", "DenyMissingCapacityKey"] :
+        try(one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == sid]).Effect == "Deny" &&
+        one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == sid]).Action == "dynamodb:*", false)
+      ])
+    )
+    error_message = "The capacity lock must not grant table-wide access, other target keys, or requests without a key."
+  }
+  assert {
+    condition = (
+      local.gateway_observer_api == "arn:aws:execute-api:us-east-1:123456789012:abc123def4/test/POST/internal/v1/runtime-proof/schema" &&
+      alltrue([for action in local.gateway_observer_actions : contains(jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement[1].NotAction, action)]) &&
+      toset(one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "DenyOtherObservations"]).NotResource) == toset([
+        "arn:aws:execute-api:us-east-1:123456789012:abc123def4/test/POST/internal/v1/runtime-proof/schema",
+        "arn:aws:s3:::adp-test-deployment-evidence-123456789012",
+        "arn:aws:s3:::adp-test-deployment-evidence-123456789012/deployment-evidence/v1/*",
+        "arn:aws:cloudfront::123456789012:distribution/E1234567890",
+      ]) &&
+      one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "DenyOtherEvidencePrefixes"]).Condition.StringNotLike["s3:prefix"] == "deployment-evidence/v1/*" &&
+      one([for s in jsondecode(aws_iam_role_policy.gateway_backend[0].policy).Statement : s if s.Action == "execute-api:Invoke"]).Resource == local.gateway_observer_api &&
+      one([for s in jsondecode(aws_iam_role_policy.gateway_backend[0].policy).Statement : s if s.Action == "s3:ListBucket"]).Condition.StringLike["s3:prefix"] == "deployment-evidence/v1/*"
+    )
+    error_message = "Release observation must read only this gateway proof, distribution and evidence prefix."
+  }
+  assert {
     condition = (
       !can(regex("iam:PassRole|iam:CreateRole|sts:AssumeRole|secretsmanager:PutSecretValue|secretsmanager:CreateSecret", aws_iam_role_policy.gateway_backend[0].policy)) &&
       !contains(jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement[1].NotAction, "iam:PassRole")
@@ -80,7 +125,8 @@ run "gateway_backend_profile_is_bounded" {
   assert {
     condition = (
       contains([for s in jsondecode(aws_iam_role_policy.gateway_backend[0].policy).Statement : s.Resource if s.Action == "codebuild:BatchGetBuilds"], "arn:aws:codebuild:us-east-1:123456789012:project/adp-test-gateway-build") &&
-      contains([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s.NotResource if try(s.Sid, "") == "DenyOtherBuildEvidence"], "arn:aws:codebuild:us-east-1:123456789012:project/adp-test-gateway-build")
+      one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "DenyOtherBuilds"]).NotResource == "arn:aws:codebuild:us-east-1:123456789012:project/adp-test-gateway-build" &&
+      toset(one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "DenyOtherBuilds"]).Action) == toset(["codebuild:StartBuild", "codebuild:BatchGetBuilds"])
     )
     error_message = "Polling a build ID requires access to the exact CodeBuild project ARN."
   }
@@ -109,5 +155,13 @@ run "gateway_backend_profile_is_bounded" {
       contains([for s in jsondecode(aws_iam_role_policy.gateway_backend[0].policy).Statement : s.Resource if s.Action == "kms:DescribeKey"], "arn:aws:kms:us-east-1:123456789012:key/87654321-4321-4321-4321-210987654321")
     )
     error_message = "Updating the orchestration image may describe only the AWS-managed Lambda key."
+  }
+  assert {
+    condition = (
+      one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "AllowGatewayParameterDecrypt"]).Resource == "arn:aws:kms:us-east-1:123456789012:key/0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a" &&
+      one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "AllowGatewayParameterDecrypt"]).Condition.StringEquals["kms:ViaService"] == "ssm.us-east-1.amazonaws.com" &&
+      contains([for s in jsondecode(aws_iam_role_policy.gateway_backend[0].policy).Statement : try(s.Resource, "") if s.Action == "kms:Decrypt"], "arn:aws:kms:us-east-1:123456789012:key/0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a")
+    )
+    error_message = "The deploy role decrypts the agent-authority SecureString parameters only through SSM in this region, on webhook-ingress's DynamoDB key (#8223)."
   }
 }

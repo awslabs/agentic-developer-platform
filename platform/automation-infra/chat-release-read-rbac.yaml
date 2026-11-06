@@ -1,0 +1,78 @@
+# Operator bootstrap: read-only access to exact Chat release prerequisites.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: adp-chat-release-read
+rules:
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [validatingadmissionpolicies, validatingadmissionpolicybindings]
+    resourceNames: [adp-chat-sandbox-template, adp-chat-supervisor-pods, adp-crew-pod-template]
+    verbs: [get]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles, clusterrolebindings]
+    resourceNames: [adp-chat-supervisor-admission-read]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: adp-chat-release-read
+subjects:
+  - kind: Group
+    name: adp:chat-release-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: adp-chat-release-read
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: adp-chat-release-read
+  namespace: adp-gateway
+rules:
+  - apiGroups: ['']
+    resources: [services]
+    resourceNames: [chat-sandbox-gateway]
+    verbs: [get]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    resourceNames: [chat-supervisor-gateway-read]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: adp-chat-release-read
+  namespace: adp-gateway
+subjects:
+  - kind: Group
+    name: adp:chat-release-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: adp-chat-release-read
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: adp-chat-release-read
+  namespace: kube-system
+rules:
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    resourceNames: [chat-supervisor-network-controller]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: adp-chat-release-read
+  namespace: kube-system
+subjects:
+  - kind: Group
+    name: adp:chat-release-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: adp-chat-release-read

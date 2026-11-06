@@ -25,7 +25,7 @@ async def controller_client(authority, monkeypatch):  # noqa: F811
             yield db
 
     app.dependency_overrides[routes.get_operation_db] = database
-    monkeypatch.setattr(routes, "_granted_permissions", lambda request: frozenset({"workspace:provision"}))
+    monkeypatch.setattr(routes, "current_registry", lambda request, scope: "paid-worker")
     verifier = AsyncMock(return_value=("invocation#9", "org"))
     monkeypatch.setattr(routes, "_verified_executor", verifier)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -67,8 +67,8 @@ async def test_revocation_during_database_read_refuses_response(controller_clien
     if change == "run":
         verifier.side_effect = [("invocation#9", "org"), HTTPException(403, "revoked run")]
     else:
-        permissions = iter([frozenset({"workspace:provision"}), frozenset()])
-        monkeypatch.setattr(routes, "_granted_permissions", lambda request: next(permissions))
+        registry_ids = iter(["paid-worker", "replacement-worker"])
+        monkeypatch.setattr(routes, "current_registry", lambda request, scope: next(registry_ids))
     response = await client.post("/internal/v1/controller-execution/authority", json={"operation_id": "operation"})
     assert response.status_code == 403
 

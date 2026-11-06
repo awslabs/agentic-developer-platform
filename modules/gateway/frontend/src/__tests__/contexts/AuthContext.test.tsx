@@ -30,6 +30,9 @@ vi.mock('@/services/auth', () => ({
 }));
 
 import * as authService from '@/services/auth';
+import { apiClient } from '@/services/api';
+
+vi.mock('@/services/api', () => ({ apiClient: { get: vi.fn() } }));
 
 function createWrapper() {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -44,6 +47,7 @@ function createWrapper() {
 describe('AuthContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(apiClient.get).mockResolvedValue({ org_id: 'org-1', permissions: [] });
     sessionStorage.clear();
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
@@ -406,6 +410,51 @@ describe('AuthContext', () => {
       expect(result.current.user).toEqual(newUser);
       expect(result.current.token).toBe('new-token');
       expect(result.current.isAuthenticated).toBe(true);
+    });
+  });
+
+  describe('workflow membership', () => {
+    const member = { id: 'member', orgId: 'workspace', role: AdminRole.MEMBER, permissions: [Permission.USAGE_READ], createdAt: '' };
+    function login() {
+      vi.mocked(authService.getAccessToken).mockReturnValue('member-token');
+      vi.mocked(authService.isTokenExpired).mockReturnValue(false);
+      vi.mocked(authService.getTokenExpiry).mockReturnValue(Date.now() + 3600000);
+      vi.mocked(authService.getCurrentUserFromToken).mockReturnValue(member);
+      return renderHook(() => useAuthContext(), { wrapper: createWrapper() });
+    }
+
+    it('shows create, approve and run controls for a member using server membership', async () => {
+      vi.mocked(apiClient.get).mockResolvedValue({ org_id: 'workspace', permissions: [Permission.PLAN_DRAFT, Permission.PLAN_APPROVE] });
+      const { result } = login();
+      await waitFor(() => expect(result.current.hasPermission(Permission.PLAN_APPROVE)).toBe(true));
+      expect(result.current.hasPermission(Permission.PLAN_DRAFT)).toBe(true);
+      expect(result.current.hasPermission(Permission.USER_MANAGE)).toBe(false);
+    });
+
+    it('does not trust an admin JWT when current membership denies workflow access', async () => {
+      vi.mocked(apiClient.get).mockResolvedValue({ org_id: 'workspace', permissions: [] });
+      const { result } = login();
+      act(() => result.current.setAuthState({ user: { ...member, role: AdminRole.PLATFORM_ADMIN, permissions: [Permission.PLAN_APPROVE] }, token: 'admin-token', isAuthenticated: true, isLoading: false }));
+      await waitFor(() => expect(apiClient.get).toHaveBeenCalled());
+      expect(result.current.hasPermission(Permission.PLAN_APPROVE)).toBe(false);
+    });
+
+    it('drops a previous workspace grant immediately on switching workspace', async () => {
+      vi.mocked(apiClient.get).mockResolvedValueOnce({ org_id: 'workspace', permissions: [Permission.PLAN_APPROVE] });
+      const { result } = login();
+      await waitFor(() => expect(result.current.hasPermission(Permission.PLAN_APPROVE)).toBe(true));
+      vi.mocked(apiClient.get).mockImplementationOnce(() => new Promise(() => {}));
+      act(() => result.current.setAuthState({ user: { ...member, orgId: 'other' }, token: 'other-token', isAuthenticated: true, isLoading: false }));
+      expect(result.current.hasPermission(Permission.PLAN_APPROVE)).toBe(false);
+    });
+
+    it('rechecks membership on focus and removes controls when lookup fails', async () => {
+      vi.mocked(apiClient.get).mockResolvedValueOnce({ org_id: 'workspace', permissions: [Permission.PLAN_APPROVE] });
+      const { result } = login();
+      await waitFor(() => expect(result.current.hasPermission(Permission.PLAN_APPROVE)).toBe(true));
+      vi.mocked(apiClient.get).mockRejectedValueOnce(new Error('Unavailable'));
+      act(() => window.dispatchEvent(new Event('focus')));
+      await waitFor(() => expect(result.current.hasPermission(Permission.PLAN_APPROVE)).toBe(false));
     });
   });
 

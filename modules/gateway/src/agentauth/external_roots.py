@@ -2,13 +2,16 @@
 
 Workers cannot call this surface. A producer's STS proof covers the entire
 request digest, and deployment-owned bindings restrict the producer to a source
-and tenant. Human ownership is resolved in the tenant's canonical directory.
-The returned envelope is final: its digest is persisted before publication.
+and tenant. Human ownership is resolved in the tenant's canonical directory:
+chat subjects through the same current tenant-membership rule chat authorization
+uses, GitLab subjects through the tenant's verified identity links. The returned
+envelope is final: its digest is persisted before publication.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -16,18 +19,23 @@ from typing import Literal
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, envelope_digest
+from src.agentauth.chat_authority import tenant_member_principal, tenant_member_user
+from src.agentauth.chat_capability import ChatAuthorizationRefusedError
 from src.agentauth.grants import AgentAction, AuthorityReference, DelegatedGrant, TargetRelationship
 from src.agentauth.model_policy import ModelPolicyError, canonical_json, ensure_snapshot_report_only, registered_compatibility_class
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.work_routes import PROOF_HEADER, verify_producer
 from src.shared.database import get_db
+from src.shared.identity.workspaces import primary_team_for_workspace
 from src.shared.models.organization import User
 from src.shared.models.vault import UserIdentity
+
+logger = logging.getLogger("bedrockgateway.agentauth.external_roots")
 
 
 class RootBinding(BaseModel):
@@ -83,28 +91,70 @@ def root_store() -> BootstrapStore:
 
 
 async def canonical_human(session: AsyncSession, binding: RootBinding, subject: str) -> str:
-    query = select(User).where(User.org_id == binding.tenant_id, User.user_kind == "human")
     if binding.source == "chat":
         # WebSocket/Slack ingestion already authenticated and resolved this
-        # subject. There is no username or arbitrary external-ID fallback.
-        query = query.where(or_(User.id == subject, User.cognito_sub == subject))
-    else:
-        if not subject.isascii() or not subject.isdecimal() or int(subject) < 1:
-            raise HTTPException(403, "model root refused")
-        query = query.join(UserIdentity, UserIdentity.user_id == User.id).where(
+        # subject (the token's Cognito sub). There is no username or arbitrary
+        # external-ID fallback. The tenant is the chat workspace claim, which a
+        # GitHub-login human holds through tenant membership rather than their own
+        # users.org_id. The Cognito-index canonical row is a login identity, not a
+        # tenant principal: for a person with several users rows (#8011) it is the
+        # home-org row with no team in this tenant, so the launch binds the
+        # tenant's member row for the same person instead (one rule, shared by the
+        # delivery, the snapshot, the owner ledger and the hierarchy lookup).
+        try:
+            member = await tenant_member_principal(session, binding.tenant_id, subject)
+        except ChatAuthorizationRefusedError as refusal:
+            logger.warning("Chat root principal refused", extra={"tenant_id": binding.tenant_id, "subject": subject, "reason": str(refusal)})
+            raise HTTPException(403, str(refusal)) from None
+        if member.id != subject and member.cognito_sub != subject:
+            logger.info(
+                "Chat root bound to the tenant member row",
+                extra={"tenant_id": binding.tenant_id, "subject": subject, "member_id": member.id},
+            )
+        return member.id
+    if not subject.isascii() or not subject.isdecimal() or int(subject) < 1:
+        raise HTTPException(403, "model root refused")
+    query = (
+        select(User)
+        .join(UserIdentity, UserIdentity.user_id == User.id)
+        .where(
+            User.user_kind == "human",
+            User.org_id == binding.tenant_id,
             UserIdentity.org_id == binding.tenant_id,
             UserIdentity.provider == "gitlab",
             UserIdentity.provider_user_id == f"{binding.instance}#{subject}",
             UserIdentity.verified_at.is_not(None),
         )
+    )
     users = (await session.scalars(query)).all()
     if len(users) != 1:
         raise HTTPException(403, "model root refused")
     return users[0].id
 
 
-def provision_root(store: BootstrapStore, envelope: dict, *, source: str, human_id: str, now: datetime, service_identity: str | None = None) -> None:
-    """Self-monitoring model authority; this never grants dispatch or control."""
+async def canonical_team(session: AsyncSession, binding: RootBinding, human_id: str) -> str:
+    """The team the chat launch will carry, derived exactly as ``admit_chat`` does.
+
+    The intake envelope's ``team_id`` belongs to the session principal's user row,
+    which for a human with duplicate rows is not the canonical member; registering
+    it would refuse every invoke and finalize against the admitted launch.
+    """
+    user = await tenant_member_user(session, binding.tenant_id, human_id)
+    if user is None:
+        raise HTTPException(403, "model root refused")
+    team = await primary_team_for_workspace(session, user, binding.tenant_id)
+    return team.id if team else ""
+
+
+def provision_root(
+    store: BootstrapStore, envelope: dict, *, source: str, human_id: str, team_id: str, now: datetime, service_identity: str | None = None
+) -> None:
+    """Self-monitoring model authority; this never grants dispatch or control.
+
+    ``human_id`` and ``team_id`` are the canonical owner tuple admission will bind
+    (``tenant_member_user`` + ``primary_team_for_workspace``), never the intake
+    principal's own row or team from the envelope.
+    """
     invocation, tenant = envelope["message_id"], envelope["tenant_id"]
     repo = envelope["source_ref"]["repo"]
     created = datetime.fromisoformat(envelope["arrived_at"].replace("Z", "+00:00"))
@@ -162,7 +212,7 @@ def provision_root(store: BootstrapStore, envelope: dict, *, source: str, human_
         if input_table is None or (input_expiry <= int(now.timestamp()) and store._read(f"INVOCATION#{invocation}", "DISPATCH") is None):
             raise BootstrapRefusedError("retained chat input unavailable")
         metadata["chat_user_turn"], input_item = protected_user_turn(envelope, human_id=human_id, expires_at=input_expiry)
-        delivery = protected_delivery(envelope, human_id)
+        delivery = protected_delivery(envelope, human_id, team_id)
         if delivery is not None:
             metadata["chat_delivery"] = delivery
         retained_chat_input = (input_table.name, input_item)
@@ -211,6 +261,7 @@ async def admit_root(
 
             await require_managed_association(session, binding)
         human_id = await canonical_human(session, binding, body.subject)
+        team_id = await canonical_team(session, binding, human_id) if body.source == "chat" else ""
         invocation = envelope["message_id"]
         if not isinstance(invocation, str) or not 1 <= len(invocation) <= 128:
             raise ValueError()
@@ -235,6 +286,7 @@ async def admit_root(
         envelope.pop("parent_principal", None)
         if body.source == "chat":
             envelope.pop("session_mode", None)
+            envelope.pop("executor", None)
         mailbox = None
         owner = None
         selected_mode = "ephemeral"
@@ -258,7 +310,12 @@ async def admit_root(
                 except (ChatAuthorizationUnavailableError, BotoCoreError, ClientError):
                     raise HTTPException(503, "chat mailbox unavailable") from None
                 envelope["session_mode"] = selected_mode
-        await run_in_threadpool(provision_root, store, envelope, source=body.source, human_id=human_id, now=datetime.now(UTC))
+                # The session's executor choice rides on the persistent turn so the supervisor's
+                # assignment names it ahead of the deployment default (#8115); the client cannot
+                # supply one (popped above) and ephemeral envelopes stay byte-identical.
+                if selected_mode == "persistent" and selected.get("executor") is not None:
+                    envelope["executor"] = selected["executor"]
+        await run_in_threadpool(provision_root, store, envelope, source=body.source, human_id=human_id, team_id=team_id, now=datetime.now(UTC))
         snapshot = await ensure_snapshot_report_only(session, store=store, invocation_id=invocation)
         if mailbox is not None and selected_mode == "persistent":
             try:

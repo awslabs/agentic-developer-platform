@@ -17,6 +17,7 @@ from src.agentauth.chat_delivery import ChatDelivery, load_registered_delivery, 
 from src.agentauth.chat_history_write import ChatHistoryConflictError
 from src.agentauth.chat_pending_registration import retry_pending_registration
 from src.agentauth.chat_queued_terminal import load_queued_terminal, verify_cancellation
+from src.agentauth.chat_session_mailbox import CHAT_EXECUTORS
 from src.agentauth.chat_unregistered_expiry import prepare_unregistered_expiry
 from src.agentauth.model_policy import canonical_json
 
@@ -62,10 +63,14 @@ def prepare_pending_handoff(authority, evidence, delivery, thread, *, now):
         }
         envelope.pop("parent_principal", None)
         envelope.pop("session_mode", None)
+        envelope.pop("executor", None)
         pointer = authority.store._read(f"INVOCATION#{run_id}", "DISPATCH") or {}
         if pointer and pointer.get("envelope_digest") != {"S": envelope_digest(envelope)}:
-            for mode in ("ephemeral", "persistent"):
-                candidate = {**envelope, "session_mode": mode}
+            # The root added the server-owned mode and, for a persistent session with a selected
+            # executor (#8115), the executor; recover exactly the registered shape.
+            candidates = [{**envelope, "session_mode": mode} for mode in ("ephemeral", "persistent")]
+            candidates += [{**envelope, "session_mode": "persistent", "executor": executor} for executor in CHAT_EXECUTORS]
+            for candidate in candidates:
                 if pointer.get("envelope_digest") == {"S": envelope_digest(candidate)}:
                     envelope = candidate
                     break

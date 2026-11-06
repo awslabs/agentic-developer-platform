@@ -165,3 +165,16 @@ The plan lane enforces that **100% of `tests/*.tftest.hcl` execute**, by countin
 disk against files `terraform test` reports as run. This matters because `terraform test`
 exits 0 when it finds no tests at all — "0 tests ran" and "all tests passed" are otherwise
 indistinguishable.
+
+Completed workspace apply recovery optionally uses the control-plane-owned
+`lifecycle_observer` IAM role. The installer input `lifecycle_observation.regions`
+selects exact regions; omission creates no role. The role trusts only the existing
+API producer and grants exact regional read actions plus reads of workspace IAM
+identities. The API combines this with a finite session policy, authenticated
+recovery claims and fresh resource census; no worker receives these credentials.
+
+Closed-operation cleanup has a separate, temporary policy-only root in
+`closed-cleanup-access/`. It attaches to the original registrar and preserves
+provider enrollment and role trust. Its service-held reader has broad underlying
+read permission requiring explicit scope review; see
+[closed bootstrap cleanup](../docs/closed-bootstrap-cleanup.md).

@@ -4,6 +4,9 @@ Issue #1616: Verify that the X-Agent-RunId header reaches _log_usage
 and that the contextvar mechanism correctly passes the value through.
 """
 
+import pytest
+from fastapi import HTTPException
+
 from src.proxy.service import _current_agent_run_id
 
 
@@ -142,3 +145,124 @@ class TestInvokeRoutesHaveAgentRunIdDependency:
         assert not missing, f"invoke routes not found: {missing}"
         unwired = [p for p, ok in seen.items() if not ok]
         assert not unwired, f"invoke routes missing agent_run_id dependency: {unwired}"
+
+
+class TestHostRunRouteAllowlist:
+    """#8223 cause 33: the host allowlist is the set the crew routers register.
+
+    The literal inside the gate admitted the model invoke and the token refresh
+    only, so the #8380 tools relay was refused on every call from a Dev Box.
+    """
+
+    HOST_ROUTES = {
+        "/model/{model_id}/invoke",
+        "/model/{model_id}/invoke-with-response-stream",
+        "/crew/model-token/refresh",
+        "/crew/tools",
+        "/crew/host-restore/context",
+        "/crew/host-restore/grant",
+        "/crew/host-restore/release",
+        "/crew/host-checkpoint/begin",
+        "/crew/host-checkpoint/complete",
+        "/crew/github-token",
+        "/crew/aws-credentials",
+        "/crew/orchestration/products",
+        "/crew/orchestration/products/{product_id}/projects/{project_id}/sources",
+        # #9522: adp-flow preflight reads on a Dev Box (owner-scoped, GET only, no writes).
+        "/crew/orchestration/products/{product_id}/projects/{project_id}",
+        "/crew/orchestration/projects/{project_id}/budget",
+        "/crew/orchestration/github/status",
+        "/crew/orchestration/flows",
+        "/crew/orchestration/flows/{flow_id}",
+        "/crew/orchestration/flows/{flow_id}/plans",
+        "/crew/orchestration/flows/{flow_id}/decisions",
+        "/crew/orchestration/flows/drafts/preview",
+        "/crew/orchestration/flows/drafts",
+        # #9640: a verified host run exchanges its proof for the owner's session (POST, mint only).
+        "/crew/orchestration/owner-session",
+        "/v1/projects/{project_id}/budget",
+        "/openai/v1/responses",
+    }
+
+    def test_every_host_route_is_registered(self):
+        import src.crew.checkpoint_routes  # noqa: F401  (registers at import)
+        import src.crew.host_aws  # noqa: F401
+        import src.crew.host_github  # noqa: F401
+        import src.crew.host_tools  # noqa: F401
+        import src.crew.orchestration_read_routes  # noqa: F401
+        import src.crew.proxy  # noqa: F401
+        import src.products.budget_routes  # noqa: F401
+        import src.proxy.routes  # noqa: F401
+        from src.crew.host_routes import HOST_RUN_ROUTE_PATHS
+
+        missing = self.HOST_ROUTES - HOST_RUN_ROUTE_PATHS
+        assert not missing, f"host routes not admitted by the gate: {sorted(missing)}"
+        # Nothing outside the known host surface is admitted.
+        unexpected = HOST_RUN_ROUTE_PATHS - self.HOST_ROUTES
+        assert not unexpected, f"routes admitted for host runs without review: {sorted(unexpected)}"
+
+    def test_every_crew_route_that_wires_the_gate_is_registered(self):
+        from src.crew import checkpoint_routes, host_aws, host_github, host_tools, orchestration_read_routes, proxy
+        from src.crew.host_routes import HOST_RUN_ROUTE_PATHS
+        from src.proxy.routes import set_agent_run_id_from_header
+
+        unregistered = []
+        for module in (proxy, host_tools, host_github, host_aws, checkpoint_routes, orchestration_read_routes):
+            for route in module.router.routes:
+                deps = {d.call for d in getattr(route, "dependant").dependencies}
+                if set_agent_run_id_from_header in deps and route.path not in HOST_RUN_ROUTE_PATHS:
+                    unregistered.append(route.path)
+        assert not unregistered, f"gated crew routes missing host_run_route(): {unregistered}"
+
+    @pytest.mark.parametrize("path,admitted", [("/crew/tools", True), ("/crew/model-token/refresh", True), ("/v1/messages", False)])
+    async def test_gate_admits_registered_routes_for_a_verified_host(self, path, admitted, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        import src.crew.host_tools  # noqa: F401  (registers /crew/tools)
+        import src.proxy.routes as routes_module
+        from src.proxy.routes import set_agent_run_id_from_header
+        from src.shared.schemas.auth import TokenContext
+
+        instance = "i-0b88826afeaa19a6e"
+        role = "arn:aws:iam::000000000000:role/adp-dev-box-guest"
+        row = {
+            "kind": "crew",
+            "target_kind": "ec2-instance",
+            "status": "active",
+            "executor_scope": "session",
+            "is_human_rooted": True,
+            "root_human_id": "owner",
+            "user_id": "owner",
+            "target_ref": instance,
+            "host_role_arn": role,
+        }
+        monkeypatch.setattr("src.proxy.bedrock_principal.read_routing_run", AsyncMock(return_value=row))
+        monkeypatch.setattr(
+            "src.auth.caller_provenance.verified_caller_identity",
+            lambda request: f"arn:aws:sts::000000000000:assumed-role/adp-dev-box-guest/{instance}",
+        )
+        monkeypatch.setattr("src.auth.agent_registry.parse_assumed_role_arn", lambda caller: role)
+        context = TokenContext(
+            user_id="dev-box-guest",
+            org_id="__platform__",
+            team_id="__agents__",
+            department_id="",
+            account_type="service",
+            auth_source="iam",
+            scope="internal",
+            requires_host_identity=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        request = SimpleNamespace(
+            headers={"x-agent-runid": "run-1"}, state=SimpleNamespace(token_context=context), scope={"route": SimpleNamespace(path=path)}
+        )
+        if admitted:
+            assert await set_agent_run_id_from_header(request) == "run-1"
+            assert context._dev_box_instance_id == instance and context._dev_box_role_arn == role
+        else:
+            with pytest.raises(HTTPException) as exc:
+                await set_agent_run_id_from_header(request)
+            assert exc.value.status_code == 403 and "model route" in exc.value.detail
+        routes_module._current_agent_run_id.set(None)

@@ -9,10 +9,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchFeatures, ALL_FEATURES_ENABLED } from '@/services/features';
 import type { FeatureFlags } from '@/services/features';
+import { useFlowPollInterval } from '@/hooks/useFlowPollInterval';
 
-export function useFeaturesQuery() {
+export function useFeaturesQuery({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['features'],
+    enabled,
     queryFn: fetchFeatures,
     staleTime: Infinity,
     retry: 1,
@@ -32,18 +34,19 @@ export const FEATURES_REVALIDATE_MS = 15_000;
  * Read the same endpoint in a separate preview cache. Updating this query must
  * not update the session-long ['features'] snapshot used by current-UI routes.
  *
- * Foreground and background tabs request a refresh every 15 seconds, and focus
- * always requests one. Browsers may throttle hidden tabs; this interval is not
+ * Visible tabs refresh within 15 seconds, with jitter to spread traffic. Focus
+ * always refreshes; hidden tabs stop polling. This interval is not
  * a guarantee about network completion. A completed refetch error withdraws
  * the preview until a successful response enables it again.
  */
 export function useRevalidatingFeaturesQuery() {
+  const interval = useFlowPollInterval(FEATURES_REVALIDATE_MS);
   return useQuery({
     queryKey: ['features', 'new-ui'],
     queryFn: fetchFeatures,
     staleTime: FEATURES_REVALIDATE_MS,
-    refetchInterval: FEATURES_REVALIDATE_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: interval,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: 'always',
     retry: 1,
   });

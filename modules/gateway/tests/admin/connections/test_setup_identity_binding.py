@@ -33,6 +33,15 @@ async def setup(db, monkeypatch):
         await require_not_revoked_context(context, db)
 
     monkeypatch.setattr("src.admin.membership_revocation.require_not_revoked_context", fixture_membership_check)
+    from src.admin.platform_authority import apply_platform_admin_authority
+
+    async def fixture_platform_authority(context):
+        return await apply_platform_admin_authority(context, db)
+
+    monkeypatch.setattr("src.admin.platform_authority.apply_platform_admin_authority", fixture_platform_authority)
+    # The IdP is offline here; durable decisions and identity binding still use
+    # the fixture's real database, including revocations after nonce issuance.
+    monkeypatch.setattr("src.admin.platform_authority.current_cognito_admin", MagicMock(return_value=True))
     user = await db.get(User, "user-mallory")
     user.cognito_sub = "sub-mallory"
     await db.commit()
@@ -465,3 +474,29 @@ async def test_org_install_keeps_selection_even_with_legacy_matching_org(db, set
     assert (await db.scalars(select(ChannelTenantMap))).one().org_id == "org-acme"
     assert (await db.get(Organization, "inert-org")).github_installation_ids == []
     assert [(m.tenant_id, m.role, m.is_active) for m in (await db.scalars(select(TenantMembership))).all()] == before
+
+
+@pytest.mark.parametrize("during_exchange", [False, True])
+async def test_global_revocation_fences_existing_registration_nonce(db, setup, during_exchange):
+    from src.admin.platform_authority import set_platform_admin_grant
+
+    setup["user"].role = "platform_admin"
+    setup["claims"]["role"] = "platform_admin"
+    await db.commit()
+    result = await start(setup, register=True)
+    assert result.status_code == 200, result.text
+    state = result.json()["state"]
+
+    async def revoke():
+        # A global demotion can originate in another linked workspace. The
+        # old initiating account's display role must not preserve this nonce.
+        await set_platform_admin_grant(db, setup["claims"]["subject"], enabled=False)
+        await db.commit()
+
+    if not during_exchange:
+        await revoke()
+    response = await register_response(db, setup, state, mutate=revoke if during_exchange else None)
+    assert "not_authorized" in response.headers["location"]
+    await db.refresh(setup["user"])
+    assert setup["user"].role == "platform_admin"
+    await untouched(db, setup, state)

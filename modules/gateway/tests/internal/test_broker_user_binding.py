@@ -122,6 +122,7 @@ async def db() -> AsyncSession:
             session.add(
                 UserCredential(
                     user_id=owner,
+                    agent_consent=True,
                     org_id=ORG,
                     service="aws",
                     label="prod",
@@ -352,10 +353,6 @@ class TestLegitimateRunStillGetsItsOwnMaterial:
         monkeypatch.setattr("src.shared.database.get_session_factory", lambda: lambda: _Session(db))
         with (
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings()),
-            patch(
-                "src.internal.assume_role_routes.resolve_credential_binding",
-                return_value=SimpleNamespace(resolved_user_id=OWNER, from_registry=True, drift_detected=False),
-            ),
             patch("src.internal.sts_assume_service.boto3") as boto3,
         ):
             boto3.client.return_value.assume_role.return_value = {
@@ -373,7 +370,7 @@ class TestLegitimateRunStillGetsItsOwnMaterial:
             resp = _client(db, mock_sm).post("/internal/v1/credential-assume-role", json=_request(OWNER))
         assert resp.status_code == 200, resp.text
         assert resp.json()["profile_name"] == "adp-aws-prod"
-        runtime.validate_flow.assert_awaited_once()
+        assert runtime.validate_flow.await_count == 4
 
     @pytest.mark.asyncio
     async def test_invocation_mismatch_is_still_refused(self, db, monkeypatch):

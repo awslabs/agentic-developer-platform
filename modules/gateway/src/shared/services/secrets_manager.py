@@ -22,6 +22,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import re
 import uuid
 
 import boto3
@@ -53,7 +54,18 @@ class SecretsManagerHelper:
     """
 
     def __init__(self, region_name: str = "us-east-1", *, client=None):
+        self._region_name = region_name
+        self._regional_factory = boto3.client if client is None else None
         self._client = client or boto3.client("secretsmanager", region_name=region_name)
+
+    def _client_for_secret(self, secret_arn: str):
+        """Read an exact ARN in its region; IAM and caller authority still apply."""
+        match = re.fullmatch(r"arn:aws:secretsmanager:([a-z]{2}(?:-[a-z]+)+-[0-9]+):[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+", secret_arn)
+        if match and match[1] != self._region_name:
+            if self._regional_factory is None:
+                raise ValueError("Injected secret client cannot change its credential/region scope")
+            return self._regional_factory("secretsmanager", region_name=match[1])
+        return self._client
 
     # ------------------------------------------------------------------
     # Helpers
@@ -236,7 +248,7 @@ class SecretsManagerHelper:
         str
             The secret string value.
         """
-        response = self._client.get_secret_value(SecretId=secret_arn)
+        response = self._client_for_secret(secret_arn).get_secret_value(SecretId=secret_arn)
         return response["SecretString"]
 
     def get_secret_at_version(self, secret_arn: str, version_id: str) -> tuple[str, str]:
@@ -259,7 +271,7 @@ class SecretsManagerHelper:
         caller must treat as a refusal. Raises ``ValueError`` when Secrets Manager
         does not identify the version it actually served.
         """
-        response = self._client.get_secret_value(SecretId=secret_arn, VersionId=version_id)
+        response = self._client_for_secret(secret_arn).get_secret_value(SecretId=secret_arn, VersionId=version_id)
         served_version = response.get("VersionId")
         if not isinstance(served_version, str) or not served_version:
             raise ValueError("Secrets Manager response did not include a non-empty VersionId")
@@ -283,7 +295,7 @@ class SecretsManagerHelper:
         is X" are different facts, and the evidence service reports the former as
         unverified rather than substituting a plausible-looking value.
         """
-        response = self._client.describe_secret(SecretId=secret_arn)
+        response = self._client_for_secret(secret_arn).describe_secret(SecretId=secret_arn)
         stages = response.get("VersionIdsToStages") or {}
         if not isinstance(stages, dict):
             return None

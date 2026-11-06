@@ -123,9 +123,24 @@ describe('Auth Service - OAuth PKCE', () => {
       expect(loginUrl).toContain('response_type=code');
       expect(loginUrl).toContain('client_id=test-client-id');
       expect(loginUrl).toContain('redirect_uri=');
-      expect(loginUrl).toContain('scope=openid+email+profile');
+      expect(new URL(loginUrl).searchParams.get('scope')).toBe('openid email profile');
       expect(loginUrl).toContain('code_challenge=');
       expect(loginUrl).toContain('code_challenge_method=S256');
+    });
+
+    it.each([false, true])('requests the session scope only for an enabled matching deployment: %s', async (enabled) => {
+      mockFetch.mockResolvedValue({ok: true, json: async () => ({
+        client_id: 'test-client-id', user_pool_id: 'us-east-1_testpool', native_credential_approval_enabled: enabled,
+      })});
+      const url = new URL(await buildLoginUrl());
+      expect(url.searchParams.get('scope')).toBe('openid email profile' + (enabled ? ' aws.cognito.signin.user.admin' : ''));
+    });
+
+    it('ignores discovery for a different Cognito client', async () => {
+      mockFetch.mockResolvedValue({ok: true, json: async () => ({
+        client_id: 'foreign-client', user_pool_id: 'us-east-1_testpool', native_credential_approval_enabled: true,
+      })});
+      expect(new URL(await buildLoginUrl()).searchParams.get('scope')).toBe('openid email profile');
     });
 
     it('stores PKCE verifier when building login URL', async () => {

@@ -1,0 +1,329 @@
+[
+  {
+    "schema": "RecordRef",
+    "valid": true,
+    "value": {
+      "tenant_id": "example-team",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "repository_commit",
+      "record_id": "repository-example",
+      "record_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "schema": "RecordRef",
+    "valid": false,
+    "value": {
+      "tenant_id": "example-team",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "repository_commit",
+      "record_id": "repository-example",
+      "record_revision": "latest"
+    }
+  },
+  {
+    "schema": "RunInput",
+    "valid": true,
+    "value": {
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "capability": "code_review",
+      "sources": [
+        {
+          "tenant_id": "example-team",
+          "project_id": "project-example",
+          "source_connection_id": "connection-example",
+          "record_type": "repository_commit",
+          "record_id": "repository-example",
+          "record_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  },
+  {
+    "schema": "RunInput",
+    "valid": false,
+    "value": {
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "capability": "pentest",
+      "sources": [
+        {
+          "tenant_id": "example-team",
+          "project_id": "project-example",
+          "source_connection_id": "connection-example",
+          "record_type": "repository_commit",
+          "record_id": "repository-example",
+          "record_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  },
+  {
+    "schema": "RunInput",
+    "valid": true,
+    "value": {
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "service_id": "devops",
+      "capability": "investigation",
+      "devops_input": {
+        "kind": "investigation",
+        "resource_refs": [
+          {
+            "tenant_id": "example-team",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "repository_commit",
+            "record_id": "repository-example",
+            "record_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "telemetry_refs": [],
+        "question": "What changed?"
+      }
+    }
+  },
+  {
+    "schema": "RunInput",
+    "valid": false,
+    "value": {
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "service_id": "devops",
+      "capability": "prevention",
+      "devops_input": {
+        "kind": "investigation",
+        "resource_refs": [
+          {
+            "tenant_id": "example-team",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "repository_commit",
+            "record_id": "repository-example",
+            "record_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "telemetry_refs": [],
+        "question": "What changed?"
+      }
+    }
+  },
+  {
+    "schema": "RunInput",
+    "valid": true,
+    "value": {
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "service_id": "well_architected",
+      "capability": "architecture_review",
+      "sources": [
+        {
+          "tenant_id": "example-team",
+          "project_id": "project-example",
+          "source_connection_id": "connection-example",
+          "record_type": "repository_commit",
+          "record_id": "repository-example",
+          "record_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "tenant_id": "example-team",
+          "project_id": "project-example",
+          "source_connection_id": "connection-example",
+          "record_type": "document",
+          "record_id": "repository-example",
+          "record_revision": "document-version-1"
+        }
+      ]
+    }
+  },
+  {
+    "schema": "RunInput",
+    "valid": false,
+    "value": {
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "service_id": "well_architected",
+      "capability": "architecture_review",
+      "sources": [
+        {
+          "tenant_id": "example-team",
+          "project_id": "project-example",
+          "source_connection_id": "connection-example",
+          "record_type": "repository_commit",
+          "record_id": "repository-example",
+          "record_revision": "HEAD"
+        }
+      ]
+    }
+  },
+  {
+    "schema": "RunInput",
+    "valid": true,
+    "value": {
+      "service_id": "finops",
+      "capability": "cost_inquiry",
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "question": "How much did January cost?",
+      "query": {
+        "start": "2026-01-01",
+        "end": "2026-02-01",
+        "metric": "UnblendedCost",
+        "granularity": "MONTHLY",
+        "group_by": [
+          "SERVICE"
+        ],
+        "currency": "USD"
+      }
+    }
+  },
+  {
+    "schema": "RunInput",
+    "valid": false,
+    "value": {
+      "service_id": "finops",
+      "capability": "cost_inquiry",
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "question": "How much did January cost?",
+      "query": {
+        "start": "2026-01-01",
+        "end": "2026-02-01",
+        "metric": "UnblendedCost",
+        "granularity": "MONTHLY",
+        "group_by": [
+          "SERVICE"
+        ],
+        "currency": "USD",
+        "billing_view_ref": "caller-selected-view"
+      }
+    }
+  },
+  {
+    "schema": "BindingInput",
+    "valid": false,
+    "value": {
+      "action": "cleanup",
+      "configuration_revision": 1,
+      "binding_id": "binding-example"
+    }
+  },
+  {
+    "schema": "BindingInput",
+    "valid": true,
+    "value": {
+      "action": "cleanup",
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "owned_cleanup_confirmed": true
+    }
+  },
+  {
+    "schema": "BindingInput",
+    "valid": true,
+    "value": {
+      "action": "sync_knowledge",
+      "configuration_revision": 1,
+      "binding_id": "binding-example",
+      "binding_revision": 2,
+      "binding_generation": 1
+    }
+  },
+  {
+    "schema": "BindingInput",
+    "valid": false,
+    "value": {
+      "action": "sync_knowledge",
+      "configuration_revision": 1,
+      "binding_id": "binding-example"
+    }
+  },
+  {
+    "schema": "DevopsKnowledgePolicy",
+    "valid": true,
+    "value": {
+      "source_refs": [
+        {
+          "tenant_id": "example-team",
+          "project_id": "project-example",
+          "source_connection_id": "connection-example",
+          "record_type": "document",
+          "record_id": "repository-example",
+          "record_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "visibility": "product_team",
+      "publish_results": false,
+      "refresh": "manual",
+      "publications": [
+        {
+          "source_ref": {
+            "tenant_id": "example-team",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "document",
+            "record_id": "repository-example",
+            "record_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "kind": "instruction",
+          "scope": "agent",
+          "active": true,
+          "native_metadata": {
+            "agent_type": "CHAT"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "schema": "DevopsKnowledgePublication",
+    "valid": false,
+    "value": {
+      "source_ref": {
+        "tenant_id": "example-team",
+        "project_id": "project-example",
+        "source_connection_id": "connection-example",
+        "record_type": "repository_commit",
+        "record_id": "repository-example",
+        "record_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "kind": "context",
+      "scope": "agent",
+      "active": true,
+      "native_metadata": {
+        "agent_type": "CHAT"
+      }
+    }
+  },
+  {
+    "schema": "Publication",
+    "valid": false,
+    "value": {
+      "publication_id": "publication-example",
+      "result_id": "result-example",
+      "state": "published",
+      "contribution_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "invalidation_watermark": 0
+    }
+  },
+  {
+    "schema": "Cost",
+    "valid": true,
+    "value": {
+      "kind": "unknown",
+      "currency": "USD"
+    }
+  },
+  {
+    "schema": "Cost",
+    "valid": false,
+    "value": {
+      "kind": "unknown",
+      "currency": "USD",
+      "amount": "0"
+    }
+  }
+]

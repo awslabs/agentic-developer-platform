@@ -60,7 +60,9 @@ class TokenManager:
         # Initialize password hashing context for token hashing
         self.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-    def generate_token(self, tenant_info: TenantInfo, duration_hours: int | None = None) -> tuple[str, datetime]:
+    def generate_token(
+        self, tenant_info: TenantInfo, duration_hours: int | None = None, *, duration_minutes: int | None = None, delegation: str | None = None
+    ) -> tuple[str, datetime]:
         """
         Generate a new JWT token for the given tenant information.
 
@@ -76,8 +78,12 @@ class TokenManager:
         """
         try:
             # Calculate expiration time
-            duration = duration_hours or self.settings.api_key_duration_hours
-            expires_at = datetime.now(UTC) + timedelta(hours=duration)
+            # #9640: owner sessions for a Dev Box host run are minute-scale; API keys keep their hour default.
+            if duration_minutes is not None:
+                expires_at = datetime.now(UTC) + timedelta(minutes=duration_minutes)
+            else:
+                duration = duration_hours or self.settings.api_key_duration_hours
+                expires_at = datetime.now(UTC) + timedelta(hours=duration)
 
             # Create JWT claims
             now = datetime.now(UTC)
@@ -88,6 +94,7 @@ class TokenManager:
                 department_id=tenant_info.department_id,
                 account_type=tenant_info.account_type,
                 is_admin=tenant_info.is_admin,
+                delegation=delegation,
                 exp=int(expires_at.timestamp()),
                 iat=int(now.timestamp()),
                 jti=self._generate_token_id(),  # Unique token ID for tracking
@@ -180,7 +187,7 @@ class TokenManager:
                 raise TokenValidationError("Token is invalid, revoked, or expired")
 
             # Create and return token context
-            return TokenContext(
+            context = TokenContext(
                 user_id=token_claims.sub,
                 org_id=token_claims.org_id,
                 team_id=token_claims.team_id,
@@ -188,7 +195,11 @@ class TokenManager:
                 account_type=token_claims.account_type,
                 is_admin=token_claims.is_admin,
                 expires_at=datetime.fromtimestamp(token_claims.exp, UTC),
+                delegation=token_claims.delegation or "",
             )
+
+            context._authenticated_token_record_id = db_token.id
+            return context
 
         except jwt.ExpiredSignatureError:
             logger.warning("Token has expired")

@@ -49,8 +49,10 @@ async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40, reviewer_owned
     await ctx.finish(reviewer)
     doc = json.loads(json.dumps(deepcopy(APPROVE)).replace(APPROVE["subject"]["reviewed_head_sha"], ctx.head))
     doc["scope"].update(org_id=node.org_id, flow_id=node.flow_id, node_id=node.id, execution_id=execution.id, cycle=ctx.identity.cycle)
-    doc["authority"].update(accepted_plan_version=1, claim_id=ctx.identity.claim_id, claim_generation=ctx.identity.claim_generation)
-    doc["repository"].update(repo=ctx.binding.repo, provider_repository_id=123)
+    doc["authority"].update(
+        accepted_plan_version=ctx.identity.accepted_plan_version, claim_id=ctx.identity.claim_id, claim_generation=ctx.identity.claim_generation
+    )
+    doc["repository"].update(repo=ctx.binding.repo, provider_repository_id=ctx.binding.provider_repository_id)
     doc["subject"].update(pr_number=ctx.binding.pr_number, provider_pr_node_id=ctx.binding.provider_pr_node_id, reviewed_head_sha=ctx.head)
     doc["lineage"].update(author_run_id=ctx.root, reviewer_run_id=reviewer)
     doc["observed_at"] = datetime.now(UTC).isoformat()
@@ -86,13 +88,13 @@ async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40, reviewer_owned
     assert (await state(ctx))[0].phase == "merge_ready"
     data = provider_data()
     data["pr"].update(number=ctx.binding.pr_number, node_id=ctx.binding.provider_pr_node_id, merged=False, merged_at=None)
-    data["pr"]["head"].update(sha=ctx.head, ref="agent/issue-43", repo={"id": 123, "full_name": ctx.binding.repo})
-    data["pr"]["base"].update(sha="b" * 40, ref="main", repo={"id": 123, "full_name": ctx.binding.repo})
-    data["repository"].update(id=123, full_name=ctx.binding.repo)
+    data["pr"]["head"].update(sha=ctx.head, ref="agent/issue-43", repo={"id": ctx.binding.provider_repository_id, "full_name": ctx.binding.repo})
+    data["pr"]["base"].update(sha="b" * 40, ref="main", repo={"id": ctx.binding.provider_repository_id, "full_name": ctx.binding.repo})
+    data["repository"].update(id=ctx.binding.provider_repository_id, full_name=ctx.binding.repo)
     data["branch"]["commit"]["sha"] = "b" * 40
     data["checks"]["check_runs"][0]["head_sha"] = ctx.head
     data["reviews"][0]["commit_id"] = ctx.head
-    data["graphql"]["data"]["repository"].update(databaseId=123)
+    data["graphql"]["data"]["repository"].update(databaseId=ctx.binding.provider_repository_id)
     data["graphql"]["data"]["repository"]["pullRequest"].update(
         id=ctx.binding.provider_pr_node_id,
         headRefOid=ctx.head,
@@ -169,7 +171,11 @@ async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40, reviewer_owned
             key = "repository"
         else:
             pytest.fail(f"Unexpected request {request.method} {path}")
-        return data[key] if isinstance(data[key], httpx.Response) else httpx.Response(404 if data[key] is None else 200, json=data[key])
+        if data[key] is None:
+            # GitHub's absent branch-protection response is JSON. HTTPX's
+            # json=None emits an empty body, which is incomplete provider proof.
+            return httpx.Response(404, json={"message": "Not Found", "status": "404"})
+        return data[key] if isinstance(data[key], httpx.Response) else httpx.Response(200, json=data[key])
 
     credentials = AsyncMock(return_value=("app", "test-key"))
     mint = AsyncMock(return_value=("scoped-test-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()))
@@ -245,6 +251,30 @@ async def test_engine_expected_head_merge_then_verified_code_completion(merge, s
     assert receipt.reviewed_base_sha == "b" * 40
     assert receipt.reviewed_head_sha == ctx.head and receipt.review_ref.startswith("s3://review-test/")
     assert bounded_receipt_summary({"merge_receipt": receipt.model_dump(mode="json")})["merge_sha"] == receipt.merge_sha
+    from src.orchestration.story_acceptance import current_story_acceptance
+
+    async with ctx.factory() as db:
+        # The recent execution panel only retains 20 actions. Acceptance must
+        # survive even when unrelated observations fill that window.
+        for index in range(25):
+            db.add(
+                OrchestrationAction(
+                    org_id=node.org_id,
+                    execution_id=execution.id,
+                    operation_key=f"later-observation:{index}",
+                    kind="engine_validation",
+                    status="succeeded",
+                    attempt=1,
+                    detail={},
+                )
+            )
+        await db.flush()
+        records = await current_story_acceptance(db, org_id=node.org_id, executions={node.id: execution})
+        assert records[execution.id].code_only
+        assert records[execution.id].completed_at is not None
+        assert records[execution.id].deployment_verified_at is None
+        assert await current_story_acceptance(db, org_id="other-tenant", executions={node.id: execution}) == {}
+        await db.commit()
     await tick(ctx)
     assert len(ctx.mutations) == 1
     assert any(call.kwargs["permissions"].get("contents") == "write" for call in ctx.mint.await_args_list)
@@ -361,6 +391,44 @@ async def test_merged_pr_successful_rollup_cannot_hide_unmet_check_policy(merge,
     assert node.state == "running" and execution.phase == "merge_ready", result
     assert merge.mutations == []
     assert not await merge_actions(merge)
+
+
+async def test_external_merge_with_running_checks_waits_instead_of_blocking_then_completes(merge):
+    """A controller that merges before current-head CI finishes leaves nothing for a human to do (#6850 flow, PR #7359)."""
+    check = merge.remote["checks"]["check_runs"][0]
+    check.update(status="in_progress", conclusion=None)
+    merge.merge_remote()
+
+    result = await tick(merge)
+    execution, _, node, _ = await state(merge)
+    assert node.state == "running" and execution.phase == "merge_ready", result
+    assert execution.status != "blocked" and execution.block_code is None and execution.block_detail is None
+    assert execution.progress_note and "waiting for the merged head" in execution.progress_note
+    assert check["name"] in execution.progress_note
+    assert execution.next_check_at is not None
+    assert merge.mutations == [] and not await merge_actions(merge)
+
+    check.update(status="completed", conclusion="success")
+    result = await tick(merge)
+    execution, _, node, _ = await state(merge)
+    assert node.state == "passed", (result, execution.block_detail)
+    assert MergeReceipt.model_validate((await merge_actions(merge))[0].detail["merge_receipt"]).verification_kind == "post_merge_verification"
+
+
+@pytest.mark.parametrize("defect", ["failed", "missing"])
+async def test_external_merge_with_failed_or_missing_checks_still_blocks_with_an_owner(merge, defect):
+    if defect == "failed":
+        merge.remote["checks"]["check_runs"][0]["conclusion"] = "failure"
+    else:
+        merge.remote["checks"] = {"total_count": 0, "check_runs": []}
+    merge.merge_remote()
+
+    result = await tick(merge)
+    execution, _, node, _ = await state(merge)
+    assert node.state == "running" and execution.phase == "merge_ready", result
+    assert execution.status == "blocked" and execution.block_detail == "merged_pr_checks_not_successful"
+    assert execution.block_owner == "orchestration-owner"
+    assert "failed or is missing" in (execution.block_required_input or "")
 
 
 @pytest.mark.parametrize("defect", ["checks", "review", "stale_review", "head", "repository", "merge_sha", "review_artifact", "timestamp"])

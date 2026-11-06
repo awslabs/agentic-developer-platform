@@ -10,17 +10,21 @@ exists" would replace a real hold with an understated charge. Issue #5226 routes
 that decision through the adapter that issued the bound.
 """
 
+import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import httpx
 import pytest
 
 from src.proxy import mantle_service
+from src.shared import metrics as metric_module
+from src.shared import performance_diagnostics as diagnostics
+from src.shared.accounting_health import METERING_UNCONFIRMED, METERING_WRITE_FAILURES
 from src.shared.schemas.auth import TokenContext
 
 MODEL = "openai.gpt-5.6-luna"
@@ -37,6 +41,7 @@ def settlement(monkeypatch):
     monkeypatch.setattr(mantle_service, "resolve_routing_decision", AsyncMock(return_value=mantle_service.RoutingDecision()))
     chat_logger = MagicMock()
     chat_logger.log_chat_async = MagicMock()
+    chat_logger.write_usage_recovery = AsyncMock(return_value=True)
     monkeypatch.setattr(mantle_service, "ChatLoggingService", lambda: chat_logger, raising=False)
     reconcile = AsyncMock()
     monkeypatch.setattr(mantle_service, "reconcile_budget_reservation", reconcile)
@@ -68,15 +73,24 @@ async def call(usage, *, stream):
     auth.sign.return_value = {"Authorization": "upstream-credential"}
     service = mantle_service.MantlePassthroughService(auth, "https://bedrock-runtime.us-east-1.amazonaws.com", http_client=client)
     async with client:
-        result = await service.create_response(
-            json.dumps({"model": MODEL, "input": "hello", "max_output_tokens": 16}).encode(),
-            context(),
-            stream=stream,
-            model=MODEL,
-            request_id="req-1",
-        )
-        body = b"".join([chunk async for chunk in result]) if stream else result.content
-    assert body == wire  # the passthrough is byte-exact either way
+        try:
+            result = await service.create_response(
+                json.dumps({"model": MODEL, "input": "hello", "max_output_tokens": 16}).encode(),
+                context(),
+                stream=stream,
+                model=MODEL,
+                request_id="req-1",
+            )
+            body = b"".join([chunk async for chunk in result]) if stream else result.content
+        except mantle_service.MantleUpstreamError as error:
+            body = error.content
+    log_request = mantle_service.UsageService(None).log_request
+    known = log_request.side_effect is None and log_request.await_args.kwargs["reservation_usage_known"]
+    if known:
+        assert body == wire
+    else:
+        assert b"usage_settlement_unconfirmed" in body
+        assert b"response.completed" not in body
     return service
 
 
@@ -88,6 +102,146 @@ async def settled(settlement, usage, *, stream):
     logged = mantle_service.UsageService(None).log_request.await_args.kwargs
     assert logged["reservation_usage_known"] is kwargs["usage_known"]
     return kwargs
+
+
+async def test_usage_write_failure_retains_hold_and_reports_failure(settlement, caplog):
+    usage_service = mantle_service.UsageService(None)
+    usage_service.log_request.side_effect = RuntimeError("test-private-sql-bind")
+    failures = METERING_WRITE_FAILURES._value.get()
+
+    await call({"input_tokens": 500, "output_tokens": 16}, stream=False)
+
+    assert METERING_WRITE_FAILURES._value.get() == failures + 1
+    assert settlement.await_args.kwargs["usage_known"] is False
+    assert settlement.await_args.kwargs["retain_failed_bound"] is True
+    assert "test-private-sql-bind" not in caplog.text
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_sql_failure_durably_records_usage_even_with_transcripts_disabled(settlement, monkeypatch, stream):
+    from src.chat_logging.service import ChatLoggingService
+
+    writer = MagicMock(write_log=AsyncMock(return_value=True))
+    logger = ChatLoggingService(s3_writer=writer, enabled=False, exclude_models=[MODEL])
+    logger._bucket_name = "usage-recovery"
+    monkeypatch.setattr(mantle_service, "ChatLoggingService", lambda: logger)
+    mantle_service.UsageService(None).log_request.side_effect = RuntimeError("SQL unavailable")
+
+    await call({"input_tokens": 500, "output_tokens": 16}, stream=stream)
+
+    writer.write_log.assert_awaited_once()
+    saved = writer.write_log.await_args.kwargs["log_data"]
+    assert saved["request_id"] == "req-1"
+    assert saved["pricing_decision"]["usage"]["valid"] is True
+    assert saved["usage_recovery"]["version"] == 1
+    assert saved["response"]["usage"]["input_tokens"] == 500
+    assert "hello" not in json.dumps(saved) and "upstream-credential" not in json.dumps(saved)
+    assert not saved["request"].get("messages") and not saved["response"].get("content")
+    assert settlement.await_args.kwargs["usage_known"] is False
+
+
+@pytest.mark.parametrize("usage", [None, {"input_tokens": -1, "output_tokens": 16}])
+async def test_sql_failure_cannot_attest_missing_or_invalid_usage(settlement, usage):
+    mantle_service.UsageService(None).log_request.side_effect = RuntimeError("SQL unavailable")
+    service = await call(usage, stream=False)
+    if service._chat_logger is not None:
+        service._chat_logger.write_usage_recovery.assert_not_awaited()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_transient_usage_write_retries_then_settles_real_cost(settlement, monkeypatch, stream):
+    from tests.usage.test_persistence import database_error
+
+    monkeypatch.setattr("src.usage.persistence.asyncio.sleep", AsyncMock())
+    usage_service = mantle_service.UsageService(None)
+    writes = []
+
+    async def write(**kwargs):
+        writes.append(kwargs)
+        if len(writes) == 1:
+            raise database_error()
+        # The common assertion in call() recognizes successful persistence.
+        usage_service.log_request.side_effect = None
+
+    usage_service.log_request.side_effect = write
+    await call({"input_tokens": 500, "output_tokens": 16}, stream=stream)
+    assert len(writes) == 2
+    assert writes[0]["pricing_decision"] is writes[1]["pricing_decision"]
+    assert writes[0]["request_id"] == writes[1]["request_id"] == "req-1"
+    settlement.assert_awaited_once()
+    assert settlement.await_args.kwargs["usage_known"] is True
+    assert settlement.await_args.kwargs["actual_cost_usd"] == writes[0]["cost_usd"]
+
+
+async def test_failed_optional_counter_cannot_skip_required_reservation_reconciliation(settlement, monkeypatch):
+    usage_service = mantle_service.UsageService(None)
+    usage_service.log_request.side_effect = RuntimeError("test-private-sql-bind")
+    monkeypatch.setattr(METERING_WRITE_FAILURES, "inc", MagicMock(side_effect=RuntimeError("test-telemetry-failure")))
+
+    await call({"input_tokens": 500, "output_tokens": 16}, stream=False)
+
+    settlement.assert_awaited_once()
+    assert settlement.await_args.kwargs["usage_known"] is False
+    assert settlement.await_args.kwargs["retain_failed_bound"] is True
+
+
+@pytest.mark.parametrize("metering_fails", [False, True])
+async def test_combined_export_denial_and_diagnostic_saturation_preserves_metering(settlement, monkeypatch, metering_fails):
+    class BrokenOutput:
+        def write(self, value):
+            raise OSError("test-private-export-error")
+
+        def flush(self):
+            raise OSError("test-private-export-error")
+
+    class DiagnosticConnection:
+        async def fetch(self, statement):
+            return [{"pid": pid, "blocker_pids": list(range(110)), "query_age_ms": 12} for pid in range(150)]
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setattr(diagnostics.asyncpg, "connect", AsyncMock(return_value=DiagnosticConnection()))
+    observed = await diagnostics.capture_blockers("postgresql://private@localhost/fixture")
+    assert observed.status == "captured"
+    assert len(observed.blockers) == 100
+    assert len(observed.blockers[0].blocker_pids) == 100
+
+    service = mantle_service.UsageService(None)
+    if metering_fails:
+        service.log_request.side_effect = RuntimeError("test-private-sql-error")
+    monkeypatch.setattr(metric_module, "_last_export_warning_at", None)
+    before_export_attempts = metric_module.EMF_WRITE_ATTEMPTS._value.get()
+    before_export_failures = metric_module.EMF_WRITE_FAILURES._value.get()
+    before_drops = diagnostics.DIAGNOSTIC_DROPS._value.get()
+    before_metering_failures = METERING_WRITE_FAILURES._value.get()
+    watcher = diagnostics.start_pressure_capture("postgresql://private@localhost/fixture", "first")
+    assert watcher is not None
+    try:
+        assert diagnostics.start_pressure_capture("postgresql://private@localhost/fixture", "second") is None
+        with patch("sys.stdout", BrokenOutput()):
+            await call({"input_tokens": 500, "output_tokens": 16}, stream=True)
+    finally:
+        diagnostics.finish_pressure_capture(watcher)
+    await asyncio.sleep(0)
+
+    export_attempts = metric_module.EMF_WRITE_ATTEMPTS._value.get() - before_export_attempts
+    assert export_attempts >= 1
+    assert metric_module.EMF_WRITE_FAILURES._value.get() - before_export_failures == export_attempts
+    assert diagnostics.DIAGNOSTIC_DROPS._value.get() == before_drops + 1
+    assert METERING_WRITE_FAILURES._value.get() == before_metering_failures + int(metering_fails)
+    assert service.log_request.await_count == 1
+    assert settlement.await_args.kwargs["usage_known"] is not metering_fails
+    assert settlement.await_args.kwargs["retain_failed_bound"] is metering_fails
+
+
+async def test_missing_provider_usage_reports_unconfirmed_without_dropping_hold(settlement):
+    before = METERING_UNCONFIRMED._value.get()
+
+    await call(None, stream=False)
+
+    assert METERING_UNCONFIRMED._value.get() >= before + 1
+    assert settlement.await_args.kwargs["usage_known"] is False
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -119,7 +273,7 @@ async def test_reasoning_output_settles_within_the_reported_output(settlement, s
 async def test_an_absent_usage_block_retains_the_hold(settlement, stream):
     kwargs = await settled(settlement, None, stream=stream)
     assert kwargs["usage_known"] is False
-    assert not kwargs.get("retain_failed_bound", False)
+    assert kwargs["retain_failed_bound"] is True
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -249,7 +403,7 @@ async def test_interrupted_stream_allows_retry_while_counting_full_bound(settlem
         entity_id="flow",
         period_type="run",
         period_start="lifetime",
-        headroom_usd=quote.total_usd * 2,
+        headroom_usd=quote.maximum_cost_usd + quote.total_usd,
         ttl_seconds=172800,
         require_initialization=True,
     )
@@ -275,9 +429,9 @@ async def test_interrupted_stream_allows_retry_while_counting_full_bound(settlem
             stream = await proxy.create_response(body, ctx, stream=True, model=MODEL, request_id="failed")
             received = b"".join([chunk async for chunk in stream])
         assert b'"type": "error"' in received and b"response.completed" not in received
-        assert (await store.snapshot(target)).total_usd == quote.total_usd
+        assert (await store.snapshot(target)).total_usd == quote.maximum_cost_usd
         after = await redis.hgetall(target.key())
-        assert after["failed"] == before["failed"]  # Neither amount nor expiry is reset.
+        assert after["failed"].split(":")[1] == before["failed"].split(":")[1]  # Preserve the original deadline.
         assert after["__initialized__"] == before["__initialized__"]
         assert "bounded:failed" in after and "pending:failed" not in after
         assert mantle_service.UsageService(None).log_request.await_args.kwargs["pricing_decision"] is None

@@ -1418,3 +1418,32 @@ async def test_a_ledger_failure_on_one_intent_does_not_stop_the_sweep(connection
     # forgetting it.
     remaining = await list_interrupted_admissions(connection)
     assert len(remaining) == 1
+
+
+async def test_approval_policy_upgrade_preserves_legacy_and_refuses_loss(connection):
+    from harness_jobs.schema import SCHEMA_VERSION, apply, current_version, downgrade
+
+    await admit(connection, FakeLedger())
+    assert await downgrade(connection, target=9) == 9
+    assert await apply(connection) == SCHEMA_VERSION
+    assert (
+        await connection.fetchval(
+            "SELECT requires_distinct_approver FROM harness_approval_consumption"
+        )
+        is True
+    )
+    # A separate-person approval may also be recorded under streamlined policy.
+    # Neither a schema rollback nor a settings change may erase that policy.
+    await connection.execute(
+        "UPDATE harness_approval_consumption SET requires_distinct_approver=false"
+    )
+    with pytest.raises(Exception, match="cannot discard recorded streamlined"):
+        async with connection.transaction():
+            await downgrade(connection, target=9)
+    assert await current_version(connection) == SCHEMA_VERSION
+    assert (
+        await connection.fetchval(
+            "SELECT requires_distinct_approver FROM harness_approval_consumption"
+        )
+        is False
+    )

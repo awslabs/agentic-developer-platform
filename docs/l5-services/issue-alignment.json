@@ -1,0 +1,382 @@
+{
+  "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+  "supersedes_design_revision": "4eacbd97edfd6f832f056796bab71745d44ba1ad",
+  "review_url": "https://github.com/aws-e/adp/pull/8725#pullrequestreview-5640168210",
+  "update_reason": "Canonical documentation relocated to docs/l5-services",
+  "native_children_preserved": true,
+  "parent_epic_link_verified": true,
+  "issues": [
+    {
+      "issue": 8150,
+      "url": "https://github.com/aws-e/adp/issues/8150",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 7683,
+      "before_sha256": "379bfc166c20a7f9aa26502bce8c1309aeeab157f8ce068a709c961b93d96957",
+      "after_sha256": "a45672388ab12ad0a2553bc9b06e9da5dae0f1d3cc685a957aae8d13e7cc3896",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "EC-01",
+        "EC-02",
+        "EC-03",
+        "EC-04",
+        "EC-05",
+        "EC-06"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8682,
+      "url": "https://github.com/aws-e/adp/issues/8682",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 8120,
+      "before_sha256": "aef0d9d42d08b87a42b0fc37fc9c4cf2238add9d52c1ea3889886fd063fa8c8b",
+      "after_sha256": "a98a9f499583df6e9ad7e1a1406cde5877e81b381421f12ad175af2e1e2e9529",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "EC-01",
+        "EC-02",
+        "EC-03",
+        "EC-04",
+        "EC-05",
+        "EC-06",
+        "EC-07",
+        "EC-08",
+        "EC-09"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8683,
+      "url": "https://github.com/aws-e/adp/issues/8683",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6743,
+      "before_sha256": "30f131257ce5347cb97bad3e13ee73d8678c560d07c21c755d8fe6fa2d96bf29",
+      "after_sha256": "b54888a55fcec82ce3733ad89e53a35c07170a46dd4858e826b249421218228e",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-01",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": false,
+      "draft_format": "pass",
+      "published_and_read_back": true,
+      "validation_change": "Only the three planned runtime test-selector paths moved to modules/L5-services/tests/contracts/test_contracts.py; acceptance text and IDs preserved."
+    },
+    {
+      "issue": 8684,
+      "url": "https://github.com/aws-e/adp/issues/8684",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6542,
+      "before_sha256": "2d81e1ab3970022dccc0ee0b3713bbc47752dd242373e0e2e62c3ffb8e733da6",
+      "after_sha256": "030fec4dd6fea3cf0dd17c1d744b76c4b3a04d1206317413220d712e07b3b8e3",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-02",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8685,
+      "url": "https://github.com/aws-e/adp/issues/8685",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6732,
+      "before_sha256": "b0479e7feb5fcd0516ce0153959e992968af95d363f6392ba343ebe7719ae885",
+      "after_sha256": "f0e592c7aa53b217d1612f585d8ef640edff5211c103253cad3502306577c25f",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-01",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8686,
+      "url": "https://github.com/aws-e/adp/issues/8686",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6663,
+      "before_sha256": "66ac86f4cd2d5bbd7d4c4ee5f4dea123c37555addb0a4c3cddff9cd49d56e34f",
+      "after_sha256": "8bfa1dc95fb2a409047b442a1b7f403aa5dd3e67957c047130d35229e71471a5",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-02",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8687,
+      "url": "https://github.com/aws-e/adp/issues/8687",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6637,
+      "before_sha256": "badc37639efd702c793669d0e055f819f5c6721070232e74d0ef10f1ec0ce3e7",
+      "after_sha256": "264fd1edeabd3072276c0a4896d099d8320481195d5c726e7abb7ccb341bc84e",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-03",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8688,
+      "url": "https://github.com/aws-e/adp/issues/8688",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6872,
+      "before_sha256": "d3ae11b1b72deaf2079a2b608f14f1067fb52ab59f83b5c130db528a3a001f6d",
+      "after_sha256": "18529157f7ab150ab007b41095d73aea2ac577e5ea8dd773d06bab3e39aeded0",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-03",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8689,
+      "url": "https://github.com/aws-e/adp/issues/8689",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6704,
+      "before_sha256": "2313c97dbc3093394915d845c09907ce8254eb1c0cdde65a257c3eaf1c9841de",
+      "after_sha256": "3185d95d7084e76d153424a290069eaaf2bfe0c810d5360dbf43502aa36ce085",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-04",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8690,
+      "url": "https://github.com/aws-e/adp/issues/8690",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6836,
+      "before_sha256": "c6720fe6cbf27c31d75de801b95b27cb06dd8fcc7d3358915f676d8cf2abf08a",
+      "after_sha256": "d73667eec87aa0d5026af9213b0a94ff24b2faea28d210efb0aaf423655427e3",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-05",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8691,
+      "url": "https://github.com/aws-e/adp/issues/8691",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6751,
+      "before_sha256": "00532d463911b884fef67e124dd6d07118fac386762d8c6dc09b19bef75e0e33",
+      "after_sha256": "24c2d69d9430e3bb5ccdec3a4ec5a37545721803d77e8aaf0feff41f19c5f917",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-03",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8692,
+      "url": "https://github.com/aws-e/adp/issues/8692",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6276,
+      "before_sha256": "bac79d0e3bd01cc7e38f913b9eea155477a4af5e9b0b4a72dbe30514c2101aa5",
+      "after_sha256": "7453f7498b9bc55c60eb16fd0bd119f868f2bbfda7e33a190941d8014e4c27bd",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-06",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8693,
+      "url": "https://github.com/aws-e/adp/issues/8693",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6355,
+      "before_sha256": "277dde579f8d9b8a6e59823560f88261673771bf79ce2821ffcad265c30dc1d9",
+      "after_sha256": "5d4704ab4a801f0b112b2dc5e13879c45cf40e6b7b1ff9664b2f485cc160a73e",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-07",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8694,
+      "url": "https://github.com/aws-e/adp/issues/8694",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6446,
+      "before_sha256": "640bdd20e9744876414308c9d918679ab348acadd04c1d8bceee6d53f52ced43",
+      "after_sha256": "5550fd8296906cf915a56ee0140ecd5917ad3a7359e462d8b94e7f64a5ddb01c",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-08",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8695,
+      "url": "https://github.com/aws-e/adp/issues/8695",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6572,
+      "before_sha256": "99f10f6fb8ccd8080391d583ec8a62bee9849b0721b3e7d47b3c11545bee3e14",
+      "after_sha256": "bf433cc78e69a7fb45c29c4b0fdf6b5d3043dcca8cac79bcb56258869d97dab3",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-08",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8696,
+      "url": "https://github.com/aws-e/adp/issues/8696",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6750,
+      "before_sha256": "423853364657c6f4bfb30ff2d93039d6fbe604d37a80219454b5295a3276aad6",
+      "after_sha256": "ac920350155dfad324607047f6d34dd0926d320e4e5688407d3d203524cda53f",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-08",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8698,
+      "url": "https://github.com/aws-e/adp/issues/8698",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 6836,
+      "before_sha256": "940885f653564c73565fa1a82585385d040069b4767c955a2cb27d56a2ebe26b",
+      "after_sha256": "3e64e3dcfcedd5d4890d1086f207e335a47d09ea4f6f25a35d3e5f8484368d50",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "EC-09",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    },
+    {
+      "issue": 8699,
+      "url": "https://github.com/aws-e/adp/issues/8699",
+      "design_revision": "5d67d1bc4b1a92f104847f87602996d7080f73bd",
+      "body_bytes": 7705,
+      "before_sha256": "4beed1ff09722ab9b897d7a167ce053af6ee00983cc22642c3e3a91a619bf1c3",
+      "after_sha256": "ab83fa2eecb10d3882fef3dee6ad448c0ca3d7afb2aa987ce275036bbab0b6de",
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "EC-04",
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "validation_unchanged": true,
+      "draft_format": "pass",
+      "published_and_read_back": true
+    }
+  ]
+}

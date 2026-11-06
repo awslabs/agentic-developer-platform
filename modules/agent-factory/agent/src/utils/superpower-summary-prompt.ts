@@ -19,7 +19,6 @@
 import { wrapUntrusted } from './trust-boundary';
 
 export interface SummaryPromptInput {
-  /** Issue title (trusted enough to display; see #4074 follow-up for titles). */
   issueTitle: string;
   issueNumber: number | string;
   /** UNTRUSTED — attacker-controlled issue body. Wrapped before interpolation. */
@@ -48,7 +47,7 @@ export function buildSummaryPrompt(input: SummaryPromptInput): string {
   return `You just completed implementing a task. Generate a detailed, SPECIFIC completion summary for the GitHub issue.
 
 ## Original Issue
-**Title**: ${issueTitle}
+**Title**: ${wrapUntrusted(issueTitle)}
 **Issue #**: ${issueNumber}
 
 **Description**:
@@ -57,13 +56,13 @@ ${wrapUntrusted(issueBody)}
 ## What Was Done
 
 ### Brainstorming/Design Phase Output:
-${design.substring(0, 3000)}
+${wrapUntrusted(design.substring(0, 3000))}
 
 ### Implementation Output:
-${result.substring(0, 3000)}
+${wrapUntrusted(result.substring(0, 3000))}
 
 ### Files Created (${fileList.length} total):
-${fileList.slice(0, 50).join('\n')}
+${wrapUntrusted(fileList.slice(0, 50).join('\n'))}
 ${fileList.length > 50 ? `\n... and ${fileList.length - 50} more files` : ''}
 
 ## Your Task

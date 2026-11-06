@@ -87,6 +87,52 @@ def test_baseline_cannot_relabel_replaced_provider_root_as_owned(monkeypatch):
         capture_system_baseline(None, journal, {}, previous=first)
 
 
+@pytest.mark.parametrize(
+    ("kind", "namespace", "name", "accepted"),
+    [
+        ("Service", "kube-system", "eks-extension-metrics-api", True),
+        ("Service", "tenant", "eks-extension-metrics-api", False),
+        ("Service", "kube-system", "unrelated-metrics-api", False),
+        ("Deployment", "kube-system", "eks-extension-metrics-api", False),
+    ],
+)
+def test_eks_metrics_service_baseline_is_exact_and_uid_pinned(
+    monkeypatch, kind, namespace, name, accepted
+):
+    from superplane_bootstrap import workload_inventory
+
+    # EKS creates this ownerless Service during cluster bootstrap in 1.35.
+    # It must join the original baseline before tenant admission; similar names
+    # or later replacement objects cannot acquire that ownership.
+    root = body(kind, name, "eks-created-uid", namespace=namespace)
+    monkeypatch.setattr(workload_inventory, "read", lambda grants: [root])
+    journal = SimpleNamespace(
+        target=SimpleNamespace(is_adopted=False, cluster_arn="arn"),
+        original_allocation_id="allocation",
+        binding=SimpleNamespace(operation_id="operation"),
+        generation="generation",
+    )
+    if not accepted:
+        with pytest.raises(BootstrapRefused, match="ownership"):
+            capture_system_baseline(None, journal, {})
+        return
+
+    baseline = capture_system_baseline(None, journal, {})
+    assert baseline["objects"] == [
+        {
+            "identity": [kind, namespace, name, "eks-created-uid"],
+            "owner_references": [],
+        }
+    ]
+    assert capture_system_baseline(None, journal, {}, previous=baseline) == baseline
+    root["metadata"]["uid"] = "replacement-uid"
+    with pytest.raises(BootstrapRefused, match="ownership"):
+        capture_system_baseline(None, journal, {}, previous=baseline)
+    journal.target.is_adopted = True
+    with pytest.raises(BootstrapRefused, match="original managed allocation"):
+        capture_system_baseline(None, journal, {})
+
+
 def test_fence_uses_original_bootstrap_uids_and_exact_active_policy(runtime):
     arguments = inputs(runtime)
     inventory = arguments["inventory"]

@@ -8,7 +8,10 @@ you do not trigger each item.
 ```sh
 adp flow list                       # your flows, worst news first
 adp flow list --needs-me            # only the ones waiting on a decision from you
+adp flow list --include-archived    # show live and archived flows; --status archived shows only archived
 adp flow show FLOW_ID               # progress, blockers, outstanding gates, next eligible work
+adp flow archive FLOW_ID --reason "Plan superseded by a correction"
+adp flow unarchive FLOW_ID --reason "Resume review of this flow"
 adp flow watch FLOW_ID              # follow it; Ctrl-C detaches, it does NOT cancel
 adp flow plans FLOW_ID              # plan versions, and which revision is proposed
 adp flow decisions FLOW_ID          # who approved what, in what role
@@ -16,7 +19,17 @@ adp flow cost FLOW_ID               # recorded spend
 adp flow gate approve GATE_ID --expect-plan-hash HASH
 adp flow gate reject  GATE_ID --reason "scope changed"
 adp flow create --file plan.json    # submit a plan document you already have
+adp flow amendment list FLOW_ID     # changes proposed to a plan already in force
 ```
+
+The default list shows live flows only. `--include-archived` includes archived flows and their status count;
+`--status archived` selects only archived flows without needing the include option.
+Archive and unarchive require a human session with `PLAN_APPROVE` and a reason of 8–4000
+characters. The API refuses archive while nodes or durable work remain active;
+archiving is not cancellation. The slug remains reserved. Detail, decisions and
+recorded cost remain readable, and unarchiving does not resume paused execution,
+renew expired plans, or reset attempts. A refusal exits nonzero, including with
+`--json`; check its error rather than assuming an interrupted request changed state.
 
 You supply no tokens. These commands reuse the session `adp login` already
 established — there is no second credential store and nothing to paste.
@@ -183,6 +196,163 @@ Two things follow that are worth knowing:
 and doing it registers the same work without its limits — running unbounded while
 the document claims it is constrained.
 
+## Changing a plan that is already running
+
+A plan in force has started work, recorded evidence and answered gates underneath
+it. Changing it is an **amendment**, not a new plan — and the two are not
+interchangeable: submitting a fresh plan over a running one discards that history.
+
+```sh
+adp flow amendment list FLOW_ID                  # what is waiting, newest first
+adp flow amendment show FLOW_ID DRAFT_ID         # one draft, and the document it would apply
+adp flow amendment preview FLOW_ID DRAFT_ID      # the whole proposed graph change; applies nothing
+adp flow amendment edit FLOW_ID DRAFT_ID --file revised.json
+adp flow amendment reject FLOW_ID DRAFT_ID --reason "not this sprint"
+adp flow amendment accept FLOW_ID DRAFT_ID \
+    --expect-revision HASH --expect-base-version N --expect-base-hash HASH --yes
+```
+
+The loop is **propose → preview → edit → approve → a new plan version**, and the
+engine then schedules the eligible work in it.
+
+With no placement flags and no `--file`, `--request-text` records a durable request
+through the same attributed, bounded authoring queue as `replan:`. It does not apply
+or approve a plan. Repeating the same text against the same accepted plan returns the
+same request rather than commissioning a second author.
+
+### Placement is addresses and edges, never a wave number
+
+When you propose work you say *where it goes* relative to what is already there,
+and ADP resolves that into concrete node addresses with explicit incoming and
+outgoing edges:
+
+```sh
+adp flow amendment propose 7f3c2a10 \
+    --request-text "add cleanup validation after U1"
+
+adp flow amendment propose 7f3c2a10 \
+    --ref migration-check --kind eval --title "Validate the migration" \
+    --placement new_wave --epic-ref epic-1 --wave-ref wave-1b \
+    --requires  demo-flow/epic-1/wave-1/eval \
+    --precedes  demo-flow/epic-1/wave-2/deploy-gate \
+    --request-text "validate the migration before the deploy gate"
+
+# Or submit multiple development/validation nodes and explicit dependencies:
+adp flow amendment propose 7f3c2a10 --file amendment-placement.json \
+    --request-text "add the checker and its live validation"
+```
+
+| `--placement` | Where the work lands | Also needs |
+|---|---|---|
+| `insert_before` | Between the anchor's predecessors and the anchor | `--anchor` |
+| `insert_after` | After the anchor; the anchor's successors wait for both | `--anchor` |
+| `parallel_branch` | Alongside the anchor, rejoining where you say | `--anchor`, `--rejoin-at` |
+| `existing_wave` | Joins a wave, defaulting to feed that wave's eval | `--epic-ref`, `--wave-ref` |
+| `new_wave` | Forms a new wave; both ends explicit | `--epic-ref`, `--wave-ref` |
+
+"Put it in Wave 1" is **not** a placement. The engine releases work from edges, and
+wave membership is derived from the address — so a node carrying a wave label with
+no edges is a node that runs *immediately*. That is why the response lists every
+resolved edge with the rule that produced it, and why a placement whose edges
+cannot be determined is refused with the ambiguity named rather than guessed one
+way and filed for approval.
+
+Resolution is strictly additive: **an existing dependency is never silently
+removed** to make room for inserted work. Dropping an edge is how inserted work
+would accidentally *release* downstream work early.
+
+### Approval binds the exact revision you reviewed
+
+Editing a draft creates a new revision and voids any approval of the earlier text:
+
+```sh
+adp flow amendment preview 7f3c2a10 draft-abc123   # prints the revision hash and base version
+adp flow amendment accept  7f3c2a10 draft-abc123 \
+    --expect-revision <hash from above> --expect-base-version <version from above> \
+    --expect-base-hash <base hash from above> --yes
+```
+
+All three preconditions are sent with the request and compared **inside the same
+transaction** that writes the new plan version. An amendment that was edited,
+superseded, or written against a plan that has since moved is refused with the plan
+untouched and exit **4**, naming which of the two moved:
+
+| Code | Means |
+|---|---|
+| `draft_not_pending` | It was edited or displaced; the message names the revision to read |
+| `revision_mismatch` | The draft's text is not what you reviewed |
+| `base_version_mismatch` | The base version you named is not the draft's |
+| `stale_base` | The plan it was written against is no longer in force |
+
+The common case is the first one, because an edit writes a *new* draft and marks the
+one you read `superseded` — so the id you typed is refused on its state before its
+text is ever compared.
+
+Do **not** retry these with the same hash, and do not script around them by
+omitting the flags — that approves whatever is live. Re-read, preview again, and
+approve what you actually reviewed. With `--yes` both flags are **required**, and
+an empty value (a command substitution that produced nothing) fails closed rather
+than approving unguarded.
+
+Re-accepting the same draft with the same revision is safe: it replays the original
+decision and reports `already_accepted`, rather than creating a second version.
+
+### What the preview tells you
+
+Blocking diagnostics come **first**, so an unapprovable amendment cannot be skimmed
+past. Then the graph change — added, removed and changed nodes with their current
+states and attempt counts, every edge change, wave membership including new and
+emptied waves, and the proposed execution order with which waves run concurrently.
+Then what it does to work that already exists: **newly blocked** downstream nodes
+and the prerequisites now holding them, and gate changes called out separately
+because a gate is where a *human* is required.
+
+**EFFECTIVE LIMITS** shows the limits dispatch enforces now and after you accept. "Now"
+includes any approved budget, retry, window or concurrency increase. Verified receipts
+carry across content-only amendments without renewing their expiry. If an amendment
+changes the original limits or execution authority, the preview warns which receipts
+will be dropped and shows their before/after effective values and reason. The accept
+response reports the committed disposition, including on replay. Re-apply dropped
+increases explicitly if needed; the preview is not an approval and never reapproves
+one automatically. Accept is also refused while work is in flight, because the new
+plan would strand it: a node running or awaiting merge
+(`active_nodes_cross_plan_boundary`), an unfinished execution or action, an unverified
+worker report, or a held work claim. Wait for the work to settle, then preview again.
+
+**ISSUES TO PUBLISH ON ACCEPT** lists new stories and evals that have no `issue_ref`
+yet. For each one it shows the target repository and whether accepting will create a
+**new** issue. Proposing, editing, or an agent registering a draft publishes nothing.
+Issues are created only by `accept`, after the revision and base checks pass and every
+other blocker is resolved. The repository must be in the flow's in-force policy
+`repository_ids`, and one accept may create at most 20 issues. A retried accept reuses
+the issue it recorded and never opens a second one. If you get
+`amendment_issue_publication_in_progress` (exit 4), the accept was not applied: wait
+and retry it.
+
+Some proposals are refused on rules that exist for good reason. Adding an
+evaluation to a wave that already has one is refused — a wave containing stories
+has exactly one eval — so a read-only validation belongs in its own wave, as in the
+`new_wave` example above. Note it is proposed as `--kind eval`, not as a story: a
+read-only validation represented as a code story would require a pull request that
+does not exist.
+
+### Nothing falls back
+
+The gateway must provide both pending amendments (#4529) and the amendment review
+API (#5329). Deploy the compatible server before updating clients. `adp update`
+installs the client served by the selected gateway; it does not enable missing
+server routes. Compatibility is determined by the available API, not by the CLI
+version string alone.
+
+If a deployment's gateway does not serve the amendment API, every verb reports that
+as a capability gap and exits 4 having changed nothing. It does **not** fall back to
+`adp flow create`, because applying a fresh plan is not a degraded amendment — it is
+a different and destructive act against the work already underneath the plan.
+
+Approving an amendment needs **plan-approve**, including `edit`: an edit chooses what
+a human will be asked to approve, so anything that could edit a draft could rewrite
+it between a reviewer reading it and accepting it.
+
 ## Cost is three-valued
 
 | Reported | Means |
@@ -212,25 +382,32 @@ refinement and continues to a proposed plan. `--refine-only` stops after the
 conversation. Scripts provide the outcome as text, use `--plan` to request a
 preview and receive unresolved questions as `pending` with exit 4.
 
+`--product PRODUCT_ID` selects an accessible Product for the session; selection
+does not authorize publication or execution. For epic intake, `--repo` and
+`--issue` locate the epic, while native children retain their own verified
+repositories. Direct-story intake targets that issue's repository. The preview
+keeps the Product, planning epic and qualified story targets distinct.
+
 The request id is printed before sending and the session id before polling.
-Retry an interrupted opening request with the same text, repository, issue and
-`--request-id`. A resumed answer can also use `--request-id`. The ingest service
-claims the turn before dispatch; retries return the original acknowledgement.
+Retry an interrupted opening request with the same text, Product, repository,
+issue and `--request-id`. A resumed answer can also use `--request-id`. The ingest
+service claims the turn before dispatch; retries return the original acknowledgement.
 A claim with an uncertain outcome is reported for inspection instead of being
 sent a second time. Retry records are retained for seven days. Session storage
 uses the existing chat service's 24-hour inactivity expiry; this is not permanent
 conversation archival. Registered plans and decisions remain in the engine.
 
-`--resume` restores the selected repository and issue. Changing them on a resumed
-session is refused. Repository access is resolved within the active tenant;
-`--issue` reads that issue's current body through the tenant's GitHub installation.
+`--resume` restores the selected Product, repository and issue. Changing them on
+a resumed session is refused. Repository access is resolved within the active
+tenant; `--issue` reads that issue's current body through the tenant's GitHub installation.
 A missing issue or mismatched engine dispatch target is a named prerequisite.
 
-The current generator proposes one story per declared outcome, a single wave and
-a human evaluation. Stories sharing an issue are serialized. Its proposed policy
-permits development, review, repair and evaluation in the selected repository,
-with a $5 total ceiling, one-hour runtime ceiling, two attempts per node, one
-concurrent action and expiry 24 hours after the conversation's last activity. It
+Without native epic children, the generator proposes one story per declared
+outcome, a single wave and a human evaluation. Stories sharing an issue are
+serialized. Its proposed policy permits development, review, repair and evaluation
+in the selected story repositories, with a $5 total ceiling, one-hour runtime
+ceiling, two attempts per node, one concurrent action and expiry 24 hours after
+the conversation's last activity. It
 grants no merge or deployment authority. These are proposed bounds, visible before
 acceptance; use a prepared plan with `create --file` for different bounds or
 execution inputs.

@@ -1,0 +1,50 @@
+{
+  "status": "proposed_not_authorized",
+  "execution_policy": null,
+  "proposed_execution_policy": {
+    "limits": {
+      "max_spend_usd": "1500",
+      "max_attempts_per_node": 3,
+      "max_concurrent_actions": 5,
+      "max_wall_clock_seconds": 604800
+    },
+    "org_id": "aws-e",
+    "team_ids": [],
+    "policy_id": null,
+    "expires_at": "2026-10-22T11:30:42Z",
+    "human_gates": [],
+    "policy_hash": null,
+    "principal_id": null,
+    "repository_ids": [
+      "aws-e/adp"
+    ],
+    "schema_version": 1,
+    "allowed_actions": [
+      "develop",
+      "review",
+      "repair",
+      "merge"
+    ],
+    "evaluation_acceptance": {
+      "cos-runtime-7197/epic-7197/runtime/runtime-evidence": "human",
+      "cos-runtime-7197/epic-7197/targets/targets-evidence": "human",
+      "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence": "human",
+      "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence": "human",
+      "cos-runtime-7197/epic-7197/qualification/live-qualification": "human",
+      "cos-runtime-7197/epic-7197/chat-review/live-evidence": "human",
+      "cos-runtime-7197/epic-7197/memory-review/live-evidence": "human",
+      "cos-runtime-7197/epic-7197/container-review/live-evidence": "human",
+      "cos-runtime-7197/epic-7197/ec2-review/live-evidence": "human"
+    },
+    "environment_connection_ids": []
+  },
+  "deployment_mode": "External authorized operator; deployment-handoff gates record observed release/access and do not execute workflows. No operate authority or environment connection is granted by this revision.",
+  "live_run_prerequisites": [
+    "Accepted target/account/region/connection and bounded service/model/infrastructure spend",
+    "Exact deployed source, image/profile/schema and workflow-definition revisions",
+    "Merged executable scenario selectors or versioned manual procedures, ordinary-user review fixtures and independent observation sources",
+    "Review access expiry, stable release while reviewing, cleanup/retention and rollback owner",
+    "Supported accepted evaluation contract when using a managed evaluation producer; no fabricated workflow or future SHA"
+  ],
+  "operator_route": "Reuse canonical deployment inventory and authorized workflows. Approval-bearing workflows are unavailable to engine operations dispatch. Future automation needs a separate supported, scoped amendment."
+}

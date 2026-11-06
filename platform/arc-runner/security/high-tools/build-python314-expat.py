@@ -1,4 +1,4 @@
-"""Build exact CPython 3.14.7 XML adapters with statically linked Expat 2.8.5.
+"""Build exact CPython 3.14.8 XML adapters with statically linked Expat 2.8.5.
 
 Only small ordinary valid/invalid XML fixtures are used for acceptance checks.
 """
@@ -13,18 +13,19 @@ import sysconfig
 import tarfile
 
 archive, expat, out = map(Path, sys.argv[1:4])
-assert sys.version_info[:3] == (3, 14, 7)
-assert hashlib.sha256(archive.read_bytes()).hexdigest() == '3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81'
+assert sys.version_info[:3] == (3, 14, 8)
+assert hashlib.sha256(archive.read_bytes()).hexdigest() == 'c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73'
 with tarfile.open(archive) as tar:
     tar.extractall(out / 'source', filter='data')
-source = out / 'source/Python-3.14.7'
-assert '#define PY_VERSION              "3.14.7"' in (source / 'Include/patchlevel.h').read_text()
+source = out / 'source/Python-3.14.8'
+assert '#define PY_VERSION              "3.14.8"' in (source / 'Include/patchlevel.h').read_text()
 include = Path(sysconfig.get_path('include'))
 modules = out / 'modules'
 modules.mkdir(parents=True, exist_ok=True)
 library = expat / 'usr/lib/x86_64-linux-gnu/libexpat.a'
-manifest = {'python_version': '3.14.7', 'expat_version': '2.8.5', 'linkage': 'static',
-            'adp_source_commit': os.environ['ADP_SOURCE_COMMIT'],
+manifest = {'python_version': '3.14.8', 'expat_version': '2.8.5', 'linkage': 'static',
+            'adp_source_commit': os.environ.get('ADP_SOURCE_COMMIT') or None,
+            'adapter_builder_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'expat_source_sha256': 'fd022c541a189bd5bee042a22188351b31e39b9389c2525fa98c28bd05c9ef21',
             'python_source_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
             'static_library_sha256': hashlib.sha256(library.read_bytes()).hexdigest(), 'modules': []}

@@ -6,7 +6,11 @@ from pathlib import Path
 import time
 
 from .cluster_clients import kubernetes_client, scoped_entry_client, write_kubeconfig
-from .credentials import assume_session, canonical_role_identity
+from .credentials import (
+    _bootstrap_actor_identity_reads,
+    assume_session,
+    canonical_role_identity,
+)
 from .network import OwnedNetworkObservations
 from .process import AsyncBridgeStore, WorkerProcesses
 from .runtime_config import LifecycleRefused
@@ -161,6 +165,7 @@ def bootstrap(
         controller="superplane-controller",
         enforce_version=config["enforce_version"],
         crds=tuple(WORKSPACE_CRDS),
+        reader_renewal=True,
     )
     artifact_root = Path(__file__).with_name("_data")
     crds = artifact_root / "crds.yaml"
@@ -215,7 +220,14 @@ def bootstrap(
         )
         for actor in roles
     }
+    # BootstrapClients.verify brackets the complete actor/EKS read-only proof
+    # with fresh operation checks. Avoid a second nested bracket for these reads.
+    identity_snapshot = _bootstrap_actor_identity_reads(sessions, session, roles)
     manifests = {name: crds for name in WORKSPACE_CRDS}
+    dynamic = {
+        actor: kubernetes_client(runners[actor], outputs, name="workspace")
+        for actor in ("registrar", "installer", "supervisor")
+    }
 
     def access(actor):
         runner = runners[actor]
@@ -228,13 +240,10 @@ def bootstrap(
             node_role=IamNodeRoleFacts(process, outputs["node_role_arn"]),
             manifests=manifests,
             imds_probe_image=config["imds_probe_image"],
+            permission_client=dynamic[actor],
         )
 
     installer, supervisor = access("installer"), access("supervisor")
-    dynamic = {
-        actor: kubernetes_client(runners[actor], outputs, name="workspace")
-        for actor in ("registrar", "supervisor")
-    }
 
     def resolve_clients(actual_binding, target, actual_release):
         if actual_binding != binding or actual_release != release:
@@ -250,6 +259,7 @@ def bootstrap(
             principals=roles,
             binding_resolver=binding_resolver,
             identity_readers=identities,
+            identity_snapshot=identity_snapshot,
             eks=session.client("eks", region_name=request.region),
             entry_client=scoped_entry_client(
                 session._superplane_source_session,
@@ -291,6 +301,7 @@ def bootstrap(
 
         return PollingObservation(
             origin=config["management_api_origin"],
+            ca_pem=config.get("management_ca_pem"),
             credential=credential,
             binding=binding,
             target=authority.journal.target,
@@ -320,9 +331,12 @@ def bootstrap(
 
         def read(service, method, **arguments):
             verify()
-            result = getattr(
-                session.client(service, region_name=request.region), method
-            )(**arguments)
+            region = request.region
+            if (service, method) == ("ec2", "describe_nat_gateways"):
+                region = config["management_public_access"].get("region", region)
+            result = getattr(session.client(service, region_name=region), method)(
+                **arguments
+            )
             verify()
             return result
 

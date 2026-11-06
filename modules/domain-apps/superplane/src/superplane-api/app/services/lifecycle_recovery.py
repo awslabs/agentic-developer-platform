@@ -10,9 +10,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+from workspace_provisioning.recovery_read_session import INVENTORY_READS, ReadSession
 
 
 READS = {
+    **INVENTORY_READS,
     ("sts", "get_caller_identity"): "sts:GetCallerIdentity",
     ("eks", "describe_cluster"): "eks:DescribeCluster",
     ("eks", "list_nodegroups"): "eks:ListNodegroups",
@@ -45,8 +47,9 @@ async def lifecycle_context(request, body):
     from workspace_provisioning.recovery_proposals import original_result
 
     operation = await claim_operation(request, body.claim)
-    connect = composition(request).operation_connect
-    async with connect() as connection:
+    owner = composition(request)
+    connect, domain_connect = owner.operation_connect, owner.domain_connect
+    async with domain_connect() as connection:
         registered = await connection.fetchval(
             "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id::text=$1 AND org_id::text=$2 "
             "AND provisioning_operation_id=$3)",
@@ -65,7 +68,7 @@ async def lifecycle_context(request, body):
         )
     context = SimpleNamespace(
         connect=connect,
-        domain_connect=connect,
+        domain_connect=domain_connect,
         policy_file=Path(settings.superplane_lifecycle_config_file),
     )
     artifact, step, source = await original_result(
@@ -88,7 +91,7 @@ async def observation_provider(*, account_id, region, current):
         current=current,
         reads=READS,
         role_environment="SUPERPLANE_RECOVERY_OBSERVATION_ROLE_ARN",
-        read_limit=64,
+        read_limit=512,
         session_name="superplane-lifecycle-observe",
     ) as provider:
         yield provider
@@ -165,12 +168,20 @@ async def scoped_observation_provider(
 
     # No delivery_role, execution resolver, AWS session or credential is exposed
     # to the worker. This object is confined to the trusted API observer helper.
-    yield ReadProvider()
+    provider = ReadProvider()
+    provider.inventory_session = ReadSession(
+        session, region=region, config=config, reads=reads, limit=read_limit
+    )
+    try:
+        yield provider
+    finally:
+        provider.inventory_session.close()
 
 
 async def observe_lifecycle(request, body):
     from superplane_executor.recovery_authority import same_recovery_operation
     from workspace_provisioning.recovery_observer import observe_result
+    from app.routers.controller_recovery import claim_operation
 
     # Gateway's finite request timeout is25 seconds; finish/refuse inside it.
     async with asyncio.timeout(20):
@@ -193,6 +204,32 @@ async def observe_lifecycle(request, body):
             facts = await observe_result(
                 operation, context, artifact=artifact, provider=provider
             )
+            from workspace_provisioning.applied_inventory import seal_verified_inventory
+
+            async def resolve():
+                await current()
+                return await claim_operation(request, body.claim)
+
+            from harness_jobs.execution import CallOutcome, CallStage, read_call
+
+            async with context.connect() as connection:
+                call = await read_call(connection, idempotency_key=body.idempotency_key)
+            if call is None:
+                raise HTTPException(403, "original apply call is unavailable")
+            if call.stage is not CallStage.INTENDED:
+                if (
+                    call.outcome is not CallOutcome.SUCCEEDED
+                    or call.provider_ref is not None
+                ):
+                    raise HTTPException(403, "original apply observation changed")
+                await seal_verified_inventory(
+                    operation,
+                    context,
+                    artifact,
+                    body.idempotency_key,
+                    provider.inventory_session,
+                    resolve,
+                )
         await current()
     return {
         "phase": "apply-infrastructure",

@@ -21,9 +21,18 @@ POST_PATHS = frozenset(
         "model/keys",
         "model/decision",
         "model/invoke",
+        "model/crew-events",
         "turn/next",
         "data/turn/result",
         "data/bootstrap",
+        "data/tools",
+        "data/tools/list",  # first-party platform tools (#8113): listing offered to the turn
+        "data/tools/call",  # ... and server-side execution under the turn capability
+        "data/qualification/pending",
+        "data/qualification/claim",
+        "data/qualification/active",
+        "data/qualification/result",
+        "data/qualification/fixtures",
         "data/session/next",
         "data/session/state",
         "data/session/admit",
@@ -49,6 +58,10 @@ POST_PATHS = frozenset(
     )
 )
 ARTIFACT_PATH = re.compile(r"/v1/chat/data/artifact/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}/[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+CHECKPOINT_PATH = re.compile(
+    r"/internal/v1/agent/crew/checkpoints/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"
+    r"/(upload-grant|complete|restore-grant|restore-release)\Z"
+)
 
 
 class SandboxTransport:
@@ -70,7 +83,7 @@ class SandboxTransport:
             and scope.get("raw_path") == path.encode("ascii", errors="replace")
             and hosts == [f"{HOST}:{PORT}".encode()]
         )
-        allowed = (scope.get("method") == "POST" and path in POST_PATHS) or (
+        allowed = (scope.get("method") == "POST" and (path in POST_PATHS or CHECKPOINT_PATH.fullmatch(path))) or (
             scope.get("method") == "GET" and (path == "/health" or ARTIFACT_PATH.fullmatch(path))
         )
         if not canonical or not allowed:

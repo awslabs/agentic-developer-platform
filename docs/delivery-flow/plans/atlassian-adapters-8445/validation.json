@@ -1,0 +1,151 @@
+{
+  "status": "registered_inert_parallel_replacement_verified",
+  "observed_at_utc": "2026-10-21T21:22:22.936166+00:00",
+  "architecture_revision": "6bc8a8697a476435e77bedd9a44e8f7eb574bbe3",
+  "schema_and_agent_source_revision": "c8c42938888bcec577965d517acaeb7ff86d4914",
+  "proposal_sha256": "f370aa217699289d27a8f73f634aa6661b752fb2ea4aed688f76cfed9c20ea80",
+  "local_schema": "passed",
+  "transformed_schema": "passed",
+  "graph_and_mapping": "passed",
+  "authored": {
+    "nodes": 32,
+    "edges": 60,
+    "waves": 14,
+    "development_stories": 9,
+    "bootstrap_code_only_stories": 2,
+    "full_delivery_stories": 7,
+    "operations": 9,
+    "machine_evaluations": 14,
+    "human_evaluations": 0
+  },
+  "native_dependencies": 14,
+  "new_atlassian_client_cells": 16,
+  "retained_live_case_groups": 21,
+  "stage_criteria": "Original issue-qualified IDs; controlled phase pass releases development; real provider clauses remain pending until separately verified.",
+  "agent_assignment": {
+    "develop": "agent-codex-developer",
+    "review": "agent-codex-reviewer via existing controller",
+    "operate": "operations engine story path",
+    "evaluation": "engine repository evidence with protected workflow/independent reader"
+  },
+  "repair_policy": {
+    "exact_files": 31,
+    "required_checks": [
+      "verify"
+    ],
+    "status": "proposed; final file layout, allowed-path restrictions and CI trigger coverage need qualification"
+  },
+  "source_findings": [
+    "Existing operations repair tools and verified repair-merge source advancement are reusable",
+    "Selected operations engine runtime exposes actions_wait and has a 60-turn default",
+    "Native Codex operations host/session cap is 20 turns and omits actions_wait",
+    "Exact dev gateway/frontend defaults already have an approval-input exception",
+    "Tools live invocation needs admitted nondefault inputs; the worker cannot supply arbitrary inputs",
+    "Adapter runtime support and complete live qualification/completion integration remain implementation work",
+    "Existing Jira/Slack fixture hooks and synthetic tests do not establish private drivers, real provider accounts, data or model access for this epic"
+  ],
+  "unresolved_before_activation": [
+    "Exact design review, accountable owner and private registered connection/role delegation",
+    "Actual worker/controller feature and credential/CI scope qualification",
+    "Reviewed bootstrap/stage/full workflow integration and original-criterion executable coverage",
+    "Verified continuation through operations repair, changed-component redeploy and final machine evidence",
+    "Fresh expiry and verifier/manifest bindings without recurring human stage amendments"
+  ],
+  "limits": [
+    "Inert draft registered and read back; no approval, dispatch, provider setup, deployment or live test performed",
+    "Source and pure preview do not establish installed worker/provider readiness",
+    "Repository receipts retain live_attestation false; live proof belongs to the independent workflow reader",
+    "New workflow integrations are deliverables; no arbitrary new scenario IDs were added"
+  ],
+  "documentation_checks": {
+    "canonical_documents": 5,
+    "canonical_local_source_links": 66,
+    "flow_local_links": 21,
+    "public_findings": 0,
+    "issue_bodies": 10,
+    "stable_criterion_and_scenario_ids": true,
+    "public_files_checked": 1654
+  },
+  "previous_gateway_preview": {
+    "proposal_sha256": "e8025f3e2a025cf142e282a5dad04bfa5cdc594159ba15d027e28e50f3c868b9",
+    "result": {
+      "would_register": true,
+      "violations": [],
+      "wrote_nothing": true,
+      "nodes": 31,
+      "edges": 59,
+      "initial_human_gates": 1,
+      "later_human_gates": 0,
+      "operations_concluded_by": "evidence",
+      "runtime_qualification": false
+    }
+  },
+  "gateway_read_only_preview": {
+    "status": "passed_for_privately_bound_variant",
+    "design_revision": "f44e711b3a18b75fb24a68856180e4d10913a96e",
+    "would_register": true,
+    "violations": [],
+    "wrote_nothing": true,
+    "nodes": 33,
+    "edges": 61,
+    "initial_human_gates": 1,
+    "later_human_gates": 0,
+    "runtime_qualification": false
+  },
+  "local_registration_transform": {
+    "nodes": 33,
+    "edges": 61,
+    "initial_human_gates": 1,
+    "later_human_gates": 0
+  },
+  "data_strategy": {
+    "provider_fixtures_verified": false,
+    "development_uses_generated_data": true,
+    "manual_dataset_preparation": false,
+    "phase_reports_require_controlled_evidence": 9,
+    "final_reports_require_provider_live_attestation": 2,
+    "live_access_blocks": "dependent_live_checks_activation_and_final_acceptance_only",
+    "generators_and_live_bootstrap": "planned_story_work_not_implemented"
+  },
+  "live_qualification_prerequisites": [
+    "Discover actual authorized provider access and available resources; no completed dataset assumed",
+    "Unavoidable provider-owner consent/policy action only for dependent live use",
+    "Implement minimal automatic data creation/readback/cleanup and retain unavailable live cases"
+  ],
+  "registration": {
+    "status": "registered_inert_replacement",
+    "record": "submission.json",
+    "plan_version": 1,
+    "accepted": false,
+    "executions_observed": 0,
+    "preview_hash_matched": true,
+    "private_bindings_retained_outside_public_docs": true,
+    "current_proposal_matches_registered_version": true,
+    "registered_nodes": 33,
+    "registered_edges": 61,
+    "machine_evaluation_definitions_verified": 14,
+    "previous_draft_archived": true
+  },
+  "parallelism": {
+    "maximum_independent_story_actions": 3,
+    "witness_issues": [
+      8451,
+      8450,
+      8452
+    ],
+    "no_four_independent_story_nodes": true,
+    "ui_does_not_gate_writes_or_cli": true,
+    "four_feature_phase_evaluators_independent": true,
+    "all_native_dependency_edges_preserved": true,
+    "shared_release_lease_required_by_foundation_evidence": true,
+    "runtime_capacity_qualified": false
+  },
+  "gateway_draft_revision_preview": {
+    "status": "rejected_without_write",
+    "error": "invalid_draft_revision",
+    "reason": "Runtime evaluation specifications require the evaluation acceptance path.",
+    "full_evidence_definitions_retained": true,
+    "saved": false,
+    "resolution": "Complete replacement registered through supported creation API; obsolete unstarted draft retired and archived"
+  }
+}

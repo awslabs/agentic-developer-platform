@@ -1,0 +1,25 @@
+{
+  "flow_id": "9a67bcca-0cb1-4fe1-aa20-ff5b834e45e5",
+  "base_plan_version": 3,
+  "base_plan_hash": "43977b1ae6751aa05f5e26a8591a1c7094baa365081329f26010236216d54d6b",
+  "plan_version": 4,
+  "plan_hash": "1c1dd59780a085da0c00f125ad9f4568782fd3ee1fd5d69d6309b79c47380fea",
+  "proposal_hash": "e087bafa61aa905636868688b5597e6a207e4925efae5dcd46d87bec7b85b261",
+  "acceptance_gate_id": "9e1bb036-e247-4855-986c-2ff907340061",
+  "acceptance_gate_address": "cos-runtime-7197/epic-7197/runtime/accept",
+  "execution_paused": true,
+  "execution_authorized": false,
+  "status": "registered_inert_not_accepted",
+  "registered_at": "2026-10-11T19:46:18.880371+00:00",
+  "effective_nodes": 34,
+  "effective_edges": 94,
+  "historical_nodes": 43,
+  "node_states": {
+    "pending": 33,
+    "superseded": 9,
+    "awaiting_gate": 1
+  },
+  "next_eligible": [],
+  "execution_policy": null,
+  "note": "Original acceptance gate remains awaiting_gate. Registration decision metadata is not acceptance. No dispatch, deployment or cloud authority."
+}

@@ -18,8 +18,18 @@ name: Gateway Smoke Test
 on:
   workflow_call:
     inputs:
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
       require_token:
         description: 'Fail if smoke credentials are unavailable; required by regression coordinators.'
+        required: false
+        type: boolean
+        default: false
+      product_profile:
+        description: 'Use the protected automated Product fixture for authenticated Product preflight; full acceptance remains downstream.'
         required: false
         type: boolean
         default: false
@@ -85,15 +95,16 @@ env:
   AWS_REGION: us-east-1
 
 concurrency:
-  group: cli-live-eval-${{ inputs.environment || 'dev' }}
+  group: cli-live-eval-${{ inputs.target_environment || inputs.environment || 'dev' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   smoke:
     if: github.ref == 'refs/heads/main'
-    environment: adp-checks-${{ inputs.environment || 'dev' }}
+    environment: adp-checks-${{ inputs.target_environment || inputs.environment || 'dev' }}
     name: Post-deploy smoke (real token)
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     permissions:
       contents: read
       id-token: write
@@ -118,8 +129,16 @@ jobs:
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
+      - name: Authenticated Product preflight
+        id: product-smoke
+        if: inputs.product_profile
+        env:
+          ADP_PRODUCT_SMOKE_FIXTURE_ARN: ${{ vars.ADP_PRODUCT_SMOKE_FIXTURE_ARN }}
+        run: python3 platform/scripts/product_authenticated_smoke.py
+
       - name: Read refresh token from Secrets Manager
         id: token
+        if: ${{ !inputs.product_profile }}
         env:
           SMOKE_REFRESH_TOKEN_ARN: ${{ vars.ADP_SMOKE_REFRESH_TOKEN_ARN }}
         run: |
@@ -165,7 +184,7 @@ jobs:
           echo "token_available=true" >> "$GITHUB_OUTPUT"
 
       - name: Require smoke coverage for coordinated runs
-        if: ${{ inputs.require_token && steps.token.outputs.token_available != 'true' }}
+        if: ${{ inputs.require_token && !inputs.product_profile && steps.token.outputs.token_available != 'true' }}
         run: |
           echo "::error::Smoke coverage is required but no usable refresh token is configured."
           exit 1
@@ -338,9 +357,15 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          PRODUCT_PROFILE: ${{ inputs.product_profile }}
+          PRODUCT_SMOKE_OUTCOME: ${{ steps.product-smoke.outcome }}
         run: |
           echo "## Gateway Smoke Test — ${ENVIRONMENT}" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.token.outputs.token_available }}" != "true" ]; then
+          if [ "$PRODUCT_PROFILE" = "true" ]; then
+            echo "- Authenticated Product preflight: $PRODUCT_SMOKE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Lifecycle, denial, recovery and installed-CLI acceptance are required separately." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.token.outputs.token_available }}" != "true" ]; then
             echo "⚠️ **Skipped**: no smoke token in Secrets Manager." >> "$GITHUB_STEP_SUMMARY"
             echo "Run \`./platform/scripts/capture-smoke-token.sh --environment ${ENVIRONMENT}\` to enable." >> "$GITHUB_STEP_SUMMARY"
           else
@@ -351,8 +376,8 @@ jobs:
 
   stage1_diagnostics:
     if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.stage1_readback || inputs.stage1_authority_plan)
-    runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    runs-on: arc-runner-deploy
+    environment: adp-deploy-${{ inputs.target_environment || inputs.environment || 'dev' }}
     permissions:
       contents: read
       id-token: write

@@ -91,20 +91,25 @@ def test_the_workflow_scans_the_repository_root():
     assert "kubernetes" in frameworks and "dockerfile" in frameworks
 
 
-def test_exact_workflow_scope_has_no_unsuppressed_hardening_failures():
+def scan_hardening(directory):
     checkov = shutil.which("checkov")
     if checkov is None:
         pytest.skip("checkov is installed by the security workflow")
 
-    result = subprocess.run(
+    return subprocess.run(
         [
             checkov,
             "--directory",
-            ".",
+            str(directory),
             "--config-file",
             ".github/security/checkov.yml",
             "--baseline",
             ".github/security/checkov-baseline.json",
+            "--framework",
+            "dockerfile",
+            "kubernetes",
+            "--skip-download",
+            "--include-all-checkov-policies",
             "--check",
             ",".join(sorted(PROTECTED)),
             "--output",
@@ -115,7 +120,27 @@ def test_exact_workflow_scope_has_no_unsuppressed_hardening_failures():
         text=True,
         timeout=120,
     )
+
+
+def test_exact_workflow_scope_has_no_unsuppressed_hardening_failures():
+    result = scan_hardening(".")
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_scanner_still_rejects_both_unhardened_resource_types(tmp_path):
+    import json
+
+    (tmp_path / "Dockerfile").write_text('FROM python:3.12-slim\nCMD ["python"]\n')
+    (tmp_path / "pod.yaml").write_text(
+        "apiVersion: v1\nkind: Pod\nmetadata:\n  name: unprivileged-test\nspec:\n"
+        "  containers:\n    - name: app\n      image: example.invalid/app:fixture\n"
+        "      securityContext:\n        allowPrivilegeEscalation: true\n"
+    )
+    result = scan_hardening(tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    reports = json.loads(result.stdout)
+    failures = {check["check_id"] for report in reports for check in report["results"]["failed_checks"]}
+    assert failures == set(PROTECTED)
 
 
 def test_runtime_user_checks_have_no_local_exceptions():

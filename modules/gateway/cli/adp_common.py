@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import datetime
 import hashlib
 import importlib.util
 import json
 import os
+import pathlib
 import re
 import stat
 import subprocess
@@ -26,6 +28,7 @@ ERROR_CODE_ALIASES = {
     "budget_exceeded": "budget_exhausted",
     "budget_exhausted": "budget_exhausted",
     "revision_conflict": "stale_revision",
+    "stale_etag": "stale_revision",
     "stale_revision": "stale_revision",
 }
 ERROR_EXIT_CODES = {
@@ -34,6 +37,9 @@ ERROR_EXIT_CODES = {
     "request_timeout": 4,
     "stale_revision": 4,
     "unknown_mutation_outcome": 4,
+    "validation_error": 1,
+    "access_denied": 3,
+    "permission_denied": 3,
 }
 
 
@@ -47,11 +53,20 @@ def normalize_error_code(code):
 
 
 class CliError(Exception):
-    def __init__(self, message, code="operation_failed", exit_code=5, *, status_code=None):
+    def __init__(self, message, code="operation_failed", exit_code=5, *, status_code=None, server_message=None):
         super().__init__(message)
         self.code = normalize_error_code(code)
         self.exit_code = ERROR_EXIT_CODES.get(self.code, exit_code)
         self.status_code = status_code
+        #: The server's own `detail["message"]`, when it sent one, kept separate from
+        #: the assembled human message above. A caller that knows the operation can
+        #: show it; the generic path does not, so no existing output changes.
+        #:
+        #: Worth having because some refusals compose advice this layer cannot
+        #: re-derive — an amendment refused as `draft_not_pending` names the successor
+        #: revision to read, and a generic "read its current status before retrying"
+        #: throws that away and leaves the operator to find it by hand.
+        self.server_message = server_message
 
 
 class Parser(argparse.ArgumentParser):
@@ -86,6 +101,22 @@ _deployment = _UNRESOLVED
 # never registered a deployment — the two need opposite treatment when resolution
 # fails, so this is checked exactly rather than guessed at.
 _SELECTION_VARIABLES = ("ADP_DEPLOYMENT_ID", "ADP_DEPLOYMENT")
+
+
+def crew_binding():
+    if "ADP_CREW_TOOLS_URL" not in os.environ:
+        return None
+    url = os.environ["ADP_CREW_TOOLS_URL"]
+    token = os.environ.get("ADP_CREW_TOOLS_TOKEN", "")
+    run_id = os.environ.get("ADP_CREW_RUN_ID", "")
+    if (not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", url)
+            or not re.fullmatch(r"[a-f0-9]{64}", token)
+            or not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", run_id)
+            or not 1 <= int(url.rsplit(":", 1)[1]) <= 65535):
+        raise CliError("Crew tools binding unavailable.", "authentication_required", 2)
+    if any(os.environ.get(key) for key in (*_SELECTION_VARIABLES, "ADP_TENANT", "ADP_TENANT_ID")):
+        raise CliError("Crew host-run binding cannot be combined with laptop deployment or tenant selection.", "usage_error", 2)
+    return url, token, run_id
 
 
 def deployment():
@@ -150,6 +181,9 @@ def gateway_url():
     config file is the fallback, and remains the only source on a legacy machine
     that has no registry at all.
     """
+    binding = crew_binding()
+    if binding is not None:
+        return binding[0]
     resolved = deployment()
     try:
         base = (resolved.gateway_url if resolved else "") or json.loads(config_path().read_text())["gateway_url"]
@@ -190,19 +224,100 @@ def access_token():
         raise CliError("Sign in with adp login or adp admin login.", "authentication_required", 2) from None
 
 
+OWNER_SESSION_REFRESH_MARGIN = 300
+
+
+def _owner_gateway_url_ok(url):
+    """The public API over TLS; plain HTTP only to the loopback (local command doubles in tests)."""
+    return isinstance(url, str) and (url.startswith("https://") or url.startswith("http://127.0.0.1:"))
+
+
+
+def owner_session_cache_path():
+    return pathlib.Path(os.environ.get("ADP_HOME") or os.path.expanduser("~")) / ".adp" / "crew-owner-session.json"
+
+
+def owner_session(binding, opener):
+    """The owner's session for this Dev Box host run (#9640): minted by the gateway, cached per home.
+
+    The box's verified host run (adapter URL, its secret, the run id) is exchanged through the
+    adapter for a short-lived gateway token that IS the owner's login context (user, team,
+    platform-admin standing) and names this run as the delegate. The cache is rewritten when the
+    run changes or the token is within five minutes of expiry.
+    """
+    url, secret, run_id = binding
+    path = owner_session_cache_path()
+    now = time.time()
+    try:
+        cached = json.loads(path.read_text())
+        expires = datetime.datetime.fromisoformat(cached["expires_at"].replace("Z", "+00:00")).timestamp()
+        if (cached.get("run_id") == run_id and cached.get("access_token") and _owner_gateway_url_ok(cached.get("gateway_url", ""))
+                and expires - now > OWNER_SESSION_REFRESH_MARGIN):
+            return cached
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    request = urllib.request.Request(
+        url + "/agent/orchestration/owner-session", data=b"{}", method="POST",
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + secret, "X-Agent-RunId": run_id},
+    )
+    try:
+        with opener.open(request, timeout=60) as response:
+            session = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = json.load(exc).get("detail", {}).get("error", "")
+        except Exception:
+            pass
+        raise CliError(f"The gateway refused an owner session for this Dev Box run ({exc.code} {detail}).", "authentication_required", 2) from None
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        raise CliError(f"Owner session unavailable: {exc}", "gateway_unavailable", 2) from None
+    if (not isinstance(session, dict) or not isinstance(session.get("access_token"), str)
+            or not isinstance(session.get("gateway_url"), str) or not _owner_gateway_url_ok(session["gateway_url"])
+            or not isinstance(session.get("expires_at"), str)):
+        raise CliError("The gateway returned an unusable owner session.", "gateway_unavailable", 2)
+    session = {"run_id": run_id, "access_token": session["access_token"], "expires_at": session["expires_at"],
+               "gateway_url": session["gateway_url"].rstrip("/"), "delegation": session.get("delegation", "")}
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(session))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        pass  # a cache is a convenience; the session itself is still returned
+    return session
+
+
 class Api:
     def __init__(self):
+        self.binding = crew_binding()
         self.base = gateway_url()
         self.opener = urllib.request.build_opener(NoRedirect())
+        self.last_etag = None
 
-    def request(self, method, path, body=None, *, authenticated=True, token=None, timeout=120):
+    def request(self, method, path, body=None, *, authenticated=True, token=None, timeout=120, extra_headers=None):
+        self.last_etag = None
         if not path.startswith("/") or path.startswith("//"):
             raise CliError("Invalid ADP API path.")
+        base = self.base
         headers = {"Content-Type": "application/json"}
-        if authenticated:
+        if self.binding:
+            # #9640: a Dev Box acts with the owner's full authority. The verified host run is
+            # exchanged (once per hour, cached under the home) for the owner's session, and
+            # every route then goes to the public API exactly as the laptop CLI sends it.
+            if token:
+                raise CliError("Crew requests cannot override their run identity.", "usage_error", 2)
+            session = owner_session(self.binding, self.opener)
+            base = session["gateway_url"]
+            if authenticated:
+                headers["Authorization"] = "Bearer " + session["access_token"]
+        elif authenticated:
             headers["Authorization"] = "Bearer " + (token or access_token())
+        if extra_headers:
+            headers.update(extra_headers)
         request = urllib.request.Request(
-            self.base + path, data=json.dumps(body).encode() if body is not None else None, headers=headers, method=method
+            base + path, data=json.dumps(body).encode() if body is not None else None, headers=headers, method=method
         )
         try:
             with self.opener.open(request, timeout=timeout) as response:
@@ -215,18 +330,34 @@ class Api:
                 # an empty or malformed body on any other status is still a
                 # failure, so a truncated response cannot pass as success.
                 if not payload.strip() and response.status in (204, 205):
+                    self.last_etag = response.headers.get("ETag")
                     return {}
-                return json.loads(payload)
+                result = json.loads(payload)
+                self.last_etag = response.headers.get("ETag")
+                return result
         except urllib.error.HTTPError as exc:
             code = "http_error"
+            served = None
             try:
                 payload = json.load(exc)
                 detail = payload.get("detail", {}) if isinstance(payload, dict) else {}
                 reason = payload.get("error", payload.get("reason", "")) if isinstance(payload, dict) else ""
+                if isinstance(reason, dict):
+                    reason = reason.get("code", "")
                 if not reason and isinstance(detail, dict):
-                    reason = detail.get("error", detail.get("reason", ""))
+                    reason = detail.get("error", detail.get("reason", detail.get("code", "")))
                 if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,80}", reason):
                     code = normalize_error_code(reason)
+                if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+                    # Bounded: this is remote text that may reach a terminal, so it is
+                    # carried at a length that cannot flood one, and only ever as a
+                    # separate attribute a caller opts into.
+                    served = detail["message"][:2000]
+                elif isinstance(detail, list):
+                    # A request-validation refusal (HTTP 422) lists the fields that
+                    # failed. Kept as "field: reason" so a caller can say WHICH field
+                    # the gateway refused instead of reporting a bare status code.
+                    served = validation_detail_text(detail)
             except (ValueError, AttributeError):
                 pass
             hints = {
@@ -239,14 +370,24 @@ class Api:
             code_hints = {
                 "budget_exhausted": "The spending limit is blocking this operation. Check `adp doctor --checks budget`.",
                 "stale_revision": "Configuration changed. Read its current state before trying again.",
+                "validation_error": "Check the required fields and try again.",
+                "access_denied": "You are not permitted to perform this operation.",
+                "permission_denied": "You are not permitted to perform this operation.",
+                "not_found": "Check the target and your access; it may be unavailable.",
             }
             hint = code_hints.get(
                 code,
                 hints.get(exc.code, "Check status before retrying; an interrupted request may have changed configuration."),
             )
             exit_code = ERROR_EXIT_CODES.get(code, {401: 2, 403: 3}.get(exc.code, 5))
-            raise CliError(f"ADP returned HTTP {exc.code} ({code}). {hint}", code, exit_code, status_code=exc.code) from None
-        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            raise CliError(
+                f"ADP returned HTTP {exc.code} ({code}). {hint}",
+                code,
+                exit_code,
+                status_code=exc.code,
+                server_message=served,
+            ) from None
+        except (urllib.error.URLError, TimeoutError, ValueError, ConnectionError) as exc:
             if method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
                 raise CliError(
                     "ADP did not confirm whether the change completed. Read the current state and reconcile the "
@@ -264,6 +405,22 @@ class Api:
                 "ADP could not be reached or returned an invalid response. Check status before retrying.",
                 "gateway_unavailable",
             ) from None
+
+
+def validation_detail_text(items, limit=5):
+    """Render a request-validation `detail` list as bounded "field: reason" text."""
+    parts = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        location = ".".join(str(part) for part in item.get("loc", []) if part != "body")
+        message = item.get("msg")
+        if isinstance(message, str) and message:
+            parts.append(f"{location}: {message}" if location else message)
+    text = "; ".join(parts)
+    if len(items) > limit:
+        text += f"; and {len(items) - limit} more"
+    return text[:2000] or None
 
 
 def api(method, path, body=None, **kwargs):
@@ -503,10 +660,17 @@ def record_capability_preflight(operation_id, evidence):
     return evidence
 
 
-def ensure_can_mutate(operation_id, *, refresh=False, request=None, token=None):
+def ensure_can_mutate(operation_id, *, refresh=False, request=None, token=None, require_known=False):
     """Refuse definitive capability failures before a mutation is sent."""
     try:
         document, source = read_capabilities(refresh=refresh, request=request, token=token)
+    except CliError as error:
+        if require_known and (error.status_code == 404 or error.code in {
+            "schema_unsupported", "invalid_response", "capability_scope_mismatch",
+        }):
+            raise CliError("This server cannot confirm L5 service support. Nothing was sent.",
+                           "unsupported_operation", 5) from None
+        return record_capability_preflight(operation_id, {"checked": False, "reason": "", "source": "unavailable"})
     except Exception:  # noqa: BLE001 - discovery is advisory; the mutation route still authorizes
         return record_capability_preflight(operation_id, {"checked": False, "reason": "", "source": "unavailable"})
     operation = capability_operation(document, operation_id)
@@ -620,11 +784,13 @@ def emit(result, as_json=False):
     return 5 if result["status"] == "failed" else 4 if result["status"] in {"pending", "unavailable"} else 0
 
 
-def report_error(exc, command, as_json):
+def report_error(exc, command, as_json, *, include_http_status=False):
     if not isinstance(exc, CliError):
         exc = CliError("Invalid response or local file error. Check the current setup before retrying.")
     result = envelope("failed", command)
     result["error"] = {"code": exc.code, "message": str(exc)}
+    if include_http_status and exc.status_code is not None:
+        result["error"]["http_status"] = exc.status_code
     emit(result, as_json)
     return exc.exit_code
 

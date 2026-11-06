@@ -50,6 +50,9 @@ CLIENT_TOOL_CURSOR = "cursor"
 CLIENT_TOOL_WEB_CHAT = "web_chat"
 CLIENT_TOOL_SDK = "sdk"
 CLIENT_TOOL_KIMI_CODE = "kimi_code"
+# #9024: Kiro Crew's own model calls from a Dev Box (title generation, summaries) — the host route with
+# no harness user agent of its own.
+CLIENT_TOOL_KIRO_CREW = "kiro_crew"
 
 #: Every value this module can persist. Exposed so tests and any future consumer
 #: can assert against one source of truth instead of restating the literals.
@@ -61,6 +64,7 @@ KNOWN_CLIENT_TOOLS: frozenset[str] = frozenset(
         CLIENT_TOOL_WEB_CHAT,
         CLIENT_TOOL_SDK,
         CLIENT_TOOL_KIMI_CODE,
+        CLIENT_TOOL_KIRO_CREW,
     }
 )
 
@@ -86,6 +90,18 @@ _MARKERS: tuple[tuple[str, str], ...] = (
     ("codex_cli_rs", CLIENT_TOOL_CODEX_CLI),
     ("codex-cli", CLIENT_TOOL_CODEX_CLI),
     ("codex/", CLIENT_TOOL_CODEX_CLI),
+    # #9024: the Codex TUI (`codex-tui/0.164.0 (Ubuntu …) tmux-256color`) and the TypeScript SDK
+    # (`codex_sdk_ts/0.155.1 (Debian …) (codex_exec; …)`) are the same harness; dev 2026-10-26 recorded
+    # 85k of one owner's rows with no tool because only the Rust CLI spelling was known.
+    ("codex-tui", CLIENT_TOOL_CODEX_CLI),
+    ("codex_sdk_ts", CLIENT_TOOL_CODEX_CLI),
+    # `codex exec` reports its originator as the agent: `codex_exec/0.164.0 (Amazon Linux …)` (dev 2026-10-27,
+    # a Codex run on the Dev Box landed as kiro_crew).
+    ("codex_exec", CLIENT_TOOL_CODEX_CLI),
+    ("codex-exec", CLIENT_TOOL_CODEX_CLI),
+    ("kirocrew", CLIENT_TOOL_KIRO_CREW),
+    ("kiro-crew", CLIENT_TOOL_KIRO_CREW),
+    ("kiro_crew", CLIENT_TOOL_KIRO_CREW),
     ("cursor", CLIENT_TOOL_CURSOR),
     # The gateway's own dashboard/chat SPA identifies itself explicitly rather
     # than being sniffed out of a browser UA — browser UA strings are a swamp and

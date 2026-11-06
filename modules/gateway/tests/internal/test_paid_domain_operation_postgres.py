@@ -30,8 +30,8 @@ from src.internal import domain_current_identity
 from src.internal import domain_operation_dispatch as dispatch_module
 from src.internal import domain_operation_routes as routes
 from src.internal import domain_operation_runtime as runtime_module
+from src.internal import domain_provider_recovery as provider_recovery
 from src.internal.domain_operation_store import DomainBinding
-from src.internal.vault_evidence_routes import DELIVERY_SCOPE
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
 from tests.agentauth.test_bootstrap_routes import DIGEST, ENV, kubernetes, store  # noqa: F401
@@ -47,7 +47,10 @@ PREFIX = "/internal/v1/controller-execution"
 
 
 @pytest.fixture
-async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
+async def paid(pg_url, store, kubernetes, monkeypatch, request):  # noqa: F811
+    distinct = getattr(request, "param", True)
+    approver = "approver" if distinct else "human"
+
     @asynccontextmanager
     async def connect(binding=None):
         connection = await asyncpg.connect(pg_url)
@@ -73,18 +76,22 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
         )
         await c.execute(
             "INSERT INTO harness_approval_consumption(approval_id,operation_id,org_id,workspace_id,plan_digest,"
-            "requester,approved_by,max_resource_units,max_runtime_seconds,max_cost_micros,reservation_state,reservation_id) "
-            "VALUES('approval-paid','original-operation',$1,$2,$3,'human','approver',1,600,100,'confirmed','reservation')",
+            "requester,approved_by,max_resource_units,max_runtime_seconds,max_cost_micros,"
+            "reservation_state,reservation_id,requires_distinct_approver) "
+            "VALUES('approval-paid','original-operation',$1,$2,$3,'human',$4,1,600,100,'confirmed','reservation',$5)",
             ORG,
             WORKSPACE,
             payload_digest(request),
+            approver,
+            distinct,
         )
         await c.execute("""
             CREATE TABLE operation_budget_reservations(reservation_id text PRIMARY KEY, job_id text,
                 attempt_id text,org_id text,workspace_id text,state text,max_resource_units bigint,max_runtime_seconds bigint,max_cost_micros bigint);
             CREATE TABLE operation_approvals(approval_id text PRIMARY KEY,org_id text,workspace_id text,requester text,
                 plan_digest text,request_payload text,approvers_json text,max_resource_units bigint,max_runtime_seconds bigint,max_cost_micros bigint,
-                result text,decided_by text,decided_at timestamptz,expires_at timestamptz,revoked boolean,organization_scope boolean);
+                result text,decided_by text,decided_at timestamptz,expires_at timestamptz,revoked boolean,organization_scope boolean,
+                requires_distinct_approver boolean NOT NULL DEFAULT true);
             CREATE TABLE workspaces(id uuid PRIMARY KEY);
             CREATE TABLE workspace_grants(workspace_id uuid,org_id uuid,principal text,principal_type text,permissions text,revoked_at timestamptz);
             CREATE TABLE organization_grants(org_id uuid,principal text,principal_type text,permissions text,revoked_at timestamptz);
@@ -95,19 +102,23 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
             WORKSPACE,
         )
         await c.execute(
-            "INSERT INTO operation_approvals VALUES('approval-paid',$1,$2,'human',$3,$4,'[\"approver\"]',1,600,100,"
-            "'allowed-once','approver',clock_timestamp(),clock_timestamp()+interval '1 hour',false,false)",
+            "INSERT INTO operation_approvals VALUES('approval-paid',$1,$2,'human',$3,$4,$5,1,600,100,"
+            "'allowed-once',$6,clock_timestamp(),clock_timestamp()+interval '1 hour',false,false,$7)",
             ORG,
             WORKSPACE,
             payload_digest(request),
             encode_payload(request),
+            json.dumps([approver]),
+            approver,
+            distinct,
         )
         await c.execute("INSERT INTO workspaces VALUES($1::text::uuid)", WORKSPACE)
         await c.execute(
-            "INSERT INTO workspace_grants VALUES($1::text::uuid,$2::text::uuid,'human','human','workspace:provision',NULL),"
+            "INSERT INTO workspace_grants VALUES($1::text::uuid,$2::text::uuid,'human','human',$3,NULL),"
             "($1::text::uuid,$2::text::uuid,'approver','human','workspace:administer',NULL)",
             WORKSPACE,
             ORG,
+            "workspace:provision" if distinct else "workspace:administer",
         )
     sqs = boto3.client("sqs", region_name="us-east-1")
     queue = sqs.create_queue(QueueName="paid-operations")["QueueUrl"]
@@ -145,7 +156,7 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
     monkeypatch.setattr(controller_routes, "operation_session", operation_session)
     for module in (routes, dispatch_module):
         monkeypatch.setattr(module, "domain_connect", connect)
-    for module in (routes, runtime_module, dispatch_module):
+    for module in (routes, runtime_module, dispatch_module, provider_recovery):
         monkeypatch.setattr(module, "operation_connect", connect)
     for module in (routes, runtime_module):
         monkeypatch.setattr(module, "runtime_for", lambda binding: runtime)
@@ -164,7 +175,7 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
     iam = boto3.client("iam", region_name="us-east-1")
     for name, scopes in (
         ("producer", [runtime_module.PRODUCER_SCOPE]),
-        ("worker", [runtime_module.EXECUTOR_SCOPE, runtime_module.RECOVERY_SCOPE, DELIVERY_SCOPE]),
+        ("worker", [runtime_module.EXECUTOR_SCOPE, runtime_module.RECOVERY_SCOPE]),
     ):
         role = iam.create_role(RoleName=name, AssumeRolePolicyDocument=json.dumps({"Version": "2012-10-17", "Statement": []}))["Role"]
         store.client.put_item(
@@ -240,6 +251,79 @@ async def start(paid):
     boot = await paid.post("/bootstrap", {"invocation_id": envelope["message_id"], "envelope_digest": envelope_digest(envelope)})
     assert boot.status_code == 200, boot.text
     return dispatched.json(), boot.json()["credential"]
+
+
+async def lifecycle_session_window(paid, *, runtime_seconds=3600, approval_seconds=3600):
+    """A sealed lifecycle admission in the disposable PostgreSQL fixture."""
+    request = OperationRequest(action="provision", idempotency_key="approved-key", parameters={"runtime_config_sha256": "a" * 64})
+    async with paid.connect() as connection:
+        await connection.execute(
+            "UPDATE harness_operations SET request_payload=$1,plan_digest=$2",
+            encode_payload(request),
+            payload_digest(request),
+        )
+        await connection.execute(
+            "UPDATE harness_approval_consumption SET plan_digest=$1,max_runtime_seconds=$2",
+            payload_digest(request),
+            runtime_seconds,
+        )
+        await connection.execute("UPDATE operation_budget_reservations SET max_runtime_seconds=$1", runtime_seconds)
+        await connection.execute(
+            "UPDATE operation_approvals SET request_payload=$1,plan_digest=$2,max_runtime_seconds=$3,expires_at=clock_timestamp()+$4::interval",
+            encode_payload(request),
+            payload_digest(request),
+            runtime_seconds,
+            timedelta(seconds=approval_seconds),
+        )
+
+
+@pytest.mark.parametrize("runtime_seconds,approval_seconds", [(3600, 840), (840, 3600), (900, 3600)])
+async def test_lifecycle_lease_refuses_insufficient_provider_session_window(paid, runtime_seconds, approval_seconds):
+    await lifecycle_session_window(paid, runtime_seconds=runtime_seconds, approval_seconds=approval_seconds)
+    _, credential = await start(paid)
+    response = await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)
+    assert response.status_code == 403, response.text
+    async with paid.connect() as connection:
+        for table in ("harness_operation_leases", "harness_execution_audit", "harness_provider_call_intent"):
+            assert await connection.fetchval("SELECT count(*) FROM " + table) == 0
+        assert await connection.fetchval("SELECT reservation_state FROM harness_approval_consumption") == "confirmed"
+
+
+async def test_lifecycle_lease_with_provider_window_preserves_lost_response_replay(paid, monkeypatch):
+    from src.internal import domain_provider_session
+
+    await lifecycle_session_window(paid)
+    _, credential = await start(paid)
+    first = await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)
+    assert first.status_code == 200, first.text
+
+    def refuse_new_session(*args, **kwargs):
+        raise AssertionError("an existing live lease must not need a new provider session")
+
+    monkeypatch.setattr(domain_provider_session, "session_deadline", refuse_new_session)
+    replay = await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == first.json()
+
+
+async def test_paid_authority_needs_executor_scope_without_vault_delivery(paid):
+    _, credential = await start(paid)
+    lease = await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)
+    assert lease.status_code == 200, lease.text
+    authority = await paid.post("/authority", {"operation_id": "original-operation"}, credential=credential)
+    assert authority.status_code == 200, authority.text
+    assert authority.json()["fence_token"] == lease.json()["fence_token"]
+    assert authority.json()["holder"] == lease.json()["holder"]
+
+    # Generic credential delivery cannot substitute for current paid execution.
+    paid.store.client.update_item(
+        TableName="paid-registry",
+        Key={"agent_id": {"S": "worker"}},
+        UpdateExpression="SET credential_scopes=:scopes",
+        ExpressionAttributeValues={":scopes": {"SS": ["credential:operation-delivery", runtime_module.RECOVERY_SCOPE]}},
+    )
+    refused = await paid.post("/authority", {"operation_id": "original-operation"}, credential=credential)
+    assert refused.status_code == 403
 
 
 async def test_original_ids_survive_retry_bootstrap_and_lost_lease_response(paid):
@@ -329,6 +413,46 @@ async def test_terminal_ack_retry_is_idempotent_and_cannot_reopen_execution(paid
 
 async def test_invalid_body_stays_validation_error(paid):
     assert (await paid.post("/dispatch", {"caller_grant": "forged"}, role="producer")).status_code == 422
+
+
+@pytest.mark.parametrize("changed", ["version", "fence", "missing", "execution"])
+async def test_observer_dispatch_locks_exact_source_before_publishing(paid, changed):
+    from harness_jobs.leases import acquire
+
+    async with paid.connect() as c:
+        await acquire(c, operation_id="original-operation", holder="dead-run#1", attempt_id="dead-run#1")
+        await c.execute("UPDATE harness_operation_leases SET expires_at=clock_timestamp()-interval '1 second'")
+        lease = dict(await c.fetchrow("SELECT * FROM harness_operation_leases WHERE operation_id='original-operation'"))
+        version = await c.fetchval("SELECT version FROM harness_operations WHERE operation_id='original-operation'")
+    body = {**paid.body, "mode": "recovery", "expected_version": version, "expected_fence": lease["fence_token"]}
+    if changed == "version":
+        body["expected_version"] += 1
+    if changed == "fence":
+        body["expected_fence"] += 1
+    if changed == "missing":
+        body.pop("expected_fence")
+    if changed == "execution":
+        body["mode"] = "execution"
+    response = await paid.post("/dispatch", body, role="producer")
+    assert response.status_code == 409, response.text
+    assert not paid.sqs.receive_message(QueueUrl=paid.queue).get("Messages")
+    async with paid.connect() as c:
+        assert dict(await c.fetchrow("SELECT * FROM harness_operation_leases WHERE operation_id='original-operation'")) == lease
+        assert await c.fetchval("SELECT reservation_state FROM harness_approval_consumption") == "confirmed"
+
+
+async def test_bounded_observer_uses_native_recovery_but_cannot_obtain_paid_lease(paid):
+    from harness_jobs.leases import acquire
+
+    async with paid.connect() as c:
+        await acquire(c, operation_id="original-operation", holder="dead-run#1", attempt_id="dead-run#1")
+        await c.execute("UPDATE harness_operation_leases SET expires_at=clock_timestamp()-interval '1 second'")
+        fence = await c.fetchval("SELECT fence_token FROM harness_operation_leases")
+        version = await c.fetchval("SELECT version FROM harness_operations")
+    paid.body.update(mode="recovery", expected_version=version, expected_fence=fence)
+    _, credential = await start(paid)
+    assert (await paid.post("/recovery/scope", credential=credential)).status_code == 200
+    assert (await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)).status_code == 403
 
 
 async def test_recovery_scope_claim_subject_and_fence_are_current_paid_run(paid):
@@ -778,3 +902,17 @@ async def test_paid_dispatch_uses_disjoint_domain_and_harness_schemas(paid, monk
         await connection.execute("UPDATE workspace_grants SET revoked_at=clock_timestamp() WHERE principal='human'")
     response = await paid.post("/authority", {"operation_id": "original-operation"}, credential=credential)
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize("distinct", [False, True])
+async def test_gateway_execution_uses_persisted_separation_policy(paid, distinct):
+    async with paid.connect() as c:
+        await c.execute("UPDATE operation_approvals SET decided_by='human', approvers_json='[\"human\"]', requires_distinct_approver=$1", distinct)
+        await c.execute("UPDATE harness_approval_consumption SET approved_by='human'")
+        await c.execute("UPDATE workspace_grants SET permissions='workspace:administer' WHERE principal='human'")
+    response = await paid.post("/dispatch", paid.body, role="producer")
+    assert response.status_code == (403 if distinct else 200), response.text
+    if not distinct:
+        async with paid.connect() as c:
+            await c.execute("UPDATE workspace_grants SET revoked_at=clock_timestamp() WHERE principal='human'")
+        assert (await paid.post("/dispatch", paid.body, role="producer")).status_code == 403

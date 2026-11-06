@@ -1,0 +1,19 @@
+version: 0.2
+env:
+  shell: bash
+phases:
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        [[ "${ADP_SOURCE_SHA:-}" =~ ^[a-f0-9]{40}$ ]]
+        python3 modules/tools/adapters/scripts/image_smoke.py \
+          --source-revision "$ADP_SOURCE_SHA" \
+          --evidence-dir /tmp/adp-tool-adapters-image-evidence
+    finally:
+      # This project uses NO_ARTIFACTS and its PR role cannot write S3. Preserve
+      # bounded nonsecret evidence through its existing CloudWatch log grant.
+      - |
+        python3 modules/tools/adapters/scripts/emit_image_evidence.py \
+          --source-revision "$ADP_SOURCE_SHA" \
+          --evidence-dir /tmp/adp-tool-adapters-image-evidence

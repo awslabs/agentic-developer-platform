@@ -36,7 +36,18 @@ locals {
       Action = "execute-api:Invoke"
       Resource = concat([for route in ["producer-readiness", "verify-run", "dispatch", "binding-proof", "current-identity", "current-identity/readiness"] :
         "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/${route}"
-      ], ["arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/credential-evidence"])
+        ], [
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/credential-evidence",
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/recover-undispatched",
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/recover-uncredentialed",
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/recover-unstarted-planning",
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/complete-saved-plan",
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/partial-apply-observation",
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/repair-partial-apply",
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/recover-unstarted-bootstrap",
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/recover-settled-bootstrap",
+        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/recover-interrupted-planning"
+      ])
     }]
   })
 }

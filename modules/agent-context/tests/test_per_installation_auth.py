@@ -194,7 +194,7 @@ class TestSqsWorkerPerInstallationAuth:
             patch.object(sqs_worker, "update_dynamo_status"),
             patch.object(sqs_worker, "write_dynamo_run_record"),
             patch.object(sqs_worker, "emit_status_callback"),
-            patch.object(sqs_worker, "ingest_repo"),
+            patch.object(sqs_worker, "ingest_repo", return_value={"status": "complete", "steps": {"clone": "verified"}}),
             patch.object(sqs_worker, "safe_emit"),
         ):
             sqs_worker.main()
@@ -221,7 +221,7 @@ class TestSqsWorkerPerInstallationAuth:
             patch.object(sqs_worker, "update_dynamo_status"),
             patch.object(sqs_worker, "write_dynamo_run_record"),
             patch.object(sqs_worker, "emit_status_callback"),
-            patch.object(sqs_worker, "ingest_repo"),
+            patch.object(sqs_worker, "ingest_repo", return_value={"status": "complete", "steps": {"clone": "verified"}}),
             patch.object(sqs_worker, "safe_emit"),
         ):
             sqs_worker.main()
@@ -315,7 +315,7 @@ class TestSqsWorkerPerInstallationAuth:
             patch.object(sqs_worker, "update_dynamo_status"),
             patch.object(sqs_worker, "write_dynamo_run_record"),
             patch.object(sqs_worker, "emit_status_callback"),
-            patch.object(sqs_worker, "ingest_url"),
+            patch.object(sqs_worker, "ingest_url", return_value={"status": "complete", "steps": {"fetch": "verified", "s3_upload": "verified"}}),
             patch.object(sqs_worker, "safe_emit"),
         ):
             sqs_worker.main()

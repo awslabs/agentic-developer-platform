@@ -22,6 +22,26 @@ URL = "/internal/v1/agent/report"
 PR = PullRequestIdentity(42, "PR_known", "org/repo", 52, "a" * 40)
 
 
+async def test_task_board_is_scoped_monotonic_and_retained_after_failure(reports):
+    board = {"generation": 1, "sequence": 2, "observed_at": "2026-10-30T10:00:00Z", "text": "- ☐ `test` T1 — Verify"}
+    client, headers = reports.client, reports.headers
+    assert (await client.post(URL + "/task-board", headers=headers, json=board)).status_code == 409
+    async with reports.sessions() as session:
+        row = await session.get(OrchestrationRunReport, reports.envelope["message_id"])
+        row.worker_receipt = {"run_id": row.run_id, "attempt": 1}
+        await session.commit()
+    assert (await client.post(URL + "/task-board", headers=headers, json=board)).status_code == 200
+    assert (await client.post(URL + "/task-board", headers=headers, json={**board, "sequence": 1, "text": "old"})).status_code == 200
+    assert (await client.post(URL + "/task-board", headers=headers, json={**board, "run_id": "another"})).status_code == 422
+    assert (await client.post(URL + "/task-board", headers={"X-Adp-Report-Credential": "bad"}, json=board)).status_code == 404
+    assert (await client.post(URL + "/terminal", headers=headers, json={"outcome": "failed"})).status_code == 200
+    assert (await client.post(URL + "/task-board", headers=headers, json={**board, "sequence": 3})).status_code == 409
+    async with reports.sessions() as session:
+        row = await session.get(OrchestrationRunReport, reports.envelope["message_id"])
+        assert row.task_board_snapshot["text"] == board["text"]
+        assert row.terminal_receipt["outcome"] == "failed"
+
+
 @pytest.fixture
 async def reports(db_session_factory, monkeypatch):
     monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
@@ -85,6 +105,15 @@ async def reports(db_session_factory, monkeypatch):
             envelope=envelope,
             headers={"X-Adp-Report-Credential": envelope["run_report"]["credential"]},
         )
+
+
+async def test_non_operations_assignment_cannot_attach_report(reports, monkeypatch):
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    endpoint = URL + "/operations"
+    assert (await reports.client.post(endpoint, headers=reports.headers, json={"report": "Not an operation"})).status_code == 404
+    async with reports.sessions() as session:
+        row = await session.get(OrchestrationRunReport, reports.envelope["message_id"])
+        assert row.operations_report_receipt is None
 
 
 async def test_authority_off_lost_reply_readback_and_terminal(reports):
@@ -412,3 +441,169 @@ async def test_terminal_merge_gate_precedes_success_receipt(reports, monkeypatch
     async with reports.sessions() as session:
         row = await session.get(OrchestrationRunReport, reports.envelope["message_id"])
         assert bool(row.terminal_receipt) is merged
+
+
+# --- Gateway-held spool for protected worker identities (#7392) -------------
+
+
+def _marker(reports, phase="executing", **extra):
+    return {
+        "contract_version": 1,
+        "run_id": reports.envelope["message_id"],
+        "attempt": 1,
+        "repo": PR.repo,
+        "phase": phase,
+        "candidate_pr": None,
+        **extra,
+    }
+
+
+def test_protected_dispatch_contract_selects_the_gateway_spool(monkeypatch):
+    from src.orchestration.run_reports import report_contract
+
+    credential = "adprpt1." + "x" * 43
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    assert report_contract(credential) == {"contract_version": 1, "credential": credential, "spool": "gateway"}
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+    assert report_contract(credential) == {"contract_version": 1, "credential": credential}
+
+
+async def test_spool_round_trip_mirrors_bucket_precondition_and_scope(reports):
+    r = reports
+    empty = await r.client.get(URL + "/spool", headers=r.headers)
+    assert empty.status_code == 200 and empty.json()["spool_document"] is None
+    created = await r.client.post(URL + "/spool", headers=r.headers, json={"document": _marker(r), "create": True})
+    assert created.status_code == 200, created.text
+    assert created.json()["spool_document"] == _marker(r) and created.json()["run_id"] == r.envelope["message_id"]
+    rival = await r.client.post(URL + "/spool", headers=r.headers, json={"document": _marker(r), "create": True})
+    assert rival.status_code == 409 and rival.json()["detail"] == "spool_exists"
+    candidate = {"repo": PR.repo, "pr_number": 42, "head_sha": PR.head_sha}
+    updated = await r.client.post(URL + "/spool", headers=r.headers, json={"document": _marker(r, "candidate", candidate_pr=candidate)})
+    assert updated.status_code == 200 and updated.json()["spool_document"]["candidate_pr"] == candidate
+    readback = await r.client.get(URL + "/spool", headers=r.headers)
+    assert readback.json()["spool_document"]["phase"] == "candidate"
+    snapshot = await r.client.get(URL, headers=r.headers)
+    assert snapshot.json()["worker_receipt"] is None and snapshot.json()["terminal_receipt"] is None
+    assert "spool_document" not in snapshot.json()
+    async with r.sessions() as session:
+        row = await session.get(OrchestrationRunReport, r.envelope["message_id"])
+        assert row.spool_document["phase"] == "candidate" and row.worker_receipt is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"run_id": "other"},
+        {"attempt": 2},
+        {"repo": "org/other"},
+        {"phase": "done"},
+        {"extra": True},
+        {"phase": "failed"},
+        {"phase": "failed", "ownership_nonce": "zz" * 16},
+        {"phase": "failed", "ownership_nonce": "a" * 32, "failure": {"category": "bogus", "exit_code": 1}},
+        {"phase": "review", "ownership_nonce": "a" * 32, "review_content": ""},
+    ],
+)
+async def test_spool_refuses_markers_that_do_not_name_this_assignment(reports, change):
+    r = reports
+    refused = await r.client.post(URL + "/spool", headers=r.headers, json={"document": _marker(r) | change, "create": True})
+    assert refused.status_code == 422 and refused.json()["detail"] == "report_spool_scope_mismatch"
+    assert (await r.client.get(URL + "/spool", headers=r.headers)).json()["spool_document"] is None
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"phase": "failed", "ownership_nonce": "a" * 32},
+        {"phase": "failed", "ownership_nonce": "a" * 32, "failure": {"category": "deadline", "exit_code": 124}},
+        {"phase": "review", "ownership_nonce": "a" * 32, "review_content": "## Review\nok"},
+    ],
+)
+async def test_spool_accepts_every_marker_shape_the_worker_writes(reports, document):
+    r = reports
+    stored = await r.client.post(URL + "/spool", headers=r.headers, json={"document": _marker(r) | document})
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["spool_document"] == _marker(r) | document
+
+
+async def test_spool_requires_the_report_capability(reports):
+    r = reports
+    assert (await r.client.get(URL + "/spool")).status_code == 404
+    assert (await r.client.get(URL + "/spool", headers={"X-Adp-Report-Credential": "adprpt1." + "y" * 43})).status_code == 404
+    stolen = await r.client.post(URL + "/spool", headers={"X-Adp-Report-Credential": "adprpt1." + "y" * 43}, json={"document": _marker(r)})
+    assert stolen.status_code == 404
+
+
+# --- Unstarted assignments settle on the trusted startup fence (#7393) --------
+
+
+def _fenced_failure(reports):
+    return {
+        "tenant_id": "org",
+        "engine_node_id": reports.node.id,
+        "engine_attempt": 1,
+        "status": "failed",
+        "status_source": "protected_execution",
+        "terminal_outcome": "cancelled",
+        "failure_reason": "worker_startup_deadline_exceeded",
+        "persona": "developer",
+    }
+
+
+async def test_real_observer_settles_unstarted_assignment_once_the_startup_fence_exists(reports, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from src.orchestration import results
+    from src.orchestration.results import observe_results
+
+    r = reports
+    fence = AsyncMock(return_value=_fenced_failure(r))
+    monkeypatch.setattr(results, "protected_failure_for_assignment", fence)
+    store = MagicMock()
+    async with r.sessions() as session:
+        result = await observe_results(session, run_store=store)
+        assert result.waiting == 0, result
+        node = await session.get(OrchestrationNode, r.node.id)
+        assert node.state == "failed"
+        row = await session.get(OrchestrationRunReport, r.envelope["message_id"])
+        assert row.block_code == "worker_startup_deadline_exceeded" and row.retryable is True
+        assert row.worker_receipt is None and row.terminal_receipt is None
+        decisions = list(await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.node_id == r.node.id)))
+        assert any("startup deadline" in (decision.reason or "") for decision in decisions)
+    fence.assert_awaited_once()
+    store.get.assert_not_called()
+
+
+async def test_real_observer_keeps_waiting_for_a_started_worker_even_if_the_claim_reads_cancelled(reports, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from src.orchestration import results
+    from src.orchestration.results import observe_results
+
+    r = reports
+    started = await r.client.post(URL + "/started", headers=r.headers, json={"ownership_nonce": "a" * 32})
+    assert started.status_code == 200 and started.json()["worker_receipt"]
+    fence = AsyncMock(return_value=_fenced_failure(r))
+    monkeypatch.setattr(results, "protected_failure_for_assignment", fence)
+    async with r.sessions() as session:
+        result = await observe_results(session, run_store=MagicMock())
+        assert result.waiting == 1
+        assert (await session.get(OrchestrationNode, r.node.id)).state == "running"
+        assert (await session.get(OrchestrationRunReport, r.envelope["message_id"])).block_code is None
+    fence.assert_not_awaited()
+
+
+async def test_real_observer_keeps_waiting_while_the_claim_is_still_pending(reports, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from src.orchestration import results
+    from src.orchestration.results import observe_results
+
+    r = reports
+    fence = AsyncMock(return_value=None)
+    monkeypatch.setattr(results, "protected_failure_for_assignment", fence)
+    async with r.sessions() as session:
+        result = await observe_results(session, run_store=MagicMock())
+        assert result.waiting == 1
+        assert (await session.get(OrchestrationNode, r.node.id)).state == "running"
+    fence.assert_awaited_once()

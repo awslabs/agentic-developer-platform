@@ -20,6 +20,7 @@ def management_only() -> bool:
 
 MANAGEMENT_ROUTES = frozenset(
     {
+        ("GET", "/internal/readers/{workspace_id}"),
         ("GET", "/health"),
         ("GET", "/readyz"),
         ("GET", "/orgs/current"),

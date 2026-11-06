@@ -1,4 +1,31 @@
 # =============================================================================
+variable "enable_l5_security" {
+  type    = bool
+  default = false
+}
+
+variable "l5_worker_artifact_bucket" {
+  type    = string
+  default = ""
+}
+variable "l5_worker_artifact_key" {
+  type    = string
+  default = ""
+}
+variable "l5_worker_artifact_version" {
+  type    = string
+  default = ""
+}
+variable "l5_worker_artifact_sha256" {
+  type    = string
+  default = ""
+}
+variable "l5_worker_factory" {
+  type    = string
+  default = ""
+}
+
+# =============================================================================
 # Gateway Module Variables
 # =============================================================================
 # Only gateway-specific configuration. VPC, EKS, ECR, and base IAM are
@@ -381,6 +408,43 @@ variable "frontend_acm_certificate_arn" {
   default     = ""
 }
 
+variable "crew_dashboard_enabled" {
+  type        = bool
+  description = "Create a dedicated public Crew dashboard ingress, certificate, and DNS record. Enable only after the authenticated Crew proxy is deployed."
+  default     = false
+}
+
+variable "crew_dashboard_hostname" {
+  type        = string
+  description = "Dedicated Crew dashboard hostname within crew_dashboard_zone_id."
+  default     = ""
+}
+
+variable "crew_dashboard_zone_id" {
+  type        = string
+  description = "Route 53 public hosted zone ID for the Crew dashboard hostname and ACM validation."
+  default     = ""
+}
+
+variable "crew_dashboard_edge" {
+  type        = string
+  description = <<-EOT
+    Edge that serves the Crew dashboard when crew_dashboard_enabled (#7902).
+    "alb": dedicated public ALB with an ACM certificate and Route 53 alias on
+    crew_dashboard_hostname / crew_dashboard_zone_id (crew-dashboard.tf).
+    "cloudfront": dedicated CloudFront distribution on its own *.cloudfront.net
+    name, reusing the frontend's VPC origin to the internal gateway ALB; needs no
+    public zone and must be combined with an empty hostname and zone
+    (crew-dashboard-cloudfront.tf).
+  EOT
+  default     = "alb"
+
+  validation {
+    condition     = contains(["alb", "cloudfront"], var.crew_dashboard_edge)
+    error_message = "crew_dashboard_edge must be \"alb\" or \"cloudfront\"."
+  }
+}
+
 variable "cloudfront_waf_web_acl_arn" {
   type        = string
   description = "ARN of a WAFv2 web ACL (scope CLOUDFRONT, created in us-east-1) to associate with the frontend distribution. Empty string (the default) leaves the distribution unassociated, which is the prior behaviour."
@@ -603,23 +667,6 @@ variable "orchestration_dispatch_queue_url" {
   default     = ""
 }
 
-variable "orchestration_dispatch_repo" {
-  type        = string
-  description = <<-EOT
-    `owner/name` of the repository the engine dispatches delivery-loop work into.
-
-    Required for dispatch because the orchestration graph does not carry one:
-    `OrchestrationNode` stores only `issue_ref` (an issue number), while the agent
-    worker requires `source_ref.{installation_id, repo, issue}`. Empty means no
-    dispatch happens.
-  EOT
-  default     = ""
-  validation {
-    condition     = var.orchestration_dispatch_repo == "" || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.orchestration_dispatch_repo))
-    error_message = "orchestration_dispatch_repo must be empty or an owner/repository name."
-  }
-}
-
 variable "orchestration_dispatch_max_per_tick" {
   type        = number
   description = <<-EOT
@@ -669,6 +716,12 @@ variable "orchestration_agent_authority_enabled" {
   default     = false
 }
 
+variable "orchestration_product_story_dispatch_enabled" {
+  description = "Enable Product-bound story dispatch only after compatible gateway, tick and worker consumers are deployed. Shared by gateway readiness and the tick; independent of flow pauses."
+  type        = bool
+  default     = false
+}
+
 variable "orchestration_webhook_events_kms_key_arn" {
   type        = string
   description = <<-EOT
@@ -682,13 +735,12 @@ variable "orchestration_webhook_events_kms_key_arn" {
 variable "orchestration_github_app_secret_arn_pattern" {
   type        = string
   description = <<-EOT
-    Secrets Manager ARN pattern for per-tenant GitHub App credentials
-    (`adp/<env>/tenants/*/github-app`), used ONLY to mint an installation token for
-    a command acknowledgement comment.
-
-    A pattern because tenants are created at runtime. Empty means the tick applies
-    commands but cannot acknowledge them, which it reports as
-    `command_acks_failed` — a non-success tick rather than a silent one.
+    Optional explicit Secrets Manager ARN scope for tenant GitHub App credentials
+    used by delivery reconciliation and command acknowledgements. An explicit
+    value is preserved exactly. When empty and engine, agent authority or shared
+    reporting is enabled, the tick derives a read-only scope for this account,
+    region and environment's tenants/*/github-app secrets (including ARN suffix).
+    With all three disabled, empty omits the grant.
   EOT
   default     = ""
 }
@@ -887,6 +939,10 @@ variable "create_test_users" {
   type        = bool
   description = "Create Cognito test users (admins group, test user, test admin) with Secrets Manager credentials. For dev/test only — never enable in production."
   default     = false
+  validation {
+    condition     = !var.create_test_users || contains(["dev", "test"], var.environment)
+    error_message = "Test users with permanent passwords are allowed only in dev/test with explicit opt-in. Use an operator-selected bootstrap administrator in other environments."
+  }
 }
 
 variable "cloudfront_enable_ipv6" {

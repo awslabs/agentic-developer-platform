@@ -493,7 +493,7 @@ class TestLiveAdminOAuth:
     async def test_non_admin_user_rejected_from_admin_api(self, api_client, jwt_for_user):
         """Non-admin user gets 403 on admin endpoints in live mode."""
         response = await api_client.get(
-            "/api/admin/organizations",
+            "/admin/organizations",
             headers={"Authorization": f"Bearer {jwt_for_user}"},
         )
         assert response.status_code in (403, 401), f"Expected 403/401 for non-admin, got {response.status_code}"
@@ -507,13 +507,13 @@ class TestLiveAdminOAuth:
         assert response.status_code == 200
 
     async def test_admin_organizations_endpoint(self, api_client, jwt_for_user):
-        """GET /api/admin/organizations returns a response (not 500).
+        """GET /admin/organizations returns a response (not 500).
 
         Note: This caught a real 500 bug in issue #36. We verify the
         endpoint doesn't return 5xx even if the user isn't admin.
         """
         response = await api_client.get(
-            "/api/admin/organizations",
+            "/admin/organizations",
             headers={"Authorization": f"Bearer {jwt_for_user}"},
         )
         # Should be 200 (if admin) or 403 (if not admin), NOT 500
@@ -546,9 +546,8 @@ class TestLiveAdminIAM:
 
     async def test_iam_signed_admin_organizations(self, iam_signed_client):
         """IAM-signed request to admin organizations -- check it doesn't 500."""
-        response = await iam_signed_client.get("/api/admin/organizations")
-        # May be 200 (if IAM admin) or 403 (if not supported for admin), NOT 500
-        assert response.status_code < 500, f"Admin organizations via IAM returned {response.status_code}"
+        response = await iam_signed_client.get("/admin/organizations")
+        assert response.status_code == 403, f"Registered non-admin IAM fixture returned {response.status_code}"
 
     async def test_iam_signed_health(self, iam_signed_client):
         """IAM-signed request to /health."""

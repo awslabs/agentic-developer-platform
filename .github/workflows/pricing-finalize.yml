@@ -37,6 +37,7 @@ on:
 concurrency:
   group: gateway-release-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
+  queue: max
 
 env:
   AWS_REGION: us-east-1
@@ -84,12 +85,22 @@ jobs:
         env:
           PRICING_RELEASE_SHA: ${{ inputs.release_sha }}
           PRICING_ALLOW_PARTIAL: ${{ inputs.allow_partial_refresh }}
+          ADP_KNOWN_PRICING_GAP: ${{ vars.ADP_KNOWN_PRICING_GAP || '' }}
         run: |
           set -euo pipefail
           [[ "$PRICING_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "A full release SHA is required" >&2; exit 1; }
           [ "$(git rev-parse HEAD)" = "$PRICING_RELEASE_SHA" ] || { echo "Checkout does not match the release SHA" >&2; exit 1; }
-          PRICING_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_SHA}"
+          export KUBECONFIG="${RUNNER_TEMP}/pricing-finalize-kubeconfig"
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG" >/dev/null
+          PRICING_RELEASE_DIGEST="$(aws ecr describe-images --repository-name adp-gateway --image-ids "imageTag=${PRICING_RELEASE_SHA}" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)"
+          [[ "$PRICING_RELEASE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Missing valid released image digest" >&2; exit 1; }
+          PRICING_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway@${PRICING_RELEASE_DIGEST}"
           PRICING_RECOVERY_ARGS=()
+          case "$ADP_KNOWN_PRICING_GAP" in
+            "") ;;
+            claude-widget-2026-09-24) PRICING_RECOVERY_ARGS=(--allow-known-claude-gap) ;;
+            *) echo "Unrecognized pricing source gap" >&2; exit 1 ;;
+          esac
           if [ "$PRICING_ALLOW_PARTIAL" = "true" ]; then PRICING_RECOVERY_ARGS+=(--allow-partial-refresh); fi
           python3 modules/gateway/scripts/pricing-rollout.py finalize "${PRICING_RECOVERY_ARGS[@]}" \
             --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" \

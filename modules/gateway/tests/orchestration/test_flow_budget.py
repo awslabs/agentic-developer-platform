@@ -447,6 +447,27 @@ class TestReconciliationRestoresOnlyValidHeadroom:
         assert refused.reason is DenyReason.SPEND_LIMIT_EXCEEDED
         assert await _holds(redis_client) == {admission_request_id(running.id): ADMISSION}
 
+    @pytest.mark.parametrize("sibling_state,permitted", [(NodeState.PASSED, True), (NodeState.RUNNING, False)])
+    async def test_waiting_review_releases_only_settled_sibling_holds(self, session, flow_store, redis_client, sibling_state, permitted):
+        from src.orchestration.execution_policy import Action
+        from src.orchestration.flow_meter import meter_target
+
+        policy = _policy(allowed_actions=[*_policy().allowed_actions, Action.REVIEW])
+        flow, sibling = await _fixture(session, policy=policy)
+        assert (await _authorize(session, sibling)).permitted
+        sibling.state = sibling_state.value
+        await _make_usage(session, sibling, cost_usd="1.00")
+        await session.flush()
+        # Both the SQL ledger and the provider accumulator retain the real cost.
+        target = meter_target(org_id=flow.org_id, flow_id=flow.id, policy=policy)
+        await flow_store.reserve("settled-call", Decimal("1.00"), [target])
+        await flow_store.reconcile("settled-call", Decimal("1.00"), [target])
+        reviewer = await _make_node(session, flow, node_ref="reviewing", state=NodeState.RUNNING, attempts=1)
+        result = await _authorize(session, reviewer, continuing_node=True, action_override=Action.REVIEW)
+        assert result.permitted is permitted
+        holds = await _holds(redis_client)
+        assert holds[admission_request_id(sibling.id)] == (Decimal(0) if permitted else ADMISSION)
+
     async def test_releasing_twice_is_not_a_double_credit(self, session, flow_store, redis_client) -> None:
         """The sweep runs on every admission, so it re-releases the same node
         repeatedly. `HSET` of the same zero is why that is safe."""

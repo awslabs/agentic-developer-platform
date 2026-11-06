@@ -16,9 +16,8 @@ import logging
 import re
 from typing import Any
 
-import httpx
-
 from .acl import SearchHit, canonicalize_key, is_shared_content_path, _normalize_repo_name, _build_allowed_lookup, _repo_is_allowed
+from .zoekt_transport import search_json
 
 log = logging.getLogger(__name__)
 
@@ -140,12 +139,21 @@ async def browse(
             content_prefix=content_prefix,
         )
     elif action == "read":
-        # Repo-scoped read: a repo-relative path (e.g. "agent/backtest/models.py")
-        # is not in the S3 content bucket — its content lives in Zoekt.
-        if repo_scope and not _is_content_root(uri):
-            if allowed_repos is not None and not _repo_is_allowed(repo_scope, _build_allowed_lookup(allowed_repos)):
+        if not _is_content_root(uri):
+            path = canonicalize_key(uri.lstrip("/"))
+            if path is None:
                 return []
-            return await _read_zoekt_file(repo_scope, uri, zoekt_url=zoekt_url)
+            if repo_scope:
+                repo_name, file_path = repo_scope, path
+            else:
+                parts = path.split("/", 2)
+                if len(parts) != 3 or allowed_repos is None:
+                    return []
+                repo_name, file_path = "/".join(parts[:2]), parts[2]
+            # Resolve authorization before asking Zoekt for whole-file bytes.
+            if allowed_repos is not None and not _repo_is_allowed(repo_name, _build_allowed_lookup(allowed_repos)):
+                return []
+            return await _read_zoekt_file(repo_name, file_path, zoekt_url=zoekt_url)
         return await _read_content(
             uri,
             db_pool=db_pool,
@@ -284,6 +292,10 @@ def _repo_for_content_key(s3_key: str, safe_names: dict[str, str], content_prefi
 
     if segments[0] in {"tenants", "users"}:
         if len(segments) < 4:
+            return ""
+        if segments[2] == "products":
+            # Product artifacts have registration-level authority. A legacy
+            # repository alias must never claim their bytes or listings.
             return ""
         namespace, owner = segments[:2]
         ownership = getattr(safe_names, "ownership", {})
@@ -479,14 +491,17 @@ async def _list_repos(
                         return await _list_repos_s3_fallback(s3_client, bucket)
 
                     # Step 2: fetch capabilities from index_run_stages
-                    # Get the LATEST row per (repo, stage) with status in
-                    # ('verified', 'skipped') — these represent the final state.
+                    # A cache hit preserves the prior verified artifact and its
+                    # metrics; it must not turn an available capability off.
+                    # Disabled/not-applicable skips still determine readiness.
                     cur.execute(
                         """
                         SELECT DISTINCT ON (repo, stage)
                             repo, stage, status, metrics
                         FROM index_run_stages
                         WHERE status IN ('verified', 'skipped')
+                          AND (status != 'skipped'
+                               OR error IS DISTINCT FROM 'already verified at current SHA')
                         ORDER BY repo, stage, completed_at DESC NULLS LAST
                         """
                     )
@@ -647,17 +662,7 @@ async def _list_zoekt_files(
         query = f"r:{repo_filter} f:."
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{zoekt_url}/api/search",
-                json={"q": query, "num": 500},
-            )
-            if resp.status_code != 200:
-                log.warning(
-                    "Zoekt browse returned HTTP %d for repo %s", resp.status_code, repo_name
-                )
-                return []
-            data = resp.json()
+        data = await search_json(zoekt_url, query, limit=500)
     except Exception:
         log.warning("Zoekt browse failed for %s/%s", repo_name, path_prefix, exc_info=True)
         return []
@@ -749,20 +754,7 @@ async def _read_zoekt_file(
     query = f"r:{repo_filter} f:^{escaped_path}$"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{zoekt_url}/api/search",
-                json={"q": query, "num": 5, "opts": {"Whole": True}},
-            )
-            if resp.status_code != 200:
-                log.warning(
-                    "Zoekt read returned HTTP %d for %s/%s",
-                    resp.status_code,
-                    repo_name,
-                    file_path,
-                )
-                return []
-            data = resp.json()
+        data = await search_json(zoekt_url, query, limit=5, whole=True)
     except Exception:
         log.warning("Zoekt read failed for %s/%s", repo_name, file_path, exc_info=True)
         return []
@@ -1120,6 +1112,8 @@ async def _get_info(
                                 stage, status, metrics
                             FROM index_run_stages
                             WHERE repo = %s AND status IN ('verified', 'skipped')
+                              AND (status != 'skipped'
+                                   OR error IS DISTINCT FROM 'already verified at current SHA')
                             ORDER BY stage, completed_at DESC NULLS LAST
                             """,
                             (repo_name,),

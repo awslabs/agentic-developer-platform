@@ -10,6 +10,7 @@ On GitLab-less deployments the endpoint returns 404 and nothing else exists.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -24,9 +25,8 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.auth.middleware import get_current_user_context
+from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
-from src.shared.models.organization import User
 from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger(__name__)
@@ -159,6 +159,7 @@ def _mint_gitlab_jwt(
     name: str,
     username: str,
     private_key_pem: bytes,
+    return_path: str | None = None,
 ) -> str:
     """Mint an RS256-signed JWT for GitLab SSO.
 
@@ -184,40 +185,50 @@ def _mint_gitlab_jwt(
         "pre_authorized": True,
     }
 
+    if return_path is not None:
+        payload["return_path"] = return_path
     return jwt.encode(payload, private_key_pem, algorithm="RS256")
+
+
+@router.post("/auth/gitlab-cli", operation_id="authorizeGitlabCli")
+async def gitlab_cli_authorize(current_user: TokenContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """One-use CLI handoff. Cognito credentials never leave the ADP gateway."""
+    from src.gitlab import homes
+    from src.gitlab.config import host
+
+    url = await asyncio.to_thread(_discover_gitlab_url) if homes.enabled() else None
+    if not url:
+        return JSONResponse({"detail": {"code": "gitlab_not_configured"}}, status_code=404)
+    # Same deployment-controlled HTTPS authority used by Product homes.
+    url = host(url)
+    identity = await homes.managed_login(db, current_user, url)
+    key = await asyncio.to_thread(_load_signing_key)
+    if not key:
+        return JSONResponse({"detail": {"code": "gitlab_unavailable"}}, status_code=503)
+    now = int(time.time())
+    assertion = jwt.encode(
+        {
+            "iss": f"urn:adp:gateway:{_get_environment()}",
+            "aud": f"adp-gitlab-cli-{_get_environment()}",
+            "purpose": "cli_oauth_bootstrap",
+            "sub": identity["id"],
+            "tenant_id": current_user.org_id,
+            "iat": now,
+            "exp": now + 60,
+            "jti": str(uuid.uuid4()),
+        },
+        key,
+        algorithm="RS256",
+    )
+    return JSONResponse(
+        {"gitlab_url": url, "subject": identity["id"], "assertion": assertion},
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
 
 
 # ---------------------------------------------------------------------------
 # User profile resolution
 # ---------------------------------------------------------------------------
-
-
-async def _resolve_user_profile(db: AsyncSession, cognito_sub: str) -> dict:
-    """Resolve user profile (email, name, username) from the users table.
-
-    Falls back to placeholder values if the user row isn't found.
-    """
-    from sqlalchemy import select
-
-    try:
-        result = await db.execute(select(User).where(User.cognito_sub == cognito_sub))
-        user = result.scalar_one_or_none()
-        if user:
-            return {
-                "canonical_id": user.id,
-                "email": user.email or "",
-                "name": user.name or user.email or "",
-                "username": user.cognito_username or (user.email.split("@")[0] if user.email else ""),
-            }
-    except Exception:
-        logger.warning("User profile lookup failed for cognito_sub=%s", cognito_sub, exc_info=True)
-
-    return {
-        "canonical_id": cognito_sub,
-        "email": "",
-        "name": "",
-        "username": "",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -237,14 +248,14 @@ async def _resolve_user_profile(db: AsyncSession, cognito_sub: str) -> dict:
 )
 async def gitlab_sso_redirect(
     request: Request,
-    current_user: TokenContext = Depends(get_current_user_context),
+    current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Mint a JWT and redirect user to their tenant's GitLab instance."""
     tenant_id = current_user.org_id
 
     # 1. Discover GitLab URL (lazy — SSM lookup, cached 5 min)
-    gitlab_url = _discover_gitlab_url()
+    gitlab_url = await asyncio.to_thread(_discover_gitlab_url)
     if not gitlab_url:
         return JSONResponse(
             status_code=404,
@@ -259,7 +270,7 @@ async def gitlab_sso_redirect(
     try:
         parsed_url = urlsplit(gitlab_url)
         valid_url = (
-            parsed_url.scheme in {"http", "https"}
+            parsed_url.scheme == "https"
             and parsed_url.hostname
             and not parsed_url.username
             and not parsed_url.password
@@ -275,7 +286,7 @@ async def gitlab_sso_redirect(
         return JSONResponse(status_code=503, content={"error_code": "GITLAB_SSO_URL_INVALID"})
 
     # 2. Load RSA private key (lazy — Secrets Manager, cached 5 min)
-    private_key = _load_signing_key()
+    private_key = await asyncio.to_thread(_load_signing_key)
     if not private_key:
         return JSONResponse(
             status_code=503,
@@ -285,20 +296,18 @@ async def gitlab_sso_redirect(
             },
         )
 
-    # 3. Resolve canonical user identity (users.id, not cognito_sub)
-    cognito_sub = current_user.user_id
-    profile = await _resolve_user_profile(db, cognito_sub)
-    canonical_user_id = profile["canonical_id"]
+    from src.gitlab.homes import managed_login
 
-    # 4. Mint JWT (includes tenant_id for group assignment)
+    identity = await managed_login(db, current_user, gitlab_url)
     token = _mint_gitlab_jwt(
-        canonical_user_id=canonical_user_id,
-        cognito_sub=cognito_sub,
+        canonical_user_id=identity["id"],
+        cognito_sub=identity["subject"],
         tenant_id=tenant_id,
-        email=profile["email"],
-        name=profile["name"],
-        username=profile["username"],
+        email=identity["email"],
+        name=identity["name"],
+        username=f"adp-{identity['id']}",
         private_key_pem=private_key,
+        return_path=urlsplit(gitlab_url).path.rstrip("/") + "/",
     )
 
     # 5. Browser fetches obtain the authorized handoff without following it.
@@ -327,7 +336,7 @@ async def jwks_endpoint():
     GitLab doesn't consume this (takes PEM in config), but it makes the
     signing identity reusable by future OIDC clients.
     """
-    private_key_pem = _load_signing_key()
+    private_key_pem = await asyncio.to_thread(_load_signing_key)
     if not private_key_pem:
         # Return empty keyset — no keys provisioned
         return JSONResponse(

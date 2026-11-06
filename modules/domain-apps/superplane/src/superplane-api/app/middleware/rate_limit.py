@@ -7,9 +7,10 @@ Redis-backed rate limiting (e.g., via fastapi-limiter or custom Redis implementa
 import hashlib
 import logging
 import time
-from collections import defaultdict
+from collections import OrderedDict
 
-from fastapi import Request, Response
+from fastapi import HTTPException, Request, Response
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -23,10 +24,11 @@ DEFAULT_WINDOW_SECONDS = 60
 class RateLimitEntry:
     """Sliding window counter for a single key."""
 
-    __slots__ = ("timestamps",)
+    __slots__ = ("timestamps", "last_seen")
 
     def __init__(self) -> None:
         self.timestamps: list[float] = []
+        self.last_seen = time.monotonic()
 
     def is_allowed(self, window_seconds: int, max_requests: int) -> bool:
         """Check if a request is allowed within the sliding window."""
@@ -65,20 +67,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         app,
         requests_per_minute: int = DEFAULT_REQUESTS_PER_MINUTE,
         window_seconds: int = DEFAULT_WINDOW_SECONDS,
+        max_buckets: int = 10_000,
     ):
         super().__init__(app)
         self.requests_per_minute = requests_per_minute
         self.window_seconds = window_seconds
-        self._buckets: dict[str, RateLimitEntry] = defaultdict(RateLimitEntry)
+        self.max_buckets = max(1, max_buckets)
+        self._buckets: OrderedDict[str, RateLimitEntry] = OrderedDict()
 
-    def _extract_key(self, request: Request) -> str:
-        """Partition known observation callers by their configured identity.
+    async def _extract_key(self, request: Request) -> str:
+        """Quota belongs to a verified principal, independent of path/token rotation.
 
-        Unauthenticated callers use the transport's client address; a spoofable
-        forwarded header cannot buy a fresh quota. Existing bearer traffic keeps
-        its token bucket. No raw credential is retained in a key or log.
+        This verifies identity for accounting only; endpoint authorization remains
+        authoritative. Invalid credentials share the transport IP quota, never a
+        new bucket derived from arbitrary header text.
         """
         auth_header = request.headers.get("authorization", "").strip()
+        host = request.client.host if request.client else "unknown"
         if request.url.path.startswith("/internal/observations"):
             from app.services.observations import load_submitters
 
@@ -86,17 +91,54 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             if caller is not None:
                 identity = hashlib.sha256(caller.submitter_id.encode()).hexdigest()
                 return f"observation:{identity}"
-            host = request.client.host if request.client else "unknown"
             return f"observation:ip:{host}"
-        org_key = "anonymous"
-        if auth_header.startswith("Bearer "):
-            org_key = "token:" + hashlib.sha256(auth_header.encode()).hexdigest()
-        else:
-            org_key = "ip:" + (request.client.host if request.client else "unknown")
-        parts = request.url.path.strip("/").split("/")
-        if len(parts) >= 2 and parts[0] == "workspaces":
-            return f"ws:{parts[1]}:{org_key}"
-        return f"global:{org_key}"
+        scheme, _, token = auth_header.partition(" ")
+        if scheme.lower() == "bearer" and token and len(token) <= 16_384:
+            from app.config import settings
+
+            try:
+                if settings.domain_auth_enforced:
+                    from app.auth import verify_access_token
+                    from superplane_auth.policy import TRUSTED_VALIDATION_PATH, TokenRejectedError
+
+                    policy = getattr(request.app.state, "domain_policy", None)
+                    if policy is None:
+                        return f"ip:{host}"
+                    try:
+                        claims = await run_in_threadpool(verify_access_token, token)
+                        candidate = policy.admit_candidate(claims, validation_path=TRUSTED_VALIDATION_PATH)
+                    except TokenRejectedError:
+                        return f"ip:{host}"
+                    identity = (candidate.org_id, candidate.subject)
+                else:
+                    from app.middleware.auth import decode_token
+
+                    verified = decode_token(token)
+                    identity = (str(verified.org_id), str(verified.user_id or verified.sub))
+                # Length-prefixing avoids ambiguous org/subject concatenations.
+                encoded = "".join(f"{len(part)}:{part}" for part in identity)
+                return "principal:" + hashlib.sha256(encoded.encode()).hexdigest()
+            except HTTPException:
+                pass
+        return f"ip:{host}"
+
+    def _entry(self, key: str) -> RateLimitEntry | None:
+        now = time.monotonic()
+        # Entries are ordered by last access. Reclaim idle entries without
+        # scanning the entire map, and never evict a live quota to admit a key.
+        while self._buckets:
+            first = next(iter(self._buckets))
+            if now - self._buckets[first].last_seen < self.window_seconds:
+                break
+            self._buckets.popitem(last=False)
+        if key not in self._buckets:
+            if len(self._buckets) >= self.max_buckets:
+                return None
+            self._buckets[key] = RateLimitEntry()
+        entry = self._buckets[key]
+        entry.last_seen = now
+        self._buckets.move_to_end(key)
+        return entry
 
     async def dispatch(self, request: Request, call_next) -> Response:
         """Check rate limit before forwarding request."""
@@ -110,10 +152,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
-        key = self._extract_key(request)
-        entry = self._buckets[key]
+        key = await self._extract_key(request)
+        entry = self._entry(key)
 
-        if not entry.is_allowed(self.window_seconds, self.requests_per_minute):
+        if entry is None or not entry.is_allowed(self.window_seconds, self.requests_per_minute):
             remaining = 0
             retry_after = self.window_seconds
             logger.warning("Rate limit exceeded for key: %s", key)

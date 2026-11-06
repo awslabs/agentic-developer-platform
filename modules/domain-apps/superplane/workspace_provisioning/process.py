@@ -115,9 +115,17 @@ class WorkerProcesses:
         self.verify()
         # This process-local environment never modifies the agent host's HOME,
         # AWS profile, Terraform workspace or kubeconfig. It is built from scratch.
+        # Go AWS SDK credential_process uses the image's POSIX shell. Include
+        # its fixed directory, never the host PATH; direct commands still require
+        # the exact reviewed executable selection above.
         environment = {
             "PATH": os.pathsep.join(
-                dict.fromkeys(str(Path(path).parent) for path in self.binaries.values())
+                dict.fromkeys(
+                    [
+                        *(str(Path(path).parent) for path in self.binaries.values()),
+                        "/bin",
+                    ]
+                )
             ),
             "HOME": str(self.directory),
             "LANG": "C.UTF-8",
@@ -137,7 +145,13 @@ class WorkerProcesses:
         from .credential_bridge import credential_environment
 
         with (
-            credential_environment(self.session, self.verify) as credential_env,
+            tempfile.TemporaryDirectory(
+                prefix=".provider-tmp-", dir=self.directory
+            ) as scratch,
+            tempfile.TemporaryDirectory(prefix="sp-", dir="/tmp") as alias,
+            credential_environment(
+                self.session, self.verify, directory=self.directory
+            ) as credential_env,
             tempfile.TemporaryFile(dir=self.directory) as stdout,
             tempfile.TemporaryFile(dir=self.directory) as stderr,
             tempfile.TemporaryFile(dir=self.directory) as stdin,
@@ -146,6 +160,16 @@ class WorkerProcesses:
                 stdin.write(supplied)
                 stdin.seek(0)
             environment.update(credential_env)
+            # Provider archives exceed the worker's small memory-backed /tmp.
+            # Keep command scratch private on its existing state volume and
+            # remove it after the owned process group stops.
+            # Go providers bind Unix sockets inside TMPDIR. The immutable
+            # operation directory plus scratch name exceeds Linux's socket
+            # path limit. A short private alias keeps downloads on disk while
+            # preserving a usable socket address; /tmp holds only the symlink.
+            short_scratch = Path(alias) / "p"
+            short_scratch.symlink_to(scratch, target_is_directory=True)
+            environment["TMPDIR"] = str(short_scratch)
             process = subprocess.Popen(
                 command,
                 cwd=cwd or self.directory,
@@ -176,12 +200,15 @@ class WorkerProcesses:
                 self.verify()
                 stdout.seek(0)
                 stderr.seek(0)
-                return subprocess.CompletedProcess(
+                result = subprocess.CompletedProcess(
                     tuple(argv),
                     process.returncode,
                     stdout.read(16 << 20).decode(),
                     stderr.read(16 << 20).decode(),
                 )
+                if result.returncode:
+                    self._retain_failure(result)
+                return result
             except BaseException:
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
@@ -200,6 +227,20 @@ class WorkerProcesses:
                 except ProcessLookupError:
                     pass
                 raise
+
+    def _retain_failure(self, result):
+        # Bootstrap adapters use run(), while Terraform uses checked(). Preserve
+        # nonzero command output at their common boundary, once, for the owner.
+        # Provider output can contain private values: never log it publicly.
+        diagnostic = Path(
+            tempfile.mkdtemp(prefix="command-failure-", dir=self.directory)
+        )
+        for name, output in (("stdout", result.stdout), ("stderr", result.stderr)):
+            descriptor = os.open(
+                diagnostic / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+            with os.fdopen(descriptor, "w") as stream:
+                stream.write(output)
 
     def checked(self, argv, *, cwd=None, timeout=120):
         result = self.run(argv, cwd=cwd, timeout=timeout)

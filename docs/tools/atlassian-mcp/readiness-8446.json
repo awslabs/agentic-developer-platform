@@ -1,0 +1,32 @@
+{
+  "issue": 8446,
+  "requirement_revision": "issue-8446-2026-10-21",
+  "design_revision": "3454ce6b73d7a263e4e90979d6eaa49f5896d098",
+  "contract": "required-operations.json",
+  "phase": "controlled-development-handoff",
+  "criteria": {
+    "AC-01": {"scenario": "SCN-01", "controlled": "generated-only", "live": "unproven", "owner": "proof owner", "activation_blocker": "Independent Identity consent, expiry, refresh, revocation and owned cleanup are not yet observed"},
+    "AC-02": {"scenario": "SCN-02", "controlled": "provisional-contract", "live": "unproven", "owner": "proof owner", "activation_blocker": "Provider-authorized full catalogue, input JSON Schemas, scopes and sites are not pinned"},
+    "AC-03": {"scenario": "SCN-03", "controlled": "handoff-review", "live": "unproven", "owner": "integration lead", "activation_blocker": "A source-bound target report and integration review remain required"}
+  },
+  "fixtures": {
+    "generated_identity_and_provider_cases": {"owner": "proof owner", "source": "in-repository generated fixtures", "human_preparation": false},
+    "isolated_identity_roles_and_return_host": {"owner": "integration lead and authorized target operator", "source": "private approved target configuration", "status": "not-verified"},
+    "licensed_consenting_account": {"owner": "account owner", "source": "private authorized account", "status": "not-verified"},
+    "conditional_provider_policy": {"owner": "provider policy admin if required", "source": "existing provider policy", "status": "not-verified"}
+  },
+  "forward_dependencies": [
+    {"issue": 8446, "after": [], "deliverable": "standalone probe, contract and controlled report; no successor code prerequisite"},
+    {"issue": 8447, "after": [8446], "deliverable": "deployment preparation, durable setup/recovery consumer and independent adapter foundation"},
+    {"issue": 8448, "after": [8447], "deliverable": "owner-bound user lifecycle and metadata/revocation handlers use the delivered setup recovery consumer"},
+    {"issue": 8449, "after": [8448], "deliverable": "adapter named reads and live schema qualification before provider activation"},
+    {"issue": 8450, "after": [8449], "deliverable": "approved writes and no-blind-replay settlement"},
+    {"issue": 8453, "after": [8447, 8448, 8449], "deliverable": "fenced coordinated release after implementation and provider readiness"},
+    {"issue": 8454, "after": [8453], "deliverable": "independent live end-to-end provider assertions and cleanup"}
+  ],
+  "client_qualification": {
+    "installed_client_owner": "story 8452 client qualification owner",
+    "provider_and_release_owner": "story 8454 live evaluation owner and epic integration lead",
+    "required": "Separate real Claude/Codex binary versions, eager/schema-loading measurements and provider-authorized user/site effects; a probe pass cannot qualify production clients"
+  }
+}

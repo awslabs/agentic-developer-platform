@@ -11,62 +11,19 @@
  * Depends on: #1590 (canonical URL), #1591 (identity header), #1602 (native MCP).
  */
 
-import { getDoorAuthHeaders, getDoorBaseUrl } from './lib/doorAuth';
-import { isProtectedKnowledgeRun } from './lib/knowledgeBridge';
+import { knowledgeBridgeUrl } from './lib/knowledgeBridge';
 
 /**
  * Feature flag: register Knowledge Layer MCP tools.
- * Default OFF — flip ON after verifying identity headers propagate correctly
+ * Default OFF — enable after verifying the run-bound gateway bridge
  * and verbs return real data in the target environment.
  */
 export const KNOWLEDGE_LAYER_ENABLED =
   (process.env.KNOWLEDGE_LAYER_ENABLED ?? '0') === '1';
 
-/**
- * Door MCP endpoint URL. Uses CONTEXT_MCP_SERVER_URL env var if set (for
- * non-standard deployments or local dev), otherwise defaults to the in-cluster
- * Kubernetes service address.
- */
-const DOOR_MCP_URL =
-  process.env.CONTEXT_MCP_SERVER_URL
-    ? `${process.env.CONTEXT_MCP_SERVER_URL.replace(/\/+$/, '')}/mcp/`
-    : 'http://context-mcp.agent-context.svc.cluster.local:5100/mcp/';
-
-/**
- * Build identity headers from available environment variables.
- *
- * Code verbs (search/understand/impact/browse) ACL on X-GitHub-Login/X-GitHub-Teams.
- * Personal verbs (remember/experience) ACL on X-Owner-Sub/X-Tenant-Id.
- *
- * Protected runs return no static headers; the gateway derives identity per
- * request. Legacy runs still use dispatch environment metadata, which is not an
- * isolation boundary against code executing inside the worker.
- */
+/** Identity belongs to the run-bound gateway bridge, never to worker-supplied headers. */
 export function buildKnowledgeLayerHeaders(): Record<string, string> {
-  if (isProtectedKnowledgeRun()) return {};
-  const headers: Record<string, string> = {};
-
-  // Shared secret authenticating this caller to the Door (#4073 finding #8).
-  //
-  // Without it the Door answers 401 and every verb below silently stops
-  // working, because the identity headers that follow are exactly what an
-  // attacker would forge — the Door cannot tell us apart from them on headers
-  // alone.
-  Object.assign(headers, getDoorAuthHeaders());
-
-  const login = process.env.ADP_GITHUB_LOGIN;
-  if (login) headers['X-GitHub-Login'] = login;
-
-  const teams = process.env.ADP_GITHUB_TEAMS;
-  if (teams) headers['X-GitHub-Teams'] = teams;
-
-  const ownerSub = process.env.ADP_OWNER_SUB;
-  if (ownerSub) headers['X-Owner-Sub'] = ownerSub;
-
-  const tenantId = process.env.ADP_TENANT_ID;
-  if (tenantId) headers['X-Tenant-Id'] = tenantId;
-
-  return headers;
+  return {};
 }
 
 /**
@@ -75,8 +32,8 @@ export function buildKnowledgeLayerHeaders(): Record<string, string> {
  * Shape matches McpHttpServerConfig from @anthropic-ai/claude-agent-sdk:
  *   { type: 'http', url: string, headers?: Record<string, string> }
  *
- * The Door uses stateless_http=True, so each tool call is a fresh HTTP POST
- * carrying its own identity headers — no session stickiness required.
+ * The Door uses stateless_http=True; the bridge attaches current run proof to
+ * each call instead of trusting worker-supplied identity headers.
  */
 export function getKnowledgeLayerMcpConfig(): {
   type: 'http';
@@ -85,7 +42,7 @@ export function getKnowledgeLayerMcpConfig(): {
 } {
   return {
     type: 'http' as const,
-    url: `${getDoorBaseUrl(DOOR_MCP_URL.replace(/\/mcp\/$/, ''))}/mcp/`,
+    url: `${knowledgeBridgeUrl()}/mcp/`,
     headers: buildKnowledgeLayerHeaders(),
   };
 }

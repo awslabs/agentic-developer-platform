@@ -145,7 +145,7 @@ test("all shipped persona candidates load through the same declarative parser", 
   const { readdir, readFile } = await import("node:fs/promises");
   const folder = new URL("../personas/", import.meta.url);
   const files = (await readdir(folder)).filter(file => file.endsWith(".json"));
-  assert.equal(files.length, 8);
+  assert.equal(files.length, 9);
   const names = new Set<string>();
   for (const file of files) {
     const snapshot = snapshotPersona(await readFile(new URL(file, folder), "utf8"), new Map());
@@ -153,6 +153,7 @@ test("all shipped persona candidates load through the same declarative parser", 
     assert.equal(names.has(parsed.key), false);
     names.add(parsed.key);
   }
+  assert.ok(names.has('gpt-operations-story'));
 });
 
 test("serialized snapshot cannot replace composed instructions or skill bodies", () => {
@@ -162,7 +163,7 @@ test("serialized snapshot cannot replace composed instructions or skill bodies",
   assert.throws(() => planVerifiedRun({ ...snapshot, skillSources: JSON.stringify([["cite", "changed"]]) }, policy(snapshot.digest), source, undefined, [], 1000), /mismatched skill/);
 });
 
-for (const persona of ['architect', 'product', 'pm', 'intent-refinement', 'developer', 'reviewer', 'operations', 'aidlc']) {
+for (const persona of ['architect', 'product', 'pm', 'intent-refinement', 'developer', 'reviewer', 'operations', 'operations-story', 'aidlc']) {
   test(`${persona}: legacy context allowance does not reject persona admission`, async () => {
     const { readFile } = await import('node:fs/promises');
     const raw = JSON.parse(await readFile(new URL(`../personas/${persona}.json`, import.meta.url), 'utf8'));
@@ -170,10 +171,11 @@ for (const persona of ['architect', 'product', 'pm', 'intent-refinement', 'devel
     raw.limits.maxContextBytes = 1024;
     const snapshot = snapshotPersona(JSON.stringify(raw), new Map());
     const capabilities = [...raw.requiredCapabilities, ...raw.optionalCapabilities];
+    const invocation = persona === 'operations-story' ? { kind: 'github' as const, eventId: 'event-1' } : source;
     const admitted = planVerifiedRun(snapshot, { ...policy(snapshot.digest), personaKey: raw.key,
       allowedEfforts: [raw.effort], capabilityLayers: { tenant: capabilities, principal: capabilities, run: capabilities,
         surface: capabilities, runtime: capabilities },
-      limits: { ...policy(snapshot.digest).limits, maxContextBytes: 1024 } }, source,
+      limits: { ...policy(snapshot.digest).limits, maxContextBytes: 1024 } }, invocation,
       { provider: 'github', repositoryId: '123', sourceRevision: 'fixture' }, capabilities, 1000);
     assert.equal(admitted.persona.key, raw.key);
   });

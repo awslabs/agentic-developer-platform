@@ -46,6 +46,7 @@ export enum Permission {
   // references it, because drafts are registered by an authoring agent, not a
   // dashboard user.
   PLAN_DRAFT = 'plan:draft',
+  TOOLS_MANAGE = 'tools:manage',
 }
 
 // Period types for budgets
@@ -640,7 +641,7 @@ export interface IndexRunDetailResponse {
 // ---------------------------------------------------------------------------
 
 /** Asset status values. */
-export type AssetStatus = 'registered' | 'queued' | 'indexing' | 'indexed' | 'failed' | 'removed';
+export type AssetStatus = 'registered' | 'queued' | 'indexing' | 'indexed' | 'complete' | 'partial' | 'failed' | 'removed';
 
 /** A single knowledge asset. */
 export interface KnowledgeAsset {
@@ -653,6 +654,9 @@ export interface KnowledgeAsset {
   tenantId: string | null;
   ownerSub: string | null;
   projectId: string | null;
+  productId: string | null;
+  canManage: boolean;
+  canDownload?: boolean;
   status: AssetStatus;
   lastError: string | null;
   retryCount: number;
@@ -691,7 +695,10 @@ export interface AssetCreateRequest {
   display_name?: string;
   tags?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
-  scope: 'personal' | 'tenant';
+  scope: 'personal' | 'tenant' | 'product';
+  product_id?: string;
+  source_binding_id?: string;
+  keep_updated?: boolean;
 }
 
 /** A GitHub repo from the picker API. */
@@ -759,7 +766,8 @@ export interface BulkCommitItem {
 /** Request body for POST /api/agent-context/assets/bulk/commit. */
 export interface BulkCommitRequest {
   items: BulkCommitItem[];
-  scope: 'personal' | 'tenant';
+  scope: 'personal' | 'tenant' | 'product';
+  product_id?: string;
 }
 
 /** Response from POST /api/agent-context/assets/bulk/commit. */

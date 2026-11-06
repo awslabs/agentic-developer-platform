@@ -19,7 +19,12 @@ from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
-from src.agentauth.abort_reconciliation import TRANSIENT_REPAIR_FAILURE, AbortRepair, repair_aborted_terminal_status
+from src.agentauth.abort_reconciliation import (
+    TRANSIENT_REPAIR_FAILURE,
+    AbortRepair,
+    repair_aborted_terminal_status,
+    repair_vanished_terminal_status,
+)
 from src.agentauth.composition import WEBHOOK_EVENTS_TABLE_ENV
 from src.agentauth.grants import AUTHORITY_GATE_DECISION, AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY
 
@@ -79,6 +84,77 @@ async def resolve_repository_id(*, org_id: str, installation_id: int, repo: str)
     if type(repository_id) is not int or repository_id <= 0:
         raise WorkClaimError("repository_unresolved", "GitHub did not return an immutable repository ID.")
     return repository_id
+
+
+async def resolve_accepted_repository(session, *, node, contract, repo: str) -> tuple[int, int, str]:
+    """Recheck the accepted story's connection before work can be reserved."""
+    from .dispatch_pass import issue_number_for_dispatch, product_binding_hold, resolve_installation_id
+    from .evaluation_correction_state import validate_correction
+    from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+    correction = await validate_correction(session, node)
+    if correction is not None and (source := correction.detail.get("source_authorization")) is not None:
+        if repo != source["repository"]:
+            raise WorkClaimError("repository_binding_changed", "The correction target differs from its authenticated source.")
+        try:
+            verified = await resolve_story_repository(
+                session,
+                tenant_id=node.org_id,
+                name=source["repository"],
+                repository_id=source["provider_repository_id"],
+                installation_id=source["installation_id"],
+                issue=issue_number_for_dispatch(node.issue_ref),
+                operation="dispatch",
+            )
+        except RepositoryBindingError as exc:
+            raise WorkClaimError(exc.code, "The correction repository authority cannot be verified.") from exc
+        if (verified.repository_id, verified.installation_id) != (source["provider_repository_id"], source["installation_id"]):
+            raise WorkClaimError("repository_binding_changed", "The correction repository identity changed.")
+        return verified.installation_id, verified.repository_id, verified.full_name
+
+    binding_hold = await product_binding_hold(session, org_id=node.org_id, flow_id=node.flow_id)
+    if binding_hold == "amendment_issue_link_unconfirmed":
+        raise WorkClaimError(binding_hold, "The accepted story has no confirmed native epic link.")
+    if binding_hold and (contract is None or not contract.node.repository_identity):
+        raise WorkClaimError("repository_unavailable", "An accepted Product story has no verified repository.")
+    if contract is not None and contract.node.repository_identity and (contract.node.repository_connection is not None or binding_hold):
+        binding = contract.node
+        if binding.provider_repository_id is None or binding.repository_connection is None:
+            raise WorkClaimError("repository_unavailable", "An accepted repository has no verified connection.")
+        issue = issue_number_for_dispatch(node.issue_ref)
+        accepted_issue = issue_number_for_dispatch(binding.issue_ref)
+        if issue is None or accepted_issue is None:
+            raise WorkClaimError("repository_invalid", "An accepted story has no valid issue number.")
+        if issue != accepted_issue or node.repository_identity != binding.repository_identity:
+            raise WorkClaimError("repository_binding_changed", "The story's accepted repository or issue changed.")
+        try:
+            verified = await resolve_story_repository(
+                session,
+                tenant_id=node.org_id,
+                name=binding.repository_identity,
+                repository_id=binding.provider_repository_id,
+                installation_id=binding.repository_connection.installation_id,
+                issue=issue,
+                operation="dispatch",
+                permitted_names=tuple(contract.repository_ids) if contract.repository_ids else None,
+            )
+        except RepositoryBindingError as exc:
+            raise WorkClaimError(exc.code, "The accepted repository authority cannot be verified.") from exc
+        if (
+            verified.installation_id != binding.repository_connection.installation_id
+            or node.provider_repository_id != verified.repository_id
+            or node.repository_connection != binding.repository_connection.model_dump(mode="json")
+        ):
+            raise WorkClaimError("repository_binding_changed", "The story's accepted connection changed.")
+        return verified.installation_id, verified.repository_id, verified.full_name
+
+    installation_id = await resolve_installation_id(session, org_id=node.org_id)
+    if installation_id is None:
+        raise WorkClaimError("installation_unresolved", "Ownership requires a tenant installation.")
+    repository_id = await resolve_repository_id(org_id=node.org_id, installation_id=installation_id, repo=repo)
+    if contract is not None and contract.node.provider_repository_id not in (None, repository_id):
+        raise WorkClaimError("repository_binding_changed", "The legacy story's repository identity changed.")
+    return installation_id, repository_id, repo
 
 
 async def admit(session, *, org_id: str, repository_id: int, issue: int, owner: ClaimOwner, invocation_id: str) -> dict:
@@ -353,6 +429,24 @@ def cancel_unstarted_claim(store, raw: dict, *, now: datetime) -> bool:
     return True
 
 
+#: How long a bound pod must have been silent before its absence from the API counts as
+#: exit evidence. Long enough that a pod which is merely between heartbeats, or whose
+#: object the API briefly cannot serve, is never mistaken for a vanished one.
+VANISHED_POD_GRACE_SECONDS = 300
+
+
+async def _pod_vanished(workloads, *, name: str, heartbeat_at: datetime | None, now: datetime) -> bool:
+    """Positive 404/NotFound for a bound pod whose claim has been silent for the grace period."""
+    is_absent = getattr(workloads, "is_absent", None)
+    if is_absent is None or heartbeat_at is None:
+        return False
+    if heartbeat_at.tzinfo is None:  # SQLite test sessions hand back naive UTC timestamps
+        heartbeat_at = heartbeat_at.replace(tzinfo=UTC)
+    if (now - heartbeat_at).total_seconds() < VANISHED_POD_GRACE_SECONDS:
+        return False
+    return bool(await run_in_threadpool(is_absent, name=name))
+
+
 async def recover_exited_claims(session, *, store, workloads, limit: int = 50, after_id: str | None = None) -> ClaimRecoveryReport:
     """Bounded recovery after a worker dies before its terminal callback.
 
@@ -364,7 +458,11 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
         (
             await session.execute(
                 select(
-                    OrchestrationWorkClaim.id, OrchestrationWorkClaim.org_id, OrchestrationWorkClaim.generation, OrchestrationWorkClaim.active_run_id
+                    OrchestrationWorkClaim.id,
+                    OrchestrationWorkClaim.org_id,
+                    OrchestrationWorkClaim.generation,
+                    OrchestrationWorkClaim.active_run_id,
+                    OrchestrationWorkClaim.heartbeat_at,
                 )
                 .where(
                     OrchestrationWorkClaim.state == ClaimState.HELD.value,
@@ -392,7 +490,8 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
         reason = ReleaseReason.ABANDONED
         if raw.get("status") == {"S": "completed"}:
             evidence = f"protected terminal report:{row.active_run_id}"
-            reason = ReleaseReason.COMPLETED if raw.get("terminal_outcome") == {"S": "completed"} else ReleaseReason.FAILED
+            # EXEC.terminal_outcome carries the worker's posted status literal, "complete" (#7764).
+            reason = ReleaseReason.COMPLETED if raw.get("terminal_outcome") == {"S": "complete"} else ReleaseReason.FAILED
         elif (raw.get("status") == {"S": "cancelled"} and not uid) or await run_in_threadpool(
             cancel_unstarted_claim, store, raw, now=datetime.now(UTC)
         ):
@@ -436,6 +535,24 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
                     # and releases instead of wedging the lane indefinitely.
                     logger.warning("holding work claim to retry an aborted run's terminal repair invocation=%s", row.active_run_id)
                     continue
+        elif name and uid and await _pod_vanished(workloads, name=name, heartbeat_at=row.heartbeat_at, now=datetime.now(UTC)):
+            # The pod object is gone (404 NotFound), the run had been bound to it, and
+            # nothing has heartbeated for a full grace period: GC of a completed Job,
+            # an operator deletion or a lost node. Without this the claim stays held
+            # until the lease-lapse stall fence hours later, and a reviewer run has no
+            # settlement path at all (#7783). A transport error is never "vanished".
+            evidence = f"kubernetes pod vanished:{uid} run:{row.active_run_id}"
+            # The run can never report now. Record its exit on the events row first so
+            # liveness readers (review recovery, continuation discharge, the dashboard)
+            # see a terminal run instead of refusing forever with "unverified"; the
+            # claim release below may legitimately stay blocked while a committed
+            # continuation is outstanding — the recorded exit is what lets that
+            # continuation be recovered.
+            repair = await _repair_vanished_before_release(store=store, invocation_id=row.active_run_id, tenant_id=row.org_id, raw=raw)
+            repaired += int(repair.repaired)
+            if repair.reason == TRANSIENT_REPAIR_FAILURE:
+                logger.warning("holding work claim to retry a vanished run's terminal repair invocation=%s", row.active_run_id)
+                continue
         else:
             continue
         parent_grant = raw.get("parent_grant_id", {}).get("S")
@@ -454,8 +571,73 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
         receipt = await release_work(
             session, org_id=row.org_id, claim_id=row.id, generation=row.generation, reason=reason, terminal_evidence=evidence
         )
+        if receipt.disposition is Disposition.BLOCKED and receipt.reason == "continuation_outstanding":
+            # The run that owed the continuation is gone (that is why we are here) and
+            # the committed promise can only be kept by a node that is still current.
+            # A superseded node's lane is closed instead, so the issue is not held
+            # forever against its successor (#7800); any other owner keeps the guard.
+            if await _conclude_superseded_continuation(session, org_id=row.org_id, claim_id=row.id, claim_generation=row.generation):
+                receipt = await release_work(
+                    session, org_id=row.org_id, claim_id=row.id, generation=row.generation, reason=reason, terminal_evidence=evidence
+                )
         released += int(receipt.admitted)
     return ClaimRecoveryReport(released, rows[-1].id if len(rows) == limit else None, repaired)
+
+
+async def _conclude_superseded_continuation(session, *, org_id: str, claim_id: str, claim_generation: int) -> bool:
+    """Conclude the open execution a superseded node still owes under this claim; False if the owner is current."""
+    from .execution_state import ExecutionPhase, ExecutionStatus, OutcomeKind, PhaseAdvance
+    from .execution_store import advance_execution, load_execution
+    from .handoff import current_identity, outstanding_continuation
+    from .models import OrchestrationNode
+    from .state import NodeState
+
+    pending = await outstanding_continuation(session, org_id=org_id, claim_id=claim_id, claim_generation=claim_generation)
+    if pending is None:
+        return False
+    node = await session.get(OrchestrationNode, pending.node_id)
+    if node is None or node.org_id != org_id or node.state != NodeState.SUPERSEDED.value:
+        return False
+    identity = await current_identity(session, org_id=org_id, node_id=node.id)
+    if identity is None or identity.claim_id != claim_id:
+        return False
+    current = await load_execution(session, identity=identity, closing_superseded_lane=True)
+    if current is None or current.kind is not OutcomeKind.APPLIED or current.record is None:
+        return False
+    ended = await advance_execution(
+        session,
+        identity=identity,
+        closing_superseded_lane=True,
+        advance=PhaseAdvance(
+            phase=ExecutionPhase.CONCLUDED,
+            status=ExecutionStatus.CONCLUDED,
+            expected_revision=current.record.revision,
+            progress_note=(
+                "Node superseded; its exited run's continuation can no longer be kept, so the lane is closed and the claim freed for the successor."
+            ),
+        ),
+    )
+    if ended.kind is not OutcomeKind.APPLIED:
+        logger.warning("could not conclude superseded continuation execution=%s reason=%s", pending.execution_id, ended.reason)
+        return False
+    logger.warning("concluded superseded node's open continuation execution=%s node=%s", pending.execution_id, node.id)
+    return True
+
+
+async def _repair_vanished_before_release(*, store, invocation_id: str, tenant_id: str, raw: dict) -> AbortRepair:
+    """Record a vanished pod's run as failed on the events row; never raises (#7783)."""
+    client = getattr(store, "client", None)
+    if client is None:
+        return AbortRepair(False, "events_client_unavailable")
+    return await run_in_threadpool(
+        repair_vanished_terminal_status,
+        authority_client=client,
+        events_table=os.environ.get(WEBHOOK_EVENTS_TABLE_ENV, ""),
+        execution=raw,
+        invocation_id=invocation_id,
+        tenant_id=tenant_id,
+        authority_table=getattr(store, "table", None),
+    )
 
 
 async def _repair_before_release(*, store, invocation_id: str, tenant_id: str, raw: dict) -> AbortRepair:
@@ -482,6 +664,7 @@ async def maintain_work_claims() -> None:
     """Lifecycle cleanup in existing gateway processes; no new scheduler."""
     cursor = None
     retained_cursor = ""
+    replaced_cursor = ""
     while True:
         # Recovery is independent of SQL claims and runs first so a database
         # outage cannot discard accepted-abort reporting work.
@@ -522,4 +705,34 @@ async def maintain_work_claims() -> None:
                     logger.warning("abort_terminal_repaired count=%s", report.aborts_repaired)
         except Exception:
             logger.exception("work_claim_recovery failed; unresolved claims remain held")
+        try:
+            if enabled():
+                # Separate transaction: a lane that cannot be settled must not undo the
+                # claim recovery above, and vice versa (#7810).
+                from src.shared.database import get_session_factory
+
+                from .amend import settle_open_superseded_lanes
+
+                async with get_session_factory()() as session:
+                    lanes = await settle_open_superseded_lanes(session)
+                    await session.commit()
+                if lanes:
+                    logger.warning("superseded_lanes_settled count=%s", lanes)
+        except Exception:
+            logger.exception("superseded lane settlement failed; open lanes remain")
+        try:
+            if enabled():
+                require_authority()
+                from src.agentauth.routes import get_agent_runtime
+                from src.shared.database import get_session_factory
+
+                from .replaced_admission import recover_replaced_admissions
+
+                settled, replaced_cursor = await recover_replaced_admissions(
+                    get_session_factory(), store=get_agent_runtime().store, after_id=replaced_cursor
+                )
+                if settled:
+                    logger.warning("replaced_admissions_settled count=%s", settled)
+        except Exception:
+            logger.exception("replaced admission recovery failed; historical executions retained")
         await asyncio.sleep(60)

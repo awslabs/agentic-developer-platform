@@ -21,6 +21,9 @@ import urllib.request
 # This module is loaded by path in tests, so sys.path may not contain its directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import capacity_subnets  # noqa: E402
+from native_credential_inputs import native_credential_settings  # noqa: E402
+from product_dispatch_inputs import product_dispatch_settings  # noqa: E402
+from teardown import instances as teardown_instances, protected as teardown_protected  # noqa: E402
 
 
 def aws(*args):
@@ -41,6 +44,21 @@ def resources(state, kind=None):
 
 def output(state, name, default=None):
     return state.get("outputs", {}).get(name, {}).get("value", default)
+
+
+def integration_outputs(state):
+    """Ignore stale endpoints only when teardown left retained resources alone.
+
+    Targeted teardown preserves credential containers/versions and their keys in
+    state. Terraform can also retain old outputs after removing the API. Use the
+    same resource classification as teardown; any remaining non-retained resource
+    keeps endpoint preservation strict, including partially removed deployments.
+    """
+    owned = {address for address, _, _ in teardown_instances(state)}
+    if not owned - teardown_protected(state):
+        return {}
+    return {key: value["value"] for key, value in state.get("outputs", {}).items()
+            if key in ("webhook_url", "github_oauth_callback_url", "github_sign_in_url", "gateway_ws_endpoint")}
 
 
 def write_json(path, data):
@@ -94,8 +112,48 @@ def legacy_worker_settings(state):
                 agent_authority_legacy_workers_drained=False)
 
 
+def legacy_chat_settings(state, saved):
+    """Recover omitted chat inputs from this target's Terraform-owned parameters.
+
+    Older release_configuration outputs omitted these settings even when they
+    were enabled. An output can therefore exist without carrying the chat
+    inputs. Explicit retained inputs take precedence over resource recovery.
+    """
+    result = {}
+    mapping = {
+        "feature_chat": "feature_chat_enabled",
+        "feature_assistant_ui": "feature_assistant_ui_enabled",
+        "model_root_bindings": "model_root_bindings",
+    }
+    for name, key in mapping.items():
+        if key in (saved or {}):
+            continue
+        matches = [attrs for resource, attrs in resources(state, "aws_ssm_parameter")
+                   if not resource.get("module") and resource["name"] == name]
+        if not matches:
+            continue
+        if len(matches) != 1:
+            raise ValueError(f"Ambiguous retained chat input: {key}")
+        value = matches[0].get("value")
+        if key == "model_root_bindings":
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                raise ValueError("Invalid retained model_root_bindings") from None
+            if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+                raise ValueError("Invalid retained model_root_bindings")
+        else:
+            if value not in ("true", "false"):
+                raise ValueError(f"Invalid retained chat input: {key}")
+            value = value == "true"
+        result[key] = value
+    return result
+
+
 def release_settings(state, module):
     """Retain account-local inputs; never import platform dev activation flags."""
+    native = native_credential_settings(state) if module == "gateway" else {}
+    dispatch = product_dispatch_settings(state) if module == "gateway" else {}
     if os.environ.get("ADP_PORTABLE_RELEASE_CONFIG") != "true":
         # Security cutovers remain authoritative on subsequent source updates,
         # even when an older operator overlay still contains legacy defaults.
@@ -110,14 +168,22 @@ def release_settings(state, module):
         }
         if not isinstance(saved, dict):
             raise ValueError(f"Invalid retained {module} security configuration")
-        return {key: value for key, value in saved.items() if key in security.get(module, set())}
+        return {**{key: value for key, value in saved.items() if key in security.get(module, set())}, **native, **dispatch}
     contract = Path(__file__).resolve().parents[2] / "config/release-defaults/preserved-inputs.json"
     keys = set(json.loads(contract.read_text())[module])
     saved = output(state, "release_configuration")
+    if module == "gateway" and isinstance(saved, dict):
+        saved = {key: value for key, value in saved.items() if key != "orchestration_dispatch_repo"}
+    if saved is not None and (not isinstance(saved, dict) or set(saved) - keys):
+        raise ValueError(f"Invalid retained {module} release configuration")
+    chat = legacy_chat_settings(state, saved) if module == "gateway" else {}
+    if module == "gateway" and "create_test_users" not in (saved or {}) and any(
+            r["type"] == "aws_cognito_user" and r["name"] in {"test_user", "test_admin"}
+            for r, _ in resources(state)):
+        raise ValueError("Existing test users have no retained configuration; use a reviewed direct upgrade with original "
+                         "target-specific tfvars before a portable upgrade, to avoid deleting the only administrator")
     if saved is not None:
-        if not isinstance(saved, dict) or set(saved) - keys:
-            raise ValueError(f"Invalid retained {module} release configuration")
-        return saved
+        return {**chat, **saved, **native, **dispatch}
     # Older states did not retain inputs. Basic settings can be recovered from
     # their resources. Activated Task/authority configurations need exact original
     # inputs; guessing could disable active work or copy another account's proof.
@@ -140,23 +206,24 @@ def release_settings(state, module):
             result.update(rds_instance_class=attrs["instance_class"], rds_allocated_storage=attrs["allocated_storage"])
         if module == "gateway" and kind == "aws_elasticache_replication_group":
             result["redis_node_type"] = attrs["node_type"]
-        if (module == "gateway" and kind == "aws_iam_role_policy"
-                and resource["name"] == "gateway_ingestion_sqs_publish"):
+        # The ingestion grant lived in its own inline policy, then moved into the
+        # consolidated data policy (#7944); during that cutover the retained copy
+        # sits under gateway_role_legacy. Any of them carries the same statement.
+        if (module == "gateway" and kind in ("aws_iam_role_policy", "aws_iam_policy")
+                and resource["name"] in ("gateway_ingestion_sqs_publish", "gateway_role", "gateway_role_legacy")):
             policy = json.loads(attrs["policy"])
-            queues = [s["Resource"] for s in policy.get("Statement", [])
-                      if s.get("Sid") == "IngestionSQSPublish" and s.get("Effect") == "Allow"]
-            if len(queues) != 1 or not isinstance(queues[0], str) or not re.fullmatch(
-                    r"arn:[a-z0-9-]+:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+(?:\.fifo)?", queues[0]):
-                raise ValueError("Existing ingestion permission requires its original target-specific configuration")
-            result.update(enable_agent_context_sqs=True, agent_context_ingestion_queue_arn=queues[0])
+            statements = [s for s in policy.get("Statement", []) if s.get("Sid") == "IngestionSQSPublish"]
+            if statements:
+                queues = [s["Resource"] for s in statements if s.get("Effect") == "Allow"]
+                if len(queues) != 1 or not isinstance(queues[0], str) or not re.fullmatch(
+                        r"arn:[a-z0-9-]+:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+(?:\.fifo)?", queues[0]):
+                    raise ValueError("Existing ingestion permission requires its original target-specific configuration")
+                result.update(enable_agent_context_sqs=True, agent_context_ingestion_queue_arn=queues[0])
         if module == "gateway" and kind == "aws_lambda_function" and resource["name"] == "tick":
             env = (attrs.get("environment") or [{}])[0].get("variables", {})
-            for key, name in (("BG_ORCH_DISPATCH_REPO", "orchestration_dispatch_repo"),):
-                if key in env:
-                    result[name] = env[key]
             if "FEATURE_ORCHESTRATION_ENGINE_ENABLED" in env:
                 result["orchestration_engine_enabled"] = env["FEATURE_ORCHESTRATION_ENGINE_ENABLED"] == "true"
-    return result
+    return {**result, **chat, **native, **dispatch}
 
 
 def preserve_access(state, cluster, extra=(), requested_cidrs=()):
@@ -480,6 +547,7 @@ def prepare(args):
     platform.update(preserve_access(states["platform"], cluster,
                                json.loads(os.environ.get("TF_VAR_extra_cluster_admin_principal_arns", "[]")), requested))
     platform.update(environment=args.environment, aws_region=args.region)
+    platform["capacity_existing_cluster"] = cluster_name
     platform["additional_private_subnet_ids_by_az"] = retain_capacity_subnets(
         states["platform"], cluster,
         json.loads(os.environ.get("TF_VAR_additional_private_subnet_ids_by_az", "{}")))
@@ -490,6 +558,9 @@ def prepare(args):
     write_json(directory / "eks-access.json", {"publicAccessCidrs": platform["eks_public_access_cidrs"]})
     gateway_state = states.get("gateway", {})
     gateway = release_settings(gateway_state, "gateway")
+    if gateway.get("create_test_users") and args.environment not in ("dev", "test"):
+        raise ValueError("Existing test users are forbidden outside dev/test. Verify a replacement administrator and "
+                         "review their retirement before disabling create_test_users in a direct upgrade.")
     gateway.update(environment=args.environment, aws_region=args.region)
     gateway.update(gateway_layer_settings(gateway_state, args.account, args.environment))
     gateway.update(gateway_engine_settings(gateway_state, states.get("webhook-ingress", {}),
@@ -509,7 +580,7 @@ def prepare(args):
         for origin in attrs.get("origin", []):
             if "gitlab" in origin.get("origin_id", "").lower():
                 gateway["gitlab_origin_dns"] = origin["domain_name"]
-        aliases = attrs.get("aliases", [])
+        aliases = attrs.get("aliases") or []
         if len(aliases) > 1:
             raise ValueError("Multiple CloudFront aliases require explicit environment configuration")
         if aliases:
@@ -542,9 +613,7 @@ def prepare(args):
     write_json(directory / "webhook-ingress.tfvars.json", webhook)
     snapshot = integration_snapshot(states, args.environment)
     snapshot.update(account=args.account, environment=args.environment, modules=list(states),
-                    outputs={name: {key: value["value"] for key, value in state.get("outputs", {}).items()
-                             if key in ("webhook_url", "github_oauth_callback_url", "github_sign_in_url", "gateway_ws_endpoint")}
-                             for name, state in states.items()},
+                    outputs={name: integration_outputs(state) for name, state in states.items()},
                     broker_function=brokers[0]["function_name"] if brokers else None,
                     broker_settings={k: v for k, v in broker_before.items() if k in (
                         "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET_ARN", "CALLBACK_URL", "FRONTEND_URL",
@@ -638,6 +707,10 @@ def verify(args):
     modules = set(before.get("outputs", {})) | required
     for name in sorted(modules):
         expected = before.get("outputs", {}).get(name, {})
+        # Older snapshots may contain outputs from a credentials-only remnant.
+        # Classify the original state, never the newly deployed resources.
+        if name in states and not integration_outputs(states[name]):
+            expected = {}
         key = f"{before['environment']}/" + ("platform" if name == "platform" else "modules/" + name) + "/terraform.tfstate"
         target = directory / f"{name}-after.tfstate"
         aws("s3api", "get-object", "--bucket", f"adp-terraform-state-{before['account']}", "--key", key, str(target))

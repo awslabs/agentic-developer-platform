@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -13,8 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionStatus
 from src.shared.identity import resolve_canonical_user_id
-from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import User
+from src.shared.identity.workflow_access import is_workflow_member
 from src.shared.schemas.auth import TokenContext
 
 
@@ -23,23 +21,12 @@ class HumanControlSession:
     user_id: str
     tenant_id: str
     expires_at: datetime
+    token_record_id: str = ""
 
 
 async def require_live_human_membership(db: AsyncSession, *, user_id: str, tenant_id: str) -> None:
     """Read current membership, without an authorization cache or admin bypass."""
-    member = await db.scalar(
-        select(User.id)
-        .join(TenantMembership, TenantMembership.user_id == User.id)
-        .where(
-            User.id == user_id,
-            User.user_kind == "human",
-            User.is_shadow.is_(False),
-            TenantMembership.tenant_id == tenant_id,
-            TenantMembership.is_active.is_(True),
-            TenantMembership.revoked_at.is_(None),
-        )
-    )
-    if member is None:
+    if not await is_workflow_member(db, user_id=user_id, org_id=tenant_id):
         raise BootstrapRefusedError("human control membership is unavailable")
 
 
@@ -54,7 +41,9 @@ async def authorize_human_session(context: TokenContext, db: AsyncSession, *, no
         raise BootstrapRefusedError("direct human session required")
     user_id = await resolve_canonical_user_id(db, context.user_id, org_id=context.org_id)
     await require_live_human_membership(db, user_id=user_id, tenant_id=context.org_id)
-    return HumanControlSession(user_id=user_id, tenant_id=context.org_id, expires_at=context.expires_at)
+    return HumanControlSession(
+        user_id=user_id, tenant_id=context.org_id, expires_at=context.expires_at, token_record_id=context._authenticated_token_record_id
+    )
 
 
 def _protected_human_owner(store, *, tenant_id: str, run_id: str, generation: int, now: datetime) -> str:

@@ -1,4 +1,4 @@
-FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:0a5115d0840164c9cf9b17d5c455322bda2c35f68902f28f91ef6d9dd84214c2 AS high-maintenance
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:7b3df072a13b928bddbf70d71735fdc8572006442048868914627ebc8e635b68 AS high-maintenance
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2ea72b3f76d6e2f8b584c9ec780811a14bc94dc983d94382bc751363bb59a020 AS openssh-security
 FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -68,4 +68,5 @@ PYTHON
 # The installer rejects unreviewed inputs and checks the full provider environment.
 RUN --network=none --mount=type=bind,from=high-maintenance,source=/,target=/maintenance-input \
     python3 /maintenance-input/maintenance/install.py /maintenance-input
+ENV PYTHON_VERSION=3.10.22 PYTHON_SHA256=c61fe9b1a1a7ec2a0b0388e664187c378a5325a89e3606d220abf5bdfccb2543
 USER 1000:1000

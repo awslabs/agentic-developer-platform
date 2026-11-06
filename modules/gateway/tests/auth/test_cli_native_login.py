@@ -181,6 +181,20 @@ def test_missing_configuration_fails_closed(client, settings, cognito):
     cognito.admin_initiate_auth.assert_not_called()
 
 
+def test_one_source_cannot_lock_an_account_for_another_source(client, cognito, monkeypatch):
+    from src.auth import client_source
+
+    monkeypatch.setattr(client_source, "get_settings", lambda: SimpleNamespace(apigw_provenance_secret="test-edge-proof"))
+    client.headers.update({"x-adp-client-provenance": "test-edge-proof", "x-adp-client-ip": "192.0.2.1"})
+    cognito.admin_initiate_auth.side_effect = ClientError({"Error": {"Code": "NotAuthorizedException"}}, "AdminInitiateAuth")
+    for _ in range(10):
+        assert start(client).status_code == 401
+    assert start(client).status_code == 429
+    client.headers["x-adp-client-ip"] = "192.0.2.2"
+    cognito.admin_initiate_auth.side_effect = None
+    assert start(client).status_code == 200
+
+
 @pytest.mark.parametrize("admin,status", [(False, 403), (True, 200)])
 def test_admin_session_authority_is_server_side(client, admin, status):
     client.app.dependency_overrides[get_current_user] = lambda: TokenContext(

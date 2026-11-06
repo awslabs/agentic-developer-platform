@@ -23,7 +23,7 @@ import re
 import tempfile
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +83,8 @@ class FixtureRecord:
     idempotency_token: str | None = None
     observed_resource_id: str | None = None
     detail: str | None = None
+    native_link_attempts: int = 0
+    native_parent_verified: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -94,6 +96,8 @@ class FixtureRecord:
             "idempotency_token": self.idempotency_token,
             "observed_resource_id": self.observed_resource_id,
             "detail": self.detail,
+            "native_link_attempts": self.native_link_attempts,
+            "native_parent_verified": self.native_parent_verified,
         }
 
     @classmethod
@@ -115,6 +119,10 @@ class FixtureRecord:
         tags = body.get("ownership_tags") or {}
         if not isinstance(tags, dict):
             raise InventoryError("inventory entry ownership_tags must be an object")
+        attempts = body.get("native_link_attempts", 0)
+        verified = body.get("native_parent_verified", False)
+        if type(attempts) is not int or attempts < 0 or type(verified) is not bool:
+            raise InventoryError("inventory entry has invalid native parent state")
         return cls(
             fixture_id=str(body["fixture_id"]),
             kind=str(body["kind"]),
@@ -124,6 +132,8 @@ class FixtureRecord:
             idempotency_token=_optional_str(body.get("idempotency_token")),
             observed_resource_id=_optional_str(body.get("observed_resource_id")),
             detail=_optional_str(body.get("detail")),
+            native_link_attempts=attempts,
+            native_parent_verified=verified,
         )
 
 
@@ -167,6 +177,7 @@ class Inventory:
     environment: str
     path: Path
     fixtures: list[FixtureRecord]
+    attempts: list[dict[str, str]] = field(default_factory=list)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -245,11 +256,21 @@ class Inventory:
         entries = document.get("fixtures")
         if not isinstance(entries, list):
             raise InventoryError(f"inventory at {path} must carry a 'fixtures' list")
+        attempts = document.get("attempts", [])
+        if not isinstance(attempts, list) or any(
+            not isinstance(attempt, dict)
+            or not isinstance(attempt.get("scenario"), str)
+            or attempt.get("status")
+            not in {"started", "failed", "incomplete", "complete"}
+            for attempt in attempts
+        ):
+            raise InventoryError("inventory attempts are invalid")
         return cls(
             qualification_id=qualification_id,
             environment=str(recorded_env),
             path=path,
             fixtures=[FixtureRecord.from_json(entry) for entry in entries],
+            attempts=attempts,
         )
 
     # -- mutation ----------------------------------------------------------
@@ -303,6 +324,19 @@ class Inventory:
         """Record that resume could not determine this fixture's real state."""
         return self._update(fixture_id, state=RECONCILE_FAILED, detail=detail)
 
+    def mark_native_link_attempt(self, fixture_id: str) -> FixtureRecord:
+        record = self.get(fixture_id)
+        if record.state != CREATED or not record.observed_resource_id:
+            raise InventoryError("native linking requires a recorded issue")
+        return self._update(
+            fixture_id,
+            native_link_attempts=record.native_link_attempts + 1,
+            native_parent_verified=False,
+        )
+
+    def mark_native_parent_verified(self, fixture_id: str) -> FixtureRecord:
+        return self._update(fixture_id, native_parent_verified=True, detail=None)
+
     def _update(self, fixture_id: str, **changes: Any) -> FixtureRecord:
         for index, record in enumerate(self.fixtures):
             if record.fixture_id == fixture_id:
@@ -314,6 +348,16 @@ class Inventory:
         raise InventoryError(
             f"fixture {fixture_id!r} is not in inventory {self.qualification_id!r}"
         )
+
+    def start_attempt(self, scenario: str) -> None:
+        self.attempts.append({"scenario": scenario, "status": "started"})
+        self.flush()
+
+    def finish_attempt(self, status: str) -> None:
+        if status not in {"failed", "incomplete", "complete"} or not self.attempts:
+            raise InventoryError("invalid attempt result")
+        self.attempts[-1]["status"] = status
+        self.flush()
 
     # -- queries -----------------------------------------------------------
 
@@ -357,6 +401,7 @@ class Inventory:
             "qualification_id": self.qualification_id,
             "environment": self.environment,
             "fixtures": [record.to_json() for record in self.fixtures],
+            "attempts": self.attempts,
         }
         payload = json.dumps(document, indent=2, sort_keys=True) + "\n"
 
@@ -429,9 +474,9 @@ def restore_inventory(
     """Bring a previous run's inventory into this run's artifact directory.
 
     A ``--resume`` or ``--cleanup`` dispatch is a *separate* workflow run with an
-    empty workspace: the inventory the original run wrote is not there, so its
+    empty workspace: the inventory the prior run wrote is not there, so its
     fixtures would be unreachable and uncleanable. The workflow downloads the
-    original run's artifact and this copies the verified inventory into place.
+    latest run's artifact and this copies the verified inventory into place.
 
     ``restore_root`` is the downloaded artifact tree. The file is verified with
     :meth:`Inventory.load` — version, ``managed_by``, qualification id and

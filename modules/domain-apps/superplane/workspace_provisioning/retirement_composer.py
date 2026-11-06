@@ -231,7 +231,7 @@ async def run_retirement(operation, context):
         )
     if bootstrap is None:
         raise LifecycleRefused("retirement original bootstrap is unavailable")
-    policy = load_policy(context, lease.org_id)
+    policy = load_policy(context, lease.org_id, lease.workspace_id)
     request, plan = retirement_request(
         inventory, access_plan, access, bootstrap, policy
     )
@@ -261,7 +261,7 @@ async def run_retirement(operation, context):
             access_plan,
             access,
             bootstrap,
-            load_policy(context, lease.org_id),
+            load_policy(context, lease.org_id, lease.workspace_id),
         )
         if expected != current.request:
             raise LifecycleRefused("retirement policy or approval changed")

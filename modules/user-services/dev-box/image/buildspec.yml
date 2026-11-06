@@ -1,0 +1,118 @@
+version: 0.2
+# Dev Box AMI build (#7998). Runs the module's Packer templates from the
+# per-build source zip: image/base.pkr.hcl always, image/crew.pkr.hcl when the
+# operator supplied an approved Crew bundle and profile (uploaded by
+# scripts/build-dev-box-image.sh to s3://<state-bucket>/dev-box/image-inputs/).
+# The temporary build instance is private (no public IP, builder security group,
+# Session Manager transport over the module's SSM endpoints). On success the
+# selected AMI id and its revisions are published to SSM under ${SSM_PREFIX}:
+#   image-id              the AMI the foundation stack deploys (Crew image when built, else base)
+#   image-revision        its adp:image-revision tag
+#   image-source-revision the commit the images were built from (ADP_SOURCE_SHA)
+#   base-image-id         the clean base AMI
+#   profile-revision      the Crew profile revision baked in, or " " (SSM's empty) for base-only
+# The Crew bundle (~1 GB) is downloaded here only to verify its digest; the
+# Packer build instance fetches it from S3 itself (crew.pkr.hcl) because the
+# file provisioner streams through the Session Manager tunnel into tmpfs.
+# Nothing secret enters the image: the bundle and profile are removed by the
+# Packer provisioner and no token or run id exists at build time.
+env:
+  variables:
+    IMAGE_REVISION: ""
+    SOURCE_AMI: ""
+    CREW_BUNDLE_S3_URI: ""
+    CREW_MANIFEST_S3_URI: ""
+    PROFILE_REVISION: ""
+    PACKER_VERSION: "1.12.0"
+    # Installed from releases.hashicorp.com (checksummed), never via `packer init`:
+    # the GitHub API behind init is rate-limited per egress IP and CodeBuild shares one.
+    AMAZON_PLUGIN_VERSION: "1.3.10"
+phases:
+  install:
+    commands:
+      - |
+        set -euo pipefail
+        curl -fsSL "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_amd64.zip" -o "/tmp/packer_${PACKER_VERSION}_linux_amd64.zip"
+        curl -fsSL "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_SHA256SUMS" -o /tmp/packer.sums
+        (cd /tmp && grep " packer_${PACKER_VERSION}_linux_amd64.zip$" packer.sums | sha256sum -c -)
+        unzip -o -q "/tmp/packer_${PACKER_VERSION}_linux_amd64.zip" -d /usr/local/bin && packer version
+        curl -fsSL "https://releases.hashicorp.com/packer-plugin-amazon/${AMAZON_PLUGIN_VERSION}/packer-plugin-amazon_${AMAZON_PLUGIN_VERSION}_linux_amd64.zip" -o "/tmp/packer-plugin-amazon_${AMAZON_PLUGIN_VERSION}_linux_amd64.zip"
+        curl -fsSL "https://releases.hashicorp.com/packer-plugin-amazon/${AMAZON_PLUGIN_VERSION}/packer-plugin-amazon_${AMAZON_PLUGIN_VERSION}_SHA256SUMS" -o /tmp/plugin.sums
+        (cd /tmp && grep " packer-plugin-amazon_${AMAZON_PLUGIN_VERSION}_linux_amd64.zip$" plugin.sums | sha256sum -c -)
+        mkdir -p /tmp/plugin && unzip -o -q "/tmp/packer-plugin-amazon_${AMAZON_PLUGIN_VERSION}_linux_amd64.zip" -d /tmp/plugin
+        packer plugins install --path "$(find /tmp/plugin -maxdepth 1 -type f -name 'packer-plugin-amazon_v*' | head -1)" github.com/hashicorp/amazon
+        packer plugins installed
+        curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_64bit/session-manager-plugin.rpm" -o /tmp/session-manager-plugin.rpm
+        yum install -y -q /tmp/session-manager-plugin.rpm && session-manager-plugin --version
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        : "${ADP_SOURCE_SHA:?codebuild-run.sh sets ADP_SOURCE_SHA}"
+        [[ "$ADP_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "ADP_SOURCE_SHA must be a full commit" >&2; exit 2; }
+        [ -n "$IMAGE_REVISION" ] || IMAGE_REVISION="base-$(date -u +%Y%m%d)-${ADP_SOURCE_SHA:0:12}"
+        [[ "$IMAGE_REVISION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo "IMAGE_REVISION is not a valid revision" >&2; exit 2; }
+        if [ -z "$SOURCE_AMI" ]; then
+          SOURCE_AMI=$(aws ssm get-parameter --region "$REGION" --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64 --query Parameter.Value --output text)
+        fi
+        [[ "$SOURCE_AMI" =~ ^ami-[0-9a-f]{8,17}$ ]] || { echo "SOURCE_AMI is not an AMI id" >&2; exit 2; }
+        if [ -n "$CREW_BUNDLE_S3_URI" ] || [ -n "$CREW_MANIFEST_S3_URI" ] || [ -n "$PROFILE_REVISION" ]; then
+          [ -n "$CREW_BUNDLE_S3_URI" ] && [ -n "$CREW_MANIFEST_S3_URI" ] && [ -n "$PROFILE_REVISION" ] \
+            || { echo "A Crew image needs CREW_BUNDLE_S3_URI, CREW_MANIFEST_S3_URI and PROFILE_REVISION together" >&2; exit 2; }
+          [[ "$PROFILE_REVISION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo "PROFILE_REVISION is not a valid revision" >&2; exit 2; }
+          mkdir -p /tmp/crew-inputs
+          aws s3 cp --region "$REGION" "$CREW_BUNDLE_S3_URI" /tmp/crew-inputs/crew.tar.gz
+          aws s3 cp --region "$REGION" "$CREW_MANIFEST_S3_URI" /tmp/crew-inputs/profile.json
+          BUNDLE_SHA=$(sha256sum /tmp/crew-inputs/crew.tar.gz | cut -d' ' -f1)
+          python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m.get("revision")==sys.argv[2], "profile manifest revision differs from PROFILE_REVISION"; assert m.get("bundle_sha256")==sys.argv[3], "bundle_sha256 does not match the downloaded bundle"' /tmp/crew-inputs/profile.json "$PROFILE_REVISION" "$BUNDLE_SHA"
+          [ "$CREW_BUNDLE_S3_URI" = "s3://adp-terraform-state-${ACCOUNT_ID}/dev-box/image-inputs/${BUNDLE_SHA}/crew.tar.gz" ] \
+            || { echo "CREW_BUNDLE_S3_URI is not the digest-addressed input the build instance may read" >&2; exit 2; }
+          echo "crew bundle: $CREW_BUNDLE_S3_URI ($(( $(stat -c %s /tmp/crew-inputs/crew.tar.gz) / 1048576 )) MiB, sha256 $BUNDLE_SHA); the build instance fetches it from S3"
+          rm -f /tmp/crew-inputs/crew.tar.gz
+        fi
+        printf '%s\n' "IMAGE_REVISION=$IMAGE_REVISION" "SOURCE_AMI=$SOURCE_AMI" "BUNDLE_SHA=${BUNDLE_SHA:-}" > /tmp/build.env
+        cd "$CODEBUILD_SRC_DIR/modules/user-services/dev-box/image"
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        source /tmp/build.env
+        cd "$CODEBUILD_SRC_DIR/modules/user-services/dev-box/image"
+        packer build -color=false \
+          -var "source_ami=$SOURCE_AMI" -var "source_revision=$ADP_SOURCE_SHA" -var "image_revision=$IMAGE_REVISION" \
+          -var "region=$REGION" -var "subnet_id=$SUBNET_ID" -var "build_instance_profile=$BUILD_INSTANCE_PROFILE" \
+          -var "kms_key_id=$KMS_KEY_ID" -var "security_group_id=$SECURITY_GROUP_ID" base.pkr.hcl
+        BASE_AMI=$(python3 -c 'import json; print(json.load(open("image-manifest.json"))["builds"][-1]["artifact_id"].split(":")[1])')
+        [[ "$BASE_AMI" =~ ^ami-[0-9a-f]{8,17}$ ]] || { echo "Packer did not report a base AMI" >&2; exit 1; }
+        SELECTED_AMI="$BASE_AMI"; SELECTED_REVISION="$IMAGE_REVISION"; SELECTED_PROFILE=""
+        if [ -n "$PROFILE_REVISION" ]; then
+          CREW_REVISION="${IMAGE_REVISION}-crew-${PROFILE_REVISION}"
+          packer build -color=false \
+            -var "source_ami=$BASE_AMI" -var "source_revision=$ADP_SOURCE_SHA" -var "image_revision=$CREW_REVISION" \
+            -var "profile_revision=$PROFILE_REVISION" -var "crew_bundle_s3_uri=$CREW_BUNDLE_S3_URI" -var "crew_bundle_sha256=$BUNDLE_SHA" \
+            -var "crew_manifest_path=/tmp/crew-inputs/profile.json" \
+            -var "region=$REGION" -var "subnet_id=$SUBNET_ID" -var "build_instance_profile=$BUILD_INSTANCE_PROFILE" \
+            -var "kms_key_id=$KMS_KEY_ID" -var "security_group_id=$SECURITY_GROUP_ID" crew.pkr.hcl
+          SELECTED_AMI=$(python3 -c 'import json; print(json.load(open("crew-image-manifest.json"))["builds"][-1]["artifact_id"].split(":")[1])')
+          [[ "$SELECTED_AMI" =~ ^ami-[0-9a-f]{8,17}$ ]] || { echo "Packer did not report a Crew AMI" >&2; exit 1; }
+          SELECTED_REVISION="$CREW_REVISION"; SELECTED_PROFILE="$PROFILE_REVISION"
+        fi
+        printf '%s\n' "BASE_AMI=$BASE_AMI" "SELECTED_AMI=$SELECTED_AMI" "SELECTED_REVISION=$SELECTED_REVISION" "SELECTED_PROFILE=$SELECTED_PROFILE" >> /tmp/build.env
+  post_build:
+    commands:
+      - |
+        set -euo pipefail
+        source /tmp/build.env
+        put() { aws ssm put-parameter --region "$REGION" --name "${SSM_PREFIX}/$1" --type String --overwrite --value "$2" >/dev/null; }
+        put base-image-id "$BASE_AMI"
+        put image-revision "$SELECTED_REVISION"
+        put image-source-revision "$ADP_SOURCE_SHA"
+        # SSM refuses an empty value; a base image has no Crew profile, so the
+        # parameter is removed and consumers treat "absent" as "no profile".
+        if [ -n "${SELECTED_PROFILE// /}" ]; then
+          put profile-revision "$SELECTED_PROFILE"
+        else
+          aws ssm delete-parameter --region "$REGION" --name "${SSM_PREFIX}/profile-revision" >/dev/null 2>&1 || true
+        fi
+        put image-id "$SELECTED_AMI"
+        echo "dev-box image published: ${SSM_PREFIX}/image-id=$SELECTED_AMI revision=$SELECTED_REVISION profile=$SELECTED_PROFILE base=$BASE_AMI source=$ADP_SOURCE_SHA"

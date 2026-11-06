@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from src.auth.dependencies import get_current_user
 from src.auth.gitlab_sso import (
     _CACHE_TTL_SECONDS,
     _JWT_LIFETIME_SECONDS,
@@ -30,7 +31,6 @@ from src.auth.gitlab_sso import (
     _mint_gitlab_jwt,
     router,
 )
-from src.auth.middleware import get_current_user_context
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
@@ -98,10 +98,15 @@ def mock_user_row():
 
 
 @pytest.fixture
-def app(mock_token_context, mock_user_row):
+def app(mock_token_context, mock_user_row, monkeypatch):
     """Create a test FastAPI app with the GitLab SSO router."""
     test_app = FastAPI()
     test_app.include_router(router)
+
+    async def managed_identity(*args):
+        return {"id": mock_user_row.id, "subject": mock_user_row.cognito_sub, "email": mock_user_row.email, "name": mock_user_row.name}
+
+    monkeypatch.setattr("src.gitlab.homes.managed_login", managed_identity)
 
     # Override auth dependency
     async def override_auth():
@@ -122,7 +127,7 @@ def app(mock_token_context, mock_user_row):
         mock_db.execute = async_execute
         return mock_db
 
-    test_app.dependency_overrides[get_current_user_context] = override_auth
+    test_app.dependency_overrides[get_current_user] = override_auth
     test_app.dependency_overrides[get_db] = override_db
 
     return test_app
@@ -492,7 +497,7 @@ class TestCaching:
 
 class TestGitlabJSONHandoff:
     @pytest.mark.anyio
-    @pytest.mark.parametrize("base_url", ["https://gitlab.example.com", "https://adp.example.com/gitlab", "http://gitlab.dev.adp.internal"])
+    @pytest.mark.parametrize("base_url", ["https://gitlab.example.com", "https://adp.example.com/gitlab"])
     async def test_json_handoff_preserves_configured_destination_and_signed_identity(self, app, rsa_key_pair, base_url):
         private_pem, _, public_key = rsa_key_pair
         with (
@@ -541,3 +546,45 @@ class TestGitlabJSONHandoff:
         assert "location" not in response.headers
         load_key.assert_not_called()
         mint.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cli_assertion_has_separate_purpose_audience_and_current_identity(app, rsa_key_pair, monkeypatch):
+    from src.auth import gitlab_sso
+
+    monkeypatch.setenv("FEATURE_GITLAB_ENABLED", "true")
+    monkeypatch.setenv("BG_ENVIRONMENT", "test")
+    monkeypatch.setattr(gitlab_sso, "_discover_gitlab_url", lambda: "https://adp.example.test/gitlab")
+    monkeypatch.setattr(gitlab_sso, "_load_signing_key", lambda: rsa_key_pair[0])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/auth/gitlab-cli")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    value = response.json()
+    claims = jwt.decode(value["assertion"], rsa_key_pair[1], algorithms=["RS256"], audience="adp-gitlab-cli-test", issuer="urn:adp:gateway:test")
+    assert claims["purpose"] == "cli_oauth_bootstrap"
+    assert claims["sub"] == "canonical-user-uuid-999"
+    assert claims["exp"] - claims["iat"] == 60
+    assert "return_path" not in claims
+    with pytest.raises(jwt.InvalidAudienceError):
+        jwt.decode(value["assertion"], rsa_key_pair[1], algorithms=["RS256"], audience="adp-gitlab-test")
+
+
+@pytest.mark.asyncio
+async def test_cli_does_not_mint_when_current_product_access_is_denied(app, rsa_key_pair, monkeypatch):
+    from fastapi import HTTPException
+
+    from src.auth import gitlab_sso
+
+    async def denied(*args):
+        raise HTTPException(403, "No Product access")
+
+    monkeypatch.setenv("FEATURE_GITLAB_ENABLED", "true")
+    monkeypatch.setattr(gitlab_sso, "_discover_gitlab_url", lambda: "https://adp.example.test/gitlab")
+    monkeypatch.setattr("src.gitlab.homes.managed_login", denied)
+    key = MagicMock(return_value=rsa_key_pair[0])
+    monkeypatch.setattr(gitlab_sso, "_load_signing_key", key)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/auth/gitlab-cli")
+    assert response.status_code == 403
+    key.assert_not_called()

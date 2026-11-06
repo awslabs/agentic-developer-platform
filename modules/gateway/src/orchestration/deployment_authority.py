@@ -48,7 +48,13 @@ async def load_delivery_merge(session, *, identity, node, allow_concluded=False)
             continue
         receipt = MergeReceipt.model_validate(raw)
         if any(getattr(receipt, key) != value for key, value in asdict(identity).items()):
-            raise BootstrapRefusedError("delivery merge authority changed")
+            from .delivery_recovery import verified_bridge
+            from .review_cycle import CycleBlockedError
+
+            try:
+                await verified_bridge(session, identity=identity, node=node, binding=binding, receipt=receipt)
+            except (CycleBlockedError, ValueError, TypeError, KeyError):
+                raise BootstrapRefusedError("delivery merge authority changed") from None
         if (
             receipt.execution_id,
             receipt.flow_id,

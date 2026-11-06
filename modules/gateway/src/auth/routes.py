@@ -14,7 +14,7 @@ This module provides REST API endpoints for:
 import logging
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.config import get_settings
@@ -26,6 +26,7 @@ from src.shared.schemas.auth import AuthExchangeRequest, AuthExchangeResponse
 
 from .auth_service import AuthService
 from .middleware import get_current_user_context
+from .native_launch_revocation import revoke_native_launch
 from .schemas import ServiceAccountCreate, ServiceAccountListResponse, ServiceAccountResponse, ServiceAccountUpdate
 from .service_account_service import ServiceAccountService
 from .workspaces import router as workspace_router
@@ -238,12 +239,21 @@ async def cognito_config() -> dict:
             detail={"error": "auth_not_configured", "message": "Cognito authentication is not configured"},
         )
 
+    from .native_credential_authority import NativeConfig
+
+    try:
+        NativeConfig.configured()
+        native_approval_enabled = True
+    except HTTPException:
+        native_approval_enabled = False
+
     return {
         "user_pool_id": settings.cognito_user_pool_id,
         "client_id": settings.cognito_client_id,
         "cli_client_id": settings.cognito_cli_client_id,
         "identity_pool_id": "",
         "region": settings.aws_region,
+        "native_credential_approval_enabled": native_approval_enabled,
     }
 
 
@@ -256,8 +266,10 @@ async def cognito_config() -> dict:
         401: {"description": "Invalid or expired token"},
     },
 )
-async def logout(token_context=Depends(get_current_user_context), db: AsyncSession = Depends(get_db)) -> dict:
+async def logout(request: Request, token_context=Depends(get_current_user_context), db: AsyncSession = Depends(get_db)) -> dict:
     """Logout the current user."""
+    if token_context.account_type == "human" and token_context.token_use == "access":
+        await revoke_native_launch(request.headers.get("Authorization", ""), token_context.expires_at)
     try:
         logger.info(f"User logout: {token_context.user_id}")
         # For Cognito tokens, we don't need to do anything server-side

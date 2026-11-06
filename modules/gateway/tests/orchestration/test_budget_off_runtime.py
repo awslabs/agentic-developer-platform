@@ -4,7 +4,7 @@
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import update
 
 from src.budget.enforcement_settings import BudgetEnforcementSetting, flow_key
 from src.orchestration.execution_policy import DenyReason
@@ -54,7 +54,7 @@ async def test_budget_off_keeps_nonfinancial_gates(shared, gate):
     s = shared
     await off(s)
     if gate == "member":
-        await s.session.execute(delete(TenantMembership))
+        await s.session.execute(update(TenantMembership).values(revoked_at=datetime.now(UTC)))
     elif gate == "claim":
         s.claim.active_run_id = "another-worker"
     elif gate == "attempts":

@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { z } from 'zod';
 import { AgentTool } from '../context/types';
-import { ChatDataClient, ChatDataError } from '../gateway/chat-data-client';
+import { ChatDataClient, ChatDataError, isStoreUnconfigured } from '../gateway/chat-data-client';
 import { createMemoryTools } from './tools';
 import { MemoryCapabilities, MemoryProvider, MemoryQuery, MemoryRecord, MemoryToolScope } from './types';
 
@@ -34,7 +34,25 @@ export interface GatewayMemoryRecord extends MemoryRecord {
 }
 
 export class GatewayMemoryProvider implements MemoryProvider {
+  #unconfigured = false;
+
   constructor(private readonly client: ChatDataClient) {}
+
+  /** True once this gateway answered 503 `chat_memory_unconfigured`: memory is off for the sandbox's lifetime. */
+  get unconfigured(): boolean { return this.#unconfigured; }
+
+  /**
+   * Memory is optional (#8028). A gateway without MEMORY_TABLE answers every memory operation
+   * with 503 `chat_memory_unconfigured`; that is recorded once, logged once, and reported as
+   * true so the caller continues without memory. Every other failure returns false and keeps
+   * its existing handling.
+   */
+  degradedBy(error: unknown): boolean {
+    if (!isStoreUnconfigured(error, 'chat_memory_unconfigured')) return false;
+    if (!this.#unconfigured) console.error('[sandbox] memory store unconfigured on this gateway; continuing without memory');
+    this.#unconfigured = true;
+    return true;
+  }
 
   #record(row: z.infer<typeof recordSchema>): GatewayMemoryRecord {
     const { labels: recordLabels, ...record } = row;
@@ -59,6 +77,7 @@ export class GatewayMemoryProvider implements MemoryProvider {
       labels: { component: input.scope?.component, persona: input.scope?.persona },
     });
     if (!parsed.success) throw new ChatDataError('invalid_request');
+    if (this.#unconfigured) return [];
     const { limit, tokenBudget, ...query } = parsed.data;
     const records: GatewayMemoryRecord[] = [];
     const ids = new Set<string>();
@@ -66,7 +85,14 @@ export class GatewayMemoryProvider implements MemoryProvider {
     let tokens = 0;
     let cursor: string | null = null;
     for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
-      const page = this.#page(await this.client.runRequest('memory/search', { ...query, limit: Math.min(limit, 4), ...(cursor ? { cursor } : {}) }));
+      let raw: unknown;
+      try {
+        raw = await this.client.runRequest('memory/search', { ...query, limit: Math.min(limit, 4), ...(cursor ? { cursor } : {}) });
+      } catch (error) {
+        if (this.degradedBy(error)) return records;
+        throw error;
+      }
+      const page = this.#page(raw);
       for (const row of page.entries) {
         if (ids.has(row.id)) throw new ChatDataError('invalid_response');
         ids.add(row.id);
@@ -122,6 +148,7 @@ export class GatewayMemoryProvider implements MemoryProvider {
   }
 
   tools(scope: MemoryToolScope = {}): AgentTool[] {
+    if (this.#unconfigured) return [];
     return [
       ...createMemoryTools(this, scope).map(tool => ({
         ...tool,

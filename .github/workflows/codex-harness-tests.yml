@@ -5,6 +5,10 @@ on:
   pull_request:
     paths:
       - 'modules/agent-factory/codex-harness/**'
+      # The SDK fixture compiles the shared board's transitive runtime imports.
+      - 'modules/agent-factory/agent/src/**'
+      - 'modules/agent-factory/agent/package*.json'
+      - 'modules/agent-factory/rules/**'
       - 'docs/task-api/contracts/v1/**'
       - 'modules/gateway/src/agentauth/task*.py'
       - 'modules/gateway/src/tasks/**'
@@ -27,6 +31,9 @@ on:
     branches: [main]
     paths:
       - 'modules/agent-factory/codex-harness/**'
+      - 'modules/agent-factory/agent/src/**'
+      - 'modules/agent-factory/agent/package*.json'
+      - 'modules/agent-factory/rules/**'
       - 'docs/task-api/contracts/v1/**'
       - 'modules/gateway/src/agentauth/task*.py'
       - 'modules/gateway/src/tasks/**'
@@ -72,6 +79,7 @@ jobs:
       - run: python3 test/run-isolated.py -- node scripts/generate-report-probe-manifest.mjs --check
       - run: python3 test/run-isolated.py -- node test/sdk-request-shape.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-turn.mjs
+      - run: python3 test/run-isolated.py -- node test/sdk-budget-wait.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --tool-error
       - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --completion-repair
@@ -88,8 +96,12 @@ jobs:
         run: python3 test/run-isolated.py -- python3 -m venv "$RUNNER_TEMP/codex-task-fixtures"
       - name: Install fixture worker dependencies
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pip install pytest==9.0.3 requests==2.32.5 rfc8785==0.1.4 boto3==1.36.0 cryptography==50.0.1
+      - name: Install shared board runtime dependencies from the agent lockfile
+        run: python3 test/run-isolated.py -- npm --prefix ../agent ci --omit=dev --ignore-scripts
       - name: Workspace and run-bound worker client tests
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest ../agent-worker-image/tests/test_codex_workspace.py ../agent-worker-image/tests/test_codex_workspace_tools.py ../agent-worker-image/tests/test_codex_validation_source.py ../agent-worker-image/tests/test_codex_service_validation.py ../agent-worker-image/tests/test_task_run_client.py ../agent-worker-image/tests/test_codex_validation_tool.py ../agent-worker-image/tests/test_codex_kubernetes_validation.py ../agent-worker-image/tests/test_workspace_validation_binding.py -q
+      - name: Gateway-mode worker proof and receipt contract against fake façade
+        run: python3 test/run-isolated.py -- env ADP_TOOLS_VIA=gateway "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest ../agent-worker-image/tests/test_task_run_client.py ../agent-worker-image/tests/test_task_host.py -k 'gateway_facade or codex_generic_tool' -q
       - name: Real worker and Codex SDK Task lifecycle with fixture inference
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_task_codex_host.py integration/test_github_codex_host.py -q
       - name: Install gateway fixture dependencies

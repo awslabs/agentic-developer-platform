@@ -138,6 +138,141 @@ class Counter:
 # --- Ref updates are never forced -------------------------------------------
 
 
+@pytest.mark.parametrize("comparison", ["ahead", "diverged"])
+async def test_reconcile_merges_only_default_into_assigned_branch(comparison):
+    recorder = Recorder()
+
+    def merge():
+        recorder.branch_head = NEW_COMMIT
+        return httpx.Response(201, json={"sha": NEW_COMMIT})
+
+    recorder.overrides = {
+        f"GET /repos/acme/widgets/compare/{HEAD}...{DEFAULT_HEAD}": httpx.Response(200, json={"status": comparison}),
+        "POST /repos/acme/widgets/merges": merge,
+    }
+    counter = Counter()
+    async with provider(recorder) as gh:
+        result = await gh.reconcile_work_branch(reauthorize=counter)
+    assert result["status"] == "merged" and result["head_revision"] == NEW_COMMIT
+    mutations = [(method, path, body) for method, path, body in recorder.requests if method != "GET"]
+    assert mutations == [
+        ("POST", "/repos/acme/widgets/merges", {"base": BRANCH, "head": DEFAULT_HEAD, "commit_message": f"Merge main into {BRANCH}"})
+    ]
+    assert counter.calls == 3
+    # Both the prior story head and the base must be ancestors of the observed result.
+    reads = [path for method, path, _ in recorder.requests if method == "GET"]
+    assert f"/repos/acme/widgets/compare/{NEW_COMMIT}...{HEAD}" in reads
+    assert f"/repos/acme/widgets/compare/{NEW_COMMIT}...{DEFAULT_HEAD}" in reads
+
+
+@pytest.mark.parametrize("head,status", [(None, "new_branch"), (HEAD, "up_to_date")])
+async def test_reconcile_noop_does_not_write(head, status):
+    recorder = Recorder(branch_head=head)
+    async with provider(recorder) as gh:
+        result = await gh.reconcile_work_branch(reauthorize=Counter())
+    assert result["status"] == status
+    assert all(method == "GET" for method, _, _ in recorder.requests)
+
+
+async def test_reconcile_conflict_preserves_story_and_reports_it():
+    recorder = Recorder(
+        overrides={
+            f"GET /repos/acme/widgets/compare/{HEAD}...{DEFAULT_HEAD}": httpx.Response(200, json={"status": "diverged"}),
+            "POST /repos/acme/widgets/merges": httpx.Response(409, json={"message": "Merge conflict"}),
+        }
+    )
+    async with provider(recorder) as gh:
+        result = await gh.reconcile_work_branch(reauthorize=Counter())
+    assert result == {"status": "conflict", "branch": BRANCH, "head_revision": HEAD, "base_revision": DEFAULT_HEAD}
+    assert not any(method in {"PATCH", "DELETE"} for method, _, _ in recorder.requests)
+
+
+async def test_reconcile_refuses_revoked_authority_before_mutation():
+    recorder = Recorder(
+        overrides={
+            f"GET /repos/acme/widgets/compare/{HEAD}...{DEFAULT_HEAD}": httpx.Response(200, json={"status": "ahead"}),
+        }
+    )
+    async with provider(recorder) as gh:
+        with pytest.raises(OperationRefusedError, match="authority withdrawn"):
+            await gh.reconcile_work_branch(reauthorize=Counter(fail_after=0))
+    assert all(method == "GET" for method, _, _ in recorder.requests)
+
+
+async def test_reconcile_detects_a_racing_story_update_before_mutation():
+    recorder = Recorder()
+
+    def comparison():
+        recorder.branch_head = NEW_COMMIT
+        return httpx.Response(200, json={"status": "diverged"})
+
+    recorder.overrides = {f"GET /repos/acme/widgets/compare/{HEAD}...{DEFAULT_HEAD}": comparison}
+    async with provider(recorder) as gh:
+        with pytest.raises(ProviderConflictError, match="branch changed"):
+            await gh.reconcile_work_branch(reauthorize=Counter())
+    assert all(method == "GET" for method, _, _ in recorder.requests)
+
+
+async def test_reconcile_cannot_target_default_branch():
+    recorder = Recorder()
+    with pytest.raises(OperationRefusedError, match="default branch"):
+        async with provider(recorder, _assignment(branch="main")) as gh:
+            await gh.reconcile_work_branch(reauthorize=Counter())
+    assert recorder.requests == []
+
+
+async def test_reconcile_refuses_a_changed_repository_default_branch():
+    recorder = Recorder(
+        overrides={
+            "GET /repos/acme/widgets": httpx.Response(200, json={"id": REPOSITORY_ID, "default_branch": "trunk"}),
+        }
+    )
+    async with provider(recorder) as gh:
+        with pytest.raises(OperationRefusedError, match="default branch changed"):
+            await gh.reconcile_work_branch(reauthorize=Counter())
+    assert all(method == "GET" for method, _, _ in recorder.requests)
+
+
+async def test_reconcile_lost_response_retry_observes_the_merge_without_repeating_it():
+    recorder = Recorder(
+        overrides={
+            f"GET /repos/acme/widgets/compare/{HEAD}...{DEFAULT_HEAD}": httpx.Response(200, json={"status": "diverged"}),
+        }
+    )
+
+    def landed_but_timed_out():
+        recorder.branch_head = NEW_COMMIT
+        raise httpx.ReadTimeout("response lost")
+
+    recorder.overrides["POST /repos/acme/widgets/merges"] = landed_but_timed_out
+    async with provider(recorder) as gh:
+        with pytest.raises(ProviderUnavailableError):
+            await gh.reconcile_work_branch(reauthorize=Counter())
+        result = await gh.reconcile_work_branch(reauthorize=Counter())
+    assert result["status"] == "up_to_date"
+    assert result["head_revision"] == NEW_COMMIT
+    assert len([method for method, _, _ in recorder.requests if method == "POST"]) == 1
+
+
+async def test_reconcile_refuses_success_if_concurrent_force_update_lost_either_parent():
+    recorder = Recorder(
+        overrides={
+            f"GET /repos/acme/widgets/compare/{HEAD}...{DEFAULT_HEAD}": httpx.Response(200, json={"status": "diverged"}),
+            f"GET /repos/acme/widgets/compare/{NEW_COMMIT}...{HEAD}": httpx.Response(200, json={"status": "diverged"}),
+        }
+    )
+
+    def overwritten():
+        recorder.branch_head = NEW_COMMIT
+        return httpx.Response(201, json={"sha": "d" * 40})
+
+    recorder.overrides["POST /repos/acme/widgets/merges"] = overwritten
+    async with provider(recorder) as gh:
+        with pytest.raises(OperationRefusedError):
+            await gh.reconcile_work_branch(reauthorize=Counter())
+    assert not any(method in {"PATCH", "DELETE"} for method, _, _ in recorder.requests)
+
+
 async def test_commit_updates_the_ref_without_force_and_on_the_observed_parent():
     """The two properties that keep a mediated commit from destroying work:
     the parent is the head we actually read, and `force` is false."""
@@ -728,6 +863,38 @@ async def test_server_errors_are_retryable_and_auth_failures_are_not():
         assert not isinstance(exc.value, ProviderUnavailableError)
 
 
+@pytest.mark.parametrize("headers", [{"x-ratelimit-remaining": "0"}, {"retry-after": "60"}])
+@pytest.mark.parametrize("archive", [False, True])
+async def test_github_rate_limit_403_is_retryable(headers, archive):
+    path = f"/repos/acme/widgets/tarball/{HEAD}" if archive else "/repos/acme/widgets"
+    recorder = Recorder(overrides={f"GET {path}": httpx.Response(403, headers=headers, json={"message": "private-provider-detail"})})
+    async with provider(recorder) as gh:
+        with pytest.raises(ProviderUnavailableError) as exc:
+            if archive:
+                await gh.fetch_repository_archive(ref=BRANCH)
+            else:
+                await gh.read_repository()
+    assert "private-provider-detail" not in str(exc.value)
+    assert "test-token" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "status,headers",
+    [(401, {"x-ratelimit-remaining": "0"}), (403, {"x-ratelimit-remaining": "1"}), (403, {"retry-after": "invalid"})],
+)
+@pytest.mark.parametrize("archive", [False, True])
+async def test_provider_denial_without_rate_limit_evidence_remains_terminal(status, headers, archive):
+    path = f"/repos/acme/widgets/tarball/{HEAD}" if archive else "/repos/acme/widgets"
+    recorder = Recorder(overrides={f"GET {path}": httpx.Response(status, headers=headers)})
+    async with provider(recorder) as gh:
+        with pytest.raises(OperationRefusedError) as exc:
+            if archive:
+                await gh.fetch_repository_archive(ref=BRANCH)
+            else:
+                await gh.read_repository()
+    assert not isinstance(exc.value, ProviderUnavailableError)
+
+
 async def test_no_provider_body_or_token_appears_in_an_error():
     """Provider bodies echo request content and URLs, and this path holds a token."""
     recorder = Recorder(overrides={"GET /repos/acme/widgets": httpx.Response(404, json={"message": "secret-detail", "token": "leaked"})})
@@ -904,3 +1071,9 @@ async def test_an_off_provider_redirect_target_is_refused():
     )
     with pytest.raises(OperationRefusedError):
         await _fetch_slice(bytes(16), recorder=recorder)
+
+
+def test_mediated_archive_ceiling_covers_this_repository_tarball():
+    """#7860: aws-e/adp's tarball measured 33,600,901 bytes at df11ca52 (2026-10-15) and every
+    worker bootstrap died at the previous 32 MiB ceiling with a silent 404. Keep headroom."""
+    assert MAX_ARCHIVE_BYTES >= 48 * 1024 * 1024

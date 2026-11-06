@@ -551,6 +551,10 @@ class TestTransactionIsolation:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.rowcount = rowcount
+        original_execute = mock_cursor.execute
+        mock_cursor.fetchone.side_effect = lambda: (
+            (None,) if "to_regclass('metering_scope_gates')" in original_execute.call_args.args[0] else ("req-1",)
+        )
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
         return mock_conn, mock_cursor
@@ -690,6 +694,9 @@ class _LedgerCursor:
         return self.result
 
     def execute(self, sql, params=None):
+        if "SELECT to_regclass('metering_scope_gates')" in sql:
+            self.result = (None,)
+            return
         if "INSERT INTO budget_settlement_receipts" in sql:
             org, request, user, cost, tokens, allocation = params
             key = (org, request)

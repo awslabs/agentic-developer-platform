@@ -35,17 +35,18 @@ resource "aws_iam_role" "provider" {
   max_session_duration = 3600
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
+    # ExternalId is an AssumeRole condition, not a TagSession condition.
+    # Both permissions retain the same exact principal and required tag values.
+    Statement = [for action in ["sts:AssumeRole", "sts:TagSession"] : {
       Effect    = "Allow"
       Principal = { AWS = var.gateway_role_arn }
-      Action    = ["sts:AssumeRole", "sts:TagSession"]
+      Action    = action
       Condition = {
-        StringEquals = {
-          "sts:ExternalId"              = var.external_id
+        StringEquals = merge({
           "aws:RequestTag/adp:user_id"  = var.beneficiary_user_id
           "aws:RequestTag/adp:agent_id" = ["superplane-operation", "superplane-provider-validation"]
           "aws:RequestTag/adp:persona"  = ["superplane-operation", "superplane-provider-validation"]
-        }
+        }, action == "sts:AssumeRole" ? { "sts:ExternalId" = var.external_id } : {})
         StringLike                  = { "aws:RequestTag/adp:task_id" = "?*" }
         "ForAllValues:StringEquals" = { "aws:TagKeys" = ["adp:user_id", "adp:agent_id", "adp:task_id", "adp:persona"] }
       }

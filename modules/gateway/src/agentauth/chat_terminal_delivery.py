@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError
-from src.agentauth.chat_delivery import ChatDelivery
+from src.agentauth.chat_delivery import ChatDelivery, owner_mismatch
 
 
 def prepare_terminal_delivery(execution, launch, terminal, reply):
@@ -15,17 +15,22 @@ def prepare_terminal_delivery(execution, launch, terminal, reply):
         return None
     try:
         delivery = ChatDelivery.model_validate_json(execution["chat_delivery"]["S"])
-        if any(getattr(delivery, field) != getattr(launch, field) for field in ("run_id", "tenant_id", "user_id", "team_id", "session_id")):
-            raise ValueError
     except (KeyError, TypeError, ValueError):
         raise ChatAuthorizationRefusedError("chat terminal delivery owner mismatch") from None
+    mismatch = owner_mismatch(delivery, launch)
+    if mismatch:
+        raise ChatAuthorizationRefusedError("chat terminal delivery owner mismatch: " + ",".join(mismatch))
     outcome = terminal["outcome"]
     if outcome == "completed":
         content = reply.get("content") if isinstance(reply, dict) else None
     elif outcome == "cancelled":
         content = "This turn was cancelled."
     elif outcome == "failed":
-        content = "The assistant could not complete this turn."
+        # A sandbox that named its own owner-visible reason (for example a refused
+        # model-policy decision) replaces the generic sentence with that text.
+        content = (
+            reply["content"] if isinstance(reply, dict) and isinstance(reply.get("content"), str) else "The assistant could not complete this turn."
+        )
     elif outcome == "interrupted":
         content = (
             "This turn was interrupted before a result was saved. You can retry it."
@@ -59,6 +64,7 @@ def terminal_delivery_payload(document):
     delivery = ChatDelivery.model_validate(document["delivery"])
     terminal = document["terminal"]
     return {
+        **({"error_class": terminal["error_class"]} if "error_class" in terminal else {}),
         "terminal_delivery": True,
         "strict_delivery": True,
         "channel": "webchat",

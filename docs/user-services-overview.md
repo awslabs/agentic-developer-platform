@@ -17,6 +17,7 @@ Several features share the same shape — user-scoped, tenant-isolated, self-ser
 | v2 | `knowledge/` | Personal knowledge repo — notes, meeting history, preferences, docs the user owns; agents reason over it | (to be written) |
 | v3 | `agents/` | User-scoped bespoke agents — per-user instances of platform-provided agent templates | `user-scoped-agents-design.md` |
 | v3+ | `chief-of-staff/` | Opinionated preconfigured agent built on the three above; goals, commitments, routines | (to be written) |
+| host | `dev-box/` | Owner-scoped persistent machine admission and lifecycle contract | `decisions/dev-box-user-service.md` |
 
 The order reflects real dependency: agents need credentials (vault) before they can act on the user's behalf; bespoke user agents need a knowledge source (knowledge repo) to reason over; chief-of-staff is a preconfigured composition of all three.
 
@@ -59,6 +60,14 @@ These apply to every service in `modules/user-services/`. They are what make thi
 8. **Per-user metered.** Costs (LLM tokens, storage, API calls) are attributable to the user, not just the tenant. Budget caps are per-user, not per-tenant.
 9. **Capability-bounded.** No user service grants a user capability beyond what their role already allows. The fence is their own scope, not the service's scope.
 10. **No arbitrary code execution from users.** Users can configure, customize, and compose — they cannot submit executable code that runs on platform infra. (See `user-scoped-agents-design.md` for how this applies to user-scoped agents.)
+
+Dev Box is a deliberate exception to items 1, 7 and 10 only: shared template and
+policy metadata is administrative, while inventory and access remain scoped to
+one owner. Owner code runs on an isolated, capability-bounded machine, never in
+the gateway or controller. Release is asynchronous because inventory and disks
+must remain attributed until provider cleanup is verified. See
+[`decisions/dev-box-user-service.md`](decisions/dev-box-user-service.md); the
+other user services retain their original restrictions.
 
 ## What goes here vs. not here
 
@@ -126,4 +135,4 @@ The cluster is neither platform core nor app code — it is the **personal layer
 
 - **Team-shared user-service content.** A team having a shared "team notes" doc, or a shared team vault, is *not* a user service — it is tenant-scoped. Belongs elsewhere (org-services cluster, or per-domain).
 - **Cross-tenant user content.** Explicitly rejected. A user belongs to one org per user-service entry; the contractor-across-two-orgs case is an identity problem, solved separately.
-- **User-authored code.** Users can configure and compose; they cannot upload executable code. This is a hard line for the cluster.
+- **User-authored code in shared infrastructure.** Dev Box permits owner code only on a private, isolated machine; other user services do not run uploaded code.

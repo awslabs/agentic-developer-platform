@@ -1,0 +1,1057 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Proposed Product Profile API 1.0 contracts; not a deployed API",
+  "$defs": {
+    "Id": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^\\S(?:.*\\S)?$"},
+    "NativeId": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^\\S(?:.*\\S)?$"},
+    "Name": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S"},
+    "Text": {"type": "string", "minLength": 1, "maxLength": 10000, "pattern": "\\S"},
+    "Instant": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "HttpsUrl": {"type": "string", "format": "uri", "pattern": "^https://[^/@]+(?:/|$)", "maxLength": 2048},
+    "Revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "ProductPerson": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "github_username"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": "string"
+        },
+        "github_username": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ProductPeople": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_id",
+        "revision",
+        "owner",
+        "team",
+        "members",
+        "next_offset",
+        "is_owner",
+        "permissions"
+      ],
+      "properties": {
+        "product_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "owner": {
+          "$ref": "#/$defs/ProductPerson"
+        },
+        "team": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "name"
+              ],
+              "properties": {
+                "id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProductPerson"
+          }
+        },
+        "next_offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "is_owner": {
+          "type": "boolean"
+        },
+        "permissions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manage_team",
+            "manage_people",
+            "enroll_github"
+          ],
+          "properties": {
+            "manage_team": {
+              "type": "boolean"
+            },
+            "manage_people": {
+              "type": "boolean"
+            },
+            "enroll_github": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+,
+    "PrincipalRef": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "id"],
+      "properties": {"kind": {"enum": ["user", "team", "service"]}, "id": {"$ref": "#/$defs/Id"}}
+    },
+    "RecordRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tenant_id", "project_id", "source_connection_id", "record_type", "record_id", "record_revision"],
+      "properties": {
+        "tenant_id": {"$ref": "#/$defs/Id"}, "project_id": {"$ref": "#/$defs/Id"},
+        "source_connection_id": {"$ref": "#/$defs/NativeId"}, "record_type": {"$ref": "#/$defs/Name"},
+        "record_id": {"$ref": "#/$defs/NativeId"}, "record_revision": {"type": "string", "minLength": 1, "maxLength": 512, "not": {"enum": ["latest", "null"]}}
+      }
+    },
+    "ConnectionRef": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "id"],
+      "properties": {"kind": {"enum": ["github_installation", "credential"]}, "id": {"$ref": "#/$defs/Id"}}
+    },
+    "Money": {
+      "type": "object", "additionalProperties": false, "required": ["amount", "currency"],
+      "properties": {"amount": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,13})(\\.[0-9]{1,6})?$"}, "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}}
+    },
+    "FieldProvenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["paths", "state", "method", "source_refs", "authority_mapping_ref", "observed_at"],
+      "properties": {
+        "paths": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "pattern": "^/"}},
+        "state": {"enum": ["accepted", "inferred", "missing", "conflicting", "not_applicable"]},
+        "method": {"enum": ["manual", "connector", "derived", "extracted"]},
+        "source_refs": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/RecordRef"}},
+        "authority_mapping_ref": {"$ref": "#/$defs/RecordRef"}, "observed_at": {"$ref": "#/$defs/Instant"},
+        "stale_after": {"$ref": "#/$defs/Instant"}, "confirmed_by": {"$ref": "#/$defs/PrincipalRef"},
+        "confirmed_at": {"$ref": "#/$defs/Instant"}, "override_until": {"$ref": "#/$defs/Instant"}
+      },
+      "dependentRequired": {"confirmed_by": ["confirmed_at"], "confirmed_at": ["confirmed_by"]},
+      "allOf": [{"if": {"properties": {"state": {"enum": ["accepted", "inferred", "conflicting"]}}}, "then": {"properties": {"source_refs": {"minItems": 1}}}}]
+    },
+    "ProductData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "purpose",
+        "intended_users",
+        "owner_ref",
+        "starting_point",
+        "lifecycle_status"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "purpose": {
+          "$ref": "#/$defs/Text"
+        },
+        "intended_users": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/Name"
+          }
+        },
+        "owner_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "user"
+            },
+            "id": {
+              "$ref": "#/$defs/Id"
+            }
+          }
+        },
+        "starting_point": {
+          "enum": [
+            "idea",
+            "existing_assets",
+            "running_product"
+          ]
+        },
+        "lifecycle_status": {
+          "enum": [
+            "draft",
+            "active",
+            "retired"
+          ]
+        },
+        "domain": {
+          "$ref": "#/$defs/Name"
+        },
+        "goals": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/Text"
+          }
+        },
+        "team_id": {
+          "$ref": "#/$defs/Id",
+          "description": "Optional existing organization team; all bound Projects inherit this Product mapping. Omitted until mapped."
+        }
+      }
+    },
+    "CreateProduct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "purpose",
+        "intended_users",
+        "starting_point",
+        "project"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "purpose": {
+          "$ref": "#/$defs/Text"
+        },
+        "intended_users": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/Name"
+          }
+        },
+        "owner_user_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "starting_point": {
+          "enum": [
+            "idea",
+            "existing_assets",
+            "running_product"
+          ]
+        },
+        "project": {
+          "$ref": "#/$defs/ProjectSelection"
+        },
+        "team_id": {
+          "$ref": "#/$defs/Id",
+          "description": "Optional existing organization team; all bound Projects inherit this Product mapping. Omitted until mapped."
+        },
+        "domain": {
+          "$ref": "#/$defs/Name"
+        }
+      }
+    },
+    "ProjectSelection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "const": "create"
+            },
+            "name": {
+              "$ref": "#/$defs/Name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "project_id"
+          ],
+          "properties": {
+            "mode": {
+              "const": "select"
+            },
+            "project_id": {
+              "$ref": "#/$defs/Id"
+            }
+          }
+        }
+      ]
+    },
+    "ProductPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "purpose": {
+          "$ref": "#/$defs/Text"
+        },
+        "intended_users": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/Name"
+          }
+        },
+        "owner_user_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "starting_point": {
+          "enum": [
+            "idea",
+            "existing_assets",
+            "running_product"
+          ]
+        },
+        "lifecycle_status": {
+          "enum": [
+            "draft",
+            "active",
+            "retired"
+          ]
+        },
+        "domain": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Name"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goals": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/Text"
+          }
+        },
+        "team_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Update Product team using existing administration rights. No per-Project override."
+        }
+      }
+    },
+    "RefList": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"$ref": "#/$defs/RecordRef"}},
+    "Basic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repositories": {
+          "$ref": "#/$defs/RefList"
+        },
+        "trackers": {
+          "$ref": "#/$defs/RefList"
+        },
+        "documents": {
+          "$ref": "#/$defs/RefList"
+        },
+        "roadmap": {
+          "$ref": "#/$defs/RefList"
+        },
+        "architecture": {
+          "$ref": "#/$defs/RefList"
+        },
+        "collaboration": {
+          "$ref": "#/$defs/RefList"
+        },
+        "decisions": {
+          "$ref": "#/$defs/RefList"
+        },
+        "user_mappings": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "provider_user_id",
+              "user_id"
+            ],
+            "properties": {
+              "provider": {
+                "$ref": "#/$defs/Name"
+              },
+              "provider_user_id": {
+                "$ref": "#/$defs/NativeId"
+              },
+              "user_id": {
+                "$ref": "#/$defs/Id"
+              }
+            }
+          }
+        }
+      }
+    },
+    "Advanced": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "environments": {"$ref": "#/$defs/RefList"}, "deployments": {"$ref": "#/$defs/RefList"},
+        "pipelines": {"$ref": "#/$defs/RefList"}, "support": {"$ref": "#/$defs/RefList"},
+        "observability": {"$ref": "#/$defs/RefList"}, "runbooks": {"$ref": "#/$defs/RefList"},
+        "test_strategy": {"$ref": "#/$defs/RefList"}, "security_strategy": {"$ref": "#/$defs/RefList"},
+        "deployment_strategy": {"$ref": "#/$defs/RefList"}, "release_strategy": {"$ref": "#/$defs/RefList"},
+        "agent_policy_ref": {"$ref": "#/$defs/RecordRef"}, "skills": {"$ref": "#/$defs/RefList"}
+      }
+    },
+    "Allocation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "target_ref", "amount", "category", "period_start", "period_end", "approval_status", "owner_ref"],
+      "properties": {
+        "id": {"$ref": "#/$defs/Id"}, "name": {"$ref": "#/$defs/Name"}, "target_ref": {"$ref": "#/$defs/RecordRef"},
+        "amount": {"$ref": "#/$defs/Money"}, "category": {"enum": ["ai", "cloud", "other"]},
+        "period_start": {"type": "string", "format": "date"}, "period_end": {"type": "string", "format": "date"},
+        "approval_status": {"enum": ["proposed", "approved", "rejected", "withdrawn", "unknown"]}, "owner_ref": {"$ref": "#/$defs/PrincipalRef"},
+        "parent_allocation_ref": {"$ref": "#/$defs/RecordRef"}, "enforcement_policy_ref": {"$ref": "#/$defs/RecordRef"}
+      }
+    },
+    "Financials": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "business_cases": {"$ref": "#/$defs/RefList"}, "initiatives": {"$ref": "#/$defs/RefList"},
+        "allocations": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/Allocation"}},
+        "release_target_date": {"type": "string", "format": "date"}, "budget_policy_ref": {"$ref": "#/$defs/RecordRef"}
+      }
+    },
+    "Applicability": {
+      "type": "object", "additionalProperties": false, "required": ["check_id", "state"],
+      "properties": {"check_id": {"$ref": "#/$defs/Name"}, "state": {"enum": ["applicable", "not_applicable", "later"]}, "reason": {"$ref": "#/$defs/Text"}}
+    },
+    "CapabilitySelection": {
+      "type": "object", "additionalProperties": false, "required": ["capability", "ownership_mode"],
+      "properties": {"capability": {"$ref": "#/$defs/Name"}, "ownership_mode": {"enum": ["managed", "integrated", "observed", "not_applicable"]}, "configuration_ref": {"$ref": "#/$defs/RecordRef"}, "reason": {"$ref": "#/$defs/Text"}}
+    },
+    "Governance": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"criticality": {"enum": ["low", "medium", "high", "critical"]}, "data_classification": {"enum": ["public", "internal", "confidential", "restricted"]}, "cost_center": {"$ref": "#/$defs/Name"}, "support_channel_ref": {"$ref": "#/$defs/RecordRef"}, "access_review_date": {"type": "string", "format": "date"}, "execution_policy_ref": {"$ref": "#/$defs/RecordRef"}, "retention_policy_ref": {"$ref": "#/$defs/RecordRef"}}
+    },
+    "ProjectConfiguration": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "basic": {"$ref": "#/$defs/Basic"}, "advanced": {"$ref": "#/$defs/Advanced"}, "financials": {"$ref": "#/$defs/Financials"},
+        "selected_capabilities": {"type": "array", "maxItems": 50, "uniqueItems": true, "items": {"$ref": "#/$defs/CapabilitySelection"}},
+        "governance": {"$ref": "#/$defs/Governance"},
+        "applicability": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/Applicability"}}
+      }
+    },
+    "Project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "tenant_id",
+        "name",
+        "owner_user_id",
+        "state"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "owner_user_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "state": {
+          "enum": [
+            "registered",
+            "suspended",
+            "archived"
+          ]
+        }
+      }
+    },
+    "ProjectPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "owner_user_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "state": {
+          "enum": [
+            "registered",
+            "suspended",
+            "archived"
+          ]
+        },
+        "configuration": {
+          "$ref": "#/$defs/ProjectConfiguration"
+        }
+      }
+    },
+    "Check": {
+      "type": "object", "additionalProperties": false, "required": ["id", "status", "required", "reason"],
+      "properties": {"id": {"$ref": "#/$defs/Name"}, "status": {"enum": ["complete", "missing", "conflicting", "stale", "not_applicable", "later"]}, "required": {"type": "boolean"}, "reason": {"$ref": "#/$defs/Text"}}
+    },
+    "Progress": {
+      "type": "object", "additionalProperties": false, "required": ["rule_version", "completed", "applicable", "percentage", "maturity", "checks", "next_steps"],
+      "properties": {
+        "rule_version": {"const": "profile-1"}, "completed": {"type": "integer", "minimum": 0}, "applicable": {"type": "integer", "minimum": 1},
+        "percentage": {"type": "integer", "minimum": 0, "maximum": 100}, "maturity": {"enum": ["saved", "getting_started", "advanced", "pro"]},
+        "checks": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/Check"}}, "next_steps": {"type": "array", "maxItems": 2, "items": {"$ref": "#/$defs/Text"}}
+      }
+    },
+    "Profile": {
+      "type": "object", "additionalProperties": false, "required": ["schema_version", "tenant_id", "product_id", "project_id", "revision", "product", "project", "configuration", "provenance", "progress", "context_status"],
+      "properties": {
+        "schema_version": {"const": "1.0"}, "tenant_id": {"$ref": "#/$defs/Id"}, "product_id": {"$ref": "#/$defs/Id"}, "project_id": {"$ref": "#/$defs/Id"}, "revision": {"$ref": "#/$defs/Revision"},
+        "product": {"$ref": "#/$defs/ProductData"}, "project": {"$ref": "#/$defs/Project"}, "configuration": {"$ref": "#/$defs/ProjectConfiguration"},
+        "provenance": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/FieldProvenance"}}, "progress": {"$ref": "#/$defs/Progress"},
+        "context_status": {"enum": ["unavailable", "pending", "available", "denied"]}, "archived_at": {"$ref": "#/$defs/Instant"}
+      }
+    },
+    "BindingInput": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "provider", "connection_ref", "namespace", "native_id"],
+      "allOf": [{"if": {"properties": {"kind": {"const": "repository"}, "provider": {"const": "github"}}}, "then": {"properties": {"source_revision": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40}$"}}}}],
+      "properties": {
+        "kind": {"enum": ["repository", "tracker", "document", "environment", "pipeline", "support", "communication", "finance"]},
+        "provider": {"$ref": "#/$defs/Name"}, "connection_ref": {"$ref": "#/$defs/ConnectionRef"}, "namespace": {"$ref": "#/$defs/NativeId"}, "native_id": {"$ref": "#/$defs/NativeId"},
+        "environment": {"$ref": "#/$defs/EnvironmentSelection"},
+        "source_revision": {"type": ["string", "null"], "maxLength": 512}
+      }
+    },
+    "EnvironmentSelection": {
+      "type": "object", "additionalProperties": false, "required": ["name", "environment_class", "production"],
+      "properties": {"name": {"$ref": "#/$defs/Name"}, "environment_class": {"enum": ["development", "test", "staging", "production", "other"]}, "production": {"type": "boolean"}}
+    },
+    "VerifiedEnvironment": {
+      "type": "object", "additionalProperties": false, "required": ["provider", "account_id", "regions", "role_ref", "permission_tier", "verified_at", "source_revision"],
+      "properties": {"provider": {"const": "aws"}, "account_id": {"type": "string", "pattern": "^[0-9]{12}$"}, "regions": {"type": "array", "minItems": 1, "maxItems": 50, "uniqueItems": true, "items": {"$ref": "#/$defs/Name"}}, "role_ref": {"$ref": "#/$defs/NativeId"}, "permission_tier": {"enum": ["read_only", "scoped_write", "unknown"]}, "verified_at": {"$ref": "#/$defs/Instant"}, "source_revision": {"$ref": "#/$defs/NativeId"}}
+    },
+    "Binding": {"oneOf": [{"$ref": "#/$defs/AccessibleBinding"}, {"$ref": "#/$defs/RedactedBinding"}]},
+    "RedactedBinding": {
+      "type": "object", "additionalProperties": false, "required": ["id", "project_id", "status", "generation", "revision"],
+      "properties": {"id": {"$ref": "#/$defs/Id"}, "project_id": {"$ref": "#/$defs/Id"}, "status": {"const": "restricted"}, "generation": {"$ref": "#/$defs/Revision"}, "revision": {"$ref": "#/$defs/Revision"}}
+    },
+    "AccessibleBinding": {
+      "type": "object", "additionalProperties": false, "required": ["id", "project_id", "selection", "status", "generation", "revision"],
+      "properties": {
+        "id": {"$ref": "#/$defs/Id"}, "project_id": {"$ref": "#/$defs/Id"}, "selection": {"$ref": "#/$defs/BindingInput"}, "revision": {"$ref": "#/$defs/Revision"}, "generation": {"$ref": "#/$defs/Revision"},
+        "status": {"enum": ["unverified", "healthy", "degraded", "revoked", "unlinked"]}, "observed_at": {"$ref": "#/$defs/Instant"}, "stale_after": {"$ref": "#/$defs/Instant"}, "source_revision": {"$ref": "#/$defs/NativeId"}, "verified_ref": {"$ref": "#/$defs/RecordRef"}, "verified_environment": {"$ref": "#/$defs/VerifiedEnvironment"}, "web_url": {"$ref": "#/$defs/HttpsUrl"}
+      }
+    },
+    "Source": {
+      "type": "object", "additionalProperties": false, "required": ["connection_ref", "provider", "label", "health", "capabilities"],
+      "properties": {"connection_ref": {"$ref": "#/$defs/ConnectionRef"}, "provider": {"$ref": "#/$defs/Name"}, "label": {"$ref": "#/$defs/Name"}, "health": {"enum": ["unverified", "healthy", "degraded", "revoked"]}, "capabilities": {"type": "array", "items": {"$ref": "#/$defs/Name"}}, "verified_at": {"$ref": "#/$defs/Instant"}, "resources": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/DiscoveredResource"}}, "resource_cursor": {"type": "string", "maxLength": 2048}, "coverage": {"enum": ["complete", "partial", "unavailable", "denied"]}}
+    },
+    "DiscoveredResource": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "namespace", "native_id", "name", "source_revision", "observed_at"],
+      "properties": {
+        "kind": {"enum": ["repository", "tracker", "document", "environment", "pipeline", "support", "communication", "finance"]}, "namespace": {"$ref": "#/$defs/NativeId"}, "native_id": {"$ref": "#/$defs/NativeId"}, "name": {"$ref": "#/$defs/Name"}, "source_revision": {"$ref": "#/$defs/NativeId"}, "observed_at": {"$ref": "#/$defs/Instant"}, "binding_id": {"$ref": "#/$defs/Id"}, "web_url": {"$ref": "#/$defs/HttpsUrl"}, "record_ref": {"$ref": "#/$defs/RecordRef"}, "default_branch": {"$ref": "#/$defs/Name"},
+        "languages": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/Name"}}, "build_commands": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/Text"}}, "test_commands": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/Text"}}
+      }
+    },
+    "SessionStart": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"mode": {"enum": ["direct", "guided"], "default": "direct"}, "selected_binding_ids": {"type": "array", "maxItems": 10, "uniqueItems": true, "items": {"$ref": "#/$defs/Id"}}}
+    },
+    "StepState": {
+      "type": "object", "additionalProperties": false, "required": ["status", "evidence_refs"],
+      "properties": {"status": {"enum": ["not_started", "in_progress", "waiting_external", "blocked", "complete", "not_applicable", "later"]}, "evidence_refs": {"$ref": "#/$defs/RefList"}, "reason": {"$ref": "#/$defs/Text"}, "operation_id": {"$ref": "#/$defs/Id"}}
+    },
+    "Session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "tenant_id",
+        "product_id",
+        "project_id",
+        "revision",
+        "state",
+        "steps",
+        "progress",
+        "resume_path",
+        "proposals"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "product_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "project_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "state": {
+          "enum": [
+            "open",
+            "waiting_external",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "steps": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "information": {
+              "$ref": "#/$defs/StepState"
+            },
+            "basic": {
+              "$ref": "#/$defs/StepState"
+            },
+            "advanced": {
+              "$ref": "#/$defs/StepState"
+            },
+            "financials": {
+              "$ref": "#/$defs/StepState"
+            }
+          }
+        },
+        "progress": {
+          "$ref": "#/$defs/Progress"
+        },
+        "resume_path": {
+          "type": "string",
+          "pattern": "^/products/"
+        },
+        "operation_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "proposals": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/Proposal"
+          },
+          "description": "Pending, currently authorized proposals, including unconsumed fields after partial confirmation. No chat transcript is needed to resume."
+        }
+      }
+    },
+    "StepUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "save",
+            "confirm",
+            "not_applicable",
+            "later"
+          ]
+        },
+        "product": {
+          "$ref": "#/$defs/ProductPatch"
+        },
+        "configuration": {
+          "$ref": "#/$defs/ProjectConfiguration"
+        },
+        "proposal_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "reason": {
+          "$ref": "#/$defs/Text"
+        },
+        "override_until": {
+          "$ref": "#/$defs/Instant"
+        },
+        "confirmed_paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/(product|configuration)/"
+          },
+          "description": "Exact remaining proposal paths selected by the user. Arrays are atomic fields; no array-element pointers."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "confirm"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "proposal_id",
+              "confirmed_paths"
+            ],
+            "properties": {
+              "product": false,
+              "configuration": false
+            }
+          },
+          "else": {
+            "properties": {
+              "proposal_id": false,
+              "confirmed_paths": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "not_applicable"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          }
+        }
+      ]
+    },
+    "DiscoveryRequest": {
+      "type": "object", "additionalProperties": false, "required": ["binding_ids"],
+      "properties": {"binding_ids": {"type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": {"$ref": "#/$defs/Id"}}, "cursor": {"type": "string", "maxLength": 2048}}
+    },
+    "Proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "base_revision",
+        "configuration",
+        "provenance",
+        "remaining_paths",
+        "expires_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "base_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "configuration": {
+          "$ref": "#/$defs/ProjectConfiguration"
+        },
+        "product": {
+          "$ref": "#/$defs/ProductPatch"
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FieldProvenance"
+          }
+        },
+        "remaining_paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/(product|configuration)/"
+          }
+        },
+        "expires_at": {
+          "$ref": "#/$defs/Instant"
+        }
+      }
+    },
+    "GuidanceRequest": {"type": "object", "additionalProperties": false, "required": ["message"], "properties": {"message": {"type": "string", "minLength": 1, "maxLength": 2000}, "mode": {"enum": ["deterministic", "model"], "default": "deterministic"}}},
+    "Guidance": {"type": "object", "additionalProperties": false, "required": ["revision", "message", "proposals", "mode"], "properties": {"revision": {"$ref": "#/$defs/Revision"}, "message": {"$ref": "#/$defs/Text"}, "proposals": {"type": "array", "maxItems": 10, "items": {"$ref": "#/$defs/Proposal"}}, "mode": {"enum": ["model", "deterministic"]}}},
+    "HandoffRequest": {
+      "type": "object", "additionalProperties": false, "required": ["target", "action"],
+      "properties": {
+        "target": {"enum": ["context", "l5", "github_connection", "aws_connection", "oauth_connection", "administrator", "repository_create", "repository_pipeline"]},
+        "action": {"enum": ["read_context", "prepare_setup", "connect", "assign_team", "create_repository", "propose_pipeline"]},
+        "capability": {"$ref": "#/$defs/Name"}, "provider": {"$ref": "#/$defs/Name"}, "binding_id": {"$ref": "#/$defs/Id"},
+        "repository_plan": {"type": "object", "additionalProperties": false, "required": ["connection_ref", "owner_native_id", "name", "visibility", "template_ref", "protections_ref", "confirmed"], "properties": {"connection_ref": {"$ref": "#/$defs/ConnectionRef"}, "owner_native_id": {"$ref": "#/$defs/NativeId"}, "name": {"$ref": "#/$defs/Name"}, "visibility": {"enum": ["private", "internal", "public"]}, "template_ref": {"$ref": "#/$defs/RecordRef"}, "protections_ref": {"$ref": "#/$defs/RecordRef"}, "confirmed": {"const": true}}},
+        "pipeline_plan": {"type": "object", "additionalProperties": false, "required": ["template_ref", "base_revision", "confirmed"], "properties": {"template_ref": {"$ref": "#/$defs/RecordRef"}, "base_revision": {"$ref": "#/$defs/NativeId"}, "confirmed": {"const": true}}}
+      },
+      "allOf": [
+        {"if": {"properties": {"target": {"const": "repository_create"}}}, "then": {"required": ["repository_plan"], "properties": {"action": {"const": "create_repository"}}}},
+        {"if": {"properties": {"target": {"const": "repository_pipeline"}}}, "then": {"required": ["pipeline_plan", "binding_id"], "properties": {"action": {"const": "propose_pipeline"}}}}
+      ]
+    },
+    "Operation": {
+      "type": "object", "additionalProperties": false, "required": ["id", "tenant_id", "product_id", "project_id", "revision", "state", "kind"],
+      "properties": {
+        "id": {"$ref": "#/$defs/Id"}, "tenant_id": {"$ref": "#/$defs/Id"}, "product_id": {"$ref": "#/$defs/Id"}, "project_id": {"$ref": "#/$defs/Id"}, "revision": {"$ref": "#/$defs/Revision"}, "kind": {"$ref": "#/$defs/Name"},
+        "state": {"enum": ["pending", "running", "waiting_external", "succeeded", "failed", "outcome_unknown", "cancelled", "expired"]},
+        "proposals": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/Proposal"}}, "resources": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/DiscoveredResource"}}, "coverage": {"enum": ["complete", "partial", "unavailable", "denied"]}, "cursor": {"type": "string", "maxLength": 2048},
+        "next_action": {"$ref": "#/$defs/Text"}, "resume_path": {"type": "string", "pattern": "^/"}, "peer_receipt": {"$ref": "#/$defs/PeerReceipt"}, "error": {"$ref": "#/$defs/ErrorDetail"}
+      }
+    },
+    "PeerReceipt": {
+      "type": "object", "additionalProperties": false, "required": ["tenant_id", "product_id", "project_id", "profile_revision", "provider_operation_id", "status"],
+      "properties": {"tenant_id": {"$ref": "#/$defs/Id"}, "product_id": {"$ref": "#/$defs/Id"}, "project_id": {"$ref": "#/$defs/Id"}, "profile_revision": {"$ref": "#/$defs/Revision"}, "provider_operation_id": {"$ref": "#/$defs/NativeId"}, "status": {"enum": ["accepted", "running", "succeeded", "failed", "denied"]}, "result_ref": {"$ref": "#/$defs/RecordRef"}}
+    },
+    "Callback": {
+      "type": "object", "additionalProperties": false, "required": ["sequence", "receipt"],
+      "properties": {"sequence": {"type": "integer", "minimum": 1}, "receipt": {"$ref": "#/$defs/PeerReceipt"}, "binding_generation": {"$ref": "#/$defs/Revision"}, "verified_connection_ref": {"$ref": "#/$defs/ConnectionRef"}}
+    },
+    "RegistryRelationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relationship_id",
+        "relationship_type",
+        "from_ref",
+        "to_ref",
+        "valid_from",
+        "recorded_at",
+        "mapping_version",
+        "source_refs",
+        "source_connection_id",
+        "relationship_revision"
+      ],
+      "properties": {
+        "relationship_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "relationship_type": {
+          "const": "product_project"
+        },
+        "from_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/RecordRef"
+            },
+            {
+              "properties": {
+                "record_type": {
+                  "const": "product"
+                }
+              }
+            }
+          ]
+        },
+        "to_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/RecordRef"
+            },
+            {
+              "properties": {
+                "record_type": {
+                  "const": "project"
+                }
+              }
+            }
+          ]
+        },
+        "valid_from": {
+          "$ref": "#/$defs/Instant"
+        },
+        "valid_to": {
+          "$ref": "#/$defs/Instant"
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/Instant"
+        },
+        "mapping_version": {
+          "$ref": "#/$defs/Id"
+        },
+        "source_connection_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "relationship_revision": {
+          "$ref": "#/$defs/Id"
+        },
+        "supersedes_revision": {
+          "$ref": "#/$defs/Id"
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/RecordRef"
+          }
+        }
+      }
+    },
+    "Change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "event_id",
+        "tenant_id",
+        "product_id",
+        "revision",
+        "actor_ref",
+        "changed_paths",
+        "recorded_at"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "event_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "product_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "project_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "actor_ref": {
+          "$ref": "#/$defs/PrincipalRef"
+        },
+        "changed_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/Instant"
+        },
+        "source_revisions": {
+          "$ref": "#/$defs/RefList"
+        },
+        "relationship_versions": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/RegistryRelationship"
+          }
+        }
+      }
+    },
+    "LifecycleRequest": {"type": "object", "additionalProperties": false, "required": ["action", "reason"], "properties": {"action": {"enum": ["archive", "restore"]}, "reason": {"$ref": "#/$defs/Text"}}},
+    "ErrorDetail": {
+      "type": "object", "additionalProperties": false, "required": ["code", "message", "retryable"],
+      "properties": {"code": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"}, "message": {"$ref": "#/$defs/Text"}, "retryable": {"type": "boolean"}, "field_paths": {"type": "array", "items": {"type": "string", "pattern": "^/"}}, "current_revision": {"$ref": "#/$defs/Revision"}, "operation_id": {"$ref": "#/$defs/Id"}}
+    },
+    "Error": {"type": "object", "additionalProperties": false, "required": ["detail", "request_id"], "properties": {"detail": {"$ref": "#/$defs/ErrorDetail"}, "request_id": {"$ref": "#/$defs/Id"}}},
+    "Ack": {"type": "object", "additionalProperties": false, "required": ["operation_id", "status"], "properties": {"operation_id": {"$ref": "#/$defs/Id"}, "status": {"enum": ["applied", "duplicate", "ignored_older"]}}},
+    "ProductSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "revision",
+        "project_ids",
+        "lifecycle_status"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "project_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "lifecycle_status": {
+          "enum": [
+            "draft",
+            "active",
+            "retired"
+          ]
+        },
+        "archived_at": {
+          "$ref": "#/$defs/Instant"
+        },
+        "team": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name"
+          ],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/Id"
+            },
+            "name": {
+              "$ref": "#/$defs/Name"
+            }
+          }
+        }
+      }
+    },
+    "ProductPage": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "items": {"$ref": "#/$defs/ProductSummary"}}, "next_cursor": {"type": ["string", "null"]}}},
+    "ProjectPage": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "items": {"$ref": "#/$defs/Project"}}, "next_cursor": {"type": ["string", "null"]}}},
+    "BindingPage": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "items": {"$ref": "#/$defs/Binding"}}, "next_cursor": {"type": ["string", "null"]}}},
+    "SourcePage": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor", "coverage"], "properties": {"items": {"type": "array", "items": {"$ref": "#/$defs/Source"}}, "next_cursor": {"type": ["string", "null"]}, "coverage": {"enum": ["complete", "partial", "unavailable"]}}},
+    "ChangePage": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "items": {"$ref": "#/$defs/Change"}}, "next_cursor": {"type": ["string", "null"]}}}
+  }
+}

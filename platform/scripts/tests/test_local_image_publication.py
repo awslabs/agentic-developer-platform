@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -12,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[3]
 REGISTRY = "111122223333.dkr.ecr.us-east-1.amazonaws.com"
 DIGEST = "sha256:" + "a" * 64
 
-TOOL = r"""#!/usr/bin/python3
+TOOL = "#!" + sys.executable + "\n" + r"""
 import json, os, sys
 from pathlib import Path
 name=Path(sys.argv[0]).name
@@ -22,6 +23,10 @@ if name=="docker" and args[0]=="build":
  context=Path(args[-1]).resolve()
  row["context"]=str(context)
  row["marker"]=(context/"source-marker").read_text()
+ wheel_marker=context/"l5-wheel/source-marker"
+ row["l5_marker"]=wheel_marker.read_text() if wheel_marker.is_file() else None
+ skills_marker=context/"skills-source/adp-flow/SKILL.md"
+ row["skills_marker"]=skills_marker.read_text() if skills_marker.is_file() else None
 if name=="kubectl" and args[0]=="apply":
  row["manifest"]=Path(args[-1]).read_text()
 with open(os.environ["CALLS"],"a") as f:f.write(json.dumps(row)+"\n")
@@ -77,6 +82,7 @@ class LocalPublicationTests(unittest.TestCase):
         stage = self.root / "modules/gateway/scripts/stage-contracts.sh"
         stage.parent.mkdir()
         stage.write_text("#!/bin/bash\nexit 0\n")
+        (self.root / "modules/gateway/Dockerfile").write_text("FROM scratch\n")
         (self.root / "modules/agent-factory/infra").mkdir()
         manifest = self.root / "modules/agent-factory/gateway/k8s/keda-scaledjob.yaml"
         manifest.parent.mkdir()
@@ -123,7 +129,7 @@ class LocalPublicationTests(unittest.TestCase):
         ):
             self.env.pop(key, None)
         self.env.update(
-            PATH=f"{self.bin}:/usr/bin:/bin",
+            PATH=f"{self.bin}:{Path(sys.executable).parent}:/usr/bin:/bin",
             CALLS=str(self.calls),
             PUSHED=str(self.base / "pushed"),
             REGISTRY=REGISTRY,
@@ -150,6 +156,157 @@ class LocalPublicationTests(unittest.TestCase):
     def publish(self, repo="adp-agent-gateway", **extra):
         return self.invoke("platform/scripts/publish-local-image.sh", [repo], **extra)
 
+    def commit_source(self):
+        subprocess.run(
+            ["git", "add", "."], cwd=self.root, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "commit", "-qm", "Gateway L5 fixture"],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, text=True
+        ).strip()
+
+    def test_gateway_stages_l5_from_selected_archive_not_checkout(self):
+        (self.root / "modules/gateway/Dockerfile").write_text(
+            "FROM scratch\nCOPY l5-wheel/ /opt/l5-wheel/\n"
+        )
+        stage = self.root / "modules/L5-services/scripts/stage-gateway.sh"
+        stage.parent.mkdir(parents=True)
+        stage.write_text(
+            "#!/bin/bash\nset -eu\nmkdir -p modules/gateway/l5-wheel\n"
+            "cp modules/L5-services/source-marker modules/gateway/l5-wheel/source-marker\n"
+        )
+        marker = self.root / "modules/L5-services/source-marker"
+        marker.write_text("committed L5 input")
+        revision = self.commit_source()
+        marker.write_text("uncommitted L5 input")
+        stage.write_text("#!/bin/bash\nexit 99\n")
+        (self.root / "modules/gateway/Dockerfile").write_text("FROM scratch\n")
+
+        result, calls = self.publish("adp-gateway", SOURCE_SHA=revision)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [call for call in calls
+                  if call["tool"] == "docker" and call["args"][0] == "build"]
+        self.assertEqual(len(builds), 1)
+        self.assertEqual(builds[0]["l5_marker"], "committed L5 input")
+        self.assertNotIn(str(self.root), builds[0]["context"])
+        self.assertEqual(
+            [call["args"] for call in calls
+             if call["tool"] == "docker" and call["args"][0] == "push"],
+            [["push", f"{REGISTRY}/adp-gateway:{revision}"]],
+        )
+
+    def test_legacy_gateway_ignores_checkout_l5_inputs(self):
+        (self.root / "modules/gateway/Dockerfile").write_text(
+            "FROM scratch\nCOPY l5-wheel/ /opt/l5-wheel/\n"
+        )
+        stage = self.root / "modules/L5-services/scripts/stage-gateway.sh"
+        stage.parent.mkdir(parents=True)
+        stage.write_text("#!/bin/bash\nexit 99\n")
+
+        result, calls = self.publish("adp-gateway", SOURCE_SHA=self.sha)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [call for call in calls
+                  if call["tool"] == "docker" and call["args"][0] == "build"]
+        self.assertEqual(len(builds), 1)
+        self.assertIsNone(builds[0]["l5_marker"])
+
+    def test_required_gateway_l5_staging_failure_prevents_build_and_push(self):
+        (self.root / "modules/gateway/Dockerfile").write_text(
+            "FROM scratch\nCOPY l5-wheel/ /opt/l5-wheel/\n"
+        )
+        stage = self.root / "modules/L5-services/scripts/stage-gateway.sh"
+        stage.parent.mkdir(parents=True)
+        for failure in ("missing", "failed"):
+            with self.subTest(failure=failure):
+                self.calls.unlink(missing_ok=True)
+                if failure == "failed":
+                    stage.write_text("#!/bin/bash\nexit 23\n")
+                revision = self.commit_source()
+                stage.write_text("#!/bin/bash\nexit 0\n")
+
+                result, calls = self.publish("adp-gateway", SOURCE_SHA=revision)
+
+                self.assertEqual(result.returncode, 127 if failure == "missing" else 23)
+                self.assertFalse(any(
+                    call["tool"] == "docker" and call["args"][0] in {"build", "push"}
+                    for call in calls
+                ))
+
+    def test_gateway_stages_skills_from_selected_archive_not_checkout(self):
+        (self.root / "modules/gateway/Dockerfile").write_text(
+            "FROM scratch\nCOPY skills-source/ /app/skills-source/\n"
+        )
+        stage = self.root / "modules/gateway/scripts/build-skills-archive.sh"
+        shutil.copyfile(ROOT / "modules/gateway/scripts/build-skills-archive.sh", stage)
+        source = self.root / "modules/agent-factory/skills"
+        (source / "adp-flow").mkdir(parents=True)
+        (source / "MANIFEST.json").write_text(json.dumps({
+            "schema_version": 1,
+            "skills": [{"name": "adp-flow", "clients": ["codex"], "invocation": "adp flow"}],
+        }))
+        marker = source / "adp-flow/SKILL.md"
+        marker.write_text("committed skills input")
+        revision = self.commit_source()
+        marker.write_text("uncommitted skills input")
+        stage.write_text("#!/bin/bash\nexit 99\n")
+        (self.root / "modules/gateway/Dockerfile").write_text("FROM scratch\n")
+
+        result, calls = self.publish("adp-gateway", SOURCE_SHA=revision)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [call for call in calls
+                  if call["tool"] == "docker" and call["args"][0] == "build"]
+        self.assertEqual(len(builds), 1)
+        self.assertEqual(builds[0]["skills_marker"], "committed skills input")
+        self.assertNotIn(str(self.root), builds[0]["context"])
+        self.assertEqual(
+            [call["args"] for call in calls
+             if call["tool"] == "docker" and call["args"][0] == "push"],
+            [["push", f"{REGISTRY}/adp-gateway:{revision}"]],
+        )
+
+    def test_legacy_gateway_ignores_checkout_skills_inputs(self):
+        (self.root / "modules/gateway/Dockerfile").write_text(
+            "FROM scratch\nCOPY skills-source/ /app/skills-source/\n"
+        )
+        stage = self.root / "modules/gateway/scripts/build-skills-archive.sh"
+        stage.write_text("#!/bin/bash\nexit 99\n")
+
+        result, calls = self.publish("adp-gateway", SOURCE_SHA=self.sha)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [call for call in calls
+                  if call["tool"] == "docker" and call["args"][0] == "build"]
+        self.assertEqual(len(builds), 1)
+        self.assertIsNone(builds[0]["skills_marker"])
+
+    def test_required_gateway_skills_staging_failure_prevents_build_and_push(self):
+        (self.root / "modules/gateway/Dockerfile").write_text(
+            "FROM scratch\nCOPY skills-source/ /app/skills-source/\n"
+        )
+        stage = self.root / "modules/gateway/scripts/build-skills-archive.sh"
+        for failure in ("missing", "failed"):
+            with self.subTest(failure=failure):
+                self.calls.unlink(missing_ok=True)
+                if failure == "failed":
+                    stage.write_text("#!/bin/bash\nexit 23\n")
+                revision = self.commit_source()
+                stage.write_text("#!/bin/bash\nexit 0\n")
+
+                result, calls = self.publish("adp-gateway", SOURCE_SHA=revision)
+
+                self.assertEqual(result.returncode, 127 if failure == "missing" else 23)
+                self.assertFalse(any(
+                    call["tool"] == "docker" and call["args"][0] in {"build", "push"}
+                    for call in calls
+                ))
+
     def test_local_builds_archive_the_selected_commit_for_all_four_families(self):
         for repo in (
             "adp-gateway",
@@ -174,7 +331,7 @@ class LocalPublicationTests(unittest.TestCase):
                     "adp-gateway": 1,
                     "adp-agent-gateway": 2,
                     "adp-chat-agent": 1,
-                    "adp-agent-runtime": 3,
+                    "adp-agent-runtime": 4,
                 }[repo])
                 self.assertTrue(all(build["marker"] == "committed input" for build in builds))
                 self.assertNotIn("--no-cache", builds[-1]["args"])
@@ -233,7 +390,7 @@ class LocalPublicationTests(unittest.TestCase):
         start = source.index("prepare_gateway_image() {")
         helper = source[start : source.index("\n}\n", start) + 3]
         start = source.index("  prepare_gateway_image\n", source.index('step "Step 4/11:'))
-        block = helper + source[start : source.index("  # --- K8s deploy", start)]
+        block = helper + source[start : source.index("  prepare_gateway_capacity\n", start)]
         result = subprocess.run(
             [
                 "bash",

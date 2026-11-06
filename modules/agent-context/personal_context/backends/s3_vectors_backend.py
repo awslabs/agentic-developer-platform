@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 # S3 Vectors PutVectors batch limit
 _MAX_BATCH_SIZE = 500
+_MAX_ACTIVE_ATTEMPTS = 1024
+_ATTEMPTS_PER_QUERY = 100
 
 
 class S3VectorsEmbeddingStore:
@@ -151,6 +153,7 @@ class S3VectorsEmbeddingStore:
                 indexName=index_name,
                 queryVector={"float32": query_embedding},
                 topK=min(top_k, 100),
+                returnDistance=True,
             )
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
@@ -263,21 +266,24 @@ class S3VectorsCodeStore:
         tenant_id: str | None = None,
         owner_sub: str | None = None,
         shard_count: int = 4,
+        product_id: str | None = None,
     ) -> str:
         """Determine target index name from scope visibility.
 
         Parameters
         ----------
         visibility:
-            One of "shared", "tenant", "personal".
+            One of "shared", "tenant", "personal", "product".
         org_id:
             Organization ID (used for shard routing in shared mode).
         tenant_id:
-            Tenant identifier (required when visibility is "tenant").
+            Tenant identifier (required for tenant and product visibility).
         owner_sub:
             User identifier (required when visibility is "personal").
         shard_count:
             Number of shared shards.
+        product_id:
+            Required for product visibility; Product data shares the tenant index.
 
         Returns
         -------
@@ -288,7 +294,9 @@ class S3VectorsCodeStore:
         ValueError:
             If tenant_id/owner_sub missing for tenant/personal visibility.
         """
-        if visibility == "tenant":
+        if visibility == "product" and not product_id:
+            raise ValueError("product_id required for product visibility")
+        if visibility in {"tenant", "product"}:
             if not tenant_id:
                 raise ValueError("tenant_id required for tenant visibility")
             return f"tenant-{tenant_id}"
@@ -341,6 +349,7 @@ class S3VectorsCodeStore:
         visibility: str = "shared",
         tenant_id: str | None = None,
         owner_sub: str | None = None,
+        product_id: str | None = None,
     ) -> None:
         """Write vectors to a scope-determined index.
 
@@ -348,6 +357,7 @@ class S3VectorsCodeStore:
         - "shared" → code-shard-{N} (existing hash-sharded behavior)
         - "tenant" → tenant-{tenant_id}
         - "personal" → personal-{owner_sub}
+        - "product" → tenant-{tenant_id}, with mandatory Product/asset metadata
 
         Creates the target index on first write (lazy provisioning).
 
@@ -370,10 +380,39 @@ class S3VectorsCodeStore:
             tenant_id=tenant_id,
             owner_sub=owner_sub,
             shard_count=self.shard_count,
+            product_id=product_id,
         )
 
+        if visibility == "product":
+            if any(
+                not isinstance(v.get("metadata", {}).get(field), str) or not v["metadata"][field]
+                for v in vectors
+                for field in ("asset_id", "ingestion_attempt_id")
+            ):
+                raise ValueError(
+                    "asset_id and ingestion_attempt_id provenance required for Product vectors"
+                )
+            vectors = [
+                {
+                    **v,
+                    "metadata": {
+                        **v["metadata"],
+                        "visibility": "product",
+                        "product_id": product_id,
+                        "tenant_id": tenant_id,
+                    },
+                }
+                for v in vectors
+            ]
+        elif product_id or any(
+            v.get("metadata", {}).get("product_id")
+            or v.get("metadata", {}).get("visibility") == "product"
+            for v in vectors
+        ):
+            raise ValueError("Product vectors require product visibility")
+
         # Ensure index exists (lazy creation for tenant/personal indexes)
-        if visibility in ("tenant", "personal"):
+        if visibility in ("tenant", "personal", "product"):
             self._ensure_index(index_name)
 
         # Batch into groups of 500
@@ -424,7 +463,15 @@ class S3VectorsCodeStore:
                     indexName=index_name,
                     queryVector={"float32": query_vector},
                     topK=min(top_k * 2, 100),
-                    filter={"org_id": {"$eq": org_id}},
+                    filter={
+                        "$and": [
+                            {"org_id": {"$eq": org_id}},
+                            {"product_id": {"$exists": False}},
+                            {"visibility": {"$ne": "product"}},
+                        ]
+                    },
+                    returnMetadata=True,
+                    returnDistance=True,
                 )
                 all_results.extend(response.get("vectors", []))
             except ClientError as e:
@@ -434,6 +481,12 @@ class S3VectorsCodeStore:
                 raise
 
         # Sort by distance (ascending = most similar first for cosine)
+        all_results = [
+            r
+            for r in all_results
+            if not r.get("metadata", {}).get("product_id")
+            and r.get("metadata", {}).get("visibility") != "product"
+        ]
         all_results.sort(key=lambda r: r.get("distance", float("inf")))
         return all_results[:top_k]
 
@@ -444,8 +497,11 @@ class S3VectorsCodeStore:
         tenant_id: str | None = None,
         owner_sub: str | None = None,
         top_k: int = 20,
+        product_id: str | None = None,
+        personal_only: bool = False,
+        active_attempt_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Query scoped indexes: unions shared + tenant + personal results.
+        """Query one Product, or union non-Product shared + tenant + personal results.
 
         Queries the indexes the caller is entitled to see:
         1. Shared shards (scatter-gather across code-shard-{0..N})
@@ -466,34 +522,136 @@ class S3VectorsCodeStore:
             Caller's user ID. If provided, also queries personal-{owner_sub}.
         top_k:
             Number of results to return.
+        product_id:
+            When provided, search only this Product in the tenant index.
 
         Returns
         -------
         Merged results sorted by distance (ascending), limited to top_k.
         """
+        attempts = sorted(set(active_attempt_ids or ()))
+        if len(attempts) > _MAX_ACTIVE_ATTEMPTS:
+            raise ValueError("Knowledge scope exceeds 1024 active ingestion attempts")
+        batches = [
+            attempts[i : i + _ATTEMPTS_PER_QUERY]
+            for i in range(0, len(attempts), _ATTEMPTS_PER_QUERY)
+        ]
+        if product_id and personal_only:
+            raise ValueError("Product and personal scopes cannot be combined")
+        if product_id:
+            if not tenant_id:
+                raise ValueError("tenant_id required for Product query")
+            results = []
+            for batch in batches:
+                results.extend(
+                    self._query_single_index(
+                        f"tenant-{tenant_id}",
+                        query_vector,
+                        top_k,
+                        filter_metadata={
+                            "$and": [
+                                {"product_id": {"$eq": product_id}},
+                                {"tenant_id": {"$eq": tenant_id}},
+                                {"visibility": {"$eq": "product"}},
+                                {"ingestion_attempt_id": {"$in": batch}},
+                            ]
+                        },
+                    )
+                )
+            # Preserve the boundary even if a backend/cache ignores its filter.
+            results = [
+                r
+                for r in results
+                if r.get("metadata", {}).get("product_id") == product_id
+                and r["metadata"].get("tenant_id") == tenant_id
+                and r["metadata"].get("visibility") == "product"
+                and r["metadata"].get("asset_id")
+                and r["metadata"].get("ingestion_attempt_id") in attempts
+            ]
+            return sorted(results, key=lambda r: r.get("distance", float("inf")))[:top_k]
+
+        non_product = {
+            "$and": [{"product_id": {"$exists": False}}, {"visibility": {"$ne": "product"}}]
+        }
+
+        def personal_results():
+            if not owner_sub:
+                return []
+            # Query legacy corpus once. Registered personal generations have a
+            # separate filter so old duplicates cannot crowd out current chunks.
+            results = self._query_single_index(
+                f"personal-{owner_sub}",
+                query_vector,
+                top_k,
+                filter_metadata={
+                    "$and": [*non_product["$and"], {"visibility": {"$ne": "personal"}}]
+                },
+            )
+            for batch in batches:
+                results.extend(
+                    self._query_single_index(
+                        f"personal-{owner_sub}",
+                        query_vector,
+                        top_k,
+                        filter_metadata={
+                            "$and": [
+                                *non_product["$and"],
+                                {"visibility": {"$eq": "personal"}},
+                                {"owner_sub": {"$eq": owner_sub}},
+                                {"ingestion_attempt_id": {"$in": batch}},
+                            ]
+                        },
+                    )
+                )
+            results = [
+                r
+                for r in results
+                if not r.get("metadata", {}).get("product_id")
+                and r.get("metadata", {}).get("visibility") != "product"
+                and (
+                    r.get("metadata", {}).get("visibility") != "personal"
+                    or r.get("metadata", {}).get("ingestion_attempt_id") in attempts
+                )
+            ]
+            # Keys are unique within a personal index, including all attempts.
+            unique = {r.get("key", ""): r for r in results}
+            return sorted(unique.values(), key=lambda r: r.get("distance", float("inf")))[:top_k]
+
+        if personal_only:
+            return personal_results()
         all_results: list[dict[str, Any]] = []
 
         # 1. Query shared shards (scatter-gather)
         for shard_idx in range(self.shard_count):
             index_name = self._index_name(shard_idx)
             results = self._query_single_index(
-                index_name, query_vector, top_k, filter_metadata={"org_id": {"$eq": org_id}}
+                index_name,
+                query_vector,
+                top_k,
+                filter_metadata={"$and": [{"org_id": {"$eq": org_id}}, *non_product["$and"]]},
             )
             all_results.extend(results)
 
         # 2. Query tenant index (if caller has a tenant)
         if tenant_id:
             tenant_index = f"tenant-{tenant_id}"
-            results = self._query_single_index(tenant_index, query_vector, top_k)
+            results = self._query_single_index(
+                tenant_index, query_vector, top_k, filter_metadata=non_product
+            )
             all_results.extend(results)
 
         # 3. Query personal index (if caller has an owner_sub)
         if owner_sub:
-            personal_index = f"personal-{owner_sub}"
-            results = self._query_single_index(personal_index, query_vector, top_k)
+            results = personal_results()
             all_results.extend(results)
 
         # Merge: sort by distance ascending, limit to top_k
+        all_results = [
+            r
+            for r in all_results
+            if not r.get("metadata", {}).get("product_id")
+            and r.get("metadata", {}).get("visibility") != "product"
+        ]
         all_results.sort(key=lambda r: r.get("distance", float("inf")))
         return all_results[:top_k]
 
@@ -527,6 +685,8 @@ class S3VectorsCodeStore:
                 "indexName": index_name,
                 "queryVector": {"float32": query_vector},
                 "topK": min(top_k * 2, 100),
+                "returnMetadata": True,
+                "returnDistance": True,
             }
             if filter_metadata:
                 kwargs["filter"] = filter_metadata

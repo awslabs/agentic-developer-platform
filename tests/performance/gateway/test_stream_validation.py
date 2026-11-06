@@ -11,10 +11,17 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from campaign_guard import CampaignGuard, serve_permits
+
+
+class RawSSE(str):
+    pass
+
 
 class StreamingValidationTest(unittest.TestCase):
     def run_streams(
-        self, api, events, stages="12:1,13:0", delay=0, expected_count=None
+        self, api, events, stages="12:1,13:0", delay=0, expected_count=None,
+        extra_env=None
     ):
         index = 0
 
@@ -23,9 +30,9 @@ class StreamingValidationTest(unittest.TestCase):
                 nonlocal index
                 self.rfile.read(int(self.headers["Content-Length"]))
                 body = "".join(
-                    "data: "
+                    ("" if isinstance(item, RawSSE) else "data: ")
                     + (item if isinstance(item, str) else json.dumps(item))
-                    + "\n\n"
+                    + ("" if isinstance(item, RawSSE) else "\n\n")
                     for item in events[index]
                 ).encode()
                 index += 1
@@ -54,6 +61,7 @@ class StreamingValidationTest(unittest.TestCase):
                     "PERF_MAX_REQUESTS": str(len(events)),
                     "PERF_STAGES": stages,
                 }
+                env.update(extra_env or {})
                 result = subprocess.run(
                     [
                         sys.executable,
@@ -91,6 +99,50 @@ class StreamingValidationTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_locust_controller_mode_reports_real_stream_outcomes(self):
+        for api, events in (
+            ("chat", [{"choices": [{"delta": {"content": "answer"}}]}, "[DONE]"]),
+            ("responses", [{"type": "response.output_text.delta", "delta": "answer"},
+                           {"type": "response.incomplete", "response": {"status": "incomplete"}}]),
+        ):
+            with self.subTest(api=api), tempfile.TemporaryDirectory() as directory:
+                controller_token = Path(directory) / "controller-token"
+                controller_token.write_text("local-controller-token")
+                controller_token.chmod(0o600)
+                stage = {"name": api, "desired_sessions": 1, "min_dwell_seconds": 0,
+                         "required": True, "spawn_rate": 1}
+                guard = CampaignGuard(
+                    {"attempts": 1, "active_seconds": 20, "drain_seconds": 5,
+                     "input_tokens": 64, "output_tokens": 128, "max_spend": 1}, [stage]
+                )
+                guard.start_stage(api, 1)
+                server = serve_permits(guard, "local-controller-token")
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    rows = self.run_streams(
+                        api, [events], stages="3:1,4:0", extra_env={
+                            "PERF_CONTROLLER_URL": f"http://127.0.0.1:{server.server_port}",
+                            "PERF_CONTROLLER_TOKEN_FILE": str(controller_token),
+                            "PERF_RESERVE_INPUT_TOKENS": "64",
+                            "PERF_DRAIN_SECONDS": "5",
+                            "PERF_IDENTITY_ID": "local-developer",
+                            "PERF_IDENTITY_KIND": "developer",
+                            "PERF_PRICE_PER_INPUT_TOKEN": "0.000001",
+                            "PERF_PRICE_PER_OUTPUT_TOKEN": "0.000001",
+                            "PERF_LONG_RATIO": "0",
+                            "PERF_RESPONSES_MAX_TOKENS": "128",
+                        }
+                    )
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=5)
+                self.assertEqual(guard.report()["physical_attempts"], 1)
+                self.assertEqual(guard.report()["completed"], 1)
+                self.assertEqual(rows[0].get("success", False), api == "chat")
+                self.assertEqual(guard.end_stage(), api == "chat")
 
     def test_responses_requires_completed_content_without_errors(self):
         content = {"type": "response.output_text.delta", "delta": "answer"}
@@ -138,18 +190,33 @@ class StreamingValidationTest(unittest.TestCase):
 
     def test_chat_requires_done_content_without_errors(self):
         content = {"choices": [{"delta": {"content": "answer"}}]}
+        finish = {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+        upstream_error = RawSSE(
+            'event: error\ndata: {"type":"error","error":{"type":"upstream_stream_error"}}\n\n'
+        )
         rows = self.run_streams(
             "chat",
             [
-                [content, "[DONE]"],
+                [content, finish, "[DONE]"],
+                [],
                 [content],
+                [content, finish],
+                [upstream_error],
+                [content, upstream_error, "[DONE]"],
+                [content, RawSSE('data: {"choices":\n\n'), "[DONE]"],
                 ["[DONE]"],
-                [content, {"error": "upstream_failure"}, "[DONE]"],
             ],
         )
         self.assertEqual(
-            [bool(row.get("success")) for row in rows], [True, False, False, False]
+            [bool(row.get("success")) for row in rows], [True, False, False, False, False, False, False, False]
         )
+        self.assertTrue(rows[0]["complete"])
+        self.assertFalse(rows[2]["complete"])
+        self.assertEqual(rows[3]["finish_reason"], "stop")
+        self.assertFalse(rows[3]["complete"])
+        self.assertIn("upstream_stream_error", rows[4]["error"])
+        self.assertIn("upstream_stream_error", rows[5]["error"])
+        self.assertEqual(rows[6]["error"], "JSONDecodeError")
 
     def test_zero_stage_drains_active_users_together(self):
         content = {"choices": [{"delta": {"content": "answer"}}]}

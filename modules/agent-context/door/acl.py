@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 log = logging.getLogger(__name__)
+MAX_ACTIVE_INGESTION_ATTEMPTS = 1024
+
+
+class KnowledgeScopeLimitError(ValueError):
+    """The active generation set cannot be queried completely within the bound."""
 
 # Header names (canonical lowercase for case-insensitive matching)
 HEADER_GITHUB_LOGIN = "x-github-login"
@@ -105,8 +110,9 @@ class CallerPrincipal:
     github_login: str = ""
     github_teams: list[str] = field(default_factory=list)
     tenant_id: str = ""
-    owner_sub: str = ""
+    owner_sub: str = ""  # Canonical asset owner; separate from the memory login subject.
     run_bound: bool = False
+    product_id: str = ""  # Only set from a request-bound Gateway membership assertion.
 
     @property
     def is_resolved(self) -> bool:
@@ -118,8 +124,8 @@ class CallerPrincipal:
 class SearchHit:
     """A single search result with provenance.
 
-    The filter inspects ``repo_name`` to decide whether the caller can see it.
-    All other fields are opaque to the filter.
+    Legacy reads use ``repo_name``. Product reads additionally require exact
+    product_id, tenant_id, asset_id and visibility provenance in ``data``.
     """
 
     repo_name: str
@@ -153,6 +159,18 @@ class ACLStore(Protocol):
         """
         ...
 
+    def get_allowed_product_assets(self, principal: CallerPrincipal, asset_ids: set[str]) -> dict[str, str]:
+        """Return active asset registrations and their current ingestion attempt."""
+        ...
+
+    def get_allowed_personal_assets(self, principal: CallerPrincipal, asset_ids: set[str]) -> dict[str, tuple[str | None, str]]:
+        """Return current personal registrations with tenant and attempt binding."""
+        ...
+
+    def get_active_ingestion_attempts(self, principal: CallerPrincipal) -> set[str]:
+        """Bound vector candidates to current registrations before nearest-neighbor selection."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Header extraction
@@ -162,11 +180,12 @@ class ACLStore(Protocol):
 def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
     """Extract the caller's identity from request headers.
 
-    Reads four headers:
+    Reads signed identity headers:
     - X-GitHub-Login: GitHub username
     - X-GitHub-Teams: comma-separated team slugs
     - X-Tenant-Id: organization/tenant identifier
-    - X-Owner-Sub: individual user identifier (Cognito sub or similar)
+    - X-Asset-Owner-Id: canonical users.id used by ingestion and asset storage
+    - X-Owner-Sub: legacy fallback for gateways without the asset-owner claim
 
     Requires GitHub identity or an owner authenticated by the run boundary.
     The run marker and owner header must be sanitized by ``door/auth.py``.
@@ -182,13 +201,13 @@ def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
     if teams_raw:
         teams = [t.strip().lower() for t in teams_raw.split(",") if t.strip()]
 
+    owner_sub = normalized.get("x-asset-owner-id", normalized.get(HEADER_OWNER_SUB, "").lower()).strip()
     run_bound = normalized.get("x-adp-run-service") == "true"
-    if not login and not teams and not (run_bound and normalized.get(HEADER_OWNER_SUB, "").strip()):
+    if not login and not teams and not (run_bound and owner_sub):
         return None
 
     # Tenant isolation headers (optional enrichment)
     tenant_id = normalized.get(HEADER_TENANT_ID, "").strip()
-    owner_sub = normalized.get(HEADER_OWNER_SUB, "").strip().lower()
 
     return CallerPrincipal(
         github_login=login,
@@ -196,6 +215,7 @@ def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
         tenant_id=tenant_id,
         owner_sub=owner_sub,
         run_bound=run_bound,
+        product_id=normalized.get("x-product-id", "").strip() if run_bound else "",
     )
 
 
@@ -259,11 +279,13 @@ def filter_results(
     results: list[SearchHit],
     caller: CallerPrincipal | None,
     acl_store: ACLStore,
+    *,
+    strict: bool = False,
 ) -> list[SearchHit]:
     """Post-query filter. Drops results from repos the caller cannot access.
 
     INVARIANT: if caller is None or unresolved, returns [] (fail-closed).
-    INVARIANT: if acl_store raises, returns [] (fail-closed).
+    INVARIANT: if acl_store raises, returns [] or raises in strict mode; never serves data.
 
     Parameters
     ----------
@@ -287,14 +309,77 @@ def filter_results(
         log.debug("filter_results: caller has no login or teams, returning empty (fail-closed)")
         return []
 
+    if caller.product_id:
+        if not caller.run_bound or not caller.tenant_id:
+            return []
+        candidates = [
+            hit
+            for hit in results
+            if hit.data.get("visibility") == "product"
+            and hit.data.get("product_id") == caller.product_id
+            and hit.data.get("tenant_id") == caller.tenant_id
+            and isinstance(hit.data.get("asset_id"), str)
+            and hit.data["asset_id"]
+            and isinstance(hit.data.get("ingestion_attempt_id"), str)
+            and hit.data["ingestion_attempt_id"]
+        ]
+        try:
+            active_assets = acl_store.get_allowed_product_assets(
+                caller, {h.data["asset_id"] for h in candidates}
+            )
+            return [
+                h
+                for h in candidates
+                if active_assets.get(h.data["asset_id"]) == h.data["ingestion_attempt_id"]
+            ]
+        except Exception:
+            log.warning("Product asset authority unavailable", exc_info=True)
+            if strict:
+                raise
+            return []
+
+    registered_personal = [h for h in results if h.data.get("visibility") == "personal"]
+    permitted_personal: set[int] = set()
+    if registered_personal and caller.run_bound and caller.owner_sub:
+        candidates = [
+            h
+            for h in registered_personal
+            if h.data.get("owner_sub") == caller.owner_sub
+            and not h.data.get("product_id")
+            and isinstance(h.data.get("asset_id"), str)
+            and h.data["asset_id"]
+            and isinstance(h.data.get("ingestion_attempt_id"), str)
+            and h.data["ingestion_attempt_id"]
+        ]
+        try:
+            active = acl_store.get_allowed_personal_assets(
+                caller, {h.data["asset_id"] for h in candidates}
+            )
+            permitted_personal = {
+                id(h)
+                for h in candidates
+                if h.data["asset_id"] in active
+                and ((h.data.get("tenant_id") or None), h.data["ingestion_attempt_id"])
+                == active[h.data["asset_id"]]
+            }
+        except Exception:
+            log.warning("Personal asset authority unavailable", exc_info=True)
+            if strict:
+                raise
+            return []
+    if len(registered_personal) == len(results):
+        return [h for h in results if id(h) in permitted_personal]
+
     # Resolve allowed repos — fail-closed on error
     try:
         allowed_repos = acl_store.get_allowed_repos(caller)
     except Exception:
         log.warning(
-            "filter_results: ACL store raised an exception, returning empty (fail-closed)",
+            "filter_results: ACL store raised an exception (fail-closed)",
             exc_info=True,
         )
+        if strict:
+            raise
         return []
 
     # Filter: only pass hits whose fully-qualified repo is in the allowed set.
@@ -306,7 +391,15 @@ def filter_results(
     filtered: list[SearchHit] = []
     denied: list[str] = []
     for hit in results:
-        if _repo_is_allowed(hit.repo_name, allowed_normalized):
+        if hit.data.get("visibility") == "personal":
+            if id(hit) in permitted_personal:
+                filtered.append(hit)
+            continue
+        if (
+            not hit.data.get("product_id")
+            and hit.data.get("visibility") != "product"
+            and _repo_is_allowed(hit.repo_name, allowed_normalized)
+        ):
             filtered.append(hit)
         else:
             denied.append(hit.repo_name or "<no-provenance>")
@@ -406,11 +499,100 @@ class PostgresACLStore:
 
         Raises on connection failure (caller handles as fail-closed).
         """
-        if principal.run_bound and not principal.tenant_id:
+        if principal.product_id or (principal.run_bound and not principal.tenant_id):
             return set()
         if self._tenant_scope_enabled or principal.run_bound:
             return self._get_allowed_repos_scoped(principal)
         return self._get_allowed_repos_legacy(principal)
+
+    def get_allowed_product_assets(
+        self, principal: CallerPrincipal, asset_ids: set[str]
+    ) -> dict[str, str]:
+        """Revalidate registry provenance on every read, including cached vectors.
+
+        Repository names confer no Product access. The signed Gateway claim
+        establishes membership; this database proves each derived chunk belongs
+        to a still-active registration in exactly that Product and tenant.
+        """
+        if (
+            not principal.run_bound
+            or not principal.product_id
+            or not principal.tenant_id
+            or not asset_ids
+        ):
+            return {}
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id::text, to_jsonb(asset)->>'ingestion_attempt_id' FROM knowledge_assets AS asset
+                       WHERE id::text = ANY(%s) AND tenant_id = %s
+                         AND to_jsonb(asset)->>'product_id' = %s
+                         AND to_jsonb(asset)->>'ingestion_attempt_id' IS NOT NULL
+                         AND status IN ('complete', 'partial')""",
+                    (sorted(asset_ids), principal.tenant_id, principal.product_id),
+                )
+                return dict(cur.fetchall())
+        finally:
+            self._pool.putconn(conn)
+
+    def get_active_ingestion_attempts(self, principal: CallerPrincipal) -> set[str]:
+        """Fetch current generations before querying; stale vectors cannot consume top-K.
+
+        The cap exceeds the default 900-asset Product quota. Never silently
+        truncate a larger configured scope: doing so would hide current content.
+        """
+        if not principal.run_bound or not principal.owner_sub:
+            return set()
+        if principal.product_id:
+            if not principal.tenant_id:
+                return set()
+            ownership = "tenant_id = %s AND to_jsonb(asset)->>'product_id' = %s"
+            params = [principal.tenant_id, principal.product_id]
+        else:
+            ownership = "owner_sub = %s AND (tenant_id IS NULL OR tenant_id = %s) AND to_jsonb(asset)->>'product_id' IS NULL"
+            params = [principal.owner_sub, principal.tenant_id]
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT to_jsonb(asset)->>'ingestion_attempt_id' FROM knowledge_assets AS asset "
+                    f"WHERE {ownership} AND status IN ('complete', 'partial') "
+                    "AND to_jsonb(asset)->>'ingestion_attempt_id' IS NOT NULL LIMIT %s",
+                    [*params, MAX_ACTIVE_INGESTION_ATTEMPTS + 1],
+                )
+                attempts = {row[0] for row in cur.fetchall()}
+                if len(attempts) > MAX_ACTIVE_INGESTION_ATTEMPTS:
+                    raise KnowledgeScopeLimitError("Knowledge scope exceeds 1024 active ingestion attempts")
+                return attempts
+        finally:
+            self._pool.putconn(conn)
+
+    def get_allowed_personal_assets(
+        self, principal: CallerPrincipal, asset_ids: set[str]
+    ) -> dict[str, tuple[str | None, str]]:
+        if (
+            not principal.run_bound
+            or not principal.owner_sub
+            or principal.product_id
+            or not asset_ids
+        ):
+            return {}
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id::text, tenant_id, to_jsonb(asset)->>'ingestion_attempt_id' FROM knowledge_assets AS asset
+                       WHERE id::text = ANY(%s) AND owner_sub = %s
+                         AND (tenant_id IS NULL OR tenant_id = %s)
+                         AND to_jsonb(asset)->>'product_id' IS NULL
+                         AND to_jsonb(asset)->>'ingestion_attempt_id' IS NOT NULL
+                         AND status IN ('complete', 'partial')""",
+                    (sorted(asset_ids), principal.owner_sub, principal.tenant_id),
+                )
+                return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+        finally:
+            self._pool.putconn(conn)
 
     def _get_allowed_repos_legacy(self, principal: CallerPrincipal) -> set[str]:
         """Legacy query: principal matching only (no tenant isolation)."""

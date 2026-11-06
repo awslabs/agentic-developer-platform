@@ -14,6 +14,9 @@ def render(raw: str, kind: str) -> str:
             raise ValueError('model bindings must be a JSON list of objects')
         text = json.dumps(value, sort_keys=True, separators=(',', ':'))
     elif kind == 'images':
+        # SSM cannot store an empty String; Terraform seeds the digest parameters
+        # with a single space (chief-of-staff-flags.tf), which means "no digests".
+        raw = raw.strip()
         if raw and any(not re.fullmatch(r'sha256:[0-9a-f]{64}', item) for item in raw.split(',')):
             raise ValueError('chat image allowlist must contain pinned digests')
         text = raw

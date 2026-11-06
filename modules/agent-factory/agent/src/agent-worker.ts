@@ -1,3 +1,5 @@
+import { archiveGitChanges } from './git-changes-archive';
+import { withIssueAuthoring } from './issue-authoring';
 import { developerRecoveryContext } from './developer-recovery';
 import { writeFailureReport } from './failure-report';
 import { reviewCyclePrompt } from './review-cycle-input';
@@ -165,7 +167,9 @@ import { isTruncatedStreamResult } from './stream-truncation';
 // AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232, EPIC #3158).
 // Writes a synthetic audit event proving a real human answered the gate, satisfying
 // mint-presence.ts's anti-fabrication check in headless mode.
-import { mintSyntheticPresence, extractGateAnswerComment, findPendingGateStage as findPresenceGateStage } from './aidlc-presence';
+import { mintSyntheticPresence, resolveVerifiedGateAnswer, findPendingGateStage as findPresenceGateStage } from './aidlc-presence';
+import { fetchApprovalComments } from './services/posted-approval';
+import { resolveSuperpowerTriggerComment } from './utils/superpower-guidance';
 
 // ============================================================================
 // Configuration
@@ -821,6 +825,10 @@ function loadRules(): string {
   const memoryRules = path.join(rulesDir, 'memory.md');
   if (fs.existsSync(memoryRules)) {
     rules.push(`## Agent Memory\n${fs.readFileSync(memoryRules, 'utf-8')}`);
+  }
+
+  if (AGENT_TYPE === 'aidlc') {
+    rules.push(withIssueAuthoring('', 'AI-DLC'));
   }
 
   rules.push(loadHumanCommunication([path.join(rulesDir, 'personas')]));
@@ -1980,7 +1988,6 @@ async function uploadGitChangesToS3(): Promise<void> {
     const { execSync } = await import('child_process');
     const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
     const fs = await import('fs');
-    const path = await import('path');
 
     // Check if there are any changes (committed but not pushed, or uncommitted)
     const status = execSync('git status --porcelain', { cwd: CWD, encoding: 'utf-8' }).trim();
@@ -1997,23 +2004,11 @@ async function uploadGitChangesToS3(): Promise<void> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const tarFile = `/tmp/git-changes-${ISSUE_NUMBER}-${timestamp}.tar.gz`;
 
-    // Get list of changed files
-    const changedFiles = execSync(
-      'git diff --name-only HEAD 2>/dev/null; git diff --name-only --cached 2>/dev/null; git diff --name-only origin/main..HEAD 2>/dev/null',
-      { cwd: CWD, encoding: 'utf-8' }
-    ).trim().split('\n').filter(f => f.length > 0);
-
-    const uniqueFiles = [...new Set(changedFiles)].filter(f => {
-      try { fs.statSync(path.join(CWD, f)); return true; } catch { return false; }
-    });
-
+    const uniqueFiles = archiveGitChanges(CWD, tarFile);
     if (uniqueFiles.length === 0) {
       log('INFO', 'No changed files to backup');
       return;
     }
-
-    // Tar the changed files
-    execSync(`tar czf ${tarFile} ${uniqueFiles.join(' ')}`, { cwd: CWD, stdio: 'pipe' });
 
     // Upload to S3.
     // Issue #4184: this is the one fallback site that loses IRREPLACEABLE work —
@@ -2353,26 +2348,26 @@ async function main(): Promise<void> {
     // AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232).
     // Must run BEFORE the SDK query starts so that mint-presence.ts sees the
     // event when /aidlc is invoked. Best-effort: never blocks startup.
-    if (AIDLC_ENABLED && existingComments.length > 0) {
+    if (AIDLC_ENABLED) {
       try {
         const pendingStage = findPresenceGateStage(CWD);
-        if (pendingStage) {
-          const triggerComment = extractGateAnswerComment(
-            existingComments,
-            pendingStage,
-            REPO_OWNER,
-            REPO_NAME,
-            ISSUE_NUMBER,
-          );
-          const presenceResult = mintSyntheticPresence(
-            { cwd: CWD, log },
-            triggerComment,
-          );
-          if (presenceResult.written) {
-            log('INFO', 'AIDLC presence: synthetic HUMAN_TURN written', {
-              stage: presenceResult.stage,
-              author: triggerComment?.author,
-            });
+        if (pendingStage && process.env.GITHUB_EVENT_PATH) {
+          const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) as { sender?: { id?: number } };
+          const triggerId = resolveSuperpowerTriggerComment(event, REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER));
+          if (triggerId) {
+            const tokenProvider = () => getRuntimeGitHubToken();
+            const target = (process.env.TARGET_REPO || `${REPO_OWNER}/${REPO_NAME}`).split('/');
+            const comments = await fetchApprovalComments(REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER), await tokenProvider());
+            const triggerComment = target.length === 2 && target[0] && target[1]
+              ? await resolveVerifiedGateAnswer(comments, pendingStage, REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER),
+                triggerId, event.sender?.id, { owner: REPO_OWNER, repo: REPO_NAME,
+                  runId: process.env.ADP_MESSAGE_ID || '', tokenProvider,
+                  effectRepo: { owner: target[0], repo: target[1] } })
+              : null;
+            if (triggerComment) {
+              const presenceResult = mintSyntheticPresence({ cwd: CWD, log }, triggerComment);
+              if (presenceResult.written) log('INFO', 'AIDLC presence: verified HUMAN_TURN written', { stage: pendingStage });
+            }
           }
         }
       } catch (presenceErr) {

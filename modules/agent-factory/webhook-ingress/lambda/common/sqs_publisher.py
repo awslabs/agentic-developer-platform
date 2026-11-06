@@ -11,6 +11,7 @@ visibility timeout expires. Using a per-run group ID keeps dedup working
 import json
 import logging
 import os
+import time
 
 import boto3
 
@@ -32,6 +33,66 @@ def _get_sqs():
     return _sqs
 
 
+class WorkOwnedByActiveRunError(Exception):
+    """Admission stayed refused because an active run still owns the issue (#9541).
+
+    Raised instead of returning ``None`` so the caller can tell a dropped reply
+    from a transport failure and leave a notice on the issue.
+    """
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(f"work owned by an active run; run_id={run_id}")
+        self.run_id = run_id
+
+
+def _admission_wait_budget() -> tuple[float, float]:
+    """Total seconds to wait on an owned refusal and the pause between attempts.
+
+    The webhook Lambda runs behind a 29 s API Gateway integration and a 30 s
+    function timeout, with actor verification already spent before this point,
+    so the default budget is deliberately short. ``0`` disables waiting.
+    """
+    try:
+        total = float(os.environ.get("ADP_WORK_ADMISSION_WAIT_SECONDS", "12"))
+    except ValueError:
+        total = 12.0
+    try:
+        pause = float(os.environ.get("ADP_WORK_ADMISSION_RETRY_SECONDS", "3"))
+    except ValueError:
+        pause = 3.0
+    return max(0.0, min(total, 20.0)), max(0.5, min(pause, 10.0))
+
+
+def _admit_with_bounded_wait(envelope: dict) -> str:
+    """Admit the invocation, retrying only while the gateway reports an owner.
+
+    An unavailable outcome is final on the first attempt (the gateway could not
+    be reached or refused for another reason); only the owned refusal is worth
+    waiting on, because the owning run is expected to finish shortly (#9541).
+    """
+    # Resolved at call time, as the original producer did: tests re-import
+    # ``common.gateway_client`` and a module-level binding would go stale.
+    from common import gateway_client
+
+    total, pause = _admission_wait_budget()
+    deadline = time.monotonic() + total
+    attempt = 0
+    while True:
+        attempt += 1
+        outcome = gateway_client.admit_issue_work_outcome(envelope)
+        if outcome != gateway_client.ADMISSION_OWNED:
+            return outcome
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "Work still owned by the active run after %d attempt(s) run_id=%s",
+                attempt,
+                envelope.get("message_id"),
+            )
+            return outcome
+        time.sleep(min(pause, remaining))
+
+
 def publish_envelope(envelope: dict, *, model_root: dict | None = None) -> str | None:
     """Publish a normalized envelope to the agent submit queue.
 
@@ -40,6 +101,10 @@ def publish_envelope(envelope: dict, *, model_root: dict | None = None) -> str |
 
     Returns:
         SQS MessageId on success, None on failure.
+
+    Raises:
+        WorkOwnedByActiveRunError: admission was refused for the whole wait
+            budget because an active run still owns the issue (#9541).
     """
     queue_url = SUBMIT_QUEUE_URL
     if not queue_url:
@@ -82,11 +147,18 @@ def publish_envelope(envelope: dict, *, model_root: dict | None = None) -> str |
                 MODEL_POLICY_UNAVAILABLE_CHANNEL,
             )
         else:
-            from common.gateway_client import admit_issue_work
+            if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+                logger.warning(
+                    "Work ownership admission refused run_id=%s; nothing published",
+                    envelope.get("message_id"),
+                )
+                return None
+            from common import gateway_client
 
-            if os.environ.get(
-                "AGENT_AUTHORITY_ENABLED", "false"
-            ).lower() != "true" or not admit_issue_work(envelope):
+            outcome = _admit_with_bounded_wait(envelope)
+            if outcome == gateway_client.ADMISSION_OWNED:
+                raise WorkOwnedByActiveRunError(str(envelope.get("message_id", "")))
+            if outcome != gateway_client.ADMISSION_ADMITTED:
                 logger.warning(
                     "Work ownership admission refused run_id=%s; nothing published",
                     envelope.get("message_id"),

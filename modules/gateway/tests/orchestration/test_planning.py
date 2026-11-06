@@ -218,6 +218,12 @@ class TestTheDerivedDocumentPassesTheServersOwnRules:
         assert proposal.org_id == "org-alpha"
         assert proposal.spec_revision == PLANNER_SPEC_REVISION
 
+    def test_selected_product_is_part_of_the_derived_proposal(self):
+        proposal = plan_from_draft(_inputs(product_id="product-1"))
+
+        assert proposal.product_id == "product-1"
+        assert proposal.model_validate(proposal.model_dump()).product_id == "product-1"
+
 
 class TestNothingIsInventedThatThePoseDoesNotContain:
     """The derivation's omissions are the load-bearing part."""
@@ -505,3 +511,22 @@ def test_repository_paths_cannot_traverse_or_extend_the_provider_path(name):
     else:
         with pytest.raises(PlanningError, match="OWNER/NAME"):
             resolve_repository(name, [(11, [name], True)])
+
+
+def test_multiple_matching_installations_require_a_reviewed_selector():
+    available = [(11, ["acme/web"], True), (22, ["acme/web"], True)]
+    with pytest.raises(PlanningError) as caught:
+        resolve_repository("acme/web", available)
+    assert caught.value.code == "repository_connection_ambiguous"
+    assert resolve_repository("acme/web", available, installation_id=22).installation_id == 22
+
+
+def test_previewed_story_carries_selected_identity_and_connection():
+    from src.orchestration.planning import ResolvedRepository
+
+    repository = ResolvedRepository(full_name="acme/web", installation_id=11, verified_live=True, repository_id=1001)
+    proposal = plan_from_draft(_inputs(repository=repository, last_activity_epoch=1800000000))
+    for story in (node for node in proposal.nodes if node.kind == "story"):
+        assert (story.repository_identity, story.provider_repository_id) == ("acme/web", 1001)
+        assert story.repository_connection.installation_id == 11
+    assert proposal.proposed_execution_policy.repository_ids == ["acme/web"]

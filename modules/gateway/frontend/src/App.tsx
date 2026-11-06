@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Suspense, lazy } from 'react';
+import { FlowsListPage as FlowsList, FlowGraphPage as GraphView } from './routing/flowPages';
 import { MainLayout } from './layouts/MainLayout';
 import { AuthLayout } from './layouts/AuthLayout';
 import { ProtectedRoute } from './components/ProtectedRoute';
@@ -20,6 +21,8 @@ import { NextLoading } from './components/next/NextLoading';
 import { NewUiGate } from './components/next/NewUiGate';
 
 const DomainMRI = lazy(() => import('./pages/DomainMRI'));
+const AssistantActivityChat = lazy(() => import('./pages/AssistantActivityChat'));
+const AssistantInstallationChat = lazy(() => import('./pages/AssistantInstallationChat'));
 
 // Lazy load pages for code splitting
 const Login = lazy(() => import('./pages/Login'));
@@ -30,10 +33,13 @@ const DepartmentDashboard = lazy(() => import('./pages/DepartmentDashboard'));
 const LogViewer = lazy(() => import('./pages/LogViewer'));
 const ClaudeSetup = lazy(() => import('./pages/ClaudeSetup'));
 const CliAuth = lazy(() => import('./pages/CliAuth')); // Web CLI login approval (login --web)
+const NativeCredentialApproval = lazy(() => import('./pages/NativeCredentialApproval'));
 const AgentManagement = lazy(() => import('./pages/AgentManagement')); // Issue #119
 const ModelAccess = lazy(() => import('./pages/ModelAccess'));
 const RateLimitManagement = lazy(() => import('./pages/RateLimitManagement')); // Issue #185
-const MyChats = lazy(() => import('./pages/MyChats')); // Issue #179
+const MyConversations = lazy(() => import('./pages/MyConversations')); // #9027
+const DevBox = lazy(() => import('./pages/settings/DevBox')); // Issue #8094
+const DevBoxOpen = lazy(() => import('./pages/settings/DevBoxOpen')); // #8223: the tab that becomes the Crew dashboard
 const AgentChat = lazy(() => import('./pages/AgentChat')); // Issue #97
 const Connections = lazy(() => import('./pages/settings/Connections')); // Issue #465
 const SettingsCredentials = lazy(() => import('./pages/settings/SettingsCredentials')); // Issue #562
@@ -46,14 +52,18 @@ const AccessRequests = lazy(() => import('./pages/admin/AccessRequests')); // Is
 const IndexingStatus = lazy(() => import('./pages/admin/IndexingStatus')); // Issue #1424
 const TenantOrgLinks = lazy(() => import('./pages/admin/TenantOrgLinks')); // Issue #2954
 const AdminOrganizations = lazy(() => import('./pages/admin/Organizations')); // Issue #4841
+const ToolEntitlements = lazy(() => import('./pages/admin/ToolEntitlements'));
 const AgentActivity = lazy(() => import('./pages/AgentActivity')); // Issue #1457
 const AgentRunDashboard = lazy(() => import('./pages/AgentRunDashboard')); // Issue #3633
 const BudgetSpend = lazy(() => import('./pages/BudgetSpend')); // Issue #4402
 const Knowledge = lazy(() => import('./pages/Knowledge')); // Issue #1794
-const GraphView = lazy(() => import('./pages/GraphView')); // Issue #4212
-const FlowsList = lazy(() => import('./pages/FlowsList')); // Issue #4869
 const Superplane = lazy(() => import('./pages/Superplane')); // Issue #5037
 const NotFound = lazy(() => import('./pages/NotFound'));
+const StartFlow = lazy(() => import('./pages/StartFlow'));
+const ProductsList = lazy(() => import('./pages/products/ProductsList'));
+const ProductCreate = lazy(() => import('./pages/products/ProductCreate'));
+const GitlabLaunch = lazy(() => import('./pages/GitlabLaunch'));
+const ProductOverview = lazy(() => import('./pages/products/ProductOverview'));
 
 // Opt-in new UI shell — Issue #5079 (NUI-01 of EPIC #5078).
 //
@@ -81,6 +91,7 @@ function App() {
             <Route path="/login" element={<Login />} />
           </Route>
 
+          <Route path="/gitlab-launch" element={<ProtectedRoute><GitlabLaunch /></ProtectedRoute>} />
           {/* OAuth callback route (must be outside ProtectedRoute) */}
           <Route path="/auth/callback" element={<AuthCallback />} />
 
@@ -106,21 +117,51 @@ function App() {
             }
           >
             <Route path="/domain-mri" element={<DomainMRI />} />
+            {/* Outside MainLayout on purpose: this tab is handed to Kiro Crew, so no app chrome. */}
+            <Route path="/settings/dev-box/open" element={<FeatureGate feature="crew_dashboard"><DevBoxOpen /></FeatureGate>} />
             <Route element={<MainLayout />}>
               <Route path="/" element={<RoleBasedRedirect />} />
               <Route path="/dashboard" element={<DashboardRedirect />} />
+              <Route path="/products" element={<FeatureGate feature="product_profile"><ProductsList /></FeatureGate>} />
+              <Route path="/products/new" element={<FeatureGate feature="product_profile"><ProductCreate /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/build" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/build/activity" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/release" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/release/:service" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/operate" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/operate/:service" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/agents" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/agents/:service" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/insights" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/settings" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/projects" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/knowledge" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/budget" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/flows" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/services" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/services/security" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/services/devops" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/services/finops" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/services/transform" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
+              <Route path="/products/:productId/projects/:projectId/services/well_architected" element={<FeatureGate feature="product_profile"><ProductOverview /></FeatureGate>} />
               <Route path="/admin/system" element={<FeatureGate feature="system_dashboard"><AdminGuard><PlatformDashboard /></AdminGuard></FeatureGate>} />
               <Route path="/org/:orgId" element={<OrgDashboard />} />
               <Route path="/org/:orgId/department/:deptId" element={<DepartmentDashboard />} />
               <Route path="/logs" element={<FeatureGate feature="logs"><LogViewer /></FeatureGate>} /> {/* Issue #3747 */}
               <Route path="/setup" element={<ClaudeSetup />} />
               <Route path="/cli-auth" element={<CliAuth />} /> {/* Web CLI login approval */}
+              <Route path="/credentials/native/:receiptId" element={<NativeCredentialApproval />} />
               <Route path="/agents" element={<AgentManagement />} /> {/* Issue #119 */}
               <Route path="/budgets" element={<Navigate to="/budget?view=manage" replace />} />
               <Route path="/model-access" element={<ModelAccess />} /> {/* Issue #185 */}
               <Route path="/ratelimits" element={<RateLimitManagement />} /> {/* Issue #185 */}
-              <Route path="/my-chats" element={<FeatureGate feature="chat"><MyChats /></FeatureGate>} /> {/* Issue #179 */}
+              <Route path="/my-conversations" element={<FeatureGate feature="chat"><MyConversations /></FeatureGate>} /> {/* #9027 */}
               <Route path="/chat" element={<FeatureGate feature="chat"><AgentChat /></FeatureGate>} /> {/* Issue #97 */}
+              <Route path="/assistant/activity/:invocationId" element={<AssistantActivityChat />} />
+              <Route path="/assistant/installation/:installationId" element={<AssistantInstallationChat />} />
+              {/* The Runtime page folded into the Dev Box page (#8864); the chat header keeps the per-conversation switch. */}
+              <Route path="/settings/dev-box" element={<FeatureGate feature="crew_dashboard"><DevBox /></FeatureGate>} /> {/* Issue #8094 */}
               <Route path="/settings/connections" element={<FeatureGate feature="connections"><Connections /></FeatureGate>} /> {/* Issue #465 */}
               <Route path="/settings/credentials" element={<FeatureGate feature="credentials"><SettingsCredentials /></FeatureGate>} /> {/* Issue #562 */}
               <Route path="/settings/credentials/aws/connect" element={<FeatureGate feature="credentials"><ConnectAws /></FeatureGate>} /> {/* Issue #562 */}
@@ -133,6 +174,7 @@ function App() {
                   ORG_UPDATE scoped to target_org_id). The page itself hides the create-org
                   button, whose route is platform-admin-only. */}
               <Route path="/admin/organizations" element={<AdminOrganizations />} />
+              <Route path="/admin/tools" element={<ToolEntitlements />} />
               <Route path="/activity" element={<AgentActivity />} /> {/* Issue #1457 */}
               <Route path="/runs" element={<AgentRunDashboard />} /> {/* Issue #3633 */}
               {/* Issue #4402. Reachable by a MEMBER: no permission guard, because the
@@ -149,6 +191,7 @@ function App() {
                   Router v6 ranks routes by specificity rather than declaration
                   order, so `/flows` and `/flows/:flowId` do not compete. */}
               <Route path="/flows" element={<FeatureGate feature="orchestration_engine"><FlowsList /></FeatureGate>} />
+              <Route path="/flows/new" element={<FeatureGate feature="orchestration_engine"><StartFlow /></FeatureGate>} />
               <Route path="/flows/:flowId" element={<FeatureGate feature="orchestration_engine"><GraphView /></FeatureGate>} />
               {/* Issue #5037 (EPIC #4910). `superplane` is fail-CLOSED in
                   ALL_FEATURES_ENABLED, so a pending or failed /features fetch keeps this

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 
@@ -33,6 +34,17 @@ from .execution_store import load_execution, prepare_action, record_observation
 from .models import OrchestrationAction, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
 from .review_cycle import CycleBlockedError, block
 from .review_cycle_dispatch import ReviewCycleServices
+
+logger = logging.getLogger(__name__)
+
+
+def _request_url(exc: httpx.HTTPError) -> str | None:
+    # httpx raises RuntimeError from `.request` when the error was built without one.
+    try:
+        return str(exc.request.url)
+    except Exception:
+        return None
+
 
 WORKFLOW_KIND = "deployment_workflow"
 HANDOFF_KIND = "deployment_handoff"
@@ -70,7 +82,7 @@ class WorkflowReceipt(BaseModel):
     artifact_id: int | None = Field(default=None, gt=0)
     artifact_ref: str | None = Field(
         default=None,
-        pattern=r"^s3://[a-z0-9-]+/deployment-evidence/v1/[0-9]+/[0-9]+/[0-9]+/context/(gateway-deploy|run-gateway-migrations)\.yml\.json\?versionId=[A-Za-z0-9%._~-]+$",
+        pattern=r"^s3://[a-z0-9-]+/deployment-evidence/v1/[0-9]+/[0-9]+/[0-9]+/context/(gateway-deploy|gateway-frontend-deploy|run-gateway-migrations)\.yml\.json\?versionId=[A-Za-z0-9%._~-]+$",
     )
     artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     target: dict
@@ -96,25 +108,49 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=convert)
 
 
-def components_for_paths(paths):
-    """Code-owned component mapping; issue prose never selects a workflow."""
+def components_for_paths(paths, manifest=None):
+    """Reviewed component selection for changed paths; issue prose never selects a workflow.
+
+    The mapping is the manifest's `path_rules` (reviewed with the pipelines they
+    name), so an agent that adds a deployment workflow extends the mapping in the
+    same pull request. Rules are ordered and the first match wins. A path no rule
+    covers blocks with `deployment_component_unmapped`: the engine never guesses
+    which pipeline a change needs (#7457).
+    """
+    # A manifest that declares no rules inherits the packaged ones: an environment
+    # overlay that only lists its own targets must not turn every path unmapped.
+    rules = manifest if manifest is not None and manifest.path_rules else load_packaged_manifest()
     components = set()
     for path in paths:
-        if path.startswith("modules/gateway/frontend/"):
-            components.add("gateway-frontend")
-        elif path.startswith("modules/gateway/alembic/") or path == ".github/workflows/run-gateway-migrations.yml":
-            components.add("gateway-migrations")
-        elif path.startswith("modules/gateway/tests/") or path.startswith(("tests/", "docs/", "aidlc/")) or path.endswith(".md"):
-            continue
-        elif path.startswith("modules/gateway/") or path == ".github/workflows/gateway-deploy.yml":
-            components.add("gateway-backend")
-        elif path.startswith("modules/agent-factory/agent-worker-image/") or path.startswith("modules/agent-factory/agent/"):
-            components.add("agent-worker")
-        elif path.startswith("modules/agent-factory/webhook-ingress/"):
-            components.add("agent-webhook")
-        else:
+        rule = rules.path_rule(path)
+        if rule is None:
             raise CycleBlockedError("deployment_component_unmapped", BlockCode.HUMAN_INPUT_REQUIRED)
+        if rule.ignored:
+            continue
+        components.add(rule.component)
     return tuple(sorted(components or {"documentation"}))
+
+
+def select_deployment_entries(manifest, components, connection_ids):
+    entries = {
+        entry.entry_id: entry
+        for component in components
+        for entry in manifest.entries
+        if entry.release_group is None and entry.covers(component) and (entry.connection_id in connection_ids or entry.connection_id is None)
+    }
+    if len(entries) > 32:
+        raise CycleBlockedError("deployment_manifest_selection_limit", BlockCode.HUMAN_INPUT_REQUIRED)
+    if any(not any(entry.covers(component) for entry in entries.values()) for component in components):
+        raise CycleBlockedError("deployment_component_has_no_approved_manifest", BlockCode.HUMAN_INPUT_REQUIRED)
+    return entries
+
+
+def _require_ungrouped_release(manifest, snapshot):
+    entry = manifest.entry(snapshot["manifest_entry_id"])
+    if entry is None or hashlib.sha256(canonical(asdict(entry)).encode()).hexdigest() != snapshot["manifest_digest"]:
+        raise CycleBlockedError("deployment_manifest_changed")
+    if entry.release_group is not None:
+        raise CycleBlockedError("deployment_shared_release_admission_unavailable")
 
 
 @dataclass(frozen=True)
@@ -172,7 +208,12 @@ class WorkflowServices:
         record, binding, merge = await load_delivery_merge(session, identity=context.identity, node=node)
         flow = await session.get(OrchestrationFlow, node.flow_id, populate_existing=True)
         claim = await session.get(OrchestrationWorkClaim, context.identity.claim_id, populate_existing=True)
-        if flow is None or flow.state != "running" or claim is None or not claim.active_run_id:
+        # A flow is live while `pending` or `running`, exactly as the merge
+        # controller, continuation, recovery and report paths read it. Nothing
+        # in the engine moves an accepted flow out of `pending`, so requiring
+        # `running` here left every K2 deployment phase blocked with this code
+        # after the story itself had already passed (#7444).
+        if flow is None or flow.state not in {"pending", "running"} or claim is None or not claim.active_run_id:
             raise CycleBlockedError("deployment_flow_or_claim_unavailable", BlockCode.AUTHORITY_UNVERIFIABLE)
         return node, binding, merge, claim.active_run_id, flow
 
@@ -226,17 +267,8 @@ class WorkflowServices:
             observation_deadline = min(policy.expires_at, started + timedelta(seconds=policy.limits.max_wall_clock_seconds))
             manifest = self.manifest_loader()
             paths = await self.provider.changed_files(binding)
-            components = components_for_paths(paths)
-            entries = {
-                entry.entry_id: entry
-                for component in components
-                for entry in manifest.entries
-                if entry.covers(component) and (entry.connection_id in policy.environment_connection_ids or entry.connection_id is None)
-            }
-            if len(entries) > 32:
-                raise CycleBlockedError("deployment_manifest_selection_limit", BlockCode.HUMAN_INPUT_REQUIRED)
-            if any(not any(entry.covers(component) for entry in entries.values()) for component in components):
-                raise CycleBlockedError("deployment_component_has_no_approved_manifest", BlockCode.HUMAN_INPUT_REQUIRED)
+            components = components_for_paths(paths, manifest)
+            entries = select_deployment_entries(manifest, components, policy.environment_connection_ids)
             completed = {(row.detail or {}).get("manifest_entry_id") for row in rows if (row.detail or {}).get("runtime_verified") is True}
             remaining = [entry for key, entry in sorted(entries.items()) if key not in completed]
             if not remaining:
@@ -291,7 +323,7 @@ class WorkflowServices:
                     user_credential_id=resolved.credential_id,
                     aws_role_arn=resolved.role_arn,
                 ),
-                context.identity.accepted_plan_version,
+                auth.in_force_plan_version,
             )
             if not decision.permitted:
                 raise CycleBlockedError("deployment_authority_denied:" + decision.reason.value, BlockCode.AUTHORITY_UNVERIFIABLE)
@@ -308,6 +340,9 @@ class WorkflowServices:
                 components=[c for c in components if entry.covers(c)],
                 remaining_entry_ids=[other.entry_id for other in remaining[1:]],
                 policy_hash=policy.policy_hash,
+                credential_id=resolved.credential_id,
+                credential_role_arn=resolved.role_arn,
+                principal_user_id=principal,
                 observation_deadline=observation_deadline.isoformat(),
                 target=asdict(resolved.physical),
                 inputs=inputs,
@@ -353,6 +388,7 @@ class WorkflowServices:
                 snapshot["accepted_scope"],
             ):
                 raise CycleBlockedError("deployment_scope_changed")
+            _require_ungrouped_release(self.manifest_loader(), snapshot)
             action = await session.scalar(
                 select(OrchestrationAction)
                 .where(
@@ -511,8 +547,20 @@ class DeploymentWorkflows:
                     snapshot=snapshot,
                     detail="Deployment provider temporarily unavailable; retry within the original observation deadline.",
                 )
+            # The block code is deliberately generic for the owner; the cause must
+            # still reach the log, or a stuck deployment phase cannot be diagnosed
+            # without reading source (#7444 follow-up).
+            logger.warning(
+                "deployment evidence unavailable node=%s execution=%s provider_error=%s status=%s url=%s",
+                context.identity.node_id,
+                context.execution.id,
+                type(exc).__name__,
+                getattr(getattr(exc, "response", None), "status_code", None),
+                _request_url(exc),
+            )
             return WorkflowObservation(ObservationKind.BLOCKED, block=block("deployment_evidence_unavailable", BlockCode.PROVIDER_UNAVAILABLE))
         except Exception:
+            logger.exception("deployment evidence observation failed node=%s execution=%s", context.identity.node_id, context.execution.id)
             return WorkflowObservation(ObservationKind.BLOCKED, block=block("deployment_evidence_unavailable", BlockCode.PROVIDER_UNAVAILABLE))
 
     def decide(self, context, observation):
@@ -565,11 +613,13 @@ class DeploymentWorkflows:
                 # This callback owns only SQL state; no provider or credential I/O.
                 data, run = observation.snapshot, observation.run
                 action = await session.scalar(
-                    select(OrchestrationAction).where(
+                    select(OrchestrationAction)
+                    .where(
                         OrchestrationAction.org_id == current.identity.org_id,
                         OrchestrationAction.execution_id == current.execution.id,
                         OrchestrationAction.operation_key == data["operation_key"],
                     )
+                    .with_for_update()
                 )
                 if action is None:
                     raise CycleBlockedError("deployment_intent_missing")

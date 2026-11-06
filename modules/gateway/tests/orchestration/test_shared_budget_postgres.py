@@ -24,7 +24,7 @@ from tests.orchestration.test_shared_amendment_postgres import (  # noqa: F401
 async def test_accept_rechecks_after_waiting_for_current_flow_lock(session, appendable, monkeypatch, competing):  # noqa: F811
     ctx = appendable
     actor = replace(ctx.actor, actor_role="platform_admin")
-    monkeypatch.setattr("src.orchestration.shared_policy.read_flow_meter", AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("12.34"))))
+    monkeypatch.setattr("src.orchestration.shared_policy.reconcile_flow_meter", AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("12.34"))))
     request = BudgetIncreaseRequest(
         expected_plan_version=ctx.plan.version,
         expected_plan_hash=ctx.plan.plan_hash,

@@ -60,3 +60,65 @@ def test_recovery_body_cannot_assert_actor_or_approval():
             actor_kind="human",
             approved=True,
         )
+
+
+@pytest.mark.parametrize("value", ["", " ", "gpt6-sol\n", 123, {"model": "gpt6-sol"}, "x" * 256])
+def test_recovery_model_is_a_bounded_string_not_authority(value):
+    with pytest.raises(ValidationError):
+        ReviewRecoveryRequest(
+            expected_attempt=1,
+            expected_plan_version=1,
+            expected_run_id="run",
+            expected_head_sha="a" * 40,
+            reason="Recover the exited reviewer",
+            reviewer_model=value,
+        )
+
+
+@pytest.mark.parametrize("mode,autonomous", [("settle_merged", False), ("review", True)])
+async def test_model_override_refuses_unsupported_recovery_modes_before_any_io(mode, autonomous):
+    from src.orchestration.review_cycle import CycleBlockedError
+    from src.orchestration.review_recovery import request_review_recovery
+
+    request = ReviewRecoveryRequest(
+        mode=mode,
+        expected_attempt=1,
+        expected_plan_version=1,
+        expected_run_id="run",
+        expected_head_sha="a" * 40,
+        reason="Recover the exited reviewer",
+        reviewer_model="gpt6-sol",
+    )
+    with pytest.raises(CycleBlockedError, match="reviewer_model_override_unsupported"):
+        await request_review_recovery(
+            None, org_id="org", node_id="node", actor_id="human", actor_role="owner", request=request, autonomous=autonomous
+        )
+
+
+@pytest.mark.parametrize(
+    "mode,source,renew,autonomous,reason",
+    [
+        ("review_existing_work", "original", None, True, "human_plan_approver_required"),
+        ("review_existing_work", None, None, False, "retained_review_request_invalid"),
+        ("review", "original", None, False, "retained_review_request_invalid"),
+        ("review", None, "receipt", False, "retained_review_request_invalid"),
+    ],
+)
+async def test_retained_recovery_is_explicit_human_only_mode_before_any_io(mode, source, renew, autonomous, reason):
+    from src.orchestration.review_cycle import CycleBlockedError
+    from src.orchestration.review_recovery import request_review_recovery
+
+    request = ReviewRecoveryRequest(
+        mode=mode,
+        source_run_id=source,
+        renew_decision_id=renew,
+        expected_attempt=3,
+        expected_plan_version=1,
+        expected_run_id="current",
+        expected_head_sha="a" * 40,
+        reason="Review the explicitly associated retained original work",
+    )
+    with pytest.raises(CycleBlockedError, match=reason):
+        await request_review_recovery(
+            None, org_id="org", node_id="node", actor_id="human", actor_role="owner", request=request, autonomous=autonomous
+        )

@@ -1,0 +1,1 @@
+{"schema_version":1,"skills":[{"name":"adp-flow","clients":["claude-code","codex"],"invocation":"adp flow"},{"name":"adp-grilling","clients":["claude-code","codex"],"invocation":"adp grilling"}]}

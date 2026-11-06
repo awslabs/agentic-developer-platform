@@ -1,0 +1,38 @@
+{
+  "source_revision": "d8e8a2a5c5e8e540f243e4aee77dcf54b3689ecc",
+  "artifacts": 11543,
+  "entry_points": 2106,
+  "global_references": 247,
+  "global_files": 97,
+  "migration_files": 135,
+  "migration_heads": [
+    "122_product_handoff_callbacks"
+  ],
+  "missing_migration_parents": [],
+  "components": {
+    "cli": 61,
+    "contracts": 13,
+    "documentation": 2160,
+    "engine": 193,
+    "frontend": 569,
+    "gateway-other": 1394,
+    "gateway-release": 244,
+    "gateway-tests": 586,
+    "identity-access": 269,
+    "module-agent-context": 522,
+    "module-domain-apps": 1844,
+    "module-harness": 72,
+    "module-insights": 75,
+    "module-platform-deploy-mgmt": 23,
+    "module-research": 46,
+    "module-source-control": 22,
+    "module-tools": 241,
+    "module-user-services": 81,
+    "other-tests": 320,
+    "qualification": 54,
+    "repository-tooling": 209,
+    "schema": 137,
+    "shared-release": 933,
+    "worker-ingress": 1475
+  }
+}

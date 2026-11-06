@@ -54,7 +54,9 @@ from src.agentauth.abort_reconciliation import (
     ABORTED_STATUS,
     RECONCILED_BY,
     TRANSIENT_REPAIR_FAILURE,
+    _mark_execution_vanished,
     repair_aborted_terminal_status,
+    repair_vanished_terminal_status,
 )
 
 AUTHORITY = "adp-test-agent-authority"
@@ -464,3 +466,155 @@ def test_repair_removes_dead_worker_control_registration(client):
     row = read_event(client)
     assert row["status"] == {"S": "aborted"}
     assert not set(fields).intersection(row)
+
+
+class TestVanishedPodRepair:
+    """A bound run whose pod object is gone gets a terminal ``failed`` row (#7783)."""
+
+    def _vanished(self, client, *, status="in_progress", bound=True):
+        put_event(client, status=status)
+        item = execution(aborted=False)
+        if bound:
+            item["workload_binding"] = {"S": "pod-uid-0001"}
+        else:
+            item.pop("workload_binding", None)
+        return repair_vanished_terminal_status(
+            authority_client=client, events_table=EVENTS, execution=item, invocation_id=INVOCATION, tenant_id=TENANT
+        )
+
+    def test_the_execution_record_is_concluded_as_failed_too(self, client):
+        """Protected review recovery reads EXEC, not the events row (#7783)."""
+        put_event(client)
+        item = execution(aborted=False)
+        item["workload_binding"] = {"S": "pod-uid-0001"}
+        item["status"] = {"S": "active"}
+        client.put_item(TableName=AUTHORITY, Item=item)
+        result = repair_vanished_terminal_status(
+            authority_client=client, events_table=EVENTS, execution=item, invocation_id=INVOCATION, tenant_id=TENANT, authority_table=AUTHORITY
+        )
+        assert (result.repaired, result.reason) == (True, "repaired")
+        row = client.get_item(TableName=AUTHORITY, Key={"pk": item["pk"], "sk": item["sk"]}, ConsistentRead=True)["Item"]
+        assert row["status"]["S"] == "completed" and row["terminal_outcome"]["S"] == "failed"
+        assert row["terminal_reconciled_by"]["S"] == "vanished_pod_reconciliation" and row["exit_reason"]["S"] == "pod_vanished"
+        # A record that already concluded (the worker did report) is never rewritten.
+        done = dict(item, status={"S": "completed"}, terminal_outcome={"S": "complete"})
+        client.put_item(TableName=AUTHORITY, Item=done)
+        repair_vanished_terminal_status(
+            authority_client=client, events_table=EVENTS, execution=item, invocation_id=INVOCATION, tenant_id=TENANT, authority_table=AUTHORITY
+        )
+        again = client.get_item(TableName=AUTHORITY, Key={"pk": item["pk"], "sk": item["sk"]}, ConsistentRead=True)["Item"]
+        assert again["terminal_outcome"]["S"] == "complete"
+
+    def test_a_stale_in_progress_row_becomes_failed_with_the_vanished_reason(self, client):
+        result = self._vanished(client)
+        assert (result.repaired, result.reason) == (True, "repaired")
+        row = read_event(client)
+        assert row["status"]["S"] == "failed" and row["stop_reason"]["S"] == "pod_vanished"
+        assert row["terminal_reconciled_by"]["S"] == "vanished_pod_reconciliation"
+        assert "abort_requested_at" not in row
+        assert liveness.compute_liveness(row["status"]["S"], ARRIVED, datetime.now(UTC)) == "exited"
+
+    def test_a_terminal_row_is_never_overwritten(self, client):
+        result = self._vanished(client, status="complete")
+        assert (result.repaired, result.reason) == (False, "already_terminal")
+        assert read_event(client)["status"]["S"] == "complete"
+
+    def test_an_unbound_execution_is_not_repaired(self, client):
+        result = self._vanished(client, bound=False)
+        assert (result.repaired, result.reason) == (False, "not_bound")
+        assert read_event(client)["status"]["S"] == "in_progress"
+
+
+class TestVanishedExecutionBranches:
+    """Every refusal and failure branch of the EXEC conclusion is pinned (#7783)."""
+
+    def _item(self, **over):
+        item = execution(aborted=False)
+        item["workload_binding"] = {"S": "pod-uid-0001"}
+        item["status"] = {"S": "active"}
+        item.update(over)
+        return item
+
+    def test_only_an_active_bound_record_is_concluded(self, client):
+        assert (
+            _mark_execution_vanished(
+                authority_client=client, authority_table=None, execution=self._item(), invocation_id=INVOCATION, tenant_id=TENANT
+            )
+            == "not_active"
+        )
+        assert (
+            _mark_execution_vanished(
+                authority_client=client,
+                authority_table=AUTHORITY,
+                execution=self._item(status={"S": "completed"}),
+                invocation_id=INVOCATION,
+                tenant_id=TENANT,
+            )
+            == "not_active"
+        )
+        unbound = self._item()
+        unbound.pop("current_attempt")
+        assert (
+            _mark_execution_vanished(
+                authority_client=client, authority_table=AUTHORITY, execution=unbound, invocation_id=INVOCATION, tenant_id=TENANT
+            )
+            == "not_bound"
+        )
+
+    def test_a_record_that_changed_underneath_is_left_alone(self, client):
+        # No EXEC row at all: the conditional write fails and nothing is invented.
+        assert (
+            _mark_execution_vanished(
+                authority_client=client, authority_table=AUTHORITY, execution=self._item(), invocation_id=INVOCATION, tenant_id=TENANT
+            )
+            == "execution_changed"
+        )
+
+    @pytest.mark.parametrize("error", ["client", "botocore"])
+    def test_transport_failures_are_transient(self, error):
+        from unittest.mock import Mock
+
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        exc = ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem") if error == "client" else BotoCoreError()
+        stub = Mock(update_item=Mock(side_effect=exc))
+        assert (
+            _mark_execution_vanished(
+                authority_client=stub, authority_table=AUTHORITY, execution=self._item(), invocation_id=INVOCATION, tenant_id=TENANT
+            )
+            == TRANSIENT_REPAIR_FAILURE
+        )
+
+    def test_a_transient_events_write_stops_before_the_execution_record(self):
+        from unittest.mock import Mock
+
+        from botocore.exceptions import BotoCoreError
+
+        stub = Mock(update_item=Mock(side_effect=BotoCoreError()))
+        result = repair_vanished_terminal_status(
+            authority_client=stub, events_table=EVENTS, execution=self._item(), invocation_id=INVOCATION, tenant_id=TENANT, authority_table=AUTHORITY
+        )
+        assert (result.repaired, result.reason) == (False, TRANSIENT_REPAIR_FAILURE)
+        assert stub.update_item.call_count == 1
+
+    def test_an_execution_transport_failure_is_reported_transient_after_the_events_repair(self, client):
+        from unittest.mock import Mock
+
+        from botocore.exceptions import BotoCoreError
+
+        put_event(client)
+        real_update = client.update_item
+        calls = {"n": 0}
+
+        def flaky(**kwargs):
+            calls["n"] += 1
+            if kwargs["TableName"] == AUTHORITY:
+                raise BotoCoreError()
+            return real_update(**kwargs)
+
+        stub = Mock(update_item=Mock(side_effect=flaky), get_item=client.get_item)
+        result = repair_vanished_terminal_status(
+            authority_client=stub, events_table=EVENTS, execution=self._item(), invocation_id=INVOCATION, tenant_id=TENANT, authority_table=AUTHORITY
+        )
+        assert (result.repaired, result.reason) == (False, TRANSIENT_REPAIR_FAILURE)
+        assert read_event(client)["status"]["S"] == "failed"

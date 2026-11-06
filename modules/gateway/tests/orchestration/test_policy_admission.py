@@ -30,6 +30,7 @@ these tests exercise cannot hide in a differently-built fixture.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -62,6 +63,7 @@ from src.orchestration.policy_admission import (
     authorize_node_dispatch,
     load_in_force_policy,
 )
+from src.orchestration.run_reports import OrchestrationRunReport
 from src.orchestration.state import ActorKind, NodeState
 from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
@@ -119,12 +121,14 @@ async def healthy_policy_reservations(monkeypatch):
 
 
 @pytest.fixture
-async def engine():
+async def engine(request, tmp_path):
+    # Concurrent request tests need separate connections and transactions.
+    file_database = getattr(request, "param", "memory") == "file"
     eng = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        f"sqlite+aiosqlite:///{tmp_path / 'policy.db'}" if file_database else "sqlite+aiosqlite:///:memory:",
         echo=False,
-        poolclass=StaticPool,
         connect_args={"check_same_thread": False},
+        **({} if file_database else {"poolclass": StaticPool}),
     )
 
     @event.listens_for(eng.sync_engine, "connect")
@@ -346,13 +350,14 @@ async def _fixture(
     *,
     policy: ExecutionPolicy | None,
     node_kwargs: dict[str, Any] | None = None,
+    initialize_meter: bool = True,
 ) -> tuple[OrchestrationFlow, OrchestrationNode]:
     """Org + member + flow + accepted plan + approval + one ready story."""
     await _make_org(session)
     await _make_member(session)
     flow = await _make_flow(session)
     await _accept_policy(session, flow, policy)
-    if policy is not None:
+    if policy is not None and initialize_meter:
         from src.orchestration.flow_meter import prepare_flow_meter
 
         # Fixtures with historical work model a flow whose first admission already
@@ -408,9 +413,13 @@ class TestNoPolicyPreservesLegacyDispatch:
         assert report.policy_blocked == 0
         assert await _state_of(session, node.id) == NodeState.RUNNING.value
 
-    async def test_a_permitting_policy_dispatches_through_the_full_pass(self, session: AsyncSession, governed_work_ownership) -> None:
+    @pytest.mark.parametrize("role", ["member", "dept_admin", "org_admin"])
+    async def test_a_permitting_policy_dispatches_through_the_full_pass(self, session: AsyncSession, governed_work_ownership, role) -> None:
         """The other half: enforcement does not break a flow it should admit."""
         _, node = await _fixture(session, policy=_policy())
+        membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER))
+        membership.role = role
+        await session.flush()
         report = await run_dispatch_pass(session, _config())
         assert report.dispatched == 1
         assert report.policy_blocked == 0
@@ -483,7 +492,139 @@ class TestRefusalLeavesTheNodeUntouched:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("allowed,expected_dispatches", [([Action.OPERATE], 1), ([Action.DEVELOP], 0)])
+async def test_flagged_accepted_operations_story_uses_operate_policy_action(
+    session, monkeypatch, governed_work_ownership, allowed, expected_dispatches
+):
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    flow, node = await _fixture(session, policy=_policy(allowed_actions=allowed, human_gates=[]))
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id))
+    approval = await session.scalar(select(OrchestrationDecision).where(OrchestrationDecision.flow_id == flow.id))
+    plan.accepted_by_decision_id = approval.id
+    plan.plan_document = {
+        **plan.plan_document,
+        "nodes": [
+            {
+                "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                "kind": "story",
+                "executor": {"kind": "agent", "role": "operate", "persona": "operations"},
+            }
+        ],
+    }
+    await session.flush()
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == expected_dispatches
+    assert report.policy_blocked == 1 - expected_dispatches
+    assert await _state_of(session, node.id) == (NodeState.RUNNING.value if expected_dispatches else NodeState.READY.value)
+
+
+async def test_operational_evidence_dispatch_requires_no_pr_but_preserves_execution(session, monkeypatch, governed_work_ownership):
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    monkeypatch.setenv("ADP_SHARED_RUN_REPORTING_ENABLED", "true")
+    monkeypatch.setenv("AGENT_RUN_CREDENTIAL_KEY", "test-only-operations-report-key")
+    flow, node = await _fixture(session, policy=_policy(allowed_actions=[Action.OPERATE], human_gates=[]))
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id))
+    approval = await session.scalar(select(OrchestrationDecision).where(OrchestrationDecision.flow_id == flow.id))
+    plan.accepted_by_decision_id = approval.id
+    plan.plan_document = {
+        **plan.plan_document,
+        "nodes": [
+            {
+                "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                "kind": "story",
+                "title": node.title,
+                "repository_identity": REPO,
+                "executor": {"kind": "agent", "role": "operate", "persona": "operations"},
+                "required_inputs": [
+                    {"name": "deploy", "source": "deployment_workflow:deploy.yml"},
+                    {"name": "source", "source": "deployment_source_revision:" + "a" * 40},
+                    {"name": "definition", "source": "deployment_definition_revision:" + "b" * 40},
+                    {"name": "branch", "source": "deployment_branch:main"},
+                ],
+                "evidence_expectations": ["runtime_verified:tools-facade"],
+            }
+        ],
+    }
+    await session.flush()
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    envelope = report.pending[0].envelope
+    assert envelope["persona"] == "operations"
+    assert not envelope.get("pr_binding_required")
+    assert not envelope.get("handoff_required")
+    assert envelope["handoff_expect"]["execution_id"]
+    assert envelope["run_report"]["credential"].startswith("adprpt1.")
+    assert (await session.get(OrchestrationRunReport, envelope["message_id"])).persona == "operations"
+    assert envelope["orchestration"]["deployment_revisions"] == {
+        "source_revision": "a" * 40,
+        "definition_revision": "b" * 40,
+        "default_branch": "main",
+    }
+    dispatched = await session.scalar(select(OrchestrationDecision).where(OrchestrationDecision.kind == "node_dispatched"))
+    assert json.loads(dispatched.reason)["conclusion_authority"] == "evidence"
+    from unittest.mock import patch
+
+    import boto3
+    from moto import mock_aws
+
+    from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore
+    from src.agentauth.engine import EngineAuthorityWriter
+
+    with mock_aws():
+        dynamodb = boto3.client("dynamodb", region_name="us-east-1")
+        for name, hash_key, range_key in (("authority", "pk", "sk"), ("events", "event_id", "arrived_at")):
+            dynamodb.create_table(
+                TableName=name,
+                BillingMode="PAY_PER_REQUEST",
+                KeySchema=[{"AttributeName": hash_key, "KeyType": "HASH"}, {"AttributeName": range_key, "KeyType": "RANGE"}],
+                AttributeDefinitions=[{"AttributeName": hash_key, "AttributeType": "S"}, {"AttributeName": range_key, "AttributeType": "S"}],
+            )
+        store = BootstrapStore(table_name="authority", dynamodb_client=dynamodb)
+        writer = EngineAuthorityWriter(store=store, events_table="events")
+        protected = writer.provision(report.pending[0])
+        assert protected == envelope
+        record = store._read(f"TENANT#{ORG_A}", f"EXEC#{envelope['message_id']}")
+        for name, expected in envelope["orchestration"]["deployment_revisions"].items():
+            assert record[name] == {"S": expected}
+        with patch.dict("os.environ", {"ADP_ENGINE_OPERATIONS_EXECUTOR": "false"}):
+            with pytest.raises(BootstrapRefusedError, match="unsupported engine persona"):
+                writer.provision(report.pending[0])
+
+
 class TestMembershipIsVerifiedLive:
+    async def test_member_approval_resume_and_dispatch_use_same_authority(self, session: AsyncSession):
+        from src.admin.access_control import AccessControl
+        from src.orchestration.adapters.github_comments import GateAnswerStatus, InputPath, apply_gate_answer_for_context
+        from src.orchestration.flow_controls import FlowExecutionRequest, set_flow_execution
+        from src.shared.schemas.auth import TokenContext
+
+        flow, node = await _fixture(session, policy=_policy())
+        membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER))
+        membership.role = "member"
+        membership.is_active = False
+        gate = await _make_node(session, flow, node_ref="approval", kind=NodeKind.GATE.value, state=NodeState.AWAITING_GATE)
+        context = TokenContext(
+            user_id=f"sub:{APPROVER}",
+            org_id=ORG_A,
+            team_id=TEAM_A,
+            department_id=DEPT_A,
+            account_type="human",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        outcome = await apply_gate_answer_for_context(
+            session,
+            context=context,
+            node_id=gate.id,
+            approve=True,
+            reason="Member reviewed the gate",
+            access=AccessControl(session),
+            input_path=InputPath.DASHBOARD,
+        )
+        assert outcome.status == GateAnswerStatus.APPLIED
+        resumed = await set_flow_execution(flow.id, FlowExecutionRequest(paused=False), context, session)
+        assert resumed.execution_paused is False
+        assert (await _authorize(session, node)).permitted
+
     async def test_revoked_member_is_blocked(self, session: AsyncSession) -> None:
         """Revocation here is a hard delete, so the test deletes rather than flags.
 
@@ -514,20 +655,35 @@ class TestMembershipIsVerifiedLive:
         await session.flush()
         assert (await _authorize(session, node)).permitted
 
-    async def test_native_membership_does_not_prove_current_approval_role(self, session: AsyncSession) -> None:
-        """The native user remains a member but has no current approval role."""
+    async def test_native_member_can_authorize_without_admin_role(self, session: AsyncSession) -> None:
         _, node = await _fixture(session, policy=_policy())
         await session.execute(delete(TenantMembership).where(TenantMembership.user_id == APPROVER))
         await session.flush()
-        assert (await _authorize(session, node)).reason is DenyReason.ROLE_REVOKED
+        assert (await _authorize(session, node)).permitted
 
-    async def test_role_demotion_blocks_the_next_admission(self, session: AsyncSession) -> None:
+    async def test_role_demotion_to_member_keeps_workflow_authority(self, session: AsyncSession) -> None:
         _, node = await _fixture(session, policy=_policy())
         assert (await _authorize(session, node)).permitted
         membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER))
         membership.role = "member"
         await session.flush()
-        assert (await _authorize(session, node)).reason is DenyReason.ROLE_REVOKED
+        assert (await _authorize(session, node)).permitted
+
+    async def test_soft_revoked_membership_blocks_admission(self, session: AsyncSession) -> None:
+        _, node = await _fixture(session, policy=_policy())
+        membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER))
+        membership.revoked_at = datetime.now(UTC)
+        await session.flush()
+        assert not (await _authorize(session, node)).permitted
+
+    @pytest.mark.parametrize("changes", [{"user_kind": "service"}, {"is_shadow": True}])
+    async def test_nonhuman_member_cannot_authorize(self, session: AsyncSession, changes) -> None:
+        _, node = await _fixture(session, policy=_policy())
+        user = await session.get(User, APPROVER)
+        for field, value in changes.items():
+            setattr(user, field, value)
+        await session.flush()
+        assert not (await _authorize(session, node)).permitted
 
     async def test_team_scoped_policy_admits_a_team_member(self, session: AsyncSession) -> None:
         _, node = await _fixture(session, policy=_policy(team_ids=[TEAM_A]))
@@ -589,7 +745,10 @@ class TestSpendAbsenceIsReadCorrectly:
         if failure == "missing":
             await client.delete(target.key())
         elif failure == "expired":
-            await client.hset(target.key(), "__initialized__", "0:1")
+            # An expired reservation whose outcome never settled is unknown usage.
+            # (The anchor's own deadline is bookkeeping, not an expiry — #7648.)
+            await client.hset(target.key(), "stale-call", "5:1")
+            await client.hset(target.key(), "pending:stale-call", "0:1")
         elif failure == "unbounded":
             await store.reserve("unknown-call", Decimal(5), [target])
             await store.mark_unknown("unknown-call", target)
@@ -645,7 +804,7 @@ class TestSpendAbsenceIsReadCorrectly:
         _, node = await _fixture(session, policy=_policy())
         assert (await _authorize(session, node)).permitted
 
-    @pytest.mark.parametrize("state", [NodeState.PASSED, NodeState.FAILED, NodeState.AWAITING_MERGE])
+    @pytest.mark.parametrize("state", [NodeState.PASSED, NodeState.AWAITING_MERGE])
     async def test_a_node_that_ran_without_a_usage_row_blocks(self, session: AsyncSession, state) -> None:
         """**The hole on the other side.** Executed work with no cost row is
         unreconciled spend, and admitting more would be minting allowance against an
@@ -658,6 +817,28 @@ class TestSpendAbsenceIsReadCorrectly:
         assert not decision.permitted
         assert decision.reason is DenyReason.SPEND_UNKNOWN
 
+    async def test_a_failed_attempt_without_usage_is_measured_by_the_strict_meter(self, session: AsyncSession) -> None:
+        """A worker refused at its first call (budget, policy) fails with no usage row.
+        The strict meter holds anything it reserved, so the flow keeps dispatching —
+        including the retry of that very story — instead of deadlocking (#7542).
+        """
+        flow, node = await _fixture(session, policy=_policy())
+        await _make_node(session, flow, node_ref="s8", state=NodeState.FAILED, attempts=1)
+        assert (await _authorize(session, node)).permitted
+
+    async def test_a_failed_attempt_without_usage_still_needs_a_trustworthy_meter(self, session: AsyncSession) -> None:
+        from src.orchestration.flow_budget import get_flow_reservations
+        from src.orchestration.flow_meter import meter_target
+
+        policy = _policy()
+        flow, node = await _fixture(session, policy=policy)
+        await _make_node(session, flow, node_ref="s8", state=NodeState.FAILED, attempts=1)
+        store = get_flow_reservations()
+        await store.reserve("unknown-call", Decimal(5), [meter_target(org_id=flow.org_id, flow_id=flow.id, policy=policy)])
+        await store.mark_unknown("unknown-call", meter_target(org_id=flow.org_id, flow_id=flow.id, policy=policy))
+        decision = await _authorize(session, node)
+        assert decision.reason is DenyReason.SPEND_UNKNOWN
+
     async def test_a_gate_node_that_passed_does_not_make_spend_unknown(self, session: AsyncSession) -> None:
         """A gate bills no model call, so its missing row is expected in any state.
 
@@ -667,6 +848,127 @@ class TestSpendAbsenceIsReadCorrectly:
         flow, node = await _fixture(session, policy=_policy())
         await _make_node(session, flow, node_ref="g1", kind=NodeKind.GATE.value, state=NodeState.PASSED, issue_ref=None)
         assert (await _authorize(session, node)).permitted
+
+    async def test_a_machine_verified_evaluation_does_not_make_spend_unknown(self, session: AsyncSession) -> None:
+        """A repository-evidence evaluation passes without dispatching a worker.
+
+        It records a decision, not an execution, so the K1 observer carve-out does
+        not see it; without this rule every flow whose machine evaluation passed
+        would refuse its next story forever (flow claude-desktop-6850-v2, #6855).
+        """
+        flow, node = await _fixture(session, policy=_policy())
+        await _make_node(session, flow, node_ref="e1", kind=NodeKind.EVAL.value, state=NodeState.PASSED, attempts=1)
+        assert (await _authorize(session, node)).permitted
+
+    @pytest.mark.parametrize("attempts", [0, 1])
+    async def test_an_unexecuted_evaluation_allows_the_first_worker_to_initialize_its_meter(
+        self, session: AsyncSession, governed_work_ownership, attempts
+    ) -> None:
+        from src.orchestration.flow_meter import read_flow_meter
+
+        policy = _policy()
+        flow, node = await _fixture(session, policy=policy, initialize_meter=False)
+        await _make_node(session, flow, node_ref="baseline", kind=NodeKind.EVAL.value, state=NodeState.PASSED, attempts=attempts)
+        assert await read_flow_meter(org_id=flow.org_id, flow_id=flow.id, policy=policy) is None
+
+        report = await run_dispatch_pass(session, _config())
+        assert report.dispatched == 1 and report.policy_blocked == 0
+        assert await _state_of(session, node.id) == NodeState.RUNNING.value
+        meter = await read_flow_meter(org_id=flow.org_id, flow_id=flow.id, policy=policy)
+        assert meter is not None and meter.total_usd == Decimal(0)
+
+    @pytest.mark.parametrize("evidence", ["dispatch", "usage", "zero_cost_usage"])
+    async def test_evaluation_execution_evidence_cannot_create_a_fresh_meter(self, session: AsyncSession, evidence) -> None:
+        flow, node = await _fixture(session, policy=_policy(), initialize_meter=False)
+        evaluation = await _make_node(session, flow, node_ref="baseline", kind=NodeKind.EVAL.value, state=NodeState.PASSED)
+        if evidence == "dispatch":
+            session.add(
+                OrchestrationDecision(
+                    org_id=flow.org_id,
+                    flow_id=flow.id,
+                    node_id=evaluation.id,
+                    kind=DecisionKind.NODE_DISPATCHED.value,
+                    actor_id="system:orchestration-dispatch",
+                    actor_role="engine",
+                    actor_kind=ActorKind.SERVICE.value,
+                    reason="evaluation worker dispatched",
+                )
+            )
+        else:
+            await _make_usage(session, evaluation, cost_usd="0" if evidence == "zero_cost_usage" else "1")
+        await session.flush()
+
+        decision = await _authorize(session, node)
+        assert not decision.permitted
+        assert decision.reason in {DenyReason.SPEND_UNKNOWN, DenyReason.BUDGET_UNAVAILABLE}
+
+    async def test_unexecuted_evaluation_cannot_replace_a_lost_initialized_meter(self, session: AsyncSession) -> None:
+        from src.orchestration.flow_budget import get_flow_reservations
+        from src.orchestration.flow_meter import meter_target
+
+        policy = _policy()
+        flow, node = await _fixture(session, policy=policy)
+        await _make_node(session, flow, node_ref="baseline", kind=NodeKind.EVAL.value, state=NodeState.PASSED)
+        store = get_flow_reservations()
+        target = meter_target(org_id=flow.org_id, flow_id=flow.id, policy=policy)
+        await store.reserve("previous-call", Decimal(5), [target])
+        await store._client.flushdb()
+
+        assert (await _authorize(session, node)).reason is DenyReason.BUDGET_UNAVAILABLE
+        assert await store.snapshot(target) is None
+
+    async def test_an_evaluation_worker_that_ran_without_a_usage_row_still_blocks(self, session: AsyncSession) -> None:
+        """Only an eval that was never dispatched is exempt; a legacy eval worker has a dispatch decision and must account for its spend."""
+        flow, node = await _fixture(session, policy=_policy())
+        ran = await _make_node(session, flow, node_ref="e2", kind=NodeKind.EVAL.value, state=NodeState.PASSED, attempts=1)
+        session.add(
+            OrchestrationDecision(
+                org_id=flow.org_id,
+                flow_id=flow.id,
+                node_id=ran.id,
+                kind=DecisionKind.NODE_DISPATCHED.value,
+                actor_id="system:orchestration-dispatch",
+                actor_role="engine",
+                actor_kind=ActorKind.SERVICE.value,
+                reason="legacy evaluation worker dispatched",
+            )
+        )
+        await session.flush()
+        decision = await _authorize(session, node)
+        assert not decision.permitted
+        assert decision.reason is DenyReason.SPEND_UNKNOWN
+
+    async def test_a_story_superseded_before_dispatch_does_not_make_spend_unknown(self, session: AsyncSession) -> None:
+        """A plan revision replaced this story before the engine ever dispatched it.
+
+        No run, no model call, no usage row by construction. Reading that absence
+        as unknown spend refused every dispatch of two real flows the moment their
+        owners approved a revision (#7408).
+        """
+        flow, node = await _fixture(session, policy=_policy())
+        await _make_node(session, flow, node_ref="s11", state=NodeState.SUPERSEDED)
+        assert (await _authorize(session, node)).permitted
+
+    async def test_a_superseded_story_that_ran_without_a_usage_row_still_blocks(self, session: AsyncSession) -> None:
+        """Only a never-dispatched superseded node is exempt; one that ran must still account for its spend."""
+        flow, node = await _fixture(session, policy=_policy())
+        ran = await _make_node(session, flow, node_ref="s12", state=NodeState.SUPERSEDED, attempts=1)
+        session.add(
+            OrchestrationDecision(
+                org_id=flow.org_id,
+                flow_id=flow.id,
+                node_id=ran.id,
+                kind=DecisionKind.NODE_DISPATCHED.value,
+                actor_id="system:orchestration-dispatch",
+                actor_role="engine",
+                actor_kind=ActorKind.SERVICE.value,
+                reason="story worker dispatched before the revision superseded it",
+            )
+        )
+        await session.flush()
+        decision = await _authorize(session, node)
+        assert not decision.permitted
+        assert decision.reason is DenyReason.SPEND_UNKNOWN
 
     async def test_a_sibling_still_pending_does_not_make_spend_unknown(self, session: AsyncSession) -> None:
         flow, node = await _fixture(session, policy=_policy())

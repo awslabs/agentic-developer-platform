@@ -3,18 +3,23 @@
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import hmac
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import secrets
 import threading
+import shlex
+import sys
+import tempfile
+from pathlib import Path
 
 from .runtime_config import LifecycleRefused
 
 
 @contextmanager
-def credential_environment(session, verify):
+def credential_environment(session, verify, *, directory):
     token = secrets.token_urlsafe(48)
     closed = threading.Event()
+    slots = threading.BoundedSemaphore(4)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -25,6 +30,18 @@ def credential_environment(session, verify):
             self.connection.settimeout(5)
 
         def do_GET(self):
+            if not slots.acquire(blocking=False):
+                self.send_error(503, "Credential authority busy")
+                return
+            try:
+                self.respond()
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                # A stopped SDK client has no authority to keep this request alive.
+                pass
+            finally:
+                slots.release()
+
+        def respond(self):
             if (
                 closed.is_set()
                 or self.path != "/credentials"
@@ -66,16 +83,35 @@ def credential_environment(session, verify):
             self.end_headers()
             self.wfile.write(payload)
 
-    server = HTTPServer(("127.0.0.1", 0), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(
         target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
     )
     thread.start()
     try:
-        yield {
-            "AWS_CONTAINER_CREDENTIALS_FULL_URI": f"http://127.0.0.1:{server.server_port}/credentials",
-            "AWS_CONTAINER_AUTHORIZATION_TOKEN": token,
-        }
+        # SDK container-credential clients impose short metadata timeouts (for
+        # example botocore's two seconds). Our checks deliberately perform live
+        # authority I/O. Use the SDK's credential_process contract with a bounded
+        # client, preserving verification before and after reading credentials.
+        command = shlex.join(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                str(Path(__file__).with_name("credential_process.py")),
+            ]
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", prefix="aws-process-", suffix=".config", dir=directory
+        ) as config:
+            config.write("[default]\ncredential_process = " + command + "\n")
+            config.flush()
+            yield {
+                "AWS_CONFIG_FILE": config.name,
+                "AWS_SDK_LOAD_CONFIG": "1",
+                "SUPERPLANE_CREDENTIAL_BRIDGE_URL": f"http://127.0.0.1:{server.server_port}/credentials",
+                "SUPERPLANE_CREDENTIAL_BRIDGE_TOKEN": token,
+            }
     finally:
         closed.set()
         server.shutdown()

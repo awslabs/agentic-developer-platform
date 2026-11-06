@@ -166,6 +166,14 @@ class TestTheHarnessIsNotVacuous:
         assert len(set(BRIEF_ENV)) == len(BRIEF_ENV), BRIEF_ENV
 
 
+class TestHostedRepositoryLookup:
+    def test_staged_skill_uses_rest_repository_identity(self, skill_text: str) -> None:
+        assert 'gh api --method GET "repos/$TARGET_REPO"' in skill_text
+        assert "`full_name`" in skill_text
+        assert "positive numeric `id` for `provider_repository_id`" in skill_text
+        assert "--json nameWithOwner,databaseId" not in skill_text
+
+
 class TestEveryExportedNameIsTaughtToTheAuthor:
     """The producer half, checked from the consumer's side.
 

@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { continuationPrompt, developerOutcomeSchema, developerPrompt, interpretDeveloperOutcome, parseDeveloperOutcome, resumeNote, runDeveloperTurns, validateTask,
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { continuationPrompt, publicationPrompt, publishedPullRequest, developerOutcomeSchema, developerPrompt, interpretDeveloperOutcome, parseDeveloperOutcome, resumeNote, runDeveloperTurns, validateTask,
   type DeveloperOutcome, type DeveloperTask } from "./developer.js";
 import { ModelExecutionBudget } from "./model-budget.js";
-import type { Task } from "./task-board.js";
+import { readTaskBoardFile, writeTaskBoardFile, type Task } from "./task-board.js";
 
 const task: DeveloperTask = { repository: "aws-e/adp", issue: 42, workspace: "/tmp/work", model: "openai.gpt-6-sol" };
 const usage = { input_tokens: 10, output_tokens: 5, cached_input_tokens: 0, cache_write_input_tokens: 0, reasoning_output_tokens: 0 };
@@ -42,6 +45,44 @@ test("architect retains its role and publishes design artifacts using native wor
   assert.match(prompt, /Never merge the PR or force push/);
   assert.doesNotMatch(prompt, /Use your native shell and file tools to implement the issue/);
   assert.doesNotMatch(prompt, /task board/);
+});
+
+test("incomplete continuations and finishing turns preserve draft checkpoints", () => {
+  const pending = parseDeveloperOutcome(outcome({ outcome: "checkpoint", remainingWork: ["AC1-t1"],
+    tasks: [t("AC1-c1", "code", "done"), t("AC1-t1", "test", "open", ["AC1-c1"])] }));
+  const initial = developerPrompt(task, {}, "agent/issue-42", "");
+  assert.match(initial, /progress to the issue without requiring a PR/);
+  assert.doesNotMatch(initial, /Open the PR at the first checkpoint/);
+  assert.match(continuationPrompt(pending), /Keep any existing draft as a draft/);
+  assert.match(publicationPrompt(pending), /do not create a PR or mark it ready while tasks remain/);
+  assert.doesNotMatch(publicationPrompt(pending), /make sure a ready/);
+  assert.match(publicationPrompt(parseDeveloperOutcome(outcome({ outcome: "complete" }))), /make sure a ready \(non-draft\) pull request/);
+});
+
+test("published drafts satisfy checkpoints but never completed delivery", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "developer-publication-"));
+  const oldPath = process.env.PATH;
+  try {
+    await mkdir(join(directory, "bin"));
+    const gh = join(directory, "bin", "gh");
+    process.env.PATH = join(directory, "bin") + ":" + oldPath;
+    const setPullRequests = async (rows: unknown[]) => writeFile(gh,
+      `#!/bin/sh\ncat <<'FIXTURE'\n${JSON.stringify(rows)}\nFIXTURE\n`, { mode: 0o700 });
+    const pr = { url: "https://github.com/fixture/repo/pull/1", headRefOid: "head", changedFiles: 1, isDraft: true };
+    await setPullRequests([pr]);
+    assert.equal((await publishedPullRequest(directory, "fixture/repo", "agent/issue-42", "head", false))?.url, pr.url);
+    assert.equal(await publishedPullRequest(directory, "fixture/repo", "agent/issue-42", "head", true), undefined);
+    assert.equal(await publishedPullRequest(directory, "fixture/repo", "agent/issue-42", "stale", false), undefined);
+    await setPullRequests([]);
+    assert.equal(await publishedPullRequest(directory, "fixture/repo", "agent/issue-42", "head", false), undefined);
+    await setPullRequests([{ ...pr, isDraft: false }]);
+    assert.equal((await publishedPullRequest(directory, "fixture/repo", "agent/issue-42", "head", true))?.url, pr.url);
+    await setPullRequests([{ ...pr, isDraft: false, changedFiles: 0 }]);
+    assert.equal(await publishedPullRequest(directory, "fixture/repo", "agent/issue-42", "head", true), undefined);
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("developer outcome schema is strict; interpretation corrects dishonest outcomes instead of failing the run", () => {
@@ -205,6 +246,36 @@ test("continuation prompt names the next task and asks for its covering test whe
   assert.match(prompt, /Next task: AC1-c2 \(code, AC1\): code AC1-c2\. Take it to done together with the test task that covers it/);
 });
 
+test("blocked acceptance tasks end the checkpoint loop without claiming completion", async () => {
+  const tasks = [t("AC1-c1", "code", "done"), t("AC1-t1", "test", "done", ["AC1-c1"]),
+    t("AC1-live", "test", "blocked", ["AC1-c1"], "deployed-target: release verification owner")];
+  const remainingWork = ["AC1-live: release verification owner must run the deployed checks"];
+  const runs = fakeRuns([
+    outcome({ outcome: "complete", tasks, remainingWork }),
+    outcome({ outcome: "blocked", tasks, remainingWork, pullRequestUrl: "https://github.com/example/product/pull/1" }),
+  ]);
+  const result = await runDeveloperTurns("start", runs.runTurn, {
+    budget: new ModelExecutionBudget(3_600_000), maxTurns: 4,
+  });
+  assert.equal(result.turns, 2);
+  assert.equal(result.exhausted, false);
+  assert.equal(result.outcome.outcome, "blocked");
+  assert.deepEqual(result.outcome.tasks.map(task => task.status), ["done", "done", "blocked"]);
+  assert.deepEqual(result.outcome.remainingWork, remainingWork);
+  assert.equal(result.outcome.pullRequestUrl, "https://github.com/example/product/pull/1");
+  assert.match(runs.prompts[1]!, /No runnable tasks remain; tasks AC1-live are blocked/);
+  assert.match(runs.prompts[1]!, /return blocked with the concrete dependency and next owner\/action/);
+  assert.doesNotMatch(runs.prompts[1]!, /Every task is done and covered|Run the full relevant suites now/);
+});
+
+test("blocked tasks do not stop other runnable work", () => {
+  const prompt = continuationPrompt({ outcome: "checkpoint", summary: "s", remainingWork: ["AC1-live", "AC2-c1"], pullRequestUrl: "",
+    tasks: [t("AC1-live", "test", "blocked", ["AC1-c1"], "deployed-target: verification owner"),
+      t("AC1-c1", "code", "done"), t("AC1-t1", "test", "done", ["AC1-c1"]), t("AC2-c1", "code", "open")] });
+  assert.match(prompt, /Next task: AC2-c1/);
+  assert.doesNotMatch(prompt, /No runnable tasks remain/);
+});
+
 test("a process that comes online with an existing board resumes it instead of re-planning", () => {
   const note = resumeNote([t("AC1-c1", "code", "done"), t("AC1-t1", "test", "open", ["AC1-c1"])]);
   assert.match(note, /already exists from a previous process/);
@@ -223,6 +294,41 @@ test("breakdown checks join the controller notes on the next turn and never end 
   assert.match(runs.prompts[1]!, /Controller notes on your last outcome.*acceptance criterion AC2 has no tasks/);
 });
 
+test("resumed developer turns retain refreshed checkpoint lineage through completion", async context => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-resumed-turns-"));
+  context.after(() => rm(workspace, { recursive: true, force: true }));
+  const tasks = [t("AC1-c1", "code", "in_progress"), t("AC1-t1", "test", "open", ["AC1-c1"])];
+  await writeTaskBoardFile(workspace, 42, tasks, new Date("2026-10-09T12:00:00Z"), { runId: "run-one", attempt: 1 });
+  const previousTasks = (await readTaskBoardFile(workspace, 42)).tasks!;
+  const runs = fakeRuns([
+    outcome({ outcome: "checkpoint", tasks, remainingWork: ["AC1-c1", "AC1-t1"] }),
+    outcome({ outcome: "complete", tasks: tasks.map(entry => ({ ...entry, status: "done" })) }),
+  ]);
+  let checkpointTasks = previousTasks;
+  const result = await runDeveloperTurns("resume", runs.runTurn, {
+    budget: new ModelExecutionBudget(3_600_000), maxTurns: 2, previousTasks,
+    onOutcome: async (reported, turn) => {
+      if (turn === 2) {
+        assert.equal(reported.tasks[0]!.run_id, "run-two", "the retained loop board must be refreshed before the next turn");
+        assert.equal(reported.tasks[0]!.attempt, 2);
+        assert.equal(reported.tasks[0]!.started_at, "2026-10-09T12:10:00.000Z");
+      }
+      await writeTaskBoardFile(workspace, 42, reported.tasks, new Date(`2026-10-09T12:${turn}0:00Z`),
+        { runId: "run-two", attempt: 2, previous: checkpointTasks, summary: reported.summary });
+      checkpointTasks = (await readTaskBoardFile(workspace, 42)).tasks!;
+      reported.tasks = checkpointTasks;
+    },
+  });
+  assert.equal(result.turns, 2);
+  assert.equal(result.outcome.outcome, "complete");
+  const completed = (await readTaskBoardFile(workspace, 42)).tasks![0]!;
+  assert.equal(completed.run_id, "run-two");
+  assert.equal(completed.attempt, 2);
+  assert.equal(completed.started_at, "2026-10-09T12:10:00.000Z");
+  assert.equal(completed.finished_at, "2026-10-09T12:20:00.000Z");
+  assert.deepEqual(result.outcome.tasks, checkpointTasks);
+});
+
 test("completion cannot drop an unfinished saved child or change its parent", () => {
   const planStep = { id: "recover", title: "Keep conversations after disconnects" };
   const previous = [t("A-c1", "code", "done"), t("A-t1", "test", "done", ["A-c1"]),
@@ -232,4 +338,13 @@ test("completion cannot drop an unfinished saved child or change its parent", ()
   assert.deepEqual(result.outcome.tasks[2], previous[2]);
   assert.ok(result.outcome.remainingWork.includes("A-t2"));
   assert.match(resumeNote(result.outcome.tasks), /A-t2/);
+});
+
+
+test("resumed blocked boards recheck current amendments before continuing implementation", () => {
+  const prompt = resumeNote([t("AC1-c1", "code", "blocked", [], "Old proxy contract")]);
+  assert.match(prompt, /current issue amendments and merged dependencies/);
+  assert.match(prompt, /resume implementation when their blocker is resolved/);
+  assert.match(prompt, /Keep its ids and completed work/);
+  assert.match(prompt, /AC1-c1/);
 });

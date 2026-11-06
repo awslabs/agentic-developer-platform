@@ -100,7 +100,7 @@ class TestTransitionTable:
             assert from_state not in successors
 
     def test_matches_the_declared_base_table(self):
-        """Transcription check against requirements.md §2.1, spelled out.
+        """Base table plus documented human failed-story replacement, spelled out.
 
         Deliberately hand-written rather than derived: this is the assertion
         that catches an edge being *added* to the table without a requirement
@@ -127,7 +127,7 @@ class TestTransitionTable:
             NodeState.PASSED: {NodeState.SUPERSEDED},
             NodeState.WAIVED: {NodeState.SUPERSEDED},
             NodeState.REJECTED_AT_GATE: {NodeState.READY},
-            NodeState.FAILED: {NodeState.READY, NodeState.RUNNING},
+            NodeState.FAILED: {NodeState.READY, NodeState.RUNNING, NodeState.SUPERSEDED},
             NodeState.HALTED: {NodeState.READY},
             NodeState.SUPERSEDED: set(),
         }

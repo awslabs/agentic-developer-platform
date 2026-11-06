@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Assistant rollout boundary (design: docs/architecture/adp-assistant-6929.md,
-# inventory: docs/architecture/assistant-deploy-boundary.md).
+# Assistant rollout boundary (design and inventory:
+# docs/chief-of-staff/architecture.md#deployment-boundary).
 #
 # Runs inside a deployment job before any AWS credential or kubeconfig step and
 # decides whether this candidate may roll protected assistant files onto the
 # named deployment target.
 #
 # Inputs (environment):
-#   ADP_ASSISTANT_DEPLOY_COMPONENT   gateway | chat-worker | agent-worker | chat-infra
+#   ADP_ASSISTANT_DEPLOY_COMPONENT   gateway | chat-worker | agent-worker | chat-infra | frontend
 #   ADP_ASSISTANT_DEPLOY_TARGET      exact protected deployment environment name
 #   GITHUB_EVENT_NAME                push | workflow_dispatch (anything else refuses)
 #   GITHUB_SHA                       candidate commit (override: ADP_ASSISTANT_DEPLOY_CANDIDATE)
@@ -22,7 +22,9 @@
 #                                    when no approval applies to this target
 #
 # Decision:
-#   1. An approval for this target (persistent or dispatch input) must be an
+#   0. Named dev targets deploy reviewed main source without assistant approval
+#      or a previously deployed baseline. Candidate/source checks still apply.
+#   1. For non-dev targets, an approval for this target (persistent or dispatch input) must be an
 #      available ancestor of the candidate; the protected files of candidate and
 #      approval must then be identical. Otherwise the candidate carries held
 #      assistant changes and is refused.
@@ -39,6 +41,9 @@ refuse() {
 }
 
 case "${ADP_ASSISTANT_DEPLOY_COMPONENT:-}" in
+  frontend)
+    protected_paths=(modules/gateway/frontend)
+    ;;
   gateway)
     protected_paths=(
       modules/gateway/src/agentauth
@@ -102,6 +107,24 @@ fi
 if [[ "$(git rev-parse HEAD)" != "$candidate" ]]; then
   refuse 'Checkout does not match the deployment candidate; deployment refused.'
 fi
+
+# Dev is the continuous delivery environment. Keep this an exact component/target
+# mapping: an arbitrary target ending in "dev" must not acquire this policy.
+case "${ADP_ASSISTANT_DEPLOY_COMPONENT}:$target" in
+  gateway:adp-gateway-deploy-dev | chat-worker:adp-chat-deploy-dev | \
+  agent-worker:adp-worker-deploy-dev | frontend:adp-frontend-deploy-dev | \
+  chat-infra:adp-deploy-dev)
+    if [[ "${GITHUB_REF:-}" != refs/heads/main ]]; then
+      refuse 'Dev deployment requires reviewed main source; deployment refused.'
+    fi
+    if ! is_sha "${GITHUB_SHA:-}" || ! commit_available "$GITHUB_SHA" || \
+       ! git merge-base --is-ancestor "$candidate" "$GITHUB_SHA"; then
+      refuse 'Dev candidate must belong to the dispatched main history; deployment refused.'
+    fi
+    echo "Dev deployment target '$target': assistant revision approval and deployed baseline are not required."
+    exit 0
+    ;;
+esac
 
 # protected_diff BASE -> prints "same" | "changed" | "error"
 protected_diff() {

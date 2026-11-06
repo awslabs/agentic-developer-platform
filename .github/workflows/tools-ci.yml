@@ -1,0 +1,218 @@
+name: Tools CI
+
+on:
+  pull_request:
+    paths:
+      - 'modules/tools/**'
+      - '.github/workflows/tools-ci.yml'
+      - '.github/workflows/atlassian-forge-deploy.yml'
+      - 'tests/unit/test_tools_ci.py'
+      - 'tests/e2e/tools/**'
+      - 'modules/gateway/scripts/deployment-workflow-context.py'
+      - 'modules/gateway/src/agentauth/actions_routes.py'
+      - 'modules/gateway/src/agentauth/github_operation_service.py'
+      - 'modules/gateway/src/orchestration/operations_continuation_authority.py'
+      - 'modules/gateway/src/orchestration/operations_shared_release.py'
+      - 'modules/gateway/src/orchestration/operations_evidence.py'
+      - 'modules/gateway/src/orchestration/operations_result_settlement.py'
+      - 'modules/gateway/src/orchestration/results.py'
+      - 'modules/gateway/src/orchestration/proposal.py'
+      - 'modules/gateway/tests/agentauth/test_actions_routes.py'
+      - 'modules/gateway/tests/agentauth/test_github_operation_service.py'
+      - 'modules/gateway/tests/agentauth/test_operations_repair.py'
+      - 'modules/gateway/tests/orchestration/test_deployment_workflow_contract.py'
+      - 'modules/gateway/tests/orchestration/test_identity_proof_binding.py'
+      - 'modules/gateway/tests/orchestration/test_operations_release_job_postgres.py'
+      - 'modules/gateway/tests/orchestration/test_operations_shared_release.py'
+      - 'modules/gateway/tests/orchestration/test_operations_completion.py'
+      - 'modules/gateway/tests/orchestration/test_operations_evidence.py'
+      - 'docs/tools/atlassian-mcp/readiness-8446.json'
+      - 'docs/tools/atlassian-mcp/readiness-8446.md'
+      - 'docs/tools/atlassian-mcp/operation-amendment-8446.json'
+      - 'docs/tools/atlassian-mcp/evaluator-amendment-8446.json'
+      - 'docs/tools/atlassian-mcp/required-operations.json'
+      - 'docs/tools/atlassian-mcp/repair-scope-8446.json'
+      - '.github/workflows/gateway-deploy.yml'
+      - '.github/workflows/tools-live-evaluation.yml'
+      - '.github/scripts/tools_ci_packages.py'
+      - 'codebuild/bs-tools-facade-smoke.yml'
+      - 'codebuild/bs-tool-adapters-smoke.yml'
+      - 'platform/scripts/zip-source.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  forge:
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify Forge admin setup artifact
+        working-directory: modules/tools/atlassian-forge
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          npm test
+          python3 -m unittest discover -s tests -p 'test_*.py'
+  verify:
+    runs-on: arc-runner-org
+    timeout-minutes: 25
+    outputs:
+      facade: ${{ steps.packages.outputs.facade }}
+      adapters: ${{ steps.packages.outputs.adapters }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select implemented packages and reject removal or incomplete scaffolds
+        id: packages
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: python .github/scripts/tools_ci_packages.py --base "$BASE_SHA"
+      - name: Install workflow test dependencies
+        run: |
+          python -m pip install pytest==9.0.3 pytest-asyncio==1.4.0 PyYAML==6.0.3 ruff==0.9.6
+          python -m pip install -e 'modules/gateway[dev]' -e modules/tools -e modules/tools/facade -e modules/tools/adapters moto==5.0.27 'aiosqlite>=0.20.0'
+      - name: Verify tools CI contract
+        run: python -m pytest -q tests/unit/test_tools_ci.py
+      - name: Validate tools evaluation scenario tags and runner fixtures
+        run: |
+          python -m tests.e2e.tools.runner --lint
+          python -m pytest -q tests/e2e/tools
+      - name: Verify Identity proof release and repair guards
+        run: |
+          python -m pytest -q modules/gateway/tests/agentauth/test_operations_repair.py modules/gateway/tests/agentauth/test_actions_routes.py modules/gateway/tests/agentauth/test_github_operation_service.py modules/gateway/tests/orchestration/test_deployment_workflow_contract.py modules/gateway/tests/orchestration/test_identity_proof_binding.py modules/gateway/tests/internal/test_tools_effective_policy.py
+      - name: Check protected shared-provider runtime receipts
+        run: |
+          python -m pytest -q modules/tools/agentcore/tests/test_shared_receipt.py modules/tools/agentcore/tests/test_deploy_script.py modules/tools/agentcore/tests/test_shared_release_bootstrap.py
+
+      - name: Verify façade package
+        if: steps.packages.outputs.facade == 'true'
+        run: |
+          python -m pip install -e modules/tools -e 'modules/tools/facade[dev]'
+          ruff check modules/tools/facade
+          python -m pytest -q modules/tools/facade/tests
+      - name: Verify interceptor package
+        if: steps.packages.outputs.interceptor == 'true'
+        run: |
+          python -m pip install -e modules/tools/interceptor
+          ruff check modules/tools/interceptor
+          python -m pytest -q modules/tools/interceptor/tests
+
+      - name: Verify adapter package in its locked environment
+        if: steps.packages.outputs.adapters == 'true'
+        working-directory: modules/tools/adapters
+        run: |
+          python -m pip install uv==0.13.4
+          env -u PYTHONPATH uv run --frozen --group dev ruff check tool_adapters tests k8s scripts ../adp_tools/adapter_contracts.py
+          env -u PYTHONPATH uv run --frozen --group dev ruff check observation_configuration.py stage_configuration.py
+          env -u PYTHONPATH uv run --frozen --group dev ruff format --check tool_adapters tests k8s scripts ../adp_tools/adapter_contracts.py
+          env -u PYTHONPATH uv run --frozen --group dev pytest -q
+
+      - uses: hashicorp/setup-terraform@v4
+        if: steps.packages.outputs.adapters == 'true'
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - name: Verify adapter Terraform with mocked providers
+        if: steps.packages.outputs.adapters == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: adapter-ci-no-cloud-access
+          AWS_SECRET_ACCESS_KEY: adapter-ci-no-cloud-access
+          AWS_SESSION_TOKEN: adapter-ci-no-cloud-access
+          AWS_EC2_METADATA_DISABLED: 'true'
+          AWS_SHARED_CREDENTIALS_FILE: /dev/null
+          AWS_CONFIG_FILE: /dev/null
+          KUBECONFIG: /dev/null
+        run: |
+          set -euo pipefail
+          for module in modules/tools/adapters/infra modules/tools/adapters/foundation-infra modules/tools/adapters/deployment-infra; do
+            terraform -chdir="$module" fmt -check -recursive
+            terraform -chdir="$module" init -backend=false -input=false -no-color
+            terraform -chdir="$module" validate -no-color
+            terraform -chdir="$module" test -no-color
+          done
+
+  smoke-build:
+    name: Build façade image without publishing
+    needs: verify
+    if: needs.verify.outputs.facade == 'true'
+    runs-on: arc-runner-org
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the existing Docker-capable build project
+        id: identity
+        run: |
+          set -euo pipefail
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$account_id" =~ ^[0-9]{12}$ ]]
+          project_arn=$(aws codebuild batch-get-projects --names adp-dev-gateway-build --region us-east-1 --query 'projects[0].arn' --output text)
+          [[ "$project_arn" == "arn:aws:codebuild:us-east-1:${account_id}:project/adp-dev-gateway-build" ]]
+          echo "id=$account_id" >> "$GITHUB_OUTPUT"
+      - name: Smoke-build image under the existing nonpublishing PR role
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-dev-gateway-build
+          region: us-east-1
+          state_bucket: adp-terraform-state-${{ steps.identity.outputs.id }}
+          source_namespace: adp-dev-gateway-build-pr
+          service_role_arn: arn:aws:iam::${{ steps.identity.outputs.id }}:role/adp-dev-codebuild-gateway-pr
+          buildspec: codebuild/bs-tools-facade-smoke.yml
+
+  adapter-smoke-build:
+    name: Qualify adapter image without publishing
+    needs: verify
+    if: needs.verify.outputs.adapters == 'true'
+    runs-on: arc-runner-org
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the existing Docker-capable build project
+        id: identity
+        run: |
+          set -euo pipefail
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$account_id" =~ ^[0-9]{12}$ ]]
+          project_arn=$(aws codebuild batch-get-projects --names adp-dev-gateway-build --region us-east-1 --query 'projects[0].arn' --output text)
+          [[ "$project_arn" == "arn:aws:codebuild:us-east-1:${account_id}:project/adp-dev-gateway-build" ]]
+          echo "id=$account_id" >> "$GITHUB_OUTPUT"
+      - name: Build and inspect the isolated adapter image
+        id: smoke
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-dev-gateway-build
+          region: us-east-1
+          state_bucket: adp-terraform-state-${{ steps.identity.outputs.id }}
+          source_namespace: adp-dev-gateway-build-pr
+          service_role_arn: arn:aws:iam::${{ steps.identity.outputs.id }}:role/adp-dev-codebuild-gateway-pr
+          buildspec: codebuild/bs-tool-adapters-smoke.yml
+      - name: Link retained adapter image evidence
+        if: always() && steps.smoke.outputs.build_id != ''
+        env:
+          ADP_ADAPTER_BUILD_ID: ${{ steps.smoke.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          evidence_url=$(aws codebuild batch-get-builds --ids "$ADP_ADAPTER_BUILD_ID" --region us-east-1 --query 'builds[0].logs.deepLink' --output text)
+          [[ "$evidence_url" == https://* ]]
+          {
+            echo 'Adapter image qualification'
+            echo
+            echo "Build: $ADP_ADAPTER_BUILD_ID"
+            echo
+            echo "[Image report, source hashes and CycloneDX inventory]($evidence_url)"
+            echo
+            echo 'Each ADP_ADAPTER_IMAGE_EVIDENCE_V1 log record includes its source revision and content digest.'
+          } >> "$GITHUB_STEP_SUMMARY"

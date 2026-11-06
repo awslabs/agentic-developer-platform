@@ -720,6 +720,9 @@ async def _recover_one(
         "WHERE operation_id=$1 ORDER BY created_at, idempotency_key",
         operation_id,
     )
+    from .provider_retry import active_call_rows
+
+    rows = await active_call_rows(connection, operation_id, rows)
     calls = []
     for row in rows:
         key = row["idempotency_key"]
@@ -1167,6 +1170,9 @@ async def _finalize_if_all_calls_settled(connection, operation_id, fence_token, 
         "SELECT * FROM harness_provider_call_intent WHERE operation_id=$1",
         operation_id,
     )
+    from .provider_retry import active_call_rows
+
+    all_rows = await active_call_rows(connection, operation_id, all_rows)
     from .execution import _call_from_row as _cfr
 
     calls = [_cfr(r) for r in all_rows]

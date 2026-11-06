@@ -30,6 +30,7 @@ from src.auth.vault_evidence import (
     validation_digest,
     verify_contract_version,
 )
+from src.internal.vault_metadata_authority import VaultMetadataAuthority
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import (
@@ -187,14 +188,46 @@ async def _read(
     return await read_credential_evidence(
         db,
         sm,
-        org_id=org_id,
-        workspace_id=workspace_id,
+        authority=VaultMetadataAuthority(org_id, "unit-reader", principal, workspace_id),
         credential_id=credential_id,
         service=service,
         label=label,
-        principal=principal,
         report_digest=report_digest,
     )
+
+
+@pytest.mark.asyncio
+async def test_evidence_helper_refuses_missing_authority_before_a_vault_query():
+    session = MagicMock()
+    answer = await read_credential_evidence(
+        session,
+        MagicMock(),
+        authority=None,
+        credential_id="cred-1",
+        service=None,
+        label=None,
+        report_digest=None,
+    )
+    assert answer is None
+    session.execute.assert_not_called()
+    session.scalar.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_evidence_helper_refuses_unbound_tenant_before_a_vault_query():
+    session = MagicMock()
+    authority = VaultMetadataAuthority("", "test", "user:user-alice", WORKSPACE)
+    answer = await read_credential_evidence(
+        session,
+        MagicMock(),
+        authority=authority,
+        credential_id="cred-1",
+        service=None,
+        label=None,
+        report_digest=None,
+    )
+    assert answer is None
+    session.scalar.assert_not_called()
 
 
 def _digest_of(row: CredentialValidationEvidence) -> str:

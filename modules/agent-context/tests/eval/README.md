@@ -55,9 +55,22 @@ TEST_ENV=dev REPORT_FORMAT=json python -m tests.eval.run_eval
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Query path:** The harness queries the **MCP endpoint** (`/call`) for all verbs. This is the production query path through the Door, with ACL filtering. If the MCP endpoint is not yet wired for a verb, the harness will report errors for those questions (not silent failures).
+**Query path:** The legacy MCP mode posts to `/call` using self-asserted
+`X-GitHub-*` headers. It is not an authenticated ADP native/CLI/MCP acceptance
+driver. Current live qualification uses the dedicated native client driver with
+genuine session authority and independent evidence. Results from this legacy mode
+must not be presented as native-client or ACL acceptance.
 
 If you need to test backends directly (e.g., Zoekt before the Door is wired), set `EVAL_MODE=direct` — but note this bypasses ACL filtering and is not the production path.
+
+Direct Zoekt ingestion checks, search, and browse use the same authenticated
+transport as the Door. The operator must supply `ZOEKT_API_KEY` through private
+runtime configuration. The key is not an evaluation argument or report field.
+Missing authentication refuses before any backend request. Requests use the
+pinned provider's `Opts`, with at most a 10-second total deadline, 500 displayed
+files, and the documented match and byte caps; `EVAL_TIMEOUT` can select a shorter
+deadline. See [the provider contract](../../ZOEKT_REQUEST_BOUNDS.md). Direct mode
+does not establish MCP identity, ACL, or live acceptance evidence.
 
 ## Prerequisites
 
@@ -67,7 +80,7 @@ If you need to test backends directly (e.g., Zoekt before the Door is wired), se
 | MCP endpoint reachable | `curl -sf http://context-mcp.agent-context.svc:5100/tools` | Returns tool list |
 | S3 Vectors index exists | Check via AWS Console or `aws s3vectors list-indexes` | `agent-context-code-embeddings` |
 | Postgres schema applied | Alembic migrations up to date | `alembic current` shows head |
-| Zoekt running | `curl -sf http://zoekt.agent-context.svc:6070/` | Returns 200 |
+| Zoekt running | `curl -sf http://zoekt.agent-context.svc:6070/healthz` | Returns 200 without exposing source |
 | GitHub access (for clone) | All 15 repos are **public** — no token needed | Anonymous clone OK |
 | Python 3.11+ | `python3 --version` | With `pyyaml`, `httpx` installed |
 
@@ -131,7 +144,7 @@ All four producers must complete for each repo:
 
 | Producer | What it creates | How to verify |
 |----------|-----------------|---------------|
-| Zoekt | Exact search index | `curl "http://zoekt:6070/api/search?q=UNIQUE_TOKEN&repos=org/repo"` returns results |
+| Zoekt | Exact search index | Direct-mode ingestion check uses the authenticated, bounded POST transport described above |
 | Structural | S3 JSON structure map | `aws s3 ls s3://<bucket>/code-indexes/<repo>/structure.json` |
 | Semantic | S3 Vectors embeddings | Query S3 Vectors with a known concept from the repo |
 | SBOM | CycloneDX + Postgres rows | `SELECT * FROM dependencies WHERE repo_id = '<repo>'` has rows |

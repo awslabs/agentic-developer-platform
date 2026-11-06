@@ -173,6 +173,7 @@ def validate(
     *,
     control_plane_only: bool = False,
     preparation: bool = False,
+    retain_worker: bool = False,
 ) -> None:
     """No credentials, shell fragments, caller-selected commands or guessed targets.
 
@@ -221,11 +222,15 @@ def validate(
         "execution",
         "controller_profiles",
         "credential_controller",
+        "dedicated_readers",
         "api_adapters",
+        "require_distinct_approver",
         "paid_worker",
         "lifecycle_foundations",
         "api_producer_role",
         "deployment_image_recovery",
+        "recovery_transport",
+        "lifecycle_observation",
     }
     require(
         set(env) <= allowed,
@@ -234,14 +239,26 @@ def validate(
     from .deployment_recovery import validate as validate_deployment_recovery
 
     validate_deployment_recovery(env)
+    from .recovery_transport import validate as validate_recovery_transport
+
+    validate_recovery_transport(env)
+    from .lifecycle_observation import validate as validate_lifecycle_observation
+
+    validate_lifecycle_observation(env)
     deployment_identity(env)
     cluster_dns_address(env)
     from .api_adapters import validate as validate_api_adapters
 
+    require(
+        type(env.get("require_distinct_approver", False)) is bool,
+        "require_distinct_approver must be a boolean",
+    )
     validate_api_adapters(env)
     from .paid_worker import validate as validate_paid_worker
 
-    validate_paid_worker(env, lock)
+    # Only paused runtime maintenance exposes this option; it separately proves
+    # that the installed worker image, binding and configuration are retained.
+    validate_paid_worker(env, lock, retain_worker=retain_worker)
     from .lifecycle_foundations import validate as validate_lifecycle_foundations
 
     validate_lifecycle_foundations(env)
@@ -254,6 +271,9 @@ def validate(
     from .credential_controller import validate as validate_credential_controller
 
     validate_credential_controller(env, lock)
+    from .dedicated_readers import validate as validate_dedicated_readers
+
+    validate_dedicated_readers(env, lock)
     require(
         env.get("image_execution", "docker") in {"docker", "cluster"},
         "image_execution must be docker or cluster",
@@ -439,7 +459,7 @@ def validate(
         # #6048 advances it to 038 for explicit cluster grant scopes.
         # #6127 advances it to 043 for current workspace grant-change evidence.
         require(
-            head == "044_organization_grant_changes",
+            head == "058_interrupted_planning",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})

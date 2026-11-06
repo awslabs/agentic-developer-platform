@@ -34,7 +34,8 @@ from src.agentauth.store import AbortIntentConflictError, AuthorityStoreError
 
 class RevalidationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    envelope: str = Field(min_length=1, max_length=8192)
+    envelope: str | None = Field(default=None, min_length=1, max_length=8192)
+    queued_grant_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     action: AgentAction
     command_id: str = Field(min_length=1, max_length=128)
     body_base64: str = Field(max_length=4 * ((MAX_REQUEST_BYTES + 2) // 3))
@@ -146,6 +147,12 @@ async def revalidate_command(runtime, body, *, context):
             raise ValueError
         registration = await run_in_threadpool(runtime.store._read, f"TENANT#{target.tenant_id}", f"REG#{target.invocation_id}#{target.attempt}")
         generation = int(registration["generation"]["N"])
+        if body.queued_grant_ref is not None:
+            from src.agentauth.queued_human_control import deliver_queued_steer
+
+            return await deliver_queued_steer(runtime, body, target=target, generation=generation, raw=raw)
+        if body.envelope is None:
+            raise ValueError
         key_id = config.get(SIGNING_KEY_ID_ENV)
         if not key_id:
             raise EnvelopeError("envelope key id is not configured")
@@ -160,6 +167,14 @@ async def revalidate_command(runtime, body, *, context):
         )
         if proof.tenant_id != target.tenant_id:
             raise ValueError
+        if proof.queued_grant_ref is not None:
+            from src.agentauth.queued_human_control import deliver_queued_steer
+
+            # Older workers send the admission proof rather than the queue
+            # reference. It must still be current above, and must consume the
+            # same grant: the compatibility path cannot authorize a second use.
+            queued = body.model_copy(update={"envelope": None, "queued_grant_ref": proof.queued_grant_ref})
+            return await deliver_queued_steer(runtime, queued, target=target, generation=generation, raw=raw)
         if proof.authority_kind == "human_session":
             from src.agentauth.human_control import require_canonical_protected_human_owner, require_live_human_membership
             from src.shared.database import get_session_factory

@@ -1,0 +1,17 @@
+{
+  "scenario": "SCN-01",
+  "fixed_clock": "2026-01-01T00:00:00Z",
+  "products": [
+    {"product_id":"product-alpha","tenant_id":"tenant-alpha","project_id":"project-alpha","capability":"threat_model","binding_id":"binding-alpha","source_ref":{"tenant_id":"tenant-alpha","project_id":"project-alpha","source_connection_id":"connection-alpha","record_type":"document","record_id":"document-alpha","record_revision":"doc-version-1"}},
+    {"product_id":"product-beta","tenant_id":"tenant-beta","project_id":"project-beta","capability":"code_review","binding_id":"binding-beta","source_ref":{"tenant_id":"tenant-beta","project_id":"project-beta","source_connection_id":"connection-beta","record_type":"repository_commit","record_id":"repository-beta","record_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+  ],
+  "cases": [
+    {"id":"document-valid","product_id":"product-alpha","source_id":"document-alpha","capability":"threat_model","expected":"accepted"},
+    {"id":"repository-valid","product_id":"product-beta","source_id":"repository-beta","capability":"code_review","expected":"accepted"},
+    {"id":"foreign-tenant","product_id":"product-alpha","source_id":"repository-beta","capability":"code_review","expected":"denied"},
+    {"id":"foreign-project","product_id":"product-beta","source_id":"document-alpha","capability":"threat_model","expected":"denied"},
+    {"id":"unsupported-capability","product_id":"product-alpha","source_id":"document-alpha","capability":"endpoint_scan","expected":"denied"},
+    {"id":"source-timeout","product_id":"product-alpha","source_id":"document-alpha","capability":"threat_model","fault":"source_read_timeout","expected":"unavailable"}
+  ],
+  "expected_receipts": ["document-valid", "repository-valid"]
+}

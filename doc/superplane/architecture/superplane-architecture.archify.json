@@ -1,0 +1,676 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Superplane \u2014 target architecture",
+    "locale": "en",
+    "output": "doc/superplane/architecture/superplane-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/aws-e/adp.git",
+      "revision": "f3c9b5da15e595b34715999501995e5721f5d5f1",
+      "link_mode": "web"
+    }
+  },
+  "components": [
+    {
+      "id": "people",
+      "type": "frontend",
+      "label": "ADP experience",
+      "sublabel": "UI / CLI / GitHub agents",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        180,
+        76
+      ],
+      "tag": "ONE USER JOURNEY",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 7,
+          "end_line": 17,
+          "label": "Shared workspace and training experience"
+        }
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "security",
+      "label": "ADP Gateway",
+      "sublabel": "Identity and route allowlist",
+      "pos": [
+        310,
+        40
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "tag": "RETAIN + EXTEND",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/api-design.md",
+          "line": 24,
+          "end_line": 62,
+          "label": "Public boundary and compatibility"
+        },
+        {
+          "path": "docs/delivery-flow/plans/superplane-factories-20261026/README.md",
+          "line": 39,
+          "end_line": 43,
+          "label": "Continuous Gateway releases"
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "Superplane API",
+      "sublabel": "Plans, approvals and budgets",
+      "pos": [
+        580,
+        40
+      ],
+      "size": [
+        230,
+        76
+      ],
+      "tag": "MANAGEMENT PLANE",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/control-plane-and-reconciliation.md",
+          "line": 63,
+          "end_line": 89,
+          "label": "Approved publication and ownership"
+        },
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 595,
+          "end_line": 645,
+          "label": "Selected-plan run submission"
+        }
+      ]
+    },
+    {
+      "id": "state",
+      "type": "database",
+      "label": "Durable state",
+      "sublabel": "Intent, runs, leases and facts",
+      "pos": [
+        900,
+        40
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "tag": "POSTGRESQL / EXTEND",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/database-design.md",
+          "line": 24,
+          "end_line": 45,
+          "label": "Existing durable record owners"
+        },
+        {
+          "path": "doc/superplane/architecture/control-plane-and-reconciliation.md",
+          "line": 50,
+          "end_line": 61,
+          "label": "Authoritative state boundaries"
+        }
+      ]
+    },
+    {
+      "id": "bundles",
+      "type": "database",
+      "label": "Approved desired state",
+      "sublabel": "Immutable OCI + source references",
+      "pos": [
+        580,
+        240
+      ],
+      "size": [
+        230,
+        76
+      ],
+      "tag": "PLANNED / ECR FIRST",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/control-plane-and-reconciliation.md",
+          "line": 63,
+          "end_line": 89,
+          "label": "Durable approved publication"
+        }
+      ]
+    },
+    {
+      "id": "argo",
+      "type": "backend",
+      "label": "Central Argo CD",
+      "sublabel": "Maintained factory + app declarations",
+      "pos": [
+        900,
+        240
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "tag": "PLANNED / MANAGEMENT",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 78,
+          "end_line": 90,
+          "label": "Central default and optional backend"
+        },
+        {
+          "path": "doc/superplane/architecture/control-plane-and-reconciliation.md",
+          "line": 65,
+          "end_line": 80,
+          "label": "Argo declaration ownership"
+        }
+      ]
+    },
+    {
+      "id": "account",
+      "type": "backend",
+      "label": "1  Account Factory",
+      "sublabel": "Create / onboard; native baseline",
+      "pos": [
+        40,
+        445
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "PLANNED CONTROLLER",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 193,
+          "end_line": 218,
+          "label": "Four-stage readiness contract"
+        },
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 220,
+          "end_line": 249,
+          "label": "Provider environment baselines"
+        }
+      ]
+    },
+    {
+      "id": "network",
+      "type": "backend",
+      "label": "2  Networking Factory",
+      "sublabel": "Private links and service access",
+      "pos": [
+        310,
+        445
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "REQUIRES ACCOUNT READY",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 49,
+          "end_line": 55,
+          "label": "Network and cluster responsibilities"
+        },
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 193,
+          "end_line": 218,
+          "label": "Dependency and revision gates"
+        }
+      ]
+    },
+    {
+      "id": "cluster",
+      "type": "backend",
+      "label": "3  Cluster Factory",
+      "sublabel": "Provision / adopt; cluster access",
+      "pos": [
+        580,
+        445
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "REQUIRES NETWORK READY",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 49,
+          "end_line": 55,
+          "label": "Cluster and bootstrap responsibilities"
+        },
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 193,
+          "end_line": 218,
+          "label": "Dependency and revision gates"
+        },
+        {
+          "path": "docs/delivery-flow/plans/superplane-factories-20261026/README.md",
+          "line": 45,
+          "end_line": 49,
+          "label": "Existing resource adoption"
+        }
+      ]
+    },
+    {
+      "id": "workload",
+      "type": "backend",
+      "label": "4  Workload Management",
+      "sublabel": "Platform bootstrap + run control",
+      "pos": [
+        900,
+        445
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "REQUIRES CLUSTER READY",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/control-plane-and-reconciliation.md",
+          "line": 19,
+          "end_line": 29,
+          "label": "Workload execution owners"
+        },
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 630,
+          "end_line": 661,
+          "label": "Applications versus TrainJobs"
+        }
+      ]
+    },
+    {
+      "id": "provider",
+      "type": "cloud",
+      "label": "Provider infrastructure",
+      "sublabel": "Account, network, Kubernetes",
+      "pos": [
+        40,
+        665
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "AWS FIRST; ADAPTERS LATER",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 49,
+          "end_line": 74,
+          "label": "AWS and multi-cloud target"
+        },
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 143,
+          "end_line": 158,
+          "label": "Resource and runtime placement"
+        }
+      ]
+    },
+    {
+      "id": "executor",
+      "type": "backend",
+      "label": "Governed execution",
+      "sublabel": "Terraform / provider workers",
+      "pos": [
+        310,
+        665
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "RETAIN STATE + FENCES",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/control-plane-and-reconciliation.md",
+          "line": 105,
+          "end_line": 129,
+          "label": "Durable, approved execution contract"
+        },
+        {
+          "path": "docs/delivery-flow/plans/superplane-factories-20261026/README.md",
+          "line": 45,
+          "end_line": 49,
+          "label": "Terraform and adoption ownership"
+        }
+      ]
+    },
+    {
+      "id": "capacity",
+      "type": "backend",
+      "label": "SkyPilot + node join",
+      "sublabel": "Approved demand; GPU readiness",
+      "pos": [
+        580,
+        665
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "MANAGEMENT / EXTEND",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 57,
+          "end_line": 61,
+          "label": "Central capacity and join services"
+        },
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 609,
+          "end_line": 641,
+          "label": "Demand and verified capacity"
+        }
+      ]
+    },
+    {
+      "id": "runtime",
+      "type": "backend",
+      "label": "Workspace training",
+      "sublabel": "Trainer v2 / JobSet / Kueue",
+      "pos": [
+        900,
+        665
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "WORKSPACE CLUSTER",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 609,
+          "end_line": 645,
+          "label": "Admission and job execution"
+        },
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 649,
+          "end_line": 661,
+          "label": "Training platform responsibilities"
+        }
+      ]
+    },
+    {
+      "id": "observations",
+      "type": "backend",
+      "label": "Status reconciliation",
+      "sublabel": "Freshness, drift and recovery",
+      "pos": [
+        310,
+        865
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "MANAGEMENT / EXTEND",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 133,
+          "end_line": 158,
+          "label": "Unified observations and results"
+        },
+        {
+          "path": "doc/superplane/architecture/control-plane-and-reconciliation.md",
+          "line": 131,
+          "end_line": 168,
+          "label": "Drift, policy and retirement"
+        }
+      ]
+    },
+    {
+      "id": "results",
+      "type": "database",
+      "label": "Checkpoints + results",
+      "sublabel": "Durable artifacts; optional MLflow",
+      "pos": [
+        900,
+        865
+      ],
+      "size": [
+        220,
+        82
+      ],
+      "tag": "VERIFIED OUTPUTS",
+      "sources": [
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 619,
+          "end_line": 626,
+          "label": "Writes and result verification"
+        },
+        {
+          "path": "doc/superplane/architecture/README.md",
+          "line": 663,
+          "end_line": 689,
+          "label": "Durable identity and checkpoints"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "entry",
+      "from": "people",
+      "to": "gateway",
+      "variant": "emphasis",
+      "label": "HTTPS"
+    },
+    {
+      "id": "identity",
+      "from": "gateway",
+      "to": "api",
+      "variant": "security",
+      "label": "authorize"
+    },
+    {
+      "id": "persist",
+      "from": "api",
+      "to": "state",
+      "variant": "default",
+      "label": "persist"
+    },
+    {
+      "id": "publish",
+      "from": "api",
+      "to": "bundles",
+      "variant": "security",
+      "label": "approved plan"
+    },
+    {
+      "id": "oci",
+      "from": "bundles",
+      "to": "argo",
+      "variant": "default",
+      "label": "pinned source"
+    },
+    {
+      "id": "account-spec",
+      "from": "argo",
+      "to": "account",
+      "variant": "default",
+      "label": "account spec"
+    },
+    {
+      "id": "network-spec",
+      "from": "argo",
+      "to": "network",
+      "variant": "default",
+      "label": "network spec"
+    },
+    {
+      "id": "cluster-spec",
+      "from": "argo",
+      "to": "cluster",
+      "variant": "default",
+      "label": "cluster spec"
+    },
+    {
+      "id": "apps-spec",
+      "from": "argo",
+      "to": "workload",
+      "variant": "default",
+      "label": "apps only"
+    },
+    {
+      "id": "admit-run",
+      "from": "api",
+      "to": "workload",
+      "variant": "security",
+      "label": "approved run"
+    },
+    {
+      "id": "account-ops",
+      "from": "account",
+      "to": "executor",
+      "variant": "dashed",
+      "label": "dispatch"
+    },
+    {
+      "id": "network-ops",
+      "from": "network",
+      "to": "executor",
+      "variant": "dashed",
+      "label": "dispatch"
+    },
+    {
+      "id": "cluster-ops",
+      "from": "cluster",
+      "to": "executor",
+      "variant": "dashed",
+      "label": "dispatch"
+    },
+    {
+      "id": "provider-ops",
+      "from": "executor",
+      "to": "provider",
+      "variant": "default",
+      "label": "plan / apply"
+    },
+    {
+      "id": "capacity-request",
+      "from": "workload",
+      "to": "capacity",
+      "variant": "default",
+      "label": "GPU demand"
+    },
+    {
+      "id": "capacity-ready",
+      "from": "capacity",
+      "to": "runtime",
+      "variant": "default",
+      "label": "ready nodes"
+    },
+    {
+      "id": "run-job",
+      "from": "workload",
+      "to": "runtime",
+      "variant": "emphasis",
+      "label": "TrainJob"
+    },
+    {
+      "id": "artifacts",
+      "from": "runtime",
+      "to": "results",
+      "variant": "default",
+      "label": "write outputs"
+    },
+    {
+      "id": "cloud-facts",
+      "from": "provider",
+      "to": "observations",
+      "variant": "default",
+      "label": "cloud facts"
+    },
+    {
+      "id": "execution-facts",
+      "from": "executor",
+      "to": "observations",
+      "variant": "default",
+      "label": "outcomes"
+    },
+    {
+      "id": "run-facts",
+      "from": "runtime",
+      "to": "observations",
+      "variant": "default",
+      "label": "run status"
+    },
+    {
+      "id": "argo-facts",
+      "from": "argo",
+      "to": "observations",
+      "variant": "default",
+      "label": "app health"
+    },
+    {
+      "id": "observed-state",
+      "from": "observations",
+      "to": "state",
+      "variant": "default",
+      "label": "fresh observations"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Read this as the target design",
+      "items": [
+        "Grounded in the 15 October architecture and epic #8950; this is not a live deployment status map.",
+        "Four factories are ownership and lifecycle boundaries, not a requirement for four microservices.",
+        "Management services coordinate resources; training controllers and jobs run on workspace clusters."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Recovery and truthful readiness",
+      "items": [
+        "Each factory waits for fresh Ready evidence for the current desired revision; applying a declaration is not completion.",
+        "Argo reconciles declarations. Factory controllers observe cloud resources and use governed execution for approved changes.",
+        "Superplane submits each TrainJob separately. Argo does not recreate finished runs. Retain attempts, fences and resource identities."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Cut over the existing workspace",
+      "items": [
+        "Repair and verify the current workspace, then shadow-adopt its resource IDs and Terraform backend, lineage and history.",
+        "Fence the old writer before activating one new owner; evaluate fallback against the retained state.",
+        "R04 uses already qualified R1 artifacts. Preserve the cluster and namespace; no infrastructure recreation."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Three grouped Superplane releases",
+      "items": [
+        "R1: AWS factories, central Argo, experience and migration. R2: training, capacity and results. R3: Azure, GCP and Nebius.",
+        "Epic #8950 has 57 implementation stories and 11 release, verification and cutover stories in eight workstreams.",
+        "Gateway keeps rolling independently; qualify the actual serving API, scheduler and binding for each release. MLflow placement remains optional and undecided."
+      ]
+    }
+  ]
+}

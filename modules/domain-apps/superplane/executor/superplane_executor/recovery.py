@@ -295,7 +295,6 @@ class ScopedRecovery:
             )
             if payload_digest(payload) != row["payload_digest"]:
                 raise OperationRefused("settlement receipt digest mismatch")
-            await self._project(row, payload)
             receipt = await self.ledger.deliver_settlement(
                 **{
                     key: row[key]
@@ -315,42 +314,16 @@ class ScopedRecovery:
                 raise OperationRefused(
                     "ledger did not acknowledge exact settlement receipt"
                 )
-            async with self.provider.execution_pool.acquire() as connection:
-                await connection.execute(
-                    "UPDATE harness_recovery_settlements SET delivered_at=clock_timestamp() "
-                    "WHERE receipt_id=$1 AND payload_digest=$2 AND delivered_at IS NULL",
-                    row["receipt_id"],
-                    row["payload_digest"],
-                )
+            from workspace_provisioning.recovery_receipts import project_and_acknowledge
+
+            await project_and_acknowledge(
+                self.provider.execution_pool.acquire,
+                self.provider.domain_pool.acquire,
+                row,
+                payload,
+            )
             delivered.append(row["operation_id"])
         return tuple(delivered)
-
-    async def _project(self, row, payload):
-        # The original shared admission names the durable domain organization UUID.
-        async with self.provider.domain_pool.acquire() as connection:
-            organization = await connection.fetchval(
-                "SELECT w.org_id::text FROM workspaces w JOIN organizations o ON o.id=w.org_id "
-                "WHERE w.id::text=$1 AND o.id::text=$2",
-                row["workspace_id"],
-                row["org_id"],
-            )
-            if organization is None:
-                raise OperationRefused("workspace accounting registration unavailable")
-            await connection.execute(
-                "INSERT INTO controller_execution_accounting(operation_id,org_id,workspace_id,observation) "
-                "VALUES($1,$2::text::uuid,$3::text::uuid,$4::json) "
-                "ON CONFLICT(operation_id) DO UPDATE SET observation=EXCLUDED.observation",
-                row["operation_id"],
-                organization,
-                row["workspace_id"],
-                canonical(
-                    {
-                        **payload,
-                        "source": "scoped_recovery",
-                        "receipt_id": row["receipt_id"],
-                    }
-                ),
-            )
 
     async def run(self, *, limit=MAX_RECOVERED_OPERATIONS):
         if type(limit) is not int or not 1 <= limit <= 200:

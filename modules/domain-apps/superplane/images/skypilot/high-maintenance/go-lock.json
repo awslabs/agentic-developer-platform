@@ -1,11 +1,11 @@
 {
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:65e92431d58468d1a662591c0158a0c623e11915304eb3a9ac2a1728037b9164",
-  "platform_digest": "sha256:de9b5a36dc589ce3fc04efb0bcfdcc9e721e3dc3604956e15b5ef8bead7268dc",
-  "config_digest": "sha256:276924e727b876ae439a5f1b07b530812b0ddd91e6382fbe55571535d6b962a9",
+  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:ca5fe2fbf4836112563ae1eee8bac8ba829109f741dd838474c3d7718c37c56e",
+  "platform_digest": "sha256:1902e70e1ab795c29f4cc1054d734c16507b33931961e10a546059b31da2d230",
+  "config_digest": "sha256:628e8a40022e970910ea5355e331623b5430f6eeb3a7ae406319ebd55864a194",
   "binary_sha256": {
-    "gcloud-crc32c": "e65cdba2615ce739ea47b2f8698fd185632e273bb3798ee972ea7cd21800ff01",
-    "gke-gcloud-auth-plugin": "5afbea5310d5959a6972b5808e62ec412c0f0ae1f922a033091e0b56d7253be0",
-    "session-manager-plugin": "baffbf5da3e935636f51801a29a43488dd734aec6cdaae6117d5a1be2dd7c9f8"
+    "gcloud-crc32c": "fc5bd7f89ffe59a4e4c328f138ca6c1cc091a0794047596cb0a5de574de61311",
+    "gke-gcloud-auth-plugin": "75f3cf83175a4fe6e2f21b061ee8526438f3c98693bfe00b0d9c42426350a533",
+    "session-manager-plugin": "5da37a85071197e9aa159886eecaf21ff6f134288a8f287b759e76e1c685a3c4"
   },
   "installed_paths": {
     "gcloud-crc32c": "/opt/google-cloud-sdk/bin/gcloud-crc32c",
@@ -16,5 +16,18 @@
     "gcloud-crc32c": "e9283fcf176ac5d3386b09db6ffd8a2731abdc0efd66b143b9124f760d06459b",
     "gke-gcloud-auth-plugin": "40cc2a0114acc7f30bb4b6a6a5264a1cb5f57907912b3aa53ae553afbe4f18c3",
     "session-manager-plugin": "c5cba20e4d8d1c7842b91cb5a68e2f78d24ca3daa55419e1dd8d867ea26378cf"
+  },
+  "previous_binary_sha256": {
+    "gcloud-crc32c": "e65cdba2615ce739ea47b2f8698fd185632e273bb3798ee972ea7cd21800ff01",
+    "gke-gcloud-auth-plugin": "5afbea5310d5959a6972b5808e62ec412c0f0ae1f922a033091e0b56d7253be0",
+    "session-manager-plugin": "baffbf5da3e935636f51801a29a43488dd734aec6cdaae6117d5a1be2dd7c9f8"
+  },
+  "kubectl": {
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:5a51c41fe984154d7618ccce424e4bd5a5aff50b7e98c5a95f55da1475ed4c0b",
+    "sha256": "0fa0f2c20d34e1d7f40f125518e7c164ee476e841313f08dc5060edaebf8d017",
+    "go": "go1.26.9",
+    "x_net": "v0.60.0",
+    "source_commit": "329000efd0b26bd78155e51e4df449130f0fca00",
+    "dependency_patch_sha256": "e807e550f5112684201972e3878ed41cfef92af8435daa9eaf605db25760f948"
   }
 }

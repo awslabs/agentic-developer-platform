@@ -867,19 +867,20 @@ class TestExistingCommandsUnchanged:
         """Zero-install property: no pip dependencies may creep in."""
         import ast
 
-        tree = ast.parse(proxy_script.read_text())
         imported = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name.split(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                imported.add(node.module.split(".")[0])
+        siblings = {"adp_deployments", "adp_native_test", "adp_common"}
+        for script in (proxy_script, *(proxy_script.parent / (name + ".py") for name in siblings)):
+            tree = ast.parse(script.read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported.update(alias.name.split(".")[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                    imported.add(node.module.split(".")[0])
 
         import sys as _sys
 
-        # The sibling resolver is distributed with the proxy and itself uses
-        # only the standard library; no external pip package is required.
-        allowed = _sys.stdlib_module_names | {"adp_deployments"}
+        # Bundled siblings must also retain the zero-pip-dependency property.
+        allowed = _sys.stdlib_module_names | siblings
         assert imported <= allowed, f"non-stdlib imports: {imported - allowed}"
 
     def test_token_subcommand_still_works_alongside_serve(self, run_bg_cognito_auth, cognito_home: Path) -> None:

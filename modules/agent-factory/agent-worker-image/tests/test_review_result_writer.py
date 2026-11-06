@@ -1477,6 +1477,46 @@ class TestFindingsFromTheAgentReport:
         )
         assert len(findings[0].summary) == 1000
 
+    def test_large_required_ci_observation_preserves_failure_after_successes(self):
+        checks = [{"name": f"Successful check {i}", "state": "success", "provider_id": i} for i in range(120)]
+        checks.append({"name": "gateway-ci / Test shard 8", "state": "failure"})
+        summary = json.dumps({"source": "required-checks", "evidence": {
+            "state": "failed", "head_sha": HEAD, "base_repair_required": False, "checks": checks,
+        }})
+        finding = findings_from_agent_report({"findings": [{
+            "finding_id": "delivery-blocked", "severity": "blocking", "disposition": "open", "summary": summary,
+        }]})[0]
+        assert len(finding.summary) <= 1000
+        observation = json.loads(finding.summary)
+        assert observation["source"] == "required-checks"
+        assert observation["evidence"]["state"] == "failed"
+        assert observation["evidence"]["head_sha"] == HEAD
+        assert observation["evidence"]["checks"] == [{"name": "gateway-ci / Test shard 8", "state": "failure"}]
+        assert observation["evidence"]["omitted_checks"] == 120
+        assert finding.severity == "blocking" and finding.disposition == "open"
+
+    def test_large_ci_snapshot_stays_valid_with_many_long_failure_names(self):
+        checks = [{"name": "界" * 300 + str(i), "state": "failure"} for i in range(100)]
+        finding = findings_from_agent_report({"findings": [{
+            "finding_id": "delivery-blocked", "summary": json.dumps({"source": "required-checks", "evidence": {
+                "state": "failed", "checks": checks,
+            }}),
+        }]})[0]
+        assert len(finding.summary) <= 1000
+        evidence = json.loads(finding.summary)["evidence"]
+        assert evidence["checks"] and all(c["state"] == "failure" for c in evidence["checks"])
+        assert evidence["omitted_checks"] + len(evidence["checks"]) == 100
+        assert evidence["check_names_truncated"] is True
+
+    @pytest.mark.parametrize("summary", [
+        '{"source":"required-checks","evidence":' + " " * 1100,
+        json.dumps({"source": "merge-controller", "evidence": {"state": "failed", "detail": "x" * 2000}}),
+    ])
+    def test_unreadable_or_non_ci_observations_are_not_reclassified(self, summary):
+        finding = findings_from_agent_report({"findings": [{"finding_id": "delivery-blocked", "summary": summary}]})[0]
+        assert finding.summary == summary.strip()[:1000]
+        assert finding.severity == "blocking" and finding.disposition == "open"
+
     def test_normalised_findings_validate_against_the_contract(self, dispatched):
         """Whatever the agent wrote, the normalised result must be a valid document."""
         models = _load_models()

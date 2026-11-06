@@ -91,3 +91,37 @@ async def test_ingestion_writes_only_the_validated_scope(monkeypatch, scope, roo
         s3.put_object.assert_called_once()
         assert s3.put_object.call_args.kwargs["Key"] == f"{root}/{suffix}"
         assert s3.put_object.call_args.kwargs["Bucket"] == "offline-test"
+
+
+@pytest.mark.parametrize("failed_step", ["fetch", "convert"])
+def test_document_failure_cannot_be_reported_as_complete(monkeypatch, tmp_path, failed_step):
+    module = load_script("ingest-doc")
+    monkeypatch.setattr(module, "parse_scope_from_env", lambda: IngestionScope())
+    monkeypatch.setattr(module, "STAGE_TRACKING_AVAILABLE", False)
+    store = Mock()
+    monkeypatch.setattr(module, "S3ContentStore", lambda **_: store)
+    document = tmp_path / "manual.pdf"
+    document.write_bytes(b"unconvertible document")
+    monkeypatch.setattr(module, "fetch_document", lambda *_: None if failed_step == "fetch" else str(document))
+    monkeypatch.setattr(module, "convert_to_markdown", lambda *_: None)
+
+    result = module.ingest_document("s3://example-documents/manual.pdf")
+    assert result["status"] == "failed"
+    assert result["steps"][failed_step] == "failed"
+    store.put_content.assert_not_called()
+
+    monkeypatch.setattr(module, "ingest_document", lambda **_: result)
+    monkeypatch.setattr(sys, "argv", ["ingest-doc.py", "--source", "s3://example-documents/manual.pdf"])
+    with pytest.raises(SystemExit) as error:
+        module.main()
+    assert error.value.code == 1
+
+
+@pytest.mark.parametrize("status", ["refused", "partial", None])
+def test_only_complete_document_results_exit_successfully(monkeypatch, status):
+    module = load_script("ingest-doc")
+    monkeypatch.setattr(module, "ingest_document", lambda **_: {"status": status})
+    monkeypatch.setattr(sys, "argv", ["ingest-doc.py", "--source", "s3://example-documents/manual.pdf"])
+    with pytest.raises(SystemExit) as error:
+        module.main()
+    assert error.value.code == 1

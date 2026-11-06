@@ -73,6 +73,8 @@ from src.orchestration.registration import (
 from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.state import ActorKind
 from tests.orchestration import test_registration as _reg
+from tests.orchestration.legacy_plan import persist_legacy_plan
+from tests.orchestration.product_fixture import seed_product
 from tests.orchestration.test_execution_policy_acceptance import a_policy
 
 # Rebound as module attributes rather than imported by name: pytest collects fixtures
@@ -100,7 +102,7 @@ def controls_app(session, access):
         yield session
 
     app.dependency_overrides[get_db] = override_db
-    app.dependency_overrides[get_current_user] = lambda: token_context(ORG_A, user_id=HUMAN_USER_ID)
+    app.dependency_overrides[get_current_user] = lambda: token_context(ORG_A, user_id=HUMAN_USER_ID, account_type="human")
     app.dependency_overrides[get_access_control] = lambda: access
     return app
 
@@ -135,7 +137,7 @@ def policy_for_these_fixtures(**overrides: object):
     return a_policy(**base)
 
 
-async def register_policy_bearing_draft(session, registrar, *, policy=None, proposal=None):
+async def register_policy_bearing_draft(session, registrar, *, policy=None, proposal=None, product_bound=True):
     """Register a draft whose submitted `execution_policy` is demoted on the way in.
 
     Returns `(result, proposal_as_submitted)`. The org and the human principal are
@@ -144,8 +146,11 @@ async def register_policy_bearing_draft(session, registrar, *, policy=None, prop
     than because the policy was inert.
     """
     await seed_org(session)
-    await seed_principal(session, org_id=ORG_A, role=_reg.AdminRole.ORG_ADMIN.value)
+    user_id = await seed_principal(session, org_id=ORG_A, role=_reg.AdminRole.ORG_ADMIN.value)
     submitted = (proposal or gateless_proposal()).model_copy(update={"execution_policy": policy or policy_for_these_fixtures()})
+    if product_bound:
+        await seed_product(session, org_id=ORG_A, actor_id=HUMAN_USER_ID, user_id=user_id)
+        submitted.product_id = f"product-{ORG_A}"
     result, _ = await register_draft_proposal(session, submitted, registrar)
     (await session.get(_reg.OrchestrationFlow, result.flow_id)).execution_paused = False
     await session.flush()
@@ -156,7 +161,7 @@ async def answer_acceptance_gate(session, access, *, node_id, approve=True, expe
     """Answer a gate through the seam both real input paths share."""
     return await apply_gate_answer_for_context(
         session,
-        context=token_context(ORG_A, user_id=user_id),
+        context=token_context(ORG_A, user_id=user_id, account_type="human"),
         node_id=node_id,
         approve=approve,
         reason="Reviewed the plan and the authority it delegates.",
@@ -355,7 +360,7 @@ class TestADraftsPolicyGrantsNothing:
         from src.orchestration.dispatch_pass import run_dispatch_pass
         from src.orchestration.tick import run_tick
 
-        await register_policy_bearing_draft(session, registrar)
+        await register_policy_bearing_draft(session, registrar, product_bound=False)
 
         pending: list = []
         for _ in range(10):
@@ -496,7 +501,7 @@ class TestAnUnboundApprovalCannotArmInertBounds:
         from src.orchestration.dispatch_pass import run_dispatch_pass
         from src.orchestration.tick import run_tick
 
-        await register_policy_bearing_draft(session, registrar)
+        await register_policy_bearing_draft(session, registrar, product_bound=False)
         gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
 
         await answer_acceptance_gate(session, access, node_id=gate.id, expected_plan_hash=None)
@@ -545,7 +550,16 @@ class TestAnUnboundApprovalCannotArmInertBounds:
         """
         await seed_org(session)
         await seed_principal(session, org_id=ORG_A, role=_reg.AdminRole.ORG_ADMIN.value)
-        await register_draft_proposal(session, gateless_proposal(), registrar)
+        result, _ = await register_draft_proposal(session, gateless_proposal(), registrar)
+        await OrchestrationRepository(session).append_decision(
+            org_id=ORG_A,
+            flow_id=result.flow_id,
+            kind=DecisionKind.PLAN_ACCEPTED.value,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind="human",
+            reason="Previously accepted Product-less fixture",
+        )
         gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
 
         outcome = await answer_acceptance_gate(session, access, node_id=gate.id, expected_plan_hash=None)
@@ -983,6 +997,8 @@ class TestBoundsAlreadyExpiredAreNotGranted:
             actor_role="org_admin",
             actor_kind=ActorKind.HUMAN,
         )
+        await seed_product(session, org_id=ORG_A, actor_id=HUMAN_USER_ID)
+        submitted.product_id = f"product-{ORG_A}"
         first = await compile_proposal(session, submitted, approval)
         await session.commit()
         monkeypatch.setattr(compile_module, "utcnow", lambda: expires_at + timedelta(seconds=1))
@@ -1017,7 +1033,7 @@ class TestBoundsAlreadyExpiredAreNotGranted:
 
         with monkeypatch.context() as legacy:
             legacy.setattr(compile_module, "prepare_execution_policy", legacy_prepare)
-            first = await compile_proposal(session, submitted, approval)
+            first = await persist_legacy_plan(session, submitted, approval)
         await session.commit()
         original = (await plan_versions(session))[0]
         assert original.plan_document["execution_policy"]["expires_at"] == expires_at.isoformat()
@@ -1047,7 +1063,7 @@ class TestBoundsAlreadyExpiredAreNotGranted:
             actor_role="org_admin",
             actor_kind=ActorKind.HUMAN,
         )
-        original = await compile_proposal(session, gateless_proposal(), approval)
+        original = await persist_legacy_plan(session, gateless_proposal(), approval)
         expires_at = datetime.now(tz=UTC) + timedelta(minutes=5)
         submitted = gateless_proposal(title="Delivery loop with amended bounds").model_copy(
             update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)}
@@ -1084,7 +1100,7 @@ class TestBoundsAlreadyExpiredAreNotGranted:
             actor_role="org_admin",
             actor_kind=ActorKind.HUMAN,
         )
-        original = await compile_proposal(session, gateless_proposal(), approval)
+        original = await persist_legacy_plan(session, gateless_proposal(), approval)
         expires_at = (datetime.now(tz=UTC) + timedelta(hours=1)).replace(tzinfo=None)
         submitted = gateless_proposal(title="Delivery loop with amended bounds").model_copy(
             update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)}

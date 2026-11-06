@@ -90,6 +90,45 @@ class TestRateLimitMiddleware:
         """Provide a test client."""
         return TestClient(app_with_middleware)
 
+    def test_crew_dashboard_assets_are_exempt_only_on_the_crew_host(self, service, user_context):
+        """#9596: a cold dashboard open fetches dozens of hashed chunks; counting them per user
+        answered 429 on the Crew origin. Chunks on that host bypass the limiter; the same path on
+        the API host and the dashboard's own API stay limited."""
+        app = FastAPI()
+        seen = []
+
+        @app.get("/assets/{chunk}")
+        async def chunk(chunk: str):
+            return {"chunk": chunk}
+
+        @app.get("/api/sessions")
+        async def sessions():
+            return {"ok": True}
+
+        # Added first so it is the inner layer; the token-context middleware below is added last
+        # and therefore runs first, as the real auth middleware does in front of the limiter.
+        app.add_middleware(RateLimitMiddleware, rate_limit_service=service, crew_dashboard_host="crew.example.test")
+
+        @app.middleware("http")
+        async def add_token_context(request, call_next):
+            request.state.token_context = user_context
+            return await call_next(request)
+
+        original = getattr(service, "check_rate_limit")
+
+        async def counting(*args, **kwargs):
+            seen.append(args)
+            return await original(*args, **kwargs)
+
+        setattr(service, "check_rate_limit", counting)
+        client = TestClient(app)
+        assert client.get("/assets/useScreenSnip-DqgMBF8T.js", headers={"host": "crew.example.test"}).status_code == 200
+        assert seen == []
+        assert client.get("/api/sessions", headers={"host": "crew.example.test"}).status_code == 200
+        assert len(seen) == 1
+        assert client.get("/assets/useScreenSnip-DqgMBF8T.js", headers={"host": "api.example.test"}).status_code == 200
+        assert len(seen) == 2
+
     def test_request_allowed(self, client):
         """Test request is allowed when under limit."""
         response = client.get("/test")

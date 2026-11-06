@@ -1,28 +1,43 @@
 {
   "buildx": {
     "commit": "0b265a9f62db554fa9aba6dd19e1bd5704bc7d8a",
-    "patch_sha256": "eed7b1e2a6d5342d9664c4bf323ff8fcc634601d3cda9f0f0e9594a3d5d028f6"
+    "patch_sha256": "d956be9176a1bb6424faec3c1e1c8c1d411a712e828fc1e2665243accd2d9a55"
   },
   "helm": {
     "commit": "144ca65f8501953fa8b41cd1d37c7223051c85b7",
-    "patch_sha256": "225d832835f1c187f06a4fdf0265e3689db11297cc5f5e1f643962ad07571733"
+    "patch_sha256": "6a739da4f599e500387645ac4b7feb4f93860a2d23d0684090fca6df0ba3a5ef"
   },
   "acr": {
     "commit": "726f4811d1f2da429555fce4c1868c1a7be96f19",
-    "patch_sha256": "281a69816e1a0c3aa52eabc384e037dde2f0a175eb16ee7ba3f48c01e562d48b"
+    "patch_sha256": "12e58ffe4b42f216e3b477125f0b7f14aeff591528ea276ee55e03480dcabefa"
   },
   "runc": {
     "commit": "bb14dabeb7185bb72c8c86735d090dcb20f36587",
-    "patch_sha256": "d2d3f98f467fe40148d90c8b0984f3a35bc05ae81d030931a38ccf1ffe2ec0df"
+    "patch_sha256": "a960fcb184f19b1f1e6b68345606c8d1119ff88b91496d19b715320899d7c6af"
   },
   "docker.tar.gz": {
-    "sha256": "d8db66739d2e28d4933786d73e918d9be643a67fbd835db1bf740d650a259e70"
-  },
-  "containerd.tar.gz": {
-    "sha256": "d65eda6a188aac1006848d8060099be88ba9c4bcddbfd9a23a961194710d0dd4"
+    "sha256": "c158ecc55adb3afb01bbd3539ed3b997d20c26dbdc418080506cc1bf5243ff57"
   },
   "action_fixtures": {
     "checkout": "11d5960a326750d5838078e36cf38b85af677262",
     "github-script": "f28e40c7f34bde8b3046d885e986cb6290c5673b"
+  },
+  "containerd": {
+    "commit": "f2551031d7276a770f65f98c9b52e57e7dad07e8",
+    "patch_sha256": "84b027898611618843a6abeade5a04f22d7a843e9a9ff3c136aefb453b011769"
+  },
+  "kubectl": {
+    "commit": "329000efd0b26bd78155e51e4df449130f0fca00",
+    "patch_sha256": "e807e550f5112684201972e3878ed41cfef92af8435daa9eaf605db25760f948"
+  },
+  "gh": {
+    "url": "https://codeload.github.com/cli/cli/tar.gz/refs/tags/v2.101.0",
+    "sha256": "a266fe8575c0e061b987920c1831a15f71bf0036a8729a5ebb93c2fb0164899c",
+    "patch_sha256": "ca762b3a62017c872d814f7c6d48987397f72a706e966eb607796d0b374f3062"
+  },
+  "yq": {
+    "url": "https://codeload.github.com/mikefarah/yq/tar.gz/refs/tags/v4.53.6",
+    "sha256": "132a28a669526f99dba52486ac80de3bdafdf9a1a52a0c6bd6045301aca0cd25",
+    "patch_sha256": "ea8fb1ebd5fc4e4f6f80e193722970e8f259446cf8e5a1a36c89a177e5b00692"
   }
 }

@@ -12,7 +12,7 @@ After authorization and context verification, the operator may enable a bounded 
 CHAT_WARM_ACTION=enable CHAT_WARM_CAPACITY=1 modules/agent-factory/chat-warm/configure-chat-warm.sh
 ```
 
-The command waits for both image-cache and reservation rollouts. Verify the intended image digest matches the supervisor Job, observe ready/desired pod counts and pending sandbox events, then execute the authorized A1/A2/B1 isolation and cold-capacity cases before admitting users. Measure cold, image-warm and node-warm first turns separately under the same model, prompts and concurrency. Record scheduling, image/bootstrap and model components, p50/p95 useful-output latency, failed attempts, idle node-hours and cost. A rollout success alone does not satisfy the latency or isolation gate; the common protocol is in `docs/architecture/adp-assistant-6929.md`.
+The command waits for both image-cache and reservation rollouts. Verify the intended image digest matches the supervisor Job, observe ready/desired pod counts and pending sandbox events, then execute the authorized A1/A2/B1 isolation and cold-capacity cases before admitting users. Measure cold, image-warm and node-warm first turns separately under the same model, prompts and concurrency. Record scheduling, image/bootstrap and model components, p50/p95 useful-output latency, failed attempts, idle node-hours and cost. A rollout success alone does not satisfy the latency or isolation gate; the common protocol is in [Chief-of-Staff latency protocol](../../../docs/chief-of-staff/architecture.md#latency-and-evaluation-execution-protocol).
 
 To remove warm-only resources after authorization and context verification:
 

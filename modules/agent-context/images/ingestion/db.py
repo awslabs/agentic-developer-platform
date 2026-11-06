@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from job_client import JobConnection, catalog_rpc, enabled
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -80,6 +81,10 @@ def get_connection():
         DB_USE_IAM_AUTH: "true" to use IAM auth (default)
         AWS_REGION: region for IAM token generation
     """
+    if enabled():
+        return JobConnection()
+    if os.environ.get("INGESTION_ISOLATION_REQUIRED") == "true":
+        raise RuntimeError("Ingestion requires an admitted per-asset job")
     import psycopg2
 
     host = os.environ.get("DB_HOST", "")
@@ -112,6 +117,7 @@ def get_connection():
     return conn
 
 
+@catalog_rpc
 def upsert_dependencies(
     conn,
     repo_id: str,
@@ -176,6 +182,7 @@ def upsert_dependencies(
     return total
 
 
+@catalog_rpc
 def ensure_repo_exists(
     conn,
     org_repo: str,
@@ -237,6 +244,7 @@ def ensure_repo_exists(
         cursor.close()
 
 
+@catalog_rpc
 def update_repo_sbom_status(
     conn,
     repo_id: str,
@@ -282,6 +290,7 @@ def update_repo_sbom_status(
 # ---------------------------------------------------------------------------
 
 
+@catalog_rpc
 def create_index_run(conn, repo_id: str | None, repo: str, commit_sha: str | None = None) -> str:
     """Create a new index_runs header row. Returns the run_id (UUID).
 
@@ -312,6 +321,7 @@ def create_index_run(conn, repo_id: str | None, repo: str, commit_sha: str | Non
     return run_id
 
 
+@catalog_rpc
 def start_stage(
     conn,
     run_id: str,
@@ -353,6 +363,7 @@ def start_stage(
     return stage_id
 
 
+@catalog_rpc
 def verify_stage(
     conn,
     stage_id: str,
@@ -395,6 +406,7 @@ def verify_stage(
         cursor.close()
 
 
+@catalog_rpc
 def fail_stage(
     conn,
     stage_id: str,
@@ -423,6 +435,7 @@ def fail_stage(
         cursor.close()
 
 
+@catalog_rpc
 def skip_stage(
     conn,
     run_id: str,
@@ -459,36 +472,45 @@ def skip_stage(
     return stage_id
 
 
-def should_skip_stage(conn, repo: str, stage: str, commit_sha: str | None = None) -> bool:
+@catalog_rpc
+def should_skip_stage(
+    conn, repo: str, stage: str, commit_sha: str | None = None, *, artifact_prefix: str | None = None
+) -> bool:
     """Check if a stage should be skipped (already verified at this SHA).
 
     Skip logic keys off 'verified' status, NOT a SHA alone.
     A stage re-runs unless its latest row is 'verified' at the current commit SHA.
     If commit_sha is None, never skip (force re-run).
+    A supplied artifact prefix also binds the verified output's format/identity;
+    old output at the same source SHA must not suppress its repair.
     """
     if commit_sha is None:
         return False
 
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            """
+        query = """
             SELECT 1 FROM index_run_stages irs
             JOIN index_runs ir ON ir.id = irs.run_id
             WHERE irs.repo = %s
               AND irs.stage = %s
               AND irs.status = 'verified'
               AND ir.commit_sha = %s
-            LIMIT 1
-            """,
-            (repo, stage, commit_sha),
-        )
+            """
+        params = (repo, stage, commit_sha)
+        if artifact_prefix is not None:
+            # Literal prefix comparison: '%' and '_' in encoded shard names
+            # are data, not SQL LIKE wildcards.
+            query += " AND substr(irs.artifact_ref, 1, length(%s)) = %s"
+            params += (artifact_prefix, artifact_prefix)
+        cursor.execute(query + " LIMIT 1", params)
         row = cursor.fetchone()
         return row is not None
     finally:
         cursor.close()
 
 
+@catalog_rpc
 def complete_index_run(conn, run_id: str) -> None:
     """Mark an index_runs header as complete (all stages done).
 

@@ -45,6 +45,11 @@ def evaluate_release(*, config, inventory, context):
         raise Unsupported("not a qualification fixture")
     target = manifest.runtime["engine"]
     runtime = read_runtime(client, target)
+    product = config.product_epic is not None
+    source_target = manifest.runtime.get("api") if product else target
+    if source_target is None:
+        raise Unsupported("reviewed Product API runtime target unavailable")
+    source_runtime = read_runtime(client, source_target) if product else runtime
     actual_target = {
         "provider": "aws",
         "account_id": runtime["account_id"],
@@ -53,7 +58,8 @@ def evaluate_release(*, config, inventory, context):
         "resource_id": target.namespace,
     }
     if (
-        runtime["actual_revision"] != context.actual_revision
+        source_runtime["actual_revision"] != context.actual_revision
+        or (product and runtime["actual_revision"] != config.versions["engine"])
         or actual_target != spec.target.model_dump()
     ):
         raise Unsupported("current deployed release/target differs from E1 context")
@@ -85,13 +91,14 @@ def evaluate_release(*, config, inventory, context):
             if criterion_id == "q2.deployed-code":
                 value = execute_source(
                     client,
-                    target,
+                    source_target,
                     Path(__file__).with_name("release_process.py").read_text(),
                     {
                         "qualification_id": qualification_id,
-                        "tests": fixture_test(0, qualification_id),
+                        "tests": fixture_test(0, qualification_id, product=product),
+                        **({"product": True} if product else {}),
                     },
-                    runtime=runtime,
+                    runtime=source_runtime,
                 )
                 assert (
                     value["successful"]
@@ -102,7 +109,13 @@ def evaluate_release(*, config, inventory, context):
                 value = observe(client, context.flow_id)
             artifact = evidence.save(
                 criterion_id,
-                {"runtime": runtime, "observation": value},
+                {
+                    "runtime": runtime,
+                    "source_runtime": source_runtime,
+                    "observation": value,
+                }
+                if product
+                else {"runtime": runtime, "observation": value},
                 "current-release:EKS/API/browser",
             )
             path = str(
@@ -134,9 +147,16 @@ def evaluate_release(*, config, inventory, context):
         runtime["digest"],
     ):
         raise Unsupported("runtime changed during evaluation")
+    if product:
+        source_after = read_runtime(client, source_target)
+        if (source_after["actual_revision"], source_after["digest"]) != (
+            source_runtime["actual_revision"],
+            source_runtime["digest"],
+        ):
+            raise Unsupported("Product API source runtime changed during evaluation")
     return {
         "live": True,
-        "actual_revision": runtime["actual_revision"],
+        "actual_revision": source_runtime["actual_revision"],
         "target": actual_target,
         "fixtures": fixture,
         "criteria": criteria,

@@ -158,6 +158,38 @@ resource "aws_dynamodb_table" "agent_memory" {
   }
 }
 
+# -----------------------------------------------------------------------------
+# Discovery: store names the gateway deploy renders into pod env (#8028)
+# -----------------------------------------------------------------------------
+# Both gateway renderers (platform/scripts/deploy-all.sh Step 4 and
+# .github/workflows/gateway-deploy.yml) read these into MEMORY_TABLE and
+# ARTIFACTS_TABLE in modules/gateway/k8s/configmap.yaml, falling back to the
+# deterministic names when a parameter is absent. ARTIFACTS_BUCKET comes from the
+# gateway stack's /adp/<env>/gateway/task-artifact-bucket-name, which already
+# names aws_s3_bucket.chat_artifacts. Published here, like the intake parameters
+# in gateway-intake-access.tf, because this stack owns the tables; the matching
+# grants on the gateway role are in that file (ChatMemoryStore,
+# ChatArtifactCatalog, ChatArtifactObjects). Unconditional, for the same reason
+# the intake parameters are: the tables exist whether or not the gateway does.
+
+resource "aws_ssm_parameter" "gateway_chat_memory_table" {
+  name        = "/adp/${var.environment}/gateway/chat-memory-table"
+  description = "Agent-memory table the gateway's delegated chat data plane serves memory/search, read and write from (#8028)"
+  type        = "String"
+  value       = aws_dynamodb_table.agent_memory.name
+
+  tags = { Component = "chat-agent" }
+}
+
+resource "aws_ssm_parameter" "gateway_chat_artifacts_table" {
+  name        = "/adp/${var.environment}/gateway/chat-artifacts-table"
+  description = "Chat-artifacts catalog table the gateway's delegated chat data plane serves artifact/create, list and download from (#8028)"
+  type        = "String"
+  value       = aws_dynamodb_table.chat_artifacts.name
+
+  tags = { Component = "chat-agent" }
+}
+
 # =============================================================================
 # S3 Artifacts Bucket
 # =============================================================================
@@ -576,4 +608,9 @@ output "session_sweeper_lambda_arn" {
 output "chat_supervisor_role_arn" {
   description = "Dedicated chat queue supervisor role; grant pod RBAC only after sandbox admission is enforced"
   value       = aws_iam_role.chat_supervisor.arn
+}
+
+output "chat_scaler_role_arn" {
+  description = "Existing queue-depth-only chat role assumed by the KEDA operator"
+  value       = aws_iam_role.chat_worker.arn
 }

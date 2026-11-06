@@ -148,6 +148,10 @@ def main() -> None:
         cmd_raw(rest)
     elif command == "assume":
         cmd_assume(rest)
+    elif command == "deployment":
+        from adp_cred.deployment import main as deployment
+
+        deployment(rest)
     elif command == "worker-session" and not rest:
         from adp_cred.task_credentials import cmd_task_credentials
 

@@ -27,15 +27,13 @@ class DeliveryResourceProvider:
         if not match or not re.fullmatch(r"q-[a-z0-9-]{8,50}", qualification_id):
             raise ValueError("invalid delivery resource intent")
         branch = branch_name(qualification_id, match[1])
-        rows = self.client.pages(
-            f"/repos/{self.client.config.repository}/pulls?state=all"
-        )
+        repository = self.client.config.story_repository(int(match[1]))
+        rows = self.client.pages(f"/repos/{repository}/pulls?state=all")
         matches = [
             r
             for r in rows
             if r["head"]["ref"] == branch
-            and (r["head"].get("repo") or {}).get("full_name")
-            == self.client.config.repository
+            and (r["head"].get("repo") or {}).get("full_name") == repository
         ]
         if len(matches) != 1:
             raise Unsupported(
@@ -53,7 +51,9 @@ class DeliveryResourceProvider:
                 "qualification_id": qualification_id,
                 "pr_number": pr["number"],
                 "branch": pr["head"]["ref"],
+                "repository": pr["base"]["repo"]["full_name"],
                 "head_sha": pr["head"]["sha"],
+                "repository_id": pr["base"]["repo"].get("id"),
                 "flow_id": flow_id,
             },
             sort_keys=True,
@@ -69,15 +69,34 @@ class DeliveryResourceProvider:
             or type(value["pr_number"]) is not int
         ):
             return None
+        index = int(value["branch"].rsplit("-", 1)[-1])
+        repository = self.client.config.story_repository(index)
+        if (
+            value.get(
+                "repository",
+                repository if self.client.config.product_epic is None else None,
+            )
+            != repository
+        ):
+            return None
         pr = self.client.get(
-            f"/repos/{self.client.config.repository}/pulls/{value['pr_number']}",
+            f"/repos/{repository}/pulls/{value['pr_number']}",
             github=True,
         )
         if (
-            (pr["head"].get("repo") or {}).get("full_name")
-            != self.client.config.repository
-            or pr["base"]["repo"]["full_name"] != self.client.config.repository
+            (pr["head"].get("repo") or {}).get("full_name") != repository
+            or pr["base"]["repo"]["full_name"] != repository
             or pr["head"]["ref"] != value["branch"]
+            or (
+                self.client.config.product_epic is not None
+                and (
+                    value.get("repository_id")
+                    != self.client.config.product_epic.stories[index - 1].repository_id
+                    or pr["base"]["repo"].get("id") != value["repository_id"]
+                    or (pr["head"].get("repo") or {}).get("id")
+                    != value["repository_id"]
+                )
+            )
             or pr["head"]["sha"] != value["head_sha"]
         ):
             return None
@@ -94,13 +113,18 @@ class DeliveryResourceProvider:
             self.client, value["flow_id"], value["qualification_id"]
         )
         if not any(
-            (n.get("bound_pull_request") or {}).get("pr_number") == value["pr_number"]
+            (binding := n.get("bound_pull_request") or {}).get("pr_number")
+            == value["pr_number"]
+            and (
+                self.client.config.product_epic is None
+                or binding.get("repo") == value.get("repository")
+            )
             for n in graph["nodes"]
         ):
             raise Unsupported("PR is not bound to the owned terminal flow")
         if self.read_tags(resource_id) is None:
             raise Unsupported("delivery resource changed before cleanup")
-        path = f"/repos/{self.client.config.repository}/pulls/{value['pr_number']}"
+        path = f"/repos/{value.get('repository', self.client.config.repository)}/pulls/{value['pr_number']}"
         pr = self.client.get(path, github=True)
         if self.kind == "qualification-pr":
             if pr["state"] != "closed":
@@ -115,7 +139,12 @@ class DeliveryResourceProvider:
             return RetainedAudit("closed pull request and review history retained")
         if pr["state"] != "closed":
             raise Unsupported("close the PR before branch cleanup")
-        delete_branch(self.client, value["branch"], value["head_sha"])
+        delete_branch(
+            self.client,
+            value["branch"],
+            value["head_sha"],
+            repository=value.get("repository", self.client.config.repository),
+        )
 
 
 def plan_resources(session):
@@ -143,14 +172,13 @@ def record_resources(session, data):
         binding = node.get("bound_pull_request") or {}
         if not binding:
             continue
-        if binding.get("repo") != session.config.repository:
+        repository = session.config.story_repository(index)
+        if binding.get("repo") != repository:
             raise Unsupported("worker PR binding names a foreign repository")
         number = binding.get("pr_number") or binding.get("number")
         if type(number) is not int:
             raise Unsupported("worker PR binding is incomplete")
-        pr = session.client.get(
-            f"/repos/{session.config.repository}/pulls/{number}", github=True
-        )
+        pr = session.client.get(f"/repos/{repository}/pulls/{number}", github=True)
         if pr["head"]["ref"] != branch_name(session.inventory.qualification_id, index):
             raise Unsupported("worker created an off-plan branch")
         descriptor = DeliveryResourceProvider.descriptor(

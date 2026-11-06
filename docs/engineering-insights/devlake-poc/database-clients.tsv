@@ -1,0 +1,521 @@
+path	signal_line	git_blob	component	disposition	reason
+.github/security/semgrep-baseline.sarif	635	321dcf4558b926ade6a139f0f5207a323969bfa7	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+.github/workflows/agent-context-ci.yml	108	13793fec0530d1c1624d19237b1d35cf4ccabd92	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+.github/workflows/gateway-infra-apply.yml	142	0ce4267c0b6ea121ac0aa0cd5948e4b5a3afdfaa	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+.github/workflows/probe-schema-v3.yml	42	996682635a5b050480db73c81bd7dae1b4442a6d	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+.github/workflows/psycopg2-layer-build.yml	1	9dfa3eca6f4205eeefb60b812bf7fafd5b7c5f9e	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+codebuild/bs-psycopg2-layer.yml	3	ebe0f85b731b552d3b4f6ba03e3ca4b212de806b	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+data/security/s21-semgrep-review-ledger.json	4536	71512d5fb54872ec0ceb48eba7a9ea2da2c65709	repository-support	exclude	root tooling/assets/config; no POC application ownership
+docs/security/runs/2026-09-21/bandit-source-review-selectors-inventory.json	6595	b4e1ba8aa32c8f5e7c5906c2b76a83ecb7f0c15c	other-planning-record	exclude	outside POC normative design; history remains unchanged
+docs/security/runs/2026-09-21/evidence/S03-live-validation.sh	38	708bbcebdd22157c1bf4d0c99c4229c1bb7e1e72	other-planning-record	exclude	outside POC normative design; history remains unchanged
+docs/security/runs/2026-09-21/evidence/bandit-bounded-sql-review.json	50	fc992cda5b4f9162a105b0aad1a5ec92c33b4080	other-planning-record	exclude	outside POC normative design; history remains unchanged
+docs/security/runs/2026-09-21/reconciliation/issue-6117-selector-ledger.json	560	4483df5b35a8585ce577b1a49f51edf74585d178	other-planning-record	exclude	outside POC normative design; history remains unchanged
+docs/security/runs/2026-09-21/triage/s20-dispositions.json	3631	f583741f5da5a28fcd16e5e4838c065c1c16ccd5	other-planning-record	exclude	outside POC normative design; history remains unchanged
+docs/security/runs/2026-09-21/triage/validate.py	1368	e3196f7248bd727eea48a08c81ad81a058849048	other-planning-record	exclude	outside POC normative design; history remains unchanged
+environments/dev/automation-ci.tfvars.json	15	66435edc5d05dab230deec1ccfa46716486b00ed	repository-support	exclude	root tooling/assets/config; no POC application ownership
+modules/L5-services/tests/integration/conftest.py	17	c08d5ccbb3054519454339759f20750f12df698e	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/integration/test_devops_access.py	196	70a0a8acebddb9486ce31ebf84e5cf511849b2e8	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/integration/test_devops_integrations.py	204	296c79af049d91e5a08341d0d36e4fee9039118d	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/integration/test_devops_recovery.py	36	d372b91509943b942d903e67518292f143da6404	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/integration/test_devops_retirement.py	62	fab46be87eed5e536c0c96259bc7b50d2cd56837	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/integration/test_devops_updates.py	16	6ae37b85f2869e7528aa2cb456c7115c1aa55cea	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/integration/test_execution_api.py	33	85b36d59fe8c070f9d969d78883f11e68be3ea12	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/integration/test_lambda_execution.py	20	a7b0473916d3a5fb858b8548c16d21915c4059ab	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/integration/test_security_binding.py	25	99a67522fe43df3ac0f97404fc26cb87492f5ecc	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/test_admission.py	25	dafadc338834090f9f072445291a356cb9e29bdf	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/test_configuration_api.py	16	8ffe40ccf345537ac6937ac5572a55343f9c0e51	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/test_configuration_refresh.py	13	dc684fd2e70f2a6429dd721d867be7a435028015	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/test_event_receipts.py	34	0e8f39f0de718991ff72c4f190a891358eff2fc2	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/test_event_recovery.py	26	8d53d20d759bd5414bac053da6ad2f2aca7483cf	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/test_execution_migrations.py	32	ad7f33bcbc7096881254b5ff0d37c6e1892b3626	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/L5-services/tests/test_schedule_events.py	28	9ad4ad86a3b7daf22767c42b38d187476d7cd331	modules/L5-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/alembic/env.py	41	85c7ce715bcdf74fa9f231fc6fa7cb274b4fa50c	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/door/acl.py	468	30fdfe7083e5ff997c5e149ae9590283018b5a9c	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/door/db.py	48	6dfa1c187568ade55463099bc4a12ab44a59f891	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/door/project_filter.py	80	28474db9373a3269b09b01a4bf874d15031e953d	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/door/server.py	487	5356f4995d702cfdcd8c308e0b13a12790619888	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/images/ingestion/Dockerfile	136	0d8d9728ba7d7b11e474699b903998238fc201ae	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/images/ingestion/db.py	60	60f76a72c7a38328d2a7af3761bf041957476642	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/images/ingestion/isolated_parser.py	60	e2b1ac894168d449e851d0a91d00f2ea0ba22248	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/images/ingestion/registry_reader.py	64	86c13eabb1a7a7fbc29e4ee6e057eb4237a105f7	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/images/parser/Dockerfile	6	f1dcd3924099500db0c5a8d83b67dfff7c55e761	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/container/parser_runtime.py	19	d3b9ec3a50e125a40344d599cad0d46c074af8b2	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/integration/test_ingestion_acl_ownership.py	11	db5d3b4e27c3670f977e675ff51290a6cf693ef8	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_acl_postgres_placeholders.py	1	81a660d25836e78d027431a02f9cec2cf4215073	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_browse_capabilities_postgres.py	5	e5fff9f0449d7cd3b7ebc01ca4cb1c67908ee7d1	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_browse_catalog.py	72	8509a10b9bfc3da65f3989f98bb9ae4477fb9d51	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_db.py	8	fd839862dbc3d509ff9aca4db22b6a3354c310da	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_door_db.py	9	4e25d1559d9aba0cadfbb2a8556efe1a88c4ccd6	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_index_run_stages.py	14	5cce5682bc5f59ba73627c8748b54d51e8afa299	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_isolated_parser.py	829	e14943f0aa2e22dec20d79c3a11ffedc0d754cbb	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_product_registry_acl_postgres.py	16	732657190edce295835532a4d109334aab9aa916	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_project_filter.py	36	ffcd6d82babcaf4e49c5f951fc4af1170622710f	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_project_filter_invariants.py	37	1c2bea7acf784efd58f1b29cbe0ec1d2b4702ff8	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_public_acl_provenance.py	22	3113ec5a6b29ad980e08ba4b0ba65f2a400347a7	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_run_bound_acl_postgres.py	15	37144a87b66a80537470dd8f05d859a3d7c21211	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-context/tests/unit/test_url_doc_stage_tracking.py	10	e32eafe7ba5c6160a4d074f2c28fa8ae02bbdcdf	modules/agent-context	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/agent-factory/agent/src/model-policy-feedback.test.ts	122	1ad7928465507328073af93a5b6b3595c1062022	modules/agent-factory	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/images/skypilot/crypto-packaging-maintenance/old-installation.json	18143	46d79eebecfc4e3bc734c5dc78640745c4b9218a	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/infra/control-plane/tests/no_secret_literal.tftest.hcl	17	9dbd5a19159e6cde828bbd5989b6af23c4bd8c51	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/alembic/env.py	64	b4d5ae33b4da5a67fc029e31fd19be8557412229	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/app/database.py	11	828c872e3635c6e23f879970d2d66db5200077e5	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/app/installation.py	199	1e796966004cc8c9f4d6f57d830dbd1090565df6	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/deploy/integration-test.yaml	74	6955d8a089051d34b583ab830c238e7b2e6d17f7	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/scripts/setup_default_workspace.py	358	f69b50f47faa876ccaade77ba67ef4e982b6c052	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/conftest.py	43	723ff03280e2b3f160e9f71b18fdd1297b2dc5c5	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_accounts.py	169	c52fa4865241ed8b9c042ff198d9999006435c6d	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_adapter_stage_postgres.py	274	90e210dd4c598e80d27632632676256dbcd48f21	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_audit_middleware.py	658	26caaba0331f578ed2bc6017f78e2d20bdd820c8	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_cleanup_evidence_postgres.py	182	9ace7288e612f72b94d0c1defd2353ad427224a2	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_default_workspace.py	204	e8fad250866d163c6ba1c53cc8ba1cca8e26ad6e	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_deployment_quota_concurrency_postgres.py	99	f82792487ac9002ad4e426f9fa0f19a9c94ca85b	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_installation.py	190	26b2e0038eebbb057943eee846ed4380a8db953b	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_installation_postgres.py	44	286e7671e059012dcf8bd465741e215598323fcb	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_api_postgres.py	119	f7aebec94ce5a9f1aca1802f54296ce9b6b36509	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_migrations.py	392	bb8d16e9ec01cba20683c93af9a93ba9d0ea6dc3	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_onboarding_postgres.py	79	beb7423dfa572f464bc27e7a54ab981d0c91d687	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_operation_authority_postgres.py	121	f6a1060dc083eebf10acf91feeb5ccf6d54c536e	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_operation_budget_ledger_postgres.py	150	c0c3b9dd8c56ff4c8952d5ade0d9ada921ff452d	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_operation_dispatch_postgres.py	82	89fd71f1fb5708b17a3ade9607397d6b68c5247d	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_operation_settlement_postgres.py	46	443dba7173057278dec3345eda0cdef27b5f5ace	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_provider_connections_postgres.py	40	2e1a00cb588f7e020b3baf6b771d83172db0adbc	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_provider_handles_postgres.py	53	d6385005910aaa61ef874432441a5fcc669795d7	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_provider_submitter_authority_postgres.py	69	04f81a3ae9e6dfc7c91e05630da5415e38b225be	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_recovery_settlement_delivery_postgres.py	34	cec765f8b921c433a9cab142ce5f1e569934a96e	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_sso_ownership_migration.py	23	136a691e1d353988b128805ffa88f47bf38271a3	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_unique_credential_migration.py	31	3d7967f9664a5ef312f0776cced39eeefb6d30e4	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_users_org_scoped_identity_postgres.py	60	aa67cede26d71e3affea43cc24e26e1b18572ca1	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py	50	80638ada8c8424d3fb973d93d86e27fdbcc3a01a	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-platform-monitor/db/client.go	8	1d2b1ac13b05dc10e04416618cbe643c61634c3c	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-platform-monitor/db/client_test.go	172	d1a82622d7e8d9ecb597f324c1476e44ad239a5b	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/domain-apps/superplane/src/superplane-platform-monitor/tests/integration_test.go	7	a6ea95602013052162a7370c791c3a14d5cd04f7	modules/domain-apps	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/gateway/alembic/env.py	116	5ad09be61859463a3b91e2aec408177a48b772b9	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/alembic/versions/045_pricing_seed_2026_09_12_1.py	98	e9dca6c16e6303860e3a43649fc7190b1d8d2218	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/docker-compose.test.yml	13	3b68a27376469ba1514d43ea99fff4f5cc031f55	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/docker-compose.yml	32	b593b3f93fe8e3452e82a4a4d6261889e8309cd0	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/infra/main.tf	84	48267bb9c7870931a798d79cc122769832a49ec5	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/infra/modules/budget-lambda/main.tf	141	a9e9b6fb64ab26c05757f95941fd314df5ddb4ac	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/infra/modules/budget-lambda/outputs.tf	95	7f56af1a51420397731139d66346124290c4fdfe	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/infra/modules/budget-lambda/variables.tf	87	5b6cd00e2fe9d35458ef66a79e97356f62a418d6	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/infra/modules/orchestration-tick/main.tf	15	5ea10e1d01db3be5f0f37e10b3124a827802ea82	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/infra/modules/rds/main.tf	92	86f04020497056b25c62acd5597ba37d5ada0378	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/infra/variables.tf	37	30722272470f212bba64f8735a624752db606c53	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/lambda/layers/psycopg2/build.sh	3	a2baab3bbdd9bfa2187156d6af8c84c870ec9439	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/lambda/pricing-refresh/publication.py	12	e7243bb17c7786ec30fa7e937566c91aadc7e91e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/lambda/shared/db.py	16	5954ce945af887c736723237abe077879df5d2ac	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/lambda/shared/pricing_v2_reader.py	1	b275f55b2ccabc4a38b4eb039f365c944bc03be7	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/pricing_policy/__init__.py	11	bdfa6c0e22493a5bfcda9245ed40dfac58296ebf	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/pricing_policy/storage.py	5	ee7622b88e377ea20e556b632a1f21e067a8ec97	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/pyproject.toml	85	9e4a8b2e326fd2041fe8af83aff82971fdd9a0a3	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/scripts/audit_install_admin_memberships.py	187	e98226e414a6407c2a2fa5c4f5c8a7768dc8707e	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/scripts/audit_org_admin_memberships.py	276	ccd042c45c97a380cb57bd2db93b7422ba0c0f23	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/scripts/backfill-identity-index.py	29	995b818d9aab3f45dcd487c59046405f3799403b	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/scripts/backfill_identity_provenance.py	102	8fe6fe0941f41dff3bb649765972c680d9830e6f	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/scripts/backfill_member_org_ids.py	80	4ea4b7135057438eb4083c2b3e35ebcd82c68b17	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/scripts/identity_snapshot_exporter.py	129	c93fe4802b269bbf68d35be35f20347069d5aba1	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/scripts/legacy-binding-migration.py	46	a39b9daf14e99af4faf57756bf424c6b7ac6e69b	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/scripts/rekey_user_budget_configs.py	78	515e1ff1971887a379a87ce8c8ac093a15e16cf1	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/scripts/resolve_installation_conflicts.py	194	fcf348d4c2f2ef04bbbb9ddd666b048e44fa196c	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/src/admin/persona_models/service.py	100	d364eea14b95cd36687c33f129b28d9c3affc491	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/src/budget/pricing_v2_reader.py	6	be0a78ba49f6c95c276df9382fa26f0c4b2f1c18	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/src/internal/domain_operation_store.py	184	16292190999fa9311e7b2c6126001d2a9b8026ff	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/src/orchestration/tick_handler.py	12	c3ea4f4c42f123179c575132a9fb678e7af25a3a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/src/shared/database.py	58	df983201b8a83806732aa65ff0d06ddf4a11d8fd	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/src/shared/database_agent_context.py	65	87d447643297c1a10e56eb0f4460e2acf7e8449c	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/src/shared/redis_client.py	24	b60cb8a5144a0e42f707bf5147f27b7b7726d939	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/admin/bedrock_routing/conftest.py	81	05641a375458f0b465826fe824a325bf389d4a49	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/conftest.py	28	6346b477615fa04262e5477a6cbd4b53641e32f5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/connections/test_bot_identity_postgres.py	20	0100b996467c9b20603ad54818c4bc991d2ea663	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/connections/test_install_callback_locking_postgres.py	27	350e9dd9d40e16572b84de2aec7b58acaceaa1f6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/connections/test_installation_revocation.py	68	ae39e1cf9700c967ee2ef13914a64918a3a19eb2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/connections/test_installed_by_disconnect.py	64	f7435a7a0e374b431ede1dccec643e1b0578a8bd	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/connections/test_list_connections.py	30	188c7de0d0db1cf06d9f4d300cd0b6726ad1c37a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/connections/test_multi_tenant_connections.py	33	86dc5b70709e5a4f7d3cd1c01844b6deb47eb688	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/connections/test_onboarding_verification.py	37	4eb52b17f24767e08f2f121805279f32bc8a9b06	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/admin/connections/test_repository_provenance.py	28	7b5c5028ea18c32d54432b1ecf436a124b535824	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/connections/test_review_teardown_postgres.py	25	883378394f81dc9ef03fe240b40376002b216d91	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/connections/test_switch_tenant.py	44	922178217c67a7baa5064ce1392c14e04e026410	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/persona_models/conftest.py	38	e102df56e5dc9f2f3ec4e1a222aa366f4c3e0314	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/persona_models/test_persona_model_preferences.py	150	f7bf1dbb4f1ac341fd79bf1eccdd8c8f08e1fb2b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/persona_models/test_pmm02_postgres_concurrency.py	95	49265e4bae1b1d9e9ae073e983c7e75b8e850514	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/persona_models/test_posture_authz.py	78	4ff7d82d409d187cd4501b8f1bce950f4d6c46d8	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/persona_models/test_posture_mutation.py	59	6b2c43b7d599580fdb7eb72788770219db08d1dc	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/postgres/test_organization_deletion.py	38	f2a3593f2785809e67b8f588584bdb341c0a9c3a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/tenants/test_matcher_parent_tenant.py	36	369b0a6efbd3ee258a13b8d499bbe7975f5d85c8	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/tenants/test_tenant_org_links.py	28	6bfcae7dc59a49061f928d5be19e65112d5f0456	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_access_cli_postgres.py	18	bd2330aee4147c10d261b367d9600fe9e012afa0	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_admin_audit.py	62	983e510911bdf74a3fcd3dc94423e61a88755e70	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_admin_audit_postgres.py	36	927f062b2fa42cef8427c1d954126d4742c85234	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_backfill_identity_provenance_script.py	34	1ea0ac801a4770f4cf05a8d06747dc3c2daa89b1	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_backfill_member_org_ids_script.py	69	e9ac028170ac66c27615c026296959290263d9ea	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_bootstrap_admin.py	25	eb9a33fd3a35179506f6f6525f374af3ad43842d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_connections_adp_default.py	33	1e9641224ee254759c97816c76cc0bcf32587237	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_connections_service.py	80	9ae279baa878898cae02d1262ac165ea47bba47b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_crew_executors.py	30	d426edf3e7617153e799a47809737868bcf45c00	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_hierarchy_postgres.py	19	6b04e2655f44480ef2a2ba405c976a85f1703003	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_identity_snapshot_exporter.py	71	18e9d0601f6672e8558c8ba6d3f96d4d02ee41d4	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_install_callback_auto_switch.py	59	94d56044d57da0852eb69a4af2319e613db57f95	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_install_callback_cross_tenant.py	66	7ebea298b379a0fbd31bec85ab763f6a1879c851	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_install_callback_membership.py	59	fccd173ffc61e33d3aaf1248967888ac72bbb499	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_install_callback_membership_persistence.py	58	056bb8acb23fca616014097289aba711d79ef24f	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_login_membership_sync.py	40	2b167564a40e3b37e1658ad7a8b25a60fffe27ae	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_machine_identities.py	28	c5325bb670cda46fe0c9617c433e0dc0414f8960	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_onboarding_access_request_scope.py	68	d698cdeb28366eded49c5f781acc4ee6398f4179	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/admin/test_onboarding_handler.py	39	60387eee3b03b97ad55669c93a5280e5bf61f921	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/admin/test_onboarding_multi_tenant.py	38	643ecf2a486efd12ad119bde7d87eabc0f90d463	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/admin/test_onboarding_tenant_matching.py	50	4249315c05bb0eebb41bb35697bd074ea85825e9	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/admin/test_org_tenant_shell.py	75	7196eccb3c23805f106a167c15a4f9ae07734ef3	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_platform_user_listing.py	80	baa80c8368a1aa0374b5dd1748f82e3003a3ecb3	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_register_app_callback_authority.py	54	4d7be178b8a239c9f9f4dba308ab79e8c0ddd789	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_request_log_queue.py	35	feb63123122e16be7e9b2c7bcd3004f20164ddf3	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_team_membership_claims_postgres.py	22	4c427242a7de7c87e54e40c849a4444492ced11a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/admin/test_tool_routes.py	26	e3dafd0a8649790aee12d12a166c9121ab69f9cc	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/conftest.py	14	936143daa60295e8c97e6c9cc80f600fc1cf5140	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_bootstrap_routes.py	202	474e370699ffcbbc277c6b7ffe5726de8df22499	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_chat_platform_tools.py	41	ef6c68176173506b33892ce0b849e89fb9c60a0e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_chat_sandbox_model.py	309	0f5b7c2701dca0042a50e163b36124a9561adffe	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_graph_dispatch.py	71	61606faf293d5466d21be8d9da791ddb96cc9722	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_independent_pmm07_posture_cache.py	38	824ce5b7f5704dc4b640ab091a8a4d8ac6053cb4	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_knowledge_service_postgres.py	24	c1aba5a5969a510f0afdeb45c9379a136a2568d0	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_native_test_enrollment.py	53	5d1aaeba0ceb31eeef8e527f4e68eabb5aa0d373	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_operator_pmm07_posture_cache.py	21	b96ce5c8823b4ac355b2374daf674ca73626ce53	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_operator_pmm07_signed_rollback.py	51	c0a69ef2b499e4bb24bb7782eb04b41f240c5d8d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_registered_class_posture.py	166	eab5bdcb667e5685eaa1aa9282d5e9fcf2e8f75d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/agentauth/test_review_dispatch.py	40	5e3f11e98ebb42f3fa2432a23c99b759bb421f2a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/auth/conftest.py	63	b322b27f4dc56fc65690751257e40c8561fb16d1	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_approval_middleware.py	82	530b4584b5e537e65beadb9da5e34ee1720facdf	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_atlassian_mcp_reconnect_postgres.py	28	b0e976feef7551d272540f66e3ea615bb7c72955	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_aws_connect.py	60	00645cd3f9c5c34f8e2d04f4b4d13199af0b2ba3	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_connections_routes.py	42	dd04f2ae2a92be29fb110770b25cd446be7b8f89	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_identity_link_proof_of_ownership.py	89	16dd02ba6f75dfda8e56b328ec28d9b57d1a41e7	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_identity_link_provider_guard.py	73	e8afe206ddf56ed6a6133a43ad4069fdbc6adf58	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_internal_credential_routes.py	84	3d5c19c087a1486768be021770bbe1d244f83ee6	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_internal_routes.py	37	d182b23ca3f2bf6247b722d8a80f5f27f2b3726c	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_magic_link.py	62	7ec2f8cd474515cfbe85674ca66c8813902ad2af	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_magic_link_proof_postgres.py	54	fb1a74af121128fbb9c8196842e9f5ff5627e9d7	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_native_credentials_postgres.py	127	e24796447f310fbead031495448a07aca0c5649c	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_native_credentials_sqlite.py	39	26c0574b3d0ea9080eb5595b95f090e071c4f2be	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_org_id_resolver.py	44	04fe5db7866b3a276fdc847075395b5f143ec77e	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_pat_registration.py	45	2170cb2278920ec8e5410bac964151892b79b395	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_platform_authority.py	223	69bb139129b573fd7a9fb5c422df162886d93893	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_vault_delivery.py	67	bdeaddb15e050eca581c076323cdbd98cf1ce1fa	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_vault_evidence.py	52	8f40b2e8de4b2ab56d586439b0302938241e395e	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_vault_operation_authority_postgres.py	57	dc88794026a1361955afeac7a699259d8a8c34cb	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_vault_routes.py	56	d5b4554a3fcbbea0d75449bd8bda1929b2621eb7	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_vault_shared_scope_authz.py	88	3374097297d6e425cef839d7ce37d70aea27ca9d	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/auth/test_workspaces_postgres.py	28	b273efa4aa4f3faa35ba2e2065ba649973665007	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/budget/test_budget_status_headers.py	81	70eac17d6c3c2e513d2a81ed7dd550a1bc1aa8cd	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_cross_org_person_budget.py	88	7d0085ac483c4e44abdf0c24197b7fb1c35c0139	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_envelope_composition.py	118	516cd1e73e97a4a79e8e1528fd028e2c87bb0796	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_fused_person_envelope.py	94	6a197855545f96183bc84f2488dc25e8da2ca505	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_integration.py	24	1f431cc0ab793a4f059d29c6e60787f1cde276fe	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_managed_scope_budget.py	133	df8586aad99819f33e6e9f875c38029282b495a5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_me_budget_routes.py	98	2731674217815a3ccb819a2decb186bbb6b5ae06	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_me_budget_runs.py	170	c6980bb9ed7eca87e96731806c6186e6506b6cd4	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_binding_fence.py	7	aaacb239aa76d0ae5a490484cdad4d0da35f9a9e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_dispatch_permit.py	10	7498d695ecd10b6cfb45a1a9ef1db5c6a16223d8	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_gate_activation.py	7	1d8684d6beae0dd670ee87b70fe70f342ca33c2f	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_mutation_gates.py	6	60069d12b1d8ed08b633999008effd5a43d94d2e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_person_scopes.py	8	0a12c99904f648959d23a87044d4b4e94cbefe31	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_reconciliation_routes.py	9	a683a1ed5a7ef71f60b7a271b0eb7f3f3c550f00	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_reconciliation_transactions.py	7	5872707360b8d14a78b232565b72c5fe9776b0b0	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_recovery.py	10	59e18cc34cd622c79b4e2cf2f4da5a91a72f3628	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_scope_admission.py	16	fbdf25d615caa073ccb8c2b4696d8bcb24b9c344	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_settlement_receipts.py	10	27c474fde3313edcfa94a2e259f47ed565a8aa30	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_metering_writer_compatibility.py	8	124e596f35050fcf3d8140fb036fa6ad33a01017	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_mis_partitioned_cap_report.py	123	0f779dec549d0f27e4ba0cd9cd1b63020982fa3d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_noncalendar_config_rows.py	67	b96d1b7bd2f00e780184dbf8db77a82a98761764	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_overview_routes.py	27	98a25c21f440e663019bcfed92b0bc554b8fc0d2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_person_cap_enforcement.py	103	af2103c9eae02c9fa4cda179f7013feecf3db0d5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_person_cap_routes.py	110	9c9a490409095c7e602e3140e5644ff8133cc1ee	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_person_default_ladder.py	115	8e18d6ae84337d0d22400885261782a107bc32b9	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_picker_id_namespace_consistency.py	118	64cfca3ccb54ef0b230e10342d85cf6a4feb351c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_pricing_correction.py	70	89e259ab03db12d777d792723f9c98bdcde623b1	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_pricing_correction_metering.py	7	988b9a25b784426ccc5abcb0395759bad5f5616b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_service.py	28	4bb5a468d83981c3788252f7c36ef0457521550a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_settlement_receipts.py	19	c1ef1106193dc6e1073200b5d6b1ea16870c31ae	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/budget/test_usage_recovery_receipts.py	90	19d92e8b719a6f9806b5bbb3153124a2c4c50a42	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/cloud_desktop/test_concurrency.py	34	987a4d684da79690459154b5f79db4bc41b04fd5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/cloud_desktop/test_routes.py	53	c61a36d2c3ccd36fec84c9f5432a2ed88ba47415	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/conftest.py	67	a4dcec5323a8f6136d4156c78fc86a3433b85c40	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/crew/test_checkpoint_multipart.py	23	74ebadac3b80bf62f10490d267a4824d9c8c6512	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/crew/test_checkpoint_routes.py	27	a4bdcd76dbf32d04f99527a2f6dac0003c425b3b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/crew/test_checkpoint_store.py	20	4f219e10fc95cfc232d8ebfd501d9b7383336393	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/crew/test_ec2_targets.py	50	f8bb680ab815f837856bd99d89de92ae583c3e94	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/crew/test_host_checkpoint_routes.py	52	2110bd0bc1dc8fb26117a05ac06917b6e00339ae	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/crew/test_host_github.py	32	d71869b37fb2aa5f5acab544282170a3f811b66b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/crew/test_host_restore_pin.py	24	e435d2a3036e7427bbabef61337003c3efdc9387	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/crew/test_inventory.py	18	68b399fce631ae6f1a11ce0390ba21b22b0d0968	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/crew/test_targets.py	38	df711de68b29df5d436805dfc8fb0361af40e0b9	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/integration/test_membership_contention.py	8	0ded824e8f97cac320a253488b03dbef6752bb95	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/integration/test_performance_contention.py	13	35457967878b302dc9f27085c13cc586a0f46c23	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_assume_role_routes.py	47	a91ab0b3648f96a6607e8c3c60a1de497501b120	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_broker_user_binding.py	63	09ba8adb42d6b6d9c8ce7793f465b5ce0f145af6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_credential_authorization_binding.py	45	09be1bf9a542d59ca387be217fab1b75c4cb9aac	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_credential_binding_adversarial.py	44	0834e4716a121461eba48aa58499bef2c3aa6a79	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_credential_binding_extension.py	37	292091952a5950c502ea3b802f9fd2234d9db030	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_credential_capability_gate.py	43	27357d655bac033d142b9cb566d898233a6d511f	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_credential_routes.py	35	d74af7e0b189dc1c57e42ab94469eab7ffb037e2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_executor_vault_pair.py	85	70993d56801f9b47c24a5f39be908399d5f24fb2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_github_installation_token_route.py	47	fb5f5889758da3cdcad50ab9cf32ba4a1d51e675	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_github_oauth.py	20	552677fdfa5e23ef75a9d2444a40fb8d00db72e6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_paid_domain_operation_postgres.py	148	51cf8e7a96375b98a0db569b96a699563747cb66	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_provenance_chain_attribution.py	33	abbe0d581fe51b99b44fc9831bbfddc963ac3744	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_provenance_parent_invocation.py	36	15e0e8ad1ed35122a4227973bfade4f6a3fbe417	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_provenance_routes.py	45	3f259f283a29d20fa4c305d410fb91d89cacc194	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_resolve_user_trust.py	70	6679a0c5f82d9876030f9017e73f77bda1559f70	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_slack_oauth.py	21	1887ed3f94970452630b8d25b55c98433aca042e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_status_callback_asset_authority_postgres.py	28	eac6002c214537142bd2556b6621c2e1c1a3a004	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tool_adapter_authority.py	104	3a2a7d0201e631db0d71074449b2379ad6491492	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tool_entitlements.py	14	712d1c540cf44ffc973ef406d843106e07c17468	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tools_access.py	30	886abbba18d64ddae5a424aa7f8bd8f9012dfb39	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tools_authorize.py	1281	5e0aa0b08b8a77219820987e65bf4c79b606be38	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tools_effective_policy.py	19	3b97152ece579eabad6c3eb27bf8af4e715cab11	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tools_github.py	21	6daab72c73e86e31e39afbc042a2f59fce91e765	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tools_jira.py	34	4adc7dd021cbba479f46bbd303edc09e5b9f544d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tools_knowledge.py	858	62bd91585037fea66861624a76a751f78f392dd5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tools_legacy_generation.py	37	3d6ac4ee0b8604588058392d96c5100600d54f82	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_tools_slack.py	56	b21729bd7be16c9029298b56901a8cefb6ba8410	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/internal/test_vault_evidence_routes.py	57	e83327adf58f0a8ede25986b9e7daf1ee27a71fb	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/knowledge/test_product_postgres.py	42	9331c375b36bdf3dac7429f6e3397e92aa3a8e9a	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/lambda/test_budget_usage_tracker.py	15	e29faab711ee4bab1cf36404e342ceca8a529a31	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/lambda/test_pricing_refresh.py	15	5a096efae5c225deb00ce81d27e5439e22388608	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/conftest_postgres.py	50	377f7cd8ccc601865a5bbf6169340321ac66b998	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_021_tenant_memberships.py	60	a68a147ea015ee591e1a6623db4ad17cc0cae382	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_025_org_created_via.py	37	f36e0fa7f2a206fcb15370d4e0f55d489bd2374a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_026_027_installation_uniqueness.py	63	e823dfe6707dd9cfb5e8e9749669a6a957a40f6e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_028_usage_cache_tokens.py	46	a9b262351614f0102a0fccd0b183948f99efc5e0	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_029_orchestration_graph.py	109	697d9954e326f63c62d1e11389c2adbdee21a519	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_030_budget_usage_cost_precision.py	61	8750b6611d7d146a4edfbf7a09f20108dab20885	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_031_usage_graph_address.py	112	4ebd6ea4addcb84cc172b2f8e3f45cc7c7909c29	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_032_budget_usage_org_entity_type.py	99	57be8bd3d8244e92398270f1015b43272763d2dd	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_033_client_tool_capture.py	114	04228483966c24935e5dc63ddf222203954df761	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_034_person_budget_configs.py	123	f20f5c030a25ba7edf4547924688abd098dec664	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_036_person_budget_defaults.py	156	5185cb0db10908cf5ff1de47d412f30d05db15c0	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_037_bedrock_account_routing.py	208	d6c7996638395f305a4311fa0cd9ef64727953af	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_039_flow_design_capture.py	123	17212ae12aa2b3203df22d31865fdccd70086788	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_040_team_memberships.py	142	cf7756a36974c2328b6966068be3d1755f6ce8c4	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_041_directory_provider.py	218	340f923322fb79c0acf29b229584a499c196025d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_042_user_identity_primary.py	117	6bc2fe7fdf6e9d60f3c6fa4c23f839a41d9f710b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_043_person_anchor_namespace_rekey.py	128	b203e229cea9e91188c5453066933cea567401ac	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_044_model_pricing_v2.py	53	01e9b36578c8a7603882017c067ce3a36493f46f	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_045_pricing_seed_parity.py	353	14a8a9086a4bfd7aee553a715c03218be663fca7	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_047_claude_pricing.py	29	f122af3680833f584ddbd5f7aae9f9f30eed0c50	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_048_team_integrity_gate.py	72	85eb65263efdc3a391d091d8a22cb5e0101201ca	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_049_bedrock_connection_grants.py	24	561ca64be28f14e55fa0a5b2834bc691ace1c01e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_050_orchestration_work_claims.py	88	bb5a86ec7ae0829ca3c0a4aac56d9546dba027a5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_051_orchestration_pr_bindings.py	89	25912bfd696890e534cce10b28c0f6202781aabb	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_052_orchestration_executions.py	119	2cde574a0668a9f6db8791d8fb6649375647faac	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_053_flow_slug_unique.py	82	19592bede7f2bd64223dcce940df0709c334e8f5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_054_execution_tenant_guards.py	36	fc6fcf8553397b38a5c3717095098c38d9368f3e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_055_orchestration_environment_leases.py	108	1cbf400eff72e4f31c0fb658386e58b8d156be28	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_056_persona_model_prefs.py	158	8171efc29a8eab655d74c80d5ac4813e0478476b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_057_model_invocability_evidence.py	46	8588d80e0c0d30fe8ead9c1269f51abf1361ea8a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_058_model_probe_admission.py	33	69ae2f8c58c5d0a190785abd06f17bc920d03223	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_059_gitlab_provider.py	19	e2ce6e9a6ced28276ed864815d909d7ccc56b898	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_060_orchestration_pending_amendments.py	94	0ac2f48e3e2f9b2c56b47212440de52eff49ce85	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_061_persona_usage_evidence.py	104	eafc1b01fb0611289d48e5305bf1f6b9b9f3bad8	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_063_pr_binding_adoption.py	20	bc89fceb0ea0084a0ecec5c5ac0a29246fbd34c4	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_065_budget_enforcement_controls.py	10	9636643a214648f05d30f5ac1896d9c3aaa5b81d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_066_vault_evidence.py	21	866fce8723e16aa460f9fc768be5ee59eef3ca09	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_066_vault_operation_fingerprint.py	40	ecf762fb1b75cd461edc0faf1f6116baf44d659b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_067_aws_connection_verification.py	41	20e0497d58cee5d1b7e4eb04fde64ab430f55dd6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_067_flow_execution_pause.py	19	58fd5c8cb872c02eb4e81b18aa2fa2c37a004a18	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_068_merge_cli_flow.py	35	ca8fa21d5cece6e85f474b5fc4d060c78847f984	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_069_aws_verification_binding.py	24	8c9ef40e669be41cda54ee43b1e6d50c50b2f101	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_070_opus55_pricing.py	49	57aefa523708195329d578dc0d5c80a93fa677f6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_071_installation_revocation.py	25	c3378324059dde54a26a8ee2ab610f708b6bb948	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_073_kimi_pricing.py	41	529a74f0bb0132a6564ae61106d877c6d8419a22	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_074_budget_settlement_receipts.py	3	bedee5e80a8814d6b42af5d87ca631b3db017e7d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_075_membership_revocation.py	3	577478556e6cd6eedfa2a7c4c50374f6597888d5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_077_codex_runtime_posture.py	15	dee2937a79b3f4143327ce0d1e407916163a942d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_078_gpt6_pricing.py	41	44abcee65eac0d24075b531228a34fbdd540dc83	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_082_aws_connection_trust.py	10	f848583febf34a069d2654ca3d70e7ced8db8022	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_083_probe_contract_revision.py	10	509a093a432920f5b94bfc45a82945a56ef30360	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_085_amendment_issue_bindings.py	12	c9364d62d27244ab6ef111cde59626568e5a14b2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_086_orchestration_node_metadata.py	32	b283994b2663fcd8862bc9e52f959237ebd0426c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_087_run_report_spool_document.py	22	bb6c0fa7aeb4eea8d2b05514828c0dd6b1dcbe36	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_088_crew_executor_inventory.py	36	d11cfefd2ca75d81897fe021979b9f967f1d3bbd	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_088_dev_box_contract.py	26	84fdceb2c47961f6f33d1dc33b2e2fc5a63e7010	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_089_merge_dev_box_crew.py	29	8f319aa8c4cab3d84db1d4290e314993f85713c3	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_090_crew_usage_root.py	17	86a107ee414e2504f3b9b8a8942c5353560d108b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_090_dev_box_release_choice.py	10	24e88c7c87f8f5c964eebf46f131cb3d037b535d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_091_merge_dev_box_crew_usage.py	28	8a7d5dae4c0648484da611d11da12a2bcc1467a8	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_092_dev_box_assistant_activity.py	17	973ab1d785a792a4d90f2eedce6e8351a120b000	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_093_dev_box_cost_policy.py	17	8472d2e75eee55d5f950340793690ef1eeda25e1	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_094_credential_agent_consent.py	17	74adf1042ca43b10d8d755e41c9fa278acf660e7	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_094_crew_checkpoints.py	26	f917f794e0697f7cb16ca71b3cf6be56aac26639	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_095_crew_restore_pins.py	21	de9f7ff4f98869a40ae8768d749996b596cab85e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_096_flow_archive.py	31	71782947b57f6d29dcd4476b1a3e9307cac6745b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_100_crew_host_restore_pin.py	21	07614cf21c6aad0a6c40f0194dd7cb58a070a293	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_101_crew_host_fingerprint.py	18	dbeeeb0d396bace7a20036639d1df81b2573ee2e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_102_crew_owner_generation.py	15	e2059ccb25fcc7c28e4e9c40371e6d0e06b7ea03	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_104_decision_display_projection.py	3	222fd3a60b273fdea6dc9487b9b23d50916d44f5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_105_flow_cost_covering.py	5	c36e3d5fab2e9451d17309974ce5911d6973d725	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_107_repository_eval_display.py	8	dceb4efabd5ef8e77b2685c2ff0dfc0633861a90	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_109_oauth_scope_snapshot.py	24	b5c322b99e9831dfddb68cd0c0096a970af0df48	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_110_oauth_provider_binding.py	23	ac22a37cc8e8e85627fb2c93702e1f5611c713d9	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_111_oauth_reconnect_resources.py	17	949a8e3cde442953a151dc704f4b76bd4e681382	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_113_metering_authority.py	36	8ac37b82386957f53145cc19b32f733e86365f4d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_113_product_scope_guard.py	64	4b291eb0088d44e11e90d3dd6415dedadbf72ddf	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/migrations/test_114_catalog_portfolios.py	37	e233675cabb6b2c26366121a6708763509bab7ed	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_116_catalog_initiatives.py	37	86751e58ce957dae9902f53e230cd89f5525db88	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_116_metering_admin_result.py	3	fb4500e62cbc1a1b650a2c865c0e3bb3ca486512	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_120_merge_metering_initiatives.py	3	e652a2bdf253e8570c7863c43fcd7ef0472b8bc2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_124_flow_product_repo.py	58	cd1bd94c32adfeeb141e15e2a68e8dbd1054e5ad	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/migrations/test_125_flow_planning_references.py	32	bc167980e9fdb5824b9fb33ad1ee5d7943dbf077	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_126_tracker_publication_outbox.py	27	7dfb2e5012600d72d25d0d6bb47048b9b4fbc9d8	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_127_authoring_assignment.py	21	1dc11ba97ee17cbd7f3ea564d3c95fb9a92028be	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_128_atlassian_setup_recovery.py	28	2d074fb000880028bce001a1f2fa25403859f9ac	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_128_atlassian_setup_worker.py	43	518b5a7793bc17d8d7119330e987375e513b464a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_128_native_epic_issue_links.py	28	0d57a6cf26abe4d0ca7c27faac096aa4339ab91a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_129_merge_native_epic_atlassian.py	15	d1064ff6383511a360fe65967971c2484656b164	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_130_shared_publication_intent.py	10	30590cd830df151b84ed5b86141fd789e8a78e15	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_131_legacy_binding_migration.py	41	8b9fe0dd677955f4b7acee1e64baf32ea5afa43f	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_131_legacy_binding_scenarios.py	41	6dca1327077ac06812d3154b9ba36027fd0777c6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_132_dev_box_snapshot_time.py	17	f54a6504a03f43f40918923ebc782cbeae44700c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_133_merge_dev_box_conversations.py	26	d58d89ba76b165f67829e68d87ce4c8c0a845e81	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_136_grant_revocation_worker.py	38	91b784dc670b25611ce95c2dce9ee7056c7495a6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_136_tool_adapter_activation.py	22	d627535279df70b41138858f666ffbf20dc1110e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_137_platform_admin_grants.py	27	07b88466d6f0fc4cced8ee3c0d914ceea803137c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_138_product_source_snapshots.py	31	c12ef1f3674e55f90f625b2e97f4608600bc0ba6	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/migrations/test_139_merge_admin_sources.py	36	76a5bb08849315eae9b1dcef46a17d3a9a536956	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_140_merge_adapter_sources.py	43	f8cdb52486ede2c3400436af0cfb0f282ec507c6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_141_normalize_profile_environments.py	5	a68910ae327f3ced68950835033e7c2914d5691c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_atlassian_packaged_restart.py	35	1480a1212dc0b445bc5f6846291315bf636e2817	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_atlassian_setup_producer.py	27	a5274e6e6260c9cfdfb8e141a5485ad018a45d91	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_i08_migration_chain.py	38	aa00ad4385ac1f3481e84ebf66c51e2abc3203eb	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_metering_rollback_preservation.py	3	a7f83d7c282474b3feb6f5baacc6e804ef2fae44	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_model_policy_postgres.py	25	fdaa280ebacb6514e51a4442951b33daa741ce50	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_pmm08_bounded_rollout.py	6	621af6610dfe1c24529cea0690680a32fbccae37	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_pricing_publication.py	14	de1358d1a5dbcce01ec7fcb09bc582b6ca1b3e43	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_product_mutations_postgres.py	31	85b72d95f638c2658e50adc0a71abb963c3b8ba3	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/migrations/test_product_runtime_proof_postgres.py	25	7d80ba48d4f1289594798dc868df7d7f8b317022	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/migrations/test_retirement_concurrency_postgres.py	14	2f98e547188b0f4f24943329db5445cee4aaa12a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_review_identity_pricing_merge.py	11	1261b2596ab964d1ad8e019527e3c0da9aff7d5c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/migrations/test_v2_reader_postgres.py	1	4b55053261146b49233ed9c2f720f21fa19f3dcd	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/flow_read_command_manifest.json	10	dc11e9677784a530fb40f57e2f90743130e225d2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_amend.py	81	8b21e0d6356ad5749b3ce0ed342e2ed72907353b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_amendment_draft_route.py	74	57f9ef39834880d7b6e5655cc96374180bc6cdef	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_amendment_impact.py	63	dd56dc00a56b714787f49a7b97bc0c981f60b14e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_amendment_issue_publisher.py	192	d681be2ccbc9960bce2cd9c6e6800534c984baa6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_amendment_proposals_postgres.py	142	7bf919da6580e225b8057b17c021522bf1ea5b45	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_amendment_review.py	82	f614eb6c49f343d183ece3e1851a2e8003fe839b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_amendment_review_routes.py	94	d257677f8fc7d6e36d6926ffed998d96888cbb23	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_compile.py	84	79fc074433687f1cff3167cdd6bc1586e490ed54	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_continuation.py	37	fb2779d15fb7a8c9b0cda0d7bb0dc1a942651073	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_controls.py	117	813323a003a243f48977f0c1f24c5e87a0ff5f16	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_controls_postgres.py	82	ad5fbd00683716757a4163966533a97f7898a6da	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_cost.py	72	70bf56804f31fd5c3270c6bdd9d70ada63b54b53	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_cost_postgres.py	7	15bef951f63f3ec08f197a70f5c6b99e8b25cf51	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_cost_prefix_postgres.py	16	93d65a7dde247356bddabf1f9bd66eac00b885ff	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_decision_payload_qualification.py	11	e3c932aa845b40ef4882e26595556d5b12ea3438	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_decision_projection.py	42	4547e89da5b1d6b69eb1a5d978693e65a5106018	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_developer_recovery.py	515	42b688cd62d562389bf2665d55d95ff42225a3a2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_deviation.py	41	3ffa8f0b44a26f11639e082c6c8b11aa29af7ae4	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_diagnose.py	92	6fd048eab8229ada985a86fd7819a90f761addca	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_dispatch.py	52	2e0569da0145a58937fc1ef8755667f51e2f1f9b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_dispatch_pass.py	90	43639dd48a562d65dc7bc90bae818b172b18230e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_dispatch_preparation_postgres.py	81	ef288b5ecac61f4178d1c51c13e8edf0a624a290	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_dispatch_transaction_failures.py	22	fce4486a46c7946f75a3a81f631d5123abf6793a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_draft_revision_postgres.py	28	2e411ddd631c434c4775a18a34fd0ff92ace2f48	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_engine_command_accept_amendment.py	76	94164755aa84a51122977ea015a784bd8b573598	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_environment_leases.py	91	6ed671711a551f699e4bfece917cd8ae05f1872d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_environment_leases_postgres.py	119	10ddfc55c9a46292a614f15d0af3aa7adc2c3d01	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_execution_policy_acceptance.py	80	27aea500c1f67f3da6312404e6d7b8f52115692f	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_execution_read.py	1260	f956934d3c9188ab51e07ff7c99fe34bbfdc6d25	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_execution_runner.py	112	bbbb911b5f324b0b00b1600d7af6934c634d727c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_execution_runner_postgres.py	91	d71beb864cd40ce538ca8cf37689b3c48eeb5bd7	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_execution_store.py	89	c174e88403b7cf80bd8838bf73c001ddc394e743	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_execution_store_postgres.py	109	d57113fae17e4096964e1e2bff67e762ac2110d7	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_flow_archive_postgres.py	16	31af6974a508a43381b710783f7bac4b06bcbba9	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_flow_create.py	171	62ac6e0d7ee044f51523851a62a25086d90a8446	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_flow_design_capture.py	75	e89dc3ee677c41317455f6504ba4bebb18a9cd26	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_flow_read_performance.py	527	44c6e93d06d3d3e9f8a863dc7f746f8bbc412c0b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_genesis.py	68	0ac8666ff942fc0ecfbff460cb63e992eb498025	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_github_adapter.py	76	4069db91d73a25b5f631536fab3d441b7eb86085	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_handoff.py	89	0d187b2dd3e7d1f6ce37ab411e4876f22d3d4048	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_handoff_adoption.py	56	491597a01f4f5498eb6afa76e812e8394f018b4b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_handoff_postgres.py	71	c7a118dd47e9e2899ad495c733d837884c2d7276	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_list_flows.py	88	7ac98761c08f38a1c5c06435990985120f63075b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_models.py	54	dbe904d8c8fe1b6a63cc85edd857a0c5c4d245e2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_operations_cancelled_release_postgres.py	22	7f8f6d5be04926d23a2033d92a3c877b804c10eb	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_pending_amendments.py	87	e5af4fdd74a93988ef4b6fafddcd2e0ccdcf380c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_pending_amendments_postgres.py	24	24dfae7c18da75d51026c7912fea51ea4535bfd7	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_policy_admission.py	125	420ac7c2f5aa7e7e54f5a21cd0d515f70363bb07	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_policy_history_reads.py	21	a4d0d6b534c3ef8aa7d2eb3131cf4e8bd2a9d27c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_pr_bindings.py	93	5d05ba123dde9540fc699b0d90e04064c736a391	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_pr_bindings_postgres.py	90	24b59dbdc2ef834a87bf26db04f1a7954b2398ce	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_read_api.py	150	900034eb92e3f93396f15612cb80de16f4075e55	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_read_cache_postgres.py	20	9e46ea7c50e9a322604fc09209ef5689a0d223c7	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_read_cache_routes.py	31	177e34c461751c49a4dc711208fd8721b7e10ac7	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_registration.py	135	a97c3c200008635b00d855cc07df5c3c70203b99	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_replan_authoring_dispatch.py	103	657ee563d1c5a2681e917f04b2cfa989dfd071c2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_review_cycle.py	54	79c27860a2cb442875319b1f0a6f302205d85346	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_review_evidence.py	667	843d91b604fbebd0efacab800cacbaf140e0478e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_review_evidence_postgres.py	128	2b1db19046930340f8f723e0d1450185ce95b86c	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_review_ingest_postgres.py	122	6363ba846788f4c83038358b149776910f665492	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_run_reports_postgres.py	21	30fc06b4a120122113183899326f54d461b9077b	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_shared_amendment_postgres.py	65	79f3a5115ec72e6c81b927319590b521fc79a43d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_stall.py	73	8eda3d4b834cff993829ddf60ffc5e8728e46969	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_story_reconciliation.py	72	58402cedd29285c47297cb26c386caa5584c23fd	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_tick.py	60	2c8101c26b1cd813fe36ed1477bc239c003fb870	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_tick_budget_and_overlap.py	27	5ec2301e761da26cde0586605275b078fbb1ef3e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_tick_dispatch_preparation.py	58	8967e5213be646f79b8d6d6fed6b1b7669cfd045	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_tick_tracker_projection.py	59	cc075ed8f5993b8ebd722530641da4f1eb0ec009	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_tick_transactions_postgres.py	16	6ad9635c36f3643598c66aa938b0686d1846644d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_tool_adapter_release.py	73	5cc8f6b989b222ddd0992c9a0aabe0b463765324	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_tracker_projection.py	110	fdb1d025fecb4db43a1249a6903b4df724a901c8	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_work_claims.py	87	a1fd8928840fa10bfdd8f17cd109e2daa410f7e2	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/orchestration/test_work_claims_postgres.py	113	c07a923dd45248cd7d952c1923716af3a1f3d539	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/products/test_devops_handoff.py	172	de3af71b239c23aa9838769b5a448705c118d47d	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/products/test_i02.py	334	338ae69fcff79fe113091028220f2530d03c8e25	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/products/test_mutation_audit_postgres.py	21	5c76e1297dd03e041243a903ac2238694c66b0f7	profile-insights-integration	reuse-or-extend	Profile transactions/source binding or bounded read integration
+modules/gateway/tests/proxy/test_bedrock_enforcement.py	115	f4d867d95c497c63bd9fb0e7bbd90ff9c38cb486	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/proxy/test_bedrock_routing_resolver.py	75	502c43f2f74082757ee85c7793ddcca52c63ab7d	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/proxy/test_mantle_metering_admission.py	45	a05e477fff4e49f1873ff2540f0151583bfe38d6	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/proxy/test_mantle_real_route_fault_scenarios.py	13	d050d66418cae90808dfd3d860aacfac7a1f25d5	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/proxy/test_mantle_receipt_process_kill.py	17	9164a1f1f2ab79e9a00f9966fd9b3ac73cad1a99	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/proxy/test_metered_transport_accounting.py	12	c15a8e0e22f87a14da2b6e59b25f05b7704c9417	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/proxy/test_serving_metering_lifecycle.py	278	d4e16403e320435718420a8da5b5559e9fb37333	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/ratelimit/conftest.py	327	f750709257e8aec9d7489739e0e5060f38ab7e2a	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/shared/identity/test_person_anchor_namespaces.py	66	35c51b5f775b5f92d849f835c7cfcfaa348d39dd	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/shared/services/test_canonical_user.py	28	e1e4ce0fee8a70ce673f27fd088381257684084e	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/shared/test_database_iam.py	22	e1994049bb54ba7b4e4c396509ed02551078bc69	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/shared/test_resolve_root_user_entity_id.py	31	4f2372a311b9f460c89805c25156f00dad4880cb	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/shared/test_resolve_user_entity_id.py	30	f3052531ff04aad2e50c778347fe1981df1d9af2	gateway-shared-authority	audit	existing identity/credential/database/build boundary; no ownership transfer
+modules/gateway/tests/test_agent_budget.py	449	136dfcfabe678504443a3959bf26ce7f61743d72	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/usage/conftest.py	26	3c372bd94d825228cc3a17120f738a4b65995a2e	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/gateway/tests/vault/test_migration.py	53	f0f5494564025b7d14e558dec58c6be719bfa6fb	gateway-other	exclude	not proposed POC application behavior; release dependency indexed
+modules/harness/jobs/harness_jobs/store.py	77	6d1eb91cfc13a551a5ff7b1c9383ba1d8f52728a	modules/harness	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/research/gbrain/tests/test_container_dream.py	67	9a52ef485c06654510e253594418aebd168d7947	modules/research	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/research/gbrain/tests/test_container_runtime.py	52	1963f8c75d8b76cfb7a2a814162c4ca89f3a8a18	modules/research	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/tools/adapters/foundation_contract.py	28	704b5191c381dd123ebb2ec1efd82667cf87b867	modules/tools	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/tools/adapters/foundation_runtime.py	163	9a5bec2daf70806a821831ede76c7ab284791fbd	modules/tools	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/tools/adapters/scripts/image_smoke.py	21	b94de36d3bbba9e4d4dbe9c1881562a6cb52ff3c	modules/tools	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/user-services/dev-box/tests/test_controller_checkpoint.py	34	0c2abcf1dd10aa8912c21ad544f1fe9da672ed4e	modules/user-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/user-services/dev-box/tests/test_controller_dashboard_origin.py	91	05c4d98ac8647d401034cad7aa07f9f0291caaa7	modules/user-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/user-services/dev-box/tests/test_controller_launch.py	79	b64c7e0acc3151046251e269d772320035c7e9ec	modules/user-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/user-services/dev-box/tests/test_controller_resume.py	33	506bedc0ccdb7dc34742956e37962d5b5e0a7fa3	modules/user-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/user-services/dev-box/tests/test_controller_snapshots.py	66	870c8042ed4926850ac37387f39e2b6960681af3	modules/user-services	exclude	other module; no POC behavior change or borrowed deployment authority
+modules/user-services/dev-box/tests/test_cost.py	21	ab43d0ff8aedc03d4f154de32b5bd6aa780613ae	modules/user-services	exclude	other module; no POC behavior change or borrowed deployment authority
+platform/automation-infra/build-dispatch.tf	68	8f3eb868f20562f17d86270fdecb9deac02f1d4a	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/automation-infra/build-workflows.json	7	2340aec8f48170ccb8710b90b31723d4abd9076f	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/infra/modules/codebuild/main.tf	98	a4eb1f223246e255a3b2f9ac4ba1d547c208003f	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/infra/modules/codebuild/tests/test_workflow_role_scope.py	15	8c08f5127029661cf9ddf59acc027b4b0c8300bc	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/build-lambda-layers.sh	15	fb4401eabd5f7811510fdbf96ed26b9dd49efc40	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/deploy-all.sh	1137	d131e2b6d918310eebef77e2153d557a4b1478dd	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/release/acceptance.py	93	875d7e4bb8c397131bb669cb205cb43f3e377a45	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/release/build.py	39	48e10d656c9e32e73fd1933845e99d3f8f2c9ec5	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/release/common.py	36	85b8e270f0d5cdf6a5f1cdea25692bdabda7c303	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/seed-bot-identities.py	271	6cbd068781107cfc5be1698d1f2d8ee8593d947b	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/seed-shared-corpus.py	78	3a3875768cd54a27234623d1e46041a0fbbeabb3	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/tests/test_seed_shared_corpus.py	7	102658de1821b8a5dc9b77d293344ea0133f9d58	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/tests/test_upgrade_plan_policy.py	496	e0d591cb685215bd44e00bf8b240da6baa43928d	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/tests/test_upgrade_state.py	43	6335c12fb25606de7668fc3180dd4305d70eb3db	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/upgrade-plan-policy.py	509	f9f5e0606b923e74705908aba6631277ab91dec5	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/upgrade-state.py	259	50147fc83f5aef81113db4353756a90a920a13ef	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+platform/scripts/validate-bedrock-routing-shadow.sh	14	97170be8131eae37550e12cea30d293ff362ad3e	platform-build-deployment	audit	shared build/infra/release boundary; only selected entry points change
+scripts/backfill-user-identity-index.py	41	44601f074a8a3ef1e2eb2cfed83538e6a51f3fa0	scripts	audit	repository utility/test/application; candidate entry points enumerated
+tests/e2e/tools/test_access_ac01.py	346	6815c1d3261c2897556568019840f55b71bbc008	tests	audit	repository utility/test/application; candidate entry points enumerated
+tests/unit/test_product_browser_edit.py	78	40bb1a9cfe2a6d64f3595eaacd6e1f86ce250c5f	tests	audit	repository utility/test/application; candidate entry points enumerated

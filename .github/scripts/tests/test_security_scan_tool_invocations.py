@@ -54,7 +54,7 @@ reconcile = importlib.util.module_from_spec(RECONCILE_SPEC)
 RECONCILE_SPEC.loader.exec_module(reconcile)
 
 from diff_security_findings import process_tool_findings
-from security_image_targets import ORIGINAL_COVERAGE, non_runtime_fixtures
+from security_image_targets import ORIGINAL_COVERAGE, maintenance_recipes, non_runtime_fixtures
 
 
 @pytest.fixture(scope="module")
@@ -415,8 +415,10 @@ def test_one_off_producer_binds_definition_source_target_and_rerun_artifacts(wor
     assert "repository-scan-receipt.py" in context_script
     assert 'test "$GITHUB_SHA" = "$EXPECTED_DEFINITION_REVISION"' in context_script
     assert workflow["env"]["EXPECTED_DEFINITION_REVISION"] == "${{ inputs.adp_definition_revision }}"
-    uploads = [step for step in context["steps"] if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
-    assert uploads[0]["with"]["name"] == "adp-deployment-context-security-scan.yml-${{ github.run_attempt }}"
+    assert "publish-deployment-evidence.py context security-scan.yml" in job_script(workflow, "context")
+    assert "actions/upload-artifact@" not in WORKFLOW_PATH.read_text()
+    assert workflow["env"]["ADP_DEPLOYMENT_EVIDENCE_STORE"] == "s3-oidc-v1"
+    assert workflow["env"]["ADP_REPOSITORY_EVIDENCE_STORE"] == "s3-oidc-v1"
 
     for name, job in workflow["jobs"].items():
         checkouts = [step for step in job.get("steps", []) if step.get("uses") == "actions/checkout@v7"]
@@ -561,7 +563,7 @@ def write_image_evidence(root: Path, tool: str, source_revision: str, digest: st
     })
 
 
-@pytest.mark.parametrize("tamper", ("missing_exclusion", "wrong_original_count", "wrong_reason", "different_scanners", "duplicate_target"))
+@pytest.mark.parametrize("tamper", ("missing_exclusion", "missing_recipes", "wrong_recipe_reason", "wrong_original_count", "wrong_reason", "different_scanners", "duplicate_target"))
 def test_paired_inventory_correction_must_match_historical_gap(tmp_path, tamper):
     revision = "a" * 40
     for tool in ("grype", "syft"):
@@ -570,8 +572,9 @@ def test_paired_inventory_correction_must_match_historical_gap(tmp_path, tamper)
         coverage = json.loads(coverage_path.read_text())
         coverage.update({
             "scope": "all",
-            "discovered": 2,
+            "discovered": 2 + len(maintenance_recipes(REPO)),
             "excluded_non_runtime": non_runtime_fixtures(REPO),
+            "maintenance_recipes": maintenance_recipes(REPO),
             "original_gap": ORIGINAL_COVERAGE,
         })
         write_json(coverage_path, coverage)
@@ -582,6 +585,10 @@ def test_paired_inventory_correction_must_match_historical_gap(tmp_path, tamper)
     coverage = json.loads(coverage_path.read_text())
     if tamper == "missing_exclusion":
         coverage["excluded_non_runtime"] = []
+    elif tamper == "missing_recipes":
+        coverage["maintenance_recipes"] = []
+    elif tamper == "wrong_recipe_reason":
+        coverage["maintenance_recipes"][0]["reason"] = "unreviewed recipe omission"
     elif tamper == "wrong_original_count":
         coverage["original_gap"]["expected"] = 40
     elif tamper == "wrong_reason":

@@ -44,26 +44,35 @@ still present at `shared/schemas/budget.py:51`; this story does not migrate thos
 but it does not copy them either.
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from heapq import heapify, heappop, heappush
+from importlib.resources import files
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_serializer, model_validator
+from pydantic_core import PydanticCustomError
 
 # Imported, never redefined — see module docstring (R-N2a). The address grammar
 # moved to `address.py` (#5128) so `execution_policy.py` can constrain its
 # evaluation-address keys to the same pattern without the two modules importing
 # each other; it is re-exported below so existing importers are unaffected.
 from .address import ADDRESS_PATTERN, split_address
+from .delivery_contract import DeliveryContract
 from .execution_policy import ExecutionPolicy
 from .executor_assignment import ExecutorAssignment, validate_executor
 from .models import NodeKind
+from .node_files import NodeFileGroups
+from .product_case_selection import PRODUCT_CASE_BINDINGS, ProductCases
 from .state import NodeState
 
 __all__ = [
     "ADDRESS_PATTERN",
     "LoopProposal",
+    "NamedInputPrerequisite",
     "ProposedEdge",
     "ProposedNode",
     "Violation",
@@ -112,6 +121,142 @@ class Violation:
         return f"{self.rule}: {self.message}{location}"
 
 
+class NamedInputPrerequisite(BaseModel):
+    """A named prerequisite, never credential material."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=128)
+    source: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class OperationalReleasePredecessor(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    address: str = Field(pattern=ADDRESS_PATTERN)
+    receipt_kind: Literal["verified_merge", "verified_operations_release"]
+
+
+class OperationalReleaseBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    predecessors: list[OperationalReleasePredecessor] = Field(min_length=1, max_length=16)
+    build_prerequisites: list[str] = Field(min_length=1, max_length=16)
+    repository: str = Field(min_length=3, max_length=255)
+    target: str = Field(min_length=1, max_length=128)
+    component: str = Field(min_length=1, max_length=128)
+    workflows: list[str] = Field(min_length=1, max_length=16)
+    delivery_contract: DeliveryContract | None = None
+    product_cases: ProductCases = "none"
+    proof_phase: Literal["none", "stage.identity-proof"] = "none"
+    definition_predecessor: str | None = None
+    default_branch: str = Field(min_length=1, max_length=255)
+    maintenance_adoption_id: str | None = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
+
+    @field_validator("default_branch")
+    @classmethod
+    def valid_branch(cls, value):
+        if (
+            value.startswith(("-", "/"))
+            or value.endswith(("/", "."))
+            or ".." in value
+            or "@{" in value
+            or value == "@"
+            or re.search(r"[\x00-\x20\x7f~^:?*\[\\]", value)
+            or any(not part or part.startswith(".") or part.endswith(".lock") for part in value.split("/"))
+        ):
+            raise ValueError("invalid release branch")
+        return value
+
+    @model_validator(mode="after")
+    def unique_predecessors_and_workflows(self):
+        addresses = [item.address for item in self.predecessors]
+        if len(set(addresses)) != len(addresses) or len(set(self.workflows)) != len(self.workflows):
+            raise ValueError("release predecessors and workflows must be unique")
+        if not set(self.build_prerequisites) <= set(addresses):
+            raise ValueError("build prerequisites must name release predecessors")
+        merges = {item.address for item in self.predecessors if item.receipt_kind == "verified_merge"}
+        if not set(self.build_prerequisites) <= merges:
+            raise ValueError("build prerequisites require verified merge predecessors")
+        if self.definition_predecessor is not None and self.definition_predecessor not in addresses:
+            raise ValueError("definition predecessor must name a release predecessor")
+        if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.ya?ml", workflow) is None for workflow in self.workflows):
+            raise ValueError("release workflows must be workflow filenames")
+        if self.delivery_contract is not None and (len(self.workflows) != 1 or self.product_cases != "none" or self.proof_phase != "none"):
+            raise ValueError("generic delivery requires one workflow and contract-owned checks")
+        if self.delivery_contract is not None and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", self.component) is None:
+            raise ValueError("generic delivery requires a bounded component identifier")
+        if self.product_cases != "none":
+            component, workflow = PRODUCT_CASE_BINDINGS[self.product_cases]
+            if self.component != component or self.workflows != [workflow]:
+                raise ValueError("Product acceptance needs its maintained Gateway deployment binding")
+        if self.proof_phase != "none" and (self.product_cases != "none" or self.workflows != ["gateway-deploy.yml"]):
+            raise ValueError("Identity proof requires its reviewed Gateway deployment workflow without Product cases")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _preserve_existing_bindings(self, handler):
+        document = handler(self)
+        # Keep both historical identities: omission before this field existed,
+        # and explicit nulls persisted while its separate serializer was shadowed.
+        if self.maintenance_adoption_id is None and "maintenance_adoption_id" not in self.model_fields_set:
+            document.pop("maintenance_adoption_id", None)
+        if self.delivery_contract is None:
+            document.pop("delivery_contract", None)
+        if self.product_cases == "none":
+            document.pop("product_cases", None)
+        if self.proof_phase == "none":
+            document.pop("proof_phase", None)
+        return document
+
+
+class NodeLineage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    story_id: str | None = None
+    size: str | None = None
+    type: str | None = None
+    risk_class: str | None = None
+    fixes_story_id: str | None = None
+    team_id: str | None = None
+    cohort: str | None = None
+
+
+def parse_node_lineage(value):
+    if value is None or isinstance(value, NodeLineage):
+        return value
+    try:
+        return NodeLineage.model_validate(value)
+    except ValidationError as exc:
+        raise PydanticCustomError("lineage_invalid", "lineage must contain only typed lineage fields") from exc
+
+
+class RepositoryConnection(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: Literal["github"]
+    installation_id: int = Field(gt=0)
+
+
+class PlanningIssueReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: Literal["github"]
+    repository_id: int = Field(gt=0)
+    repository: str = Field(min_length=3, max_length=255)
+    installation_id: int = Field(gt=0)
+    issue_number: int = Field(gt=0)
+
+
+class TrackerReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    scope: Literal["flow", "epic"]
+    address: str = Field(min_length=1, max_length=256)
+    issue: PlanningIssueReference
+
+
 class ProposedNode(BaseModel):
     """One executable node in a proposed plan.
 
@@ -133,16 +278,47 @@ class ProposedNode(BaseModel):
     # The GitHub issue this node materialises as. Optional: eval and gate nodes
     # frequently have no issue of their own.
     issue_ref: str | None = None
+    lineage: NodeLineage | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    file_groups: NodeFileGroups = Field(default_factory=list)
+
+    _parse_lineage = field_validator("lineage", mode="before")(parse_node_lineage)
     # Stored in the accepted plan document; absence retains human mode.
     evaluation: dict | None = None
+    proposal_identity: str | None = Field(default=None, min_length=1, max_length=255)
+    repository_identity: str | None = Field(default=None, min_length=1, max_length=255)
+    provider_repository_id: int | None = Field(default=None, gt=0)
+    repository_connection: RepositoryConnection | None = None
+    execution_owner: str | None = Field(default=None, min_length=1, max_length=255)
+    execution_adapter: str | None = Field(default=None, min_length=1, max_length=128)
+    criteria: list[str] = Field(default_factory=list, max_length=64)
+    required_inputs: list[NamedInputPrerequisite] = Field(default_factory=list, max_length=32)
+    evidence_expectations: list[str] = Field(default_factory=list, max_length=64)
+    operational_release_binding: OperationalReleaseBinding | None = None
+
+    # An explicit node completion boundary, independent of the flow's maximum
+    # authority. Absence preserves the existing merge/deploy pipeline.
+    delivery_mode: Literal["code_only"] | None = None
 
     # Executor identity is covered by the plan hash, separately from authority.
     executor: ExecutorAssignment | None = None
 
     @model_validator(mode="after")
     def _supported_executor(self):
+        if self.file_groups and self.kind != "story":
+            raise ValueError("file groups are supported only on story nodes")
+        if self.delivery_mode is not None and not (
+            self.kind == "story"
+            and self.executor is not None
+            and self.executor.kind == "agent"
+            and self.executor.role == "develop"
+            and self.evidence_expectations == ["verified-merge"]
+        ):
+            raise ValueError("code_only delivery requires a develop story with verified-merge evidence")
         if self.executor is not None:
-            validate_executor(self.kind, self.executor)
+            # Plans remain readable/editable before rollout or after disabling
+            # operations. Actual executor selection still requires the flag.
+            validate_executor(self.kind, self.executor, require_enabled=False)
         return self
 
     @model_serializer(mode="wrap")
@@ -150,6 +326,18 @@ class ProposedNode(BaseModel):
         document = handler(self)
         if self.executor is None:
             document.pop("executor", None)
+        if self.lineage is None:
+            document.pop("lineage", None)
+        if not self.labels:
+            document.pop("labels", None)
+        if not self.file_groups:
+            document.pop("file_groups", None)
+        if self.delivery_mode is None:
+            document.pop("delivery_mode", None)
+        if self.operational_release_binding is None:
+            document.pop("operational_release_binding", None)
+        if self.repository_connection is None:
+            document.pop("repository_connection", None)
         return document
 
 
@@ -275,6 +463,14 @@ class EpicDisplay(BaseModel):
 
 class EpicMetadata(EpicDisplay):
     epic_ref: str = Field(min_length=1, max_length=128)
+    epic_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _preserve_existing_epic_documents(self, handler):
+        document = handler(self)
+        if self.epic_id is None:
+            document.pop("epic_id", None)
+        return document
 
 
 class WaveDisplay(BaseModel):
@@ -310,6 +506,10 @@ class LoopProposal(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     # The tenant the author believes this plan belongs to. Checked, not trusted.
     org_id: str = Field(min_length=1)
+    product_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: str | None = Field(default=None, min_length=1, max_length=255)
+    origin_ref: PlanningIssueReference | None = None
+    tracker_refs: list[TrackerReference] | None = Field(default=None, max_length=32)
     # The spec revision this proposal was authored against (rule 5). Without it,
     # a plan authored against an older contract is indistinguishable from one
     # authored against the current spec.
@@ -397,6 +597,33 @@ class LoopProposal(BaseModel):
     # the graph would run with legacy *unbounded* semantics while its author
     # believed it constrained. Both halves of that are why this field exists.
     proposed_execution_policy: ExecutionPolicy | None = None
+
+    @model_serializer(mode="wrap")
+    def _preserve_existing_flow_documents(self, handler):
+        document = handler(self)
+        if self.product_id is None:
+            document.pop("product_id", None)
+        if self.project_id is None:
+            document.pop("project_id", None)
+        if self.origin_ref is None:
+            document.pop("origin_ref", None)
+        if self.tracker_refs is None:
+            document.pop("tracker_refs", None)
+        return document
+
+    @model_validator(mode="after")
+    def _tracker_addresses(self):
+        if self.project_id is not None and self.product_id is None:
+            raise ValueError("A Project selection requires its Product ID.")
+        addresses = set()
+        epic_addresses = {"/".join(node.address.split("/")[:2]) for node in self.nodes}
+        for tracker in self.tracker_refs or []:
+            if tracker.address in addresses:
+                raise ValueError("tracker addresses must be unique")
+            addresses.add(tracker.address)
+            if tracker.scope == "flow" and tracker.address != self.flow_slug or tracker.scope == "epic" and tracker.address not in epic_addresses:
+                raise ValueError("tracker address does not name its declared scope")
+        return self
 
     @model_validator(mode="after")
     def _one_policy_field_at_most(self) -> "LoopProposal":
@@ -585,11 +812,8 @@ def _work_identity(issue_ref: str | None) -> str | None:
     reference cannot be a shared work identity: the engine could not route it to
     an issue either, and rule 6 is not the place to report a malformed one.
 
-    Repository identity is not part of the key because the proposal schema has no
-    per-node repository: every node of a flow dispatches into the one repository
-    resolved at dispatch time, so within a document a shared issue number is a
-    shared issue. If per-node repositories are ever added, this key is where they
-    join.
+    The caller combines this normalized number with a verified repository ID;
+    unbound legacy documents retain the conservative shared-issue diagnostic.
     """
     if not issue_ref:
         return None
@@ -601,7 +825,7 @@ def _work_identity(issue_ref: str | None) -> str | None:
 
 
 def _resolvable_adjacency(proposal: LoopProposal) -> dict[str, list[str]]:
-    """The dependency graph over edges that can actually be followed.
+    """The dependency graph over edges and resolvable node input prerequisites.
 
     Declared once and shared by rule 3 (cycles) and rule 6 (same-issue ordering)
     so the two rules cannot disagree about what the graph is. Only *resolvable*
@@ -621,6 +845,12 @@ def _resolvable_adjacency(proposal: LoopProposal) -> dict[str, list[str]]:
             continue  # A self-edge is rule 3's one-node cycle, not an ordering.
         if edge.from_address in declared and edge.to_address in declared:
             adjacency[edge.from_address].append(edge.to_address)
+
+    for node in proposal.nodes:
+        for prerequisite in node.required_inputs:
+            source = prerequisite.source.strip()
+            if source.startswith("node:") and source[5:] in declared:
+                adjacency[source[5:]].append(node.address)
 
     return adjacency
 
@@ -813,7 +1043,7 @@ def _check_same_issue_ordering(proposal: LoopProposal) -> list[Violation]:
     have none, and "no issue" is not a shared identity.
     """
     violations: list[Violation] = []
-    by_issue: dict[str, list[str]] = {}
+    by_issue: dict[tuple[int | None, str], list[str]] = {}
 
     for node in proposal.nodes:
         if node.kind not in _ISSUE_CONSUMING_KINDS:
@@ -821,12 +1051,12 @@ def _check_same_issue_ordering(proposal: LoopProposal) -> list[Violation]:
         identity = _work_identity(node.issue_ref)
         if identity is None:
             continue
-        by_issue.setdefault(identity, []).append(node.address)
+        by_issue.setdefault((node.provider_repository_id, identity), []).append(node.address)
 
     adjacency = _resolvable_adjacency(proposal)
     topological_ranks = _topological_ranks(adjacency)
 
-    for identity, addresses in sorted(by_issue.items()):
+    for (_, identity), addresses in sorted(by_issue.items(), key=lambda item: (item[0][1], item[0][0] or 0)):
         if len(addresses) < 2:
             continue
         # A cyclic document is already rejected by rule 3, and has no valid
@@ -895,7 +1125,15 @@ def _check_declarations(proposal: LoopProposal) -> list[Violation]:
     return violations
 
 
-def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
+def _check_evaluation_specs(proposal: LoopProposal, *, settled_evaluations: frozenset[str] = frozenset()) -> list[Violation]:
+    """Check every evaluation specification.
+
+    `settled_evaluations` names evaluation addresses whose node has already
+    concluded (passed, waived or superseded). Their contract was verified by the
+    harness installed when they ran; a later gateway deploy that changes the
+    installed verifier must not make the plan un-amendable, so the digest pin is
+    not re-checked for them. Every other rule still applies.
+    """
     from .evaluation_contract import specification
     from .execution_policy import AcceptanceMode, Action
 
@@ -932,16 +1170,34 @@ def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
         ):
             violations.append(Violation("evaluation_policy_mode_mismatch", "Machine policy cannot use human evidence acceptance", node.address))
         if spec.evidence_schema in {"repository-evaluation/v1", "workflow-evaluation/v1"}:
-            from .repository_evaluation_contract import harness_digest
+            from .repository_evaluation_contract import harness_digest, native_harness_compatible
 
-            if spec.runner.harness_sha256 != harness_digest():
+            if node.address not in settled_evaluations and not native_harness_compatible(spec, harness_digest()):
                 violations.append(
                     Violation("evaluation_harness_mismatch", "Repository harness digest does not match the installed verifier", node.address)
                 )
+        if spec.evidence_schema in {"repository-evaluation/v1", "workflow-evaluation/v1", "multi-repository-evaluation/v1"}:
             kinds = {item.address: item.kind for item in proposal.nodes}
             parents = {edge.from_address for edge in proposal.edges if edge.to_address == node.address and kinds.get(edge.from_address) == "story"}
             if parents != {item.address for item in spec.predecessors}:
                 violations.append(Violation("evaluation_predecessor_mismatch", "Evidence must declare every direct story predecessor", node.address))
+            if spec.evidence_schema == "multi-repository-evaluation/v1":
+                if (
+                    node.repository_identity != spec.harness.repository
+                    or node.provider_repository_id != spec.harness.repository_id
+                    or node.repository_connection is None
+                    or node.repository_connection.installation_id != spec.harness.installation_id
+                ):
+                    violations.append(
+                        Violation("evaluation_harness_binding_mismatch", "Harness must match its verified repository binding", node.address)
+                    )
+                sources = {item.address: item.provider_repository_id for item in proposal.nodes}
+                if any(sources.get(item.address) != item.repository_id for item in spec.predecessors):
+                    violations.append(
+                        Violation(
+                            "evaluation_source_repository_mismatch", "Evidence source repository IDs must match bound predecessor nodes", node.address
+                        )
+                    )
         if spec.acceptance_mode == "machine":
             # Validation checks the requested authority, including an inert draft.
             # Admission still reads only the accepted execution_policy field.
@@ -950,6 +1206,17 @@ def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
                 violations.append(
                     Violation("evaluation_policy_mode_mismatch", "Machine evidence requires accepted policy machine mode", node.address)
                 )
+            elif spec.evidence_schema == "multi-repository-evaluation/v1":
+                if spec.harness.repository not in policy.repository_ids:
+                    violations.append(
+                        Violation("evaluation_repository_not_permitted", "Evaluation harness requires a permitted repository", node.address)
+                    )
+                if spec.environment is not None and spec.environment.connection_id not in policy.environment_connection_ids:
+                    violations.append(
+                        Violation(
+                            "evaluation_connection_not_permitted", "Evaluation target requires a permitted environment connection", node.address
+                        )
+                    )
             elif spec.runner.repository not in policy.repository_ids:
                 violations.append(
                     Violation("evaluation_repository_not_permitted", "Evaluation harness requires a permitted repository", node.address)
@@ -958,6 +1225,165 @@ def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
                 violations.append(
                     Violation("evaluation_connection_not_permitted", "Evaluation target requires a permitted environment connection", node.address)
                 )
+    return violations
+
+
+def _check_criterion_coverage(proposal: LoopProposal) -> list[Violation]:
+    """Require declared criteria to have one executable evidence producer."""
+    from .evaluation_contract import specification
+
+    violations: list[Violation] = []
+    producers: dict[str, list[ProposedNode]] = {}
+    by_address = {node.address: node for node in proposal.nodes}
+    parents: dict[str, set[str]] = {address: set() for address in by_address}
+    adjacency = _resolvable_adjacency(proposal)
+    for source, successors in adjacency.items():
+        for target in successors:
+            parents[target].add(source)
+
+    for node in proposal.nodes:
+        operating = node.kind == NodeKind.STORY.value and node.executor is not None and node.executor.role == "operate"
+        for criterion in node.criteria:
+            producers.setdefault(criterion, []).append(node)
+        if node.required_inputs:
+            for item in node.required_inputs:
+                if operating and re.fullmatch(
+                    r"deployment_workflow:[A-Za-z0-9][A-Za-z0-9_.-]*\.ya?ml"
+                    r"|deployment_(?:source|definition)_revision:[0-9a-f]{40}"
+                    r"|deployment_branch:[A-Za-z0-9][A-Za-z0-9_-]{0,127}",
+                    item.source,
+                ):
+                    continue
+                if not item.source.startswith(("environment:", "environment_connection:", "repository:", "node:")):
+                    violations.append(
+                        Violation(
+                            "required_input_source_unsupported",
+                            "Required input sources must use environment:, environment_connection:, repository:, "
+                            "or node: so readiness can resolve them",
+                            node.address,
+                        )
+                    )
+        binding = node.operational_release_binding
+        if binding is not None:
+            sources = [item.source for item in node.required_inputs]
+            addresses = {item.address for item in binding.predecessors}
+            workflows = {source.removeprefix("deployment_workflow:") for source in sources if source.startswith("deployment_workflow:")}
+            if (
+                not operating
+                or binding.repository != node.repository_identity
+                or any(
+                    source.startswith(("deployment_source_revision:", "deployment_definition_revision:", "deployment_branch:")) for source in sources
+                )
+                or workflows != set(binding.workflows)
+                or not all(f"node:{address}" in sources and _reaches(adjacency, address, node.address) for address in addresses)
+            ):
+                violations.append(
+                    Violation(
+                        "operational_release_binding_invalid",
+                        "Release binding requires an operate node, its repository and workflows, and named predecessor inputs; "
+                        "it cannot mix with literal pins",
+                        node.address,
+                    )
+                )
+        if node.kind == NodeKind.EVAL.value and (node.criteria or node.evidence_expectations) and node.evaluation is None:
+            violations.append(
+                Violation(
+                    "criterion_producer_missing",
+                    "Validation criteria and evidence expectations require an executable evaluation specification; "
+                    "an issue or worker result alone is not trusted evidence",
+                    node.address,
+                )
+            )
+        if node.kind == NodeKind.GATE.value and node.criteria:
+            violations.append(Violation("criterion_producer_missing", "A human gate cannot produce validation evidence for criteria", node.address))
+
+        if node.kind == NodeKind.EVAL.value and node.evaluation is not None:
+            try:
+                spec = specification(node.evaluation)
+            except ValueError:
+                spec = None
+            if spec is not None:
+                required = {item.criterion_id for item in getattr(spec, "criteria", []) if item.required}
+                required.update(item.criterion_id for item in getattr(spec, "external_pull_requests", []))
+                required.update(item.address for item in getattr(spec, "predecessors", []))
+                for workflow in getattr(spec, "workflows", []):
+                    required.add(workflow.criterion_id)
+                    required.update(predicate.criterion_id for artifact in workflow.artifacts for predicate in artifact.predicates)
+                qualification = getattr(spec, "qualification", None)
+                if qualification is not None:
+                    required.update(item.criterion_id for item in qualification.criteria)
+                missing = sorted(set(node.criteria) - required)
+                if missing:
+                    violations.append(
+                        Violation(
+                            "criterion_producer_missing",
+                            f"Declared criteria {missing} have no mandatory check in this evaluation; "
+                            "add required evidence checks or a separate producer",
+                            node.address,
+                        )
+                    )
+                if "trusted-live-observation" in node.evidence_expectations and spec.evidence_schema in {
+                    "repository-evaluation/v1",
+                    "workflow-evaluation/v1",
+                    "multi-repository-evaluation/v1",
+                }:
+                    violations.append(
+                        Violation(
+                            "evidence_expectation_unsupported",
+                            "This evidence contract does not attest live qualification; use a live evaluation contract or declare trusted-evaluation",
+                            node.address,
+                        )
+                    )
+
+        allowed_expectations = {
+            NodeKind.STORY.value: {"verified-merge"},
+            NodeKind.EVAL.value: {"trusted-evaluation", "trusted-live-observation"},
+            NodeKind.GATE.value: {"human-approval"},
+        }.get(node.kind, set())
+        if operating and any(item.startswith("runtime_verified:") for item in node.evidence_expectations):
+            allowed_expectations = set()
+        for expectation in node.evidence_expectations:
+            if operating and re.fullmatch(r"runtime_verified:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", expectation):
+                continue
+            if expectation not in allowed_expectations:
+                violations.append(
+                    Violation(
+                        "evidence_expectation_unsupported",
+                        f"Evidence expectation {expectation!r} is not enforced for {node.kind!r} nodes",
+                        node.address,
+                    )
+                )
+
+        if node.kind == NodeKind.EVAL.value and (node.criteria or node.evidence_expectations):
+            wave = "/".join(node.address.split("/")[:3])
+            pending = list(parents.get(node.address, set()))
+            seen: set[str] = set()
+            while pending:
+                address = pending.pop()
+                if address in seen:
+                    continue
+                seen.add(address)
+                parent = by_address.get(address)
+                if parent is not None and parent.kind == NodeKind.GATE.value and address.startswith(wave + "/"):
+                    violations.append(
+                        Violation(
+                            "validation_behind_result_gate",
+                            f"Validation {node.address!r} is downstream of same-wave gate {address!r}; place the evidence producer before the gate",
+                            node.address,
+                        )
+                    )
+                    break
+                pending.extend(parents.get(address, set()))
+
+    for criterion, nodes in sorted(producers.items()):
+        if len(nodes) > 1:
+            violations.append(
+                Violation(
+                    "criterion_producer_ambiguous",
+                    f"Criterion {criterion!r} has multiple producers: {[node.address for node in nodes]}",
+                    criterion,
+                )
+            )
     return violations
 
 
@@ -990,7 +1416,31 @@ def _check_display_metadata(proposal: LoopProposal) -> list[Violation]:
     return violations
 
 
-def validate_proposal(proposal: LoopProposal) -> list[Violation]:
+@lru_cache(maxsize=1)
+def _label_keys() -> frozenset[str]:
+    vocabulary = yaml.safe_load(files("src.orchestration").joinpath("lineage_vocabulary.yaml").read_text(encoding="utf-8"))
+    return frozenset(vocabulary["label_keys"])
+
+
+def _check_node_metadata(proposal: LoopProposal) -> list[Violation]:
+    violations: list[Violation] = []
+    allowed = _label_keys()
+    for node in proposal.nodes:
+        if node.lineage is not None and any(
+            value is not None and (not value.strip() or len(value) > 128) for value in node.lineage.model_dump().values()
+        ):
+            violations.append(Violation("lineage_invalid", "Lineage values must be non-blank strings of at most 128 characters.", node.address))
+        if len(node.labels) > 16:
+            violations.append(Violation("labels_too_many", "A node may have at most 16 labels.", node.address))
+        for key, value in node.labels.items():
+            if not key or len(key) > 32 or key not in allowed:
+                violations.append(Violation("label_key_unknown", f"Label key {key!r} is not in the controlled vocabulary.", node.address))
+            if not value.strip() or len(value) > 128:
+                violations.append(Violation("labels_invalid", f"Label {key!r} must have a value of 1 to 128 characters.", node.address))
+    return violations
+
+
+def validate_proposal(proposal: LoopProposal, *, settled_evaluations: frozenset[str] = frozenset()) -> list[Violation]:
     """Check a proposal against every rule and return **all** violations.
 
     Returns rather than raises, and runs every rule rather than stopping at the
@@ -1010,13 +1460,15 @@ def validate_proposal(proposal: LoopProposal) -> list[Violation]:
     """
     return [
         *_check_declarations(proposal),
-        *_check_evaluation_specs(proposal),
+        *_check_node_metadata(proposal),
+        *_check_evaluation_specs(proposal, settled_evaluations=settled_evaluations),
         *_check_addresses(proposal),
         *_check_display_metadata(proposal),
         *_check_kinds(proposal),
         *_check_edges(proposal),
         *_check_wave_evals(proposal),
         *_check_same_issue_ordering(proposal),
+        *_check_criterion_coverage(proposal),
     ]
 
 

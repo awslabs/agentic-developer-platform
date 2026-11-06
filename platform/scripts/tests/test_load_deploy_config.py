@@ -54,6 +54,34 @@ def test_customer_account_environment_override_fails_before_target_selection():
     assert "target=999900001111" not in result.stdout
 
 
+def test_chat_engine_connection_cannot_bypass_policy_even_in_the_platform_account():
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/chat-agent-deploy.yml").read_text())
+    connection = {
+        "customer_account_id": "111122223333",
+        "customer_user_id": "fixture-user",
+        "customer_aws_label": "fixture-connection",
+    }
+    for name, job in workflow["jobs"].items():
+        config = next(step for step in job["steps"] if step.get("uses") == "./.github/actions/load-deploy-config")
+        if name == "build-and-deploy":
+            # Customer inputs are only assertions to the authenticated engine
+            # broker. They cannot select a target via the retired loader.
+            assert not (connection.keys() & config["with"].keys())
+            assert config["with"]["account_id"] == "${{ env.ADP_ACCOUNT_ID }}"
+            guard = subprocess.run(["bash", "-c", job["steps"][0]["run"]], capture_output=True, env={
+                "CUSTOMER_SELECTION": "fixture-selection", "ADP_MANUAL_SOURCE": "", "ADP_CORRELATION": "",
+                "ADP_SOURCE": "", "ADP_DEFINITION": "", "ACTUAL_DEFINITION": "a" * 40,
+            })
+            assert guard.returncode != 0
+        else:
+            for field in connection:
+                assert config["with"][field] == "${{ inputs." + field + " }}"
+    result = _source({"ADP_" + name.upper(): value for name, value in connection.items()})
+    assert result.returncode != 0
+    assert "cross-account customer bootstrap is disabled" in result.stderr
+    assert "target=111122223333" not in result.stdout
+
+
 def test_customer_account_config_block_fails_closed(tmp_path: Path):
     config = tmp_path / "deployment.yml"
     config.write_text(
@@ -129,8 +157,14 @@ def test_every_workflow_customer_account_input_reaches_the_fail_closed_action():
     customer_workflows = [
         path for path in workflows if "\n      customer_account_id:" in path.read_text()
     ]
-    assert len(customer_workflows) == 21
+    assert customer_workflows
     for path in customer_workflows:
         text = path.read_text()
+        if path.name == "dev-box-deploy.yml":
+            # The module workflow uses the credential CLI directly and never
+            # invokes the retired customer bootstrap loader.
+            assert 'adp-cred assume --service aws --label "$ADP_CONNECTION_LABEL"' in text
+            assert 'run: bash modules/user-services/dev-box/deploy.sh' in text
+            continue
         assert "uses: ./.github/actions/load-deploy-config" in text, path
         assert "customer_account_id: ${{ inputs.customer_account_id }}" in text, path

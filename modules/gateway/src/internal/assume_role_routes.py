@@ -26,7 +26,7 @@ from src.agentauth.broker_identity import user_credential_audit, verify_selected
 from src.auth.exceptions import STSClientError
 from src.auth.sts_client import STSClient
 from src.internal.auth_deps import verify_internal_or_irsa
-from src.internal.credential_binding import resolve_credential_binding
+from src.internal.credential_binding import resolve_broker_binding
 from src.internal.sts_assume_service import AssumeRoleResult, STSAssumeError, assume_role
 from src.shared.config import get_settings
 from src.shared.database import get_db
@@ -165,33 +165,83 @@ async def credential_assume_role(
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
 ) -> AssumeRoleResponse:
-    provenance_id = str(uuid.uuid4())
     settings = get_settings()
 
     # Issue #3175: Credential-authorization binding (S2).
     # Resolve the effective user from the webhook-events registry.
-    binding = await asyncio.to_thread(
-        resolve_credential_binding,
-        verified_binding=getattr(request.state, "agent_credential_binding", None),
+    binding = resolve_broker_binding(
+        request,
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
+        agent_id=body.agent_id,
         settings=settings,
     )
+    return await assume_bound_role(
+        body,
+        request,
+        db,
+        sm,
+        binding=binding,
+        validate=lambda credential, **kwargs: verify_selected_user_credential(request, credential, db=db, **kwargs),
+    )
+
+
+async def assume_bound_role(body, request, db, sm, *, binding, validate, audit_fields=None, session_policy=None, selected_credential=None):
+    """Shared vault delivery after a worker or deployment job proves its binding."""
+    provenance_id = str(uuid.uuid4())
+    settings = get_settings()
     effective_user_id = binding.resolved_user_id
 
     user = await _get_user(effective_user_id, db)
     if worker_tenant(request) is not None and user.org_id != worker_tenant(request):
         raise HTTPException(404, "not found")
     # Issue #700: use canonical user's id and org_id for credential resolution.
-    cred = await _resolve_credential(
-        db=db,
-        org_id=user.org_id,
-        service=body.service,
-        label=body.label,
-        user_id=user.id,
-        team_id=user.team_id,
+    cred = (
+        selected_credential
+        if selected_credential is not None
+        else await _resolve_credential(
+            db=db,
+            org_id=user.org_id,
+            service=body.service,
+            label=body.label,
+            user_id=user.id,
+            team_id=user.team_id,
+        )
     )
-    await verify_selected_user_credential(request, cred)
+
+    async def _validate_selected(*, revalidate=False):
+        try:
+            if revalidate:
+                await validate(cred, revalidate=True)
+            else:
+                await validate(cred)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("error") != "not_consented":
+                raise
+            try:
+                await _write_audit(
+                    db,
+                    event_type="vault_aws_role_assumed",
+                    org_id=user.org_id,
+                    actor_id=body.agent_id,
+                    details={
+                        "provenance_id": provenance_id,
+                        "authorized_user_id": effective_user_id,
+                        "agent_id": body.agent_id,
+                        "task_id": body.task_id,
+                        "service": body.service,
+                        "label": body.label,
+                        "credential_id": cred.id,
+                        "success": False,
+                        "error_code": "not_consented",
+                    },
+                )
+                await db.commit()
+            except Exception:
+                logger.warning("AWS role consent denial audit write failed")
+            raise
+
+    await _validate_selected()
 
     # Validate credential type.
     if cred.credential_type != "aws_role":
@@ -248,11 +298,11 @@ async def credential_assume_role(
         )
 
     role_arn, external_id, _account = connection_material(role_config, cred.scopes or {}, cred)
-    session_duration = role_config.get("session_duration_seconds", 3600)
+    session_duration = 900 if session_policy is not None else min(role_config.get("session_duration_seconds", 900), 900)
     default_region = role_config.get("default_region", settings.aws_region)
     label_for_profile = body.label or cred.label or "default"
 
-    await verify_selected_user_credential(request, cred, revalidate=True)
+    await _validate_selected(revalidate=True)
     await db.refresh(cred)
     if verified_connection_evidence(cred) != evidence or await asyncio.to_thread(sm.current_version_id, cred.secret_arn) != version:
         raise connection_conflict()
@@ -274,6 +324,7 @@ async def credential_assume_role(
                     user_id=effective_user_id,
                     agent_id=body.agent_id,
                     task_id=body.task_id,
+                    **({"session_policy": session_policy} if session_policy is not None else {}),
                 )
                 expiration = credentials["Expiration"]
                 result = AssumeRoleResult(
@@ -300,6 +351,7 @@ async def credential_assume_role(
                 task_id=body.task_id,
                 label=label_for_profile,
                 aws_region=settings.aws_region,
+                **({"session_policy": session_policy} if session_policy is not None else {}),
             )
     except STSAssumeError as exc:
         # Write audit for failed attempt — do NOT include role_arn in user-facing error.
@@ -318,6 +370,7 @@ async def credential_assume_role(
                 "label": body.label,
                 "credential_id": cred.id,
                 **user_credential_audit(request),
+                **(audit_fields or {}),
                 "purpose": body.purpose,
                 "invocation_id": body.invocation_id,
                 "binding_from_registry": binding.from_registry,
@@ -336,7 +389,7 @@ async def credential_assume_role(
             },
         ) from exc
 
-    await verify_selected_user_credential(request, cred, revalidate=True)
+    await _validate_selected(revalidate=True)
     await db.refresh(cred)
     if verified_connection_evidence(cred) != evidence or await asyncio.to_thread(sm.current_version_id, cred.secret_arn) != version:
         raise connection_conflict()
@@ -361,6 +414,7 @@ async def credential_assume_role(
             "label": body.label,
             "credential_id": cred.id,
             **user_credential_audit(request),
+            **(audit_fields or {}),
             "purpose": body.purpose,
             "invocation_id": body.invocation_id,
             "binding_from_registry": binding.from_registry,
@@ -379,7 +433,7 @@ async def credential_assume_role(
         body.label,
     )
 
-    await verify_selected_user_credential(request, cred, revalidate=True)
+    await _validate_selected(revalidate=True)
     await db.refresh(cred)
     if verified_connection_evidence(cred) != evidence or await asyncio.to_thread(sm.current_version_id, cred.secret_arn) != version:
         raise connection_conflict()

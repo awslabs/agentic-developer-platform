@@ -23,12 +23,12 @@ class EvaluationRuntime:
                 auth,
                 Action.EVALUATE,
                 ResourceRef(repository_id=binding.repo, node_address=evaluation_address, org_id=node.org_id),
-                anchor.identity.accepted_plan_version,
+                auth.in_force_plan_version,
             )
             require(decision.permitted, "evaluation_authority_denied:" + (decision.reason.value if decision.reason else "unknown"))
             return node, binding, merge, flow, facts[2].policy, facts[3], auth
 
-    async def verify(self, anchor, deployment, evaluation_address):
+    async def verify(self, anchor, deployment, evaluation_address, *, include_components=False):
         services = self.deployments
         node, binding, merge, flow, policy, principal, auth = await self.authority(anchor, evaluation_address)
         require(not deployment.docs_only and deployment.delivery_complete, "evaluation_runtime_deployment_incomplete")
@@ -71,4 +71,6 @@ class EvaluationRuntime:
             )
 
         require(sorted(map(signature, fresh)) == sorted(map(signature, deployment.components)), "evaluation_runtime_evidence_changed")
+        if include_components:
+            return fresh
         return min(component.observed_at for component in fresh)

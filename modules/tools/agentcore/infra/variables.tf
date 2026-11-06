@@ -6,6 +6,11 @@ variable "browser_http_enabled" {
   type    = bool
   default = false
 }
+variable "browser_gateway_ready" {
+  description = "Enable the Gateway browser only after the reviewed consumer and facade release are connected."
+  type        = bool
+  default     = false
+}
 variable "browser_admission_enabled" {
   type    = bool
   default = false
@@ -70,11 +75,6 @@ variable "rest_api_id" {
   type    = string
   default = ""
 }
-variable "tools_parent_resource_id" {
-  description = "ID of the existing /tools resource in the shared REST API; this stack creates the three shared tool routes."
-  type        = string
-  default     = ""
-}
 variable "api_execution_arn" {
   description = "Existing REST API execution ARN without a stage suffix."
   type        = string
@@ -90,15 +90,6 @@ variable "stage_name" {
   validation {
     condition     = var.stage_name == "" || can(regex("^[A-Za-z0-9_-]+$", var.stage_name))
     error_message = "Use an explicit stage_name without wildcards."
-  }
-}
-variable "worker_role_arns" {
-  description = "Explicit existing IAM roles allowed to POST this route. Policies attach only to these roles."
-  type        = set(string)
-  default     = []
-  validation {
-    condition     = alltrue([for arn in var.worker_role_arns : can(regex("^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$", arn))])
-    error_message = "Worker identities must be explicit IAM role ARNs, without wildcards."
   }
 }
 variable "authority_endpoint" {
@@ -210,5 +201,45 @@ variable "websearch_target_excludes" {
   validation {
     condition     = length(var.websearch_target_excludes) <= 100 && alltrue([for domain in var.websearch_target_excludes : can(regex("^[a-z0-9.-]+\\.[a-z]{2,}$", domain))])
     error_message = "Supply up to 100 lowercase domain names."
+  }
+}
+
+variable "tools_assertion_key_arn" {
+  description = "Existing tools-platform signing key; only verification is allowed from this Lambda."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.tools_assertion_key_arn == "" || can(regex("^arn:aws:kms:${var.aws_region}:${var.aws_account_id}:key/[A-Za-z0-9-]+$", var.tools_assertion_key_arn))
+    error_message = "Use the existing signing key ARN in the confirmed account and region."
+  }
+}
+
+variable "tools_facade_role_arn" {
+  description = "Existing dedicated facade signer; must match the tools-platform caller."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.tools_facade_role_arn == "" || can(regex("^arn:aws:iam::${var.aws_account_id}:role/adp-(dev|prod)-role-tools-facade$", var.tools_facade_role_arn))
+    error_message = "Use the dedicated tools facade role in the confirmed account."
+  }
+}
+
+variable "tools_reconciler_key_arn" {
+  description = "Separate cleanup-only assertion verification key from the protected tools bootstrap."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.tools_reconciler_key_arn == "" || can(regex("^arn:aws:kms:${var.aws_region}:${var.aws_account_id}:key/[A-Za-z0-9-]+$", var.tools_reconciler_key_arn))
+    error_message = "Use the cleanup-only assertion key in the confirmed account and region."
+  }
+}
+
+variable "tools_reconciler_role_arn" {
+  description = "Dedicated cleanup-only signer role, paired with the reconciler key."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.tools_reconciler_role_arn == "" || can(regex("^arn:aws:iam::${var.aws_account_id}:role/adp-(dev|prod)-role-tools-reconciler$", var.tools_reconciler_role_arn))
+    error_message = "Use only the dedicated tools cleanup role in this account."
   }
 }

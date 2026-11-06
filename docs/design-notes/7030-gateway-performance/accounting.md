@@ -252,6 +252,33 @@ mode; a check before `to_thread`/`client.send` is insufficient. Any adapter need
 remote quote validation must first return a verifiable bounded-validity token;
 without that capability it cannot implement this no-wait guard and fails closed.
 
+### Accounting-to-transport handoff for #7033
+
+The #7032 implementation supplies `MeteringAdmission.arm(attempt, *, submitted,
+model, destination) -> MeteringDispatchPermit` after the admission journal is
+acknowledged. It locks the captured gates in order, checks the authoritative
+quote snapshot, SQL bound, deadlines, policy revisions, other open exposure and
+attempt epoch, and returns a one-use permit with the exact submitted-body and
+destination digests, SQL revision/epoch and both wall-clock and monotonic expiry.
+An arm commit does **not** mean a provider request was sent.
+
+The #7033 implementation must supply
+`MeteredResponseTransport.dispatch_once(client, request, permit, *, model,
+stream) -> response` for both streaming and non-streaming Responses. Acquire
+credentials and physical transport capacity before the last check. Read the
+trusted process-local pricing revision under coordinated publication, then call
+`permit.consume(submitted=actual_bytes, model=actual_model,
+destination=actual_destination, pricing_revision=current_revision)` synchronously
+at the final physical submission boundary. `consume` rejects changed bindings,
+expiry and replay, burning the permit on either success or refusal. A regular
+HTTPX `send`, request hook or pre-network awaited check is **not** that boundary;
+the adapter must supply a proven-unsent or ambiguous-send failure for accounting
+recovery. The opt-in gateway rejects metered Responses before SQL preparation
+when no transport adapter is supplied; the test-only mock adapter does not
+qualify production activation. Compatible legacy writers and recovery remain
+required as well. F03/F09–F11 need combined E3 physical-provider-call evidence
+after #7033; SQL/quote/expiry checks alone do not close those scenarios.
+
 The pricing revision check preserves today's process-local publication semantics,
 not a fictitious globally synchronous price read. An externally committed price
 generation not yet published to a process is governed by existing pricing-reader

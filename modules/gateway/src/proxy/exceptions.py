@@ -99,11 +99,12 @@ class BedrockInvocationError(BedrockGatewayError):
         message: str,
         bedrock_error_code: str | None = None,
         bedrock_request_id: str | None = None,
+        status_code: int = 502,
     ):
         super().__init__(
             error="bedrock_invocation_error",
             message=message,
-            status_code=502,
+            status_code=status_code,
             details={
                 "bedrock_error_code": bedrock_error_code,
                 "bedrock_request_id": bedrock_request_id,

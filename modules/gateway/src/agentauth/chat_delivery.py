@@ -31,7 +31,20 @@ class ChatDelivery(BaseModel):
     session_generation: int = Field(gt=0)
 
 
-def protected_delivery(envelope, human_id):
+OWNER_FIELDS = ("run_id", "tenant_id", "user_id", "team_id", "session_id")
+
+
+def protected_delivery(envelope, human_id, team_id):
+    """Register the owner tuple admission will bind, keyed by the intake routing.
+
+    ``owner_principal`` stays exactly as the intake session supplied it: the
+    response Lambda routes with it. The comparison fields come from the canonical
+    directory instead: ``human_id`` is the tenant member the root resolved and
+    ``team_id`` is that member's primary team in the tenant (``""`` for none),
+    derived the same way ``admit_chat`` derives the launch. The intake principal's
+    own team (``envelope["team_id"]``) can name a duplicate user row's team and is
+    never what the launch carries.
+    """
     if envelope.get("channel") != "webchat":
         return None
     owner = json.dumps(
@@ -46,11 +59,16 @@ def protected_delivery(envelope, human_id):
         thread_id=envelope["thread_id"],
         tenant_id=envelope["tenant_id"],
         user_id=human_id,
-        team_id=envelope.get("team_id", ""),
+        team_id=team_id,
         owner_principal=owner,
         session_generation=envelope["session_generation"],
     )
     return {"S": delivery.model_dump_json()}
+
+
+def owner_mismatch(delivery, launch, fields=OWNER_FIELDS):
+    """Names of the owner fields on which ``delivery`` and ``launch`` disagree (ids only)."""
+    return [field for field in fields if getattr(delivery, field) != getattr(launch, field)]
 
 
 def delivery_lookup_key(tenant_id, session_id, task_id):
@@ -60,7 +78,9 @@ def delivery_lookup_key(tenant_id, session_id, task_id):
 
 def delivery_lookup_item(metadata, envelope, human_id):
     delivery = ChatDelivery.model_validate_json(metadata["chat_delivery"]["S"])
-    if metadata["chat_delivery"] != protected_delivery(envelope, human_id):
+    # The team is resolved from the canonical directory, not the envelope, so the
+    # registration is re-derived for the team it recorded and must match otherwise.
+    if metadata["chat_delivery"] != protected_delivery(envelope, human_id, delivery.team_id):
         raise ValueError("chat delivery registration mismatch")
     return {**delivery_lookup_key(delivery.tenant_id, delivery.session_id, delivery.task_id), "run_id": {"S": delivery.run_id}}
 
@@ -82,8 +102,9 @@ def load_registered_delivery(authority, run_id, tenant_id):
 
 def load_delivery(authority, launch):
     delivery = load_registered_delivery(authority, launch.run_id, launch.tenant_id)
-    if any(getattr(delivery, key) != getattr(launch, key) for key in ("user_id", "team_id", "session_id")):
-        raise ChatAuthorizationRefusedError("chat owner delivery unavailable")
+    mismatch = owner_mismatch(delivery, launch, ("user_id", "team_id", "session_id"))
+    if mismatch:
+        raise ChatAuthorizationRefusedError("chat owner delivery mismatch: " + ",".join(mismatch))
     return delivery
 
 
@@ -121,6 +142,8 @@ class ChatDeliveryRelay:
         self.sequence = 0
         self.started = False
         self.text_bytes = 0
+        # Set by the model route when the sandbox reports its sources (#8113).
+        self.evidence = None
 
     @classmethod
     async def create(cls, authority, launch, operation_id, authorize):
@@ -202,6 +225,10 @@ class ChatDeliveryRelay:
         if not self.started:
             await self.publish({"event_type": "RUN_STARTED", "threadId": self.delivery.thread_id, "runId": self.delivery.task_id})
             await self.publish({"event_type": "TEXT_MESSAGE_START", "messageId": message_id, "role": "assistant"})
+            if self.evidence is not None:
+                # The frontend binds evidence to the assistant bubble by messageId (useAgUiEvents
+                # `answer_evidence`), so it is published as soon as that bubble exists.
+                await self.publish({"event_type": "CUSTOM", "name": "answer_evidence", "value": {"messageId": message_id, "evidence": self.evidence}})
             self.started = True
         for offset in range(0, len(event["text"]), 1024):
             await self.publish({"event_type": "TEXT_MESSAGE_CONTENT", "messageId": message_id, "delta": event["text"][offset : offset + 1024]})

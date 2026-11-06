@@ -54,11 +54,11 @@ on:
         default: ''
       source_run_id:
         description: >-
-          Run id of the ORIGINAL qualification whose inventory this run must act
-          on. Required for resume and cleanup: those modes execute in a separate
-          workflow run with an empty workspace, so the inventory recording the
-          fixtures is restored from that run's artifact. Without it there is
-          nothing to reconcile or delete.
+          Run id of the latest qualification/resume/cleanup attempt with an
+          inventory for this qualification. Required for resume and cleanup:
+          each mode starts in an empty workspace and restores that run's artifact.
+          After each attempt, use its new run id to retain reconciliation and
+          deletion progress rather than restoring an older inventory.
         required: false
         default: ''
 
@@ -123,12 +123,12 @@ jobs:
             echo "::error::mode '$MODE' requires qualification_id."
             exit 1
           fi
-          # resume/cleanup act on fixtures recorded by an EARLIER run. This
-          # workspace is empty, so without the originating run's artifact there is
+          # resume/cleanup act on fixtures recorded by a PREVIOUS run. This
+          # workspace is empty, so without the preceding run's artifact there is
           # no inventory to reconcile or delete against.
           if { [ "$MODE" = "resume" ] || [ "$MODE" = "cleanup" ]; } \
              && [ -z "$INPUT_SOURCE_RUN_ID" ]; then
-            echo "::error::mode '$MODE' requires source_run_id: the inventory recording the fixtures lives in the original run's artifact."
+            echo "::error::mode '$MODE' requires source_run_id: the latest inventory recording the fixtures lives in the preceding run's artifact."
             exit 1
           fi
 
@@ -196,11 +196,11 @@ jobs:
             echo "| Config | \`${INPUT_CONFIG_PATH}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # resume/cleanup act on fixtures an EARLIER run created. That run's
+      # resume/cleanup act on fixtures an EARLIER run recorded. That run's
       # inventory is the only record of them, and this workspace does not have
       # it, so it is downloaded here and installed by --restore-from below.
       # Fixtures would otherwise be unreachable and could not be cleaned up.
-      - name: Restore the originating run's inventory
+      - name: Restore the preceding run's inventory
         if: github.event.inputs.mode == 'resume' || github.event.inputs.mode == 'cleanup'
         uses: actions/download-artifact@v7
         with:
@@ -292,8 +292,8 @@ jobs:
           {
             echo ""
             echo "> **Fixtures may still exist.** Find the \`qualification_id\` in the run"
-            echo "> output above, then dispatch this workflow with \`mode=resume\` followed by"
-            echo "> \`mode=cleanup\`, passing that id AND \`source_run_id=${{ github.run_id }}\`."
-            echo "> The run id is required: it is how this run's inventory — the only record"
-            echo "> of the fixtures — is restored into the cleanup run's empty workspace."
+            echo "> output above, then dispatch with \`mode=resume\` and \`source_run_id=${{ github.run_id }}\`."
+            echo "> To clean up, use the SAME qualification id and \`source_run_id\` from the"
+            echo "> latest resume run (or this run if resume was skipped). Each run uploads"
+            echo "> its updated inventory; using an older run can undo reconciliation progress."
           } >> "$GITHUB_STEP_SUMMARY"

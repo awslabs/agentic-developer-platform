@@ -1,0 +1,10 @@
+{
+  "release_target_date": "2027-01-18",
+  "allocation": {
+    "name": "Proposed cloud plan",
+    "amount": { "amount": "100.00", "currency": "USD" },
+    "category": "cloud",
+    "period_start": "2026-10-01",
+    "period_end": "2027-03-31"
+  }
+}

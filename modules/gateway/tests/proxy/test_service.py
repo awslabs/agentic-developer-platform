@@ -17,6 +17,14 @@ from src.shared.schemas.auth import TokenContext
 from tests.proxy.conftest import MockPoolService
 
 
+@pytest.fixture(autouse=True)
+def confirmed_receipt(monkeypatch):
+    async def confirm_usage(self, **kwargs):
+        return True
+
+    monkeypatch.setattr(ProxyService, "_log_usage", confirm_usage)
+
+
 class TestProxyServiceInit:
     """Test ProxyService initialization."""
 

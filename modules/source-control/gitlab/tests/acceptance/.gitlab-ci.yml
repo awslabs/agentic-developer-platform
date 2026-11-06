@@ -1,0 +1,21 @@
+# Seed ADP_PROBE_IMAGE with the reviewed digest from the trusted S3 build.
+# The manager independently permits only that exact image. Fixtures contain
+# targets and run IDs only; never copy AWS, manager or connector credentials.
+stages: [qualification]
+network-probe:
+  stage: qualification
+  image:
+    name: $ADP_PROBE_IMAGE
+    docker:
+      user: "10001:10001"
+  tags: [$ADP_RUNNER_GROUP_TAG]
+  timeout: 10m
+  variables:
+    CI_DEBUG_TRACE: "false"
+    GIT_STRATEGY: clone
+  script:
+    - python3 modules/source-control/gitlab/tests/acceptance/probe.py --fixtures qualification-targets.json --ca-file "$CI_SERVER_TLS_CA_FILE" --output qualification-probes.json
+  artifacts:
+    when: always
+    expire_in: 1 day
+    paths: [qualification-probes.json]

@@ -1,0 +1,26 @@
+{
+ "flow_id": "9a67bcca-0cb1-4fe1-aa20-ff5b834e45e5",
+ "plan_version": 2,
+ "plan_hash": "d48dcf14f84b5624a163f9f867f470bd1d228024b4d8cb987f95bb540f3648a1",
+ "proposal_hash": "b47759cf6c95b4f31130c6bbb685dbbd1dc9b7984ad423eb3fc28237f7af826f",
+ "acceptance_gate_address": "cos-runtime-7197/epic-7197/runtime/accept",
+ "acceptance_gate_id": "9e1bb036-e247-4855-986c-2ff907340061",
+ "superseded_versions": [
+  {
+   "plan_version": 1,
+   "plan_hash": "95d92fb33c791ba6a967b939ee694447c0b3018f44fb9a62546c773085eb2a72",
+   "superseded_at": "2026-10-08T11:34:50Z",
+   "reason": "replanned into three waves with evaluation issues"
+  }
+ ],
+ "status": "registered_inert_not_accepted",
+ "execution_authorized": false,
+ "registered_at": "2026-10-08",
+ "evaluation_issues": {
+  "runtime": 7214,
+  "kirocrew": 7215,
+  "dashboard": 7216,
+  "live-qualification": 7217
+ },
+ "note": "Owner-requested inert draft; v2 filed via the draft preview/revise routes. Eval nodes carry issue_ref only; runtime evaluation specifications are bound later through evaluation acceptance. Acceptance is a separate owner decision: adp flow gate approve 9e1bb036-e247-4855-986c-2ff907340061 --expect-plan-hash <plan_hash> --yes"
+}

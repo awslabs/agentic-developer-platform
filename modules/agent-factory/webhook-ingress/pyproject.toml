@@ -5,6 +5,8 @@ description = "Webhook ingress Lambda utilities: event logging, rate limiting, m
 requires-python = ">=3.11"
 dependencies = [
     "boto3>=1.34",
+    "PyJWT==2.14.0",
+    "cryptography==50.0.2",
 ]
 
 [project.optional-dependencies]

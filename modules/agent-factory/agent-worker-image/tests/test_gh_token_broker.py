@@ -521,6 +521,44 @@ def test_protected_worker_never_loads_or_reuses_a_shared_signing_key(client, mon
 
 @pytest.fixture(autouse=True)
 def stub_agent_runtime(monkeypatch):
+    monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", MagicMock(return_value={"status": "up_to_date"}))
     # These bootstrap tests stub execution; deadline/process-group tests run real children.
     import subprocess
     monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))
+
+
+class TestBrokerTokenRepositories:
+    """Issue #9550: the gateway's repository list reaches the agent as TARGET_REPOS."""
+
+    def test_listed_repositories_are_remembered_with_the_primary_first(self):
+        import entrypoint
+
+        entrypoint._remember_broker_token_repositories(["org/planning", "org/api", "bad name", 7, "org/api"], "org/api")
+        assert entrypoint.broker_token_repositories("org/api") == ["org/api", "org/planning"]
+
+    def test_without_a_list_only_the_primary_repository_is_exported(self):
+        import entrypoint
+
+        entrypoint._remember_broker_token_repositories(None, "org/api")
+        assert entrypoint.broker_token_repositories("org/api") == ["org/api"]
+        # A list remembered for another repository never leaks into this run's export.
+        assert entrypoint.broker_token_repositories("org/other") == ["org/other"]
+
+    def test_broker_mint_records_the_gateway_repositories(self):
+        from datetime import UTC, datetime, timedelta
+
+        import entrypoint
+
+        client = MagicMock()
+        client.is_configured = True
+        client.github_installation_token.return_value = {
+            "token": "ghs_x",
+            "app_id": "12",
+            "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            "repositories": ["org/api", "org/planning"],
+        }
+        token, app_id, _ = entrypoint._broker_installation_token(
+            installation_id=17, repo_owner="org", repo_name="api", cred_client=client
+        )
+        assert (token, app_id) == ("ghs_x", "12")
+        assert entrypoint.broker_token_repositories("org/api") == ["org/api", "org/planning"]

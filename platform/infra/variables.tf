@@ -4,6 +4,24 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "tools_execution_table_arn" {
+  description = "Reviewed dedicated tools execution table ARN; empty disables façade storage access."
+  type        = string
+  default     = ""
+}
+
+variable "tools_internal_authorize_api_arn" {
+  description = "Reviewed execution ARN for the internal tools-authorization POST route."
+  type        = string
+  default     = ""
+}
+
+variable "tools_agentcore_gateway_arn" {
+  description = "Specific AgentCore tools gateway ARN for the façade role; empty keeps invocation disabled."
+  type        = string
+  default     = ""
+}
+
 variable "environment" {
   description = "Environment name (dev, staging, prod)"
   type        = string
@@ -33,12 +51,26 @@ variable "single_nat_gateway" {
   default     = true
 }
 
+variable "private_subnet_cidrs" {
+  type        = list(string)
+  default     = []
+  description = "Optional initial private subnet CIDRs. New default /16 VPCs receive a /20 per AZ; updates retain existing CIDRs and add capacity separately."
+}
+
+variable "capacity_existing_cluster" {
+  type        = string
+  default     = ""
+  description = "Existing cluster name discovered during an update; its live subnet membership allows retaining exhausted capacity. Empty for a fresh install."
+}
+
 variable "additional_private_subnet_ids_by_az" {
   description = <<-EOT
     Additional ALREADY-EXISTING private subnets to add to the EKS cluster's
     subnet set, keyed by the availability zone each is expected to be in:
 
-      {"us-east-1a" = "subnet-0123456789abcdef0"}
+      {"us-east-1a" = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]}
+
+    A single subnet ID string per zone is still accepted for compatibility.
 
     Why (#5830): when the cluster's original private subnets exhaust their IP
     addresses, the CNI fails every new pod with "failed to assign an IP address
@@ -77,7 +109,7 @@ variable "additional_private_subnet_ids_by_az" {
     needs an explicit authorisation. A bare `terraform apply` with the variable
     unset bypasses that and WILL plan the additions away.
   EOT
-  type        = map(string)
+  type        = any
   default     = {}
 }
 
@@ -239,4 +271,10 @@ variable "gateway_customer_role_arns" {
     condition     = alltrue([for arn in var.gateway_customer_role_arns : can(regex("^arn:aws(-[a-z]+)*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", arn))])
     error_message = "Customer role approvals must be exact IAM role ARNs without wildcards."
   }
+}
+
+variable "enable_gitlab_runner_build" {
+  description = "Opt in to the separately reviewed, scoped GitLab runner bootstrap build project."
+  type        = bool
+  default     = false
 }

@@ -20,6 +20,8 @@ const labels = {
   awaiting_input: "Investigator needs additional input",
 };
 async function api(path, body) {
+  // Browser-only demo API helper; this request never executes on the server.
+  // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
   const r = await fetch(
     path,
     body

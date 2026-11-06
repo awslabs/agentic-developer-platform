@@ -19,12 +19,14 @@ Environment variables:
     MCP_URL         - MCP endpoint URL (default: cluster-internal)
     EVAL_MODE       - "mcp" (default) or "direct" (hit backends directly)
     ZOEKT_URL       - Zoekt backend URL (for direct mode)
+    ZOEKT_API_KEY   - Private backend key supplied by the operator (direct mode)
     S3_VECTORS_INDEX - S3 Vectors index name (for direct mode)
     REPORT_FORMAT   - "text" (default) or "json"
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
@@ -35,6 +37,8 @@ from typing import Any
 
 import httpx
 import yaml
+
+from door.zoekt_transport import ZoektUnavailable, search_json
 
 log = logging.getLogger(__name__)
 
@@ -199,6 +203,18 @@ def load_golden() -> list[GoldenQuestion]:
 # ---------------------------------------------------------------------------
 
 
+def _zoekt_request(config: EvalConfig, query: str, *, limit: int) -> dict[str, Any]:
+    """Use Door's bounded transport from this synchronous evaluation harness."""
+    try:
+        return asyncio.run(
+            search_json(config.zoekt_url, query, limit=limit, timeout=config.timeout)
+        )
+    except ZoektUnavailable:
+        # A nonempty, fixed error keeps report aggregation accurate without
+        # publishing provider response bodies or backend credentials.
+        raise RuntimeError("Zoekt evaluation request unavailable") from None
+
+
 def check_ingestion(config: EvalConfig, corpus: list[Repo]) -> dict[str, bool]:
     """Verify all corpus repos have been ingested.
 
@@ -212,22 +228,13 @@ def check_ingestion(config: EvalConfig, corpus: list[Repo]) -> dict[str, bool]:
         try:
             if config.eval_mode == "direct":
                 # Query Zoekt: search for any file in this repo
-                # Use a common token as content query (Zoekt needs a content term)
-                resp = httpx.post(
-                    f"{config.zoekt_url}/api/search",
-                    json={"q": f"r:{repo.name}", "num": 1},
-                    timeout=config.timeout,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    result = data.get("Result", {})
-                    # Zoekt v16+ uses "Files" instead of "FileMatches"
-                    file_matches = result.get("FileMatches") or result.get("Files") or []
-                    # Also check FileCount for repo-only queries (no content matches but files exist)
-                    file_count = result.get("FileCount", 0)
-                    results[repo.name] = len(file_matches) > 0 or file_count > 0
-                else:
-                    results[repo.name] = False
+                data = _zoekt_request(config, f"r:{repo.name}", limit=1)
+                result = data.get("Result", {})
+                # Zoekt v16+ uses "Files" instead of "FileMatches"
+                file_matches = result.get("FileMatches") or result.get("Files") or []
+                # Also check FileCount for repo-only queries (no content matches but files exist)
+                file_count = result.get("FileCount", 0)
+                results[repo.name] = len(file_matches) > 0 or file_count > 0
             else:
                 # Use browse verb to check if repo is indexed
                 headers = {
@@ -308,14 +315,7 @@ def _query_zoekt(config: EvalConfig, arguments: dict[str, Any]) -> dict[str, Any
     query = arguments.get("query", "")
     limit = arguments.get("limit", 20)
 
-    # Zoekt web API: POST /api/search
-    resp = httpx.post(
-        f"{config.zoekt_url}/api/search",
-        json={"q": query, "num": limit},
-        timeout=config.timeout,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    data = _zoekt_request(config, query, limit=limit)
 
     # Transform Zoekt response to match MCP search response format
     # Zoekt v16+ uses "Files" instead of "FileMatches"
@@ -365,13 +365,7 @@ def _query_zoekt_browse(config: EvalConfig, arguments: dict[str, Any]) -> dict[s
 
     # Use Zoekt file search to list files under the path
     query = f"r:{repo} f:{path_prefix}" if path_prefix else f"r:{repo} f:."
-    resp = httpx.post(
-        f"{config.zoekt_url}/api/search",
-        json={"q": query, "num": 100},
-        timeout=config.timeout,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    data = _zoekt_request(config, query, limit=100)
 
     # Extract unique directory entries at the requested depth
     # Zoekt v16+ uses "Files" instead of "FileMatches"

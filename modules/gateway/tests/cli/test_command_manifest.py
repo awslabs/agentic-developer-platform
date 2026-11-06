@@ -141,6 +141,21 @@ def test_entries_are_unique(commands) -> None:
     assert len(names) == len(set(names))
 
 
+def test_amendment_preview_declares_its_read_only_post(commands):
+    preview = next(command for command in commands if command["command"] == "adp flow amendment preview")
+    assert preview["mutates"] is False
+    assert preview["operation"] == "flows.read"
+    assert set(preview["request"]["methods"]) == {"GET", "POST"}
+
+
+def test_result_publication_declares_read_only_service_access(commands):
+    publication = next(command for command in commands if command["command"] == "adp service result publication")
+    assert publication["mutates"] is False
+    assert publication["operation"] == "service.read"
+    assert publication["required_capabilities"] == ["service.read"]
+    assert publication["response"]["stream"] == "single-json"
+
+
 def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
     helper_prefixes = [
         ("adp-aws.py", ["adp", "aws"]),
@@ -155,11 +170,15 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-tenant.py", ["adp", "tenant"]),
         ("adp-hierarchy.py", ["adp", "admin"]),
         ("adp-vault.py", ["adp"]),
+        ("adp-native-credentials.py", ["adp", "credential"]),
         ("adp-machine.py", ["adp", "admin"]),
         ("adp-gitlab.py", ["adp"]),
         ("adp-usage.py", ["adp"]),
         ("adp-knowledge.py", ["adp"]),
         ("adp-agent.py", ["adp", "agent"]),
+        ("adp-product.py", ["adp", "product"]),
+        ("adp-insights.py", ["adp", "insights"]),
+        ("adp-service.py", ["adp", "service"]),
         ("adp-budget.py", ["adp"]),
         ("adp-ratelimit.py", ["adp"]),
         ("adp-platform.py", ["adp", "platform"]),
@@ -236,7 +255,19 @@ def test_every_entry_declares_request_and_output_contract(commands) -> None:
                 "DELETE",
             }
             assert all(path.startswith("/") for path in row["request"]["paths"])
-        assert row["response"]["stream"] in {"single-json", "ndjson"}
+        if row["command"] == "adp mcp":
+            assert row["response"]["stream"] == "json-rpc-stdio"
+        elif row["command"] in {
+            "adp tools status",
+            "adp tools logout",
+            "adp devbox ssh",
+            "adp devbox ssh-config",
+            "adp credential host-serve",
+            "adp gitlab setup",
+        }:
+            assert row["response"]["stream"] == "human-text"
+        else:
+            assert row["response"]["stream"] in {"single-json", "ndjson"}
         if row["command"] == "adp flow watch":
             assert row["response"]["stream"] == "ndjson"
 
@@ -246,6 +277,13 @@ def test_new_and_reclassified_commands_publish_their_real_wire_contract(
 ) -> None:
     found = {row["command"]: row for row in commands}
     expected = {
+        "adp service result publication": (
+            {"GET"},
+            {
+                "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/results/{result_id}",
+                "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/results/{result_id}/publication-status",
+            },
+        ),
         "adp capabilities": ({"GET"}, {"/me/cli-capabilities"}),
         "adp doctor": (
             {"GET"},
@@ -419,9 +457,10 @@ def test_every_owning_test_file_exists(commands) -> None:
     the command.
     """
     root = Path(__file__).parents[2]
+    repo_root = Path(__file__).parents[4]
     for command in commands:
         for test_path in command["tests"]:
-            assert (root / test_path).is_file(), f"{command['command']} names missing test {test_path}"
+            assert (root / test_path).is_file() or (repo_root / test_path).is_file(), f"{command['command']} names missing test {test_path}"
 
 
 def test_the_two_new_commands_are_recorded_as_read_only(commands) -> None:
@@ -444,10 +483,23 @@ def test_manifest_itself_is_installed_updated_and_downloadable() -> None:
 def test_http_mutations_have_capabilities_and_setup_declares_provider_variants(commands):
     for row in commands:
         if row["mutates"] and row["request"]["kind"] == "http":
-            if row.get("capability_source") == "/activity/invocations/{invocation_id}/agent/state":
+            if row["command"] in {"adp mcp", "adp tools logout"}:
+                assert not row["required_capabilities"]
+            elif row.get("authentication") == "project-budget-owner":
+                assert row["command"] == "adp product budget set"
+                assert not row["required_capabilities"]
+            elif row.get("capability_source") == "/activity/invocations/{invocation_id}/agent/state":
                 assert row["command"] in {"adp agent " + action for action in ("pause", "resume", "steer", "abort")}
                 assert row["helper"] == "adp-agent.py"
                 assert not row["required_capabilities"]  # actual runtime capability, not invented global IDs
+            elif row.get("authentication") == "native-cli-human-with-separate-browser-selection":
+                assert row["command"] in {"adp credential use", "adp credential host-register", "adp credential host-serve"}
+                assert row["capability_source"] == "/auth/native-credentials/config"
+                assert not row["required_capabilities"]  # exact native human/recipient authority, no generic worker grant
+            elif row.get("capability_source") == "/activity/invocations/{invocation_id}/reconcile-exit/preview":
+                assert row["command"] == "adp agent recover-exit"
+                assert row["helper"] == "adp-agent.py"
+                assert not row["required_capabilities"]  # protected ownership and provider exit evidence, not a live control capability
             elif row.get("authentication") in {"task-service-principal", "task-human-standing-policy"}:
                 assert row["required_oauth_scopes"], row["command"]
                 assert not row["required_capabilities"], "Task service tokens must not use human discovery"

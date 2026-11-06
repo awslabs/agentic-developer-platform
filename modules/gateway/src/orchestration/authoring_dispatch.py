@@ -85,12 +85,13 @@ from dataclasses import dataclass, replace
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from src.shared.models.base import utcnow
 
-from .models import AmendmentRequestState
+from .models import AmendmentRequestState, OrchestrationPendingAmendment
 from .pending_amendments import AmendmentRequest, assign_author_run, mark_request_dispatched, owed_authoring_requests
 
 logger = logging.getLogger("bedrockgateway.orchestration.authoring_dispatch")
@@ -134,7 +135,6 @@ _ENVELOPE_VERSION = "1.0"
 _MAX_SQS_KEY_LEN = 128
 
 QUEUE_URL_ENV = "BG_ORCH_DISPATCH_QUEUE_URL"
-REPO_ENV = "BG_ORCH_DISPATCH_REPO"
 
 
 def authoring_run_id(request_id: str) -> str:
@@ -200,6 +200,7 @@ class PendingAuthoring:
     base_plan_version: int | None
     base_plan_hash: str | None
     envelope: dict[str, Any]
+    repository_id: int | None
     group_id: str
     deduplication_id: str
 
@@ -279,6 +280,16 @@ def _build_envelope(
     }
 
 
+async def _requester_still_matches(session: AsyncSession, *, org_id: str, requested_by: str, envelope: dict[str, Any]) -> bool:
+    from src.shared.identity.resolver import resolve_root_user_entity_id, resolve_user_entity_id
+
+    if envelope["payload"]["requested_by"] != requested_by:
+        return False
+    user_id = await resolve_root_user_entity_id(session, org_id, requested_by)
+    cognito_sub = await resolve_user_entity_id(session, org_id, user_id)
+    return user_id == envelope["actor"]["user_id"] and cognito_sub == envelope["cognito_sub"]
+
+
 async def build_authoring_assignment(
     session: AsyncSession,
     *,
@@ -287,19 +298,20 @@ async def build_authoring_assignment(
     repo: str,
     issue: int,
     installation_id: int,
+    repository_id: int | None = None,
 ) -> PendingAuthoring | None:
     """Bind an authoring run to a recorded request. **Commits nothing; sends nothing.**
 
     Call inside the same transaction that recorded the request, so the run binding and
     the request row land together or not at all.
 
-    Returns None only when the request has already been **published** (`DISPATCHED`):
-    one author is already answering, so nothing is owed and the caller reports the same
-    success it reported the first time.
+    Returns None when the request has already been **published** (`DISPATCHED`) or
+    a draft has been registered: an author is already answering or has answered, so
+    nothing is owed and the caller reports the same success it reported the first time.
 
-    A request that is still `QUEUED` yields an assignment even if a run is already
-    bound, because `QUEUED` means the envelope did not provably reach the queue — a
-    duplicated delivery and a lost publish ack look identical from here, and both are
+    A request that is still `QUEUED` and has no draft yields an assignment even if a
+    run is already bound, because `QUEUED` means the envelope did not provably reach
+    the queue — a duplicated delivery and a lost publish ack look identical, and both are
     answered by re-publishing. That reconciles to *one* authoring job rather than two,
     because the run id is derived and the deduplication id is derived: SQS collapses the
     duplicate, and even past the dedup window the pod binding in
@@ -326,12 +338,48 @@ async def build_authoring_assignment(
         )
         return None
 
+    draft_id = await session.scalar(
+        select(OrchestrationPendingAmendment.id)
+        .where(
+            OrchestrationPendingAmendment.org_id == org_id,
+            OrchestrationPendingAmendment.flow_id == request.flow_id,
+            OrchestrationPendingAmendment.request_id == request.id,
+        )
+        .limit(1)
+    )
+    if draft_id is not None:
+        return None
+
     # The stored id wins when one is already bound: it is what `resolve_authoring_request`
     # checks, so a re-publish has to address the run the server already commissioned.
     # Equal to the derived value in every reachable case — `assign_author_run` only ever
     # writes this function's derivation — but reading it rather than recomputing means a
     # re-publish can never disagree with the binding.
     run_id = request.author_run_id or authoring_run_id(request.id)
+    stored = request.authoring_assignment
+    if request.author_run_id:
+        if (
+            not stored
+            or stored.get("repository_id") != repository_id
+            or stored.get("repo", "").casefold() != repo.casefold()
+            or stored.get("issue") != issue
+            or stored.get("installation_id") != installation_id
+        ) or not await _requester_still_matches(session, org_id=org_id, requested_by=request.requested_by, envelope=stored["envelope"]):
+            return None
+        return PendingAuthoring(
+            org_id=org_id,
+            request_id=request.id,
+            flow_id=request.flow_id,
+            replan_decision_id=request.replan_decision_id,
+            requested_by=request.requested_by,
+            author_run_id=run_id,
+            base_plan_version=request.base_plan_version,
+            base_plan_hash=request.base_plan_hash,
+            envelope=stored["envelope"],
+            repository_id=repository_id,
+            group_id=message_group_id(org_id=org_id, request_id=request.id),
+            deduplication_id=message_deduplication_id(request_id=request.id, replan_decision_id=request.replan_decision_id),
+        )
 
     from src.shared.identity.resolver import resolve_root_user_entity_id, resolve_user_entity_id
 
@@ -367,7 +415,13 @@ async def build_authoring_assignment(
 
     # Bind only after the complete input is resolvable and transportable. A refusal
     # leaves the durable request queued without commissioning an unusable run.
-    await assign_author_run(session, org_id=org_id, request_id=request.id, author_run_id=run_id)
+    await assign_author_run(
+        session,
+        org_id=org_id,
+        request_id=request.id,
+        author_run_id=run_id,
+        assignment={"repository_id": repository_id, "repo": repo, "issue": issue, "installation_id": installation_id, "envelope": envelope},
+    )
 
     logger.info(
         "authoring assignment built request=%s flow=%s run=%s base=v%s org=%s — envelope queued for publish",
@@ -387,6 +441,7 @@ async def build_authoring_assignment(
         base_plan_version=request.base_plan_version,
         base_plan_hash=request.base_plan_hash,
         envelope=envelope,
+        repository_id=repository_id,
         group_id=message_group_id(org_id=org_id, request_id=request.id),
         deduplication_id=message_deduplication_id(request_id=request.id, replan_decision_id=request.replan_decision_id),
     )
@@ -398,7 +453,7 @@ async def recover_owed_authoring(
     limit: int = RECOVERY_LIMIT,
     grace_seconds: int = RECOVERY_GRACE_SECONDS,
 ) -> list[PendingAuthoring]:
-    """Rebuild the assignments for requests still owed an author. **Commits nothing.**
+    """Recover the persisted assignments for requests still owed an author. **Commits nothing.**
 
     The other half of commit-then-publish, and the reason this module's claim that "a
     later pass re-publishes it" is now true. `build_authoring_assignment` is driven by a
@@ -417,26 +472,15 @@ async def recover_owed_authoring(
     `mark_request_dispatched` is conditional on `QUEUED`, so the first successful publish
     takes the row out of this query's scope permanently.
 
-    Per-request failures are contained and skipped rather than raised: a tenant whose
-    installation cannot be resolved, or a human who has since been removed, must not stop
-    every other tenant's owed request being recovered. A skipped request stays `QUEUED`
-    and is tried again next wake, which is the honest outcome — it is still owed.
+    Only requests with a saved verified target and envelope are recoverable. Current
+    authority is rechecked before reuse; legacy unbound requests stay readable and owed.
+    Per-request failures are contained so one inaccessible planning repository cannot
+    stop another tenant's recovery.
 
     Returns:
         The assignments to publish. Empty when nothing is owed, which is the normal case.
     """
-    repo = (os.environ.get(REPO_ENV) or "").strip()
-    if not repo:
-        # Same fail-closed rule the command pass applies: with no configured repository
-        # an authoring run cannot be addressed at all, so there is nothing to rebuild.
-        # Logged at debug because on a deployment that never enabled the engine this
-        # would otherwise be a warning on every tick.
-        logger.debug("authoring recovery: %s is unset; no owed assignment can be addressed", REPO_ENV)
-        return []
-
     from datetime import timedelta
-
-    from .dispatch_pass import resolve_installation_id
 
     try:
         owed = await owed_authoring_requests(session, limit=limit, older_than=utcnow() - timedelta(seconds=grace_seconds))
@@ -453,30 +497,17 @@ async def recover_owed_authoring(
     logger.info("authoring recovery: %d request(s) still owed an author", len(owed))
 
     rebuilt: list[PendingAuthoring] = []
-    for org_id, request, intent_ref in owed:
+    for org_id, request, _intent_ref in owed:
         try:
-            # Addressed from server state only. The issue comes from the flow's own
-            # intent issue and the installation from the org record through the SAME
-            # fail-closed resolver dispatch uses — never from anything a comment
-            # supplied, which by now is long consumed anyway.
-            issue = _issue_number(intent_ref)
-            if issue is None:
-                logger.warning(
-                    "authoring recovery: flow %s has no usable intent issue; request %s stays queued",
-                    request.flow_id,
-                    request.id,
-                )
+            stored = request.authoring_assignment
+            if not request.author_run_id or not stored or not stored.get("repository_id"):
                 continue
+            from .engine_commands import _authoring_source
 
-            installation_id = await resolve_installation_id(session, org_id=org_id)
-            if installation_id is None:
-                logger.warning(
-                    "authoring recovery: org %s has no unambiguous installation; request %s stays queued",
-                    org_id,
-                    request.id,
-                )
+            source = await _authoring_source(session, org_id=org_id, flow_id=request.flow_id)
+            if source is None:
                 continue
-
+            repo, issue, installation_id, repository_id = source
             assignment = await build_authoring_assignment(
                 session,
                 org_id=org_id,
@@ -484,6 +515,7 @@ async def recover_owed_authoring(
                 repo=repo,
                 issue=issue,
                 installation_id=installation_id,
+                repository_id=repository_id,
             )
         except Exception:
             # Contained per request, for the reason in the docstring: one tenant's
@@ -505,21 +537,6 @@ async def recover_owed_authoring(
         rebuilt.append(assignment)
 
     return rebuilt
-
-
-def _issue_number(intent_ref: str | None) -> int | None:
-    """The issue number a flow's `intent_ref` names, or None.
-
-    Both `"4527"` and `"#4527"` occur in real proposals — `engine_commands`,
-    `dispatch_pass` and `diagnose` all cope with either spelling — so this strips the
-    `#` rather than matching one form and silently failing on half of all flows.
-
-    None for absent or non-numeric text, which is a skip rather than a guess: a rebuilt
-    envelope addressed at an invented issue would post an authoring run's output
-    somewhere nobody asked for.
-    """
-    text = (intent_ref or "").strip().lstrip("#")
-    return int(text) if text.isdigit() else None
 
 
 async def publish_authoring(
@@ -562,6 +579,46 @@ async def publish_authoring(
             QUEUE_URL_ENV,
             pending.request_id,
         )
+        return False
+
+    if pending.repository_id is None:
+        return False
+    try:
+        from .engine_commands import _authoring_source
+        from .models import OrchestrationAmendmentRequest
+
+        async with session_factory() as session:
+            row = await session.scalar(
+                select(OrchestrationAmendmentRequest).where(
+                    OrchestrationAmendmentRequest.id == pending.request_id,
+                    OrchestrationAmendmentRequest.org_id == pending.org_id,
+                    OrchestrationAmendmentRequest.state == AmendmentRequestState.QUEUED.value,
+                )
+            )
+            stored = row.authoring_assignment if row is not None else None
+            if not stored or row.author_run_id != pending.author_run_id or stored.get("envelope") != pending.envelope:
+                return False
+            source = await _authoring_source(session, org_id=pending.org_id, flow_id=pending.flow_id)
+            if (
+                source
+                != (
+                    stored.get("repo"),
+                    stored.get("issue"),
+                    stored.get("installation_id"),
+                    stored.get("repository_id"),
+                )
+                or source
+                != (
+                    pending.envelope["source_ref"]["repo"],
+                    pending.envelope["source_ref"]["issue"],
+                    pending.envelope["source_ref"]["installation_id"],
+                    pending.repository_id,
+                )
+                or not await _requester_still_matches(session, org_id=pending.org_id, requested_by=row.requested_by, envelope=pending.envelope)
+            ):
+                return False
+    except Exception:
+        logger.exception("authoring assignment target verification unavailable request=%s", pending.request_id)
         return False
 
     protected = os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"

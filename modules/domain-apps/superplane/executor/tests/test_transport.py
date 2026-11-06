@@ -199,3 +199,249 @@ async def test_unbound_transport_is_limited_to_actual_bootstrap_paths(tmp_path):
                 "/internal/v1/controller-execution/lease", {}, bootstrap=True
             )
         assert len(seen) == 1 and not run.exists()
+
+
+@pytest.mark.parametrize(
+    "route,read_timeout",
+    [
+        ("provider-session", 25),
+        ("authority", 25),
+        ("provider-preflight", 25),
+        ("recovery/lifecycle", 25),
+        ("task/acquire", 15),
+    ],
+)
+@pytest.mark.parametrize("failure", [None, "refused", "timeout"])
+async def test_bounded_authority_responses_and_route_specific_retries(
+    tmp_path, monkeypatch, capsys, route, read_timeout, failure
+):
+    seen = []
+
+    def transport(request):
+        seen.append(request)
+        assert request.extensions["timeout"] == {
+            "connect": 10,
+            "read": read_timeout,
+            "write": 10,
+            "pool": 10,
+        }
+        if failure == "timeout":
+            raise httpx.ReadTimeout("secret-provider-response", request=request)
+        return httpx.Response(403 if failure else 200, json={"issued": True})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(transport), timeout=10
+    ) as client:
+        authority = GatewayAuthority(
+            endpoint="https://gateway.example",
+            region="us-east-1",
+            run_credential_file=tmp_path / "run",
+            workload_token_file=tmp_path / "workload",
+            client=client,
+        )
+        monkeypatch.setattr(authority, "_headers", lambda *args, **kwargs: {})
+        if failure:
+            with pytest.raises(OperationRefused):
+                await authority.post("/internal/v1/controller-execution/" + route, {})
+        else:
+            assert await authority.post(
+                "/internal/v1/controller-execution/" + route, {}
+            ) == {"issued": True}
+    assert len(seen) == (
+        2
+        if route in {"authority", "provider-preflight"} and failure == "timeout"
+        else 1
+    )
+    output = capsys.readouterr().err
+    assert "secret-provider-response" not in output
+    if failure == "timeout":
+        assert json.loads(output) == {
+            "event": "paid_authority_transport_failed",
+            "exception_type": "ReadTimeout",
+            "path": "/internal/v1/controller-execution/" + route,
+        }
+
+
+@pytest.mark.parametrize("route", ["authority", "provider-preflight"])
+async def test_authority_read_retries_once_with_fresh_workload_identity(
+    tmp_path, route
+):
+    run, workload = tmp_path / "run", tmp_path / "workload"
+    run.write_text("original-run")
+    workload.write_text("original-workload")
+    session = Mock()
+    session.get_credentials.return_value = Credentials("test-access", "test-secret")
+    seen = []
+
+    def transport(request):
+        seen.append(request)
+        if len(seen) == 1:
+            run.write_text("rotated-run")
+            workload.write_text("rotated-workload")
+            raise httpx.ReadTimeout("response lost", request=request)
+        assert request.headers["X-Adp-Run-Credential"] == "rotated-run"
+        assert request.headers["X-Adp-Workload-Token"] == "rotated-workload"
+        return httpx.Response(200, json={"current": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        authority = GatewayAuthority(
+            endpoint="https://gateway.example",
+            region="us-east-1",
+            run_credential_file=run,
+            workload_token_file=workload,
+            session=session,
+            client=client,
+        )
+        assert await authority.post(
+            "/internal/v1/controller-execution/" + route, {"operation_id": "original"}
+        ) == {"current": True}
+    assert len(seen) == 2 and seen[0].content == seen[1].content
+
+
+@pytest.mark.parametrize("route", ["authority", "provider-preflight"])
+async def test_authority_read_total_deadline_stops_a_hanging_transport(
+    tmp_path, monkeypatch, route
+):
+    import asyncio
+    import superplane_executor.authority as module
+
+    real_timeout = asyncio.timeout
+    limits = []
+
+    def short_timeout(seconds):
+        limits.append(seconds)
+        return real_timeout(0.01)
+
+    monkeypatch.setattr(module.asyncio, "timeout", short_timeout)
+    calls = []
+
+    async def transport(request):
+        calls.append(request)
+        await asyncio.Event().wait()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        authority = GatewayAuthority(
+            endpoint="https://gateway.example",
+            region="us-east-1",
+            run_credential_file=tmp_path / "run",
+            workload_token_file=tmp_path / "workload",
+            client=client,
+        )
+        monkeypatch.setattr(authority, "_headers", lambda *args, **kwargs: {})
+        with pytest.raises(OperationRefused):
+            await authority.post("/internal/v1/controller-execution/" + route, {})
+    assert limits == [25] and len(calls) == 1
+
+
+@pytest.mark.parametrize("route", ["authority", "provider-preflight"])
+@pytest.mark.parametrize("status", [502, 503, 504])
+async def test_read_proxy_failure_rechecks_with_rotated_identity(
+    tmp_path, route, status
+):
+    run, workload = tmp_path / "run", tmp_path / "workload"
+    run.write_text("original-run")
+    workload.write_text("original-workload")
+    session = Mock()
+    session.get_credentials.return_value = Credentials("test-access", "test-secret")
+    seen = []
+
+    def transport(request):
+        seen.append(request)
+        if len(seen) == 1:
+            run.write_text("rotated-run")
+            workload.write_text("rotated-workload")
+            return httpx.Response(status, text="upstream temporarily unavailable")
+        assert request.headers["X-Adp-Run-Credential"] == "rotated-run"
+        assert request.headers["X-Adp-Workload-Token"] == "rotated-workload"
+        return httpx.Response(200, json={"current": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        authority = GatewayAuthority(
+            endpoint="https://gateway.example",
+            region="us-east-1",
+            run_credential_file=run,
+            workload_token_file=workload,
+            session=session,
+            client=client,
+        )
+        assert await authority.post(
+            "/internal/v1/controller-execution/" + route,
+            {"operation_id": "original"},
+        ) == {"current": True}
+    assert len(seen) == 2 and seen[0].content == seen[1].content
+
+
+@pytest.mark.parametrize(
+    "route,first,second,expected_calls",
+    [
+        ("authority", 502, 502, 2),
+        ("provider-preflight", 503, 403, 2),
+        ("authority", 403, 200, 1),
+        ("authority", 429, 200, 1),
+        ("provider-session", 502, 200, 1),
+        ("lease", 503, 200, 1),
+        ("renew", 504, 200, 1),
+        ("recovery/lifecycle", 502, 200, 1),
+    ],
+)
+async def test_proxy_retry_is_bounded_and_never_replays_mutations(
+    tmp_path, monkeypatch, capsys, route, first, second, expected_calls
+):
+    seen = []
+
+    def transport(request):
+        seen.append(request)
+        return httpx.Response(
+            first if len(seen) == 1 else second, text="private-response-not-for-logs"
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        authority = GatewayAuthority(
+            endpoint="https://gateway.example",
+            region="us-east-1",
+            run_credential_file=tmp_path / "run",
+            workload_token_file=tmp_path / "workload",
+            client=client,
+        )
+        monkeypatch.setattr(authority, "_headers", lambda *args, **kwargs: {})
+        with pytest.raises(OperationRefused):
+            await authority.post("/internal/v1/controller-execution/" + route, {})
+    assert len(seen) == expected_calls
+    output = capsys.readouterr().err
+    assert "private-response-not-for-logs" not in output
+    event = json.loads(output)
+    assert event["path"] == "/internal/v1/controller-execution/" + route
+    assert event["status_code"] == (first if expected_calls == 1 else second)
+
+
+async def test_proxy_retry_delay_stays_inside_total_authority_deadline(
+    tmp_path, monkeypatch
+):
+    import asyncio
+    import superplane_executor.authority as module
+
+    real_timeout = asyncio.timeout
+    limits, calls = [], []
+
+    def short_timeout(seconds):
+        limits.append(seconds)
+        return real_timeout(0.01)
+
+    monkeypatch.setattr(module.asyncio, "timeout", short_timeout)
+
+    def transport(request):
+        calls.append(request)
+        return httpx.Response(502)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        authority = GatewayAuthority(
+            endpoint="https://gateway.example",
+            region="us-east-1",
+            run_credential_file=tmp_path / "run",
+            workload_token_file=tmp_path / "workload",
+            client=client,
+        )
+        monkeypatch.setattr(authority, "_headers", lambda *args, **kwargs: {})
+        with pytest.raises(OperationRefused):
+            await authority.post("/internal/v1/controller-execution/authority", {})
+    assert limits == [25] and len(calls) == 1

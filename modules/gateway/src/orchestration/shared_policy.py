@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import JSON, and_, func, not_, or_, select
 
-from .developer_personas import DEVELOPER_PERSONAS
+from .developer_personas import DEVELOPER_PERSONAS, OPERATIONS_PERSONAS, operations_executor_enabled
 from .dispatch import graph_address
 from .execution_policy import Action, CredentialScope, ResourceRef, authorize_action
 from .execution_state import BlockCode
@@ -29,7 +29,7 @@ from .models import (
 from .policy_admission import SpendObservation, load_in_force_policy, resolve_authorization_context
 from .stage_attempts import stage_attempts
 
-CODE_ACTIONS = frozenset({Action.DEVELOP, Action.REPAIR, Action.REVIEW, Action.MERGE})
+CODE_ACTIONS = frozenset({Action.DEVELOP, Action.REPAIR, Action.REVIEW, Action.MERGE, Action.OPERATE})
 
 
 def _refuse(code, block=BlockCode.AUTHORITY_UNVERIFIABLE):
@@ -89,6 +89,74 @@ async def shared_inputs(session, *, org_id, flow_id, lock=False, allow_elapsed_w
     if not allow_elapsed_window and (datetime.now(UTC) - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
         _refuse("wall_clock_limit_exceeded", BlockCode.ATTEMPTS_EXHAUSTED)
     return inputs, marker
+
+
+async def is_protected_assignment(session, assignment) -> bool:
+    """Whether a report-bearing dispatch runs under protected authority rather than a continuation.
+
+    Decided by the flow's accepted authority mode, never by the row's metadata:
+    shared review-cycle dispatches also carry `handoff_expect` fences, so the
+    marker's absence on the row proves nothing. A plan that accepted a shared
+    worker continuation keeps the shared contract even where protected authority
+    is enabled globally.
+    """
+    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+        return False
+    return not await is_shared_continuation(session, org_id=assignment.org_id, flow_id=assignment.flow_id)
+
+
+async def protected_inputs(session, *, org_id, flow_id, assignment):
+    """Authorize a protected report-bearing run from the in-force policy and its fences (#7419).
+
+    The shared path derives its baseline, role and window from an accepted
+    continuation marker. A protected runtime has none by construction (Terraform
+    forbids continuation together with protected authority), so an `operate` story
+    on it could never start: `/started` and every report route refused with
+    `shared_worker_continuation_disabled`. The same fences still apply here — the
+    flow is active, the policy is in force, the wall clock has not run out — read
+    from protected state instead of the marker. Spend starts from the flow meter the
+    engine prepared at admission, and the resource carries no user role.
+    """
+    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+        _refuse("protected_authority_disabled")
+    fences = (assignment.dispatch_metadata or {}).get("handoff_expect")
+    if (
+        not isinstance(fences, dict)
+        or fences.get("org_id") != org_id
+        or fences.get("flow_id") != flow_id
+        or fences.get("node_id") != assignment.node_id
+        or fences.get("cycle") != assignment.attempt
+    ):
+        _refuse("protected_assignment_unverifiable")
+    flow = await session.scalar(select(OrchestrationFlow).where(OrchestrationFlow.id == flow_id, OrchestrationFlow.org_id == org_id))
+    if flow is None or flow.state not in {"pending", "running"}:
+        _refuse("protected_flow_not_active")
+    inputs = await load_in_force_policy(session, org_id=org_id, flow_id=flow_id)
+    if inputs.refusal or inputs.policy is None:
+        _refuse("protected_policy_unverifiable")
+    if inputs.policy.expires_at <= datetime.now(UTC):
+        _refuse("policy_expired")
+    from .runtime_policy import flow_started_at
+
+    started = await flow_started_at(session, org_id=org_id, flow_id=flow_id)
+    if started is not None and (datetime.now(UTC) - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
+        _refuse("wall_clock_limit_exceeded", BlockCode.ATTEMPTS_EXHAUSTED)
+    # Membership is keyed by canonical users.id; the accepted policy records the
+    # approver's Cognito sub. Dispatch admission resolves the same way; an
+    # unresolved principal answered membership_revoked here instead (#7419).
+    from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
+
+    try:
+        principal = await resolve_root_user_entity_id(session, org_id, inputs.policy.principal_id)
+    except UnresolvableUserEntityError:
+        _refuse("protected_principal_unresolvable")
+    return inputs, {
+        "mode": "protected_authority",
+        "prior_spend_usd": "0",
+        "worker_role_arn": None,
+        "initial_runs": None,
+        "principal_user_id": principal,
+    }
 
 
 async def initialize_shared_meter(*, org_id, flow_id, policy, marker) -> bool:
@@ -222,13 +290,20 @@ async def _active_count(session, *, org_id, flow_id, exclude_run_id=None, initia
     return count + (legacy or 0)
 
 
-async def authorize_shared_action(session, context, node, binding, run_id, action, *, reserve=False, observation=False):
+async def authorize_shared_action(session, context, node, binding, run_id, action, *, reserve=False, observation=False, provisional_checkpoint=False):
     """Recheck membership, scope, claim, revision, clock, spend, and shared limits."""
     inputs, marker = await shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id, lock=reserve)
-    if action not in CODE_ACTIONS or node.kind != "story":
+    if action not in CODE_ACTIONS or node.kind != "story" or (action is Action.OPERATE and not operations_executor_enabled()):
         _refuse("shared_continuation_code_delivery_only", BlockCode.HUMAN_GATE_REQUIRED)
     if node.state not in {"running", "awaiting_merge"}:
         _refuse("continued_story_not_active")
+    from .pr_bindings import continuation_binding_hold
+
+    if provisional_checkpoint and (reserve or not observation):
+        _refuse("recovery_binding_changed")
+    hold = await continuation_binding_hold(session, node, binding, provisional_checkpoint=provisional_checkpoint)
+    if hold:
+        _refuse(hold, BlockCode.AUTHORITY_UNVERIFIABLE if hold == "repository_connection_unavailable" else BlockCode.HUMAN_INPUT_REQUIRED)
     identity = context.identity
     from .plan_lineage import execution_plan_matches
 
@@ -438,7 +513,11 @@ async def authorize_shared_model(session, assignment):
     if assignment.terminal_receipt is not None:
         _refuse("run_already_finished")
     node = await session.get(OrchestrationNode, assignment.node_id)
-    inputs, marker = await shared_inputs(session, org_id=assignment.org_id, flow_id=assignment.flow_id)
+    protected = await is_protected_assignment(session, assignment)
+    if protected:
+        inputs, marker = await protected_inputs(session, org_id=assignment.org_id, flow_id=assignment.flow_id, assignment=assignment)
+    else:
+        inputs, marker = await shared_inputs(session, org_id=assignment.org_id, flow_id=assignment.flow_id)
     if node is None or node.org_id != assignment.org_id or node.flow_id != assignment.flow_id or node.attempts != assignment.attempt:
         _refuse("report_scope_changed")
     flow = await session.get(OrchestrationFlow, node.flow_id)
@@ -456,24 +535,42 @@ async def authorize_shared_model(session, assignment):
         "codex": Action.REVIEW,
         "codex-reviewer": Action.REVIEW,
         "agent-codex-reviewer": Action.REVIEW,
+        **({persona: Action.OPERATE for persona in OPERATIONS_PERSONAS} if operations_executor_enabled() else {}),
     }.get(assignment.persona)
     declared = assignment.dispatch_metadata.get("action")
+    if declared is None and protected:
+        # A protected envelope declares its executor in the accepted graph scope;
+        # the shared `action` field is written only for continuation dispatches.
+        role = (assignment.dispatch_metadata.get("orchestration") or {}).get("executor_role")
+        declared = Action.OPERATE.value if role == "operate" else None
+    if action is Action.OPERATE and declared != Action.OPERATE.value:
+        _refuse("model_action_unverifiable")
     if declared in {Action.DEVELOP.value, Action.REPAIR.value, Action.REVIEW.value}:
+        if action is Action.OPERATE:
+            _refuse("model_action_unverifiable")
         action = Action(declared)
     if action is None:
         _refuse("model_action_unverifiable")
     # A development request precedes PR binding, so it uses the authoritative
     # assignment's repository and node scope instead of inventing a PR binding.
-    meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+    meter = await reconcile_flow_meter(session, org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
     if inputs.policy._budget_enforcement_enabled and (meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"])):
         _refuse("budget_unavailable", BlockCode.BUDGET_EXHAUSTED)
+    if protected:
+        # The same scope dispatch admission established for this run: a credential
+        # bounded to the policy's repositories, or none the provider can express.
+        from .runtime_policy import policy_github_permissions
+
+        scope = CredentialScope.SCOPED if policy_github_permissions(inputs.policy, action) is not None else CredentialScope.UNSCOPABLE
+    else:
+        scope = CredentialScope.USER_GRANTED
     auth = await resolve_authorization_context(
         session,
         policy=inputs.policy,
         plan_version=inputs.plan_version,
         node=node,
-        principal_user_id=inputs.policy.principal_id,
-        credential_scope=CredentialScope.USER_GRANTED,
+        principal_user_id=marker.get("principal_user_id") or inputs.policy.principal_id,
+        credential_scope=scope,
         spend=SpendObservation(total_usd=meter.total_usd if meter else None),
         provider_repository_id=assignment.provider_repository_id,
         expected_invocation_id=assignment.run_id,
@@ -502,7 +599,7 @@ async def authorize_shared_model(session, assignment):
             0,
             (
                 node.attempts
-                if action is Action.DEVELOP
+                if action in {Action.DEVELOP, Action.OPERATE}
                 or (assignment.persona in DEVELOPER_PERSONAS and not assignment.dispatch_metadata.get("review_cycle_input"))
                 else await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=action)
             )
@@ -520,7 +617,7 @@ async def authorize_shared_model(session, assignment):
             repository_id=assignment.repo,
             node_address=graph_address(node, flow_slug=flow.slug),
             org_id=node.org_id,
-            aws_role_arn=marker["worker_role_arn"],
+            aws_role_arn=marker.get("worker_role_arn"),
         ),
         inputs.plan_version,
     )
@@ -560,7 +657,12 @@ async def authorize_shared_dispatch(
     action = action_override or resolve_node_action(node)
     if principal_user_id != inputs.policy.principal_id:
         return Decision.block(DenyReason.MEMBERSHIP_REVOKED, "Dispatch principal differs from the accepted policy owner.")
-    if action not in CODE_ACTIONS or node.kind != "story" or node.state != "ready":
+    if (
+        action not in CODE_ACTIONS
+        or node.kind != "story"
+        or node.state != "ready"
+        or (action is Action.OPERATE and not operations_executor_enabled())
+    ):
         return Decision.block(DenyReason.ACTION_NOT_PERMITTED, "Only ready code stories may enter shared-worker delivery.")
     claim = await session.scalar(
         select(OrchestrationWorkClaim).where(

@@ -2,6 +2,20 @@
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
+# Live membership, not caller-supplied subnet IDs, establishes which exhausted
+# subnets may be retained. This independent read has no dependency on the
+# managed cluster resource and is omitted on a fresh install.
+data "aws_eks_cluster" "capacity_existing" {
+  count = var.capacity_existing_cluster == "" ? 0 : 1
+  name  = var.capacity_existing_cluster
+  lifecycle {
+    postcondition {
+      condition     = self.vpc_config[0].vpc_id == var.vpc_id
+      error_message = "The existing capacity cluster must be in the target VPC."
+    }
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Additional existing private capacity subnets (#5830)
 # ---------------------------------------------------------------------------
@@ -9,7 +23,7 @@ data "aws_caller_identity" "current" {}
 # point the CNI fails every new pod with "failed to assign an IP address to
 # container" and nothing new can be scheduled. Auto Mode's AWS-managed `default`
 # NodeClass draws its subnets from the cluster's own resourcesVpcConfig.subnetIds
-# (it exposes no subnetSelectorTerms and must not be edited), so widening the
+# (its managed subnet selectors must not be edited directly), so widening the
 # cluster's subnet set is the supported way to give new nodes more addresses.
 # UpdateClusterConfig permits exactly that on a live cluster — same VPC, >= 2 AZs
 # — and the provider plans it as an in-place vpc_config update, not a rebuild.
@@ -27,9 +41,16 @@ locals {
   # (which is how this change is rolled out) would prune them and accept an
   # unchecked subnet in silence. The routing read is bound through the cluster's
   # depends_on for the same reason.
+  # Keep the historic data address for the first entry in each AZ. Additional
+  # entries get their own checked read; no subnet is dropped to fit a map key.
+  additional_private_subnets = try(merge({}, [
+    for zone, entries in var.additional_private_subnet_ids_by_az : {
+      for index, id in try(tolist(entries), [tostring(entries)]) :
+      (index == 0 ? zone : "${zone}/${id}") => { id = id, zone = zone }
+    }
+  ]...), {})
   additional_private_subnet_ids = [
-    for az in sort(keys(var.additional_private_subnet_ids_by_az)) :
-    data.aws_subnet.additional_private[az].id
+    for key in sort(keys(local.additional_private_subnets)) : data.aws_subnet.additional_private[key].id
   ]
 
   # Order matters for plan stability, not for behaviour: existing subnets first
@@ -45,9 +66,9 @@ locals {
 # loss of zone coverage. Data sources + postconditions, so this adds no managed
 # resource to the plan and fails during plan, before anything is applied.
 data "aws_subnet" "additional_private" {
-  for_each = var.additional_private_subnet_ids_by_az
+  for_each = local.additional_private_subnets
 
-  id = each.value
+  id = each.value.id
 
   lifecycle {
     postcondition {
@@ -56,7 +77,7 @@ data "aws_subnet" "additional_private" {
     }
 
     postcondition {
-      condition     = self.availability_zone == each.key
+      condition     = self.availability_zone == each.value.zone
       error_message = "additional_private_subnet_ids_by_az names a subnet that is not in the availability zone it is keyed by; fix the key or the subnet id rather than losing zone coverage."
     }
 
@@ -83,8 +104,13 @@ data "aws_subnet" "additional_private" {
       # their own as pods come and go, so it catches an obviously unsuitable subnet
       # -- it does NOT establish that capacity will still be there at apply. Recheck
       # immediately before rollout: docs/runbooks/eks-pod-ip-exhaustion.md §5.4.
-      condition     = self.available_ip_address_count >= 6
-      error_message = "additional_private_subnet_ids_by_az names a subnet with fewer than the 6 available IP addresses EKS requires; pick one with comfortable headroom (16+)."
+      # Retaining an exhausted live subnet cannot be gated on it first becoming
+      # non-exhausted. New additions still need the full minimum; a failed or
+      # wrong-cluster read cannot manufacture retained membership.
+      condition = self.available_ip_address_count >= 6 || contains(
+        try(data.aws_eks_cluster.capacity_existing[0].vpc_config[0].subnet_ids, []), self.id
+      )
+      error_message = "A new additional capacity subnet has fewer than 6 available IP addresses; retain exhausted live subnets but choose new capacity with comfortable headroom (16+)."
     }
   }
 }
@@ -95,9 +121,9 @@ data "aws_subnet" "additional_private" {
 # all cannot pull images or reach the control plane, so nodes launched there
 # would fail to join instead of relieving the exhaustion.
 data "aws_route_table" "additional_private" {
-  for_each = var.additional_private_subnet_ids_by_az
+  for_each = local.additional_private_subnets
 
-  subnet_id = each.value
+  subnet_id = each.value.id
 
   lifecycle {
     postcondition {
@@ -315,6 +341,141 @@ resource "kubernetes_namespace" "gateway_evals" {
 # the OIDC provider which is created after the EKS cluster.
 locals {
   oidc_issuer = replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")
+}
+
+resource "aws_iam_role" "tools_facade_irsa" {
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-role-tools-facade"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.cluster.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = { StringEquals = {
+        "${local.oidc_issuer}:aud" = "sts.amazonaws.com"
+        "${local.oidc_issuer}:sub" = "system:serviceaccount:adp-gateway:tools-facade"
+      } }
+    }]
+  })
+  tags = merge(var.common_tags, { Purpose = "tools-facade-irsa" })
+}
+
+resource "aws_iam_role_policy" "tools_facade_invoke" {
+  count = var.tools_agentcore_gateway_arn != "" ? 1 : 0
+  name  = "${var.name_prefix}-policy-tools-facade-invoke"
+  role  = aws_iam_role.tools_facade_irsa.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["bedrock-agentcore:InvokeGateway"]
+      Resource = var.tools_agentcore_gateway_arn
+    }]
+  })
+  lifecycle {
+    precondition {
+      condition     = startswith(var.tools_agentcore_gateway_arn, "arn:aws:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:gateway/")
+      error_message = "Only the gateway in this EKS cluster's account and region may be invoked."
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "tools_facade_authorize" {
+  count = var.tools_internal_authorize_api_arn != "" ? 1 : 0
+  name  = "${var.name_prefix}-policy-tools-facade-authorize"
+  role  = aws_iam_role.tools_facade_irsa.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["execute-api:Invoke"]
+      Resource = [var.tools_internal_authorize_api_arn, replace(var.tools_internal_authorize_api_arn, "/tools/authorize", "/tools/native-dispatch")]
+    }]
+  })
+  lifecycle {
+    precondition {
+      condition     = startswith(var.tools_internal_authorize_api_arn, "arn:aws:execute-api:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:")
+      error_message = "Only the internal tools route in this account and region may be invoked."
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "tools_facade_executions" {
+  count = var.tools_execution_table_arn != "" ? 1 : 0
+  name  = "${var.name_prefix}-policy-tools-facade-executions"
+  role  = aws_iam_role.tools_facade_irsa.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Scan"]
+      Resource = var.tools_execution_table_arn
+    }]
+  })
+  lifecycle {
+    precondition {
+      condition     = var.tools_execution_table_arn == "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/adp-tools-${var.environment}-executions"
+      error_message = "Only this environment's tools execution table may be accessed."
+    }
+  }
+}
+
+resource "aws_iam_role" "tools_reconciler_irsa" {
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-role-tools-reconciler"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.cluster.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = { StringEquals = {
+        "${local.oidc_issuer}:aud" = "sts.amazonaws.com"
+        "${local.oidc_issuer}:sub" = "system:serviceaccount:adp-gateway:tools-facade-reconciler"
+      } }
+    }]
+  })
+  tags = merge(var.common_tags, { Purpose = "tools-reconciler-irsa" })
+}
+
+resource "aws_iam_role_policy" "tools_reconciler" {
+  count = var.tools_execution_table_arn != "" ? 1 : 0
+  name  = "${var.name_prefix}-policy-tools-reconciler"
+  role  = aws_iam_role.tools_reconciler_irsa.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = ["dynamodb:Query"], Resource = "${var.tools_execution_table_arn}/index/cleanup-due" },
+      { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"], Resource = var.tools_execution_table_arn }
+    ]
+  })
+  lifecycle {
+    precondition {
+      condition     = var.tools_execution_table_arn == "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/adp-tools-${var.environment}-executions"
+      error_message = "Only this environment's tools execution table may be reconciled."
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "tools_reconciler_native_cleanup" {
+  count = var.tools_internal_authorize_api_arn != "" ? 1 : 0
+  name  = "${var.name_prefix}-policy-tools-reconciler-native-cleanup"
+  role  = aws_iam_role.tools_reconciler_irsa.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["execute-api:Invoke"]
+      Resource = replace(var.tools_internal_authorize_api_arn, "/tools/authorize", "/tools/native-cleanup")
+    }]
+  })
+  lifecycle {
+    precondition {
+      condition     = startswith(var.tools_internal_authorize_api_arn, "arn:aws:execute-api:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:")
+      error_message = "Only this environment's internal native cleanup route may be invoked."
+    }
+  }
 }
 
 resource "aws_iam_role" "gateway_service_irsa" {
@@ -817,8 +978,12 @@ resource "aws_eks_addon" "cloudwatch_observability" {
 
   service_account_role_arn = aws_iam_role.cloudwatch_observability[0].arn
 
-  resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "OVERWRITE"
+  resolve_conflicts_on_create = "NONE"
+  resolve_conflicts_on_update = "PRESERVE"
+
+  lifecycle {
+    ignore_changes = [configuration_values]
+  }
 
   depends_on = [
     aws_eks_cluster.main,

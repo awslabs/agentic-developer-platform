@@ -121,13 +121,6 @@ class TaskRunClient:
         self._traceparent = None
         self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
         self._tool_routes = json.loads(os.environ.get("ADP_TASK_TOOL_ROUTES", "{}"))
-        # Code sessions must participate in host finalization, even if the model
-        # never calls close. Reuse the configured endpoint and Task cleanup wire.
-        code_endpoint = self._tool_routes.get("code_interpreter.start")
-        if code_endpoint:
-            self._tool_routes["code_interpreter.cancel_jobs"] = code_endpoint
-            if "code_interpreter.cancel_jobs" not in self._tool_cleanup:
-                self._tool_cleanup.append("code_interpreter.cancel_jobs")
         self._base = base
         self._timeout = timeout
         self._run_credential: str | None = None
@@ -181,6 +174,7 @@ class TaskRunClient:
         run_bound: bool,
         workload_token: str | None = None,
         tool_endpoint: str | None = None,
+        gateway_tool: bool = False,
     ) -> dict:
         if action not in _ACTIONS:
             raise TaskRunClientError("unsupported task operation")
@@ -231,7 +225,7 @@ class TaskRunClient:
                     if response.status_code >= 500:
                         raise TaskRunClientUnavailable(f"task {action} outcome unavailable (HTTP {response.status_code})")
                     expected_status = 201 if action == "artifact" and body.get("operation") != "read" else 200
-                    if response.status_code != expected_status:
+                    if response.status_code != expected_status and not (gateway_tool and response.status_code == 202):
                         raise TaskRunClientError("task service refused operation")
                     raw = response.raw.read(_MAX_RESPONSE_BYTES + 1, decode_content=True)
                     if len(raw) > _MAX_RESPONSE_BYTES:
@@ -460,19 +454,45 @@ class TaskRunClient:
             valid = False
         if not valid:
             raise TaskRunClientError("Tool endpoint unavailable")
-        if parsed.path.endswith("/tools/browser"):
-            cleanup = body.get("operation") == "cancel_jobs"
-            deadline = self._clock() + 210
-            if not cleanup:
-                deadline = min(deadline, self._deadline)
-            while True:
-                result = self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
-                if result.get("operation_status") != "pending" or (self._stopping and not cleanup):
-                    return result
-                if self._clock() >= deadline:
-                    return result
-                time.sleep(min(2, max(0, deadline - self._clock())))
-        return self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
+        return self._gateway_tool(name, body, endpoint)
+
+    def _gateway_tool(self, name: str, body: dict, endpoint: str) -> dict:
+        from lib.task_tool_artifacts import publish_tool_result
+
+        allowed = {"websearch": {"search"}, "code_interpreter": {"start", "execute", "result", "file", "close"},
+                   "browser": {"start", "step", "inspect", "close"}}
+        provider, _, operation = name.partition(".")
+        if (operation not in allowed.get(provider, set())
+                or not isinstance(body, dict)
+                or set(body) != {"schema_version", "attempt", "operation_id", "operation", "payload"}
+                or body["schema_version"] != "1.0" or not isinstance(body["payload"], dict)
+                or not isinstance(body["operation_id"], str)
+                or name.rsplit(".", 1)[1] != body.get("operation")
+                or not isinstance(body.get("attempt"), dict)
+                or not isinstance(body["attempt"].get("run"), dict)
+                or not isinstance(body["attempt"]["run"].get("task_id"), str)):
+            raise TaskRunClientError("Gateway tool call unavailable")
+        tool = name.replace(".", "___", 1)
+        if (not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*/tools/[A-Za-z0-9_-]+", urlparse(endpoint).path)
+                or not urlparse(self._base).path.endswith("/internal/v1/agent")):
+            raise TaskRunClientError("Gateway tool endpoint unavailable")
+        gateway_endpoint = self._base.removesuffix("/internal/v1/agent") + "/agent/tools/call"
+        receipt = self._post("cyber", {"tool": tool, "arguments": body["payload"],
+            "request_id": body["operation_id"]}, run_bound=True, tool_endpoint=gateway_endpoint, gateway_tool=True)
+        if (receipt.get("request_id") != body["operation_id"]
+                or receipt.get("status") not in {"confirmed", "unknown"}
+                or not isinstance(receipt.get("root_human_id"), str) or not receipt["root_human_id"]):
+            raise TaskRunClientError("Gateway tool receipt unavailable")
+        result = {"schema_version": body["schema_version"], "task_id": body["attempt"]["run"]["task_id"],
+                  "operation_id": body["operation_id"],
+                  "operation_status": "confirmed" if receipt["status"] == "confirmed" else "unknown"}
+        if receipt["status"] == "confirmed":
+            if (not isinstance(receipt.get("result"), dict) or receipt["result"].get("jsonrpc") != "2.0"
+                    or not isinstance(receipt["result"].get("result"), dict) or "error" in receipt["result"]):
+                raise TaskRunClientError("Gateway tool result unavailable")
+            result["result"] = receipt["result"]["result"]
+            result["artifact"] = publish_tool_result(self, attempt=body["attempt"], result=result["result"])
+        return result
 
     def validation_service(self, body: dict) -> dict:
         endpoint = os.environ.get("ADP_CODEX_VALIDATION_SERVICE_ENDPOINT", "")

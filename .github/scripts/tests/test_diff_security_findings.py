@@ -1,5 +1,6 @@
 """Tests for diff-security-findings.py."""
 
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -17,9 +18,120 @@ from diff_security_findings import (
     load_json_safe,
     process_tool_findings,
     resolve_sarif_severity,
+    reviewed_sarif_baseline,
 )
 
 SCRIPT_PATH = Path(__file__).parent.parent / "diff_security_findings.py"
+
+
+def test_reviewed_baseline_requires_unchanged_source_and_exact_finding(tmp_path):
+    source = tmp_path / "command.py"
+    source.write_text('subprocess.run(["git", "status"])\n')
+    rule = "reviewed-rule"
+    result = {
+        "ruleId": rule,
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": source.name}, "region": {"startLine": 1},
+        }}],
+        "properties": {"review": {
+            "justification": "Fixed local read-only Git argv, without a shell.",
+            "sources": {source.name: hashlib.sha256(source.read_bytes()).hexdigest()},
+        }},
+    }
+    baseline = {"runs": [{"results": [result]}]}
+    fingerprint = f"{rule}:{source.name}:1"
+    observed = {fingerprint, f"other-rule:{source.name}:1", f"{rule}:{source.name}:2"}
+    reviewed = extract_sarif_fingerprints(reviewed_sarif_baseline(baseline, tmp_path))
+    assert reviewed == {fingerprint}
+    assert diff_findings(observed, reviewed)["new_count"] == 2
+
+    source.write_text('subprocess.run(user_input, shell=True)\n')
+    assert extract_sarif_fingerprints(reviewed_sarif_baseline(baseline, tmp_path)) == set()
+    source.unlink()
+    assert extract_sarif_fingerprints(reviewed_sarif_baseline(baseline, tmp_path)) == set()
+    assert extract_sarif_fingerprints(baseline) == {fingerprint}
+
+
+def test_reviewed_baseline_requires_all_bound_sources(tmp_path):
+    source = tmp_path / "command.py"
+    dependency = tmp_path / "guard.py"
+    source.write_text("guard.validate()\n")
+    dependency.write_text("def validate(): return True\n")
+    result = {
+        "ruleId": "reviewed-rule",
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": source.name}, "region": {"startLine": 1},
+        }}],
+        "properties": {"review": {
+            "justification": "Execution requires the reviewed guard.",
+            "sources": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                        for path in (source, dependency)},
+        }},
+    }
+    baseline = {"runs": [{"results": [result]}]}
+    assert reviewed_sarif_baseline(baseline, tmp_path)["runs"][0]["results"] == [result]
+    dependency.write_text("def validate(): return False\n")
+    assert reviewed_sarif_baseline(baseline, tmp_path)["runs"][0]["results"] == []
+
+
+def test_reviewed_baseline_refuses_unbound_locations_and_outside_sources(tmp_path):
+    outside = tmp_path / "outside.py"
+    outside.write_text("pass\n")
+    root = tmp_path / "repo"
+    root.mkdir()
+    result = {
+        "ruleId": "reviewed-rule",
+        "locations": [{"physicalLocation": {"artifactLocation": {"uri": "../outside.py"}}}],
+        "properties": {"review": {
+            "justification": "Invalid external binding.",
+            "sources": {"../outside.py": hashlib.sha256(outside.read_bytes()).hexdigest()},
+        }},
+    }
+    baseline = {"runs": [{"results": [result]}]}
+    assert reviewed_sarif_baseline(baseline, root)["runs"][0]["results"] == []
+    result["properties"]["review"]["sources"] = {"outside.py": hashlib.sha256(outside.read_bytes()).hexdigest()}
+    assert reviewed_sarif_baseline(baseline, tmp_path)["runs"][0]["results"] == []
+
+
+def test_semgrep_gate_does_not_accept_review_metadata_from_current_report(tmp_path):
+    findings = tmp_path / "findings"
+    findings.mkdir()
+    baselines = tmp_path / "baselines"
+    baselines.mkdir()
+    source = Path(__file__).relative_to(SCRIPT_PATH.parents[2]).as_posix()
+    result = {
+        "ruleId": "reviewed-rule",
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": source}, "region": {"startLine": 1},
+        }}],
+        "properties": {"review": {"justification": "Reviewed test fixture.", "sources": {
+            source: hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        }}},
+    }
+    report = {"runs": [{"tool": {"driver": {"name": "Semgrep", "rules": [{
+        "id": "reviewed-rule", "properties": {"security-severity": "high"},
+    }]}}, "results": [result]}]}
+    (findings / "semgrep.sarif").write_text(json.dumps(report))
+    assert process_tool_findings("semgrep", findings, baselines)["new_severities"] == {
+        f"reviewed-rule:{source}:1": "high",
+    }
+    baseline = baselines / "semgrep-baseline.sarif"
+    baseline.write_text(json.dumps(report))
+    assert process_tool_findings("semgrep", findings, baselines)["new_count"] == 0
+    result["properties"]["review"]["sources"][source] = "0" * 64
+    baseline.write_text(json.dumps(report))
+    assert process_tool_findings("semgrep", findings, baselines)["new_count"] == 1
+
+
+def test_reviewed_baseline_refuses_malformed_reviews_but_preserves_legacy_entries(tmp_path):
+    legacy = {"ruleId": "legacy", "locations": [{"physicalLocation": {
+        "artifactLocation": {"uri": "legacy.py"}, "region": {"startLine": 1},
+    }}]}
+    for review in (None, {}, "reviewed", {"justification": "Missing source binding"},
+                   {"justification": "Empty binding", "sources": {}}):
+        result = {**legacy, "properties": {"review": review}}
+        data = {"runs": [{"results": [legacy, result]}]}
+        assert reviewed_sarif_baseline(data, tmp_path)["runs"][0]["results"] == [legacy]
 
 
 def test_diff_findings_new_only():
@@ -120,6 +232,37 @@ def test_extract_sarif_skips_only_explicitly_accepted_suppressions():
         "underReview:main.py:1",
         "missing:main.py:1",
     }
+
+
+def test_semgrep_inline_suppression_without_status_is_not_an_active_finding():
+    # Semgrep 1.80.0 SARIF encodes a recognized nosemgrep directive this way.
+    cases = {
+        "inline": [{"kind": "inSource"}],
+        "accepted": [{"kind": "inSource", "status": "accepted"}],
+        "rejected": [{"kind": "inSource", "status": "rejected"}],
+        "review": [{"kind": "inSource", "status": "underReview"}],
+        "null": [{"kind": "inSource", "status": None}],
+        "external": [{"kind": "external"}],
+        "missing-kind": [{}],
+        "malformed": [None, "inSource"],
+        "no-suppression": [],
+    }
+    for scanner in ("Semgrep OSS", "Semgrep", "Other scanner"):
+        results = [{
+            "ruleId": name, "level": "error", "suppressions": suppression,
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": "client.ts"}, "region": {"startLine": 7},
+            }}],
+        } for name, suppression in cases.items()]
+        severities, sources = {}, {}
+        actual = extract_sarif_fingerprints({"runs": [{
+            "tool": {"driver": {"name": scanner}}, "results": results,
+        }]}, severities, sources)
+        excluded = {"accepted"} | ({"inline"} if scanner != "Other scanner" else set())
+        expected = {f"{name}:client.ts:7" for name in cases if name not in excluded}
+        assert actual == expected
+        assert set(severities) == expected
+        assert set(sources) == expected
 
 
 def test_locationless_sarif_uses_provided_fingerprints_stably():

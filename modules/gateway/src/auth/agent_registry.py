@@ -45,6 +45,7 @@ class AgentRegistryEntry(TypedDict):
     owner: str
     scope: str
     requires_run_identity: bool
+    requires_host_identity: bool
     budget_config_id: str
     allowed_models: list[str]
     # Issue #4131 (grant step): the credential scopes this agent has actually
@@ -121,6 +122,7 @@ class AgentRegistryService:
             owner=item.get("owner", {}).get("S", ""),
             scope=item.get("scope", {}).get("S", ""),
             requires_run_identity=item.get("requires_run_identity", {}).get("BOOL", False),
+            requires_host_identity=item.get("requires_host_identity", {}).get("BOOL", False),
             budget_config_id=item.get("budget_config_id", {}).get("S", ""),
             allowed_models=item.get("allowed_models", {}).get("SS", []),
             credential_scopes=item.get("credential_scopes", {}).get("SS", []),
@@ -135,8 +137,14 @@ class AgentRegistryService:
 
     @staticmethod
     def _domain_role(entry: AgentRegistryEntry) -> bool:
-        return entry.get("owner") == "webhook-terraform-domain-operations-v1" or bool(
-            re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/adp-[a-z][a-z0-9-]*-superplane-(api-producer|domain-worker)", entry["role_arn"])
+        return (
+            entry.get("owner") == "webhook-terraform-domain-operations-v1"
+            or entry.get("agent_id")
+            in {
+                "00000000-0000-0000-0000-000000008243",
+                "00000000-0000-0000-0000-000008243002",
+            }
+            or bool(re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/adp-[a-z][a-z0-9-]*-superplane-(api-producer|domain-worker)", entry["role_arn"]))
         )
 
     def _domain_role_is_current(self, entry: AgentRegistryEntry) -> bool:
@@ -150,14 +158,21 @@ class AgentRegistryService:
                 self._iam = boto3.client(
                     "iam",
                     region_name=get_settings().aws_region,
-                    config=Config(connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 1}),
+                    # GetRole is read-only. One transient connection/service
+                    # failure must not immediately terminate a paid worker.
+                    # Keep the retry inside its ten-second heartbeat timeout;
+                    # every successful response still checks the immutable ID.
+                    config=Config(connect_timeout=2, read_timeout=2, retries={"mode": "standard", "total_max_attempts": 2}),
                 )
             observed = self._iam.get_role(RoleName=entry["role_arn"].rsplit("/", 1)[-1])["Role"]
             return observed["Arn"] == entry["role_arn"] and observed["RoleId"] == expected
-        except Exception:
+        except Exception as error:
             # Missing/recreated role, denied lookup and unknown provider outcome
             # all refuse protected authority; never log SDK response contents.
-            logger.warning("Protected domain IAM role identity could not be verified")
+            # Types/codes distinguish availability failures from real refusal
+            # without logging credentials, request headers or SDK messages.
+            code = error.response.get("Error", {}).get("Code", "") if isinstance(error, ClientError) else ""
+            logger.warning("Protected domain IAM role identity could not be verified (type=%s, code=%s)", type(error).__name__, code)
             return False
 
     def get_agent_by_role_arn(self, role_arn: str) -> AgentRegistryEntry | None:
@@ -336,6 +351,8 @@ def agent_entry_to_token_context(entry: AgentRegistryEntry) -> TokenContext:
         # Preserve enforcement for protected entries seeded before this field
         # existed. Disabling the gateway rollout flag must not downgrade them.
         requires_run_identity=entry.get("requires_run_identity", False) or entry.get("agent_id") == "authority-worker",
+        requires_host_identity=entry.get("requires_host_identity", False)
+        or bool(re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/adp-dev-box-guest-[^/]+", entry.get("role_arn", ""))),
         # Issue #4131 (grant step): carry the registry-granted credential scopes
         # so credential routes can authorize against them server-side instead of
         # trusting a caller-supplied header. Nothing reads this yet — the

@@ -796,7 +796,7 @@ class TestDisplayCountsAndStatus:
         assert [aggregate.flow.slug for aggregate in attention.flows] == ["stalled-and-running"]
 
     async def test_every_status_filter_agrees_with_the_derived_status(self, session):
-        """Exhaustive: for each of the six statuses, the filter returns exactly the
+        """Exhaustive: for each status, the filter returns exactly the
         rows that report it.
 
         This is what keeps `_status_predicate` and `derive_flow_status` from
@@ -815,11 +815,14 @@ class TestDisplayCountsAndStatus:
         flow_stalled = await seed_flow(session, slug="s-stalled", created_offset=5)
         node = await seed_node(session, flow_stalled, node_ref="n1", state=NodeState.FAILED.value)
         await seed_decision(session, flow_stalled, node, kind=DecisionKind.NODE_STALLED.value)
+        archived = await seed_flow(session, slug="s-archived", created_offset=6)
+        archived.archived_at = datetime.now(UTC)
+        await session.flush()
 
         repo = OrchestrationRepository(session)
-        unfiltered = await repo.list_flows_page_with_aggregates(org_id=ORG_A, limit=100)
+        unfiltered = await repo.list_flows_page_with_aggregates(org_id=ORG_A, limit=100, include_archived=True)
         expected = {status: sorted(a.flow.slug for a in unfiltered.flows if a.status is status) for status in FlowStatus}
-        # Guard the guard: if the seed above stopped covering all six statuses, this
+        # Guard the guard: if the seed above stopped covering all statuses, this
         # test would keep passing while asserting almost nothing.
         assert all(expected[status] for status in FlowStatus), f"seed no longer covers every status: {expected}"
 
@@ -1101,6 +1104,32 @@ class TestStatusChips:
 
 class TestDeliveryCost:
     """Cost per flow, three-valued, one ledger query for the page."""
+
+    async def test_busy_cost_read_keeps_progress_visible_and_recovers(self, session, app_with_router, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from src.orchestration import routes
+        from src.orchestration.cost_cache import DisplayCostRefreshUnavailable
+
+        flow = await seed_flow(session, slug="delivery-loop", created_offset=0)
+        await seed_node(session, flow, node_ref="n1")
+        await seed_usage(session, address="delivery-loop/epic-1/wave-1/n1", cost_usd=Decimal("1.50"))
+        original = routes.get_display_costs
+        monkeypatch.setattr(routes, "get_display_costs", AsyncMock(side_effect=DisplayCostRefreshUnavailable()))
+        response = client_for(app_with_router).get(ROUTE)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["flows"][0]["total_nodes"] == 1
+        cost = data["flows"][0]["delivery_cost"]
+        assert cost["status"] == "unknown"
+        assert cost["amount_usd"] is None
+        assert cost["reason"] == "cost_refresh_unavailable"
+
+        monkeypatch.setattr(routes, "get_display_costs", original)
+        recovered = client_for(app_with_router).get(ROUTE).json()["flows"][0]["delivery_cost"]
+        assert recovered["status"] == "known"
+        assert Decimal(recovered["amount_usd"]) == Decimal("1.50")
 
     async def test_a_flows_spend_is_summed_from_its_address_prefix(self, session, app_with_router):
         flow = await seed_flow(session, slug="delivery-loop", created_offset=0)

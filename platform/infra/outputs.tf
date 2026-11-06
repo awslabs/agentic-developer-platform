@@ -97,6 +97,11 @@ output "alb_security_group_id" {
 # Gateway Service IRSA role (created in platform EKS module)
 # ---------------------------------------------------------------------------
 
+output "tools_reconciler_irsa_role_arn" {
+  description = "Role used by the isolated tools deadline worker"
+  value       = module.eks.tools_reconciler_irsa_role_arn
+}
+
 output "gateway_service_irsa_role_arn" {
   description = "ARN of the gateway service IRSA role"
   value       = module.eks.gateway_service_irsa_role_arn

@@ -14,7 +14,9 @@ name: Agent Worker Image Build
 on:
   pull_request:
     paths:
+      - 'contracts/**'
       - 'modules/agent-factory/agent/**'
+      - 'modules/gateway/src/admin/persona_models/request-shape-manifest.json'
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/codex-reviewer/**'
       - 'modules/agent-factory/codex-harness/**'
@@ -26,6 +28,7 @@ on:
       - 'codebuild/bs-agent-runtime.yml'
       - '.github/workflows/agent-worker-image.yml'
       - 'platform/scripts/rollout-worker-image.py'
+      - 'modules/gateway/scripts/sync-gateway-writers.py'
       - 'platform/scripts/tests/test_worker_image_rollout.py'
       - 'modules/gateway/src/agentauth/task_runtime_routes.py'
       - 'modules/gateway/src/agentauth/task_model.py'
@@ -38,7 +41,9 @@ on:
       - '!**/*.rst'
   push:
     paths:
+      - 'contracts/**'
       - 'modules/agent-factory/agent/**'
+      - 'modules/gateway/src/admin/persona_models/request-shape-manifest.json'
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/codex-reviewer/**'
       - 'modules/agent-factory/codex-harness/**'
@@ -50,6 +55,7 @@ on:
       - 'codebuild/bs-agent-runtime.yml'
       - '.github/workflows/agent-worker-image.yml'
       - 'platform/scripts/rollout-worker-image.py'
+      - 'modules/gateway/scripts/sync-gateway-writers.py'
       - 'platform/scripts/tests/test_worker_image_rollout.py'
       # Documentation-only changes do not start this workflow.
       - '!docs/**'
@@ -83,7 +89,7 @@ on:
         required: false
         default: 'dev'
       adp_approved_revision:
-        description: 'Assistant rollout approval for this run only: full 40-hex commit whose protected assistant files this candidate must match (see docs/architecture/assistant-deploy-boundary.md).'
+        description: 'Assistant rollout approval for non-dev targets only (dev needs none): full 40-hex commit whose protected assistant files this candidate must match (see docs/architecture/assistant-deploy-boundary.md).'
         required: false
         type: string
         default: ''
@@ -118,6 +124,65 @@ jobs:
             src/invocability-probe/native-runner.test.ts \
             src/invocability-probe/gateway-client.test.ts
 
+  invocability-manifest-drift:
+    name: Claude Request-Shape Manifest Drift
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+      # The gateway selects the expected Claude request-shape digest from its
+      # manifest copy and the probe runner refuses any body whose digest differs,
+      # so a manifest that was not produced by the pinned SDK with the current
+      # normalization makes every Claude probe fail request_shape_mismatch and
+      # delegated chat fail closed (#7993). The generator drives the pinned SDK
+      # against a loopback-only fake Bedrock (no AWS credentials, no network)
+      # and must reproduce both committed copies byte for byte. Normalization v5
+      # removes everything host-specific (shell, kernel, date, budget, device),
+      # which is what lets a runner reproduce the runtime image's manifest.
+      - name: Generate the manifest from the pinned SDK and compare both copies
+        working-directory: modules/agent-factory/agent
+        env:
+          ADP_PROBE_PRINT_BODY: '1'
+        run: |
+          set -euo pipefail
+          npm ci --include=dev --ignore-scripts
+          npm run --silent generate:invocability-manifest > "$RUNNER_TEMP/request-shape-manifest.json" \
+            2> "$RUNNER_TEMP/generate-invocability-manifest.log"
+          cmp src/invocability-probe/request-shape-manifest.json \
+              ../../gateway/src/admin/persona_models/request-shape-manifest.json
+          if ! diff -u src/invocability-probe/request-shape-manifest.json "$RUNNER_TEMP/request-shape-manifest.json"; then
+            echo "::error::request-shape-manifest.json differs from what the pinned Claude SDK emits under" \
+                 "the current normalization. Regenerate both copies from the runtime image (see" \
+                 "src/invocability-probe/task-probes.md) instead of editing them."
+            exit 1
+          fi
+      # Pinned by path (see agent-control-ci.yml for the rationale): the
+      # normalization rules, the two-copy parity check and the bounded body
+      # diagnostics must fail the build when a file disappears.
+      - name: Run the request-shape normalization and manifest parity suites
+        working-directory: modules/agent-factory/agent
+        run: |
+          npx jest --runInBand --runTestsByPath \
+            src/invocability-probe/canonical-json.test.ts \
+            src/invocability-probe/manifest-parity.test.ts \
+            src/invocability-probe/body-debug.test.ts \
+            src/invocability-probe/runner.test.ts \
+            src/invocability-probe/capture-proxy.test.ts
+      - name: Preserve generated bodies on drift
+        if: failure()
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: invocability-manifest-drift
+          path: ${{ runner.temp }}/generate-invocability-manifest.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   codex-tests:
     name: Codex Adapter Unit Tests
     runs-on: arc-runner-org
@@ -140,12 +205,12 @@ jobs:
           node scripts/generate-native-probe-manifest.mjs --check
       - name: Preserve synthetic probe mismatch diagnostics
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: native-probe-diagnostics
           path: ${{ runner.temp }}/adp-native-probe-diagnostics/*.json
           if-no-files-found: ignore
-          retention-days: 3
+          retention-days: 7
 
   task-investigator-tests:
     name: Task API Investigator Unit Tests
@@ -154,6 +219,13 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+      - name: Verify Task API network confinement on the runner kernel
+        run: |
+          if ! command -v gcc >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends gcc libc6-dev
+          fi
+          python3 -m unittest discover -s modules/agent-factory/agent-worker-image/tests -p test_task_network_exec.py -v
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -207,7 +279,7 @@ jobs:
         run: bash platform/scripts/enable-bedrock-models.sh --verify
 
   build:
-    needs: [model-readiness, installation-boundary-tests, codex-tests, task-investigator-tests]
+    needs: [model-readiness, installation-boundary-tests, invocability-manifest-drift, codex-tests, task-investigator-tests]
     name: Build Agent Runtime Image
     if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request')
     runs-on: arc-runner-org
@@ -300,6 +372,7 @@ jobs:
     concurrency:
       group: gateway-release-${{ inputs.environment || 'dev' }}
       cancel-in-progress: false
+      queue: max
     permissions:
       id-token: write
       contents: read
@@ -314,9 +387,10 @@ jobs:
           git merge-base --is-ancestor HEAD FETCH_HEAD
       # The shared worker image carries the assistant/chat surfaces. Building it
       # is unguarded (build-only); rolling the digest onto agent-scaledjob is a
-      # live mutation and must satisfy the assistant rollout boundary first.
+      # live mutation. Dev uses continuous delivery; non-dev requires approval.
       - name: Resolve last successfully deployed revision
         id: deployed
+        if: ${{ (inputs.environment || 'dev') != 'dev' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -354,6 +428,7 @@ jobs:
       - name: Authorize and roll out the built worker digest
         env:
           WORKER_REVISION: ${{ github.sha }}
+          ADP_GATEWAY_WRITER_INVENTORY: ${{ vars.ADP_GATEWAY_WRITER_INVENTORY || '[]' }}
         run: |
           set -euo pipefail
           export KUBECONFIG="${RUNNER_TEMP}/worker-rollout-kubeconfig"

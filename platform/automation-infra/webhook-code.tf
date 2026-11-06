@@ -45,8 +45,15 @@ variable "webhook_code_archive_prefix" {
 locals {
   webhook_code_enabled       = length(var.webhook_code_lambda_targets) > 0 && var.webhook_code_archive_prefix != ""
   webhook_code_function_arns = keys(var.webhook_code_lambda_targets)
-  webhook_code_role_arns     = values(var.webhook_code_lambda_targets)
-  webhook_code_state_bucket  = "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  # UpdateFunctionCode evaluates the mutable $LATEST resource even when the
+  # request uses an unqualified FunctionName. Published versions/aliases stay
+  # outside the admitted set; never widen this to function:*.
+  webhook_code_update_arns = sort(concat(
+    local.webhook_code_function_arns,
+    [for arn in local.webhook_code_function_arns : "${arn}:$LATEST"],
+  ))
+  webhook_code_role_arns    = values(var.webhook_code_lambda_targets)
+  webhook_code_state_bucket = "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}"
 }
 
 resource "aws_iam_role" "webhook_code" {
@@ -89,7 +96,7 @@ resource "aws_iam_role_policy" "webhook_code_lambda" {
         Sid      = "ReadAndUpdateAdmittedFunctions"
         Effect   = "Allow"
         Action   = ["lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:UpdateFunctionCode"]
-        Resource = sort(local.webhook_code_function_arns)
+        Resource = local.webhook_code_update_arns
       },
       {
         Sid      = "ReadWriteCodeArchive"
@@ -158,7 +165,7 @@ resource "aws_iam_role_policy" "webhook_code_ceiling" {
         Sid         = "DenyOtherLambdaTargets"
         Effect      = "Deny"
         Action      = ["lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:UpdateFunctionCode"]
-        NotResource = sort(local.webhook_code_function_arns)
+        NotResource = local.webhook_code_update_arns
       },
       {
         Sid         = "DenyOtherS3Prefixes"

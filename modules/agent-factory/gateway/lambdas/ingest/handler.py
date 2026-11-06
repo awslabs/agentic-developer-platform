@@ -296,11 +296,11 @@ def lambda_handler(event, context):
     channel_name, adapter = detect_channel(event)
 
     if channel_name == "slack":
+        if not adapter.verify_request(event.get("headers", {}), event.get("body", "").encode("utf-8")):
+            return {"statusCode": 401, "body": "Invalid signature"}
         payload = parse_body(event)
         if payload.get("type") == "url_verification":
             return {"statusCode": 200, "body": json.dumps(SlackAdapter.handle_url_verification(payload))}
-        if not adapter.verify_request(event.get("headers", {}), event.get("body", "").encode("utf-8")):
-            return {"statusCode": 401, "body": "Invalid signature"}
 
     # webchat needs the whole event (it reads `requestContext.authorizer.claims`);
     # gateway-api needs it too, because a direct invocation's event IS the envelope
@@ -1417,6 +1417,17 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
                         now, session_generation):
     """Per-thread serialization for long_running tasks."""
 
+    if (os.environ.get("ADP_CHAT_LEGACY_RETIRED") == "true"
+            and os.environ.get("ADP_CHAT_MODEL_POLICY_ENABLED", "false").lower() != "true"):
+        # Do not acknowledge or queue work for the deliberately retired worker.
+        # Delegated chat remains gated until its separate runtime qualification.
+        text = "Chat is currently unavailable. Please try again after it has been enabled."
+        failure = {"type": "response", "status": "failed", "session_id": session_id,
+                   "error": text, "content": text}
+        if connection_id:
+            _send_ws_response(connection_id, "", failure)
+        return {"statusCode": 503, "body": json.dumps(failure)}
+
     is_follow_up = (
         classification.thread_action == "follow_up"
         and classification.follow_up_thread_id
@@ -1759,6 +1770,7 @@ def get_or_create_session(session_id, connection_id, message, now):
     if message.platform_data.get("ingress") == "gateway-api":
         item["intake_repository"] = str(message.platform_data.get("intake_repository") or "")
         item["intake_issue"] = str(message.platform_data.get("intake_issue") or "")
+        item["intake_product_id"] = str(message.platform_data.get("intake_product_id") or "")
     try:
         sessions_table.put_item(
             Item=item,

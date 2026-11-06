@@ -12,6 +12,7 @@ from app.adapters.operation_authority_source import (
     GrantBackedAuthority,
     acting_principal,
 )
+from app.config import settings
 from app.models.operation_approval import OperationApproval
 
 
@@ -47,6 +48,20 @@ def record_from_row(row):
         decided_at=row.decided_at,
         expires_at=row.expires_at,
         revoked=row.revoked,
+        requires_distinct_approver=row.requires_distinct_approver,
+    )
+
+
+def can_decide_ticket(row, subject, statuses):
+    status = statuses.get(subject)
+    return bool(
+        (not row.requires_distinct_approver or subject != row.requester)
+        and subject in json.loads(row.approvers_json)
+        and status
+        and status.may_approve
+        and not row.revoked
+        and row.result is None
+        and row.expires_at > datetime.now(UTC)
     )
 
 
@@ -69,6 +84,7 @@ def public_ticket(row, *, can_decide=False):
         "expires_at": row.expires_at,
         "revoked": row.revoked,
         "can_decide": can_decide,
+        "requires_distinct_approver": row.requires_distinct_approver,
     }
 
 
@@ -133,13 +149,13 @@ class ApprovalService:
         binding = ApprovalBinding.for_request(principal, request)
         envelope = _requested_envelope(request)
         statuses = await self.authority._approver_statuses(principal)
+        require_distinct = settings.superplane_require_distinct_approver
         approvers = sorted(
             subject
             for subject, status in statuses.items()
-            if subject != principal.subject and status.may_approve
+            if (not require_distinct or subject != principal.subject)
+            and status.may_approve
         )
-        if not approvers:
-            raise ApprovalDenied("no distinct current human approver is available")
         query = select(OperationApproval).where(
             OperationApproval.org_id == principal.org_id,
             OperationApproval.workspace_id == principal.workspace_id,
@@ -149,7 +165,16 @@ class ApprovalService:
         async with self.sessions() as session:
             existing = (await session.execute(query)).scalar_one_or_none()
             if existing is not None:
-                return public_ticket(existing)
+                return public_ticket(
+                    existing,
+                    can_decide=can_decide_ticket(existing, principal.subject, statuses),
+                )
+            if not approvers:
+                raise ApprovalDenied(
+                    "no distinct current human approver is available"
+                    if require_distinct
+                    else "no current human administrator is available to approve"
+                )
             row = OperationApproval(
                 approval_id=str(uuid.uuid4()),
                 org_id=principal.org_id,
@@ -161,9 +186,19 @@ class ApprovalService:
                 max_resource_units=envelope.max_resource_units,
                 max_runtime_seconds=envelope.max_runtime_seconds,
                 max_cost_micros=envelope.max_cost_micros,
-                expires_at=datetime.now(UTC) + timedelta(minutes=15),
+                # STS requires a 900-second session inside the recorded authority.
+                # A 15-minute ticket is already too short when execution starts.
+                # New native tickets cover their approved runtime plus dispatch
+                # headroom; the existing-ticket branch above never renews expiry.
+                expires_at=datetime.now(UTC)
+                + timedelta(
+                    seconds=max(3600, envelope.max_runtime_seconds + 900)
+                    if request.parameters.get("lifecycle_request")
+                    else 900
+                ),
                 revoked=False,
                 organization_scope=organization_scope,
+                requires_distinct_approver=require_distinct,
             )
             session.add(row)
             try:
@@ -173,9 +208,14 @@ class ApprovalService:
                 existing = (await session.execute(query)).scalar_one_or_none()
                 if existing is None:
                     raise
-                return public_ticket(existing)
+                return public_ticket(
+                    existing,
+                    can_decide=can_decide_ticket(existing, principal.subject, statuses),
+                )
             await session.refresh(row)
-            return public_ticket(row)
+            return public_ticket(
+                row, can_decide=can_decide_ticket(row, principal.subject, statuses)
+            )
 
     async def read(self, approval_id):
         caller = acting_principal()
@@ -207,14 +247,7 @@ class ApprovalService:
                 raise ApprovalDenied("approval unavailable to this principal")
             return public_ticket(
                 row,
-                can_decide=bool(
-                    caller.subject != row.requester
-                    and status
-                    and status.may_approve
-                    and not row.revoked
-                    and row.result is None
-                    and row.expires_at > datetime.now(UTC)
-                ),
+                can_decide=can_decide_ticket(row, caller.subject, statuses),
             )
 
     async def decide(self, approval_id, result):
@@ -239,7 +272,9 @@ class ApprovalService:
                     .with_for_update()
                 )
             ).scalar_one_or_none()
-            if row is None or caller.subject == row.requester:
+            if row is None or (
+                row.requires_distinct_approver and caller.subject == row.requester
+            ):
                 raise ApprovalDenied("a distinct selected approver is required")
             principal = await self._principal(
                 row.workspace_id, organization_scope=row.organization_scope

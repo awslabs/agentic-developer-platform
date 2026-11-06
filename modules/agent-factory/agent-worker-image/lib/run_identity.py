@@ -93,6 +93,10 @@ class RunIdentityError(Exception):
     """The worker cannot establish or refresh its own authority."""
 
 
+class RunIdentityUnavailable(RunIdentityError):
+    """A transient transport failure may have lost a successful bootstrap reply."""
+
+
 class WorkOwnershipPending(RunIdentityError):
     """The gateway retained an authorized child behind its active parent."""
 
@@ -669,6 +673,15 @@ class RunIdentitySession:
         self._correlation_id = (
             correlation.get("correlation_id") if isinstance(correlation, dict) else None
         )
+        # The gateway roots an engine run's model-policy snapshot on its flow and
+        # signs the decision with that chain, while `correlation.correlation_id`
+        # names the run itself. Verify engine decisions against the flow the
+        # envelope declares; webhook-rooted runs keep their own correlation (#7596).
+        orchestration = envelope.get("orchestration")
+        flow_id = orchestration.get("flow_id") if isinstance(orchestration, dict) else None
+        self._policy_chain_id = (
+            flow_id if isinstance(flow_id, str) and flow_id else self._correlation_id
+        )
         if not all(
             isinstance(item, str) and item
             for item in (self._invocation_id, self._tenant_id, self._correlation_id)
@@ -728,12 +741,19 @@ class RunIdentitySession:
                 ) as response:
                     if response.status_code == 425:
                         raise WorkOwnershipPending("waiting for exclusive work ownership")
+                    if response.status_code in (502, 503, 504):
+                        raise RunIdentityUnavailable("run identity service unavailable")
                     if response.status_code != 200:
                         raise RunIdentityError("gateway refused run identity")
                     raw = response.raw.read(8193, decode_content=True)
                     if len(raw) > 8192:
                         raise RunIdentityError("invalid identity response")
                     return json.loads(raw)
+        except requests.exceptions.SSLError:
+            # Invalid TLS trust is not a transient admission failure.
+            raise RunIdentityError("run identity service unavailable") from None
+        except (requests.Timeout, requests.ConnectionError):
+            raise RunIdentityUnavailable("run identity service unavailable") from None
         except (requests.RequestException, ValueError, OSError):
             raise RunIdentityError("run identity service unavailable") from None
 
@@ -768,7 +788,7 @@ class RunIdentitySession:
                     invocation_id=self._invocation_id,
                     attempt=attempt,
                     tenant_id=self._tenant_id,
-                    correlation_id=self._correlation_id,
+                    correlation_id=self._policy_chain_id,
                     public_keys=load_model_policy_verification_keys(),
                 )
             except ModelPolicyVerificationError as exc:
@@ -845,6 +865,7 @@ class RunIdentitySession:
 
     def start(self) -> None:
         deadline = time.monotonic() + 1800
+        transient_delays = iter((2, 4, 8))
         while True:
             try:
                 self.refresh()
@@ -853,6 +874,16 @@ class RunIdentitySession:
                 if time.monotonic() >= deadline or self._stop.wait(10):
                     raise RunIdentityError("work ownership startup deadline exceeded") from None
                 logger.info("Authorized child is waiting for its parent to release work ownership")
+            except RunIdentityUnavailable:
+                # A slow gateway may have bound this pod before the client lost
+                # its reply. Retry the same invocation, envelope and workload
+                # proof; only a newly verified response may install a credential.
+                delay = next(transient_delays, None)
+                if delay is None or time.monotonic() >= deadline or self._stop.wait(delay):
+                    raise RunIdentityError("run identity startup retry limit reached") from None
+                logger.warning(
+                    "Run identity temporarily unavailable; retrying the same workload binding"
+                )
         os.environ[CREDENTIAL_FILE_ENV] = str(self.credential_path)
         os.environ["ADP_RUN_ATTEMPT"] = str(self._attempt)
         os.environ["ADP_POD_DEADLINE_AT"] = self.pod_deadline_at or "1970-01-01T00:00:00Z"
@@ -887,6 +918,7 @@ def bootstrap_run_identity(envelope: dict) -> RunIdentitySession | None:
     )
     if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
         from lib import run_report
+
         if claims_required and not run_report.enabled():
             raise RunIdentityError("Work ownership requires authenticated worker reporting")
         return None

@@ -15,9 +15,11 @@ from installation.runtime_approval import (
     decode_json,
     manifest,
     manifest_path,
+    review_document,
 )
 
 HEAD = "b" * 40
+MERGE = "e" * 40
 URL = "https://github.com/aws-e/adp/pull/42"
 
 
@@ -89,9 +91,20 @@ def review_setup(tmp_path, environment):
             data = copy.deepcopy(state["pull"])
             if state.get("move_head") and state["pull_reads"] > 1:
                 data["head"]["sha"] = "c" * 40
+            if state["pull_reads"] > 1:
+                data.update(state.get("final_pull", {}))
+                if state.get("change_binary") and data.get("merged"):
+                    (directory / "terraform/installation.tfplan").write_bytes(
+                        b"changed"
+                    )
             return data
         if "/contents/" in path:
-            raw = json.dumps(state["manifest"]).encode()
+            document = state["manifest"]
+            if path.endswith("ref=" + MERGE):
+                document = state.get("merged_manifest", document)
+            raw = json.dumps(
+                state.get("review_document", review_document(document))
+            ).encode()
             return {
                 "type": "file",
                 "path": manifest_path(operator["review_id"]),
@@ -109,6 +122,8 @@ def review_setup(tmp_path, environment):
                 (directory / "terraform/installation.tfplan").write_bytes(b"changed")
             return copy.deepcopy(state.get("final_review", state["reviews"][-1]))
         if "/permission" in path:
+            if state["pull_reads"] > 1 and "final_permission" in state:
+                return copy.deepcopy(state["final_permission"])
             return copy.deepcopy(
                 state.get("permissions", {}).get(path, state["permission"])
             )
@@ -144,7 +159,6 @@ def test_real_api_records_bind_manifest_head_actor_and_current_permission(review
         "draft",
         "fork",
         "branch",
-        "self",
         "comment",
         "dismissed",
         "changes",
@@ -158,7 +172,7 @@ def test_real_api_records_bind_manifest_head_actor_and_current_permission(review
         "binary-changed",
     ],
 )
-def test_missing_or_changed_independent_authority_refuses(review_setup, change):
+def test_missing_or_changed_maintainer_authority_refuses(review_setup, change):
     adapter, args, state = review_setup
     if change == "repo":
         state["repo"]["id"] = 999
@@ -170,8 +184,6 @@ def test_missing_or_changed_independent_authority_refuses(review_setup, change):
         state["pull"]["head"]["repo"]["id"] = 999
     elif change == "branch":
         state["pull"]["base"]["ref"] = "other"
-    elif change == "self":
-        state["pull"]["user"]["id"] = 2
     elif change in ("comment", "dismissed", "changes"):
         state["reviews"][0]["state"] = {
             "comment": "COMMENTED",
@@ -259,8 +271,106 @@ def test_local_approved_dict_does_not_replace_live_review(review_setup):
         {"approved": True, "approver": "administrator"},
     )
     state["reviews"] = []
-    with pytest.raises(Refusal, match="No separate"):
+    with pytest.raises(Refusal, match="No current-head"):
         adapter.verify_plan(**args)
+
+
+def merged_plan(state):
+    state["pull"].update(
+        state="closed",
+        merged=True,
+        merge_commit_sha=MERGE,
+        merged_by={"id": 2, "login": "reviewer"},
+    )
+    state["reviews"] = []
+
+
+@pytest.mark.parametrize("same_author", [False, True])
+def test_maintainer_merge_approves_exact_plan_without_a_review(
+    review_setup, same_author
+):
+    adapter, args, state = review_setup
+    merged_plan(state)
+    if same_author:
+        state["pull"]["user"]["id"] = 2
+    assert adapter.verify_plan(**args) == {
+        "approved": True,
+        **args,
+        "approver": "github:user:2",
+    }
+    saved = json.loads(
+        (adapter.directory / "runtime-plan-review-evidence.json").read_text()
+    )
+    assert saved["approval_kind"] == "merge"
+    assert saved["reviewer_id"] == 2
+    assert saved["review_id"] is None
+    assert saved["commit_id"] == HEAD and saved["merge_commit_sha"] == MERGE
+    assert state["pull_reads"] == 2
+    assert sum("/permission" in path for path in state["calls"]) == 2
+    assert any(path.endswith("ref=" + MERGE) for path in state["calls"])
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "not-merged",
+        "missing-merger",
+        "invalid-commit",
+        "not-maintainer",
+        "permission-user",
+        "merged-manifest",
+        "head-manifest",
+        "head-moved",
+        "merge-moved",
+        "merger-changed",
+        "merge-revoked",
+        "permission-revoked",
+        "binary-changed",
+        "changes-requested",
+    ],
+)
+def test_merge_cannot_replace_exact_plan_or_current_authority(review_setup, fault):
+    adapter, args, state = review_setup
+    merged_plan(state)
+    if fault == "not-merged":
+        state["pull"]["merged"] = False
+    elif fault == "missing-merger":
+        state["pull"]["merged_by"] = None
+    elif fault == "invalid-commit":
+        state["pull"]["merge_commit_sha"] = "main"
+    elif fault == "not-maintainer":
+        state["permission"].update(role_name="write", permission="write")
+    elif fault == "permission-user":
+        state["permission"]["user"]["id"] = 999
+    elif fault == "merged-manifest":
+        state["merged_manifest"] = {**state["manifest"], "plan_sha256": "9" * 64}
+    elif fault == "head-manifest":
+        state["merged_manifest"] = copy.deepcopy(state["manifest"])
+        state["manifest"]["target"] = "another-environment"
+    elif fault == "head-moved":
+        state["move_head"] = True
+    elif fault == "merge-moved":
+        state["final_pull"] = {"merge_commit_sha": "f" * 40}
+    elif fault == "merger-changed":
+        state["final_pull"] = {"merged_by": {"id": 3, "login": "another"}}
+    elif fault == "merge-revoked":
+        state["final_pull"] = {"merged": False}
+    elif fault == "permission-revoked":
+        state["final_permission"] = {**state["permission"], "role_name": "read"}
+    elif fault == "binary-changed":
+        state["change_binary"] = True
+    else:
+        state["reviews"] = [
+            {
+                "id": 100,
+                "state": "CHANGES_REQUESTED",
+                "commit_id": HEAD,
+                "user": {"id": 2, "login": "reviewer"},
+            }
+        ]
+    with pytest.raises(Refusal):
+        adapter.verify_plan(**args)
+    assert not (adapter.directory / "runtime-plan-review-evidence.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -290,7 +400,26 @@ def test_duplicate_json_cannot_rebind_approval():
 
 def test_json_boolean_cannot_impersonate_manifest_version(review_setup):
     adapter, args, state = review_setup
-    state["manifest"]["version"] = True
+    state["review_document"] = {**review_document(state["manifest"]), "version": True}
+    with pytest.raises(Refusal, match="differs from saved plan"):
+        adapter.verify_plan(**args)
+
+
+def test_public_review_contains_only_commitment_to_full_private_manifest(review_setup):
+    _, _, state = review_setup
+    document = review_document(state["manifest"])
+    canonical = json.dumps(state["manifest"], sort_keys=True, separators=(",", ":"))
+    assert document == {
+        "version": 1,
+        "scope": "superplane-domain-runtime-review-v1",
+        "manifest_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+    }
+    assert review_document(dict(reversed(list(state["manifest"].items())))) == document
+
+
+def test_full_private_manifest_is_not_a_public_review_document(review_setup):
+    adapter, args, state = review_setup
+    state["review_document"] = state["manifest"]
     with pytest.raises(Refusal, match="differs from saved plan"):
         adapter.verify_plan(**args)
 

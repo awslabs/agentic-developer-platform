@@ -1,0 +1,174 @@
+name: ADP New Environment E2E Smoke
+run-name: New environment smoke — ${{ inputs.target_environment }}
+'on':
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Protected GitHub environment with commissioned smoke fixtures
+        type: environment
+        required: true
+      environment:
+        description: AWS resource namespace (must match private target record)
+        type: string
+        required: true
+      region:
+        description: AWS region (must match private target record)
+        type: string
+        required: true
+      expected_revision:
+        description: Deployed gateway release SHA (40 lowercase hex characters)
+        type: string
+        required: true
+      modules:
+        description: Blank = core smoke; IDs/names or all = all defined smoke groups. Auth, CLI and navigation always run.
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      target_environment:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      region:
+        required: true
+        type: string
+      expected_revision:
+        required: true
+        type: string
+      modules:
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: adp-regression-${{ inputs.target_environment }}
+  cancel-in-progress: false
+jobs:
+  before:
+    uses: ./.github/workflows/_environment-smoke-snapshot.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      target_environment: ${{ inputs.target_environment }}
+      environment: ${{ inputs.environment }}
+      region: ${{ inputs.region }}
+      expected_revision: ${{ inputs.expected_revision }}
+      modules: ${{ inputs.modules }}
+      phase: before
+  cli:
+    needs: before
+    if: ${{ needs.before.outputs.target_digest != '' && needs.before.outputs.cli_scope != '' }}
+    uses: ./.github/workflows/eval-cli-uplift.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      target_environment: ${{ inputs.target_environment }}
+      environment: ${{ inputs.environment }}
+      region: ${{ inputs.region }}
+      expected_revision: ${{ inputs.expected_revision }}
+      smoke_target_digest: ${{ needs.before.outputs.target_digest }}
+      suites: ${{ needs.before.outputs.cli_scope }}
+  browser:
+    needs: [before, cli]
+    # A failed CLI run may still allow independent browser diagnostics, but only
+    # after its recovery has positively completed. Overall verdict still fails.
+    if: ${{ !cancelled() && needs.before.result == 'success' && needs.cli.outputs.cleanup_ok == 'true' }}
+    runs-on: arc-runner-org
+    environment: adp-browser-checks-${{ inputs.target_environment }}
+    timeout-minutes: 30
+    concurrency:
+      group: cli-live-eval-${{ inputs.target_environment }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ inputs.region }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      SMOKE_TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+      SMOKE_TARGET_DIGEST: ${{ needs.before.outputs.target_digest }}
+      SMOKE_MODULES: ${{ inputs.modules }}
+      ENVIRONMENT_SMOKE_TARGET_JSON: ${{ secrets.ENVIRONMENT_SMOKE_TARGET_JSON }}
+      CLI_UPLIFT_EVAL_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+      PYTHONPATH: ${{ github.workspace }}/.github/scripts:${{ github.workspace }}
+      REGRESSION_INVENTORY: ${{ github.workspace }}/test-results/environment-smoke-browser-inventory.json
+      E2E_SCREENSHOT_DIR: ${{ github.workspace }}/test-results/screenshots
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/trusted-checks
+        with:
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: ${{ inputs.region }}
+      - name: Install browser dependencies
+        run: |
+          pip install pytest pytest-timeout playwright boto3 requests
+          playwright install chromium --with-deps
+      - name: Run existing browser smoke journeys
+        run: python -m tests.regression.environment_smoke browser
+      - name: Require complete browser execution
+        if: always()
+        run: >-
+          python .github/scripts/regression_report.py junit
+          --suite environment-smoke-browser
+          --junit test-results/environment-smoke-browser.xml
+          --inventory test-results/environment-smoke-browser-inventory.json
+          --output test-results/environment-smoke-browser-result.json
+      - uses: ./.github/actions/upload-ci-evidence-s3
+        if: always()
+        with:
+          name: environment-smoke-browser
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 14
+  after:
+    needs: [before, cli, browser]
+    if: ${{ always() && needs.before.result == 'success' }}
+    uses: ./.github/workflows/_environment-smoke-snapshot.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      target_environment: ${{ inputs.target_environment }}
+      environment: ${{ inputs.environment }}
+      region: ${{ inputs.region }}
+      expected_revision: ${{ inputs.expected_revision }}
+      modules: ${{ inputs.modules }}
+      target_digest: ${{ needs.before.outputs.target_digest }}
+      phase: after
+  summary:
+    needs: [before, cli, browser, after]
+    if: always()
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Combined smoke verdict
+        env:
+          REGRESSION_JOBS: ${{ toJSON(needs) }}
+          REGRESSION_REVISION_BEFORE: ${{ needs.before.outputs.revision }}
+          REGRESSION_REVISION_AFTER: ${{ needs.after.outputs.revision }}
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          python .github/scripts/regression_report.py aggregate --required before cli browser after 2>&1 | tee test-results/environment-smoke-summary.txt
+      - uses: ./.github/actions/upload-ci-evidence-s3
+        if: always()
+        with:
+          name: environment-smoke-summary
+          path: test-results/environment-smoke-summary.txt
+          if-no-files-found: error
+          retention-days: 14

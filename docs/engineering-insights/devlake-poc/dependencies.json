@@ -1,0 +1,190 @@
+{
+  "observed_date": "2026-10-27",
+  "blocked_by": {
+    "8888": [],
+    "8889": [
+      8888,
+      8901,
+      8919
+    ],
+    "8890": [
+      8888,
+      8889,
+      8903
+    ],
+    "8891": [
+      8374,
+      8375,
+      8888,
+      8890
+    ],
+    "8892": [
+      8891
+    ],
+    "8893": [
+      8374,
+      8375,
+      8891,
+      8920
+    ],
+    "8894": [
+      8889,
+      8890,
+      8892,
+      8893
+    ],
+    "8895": [
+      8894
+    ],
+    "8901": [
+      8888
+    ],
+    "8902": [
+      8888,
+      8889,
+      8901
+    ],
+    "8903": [
+      8902
+    ],
+    "8919": [
+      8888
+    ],
+    "8920": [
+      8374,
+      8375,
+      8891,
+      8919
+    ],
+    "8274": [],
+    "8275": [],
+    "8276": [],
+    "8294": [],
+    "8373": [],
+    "8374": [],
+    "8375": []
+  },
+  "functional_boundaries": {
+    "8919": "controlled registered fixtures; no 8889 acceptance dependency",
+    "8889": "real cell IAM and optional-mode runtime harness; provider/Profile E2E belongs to S10/S11/S07, no 8902 or 8890 acceptance dependency",
+    "8901": "baseline extracted-code build; later consumer patches reuse pipeline",
+    "8920": "controlled S04 admitted fixtures; no 8893 dependency"
+  },
+  "declared_capability_dependencies": {
+    "8274": [
+      7299,
+      7304,
+      8265,
+      8269
+    ],
+    "8275": [
+      8270,
+      8271,
+      8274
+    ],
+    "8276": [
+      7299,
+      7304,
+      8273,
+      8274,
+      8275,
+      8294
+    ],
+    "8294": [
+      8245,
+      8275
+    ],
+    "8373": [
+      8270,
+      8271,
+      8274
+    ],
+    "8374": [
+      8274,
+      8373
+    ],
+    "8375": [
+      8275,
+      8294,
+      8373,
+      8374
+    ],
+    "7299": [
+      7296,
+      7298,
+      7302,
+      7304
+    ],
+    "7300": [
+      7296,
+      7299,
+      7304
+    ],
+    "7303": [
+      7297
+    ],
+    "8265": [
+      8241,
+      8245,
+      8248
+    ],
+    "8269": [
+      8153
+    ],
+    "8270": [
+      8248,
+      8269
+    ],
+    "8271": [
+      8269,
+      8270
+    ],
+    "8245": [
+      8240,
+      8241
+    ],
+    "8273": [
+      8250,
+      8270,
+      8271,
+      8272
+    ]
+  },
+  "external_leaf_boundary": "Referenced prerequisites outside the reviewed POC/shared-capability graph remain owner handoffs, not whole-epic completion. Native edges above are preserved separately from issue-body capability dependencies.",
+  "compensation_contract": {
+    "kind": "design contract only; not a registered flow or new native dependency",
+    "bootstrap_owner": 8901,
+    "runtime_owner": 8889,
+    "decision_and_receipt_consumer": 8895,
+    "triggers": [
+      "terminal_failure",
+      "retries_exhausted",
+      "operator_abort",
+      "expiry",
+      "reuse_rejected",
+      "normal_completion"
+    ],
+    "entrypoint": ".github/workflows/insights-poc-finalize.yml",
+    "logic": "modules/insights/poc/devlake/finalize",
+    "admission": "S09 qualifies artifact handlers before publication; S02 qualifies runtime handlers before provisioning; protected authority/ledger required",
+    "success_dependency": null,
+    "preserves": "Native success graph and original failed/not-run outcomes; S08 adoption review still requires S07"
+  },
+  "optional_deployment_contract": {
+    "canonical": "architecture.md#21-optional-deployment-and-connector-reuse",
+    "master_flag": "FEATURE_DEVLAKE_CONNECTORS_ENABLED",
+    "collection_flag": "DEVLAKE_COLLECTION_ENABLED",
+    "defaults": false,
+    "modes": [
+      "off",
+      "connectors_only",
+      "connectors_and_collection"
+    ],
+    "infra_roots": [
+      "modules/connectors/devlake/infra/",
+      "modules/insights/poc/devlake/infra/"
+    ],
+    "preserves_native_dependencies": true,
+    "cleanup_requires_enabled_feature": false
+  }
+}

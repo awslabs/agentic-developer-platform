@@ -26,6 +26,7 @@ from app.routers.accounts import router as accounts_router
 from app.routers.auth import router as auth_router
 from app.routers.controller_management import router as controller_management_router
 from app.routers.bootstrap_observation import router as bootstrap_observation_router
+from app.routers.dedicated_readers import router as dedicated_readers_router
 from app.routers.controller_recovery import router as controller_recovery_router
 from app.routers.cost import router as cost_router
 from app.routers.events import router as events_router
@@ -33,9 +34,20 @@ from app.routers.heartbeat import router as heartbeat_router
 from app.routers.installation import router as installation_router
 from app.routers.internal import router as internal_router
 from app.routers.operation_approvals import router as operation_approvals_router
+from app.routers.planning_budget import router as planning_budget_router
+from app.routers.dispatch_recovery import router as dispatch_recovery_router
+from app.routers.provider_recovery import (
+    planning_router,
+    completion_router,
+    interrupted_router,
+    bootstrap_router,
+    settled_bootstrap_router,
+    router as provider_recovery_router,
+)
 from app.routers.onboarding import router as onboarding_router
 from app.routers.retirement import router as retirement_router
 from app.routers.retirement_access import router as retirement_access_router
+from app.routers.partial_apply import router as partial_apply_router
 from app.routers.orgs import router as orgs_router
 from app.routers.organization_access import router as organization_access_router
 from app.routers.provider_connections import router as provider_connections_router
@@ -242,6 +254,7 @@ app = FastAPI(
 app.state.domain_policy = build_domain_policy()
 app.include_router(controller_management_router)
 app.include_router(bootstrap_observation_router)
+app.include_router(dedicated_readers_router)
 app.include_router(controller_recovery_router)
 
 # Validate the browser origin allowlist at import, before serving requests.
@@ -336,9 +349,18 @@ async def _scrubbed_validation_error(
 
 # Routers
 app.include_router(operation_approvals_router)
+app.include_router(planning_budget_router)
+app.include_router(dispatch_recovery_router)
+app.include_router(provider_recovery_router)
+app.include_router(planning_router)
+app.include_router(completion_router)
+app.include_router(interrupted_router)
+app.include_router(bootstrap_router)
+app.include_router(settled_bootstrap_router)
 app.include_router(onboarding_router)
 app.include_router(retirement_router)
 app.include_router(retirement_access_router)
+app.include_router(partial_apply_router)
 app.include_router(health.router, tags=["health"])
 app.include_router(auth_router)
 app.include_router(orgs_router)

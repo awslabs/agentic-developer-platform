@@ -106,6 +106,13 @@
   },
   {
     "method": "POST",
+    "path": "/admin/connections/atlassian-mcp/prepare",
+    "module": "src.admin.connections.oauth_apps",
+    "endpoint": "prepare_atlassian_mcp",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
     "path": "/admin/connections/github/app/disconnect",
     "module": "src.admin.connections.routes",
     "endpoint": "github_app_disconnect",
@@ -179,6 +186,20 @@
     "path": "/admin/connections/github/{installation_id}",
     "module": "src.admin.connections.routes",
     "endpoint": "disconnect_github",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/connections/oauth/slack/app/automate",
+    "module": "src.admin.connections.oauth_apps",
+    "endpoint": "automate_slack_app",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/connections/oauth/{provider}/app",
+    "module": "src.admin.connections.oauth_apps",
+    "endpoint": "register_oauth_app",
     "classification": "durable-operation"
   },
   {
@@ -280,6 +301,13 @@
     "classification": "durable-operation"
   },
   {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/campaign-identities/{subject}/operations/{operation_id}",
+    "module": "src.admin.campaign_identity",
+    "endpoint": "edit_identity",
+    "classification": "durable-operation"
+  },
+  {
     "method": "POST",
     "path": "/admin/organizations/{org_id}/connections/github",
     "module": "src.admin.org_connections.routes",
@@ -347,6 +375,13 @@
     "path": "/admin/organizations/{org_id}/members",
     "module": "src.admin.routes",
     "endpoint": "add_org_member",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/ratelimit-cli/user/{key}/campaign/{operation_id}",
+    "module": "src.admin.campaign_quota",
+    "endpoint": "edit_campaign_quota",
     "classification": "durable-operation"
   },
   {
@@ -564,6 +599,27 @@
     "path": "/admin/tenants/{tenant_id}/orgs/{github_org_id}",
     "module": "src.admin.tenants.routes",
     "endpoint": "unlink_org_from_tenant",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/tools/consent-default",
+    "module": "src.admin.tool_routes",
+    "endpoint": "put_tools_consent_default",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/tools/entitlements",
+    "module": "src.admin.tool_routes",
+    "endpoint": "put_entitlement",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/tools/users/{user_id}/policy",
+    "module": "src.admin.tool_routes",
+    "endpoint": "put_user_tool_policy",
     "classification": "durable-operation"
   },
   {

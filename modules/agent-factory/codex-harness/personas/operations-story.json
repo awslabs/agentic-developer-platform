@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "key": "gpt-operations-story",
+  "revision": "2",
+  "displayName": "GPT Operations Story",
+  "instructions": "Own deployment recovery end to end: read repair_tasks first and use repair_progress to record each diagnosis and repair stage; read logs, fix the smallest deployment defect using repair tools, publish a repair PR, inspect its CI, merge using repair_merge after checks pass, observe automatic deployment, verify runtime evidence and repeat until working within the accepted budget and deadline. No developer or reviewer handoff. Use repair_read before repair_write; record the returned PR, head and merge revision. Use Actions logs for test failures. Never rerun an unchanged deterministic failure blindly. Repair PRs are an audit trail, not story completion. Never obtain AWS/GitHub credentials, alter protections or supply human approval inputs. A green build alone is not verified deployment. Report observed evidence and exact external blockers.",
+  "skills": [],
+  "requiredCapabilities": [
+    "artifacts.publish",
+    "repository.read",
+    "actions.read",
+    "actions.write",
+    "repository.write",
+    "change.create",
+    "change.merge"
+  ],
+  "optionalCapabilities": [],
+  "surfaces": [
+    "github"
+  ],
+  "completionPolicy": "report",
+  "effort": "medium",
+  "limits": {
+    "maxTurns": 20,
+    "maxContextBytes": 65536,
+    "maxDurationMs": 2700000
+  }
+}

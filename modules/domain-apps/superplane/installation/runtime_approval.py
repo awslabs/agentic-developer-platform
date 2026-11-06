@@ -1,8 +1,8 @@
-"""Authenticate a separate maintainer's approval of one saved runtime plan.
+"""Authenticate a maintainer's review or merge of one saved runtime plan.
 
 The source repository is a maintained trust boundary, not installer input.
 Local manifests and review references are proposals; only live GitHub review
-and repository permission records can supply the independent approval.
+or merge records and current repository permissions can supply approval.
 """
 
 import base64
@@ -121,6 +121,16 @@ def manifest_path(review_id):
     return f"{MANIFEST_DIRECTORY}/{review_id}.json"
 
 
+def review_document(private_manifest):
+    """Commit to the complete private manifest without publishing target identities."""
+    canonical = json.dumps(private_manifest, sort_keys=True, separators=(",", ":"))
+    return {
+        "version": 1,
+        "scope": "superplane-domain-runtime-review-v1",
+        "manifest_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
 class GitHubReadAPI:
     def __init__(self, commands=None):
         self.commands = commands or Commands()
@@ -215,7 +225,16 @@ class GitHubPlanApproval:
         document = self.api.get(f"{self.prefix}/pulls/{self.number}")
         require(
             document.get("number") == self.number
-            and document.get("state") == "open"
+            and (
+                document.get("state") == "open"
+                and document.get("merged") in (None, False)
+                or document.get("state") == "closed"
+                and document.get("merged") is True
+                and isinstance(document.get("merge_commit_sha"), str)
+                and re.fullmatch(r"[0-9a-f]{40}", document["merge_commit_sha"])
+                and isinstance(document.get("merged_by"), dict)
+                and type(document["merged_by"].get("id")) is int
+            )
             and document.get("draft") is False
             and document.get("base", {}).get("ref") == "main"
             and document.get("base", {}).get("repo", {}).get("id") == REPOSITORY_ID
@@ -223,7 +242,7 @@ class GitHubPlanApproval:
             and isinstance(document.get("head", {}).get("sha"), str)
             and re.fullmatch(r"[0-9a-f]{40}", document["head"]["sha"])
             and type(document.get("user", {}).get("id")) is int,
-            "Runtime plan review must be an open same-repository main PR",
+            "Runtime plan review must be an open or merged same-repository main PR",
         )
         return document
 
@@ -258,6 +277,41 @@ class GitHubPlanApproval:
                 return reviews
         raise Refusal("Runtime plan review history exceeds bounded lookup")
 
+    def verify_manifest(self, expected, ref):
+        path = manifest_path(expected["review_id"])
+        contents = self.api.get(f"{self.prefix}/contents/{path}?ref={ref}")
+        require(
+            contents.get("type") == "file"
+            and contents.get("path") == path
+            and contents.get("encoding") == "base64"
+            and type(contents.get("size")) is int
+            and 0 < contents["size"] <= MAX_JSON,
+            "Reviewed runtime manifest is missing or invalid",
+        )
+        try:
+            encoded = "".join(contents["content"].splitlines())
+            require(len(encoded) <= MAX_JSON * 2, "Encoded manifest exceeds bound")
+            raw = base64.b64decode(encoded, validate=True)
+        except (KeyError, ValueError, TypeError):
+            raise Refusal("Reviewed runtime manifest encoding is invalid") from None
+        require(
+            len(raw) == contents["size"]
+            # Git's blob identifier is SHA-1 for compatibility. Content authority
+            # is checked below against the complete reviewed SHA-256 plan document.
+            and hashlib.sha1(
+                b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+            ).hexdigest()
+            == contents.get("sha"),
+            "Reviewed manifest Git blob identity mismatch",
+        )
+        require(
+            json.dumps(decode_json(raw), sort_keys=True, separators=(",", ":"))
+            == json.dumps(
+                review_document(expected), sort_keys=True, separators=(",", ":")
+            ),
+            "Reviewed manifest differs from saved plan",
+        )
+
     def verify_plan(self, *, plan_sha256, installation_id, review_id):
         expected = manifest(self.environment, self.operator, self.directory)
         require(
@@ -275,35 +329,7 @@ class GitHubPlanApproval:
         )
         pull = self.pull()
         head = pull["head"]["sha"]
-        path = manifest_path(review_id)
-        contents = self.api.get(f"{self.prefix}/contents/{path}?ref={head}")
-        require(
-            contents.get("type") == "file"
-            and contents.get("path") == path
-            and contents.get("encoding") == "base64"
-            and type(contents.get("size")) is int
-            and 0 < contents["size"] <= MAX_JSON,
-            "Reviewed runtime manifest is missing or invalid",
-        )
-        try:
-            encoded = "".join(contents["content"].splitlines())
-            require(len(encoded) <= MAX_JSON * 2, "Encoded manifest exceeds bound")
-            raw = base64.b64decode(encoded, validate=True)
-        except (KeyError, ValueError, TypeError):
-            raise Refusal("Reviewed runtime manifest encoding is invalid") from None
-        require(
-            len(raw) == contents["size"]
-            and hashlib.sha1(
-                b"blob " + str(len(raw)).encode() + b"\0" + raw
-            ).hexdigest()
-            == contents.get("sha"),
-            "Reviewed manifest Git blob identity mismatch",
-        )
-        require(
-            json.dumps(decode_json(raw), sort_keys=True, separators=(",", ":"))
-            == json.dumps(expected, sort_keys=True, separators=(",", ":")),
-            "Reviewed manifest differs from saved plan",
-        )
+        self.verify_manifest(expected, head)
         latest = {}
         for review in self.reviews():
             require(
@@ -330,9 +356,7 @@ class GitHubPlanApproval:
             if key not in latest or review["id"] > latest[key]["id"]:
                 latest[key] = review
         approvals = []
-        for reviewer_id, review in latest.items():
-            if reviewer_id == pull["user"]["id"]:
-                continue
+        for review in latest.values():
             if not self.maintainer(review["user"]):
                 continue
             require(
@@ -341,24 +365,55 @@ class GitHubPlanApproval:
             )
             if review.get("state") == "APPROVED" and review.get("commit_id") == head:
                 approvals.append(review)
-        require(
-            approvals, "No separate current-head maintainer approval of runtime plan"
-        )
-        approved = max(approvals, key=lambda item: item["id"])
+        merged = pull.get("merged") is True
+        if merged:
+            approver = pull["merged_by"]
+            require(
+                self.maintainer(approver),
+                "Runtime plan merger is not a current repository maintainer",
+            )
+            # A squash, rebase or merge must preserve the exact plan manifest.
+            self.verify_manifest(expected, pull["merge_commit_sha"])
+            approval_evidence = {
+                "approval_kind": "merge",
+                "merge_commit_sha": pull["merge_commit_sha"],
+                "review_id": None,
+            }
+        else:
+            require(approvals, "No current-head maintainer approval of runtime plan")
+            approved = max(approvals, key=lambda item: item["id"])
+            approver = approved["user"]
+            approval_evidence = {
+                "approval_kind": "review",
+                "review_id": approved["id"],
+            }
         final_pull = self.pull()
-        final_review = self.api.get(
-            f"{self.prefix}/pulls/{self.number}/reviews/{approved['id']}"
-        )
         require(
             final_pull["head"]["sha"] == head
             and final_pull["user"]["id"] == pull["user"]["id"]
-            and final_review.get("id") == approved["id"]
-            and final_review.get("state") == "APPROVED"
-            and final_review.get("commit_id") == head
-            and final_review.get("user", {}).get("id") == approved["user"]["id"]
-            and self.maintainer(final_review["user"]),
-            "Runtime plan head, approval or reviewer authority changed",
+            and final_pull["state"] == pull["state"]
+            and (final_pull.get("merged") is True) == merged,
+            "Runtime plan head or approval state changed",
         )
+        if merged:
+            require(
+                final_pull["merge_commit_sha"] == pull["merge_commit_sha"]
+                and final_pull["merged_by"]["id"] == approver["id"]
+                and self.maintainer(final_pull["merged_by"]),
+                "Runtime plan merge or merger authority changed",
+            )
+        else:
+            final_review = self.api.get(
+                f"{self.prefix}/pulls/{self.number}/reviews/{approved['id']}"
+            )
+            require(
+                final_review.get("id") == approved["id"]
+                and final_review.get("state") == "APPROVED"
+                and final_review.get("commit_id") == head
+                and final_review.get("user", {}).get("id") == approver["id"]
+                and self.maintainer(final_review["user"]),
+                "Runtime plan approval or reviewer authority changed",
+            )
         require(
             manifest(self.environment, self.operator, self.directory) == expected,
             "Saved runtime plan changed while verifying approval",
@@ -370,8 +425,8 @@ class GitHubPlanApproval:
                 "repository_id": REPOSITORY_ID,
                 "pull_request": self.number,
                 "commit_id": head,
-                "review_id": approved["id"],
-                "reviewer_id": approved["user"]["id"],
+                **approval_evidence,
+                "reviewer_id": approver["id"],
                 "manifest": expected,
             },
         )
@@ -380,5 +435,5 @@ class GitHubPlanApproval:
             "plan_sha256": plan_sha256,
             "installation_id": installation_id,
             "review_id": review_id,
-            "approver": "github:user:" + str(approved["user"]["id"]),
+            "approver": "github:user:" + str(approver["id"]),
         }

@@ -1,0 +1,34 @@
+name: DevLake POC / bounded window
+on:
+  workflow_call:
+    inputs:
+      launch_manifest:
+        type: string
+        required: true
+      window:
+        type: number
+        required: true
+permissions:
+  contents: read
+jobs:
+  observe:
+    if: github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: arc-runner-org
+    environment: adp-devlake-campaign
+    timeout-minutes: 300
+    env:
+      ADP_DEVLAKE_CAMPAIGN_ROOT: ${{ secrets.ADP_DEVLAKE_CAMPAIGN_ROOT }}
+      LAUNCH_MANIFEST: ${{ inputs.launch_manifest }}
+      WINDOW: ${{ inputs.window }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r modules/insights/schemas/requirements.txt
+      - run: |
+          python3 modules/insights/poc/devlake/resume_campaign.py \
+            --root "$ADP_DEVLAKE_CAMPAIGN_ROOT" --launch-manifest "$LAUNCH_MANIFEST" \
+            --revision "$GITHUB_SHA" --window "$WINDOW"

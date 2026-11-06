@@ -77,6 +77,36 @@ React + Tailwind admin dashboard. Provides:
 - Usage analytics and cost dashboards
 - Agent onboarding and credential management
 
+### Opt-in metering recovery
+
+After the metering migration and versioned journal permissions are installed,
+`BG_METERING_JOURNAL_BUCKET` starts a bounded background scan using the gateway's
+accounting database and configured Mantle region. Leave it unset until the
+journal is accessible and writers are compatible. It does **not** activate
+metered admission or supply the physical-send guard. An attempt with no trusted
+final usage remains held as unknown; a verified receipt can settle without
+replaying inference. On rollback, retain the schema, journal and recovery
+worker wherever outstanding metering attempts exist.
+
+Serving metered Responses is a separate default-off choice:
+`BG_METERED_RESPONSES_ENABLED=true` requires a working journal binding and
+refuses serving if that binding is unavailable. Recovery remains active when
+serving is off. Admission reserves and arms on the request database factory;
+final receipts and recovery use the accounting factory. Keep
+`BG_RDS_SPLIT_POOL_ENABLED` off until the distinct pools pass capacity qualification.
+
+The Responses gateway also enforces an absolute operation deadline (720 seconds
+by default, at most 1,440) through `BG_MANTLE_OPERATION_TIMEOUT_SECONDS`. It
+includes provider setup and continuous streaming; arriving chunks and downstream
+keep-alives cannot extend it. Interrupted streams report an error when a complete
+SSE record boundary permits one and never synthesize a completed response.
+
+Human-rooted metered requests require a verified run binding and active person
+scope gates. Previously bound person aliases continue to block unresolved spend
+after an identity link changes; strict flow/policy scopes fail closed until a
+compatible durable writer is available. Turning off numeric caps does not
+remove unknown-accounting holds.
+
 ### Infrastructure (`infra/`)
 
 Terraform modules (14 total):
@@ -215,6 +245,8 @@ aws s3 sync dist/ "s3://${BUCKET}/" --delete
 | `gateway-ci.yml` | PR to `src/`, `tests/`, `pyproject.toml` | Lint → Test → Docker build |
 | `gateway-deploy.yml` | Push to main | ECR push → EKS rollout → S3 sync → CF invalidation |
 | `gateway-infra-apply.yml` | Dispatch on main with required `reviewed_source_sha` | Terraform apply with two-pass ALB wiring; the reviewed pin must equal the run and checkout commit |
+
+Atlassian MCP dynamic registration needs the reviewed gateway Terraform plan to include `aws_secretsmanager_secret_policy.atlassian_mcp_client` before the administrator runs the prepare API. Apply only through the existing manual gateway infrastructure workflow after review; the policy grants AgentCore Identity read access to that one Terraform-owned client secret, not to user tokens or other connectors. A passing Terraform test or Secrets Manager policy validation does not establish a live Identity secret read or OAuth compatibility. Verify those separately before enabling consent; do not turn on the compatibility gate from metadata pins alone.
 
 ## Local Development
 

@@ -6,6 +6,13 @@
 
 import { apiClient } from './api';
 
+export function registerProfileCredential(operationId: string, data: {
+  service: string; label: string; credential_type: 'basic_auth' | 'bearer' | 'oauth_token' | 'api_key';
+  value: string; scope_hint: 'user'; scopes?: { oauth_scopes: string[] };
+}) {
+  return apiClient.put<CredentialItem>(`/auth/credentials/${encodeURIComponent(operationId)}`, data);
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -35,11 +42,13 @@ export interface CredentialItem {
   service: string;
   label: string;
   credential_type: string;
+  provider?: string | null;
   scope: string;
   scopes: Record<string, string> | null;
   expires_at: string | null;
   last_used_at: string | null;
   strict: boolean;
+  agent_consent: boolean;
   created_at: string;
   updated_at: string | null;
 }
@@ -87,36 +96,38 @@ export async function deleteCredential(id: string): Promise<void> {
   return apiClient.delete<void>(`/auth/credentials/${id}`);
 }
 
-// ---------------------------------------------------------------------------
-// GitHub PAT registration
-// ---------------------------------------------------------------------------
-
-export interface RegisterGitHubPatRequest {
-  pat: string;
-  expires_at?: string; // ISO date string (YYYY-MM-DD)
+export async function setCredentialAgentConsent(id: string, agentConsent: boolean): Promise<CredentialItem> {
+  return apiClient.put<CredentialItem>(`/auth/credentials/${encodeURIComponent(id)}/agent-consent`, {
+    agent_consent: agentConsent,
+  });
 }
 
-/**
- * Register a GitHub Personal Access Token in the vault.
- *
- * Uses fixed conventions per design note §2:
- *   service = "github"
- *   credential_type = "bearer"
- *   label = "github-pat"
- *   strict = true
- *   scope_hint = "user"
- */
-export async function registerGitHubPat(
-  data: RegisterGitHubPatRequest,
-): Promise<CredentialItem> {
-  return apiClient.post<CredentialItem>('/auth/credentials', {
-    service: 'github',
-    credential_type: 'bearer',
-    label: 'github-pat',
-    value: data.pat,
-    strict: true,
-    scope_hint: 'user',
-    ...(data.expires_at ? { expires_at: data.expires_at } : {}),
+export type ConsentMode = 'default' | 'explicit';
+export type ConsentPosture = 'granted' | 'explicit';
+
+export interface ToolsConsent {
+  allowed_tools: string[];
+  consented_tools: string[];
+  revision: number;
+  /** #8387: absent on older gateways, which only know the explicit opt-in contract. */
+  consent_mode?: ConsentMode;
+  opted_out_tools?: string[];
+  tenant_consent_default?: ConsentPosture;
+  entitled_tools?: string[];
+}
+
+export async function getToolsConsent(): Promise<ToolsConsent> {
+  return apiClient.get<ToolsConsent>('/auth/tools/consent');
+}
+
+export async function setToolsConsent(consentedTools: string[], expectedRevision: number): Promise<ToolsConsent> {
+  return apiClient.put<ToolsConsent>('/auth/tools/consent', { consented_tools: consentedTools, expected_revision: expectedRevision });
+}
+
+/** #8387: keep (or return to) the organization default and opt out of the named tools only. */
+export async function setToolsConsentDefault(optedOutTools: string[], expectedRevision: number): Promise<ToolsConsent> {
+  return apiClient.put<ToolsConsent>('/auth/tools/consent', {
+    consent_mode: 'default', opted_out_tools: optedOutTools, expected_revision: expectedRevision,
   });
 }
 

@@ -145,9 +145,10 @@ class PreservationTests(unittest.TestCase):
         # Silently dropping either case would shrink the live subnet set.
         with self.assertRaisesRegex(state.capacity_subnets.Refused, "availability zone"):
             self.capacity(["subnet-0extra1", "subnet-0vanished"], zones={"subnet-0extra1": "us-east-1a"})
-        with self.assertRaisesRegex(state.capacity_subnets.Refused, "availability zone"):
+        self.assertEqual(
             self.capacity(["subnet-0extra1", "subnet-0extra2"],
-                          zones={"subnet-0extra1": "us-east-1a", "subnet-0extra2": "us-east-1a"})
+                          zones={"subnet-0extra1": "us-east-1a", "subnet-0extra2": "us-east-1a"}),
+            {"us-east-1a": ["subnet-0extra1", "subnet-0extra2"]})
         # The same subnet claimed under two zones: a subnet lives in exactly one.
         with self.assertRaisesRegex(state.capacity_subnets.Refused, "more than one"):
             self.capacity(["subnet-0extra1", "subnet-0extra2"],
@@ -255,10 +256,116 @@ class PreservationTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class RetainedEndpointTests(unittest.TestCase):
+    account = "123456789012"
+    old_url = "https://old.example.com/dev/github"
+    new_url = "https://new.example.com/dev/github"
+
+    def retained(self):
+        return {"outputs": {"webhook_url": {"value": self.old_url}}, "resources": [
+            resource("aws_secretsmanager_secret", "github_app_key", {
+                "name": "adp/dev/github-app/key", "id": "secret-id", "kms_key_id": "key-id"}),
+            resource("aws_secretsmanager_secret_version", "github_app_key", {"secret_id": "secret-id"}),
+            resource("aws_kms_key", "credentials", {"id": "key-id", "arn": "key-arn"}),
+            resource("aws_kms_alias", "credentials", {"target_key_id": "key-id"}),
+            {"mode": "data", "type": "aws_eks_cluster", "name": "main", "instances": [
+                {"attributes": {"id": "old-cluster"}}]},
+        ]}
+
+    def installed(self, url=None):
+        result = self.retained()
+        result["resources"].append(resource("aws_api_gateway_rest_api", "webhook", {"id": "api-id"}))
+        result["outputs"]["webhook_url"]["value"] = url or self.old_url
+        return result
+
+    def test_credential_remnants_do_not_preserve_deleted_api_outputs(self):
+        self.assertEqual(state.integration_outputs(self.retained()), {})
+
+    def test_empty_state_does_not_preserve_stale_outputs(self):
+        self.assertEqual(state.integration_outputs({"resources": [], "outputs": {
+            "webhook_url": {"value": self.old_url}}}), {})
+
+    def test_any_remaining_nonretained_resource_keeps_endpoint_guard(self):
+        for kind in ("aws_api_gateway_rest_api", "aws_lambda_function", "aws_sqs_queue",
+                     "aws_secretsmanager_secret"):
+            with self.subTest(kind=kind):
+                original = self.retained()
+                original["resources"].append(resource(kind, "other", {"name": "unrelated"}))
+                self.assertEqual(state.integration_outputs(original), {"webhook_url": self.old_url})
+
+    def test_prepare_omits_stale_endpoint_but_keeps_credential_snapshot(self):
+        platform = {"outputs": {"eks_cluster_name": {"value": "adp-dev-eks-cluster"}},
+                    "resources": [resource("aws_eks_cluster", "main", {"name": "adp-dev-eks-cluster"})]}
+        states = {"dev/platform/terraform.tfstate": platform,
+                  "dev/modules/webhook-ingress/terraform.tfstate": self.retained()}
+        baseline = {"secrets": {"secret-id": ["version-1"]}, "mappings": {}}
+
+        def aws(*args):
+            if args[:2] == ("sts", "get-caller-identity"):
+                return {"Account": self.account}
+            if args[:2] == ("s3api", "list-objects-v2"):
+                return {"Contents": [{"Key": key} for key in states]}
+            if args[:2] == ("s3api", "get-object"):
+                Path(args[-1]).write_text(json.dumps(states[args[args.index("--key") + 1]]))
+                return {}
+            if args[:2] == ("eks", "describe-cluster"):
+                return {"cluster": {"status": "ACTIVE", "resourcesVpcConfig": {
+                    "endpointPublicAccess": False, "endpointPrivateAccess": True, "publicAccessCidrs": []}}}
+            self.fail(f"Unexpected AWS access: {args[:2]}")
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(state, "aws", aws), \
+                patch.object(state, "integration_snapshot", return_value=copy.deepcopy(baseline)):
+            state.prepare(SimpleNamespace(directory=directory, account=self.account,
+                                          region="us-east-1", environment="dev"))
+            saved = json.loads((Path(directory) / "integration-before.json").read_text())
+        self.assertEqual(saved["outputs"]["webhook-ingress"], {})
+        self.assertEqual(saved["secrets"], baseline["secrets"])
+        self.assertIn("webhook-ingress", saved["modules"])
+
+    def verify(self, original, current, rotated=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = {"account": self.account, "environment": "dev", "modules": ["webhook-ingress"],
+                      "outputs": {"webhook-ingress": {"webhook_url": self.old_url}},
+                      "secrets": {"secret-id": ["version-1"]}, "mappings": {}, "broker_function": None}
+            (root / "integration-before.json").write_text(json.dumps(before))
+            (root / "webhook-ingress-before.tfstate").write_text(json.dumps(original))
+
+            def aws(*args):
+                if args[:2] == ("sts", "get-caller-identity"):
+                    return {"Account": self.account}
+                if args[:2] == ("s3api", "get-object"):
+                    Path(args[-1]).write_text(json.dumps(current))
+                    return {}
+                self.fail(f"Unexpected AWS access: {args[:2]}")
+
+            after = {"secrets": {"secret-id": ["version-2" if rotated else "version-1"]}, "mappings": {}}
+            with patch.object(state, "aws", aws), patch.object(state, "integration_snapshot", return_value=after):
+                state.verify(SimpleNamespace(directory=directory, require_module=["webhook-ingress"]))
+            return json.loads((root / "integration-verification.json").read_text())
+
+    def test_old_snapshot_can_verify_new_api_from_retained_credentials(self):
+        self.assertTrue(self.verify(self.retained(), self.installed(self.new_url))["preserved"])
+
+    def test_existing_api_endpoint_change_still_refuses(self):
+        with self.assertRaisesRegex(ValueError, "Existing integration endpoint changed"):
+            self.verify(self.installed(), self.installed(self.new_url))
+
+    def test_existing_api_endpoint_unchanged_passes(self):
+        self.assertTrue(self.verify(self.installed(), self.installed())["preserved"])
+
+    def test_recreated_api_cannot_rotate_retained_credentials(self):
+        with self.assertRaisesRegex(ValueError, "credential version changed"):
+            self.verify(self.retained(), self.installed(self.new_url), rotated=True)
+
+
 class CapacitySubnetExportTests(unittest.TestCase):
     """The retained subnets have to reach the file the update apply actually reads."""
     account = "111122223333"
     region = "us-east-1"
+
+    def test_update_export_requests_live_cluster_membership_verification(self):
+        self.assertEqual(self.exported(["subnet-0own1"])["capacity_existing_cluster"], "adp-test-eks-cluster")
 
     def exported(self, live, requested=None):
         platform = {"outputs": {"eks_cluster_name": {"value": "adp-test-eks-cluster"}},
@@ -326,8 +433,7 @@ class EnginePreservationTests(unittest.TestCase):
                 "server_side_encryption": [{"kms_key_arn": "arn:aws:kms:eu-west-1:111122223333:key/existing"}]})]}
         return gateway, webhook
 
-    def test_prepare_keeps_live_dispatch_and_command_bridge_in_exported_gateway_inputs(self):
-        gateway, webhook = self.states()
+    def exported(self, gateway, webhook):
         platform = {"outputs": {"eks_cluster_name": {"value": "adp-test-eks-cluster"}},
                     "resources": [resource("aws_eks_cluster", "main", {"name": "adp-test-eks-cluster"})]}
         states = {"test/platform/terraform.tfstate": platform,
@@ -349,12 +455,43 @@ class EnginePreservationTests(unittest.TestCase):
                 patch.object(state, "integration_snapshot", return_value={"secrets": {}, "mappings": {}}):
             state.prepare(SimpleNamespace(directory=directory, account=self.account, region=self.region, environment="test"))
             exported = json.loads((Path(directory) / "gateway.tfvars.json").read_text())
+        return exported
+
+    def test_prepare_keeps_live_dispatch_and_command_bridge_in_exported_gateway_inputs(self):
+        gateway, webhook = self.states()
+        exported = self.exported(gateway, webhook)
         self.assertEqual(exported["orchestration_dispatch_queue_url"], self.queue)
         self.assertEqual(exported["orchestration_dispatch_queue_arn"], webhook["resources"][0]["instances"][0]["attributes"]["arn"])
         self.assertEqual(exported["orchestration_webhook_events_table"], "customer-events")
         self.assertEqual(exported["orchestration_webhook_events_kms_key_arn"], "arn:aws:kms:eu-west-1:111122223333:key/existing")
         self.assertEqual(exported["orchestration_github_app_secret_arn_pattern"], self.scope)
         self.assertNotIn("orchestration_agent_authority_enabled", exported)
+
+    def test_prepare_preserves_custom_domain_and_accepts_provider_null_aliases(self):
+        for aliases in (None, [], ["gateway.example.com"]):
+            with self.subTest(aliases=aliases):
+                gateway, webhook = self.states()
+                gateway["resources"].append(resource("aws_cloudfront_distribution", "frontend", {
+                    "aliases": aliases, "origin": [],
+                    "viewer_certificate": [{"acm_certificate_arn": "arn:aws:acm:us-east-1:111122223333:certificate/existing"}],
+                }))
+                exported = self.exported(gateway, webhook)
+                if aliases:
+                    self.assertEqual(exported["frontend_domain_name"], aliases[0])
+                    self.assertEqual(exported["frontend_acm_certificate_arn"],
+                                     "arn:aws:acm:us-east-1:111122223333:certificate/existing")
+                else:
+                    self.assertNotIn("frontend_domain_name", exported)
+                    self.assertNotIn("frontend_acm_certificate_arn", exported)
+                self.assertEqual(exported["orchestration_dispatch_queue_url"], self.queue)
+
+    def test_prepare_still_refuses_multiple_custom_domains(self):
+        gateway, webhook = self.states()
+        gateway["resources"].append(resource("aws_cloudfront_distribution", "frontend", {
+            "aliases": ["one.example.com", "two.example.com"], "origin": [],
+        }))
+        with self.assertRaisesRegex(ValueError, "Multiple CloudFront aliases"):
+            self.exported(gateway, webhook)
 
     def test_unwired_tick_does_not_gain_optional_integration(self):
         gateway, webhook = self.states()

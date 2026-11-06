@@ -1,0 +1,49 @@
+{
+  "contract_version": 1,
+  "desktop": {
+    "desktop_id": "00000000-0000-4000-8000-000000000001",
+    "user_id": "example-owner",
+    "org_id": "example-org",
+    "deployment_id": "example-deployment",
+    "template_revision": "example-r1",
+    "profile": "crew",
+    "machine_generation": 1,
+    "desired_state": "running",
+    "observed_state": "unknown",
+    "status": "requested"
+  },
+  "operation": {
+    "operation_id": "00000000-0000-4000-8000-000000000002",
+    "actor_user_id": "example-owner",
+    "action": "setup",
+    "status": "pending",
+    "progress": "admitted",
+    "provider_token": "0000000000000000000000000000000000000000000000000000000000000000",
+    "retention_choice": null,
+    "readiness_class": null,
+    "error_class": null
+  },
+  "instance": {
+    "machine_generation": 1,
+    "device_identity_id": null,
+    "observed_state": "unknown"
+  },
+  "resource": {
+    "machine_generation": 1,
+    "retention_state": "retained",
+    "deletion_state": "unknown"
+  },
+  "usage": {
+    "machine_generation": 1,
+    "resource_id": "00000000-0000-4000-8000-000000000003",
+    "interval_start": "2026-01-01T00:00:00Z",
+    "interval_end": "2026-01-01T01:00:00Z",
+    "cost_usd": "0.000000",
+    "units": "1.000000",
+    "unit_name": "hour",
+    "rate_usd": "0.000000",
+    "currency": "USD",
+    "reconciled": false,
+    "source_revision": "example-billing-r1"
+  }
+}

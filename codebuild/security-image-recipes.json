@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "recipes": [
+    {
+      "dockerfile": "modules/domain-apps/superplane/images/api-compat-high/Dockerfile",
+      "dockerfile_sha256": "c704aaa45a6f6a9e718f22a302f767a9260c150e547d7a15f0f650f2a9610e3f",
+      "reason": "Legacy schema016 compatibility overlay, separate from the maintained API release; its exact parent and published compatibility image have been retired from ECR. The maintained API source remains a required scan target."
+    },
+    {
+      "dockerfile": "modules/domain-apps/superplane/images/python-base-maintenance/Dockerfile",
+      "dockerfile_sha256": "34fe14d84f8c3bf3afdde1b7a629786ae8c16a55d1260b50e80936c70c58a446",
+      "reason": "Offline package-composition recipe requiring separately retained, reviewed Debian artifacts. Application runtime images built on the selected Python base remain scan targets."
+    },
+    {
+      "dockerfile": "modules/domain-apps/superplane/images/skypilot/crypto-packaging-maintenance/Dockerfile",
+      "dockerfile_sha256": "91fac397f829be52fc0423758839035bdf37d13d9a6709d676f43b2be13ea70c",
+      "reason": "Wheel-export builder (FROM scratch), not a runtime image. Its installer composes the qualified SkyPilot runtime, which is scanned separately by its release digest."
+    },
+    {
+      "dockerfile": "modules/domain-apps/superplane/images/skypilot/email-parser-maintenance/Dockerfile",
+      "dockerfile_sha256": "41833627a3d88a8ddc128ef26b59f3e5895fb4b79d9f556642b59782b26befc6",
+      "reason": "Offline maintenance overlay for an exact intermediate parent; the composed SkyPilot runtime is scanned separately by its release digest."
+    },
+    {
+      "dockerfile": "modules/domain-apps/superplane/images/skypilot/jackson-maintenance/Dockerfile",
+      "dockerfile_sha256": "e285d1c34c082eb931298a66312c26b40362729813703934b2d13be04e304780",
+      "reason": "Offline maintenance overlay requiring a separately qualified parent and retained rebuilt Ray JAR; the composed SkyPilot runtime is scanned separately by its release digest."
+    },
+    {
+      "dockerfile": "modules/domain-apps/superplane/images/skypilot/os-maintenance/Dockerfile",
+      "dockerfile_sha256": "4717ddc4530c0b59b224bc191d65155f8d932db28945fad5aaeb2197de30f5b8",
+      "reason": "Offline maintenance overlay requiring retained Debian artifacts and a digest-bound OCI build context; the composed SkyPilot runtime is scanned separately by its release digest."
+    },
+    {
+      "dockerfile": "modules/domain-apps/superplane/images/skypilot/pyjwt-maintenance/Dockerfile",
+      "dockerfile_sha256": "e73d096d650e333bc43e4559db611be01caec00ee5af0c5ea2ffa5299f4d3e28",
+      "reason": "Offline maintenance overlay for an exact intermediate parent and staged wheel; the composed SkyPilot runtime is scanned separately by its release digest."
+    },
+    {
+      "dockerfile": "modules/domain-apps/superplane/images/skypilot/sudo-maintenance/Dockerfile",
+      "dockerfile_sha256": "42ae7791eb941466191a0a7a00e917aade7c2a297eb7277808e0d31b51092d90",
+      "reason": "Offline maintenance overlay requiring a retained reviewed Debian package and digest-bound OCI build context; the composed SkyPilot runtime is scanned separately by its release digest."
+    },
+    {
+      "dockerfile": "modules/domain-apps/superplane/images/skypilot/vendor-maintenance/Dockerfile",
+      "dockerfile_sha256": "4717ddc4530c0b59b224bc191d65155f8d932db28945fad5aaeb2197de30f5b8",
+      "reason": "Offline maintenance overlay requiring retained reviewed packages, wheels and a digest-bound OCI build context; the composed SkyPilot runtime is scanned separately by its release digest."
+    }
+  ]
+}

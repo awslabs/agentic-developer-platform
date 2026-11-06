@@ -53,15 +53,9 @@ def safe_name(repo: str) -> str:
 
 
 def load_code_index(repo: str) -> dict[str, Any] | None:
-    """Load code-index.json for a repo."""
-    path = os.path.join(CODE_INDEX_DIR, f"{safe_name(repo)}.json")
-    if os.path.isfile(path):
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            log.warning("Failed to load code-index for %s: %s", repo, e)
-    return None
+    """Load the published index, with compatibility for older PVC artifacts."""
+    from stored_code_index import load_code_index as read_index
+    return read_index(repo, bucket=settings.s3_bucket_name, directory=CODE_INDEX_DIR)
 
 
 def load_wiki(repo: str) -> str | None:

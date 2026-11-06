@@ -21,6 +21,8 @@ export default function DomainMRI() {
         throw Error("Please sign in again.");
       }
       const path = String(input);
+      // Browser-only request to the deployment API; this is not a server-side fetch.
+      // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
       const response = await fetch(
         (deploymentSetting("VITE_API_URL") || "/api") + path,
         {

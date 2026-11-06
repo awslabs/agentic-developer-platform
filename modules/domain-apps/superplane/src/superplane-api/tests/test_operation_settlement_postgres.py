@@ -144,13 +144,16 @@ async def settlement(ledger, installation_postgres_url):  # noqa: F811
             await connection.execute(
                 "INSERT INTO harness_recovery_settlements(receipt_id,operation_id,org_id,workspace_id,job_id,attempt_id,"
                 "claim_holder,claim_attempt_id,claim_fence_token,payload_digest,accounting) "
-                "VALUES($1,$2,$3,$4,$5,$6,'recovery#1','recovery-attempt',3,$7,$8::jsonb)",
+                "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)",
                 receipt["receipt_id"],
                 receipt_identity["operation_id"],
                 receipt_identity["org_id"],
                 receipt_identity["workspace_id"],
                 receipt_identity["job_id"],
                 receipt_identity["attempt_id"],
+                accounting["claim"]["holder"],
+                accounting["claim"]["attempt_id"],
+                accounting["claim"]["fence_token"],
                 digest,
                 encoded,
             )

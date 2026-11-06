@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Quarantined lineage event (sections 3.0 and 6.1)",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "type": "object",
+  "properties": {
+    "reason": {"type": "string", "minLength": 1}
+  },
+  "required": ["reason"],
+  "unevaluatedProperties": false
+}

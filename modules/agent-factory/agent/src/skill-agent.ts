@@ -8,7 +8,7 @@
  */
 /// <reference types="node" />
 import { randomUUID } from 'crypto';
-import { hasRepositoryWritePermission, parsePlanApproval } from './utils/comment-authority';
+import { bindPostedApproval, fetchApprovalComments, fetchApprovalPlan, postApprovalPlan, waitForPostedApproval, type PostedApproval } from './services/posted-approval';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
@@ -111,34 +111,22 @@ async function getLatestComments(count: number = 5): Promise<Array<{ body: strin
   }));
 }
 
-async function waitForApproval(requestId: string): Promise<{ approved: boolean; feedback: string }> {
-  console.log('\n⏳ Waiting for /approve or /reject on issue...');
-  const waitStartTime = new Date().toISOString();
-  const botAuthors = ['github-actions[bot]', 'gateway-dev-agent', 'BedrockGateway Agent', 'MCP Onboard Agent'];
-
-  for (let i = 0; i < 60; i++) {
-    const comments = await getLatestComments(10);
-    for (const comment of comments) {
-      // Skip comments posted before we started waiting
-      if (comment.created_at < waitStartTime) continue;
-      // Skip comments from the bot itself
-      if (botAuthors.some(bot => comment.author.toLowerCase().includes(bot.toLowerCase()))) continue;
-
-      const decision = parsePlanApproval(comment.body, requestId);
-      if (!decision) continue;
-      const token = process.env.GITHUB_TOKEN || GITHUB_TOKEN;
-      if (!await hasRepositoryWritePermission(REPO_OWNER, REPO_NAME, comment.author, token)) continue;
-      const target = (process.env.TARGET_REPO || `${REPO_OWNER}/${REPO_NAME}`).split('/');
-      if (target.length !== 2) continue;
-      if (target.join('/') !== `${REPO_OWNER}/${REPO_NAME}` &&
-          !await hasRepositoryWritePermission(target[0], target[1], comment.author, token)) continue;
-      return decision;
-    }
-    console.log(`   Poll ${i + 1}/60 — waiting...`);
-    await new Promise(r => setTimeout(r, 30000));
-  }
-  console.log('⏰ Approval timeout (30 minutes)');
-  return { approved: false, feedback: 'Timeout waiting for approval' };
+async function waitForApproval(request: PostedApproval): Promise<{ approved: boolean; feedback: string }> {
+  const tokenProvider = async () => {
+    await refreshGitHubToken();
+    return process.env.GH_TOKEN || process.env.GITHUB_TOKEN || GITHUB_TOKEN;
+  };
+  const target = (process.env.TARGET_REPO || `${REPO_OWNER}/${REPO_NAME}`).split('/');
+  if (target.length !== 2 || !target[0] || !target[1]) return { approved: false, feedback: 'Approval scope unavailable' };
+  const result = await waitForPostedApproval(request,
+    async () => fetchApprovalComments(REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER), await tokenProvider()),
+    async () => fetchApprovalPlan(REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER), request.planCommentId, await tokenProvider()),
+    { owner: REPO_OWNER, repo: REPO_NAME, runId: request.runId, tokenProvider,
+      effectRepo: { owner: target[0], repo: target[1] } },
+    30_000, 60, 3);
+  return { approved: result.outcome === 'allowed-once',
+    feedback: result.outcome === 'allowed-once' ? '' : result.outcome === 'unavailable' ? 'Approval unavailable'
+      : result.approver ? result.feedback : 'Timeout waiting for approval' };
 }
 
 function logMessage(message: { type: string; message: { content: Array<Record<string, unknown>> } }, turnCount: number): string {
@@ -399,13 +387,18 @@ IMPORTANT: Actually read the skill files and codebase during planning. Use Read,
   // Post plan for approval
   const approvalRequestId = randomUUID();
   const planComment = `## 🤖 Implementation Plan\n\n${planText}\n\n---\n**To approve:** Comment \`/approve ${approvalRequestId}\`\n**To reject:** Comment \`/reject ${approvalRequestId} <feedback>\``;
-  await postComment(planComment);
+  await refreshGitHubToken();
+  const receipt = await postApprovalPlan(REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER), planComment,
+    process.env.GH_TOKEN || process.env.GITHUB_TOKEN || GITHUB_TOKEN);
+  const request = bindPostedApproval(approvalRequestId, process.env.ADP_INVOCATION_ID || randomUUID(),
+    REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER), planComment, receipt, 30 * 60_000);
+  if (!request) throw new Error('Approval plan could not be verified');
   console.log('\n📋 Plan posted. Waiting for approval...');
 
   // ========== PHASE 2: APPROVAL ==========
   liveComment.transition(0, 'complete', 'Plan posted');
   liveComment.transition(1, 'in_progress', 'Waiting for approval');
-  const approval = await waitForApproval(approvalRequestId);
+  const approval = await waitForApproval(request);
   if (!approval.approved) {
     liveComment.transition(1, 'complete');
     const reason = approval.feedback === 'Timeout waiting for approval' ? 'Timed out' : 'Rejected';
@@ -455,7 +448,7 @@ ${wrapUntrusted(commentsContext)}
 ---
 ` : ''}
 ## Approved Plan
-${planText}
+${wrapUntrusted(planText)}
 
 ## Instructions
 1. Execute the plan step by step

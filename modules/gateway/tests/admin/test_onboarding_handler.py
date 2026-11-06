@@ -144,9 +144,10 @@ async def admin_app_client(db_engine, admin_context):
 
 
 @pytest.mark.asyncio
-async def test_access_status_new_user(app_client):
+@pytest.mark.parametrize("query", ["", "?sync_memberships=false"])
+async def test_access_status_new_user(app_client, query):
     """New user with no existing rows gets status='new'."""
-    resp = await app_client.get("/access/status")
+    resp = await app_client.get("/access/status" + query)
     assert resp.status_code == 200
     assert resp.json()["status"] == "new"
 
@@ -843,3 +844,31 @@ class TestSyncCognitoRoleClaims:
 
         assert mock_client.admin_update_user_attributes.call_count == 2
         mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")
+
+
+@pytest.mark.asyncio
+async def test_membership_identity_lookup_does_not_block_event_loop(new_user_context):
+    import threading
+
+    from starlette.requests import Request
+
+    from src.admin.onboarding import handler
+
+    event_loop_thread = threading.get_ident()
+    lookup_threads = []
+
+    def resolve_identity(claims, subject):
+        assert subject == new_user_context.user_id
+        lookup_threads.append(threading.get_ident())
+        return handler.NO_LINKED_IDENTITY
+
+    db = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = MagicMock()
+    db.execute.return_value = result
+    request = Request({"type": "http", "headers": []})
+    with patch.object(handler, "resolve_trusted_github_identity", side_effect=resolve_identity):
+        response = await handler.get_access_status(request, current_user=new_user_context, db=db)
+    assert response.status == "registered"
+    assert len(lookup_threads) == 1
+    assert lookup_threads[0] != event_loop_thread

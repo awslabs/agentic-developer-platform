@@ -21,6 +21,8 @@ class VerifiedCredentialEvidence:
     expires_at: datetime
     attested_report_digest: str | None = None
     report_checked_at: datetime | None = None
+    authenticated_subject: str | None = None
+    authenticated_owner_principal: str | None = None
 
 
 class CredentialEvidenceReader(Protocol):

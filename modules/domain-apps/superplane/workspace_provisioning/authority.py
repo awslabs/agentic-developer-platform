@@ -1,5 +1,6 @@
 """Fresh original operation identity and shared policy validation for lifecycle effects."""
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -11,44 +12,47 @@ from account_factory.modes import (
 )
 
 from .artifacts import digest
-from .lifecycle_policy import policy_document, policy_digest
+from .lifecycle_policy import policy_document, policy_digest, select_policy
 from .preview import preview_workspace
 from .runtime_config import LifecycleRefused, validate_runtime_config
 
 
 async def current_operation(operation, context):
-    current = await context.authority.resolve(operation.grant.lease.operation_id)
-    fields = (
-        "operation_id",
-        "org_id",
-        "workspace_id",
-        "holder",
-        "attempt_id",
-        "fence_token",
-    )
-    if (
-        any(
-            getattr(current.grant.lease, key) != getattr(operation.grant.lease, key)
-            for key in fields
+    # The 45-second renewable lease leaves room for the ten-second heartbeat
+    # interval and a bounded authority/preflight round trip.
+    async with asyncio.timeout(30):
+        current = await context.authority.resolve(operation.grant.lease.operation_id)
+        fields = (
+            "operation_id",
+            "org_id",
+            "workspace_id",
+            "holder",
+            "attempt_id",
+            "fence_token",
         )
-        or current.job_id != operation.job_id
-        or current.plan_digest != operation.plan_digest
-        or current.reservation_state != "confirmed"
-    ):
-        raise LifecycleRefused(
-            "lifecycle execution identity changed or authority was withdrawn"
-        )
-    if (
-        current.request.action == "provision"
-        and "runtime_config_sha256" in current.request.parameters
-    ):
-        validated_request(current, context)
-    if getattr(context, "policy_fixture", None) is not True:
-        await context.authority.preflight(current)
-    return current
+        if (
+            any(
+                getattr(current.grant.lease, key) != getattr(operation.grant.lease, key)
+                for key in fields
+            )
+            or current.job_id != operation.job_id
+            or current.plan_digest != operation.plan_digest
+            or current.reservation_state != "confirmed"
+        ):
+            raise LifecycleRefused(
+                "lifecycle execution identity changed or authority was withdrawn"
+            )
+        if (
+            current.request.action == "provision"
+            and "runtime_config_sha256" in current.request.parameters
+        ):
+            validated_request(current, context)
+        if getattr(context, "policy_fixture", None) is not True:
+            await context.authority.preflight(current)
+        return current
 
 
-def load_policy(context, org_id):
+def load_policy(context, org_id, workspace_id=None):
     path = getattr(context, "policy_file", None)
     if path:
         path = Path(path)
@@ -65,7 +69,10 @@ def load_policy(context, org_id):
             document.get("tenants"), dict
         ):
             raise LifecycleRefused("lifecycle policy document is invalid")
-        policy = document["tenants"].get(org_id)
+        try:
+            policy = policy_document(select_policy(document, org_id, workspace_id))
+        except (ValueError, TypeError) as error:
+            raise LifecycleRefused("lifecycle workspace policy is invalid") from error
     elif getattr(context, "policy_fixture", None) is True:
         policy = context.policy
     else:
@@ -86,7 +93,9 @@ def validated_request(operation, context):
         org_id=operation.grant.lease.org_id,
         workspace_id=operation.grant.lease.workspace_id,
     )
-    policy = load_policy(context, operation.grant.lease.org_id)
+    policy = load_policy(
+        context, operation.grant.lease.org_id, operation.grant.lease.workspace_id
+    )
     if parameters["lifecycle_policy_sha256"] != policy_digest(policy):
         raise LifecycleRefused("approved lifecycle policy changed")
     config = validate_runtime_config(policy["runtime"])

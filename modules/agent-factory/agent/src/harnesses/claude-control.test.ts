@@ -19,6 +19,7 @@
  * about real Claude runtime behaviour. Live lifecycle evidence is #3968's, and
  * a green run here is not a substitute for it.
  */
+import { once } from 'events';
 import {
   AttemptInputChannel,
   CLAUDE_ADAPTER_ID,
@@ -1292,26 +1293,38 @@ describe('review regressions: attempt and detached-work ownership', () => {
     const gate = new PauseGate({ backgroundWorkProbe: () => observer.count() });
     const hooks = createClaudePauseHooks(gate, observer);
     await hooks.preToolUse({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_use_id: 'opaque', tool_input: { command: 'detached service', run_in_background: false } } as never);
-    const child = spawn(process.execPath, ['-e', 'let n=0; setInterval(()=>require("fs").writeFileSync(process.argv[1], String(++n)), 10)', file], { detached: true, stdio: 'ignore' });
+    const child = spawn(process.execPath, ['-e', `
+      process.on('message', (sequence) => {
+        require('fs').writeFileSync(process.argv[1], String(sequence));
+        process.send(sequence);
+      });
+    `, file], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const writeAndAcknowledge = async (sequence: number) => {
+      const written = once(child, 'message', { signal: AbortSignal.timeout(3000) });
+      child.send(sequence);
+      expect((await written)[0]).toBe(sequence);
+      expect(fs.readFileSync(file, 'utf8')).toBe(String(sequence));
+    };
     try {
-      const deadline = Date.now() + 3000;
-      while (!fs.existsSync(file) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(fs.existsSync(file)).toBe(true);
+      await writeAndAcknowledge(1);
       await hooks.postToolUse({ hook_event_name: 'PostToolUse', tool_use_id: 'opaque' } as never);
       expect(gate.activeToolCount()).toBe(0);
       // A returned MCP response and the SDK's empty task list cannot certify an
       // external service or detached process has stopped producing effects.
       await hooks.onStop({ hook_event_name: 'Stop', background_tasks: [] } as never);
       const result = await gate.requestPause();
-      const before = fs.readFileSync(file, 'utf8');
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(fs.readFileSync(file, 'utf8')).not.toBe(before);
+      // Acknowledge an actual effect after the pause request, without racing
+      // readFileSync against an interval writer's truncate/write window.
+      await writeAndAcknowledge(2);
       expect(result.outcome).toBe('requested');
       expect(gate.currentPhase()).not.toBe('paused');
     } finally {
       gate.cancel();
-      child.kill('SIGKILL');
-      await new Promise((resolve) => child.once('exit', resolve));
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, 'exit');
+        child.kill('SIGKILL');
+        await exited;
+      }
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

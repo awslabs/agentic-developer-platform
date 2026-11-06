@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.auth.client_source import login_source
 from src.auth.dependencies import require_admin
 from src.shared.config import get_settings
 from src.shared.database import get_db
@@ -195,11 +196,12 @@ async def response(result, username, settings, db):
 @router.post("/password")
 async def password_login(request: Request, db: AsyncSession = Depends(get_db), client=Depends(get_native_client)):
     settings = settings_for_login()
-    await limit(db, "ip", request.client.host if request.client else "unknown", 30)
+    source = login_source(request)
+    await limit(db, "ip", source, 30)
     body = await payload(request)
     username = string_field(body, "username", 128)
     password = string_field(body, "password")
-    await limit(db, "user", username, 10)
+    await limit(db, "user-source", source + "\0" + username, 10)
     result = await call(
         client,
         "admin_initiate_auth",
@@ -214,7 +216,8 @@ async def password_login(request: Request, db: AsyncSession = Depends(get_db), c
 @router.post("/challenge")
 async def challenge_login(request: Request, db: AsyncSession = Depends(get_db), client=Depends(get_native_client)):
     settings = settings_for_login()
-    await limit(db, "ip", request.client.host if request.client else "unknown", 30)
+    source = login_source(request)
+    await limit(db, "ip", source, 30)
     body = await payload(request)
     token = string_field(body, "continuation", 24000)
     try:
@@ -230,7 +233,7 @@ async def challenge_login(request: Request, db: AsyncSession = Depends(get_db), 
             raise ValueError
     except (jwt.PyJWTError, ValueError, KeyError):
         raise failure() from None
-    await limit(db, "user", claims["sub"], 10)
+    await limit(db, "user-source", source + "\0" + claims["sub"], 10)
     challenge = claims["challenge"]
     key = {"NEW_PASSWORD_REQUIRED": "NEW_PASSWORD", "SMS_MFA": "SMS_MFA_CODE", "SOFTWARE_TOKEN_MFA": "SOFTWARE_TOKEN_MFA_CODE"}[challenge]
     supplied = body.get("responses")

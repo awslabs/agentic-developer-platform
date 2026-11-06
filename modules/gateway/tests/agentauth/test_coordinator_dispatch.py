@@ -126,6 +126,12 @@ async def _accept(ctx, policy=None, *, addresses=None, version=1):
     async with ctx.session_factory() as db:
         if await db.scalar(select(TenantMembership).where(TenantMembership.user_id == "human")) is None:
             db.add(TenantMembership(user_id="human", tenant_id="tenant", role="org_admin"))
+        previous = await db.scalar(
+            select(OrchestrationAcceptedPlan).where(
+                OrchestrationAcceptedPlan.flow_id == ctx.flow.id, OrchestrationAcceptedPlan.superseded_at.is_(None)
+            )
+        )
+        accepted_nodes = (previous.plan_document or {}).get("nodes", []) if previous else []
         # Exactly one plan is ever in force. An amendment supersedes its predecessor,
         # which is what `load_in_force_policy` reads, so a test that added a version
         # without superseding would be asserting against a state acceptance cannot
@@ -145,16 +151,34 @@ async def _accept(ctx, policy=None, *, addresses=None, version=1):
                 **document["coordination"],
                 "assigned_node_addresses": addresses if addresses is not None else [graph_address(evaluation, flow_slug=ctx.flow.slug)],
             }
-        db.add(
-            OrchestrationAcceptedPlan(
-                org_id="tenant",
-                flow_id=ctx.flow.id,
-                version=version,
-                accepted_by_decision_id=ctx.approval.id,
-                plan_hash=f"coordinator-policy-v{version}",
-                plan_document={"flow_slug": ctx.flow.slug, "execution_policy": document},
-            )
+        saved = await db.scalar(
+            select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == ctx.flow.id, OrchestrationAcceptedPlan.version == version)
         )
+        if saved is not None:
+            saved.plan_document = {
+                "flow_slug": ctx.flow.slug,
+                "execution_policy": document,
+                "origin_ref": ctx.flow.origin_ref,
+                "nodes": accepted_nodes,
+            }
+            saved.plan_hash = f"coordinator-policy-v{version}"
+            saved.superseded_at = None
+        else:
+            db.add(
+                OrchestrationAcceptedPlan(
+                    org_id="tenant",
+                    flow_id=ctx.flow.id,
+                    version=version,
+                    accepted_by_decision_id=ctx.approval.id,
+                    plan_hash=f"coordinator-policy-v{version}",
+                    plan_document={
+                        "flow_slug": ctx.flow.slug,
+                        "execution_policy": document,
+                        "origin_ref": ctx.flow.origin_ref,
+                        "nodes": accepted_nodes,
+                    },
+                )
+            )
         await db.commit()
     return policy
 
@@ -577,7 +601,7 @@ class TestSharedLimitsAndRevocation:
         assert messages(ctx) == []
 
     async def test_membership_revocation_refuses_the_coordinator_request(self, wave_context):
-        """Revoking the plan owner's role stops the lane at the next request.
+        """Revoking the plan owner's membership stops the lane at the next request.
 
         Coordination is delegated authority, so it cannot outlive the delegation. The
         check runs on every request rather than at launch, which is what makes a
@@ -588,11 +612,11 @@ class TestSharedLimitsAndRevocation:
         _, headers = await _launch(ctx)
         async with ctx.session_factory() as db:
             membership = await db.scalar(select(TenantMembership).where(TenantMembership.user_id == "human"))
-            membership.role = "member"
+            membership.revoked_at = datetime.now(UTC)
             await db.commit()
         refused = await _child(ctx, headers, request_id="story")
         assert refused.status_code == 409, refused.text
-        assert "role_revoked" in refused.text
+        assert "membership_revoked" in refused.text
         assert await _story_state(ctx) == ("ready", 0)
         assert messages(ctx) == []
 

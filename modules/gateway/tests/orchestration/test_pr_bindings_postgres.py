@@ -51,6 +51,7 @@ from src.orchestration.models import (
     NodeState,
     OrchestrationAcceptedPlan,
     OrchestrationDecision,
+    OrchestrationExecution,
     OrchestrationFlow,
     OrchestrationNode,
     OrchestrationPullRequestBinding,
@@ -93,6 +94,9 @@ async def pg_engine(pg_url):  # noqa: F811 - pg_url is a fixture, not a shadowed
         await conn.run_sync(OrchestrationNode.__table__.create)
         await conn.run_sync(OrchestrationDecision.__table__.create)
         await conn.run_sync(OrchestrationPullRequestBinding.__table__.create)
+        # The results pass reads the node's execution row before it consults the
+        # run store (#7727); a story with no execution simply has none.
+        await conn.run_sync(OrchestrationExecution.__table__.create)
         from src.orchestration.run_reports import OrchestrationRunReport
 
         await conn.run_sync(OrchestrationRunReport.__table__.create)

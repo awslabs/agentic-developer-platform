@@ -7,24 +7,118 @@ from sqlalchemy import select
 
 from .execution_state import TERMINAL_EXECUTION_STATUSES
 from .models import OrchestrationExecution
+from .story_acceptance import StoryAcceptance
+from .validation_diagnostics import ValidationCheck, check_result, safe_code
 
 
 class DeliveryProgress(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    validations: list[ValidationCheck] = Field(default_factory=list)
+    acceptance: StoryAcceptance | None = None
     stage: str
     actor: str
     detail: str
     blocker: str | None = None
     blockers: list[str] = Field(default_factory=list)
     next_action: str | None = None
+    required_input: str | None = None
     scheduled_action: str | None = None
     next_check_at: str | None = None
     observed_at: str | None = None
+    # Who drives the next step. "engine" = a controller execution owns it;
+    # "not_started" = an accepted policy will dispatch it once ready; "paused" /
+    # "blocked" = a human or admission hold; "reconciliation_only" = historical
+    # delivery; "not_initialized" = policy accepted but no execution recorded
+    # for this attempt; "not_configured" = no accepted autonomous policy.
+    # The default is only correct for provider snapshots of legacy flows and is
+    # overridden for every node path below that knows the policy state.
     automation: str = "not_configured"
     head_sha: str | None = None
     checks_state: str | None = None
     review_state: str | None = None
+
+
+EVALUATION_WAIT_DETAILS = {
+    "verified_deployment_required": (
+        "flow-owner",
+        "The required deployment receipt is missing or stale.",
+        "Verify deployment of the current predecessor revision.",
+    ),
+    "evaluation_predecessor_evidence_missing": ("engine", "A passed predecessor has no acceptance evidence.", "Reconcile the predecessor decision."),
+    "evaluation_merge_evidence_missing_or_ambiguous": (
+        "engine",
+        "Current merge and check evidence cannot be verified.",
+        "Reconcile the predecessor merge and checks.",
+    ),
+    "evaluation_predecessor_binding_changed": (
+        "developer",
+        "The predecessor pull request binding changed.",
+        "Register and verify the current predecessor revision.",
+    ),
+    "evaluation_merge_plan_changed": (
+        "flow-owner",
+        "The predecessor merge no longer matches the accepted plan.",
+        "Review the changed plan and obtain current evidence.",
+    ),
+    "evaluation_specification_missing": (
+        "flow-owner",
+        "The machine evaluation has no accepted specification.",
+        "Accept a machine specification or choose human acceptance.",
+    ),
+    "evaluation_flow_paused": ("flow-owner", "The flow is paused.", "Resume the flow before presenting the evaluation gate."),
+    "evaluation_flow_not_active": ("flow-owner", "The flow is not active.", "Resume the flow before presenting the evaluation gate."),
+    "evaluation_evidence_unverifiable": (
+        "platform-operator",
+        "Accepted evaluation evidence cannot be verified.",
+        "Reconcile the accepted plan and predecessor evidence before retrying the evaluation.",
+    ),
+    "deployment_authority_unverifiable": (
+        "platform-operator",
+        "Required deployment evidence cannot be verified.",
+        "Restore deployment evidence access.",
+    ),
+}
+
+
+def _admission_progress(node, plan_version, policy_hash, refusal):
+    if node.state != "ready" or not isinstance(refusal, dict):
+        return None
+    from .admission_diagnostics import CONTRACT, description, recognized_code
+
+    if (
+        refusal.get("contract") != CONTRACT
+        or type(refusal.get("attempt")) is not int
+        or refusal["attempt"] != node.attempts
+        or type(refusal.get("accepted_plan_version")) is not int
+        or refusal["accepted_plan_version"] != plan_version
+        or refusal.get("policy_hash") != policy_hash
+        or not isinstance(refusal.get("block_code"), str)
+        or safe_code(refusal["block_code"]) != refusal["block_code"]
+    ):
+        return None
+    code = refusal["block_code"]
+    owner, detail, action = description(code)
+    checks = []
+    if not recognized_code(code):
+        unknown = check_result(code, observed_at=refusal.get("observed_at"))
+        checks.append(unknown)
+        detail, action = unknown.detail, unknown.next_action
+    if code == "operations_release_unverified" and safe_code(refusal.get("detail")) != "validation_unavailable":
+        underlying = check_result(refusal["detail"], observed_at=refusal.get("observed_at"))
+        checks.append(underlying)
+        detail, action = underlying.detail, underlying.next_action
+    return DeliveryProgress(
+        validations=checks,
+        stage="admission",
+        actor=owner,
+        blocker=code,
+        blockers=[code],
+        detail=detail,
+        next_action=action,
+        automation="blocked",
+        observed_at=refusal.get("observed_at"),
+    )
 
 
 def provider_progress(binding, evidence) -> dict:
@@ -141,6 +235,21 @@ def provider_progress(binding, evidence) -> dict:
     ).model_dump()
 
 
+def with_runtime_budget_wait(progress, activity):
+    """Overlay fresh current-worker diagnostics without changing engine authority."""
+    wait = activity.runtime_budget_wait if activity else None
+    if progress is None or wait is None or progress.blocker or progress.automation != "engine":
+        return progress
+    return progress.model_copy(
+        update={
+            **wait.model_dump(),
+            "blockers": [wait.blocker],
+            "automation": "blocked",
+            "actor": "reviewer" if "reviewer" in activity.persona else "developer",
+        }
+    )
+
+
 async def current_executions(session, *, org_id: str, flow_id: str) -> dict:
     """Newest cycle per node, tenant-filtered before projection."""
     rows = await session.scalars(
@@ -174,24 +283,129 @@ def node_progress(
     preserved_execution=False,
     policy_hash=None,
     admission_refusal=None,
+    evaluation_wait=None,
+    repository_refusal=None,
     developer_retry=None,
     observed_at=None,
 ) -> DeliveryProgress | None:
+    if node.kind == "eval":
+        if node.state == "passed":
+            return DeliveryProgress(stage="complete", actor="none", detail="Evaluation was accepted.", automation="not_applicable")
+        if node.state == "waived":
+            return DeliveryProgress(stage="waived", actor="none", detail="Owner waived independent evaluation.", automation="not_applicable")
+        if node.state == "superseded":
+            return DeliveryProgress(stage="superseded", actor="none", detail="Evaluation was superseded.", automation="not_applicable")
+        if node.state in {"running", "awaiting_merge"}:
+            return DeliveryProgress(stage=node.state, actor="engine", detail="Evaluation is in progress.", automation="engine")
+        if node.state == "awaiting_gate":
+            return DeliveryProgress(
+                stage="awaiting_gate",
+                actor="flow-owner",
+                detail="Human evaluation is ready for review.",
+                next_action="Review the presented evidence and decide whether to approve the gate.",
+                automation="paused",
+            )
+        if node.state in {"pending", "ready"}:
+            admission = _admission_progress(node, plan_version, policy_hash, admission_refusal)
+            if admission is not None:
+                return admission
+            if repository_refusal is not None:
+                from .repository_evaluation_diagnostics import DETAILS
+
+                code = repository_refusal.get("code")
+                if code in DETAILS:
+                    owner, detail, required_input, action = DETAILS[code]
+                    return DeliveryProgress(
+                        stage="evidence_wait",
+                        actor=owner,
+                        blocker=code,
+                        blockers=[code],
+                        detail=detail,
+                        required_input=required_input,
+                        next_action=action,
+                        automation="blocked",
+                        observed_at=repository_refusal.get("observed_at"),
+                    )
+            if (
+                isinstance(evaluation_wait, dict)
+                and type(evaluation_wait.get("attempt")) is int
+                and evaluation_wait["attempt"] == node.attempts
+                and type(evaluation_wait.get("plan_version")) is int
+                and evaluation_wait["plan_version"] == plan_version
+                and evaluation_wait.get("block_code") in EVALUATION_WAIT_DETAILS
+            ):
+                code = evaluation_wait["block_code"]
+                owner, detail, action = EVALUATION_WAIT_DETAILS[code]
+                return DeliveryProgress(
+                    stage="evidence_wait",
+                    actor=owner,
+                    blocker=code,
+                    blockers=[code],
+                    detail=detail,
+                    next_action=action,
+                    automation="blocked",
+                    observed_at=evaluation_wait.get("observed_at"),
+                )
+            return DeliveryProgress(
+                stage=node.state,
+                actor="engine",
+                detail=("Evaluation is ready for the next engine check." if node.state == "ready" else "Evaluation is waiting for its predecessors."),
+                automation="not_started",
+            )
+        return DeliveryProgress(
+            stage=node.state,
+            actor="operator",
+            blocker=node.state,
+            blockers=[node.state],
+            detail="Evaluation requires a decision before it can continue.",
+            automation="paused",
+        )
     if node.kind != "story":
         return None
-    if node.state == "passed":
+    from .deployment_authority import DELIVERY_PHASES
+
+    if node.state == "passed" and (execution is None or execution.status in TERMINAL_EXECUTION_STATUSES or execution.phase not in DELIVERY_PHASES):
         return DeliveryProgress(
-            stage="complete", actor="none", detail="Delivery evidence was accepted.", automation="not_applicable", observed_at=observed_at
+            stage="complete",
+            actor="none",
+            detail=result["evidence"] if result.get("external_completion") else "Delivery evidence was accepted.",
+            automation="not_applicable",
+            observed_at=observed_at,
         )
+    admission = _admission_progress(node, plan_version, policy_hash, admission_refusal)
+    if admission is not None:
+        return admission
     if node.state in {"failed", "ready"} and isinstance(developer_retry, dict) and developer_retry.get("attempt") == node.attempts:
         outcome = developer_retry.get("result")
+        if outcome == "automatic_recovery_disabled":
+            return DeliveryProgress(
+                stage="retry",
+                actor="flow-owner",
+                automation="paused",
+                detail="Automatic retry recovery is off for this flow. Saved progress and attempts are retained.",
+                next_action="Turn automatic retry recovery on in the flow controls to allow the engine to continue within approved limits.",
+            )
+        if outcome == "checkpoint_requires_reconciliation":
+            return DeliveryProgress(
+                stage="retry",
+                actor="platform-operator",
+                automation="blocked",
+                detail="The saved checkpoint could not be verified against this story's assignment. The existing branch and progress are retained.",
+                next_action="Reconcile the checkpoint identity and revision before the engine starts another paid attempt.",
+                blocker=outcome,
+                blockers=[outcome],
+            )
         if outcome in {"retry_backoff", "scheduled"}:
             return DeliveryProgress(
                 stage="retry",
                 actor="engine",
-                detail="The developer attempt failed. The engine will retry using the prior failure evidence and existing work.",
+                detail=(
+                    "The worker never acknowledged startup. Its assignment was fenced; the engine will retry within the accepted allowance."
+                    if developer_retry.get("reason") == "stall_retry"
+                    else "The worker attempt ended. The engine will continue using the prior failure evidence and saved progress."
+                ),
                 next_action="Recheck recovery eligibility and dispatch the next permitted attempt.",
-                scheduled_action="Retry development after backoff" if outcome == "retry_backoff" else "Dispatch the recovery attempt",
+                scheduled_action="Continue after backoff" if outcome == "retry_backoff" else "Dispatch the recovery attempt",
                 automation="engine",
             )
         if outcome == "recovery_evidence_unavailable":
@@ -212,15 +426,28 @@ def node_progress(
             "flow_not_active": "The flow is paused or no longer active.",
             "repair_requires_approval": "The accepted policy does not allow autonomous repair.",
             "failure_requires_operator": "The recorded failure requires operator intervention.",
+            "operations_input_required": (
+                "The operations agent identified missing protected input or human evidence. Automatic retries cannot supply it."
+            ),
+            "deterministic_failure_unchanged": "The operations agent repeated the same completed diagnosis without a verified repair.",
         }
         if outcome in descriptions:
             return DeliveryProgress(
                 stage="failed",
                 actor="operator",
-                detail=descriptions[outcome],
+                detail=(
+                    "Worker vanished twice; an operator must inspect this story before another attempt."
+                    if outcome == "failure_requires_operator" and developer_retry.get("detail") == "worker vanished twice"
+                    else descriptions[outcome]
+                ),
                 blocker=outcome,
                 blockers=[outcome],
-                next_action="Inspect the failure and resolve the recorded recovery blocker.",
+                next_action=(
+                    "Inspect the latest completed diagnosis in the operations task board, "
+                    "supply the required input or evidence, then resume this story."
+                    if outcome == "operations_input_required"
+                    else "Inspect the failure and resolve the recorded recovery blocker."
+                ),
                 automation="paused",
             )
     if node.state in {"failed", "halted", "rejected_at_gate", "awaiting_gate", "superseded"}:
@@ -233,33 +460,6 @@ def node_progress(
             next_action=None if node.state == "superseded" else "Inspect the recorded hold and use the appropriate approval or resume control.",
             automation="paused",
         )
-    if node.state == "ready" and isinstance(admission_refusal, dict):
-        from .admission_diagnostics import CONTRACT, description, recognized_code
-
-        if (
-            admission_refusal.get("contract") == CONTRACT
-            and type(admission_refusal.get("attempt")) is int
-            and admission_refusal["attempt"] == node.attempts
-            and type(admission_refusal.get("accepted_plan_version")) is int
-            and admission_refusal.get("accepted_plan_version") == plan_version
-            and admission_refusal.get("policy_hash") == policy_hash
-            and isinstance(admission_refusal.get("block_code"), str)
-            and recognized_code(admission_refusal["block_code"])
-        ):
-            # Stored exception detail is never rendered. The typed code selects
-            # safe text, and an old attempt/policy cannot override current work.
-            code = admission_refusal["block_code"]
-            owner, detail, action = description(code)
-            return DeliveryProgress(
-                stage="admission",
-                actor=owner,
-                blocker=code,
-                blockers=[code],
-                detail=detail,
-                next_action=action,
-                automation="blocked",
-                observed_at=admission_refusal.get("observed_at"),
-            )
     if execution is not None:
         current_execution = (
             policy_enabled
@@ -285,16 +485,24 @@ def node_progress(
         actor = execution.block_owner or {"delivering": "developer", "awaiting_review": "reviewer", "repairing": "developer"}.get(
             execution.phase, "engine"
         )
+        operations_continuation = (getattr(execution, "handoff_receipt_ref", None) or "").startswith("operations-continuation:")
         return DeliveryProgress(
-            stage=execution.phase,
-            actor=actor,
+            stage="operations_continuation" if operations_continuation else execution.phase,
+            actor="engine" if operations_continuation and not execution.block_owner else actor,
             blocker=execution.block_code,
             blockers=[execution.block_code] if execution.block_code else [],
             detail=execution.block_detail or execution.progress_note or "The engine is tracking this delivery stage.",
-            next_action=execution.block_required_input or ("Reconcile the recorded delivery stage." if not terminal else None),
-            scheduled_action="Reconcile this execution" if due else None,
+            next_action=execution.block_required_input
+            or (
+                "Automatically continue repair, deployment and verification."
+                if operations_continuation and not terminal
+                else "Reconcile the recorded delivery stage."
+                if not terminal
+                else None
+            ),
+            scheduled_action=("Recheck operations continuation" if operations_continuation else "Reconcile this execution") if due else None,
             next_check_at=due,
-            automation="engine" if not terminal else "not_applicable",
+            automation="blocked" if execution.block_code else "engine" if not terminal else "not_applicable",
             observed_at=execution.progressed_at.isoformat() if execution.progressed_at else None,
         )
     raw = result.get("delivery_progress")
@@ -350,6 +558,7 @@ def node_progress(
                 actor="developer",
                 detail="The current attempt was dispatched; check worker activity for its live status.",
                 next_action="Finish the work and acknowledge its PR handoff.",
+                automation="engine" if policy_enabled else "not_configured",
             )
         elif node.state == "awaiting_merge" and not current:
             progress = DeliveryProgress(
@@ -370,11 +579,14 @@ def node_progress(
                 next_action="Recheck the bound PR.",
             )
         else:
+            # Not dispatched yet. Under an accepted policy the engine starts it when
+            # its predecessors pass; only a flow without that policy is unconfigured.
             progress = DeliveryProgress(
                 stage="pending",
                 actor="engine",
                 detail="Waiting for this story's dependencies and admission requirements.",
                 next_action="Reassess readiness when prerequisites complete.",
+                automation="not_started" if policy_enabled else "not_configured",
             )
     # Legacy completion checks are not scheduled reviewer, repair or merge jobs.
     # Provider snapshots cannot supply controller scheduling fields.
@@ -386,5 +598,5 @@ def node_progress(
             progress.blockers.append(code)
         if progress.blocker is None:
             progress.blocker = code
-        progress.automation = "not_configured"
+        progress.automation = "not_initialized" if policy_enabled else "not_configured"
     return progress

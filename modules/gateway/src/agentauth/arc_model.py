@@ -70,7 +70,7 @@ def bindings() -> list[ArcBinding]:
         raise HTTPException(503, "ARC model registration unavailable") from None
 
 
-async def github_claims(token: str) -> dict:
+async def github_claims(token: str, *, audience: str = AUDIENCE) -> dict:
     try:
         header = jwt.get_unverified_header(token)
         if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
@@ -87,7 +87,7 @@ async def github_claims(token: str) -> dict:
             token,
             jwt.PyJWK.from_dict(keys[0], algorithm="RS256").key,
             algorithms=["RS256"],
-            audience=AUDIENCE,
+            audience=audience,
             issuer=ISSUER,
             options={
                 "require": [
@@ -211,6 +211,7 @@ async def arc_model_decision(body: ArcModelRequest, request: Request, db: AsyncS
                 envelope,
                 source="github_actions",
                 human_id=owner,
+                team_id="",
                 now=now,
                 service_identity=None if human else binding.service_identity,
             )

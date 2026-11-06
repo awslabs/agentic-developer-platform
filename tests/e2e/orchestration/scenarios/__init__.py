@@ -112,4 +112,30 @@ def connection_resolver(config):
     return Client(config, manifest)
 
 
-REGISTRY = {"autonomous-delivery": DeliveryAdapter()}
+class ProductEpicDeliveryAdapter(DeliveryAdapter):
+    def planned_fixtures(self, config):
+        if config.product_epic is None:
+            from tests.e2e.orchestration.config import ConfigError
+
+            raise ConfigError(
+                ["product-epic-delivery requires a Product and planning epic"]
+            )
+        return super().planned_fixtures(config)
+
+
+class ProductEpicRecoveryAdapter(ProductEpicDeliveryAdapter):
+    def planned_fixtures(self, config):
+        return ()
+
+    def execute(self, *, config, inventory, providers):
+        from tests.e2e.orchestration.config import ConfigError
+
+        raise ConfigError(["product-epic-recovery is resume/cleanup-only"])
+
+
+REGISTRY = {
+    "autonomous-delivery": DeliveryAdapter(),
+    "product-epic-delivery": ProductEpicDeliveryAdapter(),
+    "product-epic-recovery": ProductEpicRecoveryAdapter(),
+    "legacy-attribution": DeliveryAdapter(),
+}

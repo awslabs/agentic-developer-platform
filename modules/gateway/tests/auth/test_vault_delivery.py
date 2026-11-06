@@ -40,6 +40,7 @@ from src.auth.vault_delivery import (
     deliver_credential,
     revocation_state,
 )
+from src.internal.vault_metadata_authority import VaultMetadataAuthority
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import (
@@ -663,10 +664,37 @@ class TestRefusalsAreUniform:
 
 
 class TestRevocationState:
+    def authority(self):
+        return VaultMetadataAuthority(
+            ORG,
+            EXECUTOR,
+            EXECUTOR,
+            WORKSPACE,
+            operation_binding=binding(),
+            authority_kind="agent_run",
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_or_mismatched_operation_authority_cannot_read_vault(self):
+        session = MagicMock()
+        bad_binding = VaultMetadataAuthority(
+            OTHER_ORG,
+            EXECUTOR,
+            EXECUTOR,
+            WORKSPACE,
+            operation_binding=binding(),
+            authority_kind="agent_run",
+        )
+        for authority in (None, bad_binding):
+            with pytest.raises(DeliveryRefusedError):
+                await revocation_state(session, authority=authority, credential_id="cred-1")
+        session.scalar.assert_not_called()
+        session.execute.assert_not_called()
+
     async def test_a_delegated_unexpired_credential_admits_work(self, db):
         cred = await _cred(db)
         await _delegate(db, cred)
-        answer = await revocation_state(db, binding=binding(), credential_id=cred.id)
+        answer = await revocation_state(db, authority=self.authority(), credential_id=cred.id)
         assert answer.admits_work is True
 
     @pytest.mark.parametrize("case", ["unknown", "foreign", "undelegated", "revoked-delegation", "expired"])
@@ -692,7 +720,7 @@ class TestRevocationState:
             await _delegate(db, cred)
             credential_id = cred.id
 
-        answer = await revocation_state(db, binding=binding(), credential_id=credential_id)
+        answer = await revocation_state(db, authority=self.authority(), credential_id=credential_id)
         assert answer.admits_work is False
         assert answer.limitation == REVOCATION_LIMITATION
 

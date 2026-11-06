@@ -2,23 +2,39 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+import yaml
 from sqlalchemy import select, text
 
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.engine import validate_engine_authority
-from src.orchestration.deployment_manifest import DeploymentManifest, EntryStatus, ManifestEntry, PhysicalTarget, TargetEvidence, WorkflowRef
+from src.orchestration.deployment_manifest import (
+    DeploymentManifest,
+    EntryStatus,
+    ManifestEntry,
+    PhysicalTarget,
+    TargetEvidence,
+    WorkflowRef,
+    load_packaged_manifest,
+)
 from src.orchestration.deployment_target import ResolvedTarget
 from src.orchestration.deployment_workflow_provider import WorkflowContext, WorkflowDefinition, WorkflowRun
 from src.orchestration.deployment_workflows import PHASES, WORKFLOW_KIND, DeploymentWorkflows, WorkflowReceipt, WorkflowServices
 from src.orchestration.execution_runner import RunnerConfig, run_execution_runner
 from src.orchestration.execution_state import ExecutionPhase, ExecutionStatus, PhaseAdvance
 from src.orchestration.execution_store import advance_execution, load_execution
-from src.orchestration.models import OrchestrationAction, OrchestrationEnvironmentLease, OrchestrationExecution, OrchestrationWorkClaim
+from src.orchestration.models import (
+    OrchestrationAction,
+    OrchestrationEnvironmentLease,
+    OrchestrationExecution,
+    OrchestrationFlow,
+    OrchestrationWorkClaim,
+)
 from src.shared.models.base import Base
 from tests.orchestration.test_merge_controller import merge  # noqa: F401
 from tests.orchestration.test_merge_controller import tick as merge_tick
@@ -163,6 +179,68 @@ async def test_automatic_workflow_adopted_without_second_dispatch(deployment, tr
         assert lease.owner_action_id == receipt.lease_holder_action_id
 
 
+async def test_enabled_chat_entry_prepares_dispatch_with_registered_connection(deployment):
+    ctx = deployment
+    manifest = load_packaged_manifest()
+    entry = next(entry for entry in manifest.entries if entry.entry_id == "adp-dev-agent-worker")
+    inputs = {"customer_account_id": ctx.target.account_id, "customer_user_id": "human", "customer_aws_label": "test-role"}
+    ctx.entry = replace(
+        entry,
+        status=EntryStatus.ENABLED,
+        unresolved_reason=None,
+        connection_id="delivery-connection",
+        resource_kind=ctx.target.resource_kind,
+        resource_id=ctx.target.resource_id,
+        artifact_revision=SOURCE,
+        workflow=replace(entry.workflow, definition_revision=SOURCE, allowed_inputs={name: frozenset({value}) for name, value in inputs.items()}),
+    )
+    workflow = yaml.safe_load((Path(__file__).resolve().parents[4] / entry.workflow.path).read_text())
+    defaults = {name: str(field.get("default", "")) for name, field in workflow[True]["workflow_dispatch"]["inputs"].items()}
+    assert inputs.keys() <= defaults.keys()
+    ctx.provider.definition = AsyncMock(return_value=replace(ctx.definition, defaults=defaults))
+    ctx.provider.changed_files = AsyncMock(return_value=("modules/agent-factory/agent/k8s/chat-crew-pod-admission.yaml",))
+    ctx.workflow_services.manifest_loader = lambda: replace(manifest, entries=(ctx.entry,))
+    result = await tick(ctx)
+    assert result.effects_succeeded == 1, (result, (await state(ctx))[0].block_detail)
+    assert len(ctx.dispatches) == 1
+    dispatched = ctx.provider.dispatch.await_args.kwargs
+    assert dispatched["workflow"].path == ".github/workflows/chat-agent-deploy.yml"
+    assert dispatched["inputs"] == inputs
+    assert (await action(ctx)).detail["manifest_entry_id"] == entry.entry_id
+    ctx.targets.resolve.assert_awaited()
+
+
+async def _set_flow_state(ctx, value):
+    async with ctx.factory() as db:
+        flow = await db.get(OrchestrationFlow, ctx.flow.id)
+        flow.state = value
+        await db.commit()
+
+
+async def test_pending_flow_is_live_for_the_deployment_phase(deployment):
+    """No code path moves an accepted flow out of `pending`; every other liveness
+    check treats it as live. Requiring `running` here left the K2 deployment phase
+    of every passed story blocked with deployment_flow_or_claim_unavailable (#7444)."""
+    ctx = deployment
+    await _set_flow_state(ctx, "pending")
+    ctx.runs.append(ctx.make_run())
+    first = await tick(ctx)
+    assert first.effects_succeeded == 1, (first, (await state(ctx))[0].block_detail)
+    await tick(ctx)
+    execution, _, node, _ = await state(ctx)
+    assert execution.phase == "awaiting_runtime_verification" and node.state == "passed"
+
+
+async def test_finished_flow_still_blocks_the_deployment_phase(deployment):
+    ctx = deployment
+    await _set_flow_state(ctx, "completed")
+    ctx.runs.append(ctx.make_run())
+    await tick(ctx)
+    execution, _, _, _ = await state(ctx)
+    assert execution.phase == "deployment_pending"
+    assert execution.block_detail == "deployment_flow_or_claim_unavailable"
+
+
 async def test_timeout_after_success_restart_uses_recorded_definition(deployment):
     ctx = deployment
     ctx.timeout_after_dispatch = True
@@ -258,6 +336,24 @@ async def test_competing_target_lease_blocks_dispatch_even_when_lapsed(deploymen
     await tick(ctx)
     assert ctx.dispatches == []
     assert "deployment_target_lease" in (await action(ctx)).detail["observation"]
+
+
+@pytest.mark.parametrize("existing_run", [False, True])
+async def test_grouped_d2_release_refuses_during_ordinary_discovery(deployment, existing_run):
+    ctx = deployment
+    ctx.entry = replace(
+        ctx.entry, release_group="atlassian-foundation", mutation_role_arn="arn:aws:iam::000000000000:role/adp-dev-trusted-deployment"
+    )
+    if existing_run:
+        ctx.runs.append(ctx.make_run())
+    await tick(ctx)
+    assert ctx.dispatches == []
+    assert (await state(ctx))[0].block_detail == "deployment_component_has_no_approved_manifest"
+    assert await action(ctx) is None
+    ctx.provider.definition.assert_not_awaited()
+    ctx.provider.observe.assert_not_awaited()
+    async with ctx.factory() as db:
+        assert await db.scalar(select(OrchestrationEnvironmentLease)) is None
 
 
 async def test_concurrent_ticks_dispatch_once(deployment):

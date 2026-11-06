@@ -28,6 +28,39 @@ class PortError(RuntimeError):
     """A transport failed. Carries no provider text, which can quote a token."""
 
 
+def _boto3():
+    """Import boto3, falling back to the evaluator virtualenv it is installed in.
+
+    The release workflow installs the evaluator's dependencies into
+    `modules/gateway/.venv` and drives the evaluation with that interpreter,
+    but the protected evidence readers it also runs - the installed Product CLI
+    handoff and the automatic-identity stage - are invoked with the runner's own
+    `python`, which has no boto3. Every one of them failed with
+    ModuleNotFoundError, so a complete live run still reported a failed job.
+    Reusing the versions the workflow already installed keeps one dependency
+    set; a genuinely absent dependency still fails, now as a PortError that
+    names it rather than an unhandled import error inside a transport.
+    """
+    try:
+        import boto3
+    except ModuleNotFoundError:
+        pass
+    else:
+        return boto3
+    import sys
+    from pathlib import Path
+
+    libraries = Path(__file__).resolve().parents[3] / "modules/gateway/.venv/lib"
+    for candidate in sorted(libraries.glob("python*/site-packages")):
+        if candidate.is_dir() and str(candidate) not in sys.path:
+            sys.path.append(str(candidate))
+    try:
+        import boto3
+    except ModuleNotFoundError:
+        raise PortError("boto3 is not installed for this interpreter") from None
+    return boto3
+
+
 class AwsPort:
     """Lazily-created boto3 clients, per (service, account) role session.
 
@@ -44,8 +77,7 @@ class AwsPort:
 
     def session(self):
         if self._session is None:
-            import boto3
-
+            boto3 = _boto3()
             self._session = boto3.session.Session(region_name=self.region)
         return self._session
 
@@ -72,8 +104,7 @@ class AwsPort:
             RoleSessionName=session_name[:64],
             DurationSeconds=duration_seconds,
         )["Credentials"]
-        import boto3
-
+        boto3 = _boto3()
         session = boto3.session.Session(
             aws_access_key_id=credentials["AccessKeyId"],
             aws_secret_access_key=credentials["SecretAccessKey"],

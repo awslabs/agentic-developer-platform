@@ -10,9 +10,17 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from .evaluation_contract import models
+from .evaluation_contract import MULTI_REPOSITORY_SCHEMA, EvaluationVersionError, models
 from .evaluation_evidence import EvaluationEvidenceError, EvaluationExpectation, evidence_summary, specification_hash
-from .evaluation_plan import accepted_evaluation, current_deployment, managed_evaluation, predecessor_deployments, require
+from .evaluation_plan import (
+    accepted_evaluation,
+    current_deployment,
+    human_gate_evidence,
+    managed_evaluation,
+    predecessor_deployments,
+    record_human_gate_evidence,
+    require,
+)
 from .evaluation_provider import EvaluationProvider
 from .evaluation_runtime import EvaluationRuntime
 from .execution_runner import DecisionKind, HandlerDecision, HandlerObservation, ObservationKind, OperationIdentity, RunnerContext
@@ -149,6 +157,7 @@ class EvaluationServices:
         accepted = await accepted_evaluation(session, node)
         require(accepted is not None, "evaluation_specification_removed")
         plan, spec, address = accepted
+        require(spec.evidence_schema != MULTI_REPOSITORY_SCHEMA, "evaluation_adapter_unavailable")
         require(plan.version == context.identity.accepted_plan_version, "evaluation_plan_changed")
         request = await self.request(session, context)
         require(request.detail["specification_hash"] == specification_hash(spec), "evaluation_specification_changed")
@@ -213,6 +222,7 @@ class EvaluationServices:
                 accepted = await accepted_evaluation(session, evaluation)
                 require(accepted is not None, "evaluation_specification_missing")
                 plan, spec, address = accepted
+                require(spec.evidence_schema != MULTI_REPOSITORY_SCHEMA, "evaluation_adapter_unavailable")
                 if spec.evidence_schema == "repository-evaluation/v1":
                     # The native read-only observer consumes merged-code receipts
                     # independently; it must not inherit a deployment claim.
@@ -247,6 +257,13 @@ class EvaluationServices:
 
     async def admit(self, session, context, snapshot):
         # K2 holds the current flow/claim/version lock before this settlement.
+        flow = await session.scalar(
+            select(OrchestrationFlow)
+            .where(OrchestrationFlow.org_id == context.identity.org_id, OrchestrationFlow.id == context.execution.flow_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        require(flow is not None and flow.archived_at is None, "flow_archived")
         node = await session.scalar(
             select(OrchestrationNode)
             .where(
@@ -261,6 +278,7 @@ class EvaluationServices:
         accepted = await accepted_evaluation(session, node)
         require(accepted is not None, "evaluation_specification_removed")
         plan, spec, address = accepted
+        require(spec.evidence_schema != MULTI_REPOSITORY_SCHEMA, "evaluation_adapter_unavailable")
         require(
             plan.version == context.identity.accepted_plan_version and specification_hash(spec) == snapshot["specification_hash"],
             "evaluation_plan_changed",
@@ -276,6 +294,8 @@ class EvaluationServices:
         node.attempts += 1
         if spec.acceptance_mode == "human":
             await move(session, node, NodeState.AWAITING_GATE, reason="Human evaluation mode requires the existing approval control.")
+            bound = await human_gate_evidence(session, node, plan, spec, now=datetime.now(UTC))
+            await record_human_gate_evidence(session, node, bound, actor_id=ACTOR)
             return
         identity = ExecutionIdentity(node.org_id, node.id, node.attempts, plan.version, anchor.identity.claim_id, anchor.identity.claim_generation)
         created = await create_execution(
@@ -490,6 +510,23 @@ class EvaluationController:
             async with self.services.factory() as session:
                 node = await self.services.node(session, context)
                 accepted = await accepted_evaluation(session, node) if node.kind == "eval" else None
+            if accepted is not None and accepted[1].evidence_schema == MULTI_REPOSITORY_SCHEMA:
+                from .repository_evaluation import repository_mode_supported
+
+                if not repository_mode_supported(accepted[1]):
+                    raise CycleBlockedError("evaluation_adapter_unavailable")
+                async with self.services.factory() as session:
+                    failed = await session.scalar(
+                        select(OrchestrationAction).where(
+                            OrchestrationAction.org_id == context.identity.org_id,
+                            OrchestrationAction.execution_id == context.execution.id,
+                            OrchestrationAction.kind == "multi_repository_context",
+                            OrchestrationAction.status == "succeeded",
+                        )
+                    )
+                if failed is not None and (failed.detail or {}).get("failed_probe"):
+                    return await self.services.correction_service().observe(context)
+                return await self.repository_producer.observe(context)
             if accepted is not None and getattr(accepted[1], "producer", None) is not None:
                 return await self.repository_producer.observe(context)
             return await (self.services.story(context) if node.kind == "story" else self.services.evaluate(context))
@@ -497,14 +534,16 @@ class EvaluationController:
             return EvaluationObservation(ObservationKind.BLOCKED, block=block(error.reason.value, BlockCode.HUMAN_INPUT_REQUIRED))
         except CycleBlockedError as error:
             return EvaluationObservation(ObservationKind.BLOCKED, block=block(error.reason, error.code))
+        except EvaluationVersionError as error:
+            return EvaluationObservation(ObservationKind.BLOCKED, block=block(str(error)))
         except Exception:
             return EvaluationObservation(ObservationKind.BLOCKED, block=block("evaluation_evidence_unverifiable", BlockCode.PROVIDER_UNAVAILABLE))
 
     async def perform(self, context, effect):
         from .evaluation_correction_state import CORRECTION_KIND
-        from .repository_producer import CLI_PRODUCER_KIND, PRODUCER_KIND
+        from .repository_producer import CLI_PRODUCER_KIND, MULTI_PROBE_KIND, PRODUCER_KIND
 
-        if effect.intent.kind in {PRODUCER_KIND, CLI_PRODUCER_KIND}:
+        if effect.intent.kind in {PRODUCER_KIND, CLI_PRODUCER_KIND, MULTI_PROBE_KIND}:
             return await self.repository_producer.perform(context, effect)
         require(effect.intent.kind == CORRECTION_KIND, "evaluation_effect_unsupported")
         return await self.services.correction_service().perform(context, effect)
@@ -518,8 +557,16 @@ class EvaluationController:
         if observation.kind is ObservationKind.BLOCKED:
             return HandlerDecision(DecisionKind.BLOCK, block=observation.block)
         if stage == "done":
+
+            async def complete(session, current):
+                from .story_acceptance import record_acceptance_completion
+
+                await record_acceptance_completion(session, current.execution, current.now)
+
             return HandlerDecision(
-                DecisionKind.CONCLUDE, progress_note="Delivery/evaluation handoff complete; explicit human gates remain authoritative."
+                DecisionKind.CONCLUDE,
+                settlement=complete,
+                progress_note="Delivery/evaluation handoff complete; explicit human gates remain authoritative.",
             )
         if stage == "admit":
 

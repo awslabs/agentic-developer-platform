@@ -91,3 +91,17 @@ Resume an in-progress task before starting a new one. Retain the parent links,
 completed tasks, evidence and blocked tasks. Add the two-level grouping to an
 older flat board without resetting its progress. Persist the active child and
 every completed checkpoint through the runtime's existing board mechanism.
+
+## Checkpoint lineage (board version 2)
+
+The controller, not the model, records `started_at` when a task starts,
+`finished_at` when it finishes, the producing `run_id`, and the attempt
+number. It stores a `checkpoint_note` about the attempt, failure or unblock
+(at most 400 characters after masking credential patterns) and preserves an
+optional `pattern_id` when assigned. The header retains `updated_at` and
+stores dispatch `flow_id` and `node_address` (the graph address) when available.
+Unstarted and unfinished tasks do not receive invented timestamps; missing
+run or dispatch identity remains null. New files contain these keys. Version-1
+boards remain readable with null/zero/empty defaults in memory only: a read
+never rewrites the original file. Save checkpoints by atomic rename and retain
+previous lineage when the reviewer writes the board after merge.

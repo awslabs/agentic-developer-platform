@@ -57,20 +57,6 @@ const KNOWN_UNWRAPPED: Array<{
   why: string;
 }> = [
   {
-    file: 'components/FixOrchestrator.ts',
-    kind: 'interpolation',
-    expression: 'instructions',
-    issue: '#4102',
-    why: 'process.env.FIX_INSTRUCTIONS is a /fixPR PR-comment body, interpolated raw at the analyze (:153) and apply-fix (:195) prompts; maxTurns 100. Module does not import trust-boundary at all.',
-  },
-  {
-    file: 'agent-superpower.ts',
-    kind: 'interpolation',
-    expression: 'issue.guidance',
-    issue: '#4104',
-    why: 'A /context or /guidance comment body, interpolated raw at :500 and :675. Part of the systematic raw issue.title/issue.guidance gap across ~20 Bash+bypass sites — tracked separately, NOT in #4074 scope.',
-  },
-  {
     file: 'complex-task-chat/run-query.ts',
     kind: 'stream',
     expression: 'buildPromptStream(history, userMessage)',
@@ -138,38 +124,26 @@ describe('T6: every Bash + bypassPermissions site wraps its untrusted input', ()
     expect(sites.map(s => s.rel)).toContain('agent-superpower.ts');
   });
 
-  it('the detector actually works (it finds the allowlisted FixOrchestrator debt)', () => {
-    // Proves a raw interpolation IS detectable — otherwise a silent regex
-    // failure would make every assertion below trivially pass.
-    const source = fs.readFileSync(path.join(SRC_ROOT, 'components/FixOrchestrator.ts'), 'utf-8');
-    const raw = findRawUntrustedInterpolations(source);
-    expect(raw.length).toBeGreaterThan(0);
-    expect(raw.map(r => r.expression)).toContain('instructions');
+  it('the detector finds a synthetic unwrapped instruction', () => {
+    const raw = findRawUntrustedInterpolations('const prompt = `${instructions}`;');
+    expect(raw.map(item => item.expression)).toEqual(['instructions']);
   });
 
-  it.each(sites.map(s => [s.rel, s.abs]))(
+  it.each(sites.map(site => [site.rel, site.abs]))(
     '%s embeds no unwrapped untrusted input',
     (rel, abs) => {
       const source = fs.readFileSync(abs as string, 'utf-8');
       const raw = findRawUntrustedInterpolations(source);
-
-      const unexcused = raw.filter(
-        finding =>
-          !KNOWN_UNWRAPPED.some(
-            entry =>
-              entry.file === rel &&
-              entry.kind === 'interpolation' &&
-              finding.expression.includes(entry.expression),
-          ),
+      const unexcused = raw.filter(finding =>
+        !KNOWN_UNWRAPPED.some(entry =>
+          entry.file === rel && entry.kind === 'interpolation' &&
+          finding.expression.includes(entry.expression),
+        ),
       );
 
       if (unexcused.length > 0) {
-        const detail = unexcused.map(f => `  ${rel}:${f.line}  \${${f.expression}}`).join('\n');
-        throw new Error(
-          `Unwrapped untrusted input at a Bash+bypassPermissions site:\n${detail}\n\n` +
-            `Wrap it with wrapUntrusted() from utils/trust-boundary, or (if it must ship ` +
-            `unwrapped) add it to KNOWN_UNWRAPPED with a tracking issue number.`,
-        );
+        const detail = unexcused.map(finding => `  ${rel}:${finding.line}  \${${finding.expression}}`).join('\n');
+        throw new Error(`Unwrapped untrusted input at a Bash+bypassPermissions site:\n${detail}`);
       }
     },
   );
@@ -224,10 +198,11 @@ describe('T4: the superpower completion-summary prompt wraps the issue body', ()
 
     expect(prompt).toContain(TRUST_BOUNDARY_PREAMBLE);
 
-    const preambleIndex = prompt.indexOf(TRUST_BOUNDARY_PREAMBLE);
-    const delimiterIndex = prompt.indexOf('## UNTRUSTED INPUT BELOW');
+    const descriptionIndex = prompt.indexOf('**Description**:');
+    const preambleIndex = prompt.indexOf(TRUST_BOUNDARY_PREAMBLE, descriptionIndex);
+    const delimiterIndex = prompt.indexOf('## UNTRUSTED INPUT BELOW', preambleIndex);
     const injectionIndex = prompt.indexOf(INJECTION);
-    const endIndex = prompt.indexOf('## END UNTRUSTED INPUT');
+    const endIndex = prompt.indexOf('## END UNTRUSTED INPUT', injectionIndex);
 
     // The model must be told the rules BEFORE it reads the attacker's text.
     expect(preambleIndex).toBeGreaterThan(-1);

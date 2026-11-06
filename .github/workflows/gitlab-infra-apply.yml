@@ -1,4 +1,5 @@
 name: GitLab Infra Apply
+run-name: ADP deployment ${{ inputs.adp_correlation }}
 
 on:
   # Manual-only trigger. Merging a PR does NOT auto-apply infra; operator
@@ -6,6 +7,10 @@ on:
   # explicitly via Actions -> GitLab Infra Apply -> Run workflow.
   workflow_dispatch:
     inputs:
+      region:
+        description: 'Reviewed AWS region; must match the protected deployment configuration'
+        required: true
+        type: string
       account_id:
         description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
         required: false
@@ -26,25 +31,36 @@ on:
         description: 'Deployment environment.'
         required: false
         default: 'dev'
+      adp_correlation:
+        description: 'Accepted operational release correlation'
+        required: true
+      adp_source_revision:
+        description: 'Accepted immutable source revision'
+        required: true
+      adp_definition_revision:
+        description: 'Accepted workflow definition revision'
+        required: true
+      adp_contract_digest:
+        description: 'Accepted delivery contract digest'
+        required: true
 
 concurrency:
   group: tf-apply-gitlab-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
   cancel-in-progress: false
 
 env:
-  AWS_REGION: us-east-1
-  TF_VAR_environment: dev
+  AWS_REGION: ${{ inputs.region }}
   MODULE_NAME: gitlab
-  TF_WORKING_DIR: modules/source-control/gitlab/infra
-  BACKEND_CONFIG: environments/dev/modules/gitlab-backend.tfvars
-  VAR_FILE: environments/dev/modules/gitlab.tfvars
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+  ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1
+  ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
 
 jobs:
   apply:
     name: Terraform Apply
     if: github.ref == 'refs/heads/main'
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    environment: adp-gitlab-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       id-token: write
       contents: read
@@ -53,91 +69,116 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify source belongs to reviewed main history
+        id: source
         shell: bash
+        env:
+          ACCEPTED_REVISION: ${{ inputs.adp_source_revision }}
+          ACCEPTED_DEFINITION: ${{ inputs.adp_definition_revision }}
+          WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCEPTED_DIGEST: ${{ inputs.adp_contract_digest }}
+          REQUESTED_REGION: ${{ inputs.region }}
+          PROTECTED_REGION: ${{ vars.ADP_DEPLOY_REGION }}
+          PROTECTED_DIGEST: ${{ vars.GITLAB_INFRA_DELIVERY_CONTRACT_DIGEST }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
+          [[ "$REQUESTED_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]]
+          test "$REQUESTED_REGION" = "$PROTECTED_REGION"
+          [[ "$ACCEPTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$ACCEPTED_REVISION"
+          [[ "$ACCEPTED_DEFINITION" =~ ^[0-9a-f]{40}$ ]]
+          test "$WORKFLOW_REVISION" = "$ACCEPTED_DEFINITION"
+          [[ "$ACCEPTED_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          test "$ACCEPTED_DIGEST" = "$PROTECTED_DIGEST"
+          git merge-base --is-ancestor "$ACCEPTED_REVISION" refs/remotes/origin/main
 
       - name: Establish trusted deployment identity
+        id: identity
         uses: ./.github/actions/trusted-deployment
         with:
           role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
+        id: config
         uses: ./.github/actions/load-deploy-config
         with:
           account_id: ${{ inputs.account_id }}
+          region: ${{ inputs.region }}
           environment: ${{ inputs.environment }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+
       - name: Install required CLI tools
+        id: tools
         run: |
           set -euo pipefail
-          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+          for tool in aws terraform git python3 openssl; do
             command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
           done
-      - name: Terraform Init
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: |
-          terraform init \
-            -backend-config="../../../../${{ env.BACKEND_CONFIG }}" \
-            -backend-config="bucket=${STATE_BUCKET}" \
-            -input=false -reconfigure
+          python3 -m venv "$RUNNER_TEMP/gitlab-registration-venv"
+          "$RUNNER_TEMP/gitlab-registration-venv/bin/pip" install --quiet ./modules/gateway boto3 httpx cryptography
+          echo "$RUNNER_TEMP/gitlab-registration-venv/bin" >> "$GITHUB_PATH"
 
-      - name: Terraform Plan (destroy-safety check)
-        id: plan
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: |
-          set -e
-          set -o pipefail
-          EXIT_CODE=0
-          terraform plan -var-file="../../../../${{ env.VAR_FILE }}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
-          echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          if [ "$EXIT_CODE" -eq 1 ]; then
-            echo "::error::Terraform plan failed."
-            exit 1
-          fi
-
-      - name: Destroy-safety label gate
-        if: steps.plan.outputs.detailed_exitcode == '2'
+      - name: Publish authenticated deployment context
         env:
-          GH_TOKEN: ${{ github.token }}
+          ADP_DELIVERY_CONTRACT_JSON: ${{ vars.GITLAB_INFRA_DELIVERY_CONTRACT_JSON }}
+          ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ADP_DELIVERY_WORKFLOW: gitlab-infra-apply.yml
+          ADP_DELIVERY_ACCOUNT_ID: ${{ steps.config.outputs.account_id }}
+          ADP_DELIVERY_RESOURCE_KIND: ${{ vars.GITLAB_INFRA_DELIVERY_RESOURCE_KIND }}
+          ADP_DELIVERY_RESOURCE_ID: ${{ vars.GITLAB_INFRA_DELIVERY_RESOURCE_ID }}
+          ADP_DELIVERY_INPUTS_JSON: ${{ toJSON(inputs) }}
         run: |
-          set -e
-          DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt || echo "0")
-          if [ "$DESTROYS" -gt 0 ]; then
-            echo "Plan includes $DESTROYS resource(s) to destroy."
-            COMMIT_SHA="${{ github.sha }}"
-            PR_NUMBER=$(gh pr list --state merged --search "$COMMIT_SHA" --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
-            if [ -z "$PR_NUMBER" ]; then
-              echo "::error::This apply would destroy $DESTROYS resource(s) but no associated PR was found. Cannot verify destructive-apply-approved label. Re-run via workflow_dispatch after adding the label to the source PR."
-              exit 1
-            fi
-            echo "Associated PR: #$PR_NUMBER"
-            HAS_LABEL=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null | grep -c 'destructive-apply-approved' || echo "0")
-            if [ "$HAS_LABEL" -eq 0 ]; then
-              echo "::error::This apply would destroy $DESTROYS resource(s). The PR #$PR_NUMBER does NOT have the 'destructive-apply-approved' label. Add the label to PR #$PR_NUMBER and re-run this workflow."
-              echo ""
-              echo "Resources to be destroyed:"
-              grep 'will be destroyed' /tmp/plan-output.txt || true
-              exit 1
-            fi
-            echo "PR #$PR_NUMBER has 'destructive-apply-approved' label. Proceeding."
-          else
-            echo "No destroys in plan. Proceeding."
-          fi
+          set -euo pipefail
+          python3 modules/source-control/gitlab/scripts/delivery_evidence.py --context
+          python3 modules/gateway/scripts/publish-deployment-evidence.py context gitlab-infra-apply.yml "$RUNNER_TEMP/gitlab-delivery/deployment-context.json"
 
-      - name: Terraform Apply
+      - name: Load the private reviewed registration plan
+        id: plan
+        env:
+          ADP_REGISTRATION_CONFIG_JSON: ${{ vars.GITLAB_REGISTRATION_CONFIG_JSON }}
+          ADP_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+        run: python3 modules/source-control/gitlab/scripts/registration_workflow.py prepare
+
+      - name: Verify exact saved plan and instance authority
+        id: safety
+        env:
+          ADP_REGISTRATION_CONFIG_JSON: ${{ vars.GITLAB_REGISTRATION_CONFIG_JSON }}
+          ADP_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+        run: python3 modules/source-control/gitlab/scripts/registration_workflow.py guard
+
+      - name: Apply reviewed plan and verify ordinary zero-change replan
         id: apply
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform apply tfplan
+        env:
+          ADP_REGISTRATION_CONFIG_JSON: ${{ vars.GITLAB_REGISTRATION_CONFIG_JSON }}
+          ADP_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+        run: python3 modules/source-control/gitlab/scripts/registration_workflow.py apply
+
+      - name: Collect six live registration checks
+        id: registration
+        env:
+          ADP_REGISTRATION_CONFIG_JSON: ${{ vars.GITLAB_REGISTRATION_CONFIG_JSON }}
+          ADP_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+        run: python3 modules/source-control/gitlab/scripts/registration_workflow.py collect
 
       - name: Summary
         if: always()
@@ -145,4 +186,28 @@ jobs:
           echo "## Terraform Apply -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status**: ${{ steps.apply.outcome == 'success' && 'applied' || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish verified operational delivery
+        env:
+          ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1
+          ADP_DELIVERY_CONTRACT_JSON: ${{ vars.GITLAB_INFRA_DELIVERY_CONTRACT_JSON }}
+          ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          ADP_DELIVERY_WORKFLOW: gitlab-infra-apply.yml
+          ADP_DELIVERY_COMPONENT: ${{ vars.GITLAB_INFRA_DELIVERY_COMPONENT }}
+          ADP_DELIVERY_ACCOUNT_ID: ${{ steps.config.outputs.account_id }}
+          ADP_DELIVERY_RESOURCE_KIND: ${{ vars.GITLAB_INFRA_DELIVERY_RESOURCE_KIND }}
+          ADP_DELIVERY_RESOURCE_ID: ${{ vars.GITLAB_INFRA_DELIVERY_RESOURCE_ID }}
+          ADP_DELIVERY_STEP_OUTCOMES: '{"source":"${{ steps.source.outcome }}","identity":"${{ steps.identity.outcome }}","config":"${{ steps.config.outcome }}","tools":"${{ steps.tools.outcome }}","plan":"${{ steps.plan.outcome }}","safety":"${{ steps.safety.outcome }}","apply":"${{ steps.apply.outcome }}"}'
+        run: |
+          set -euo pipefail
+          python3 modules/source-control/gitlab/scripts/delivery_evidence.py
+          python3 modules/gateway/scripts/publish-deployment-evidence.py delivery delivery-evidence "$RUNNER_TEMP/gitlab-delivery/delivery.json"
+
+      - name: Remove private local registration material
+        if: always()
+        run: |
+          rm -rf -- "$RUNNER_TEMP/gitlab-registration" "$RUNNER_TEMP/gitlab-registration-venv"

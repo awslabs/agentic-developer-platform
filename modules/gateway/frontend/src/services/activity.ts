@@ -6,6 +6,7 @@
  * Mirrors the pattern in services/logs.ts.
  */
 
+import { activityBase, type ActivityScope } from '@/contexts/ActivityScopeContext';
 import { deploymentSetting } from '@/config/runtime';
 
 import { apiClient, buildQueryString } from './api';
@@ -23,6 +24,7 @@ import type {
  */
 export async function getMyInvocations(
   params?: InvocationQueryParams,
+  scope?: ActivityScope,
 ): Promise<InvocationListResponse> {
   const query = buildQueryString({
     status: params?.status,
@@ -36,7 +38,7 @@ export async function getMyInvocations(
   });
 
   const response = await apiClient.get<InvocationListResponse>(
-    `/me/agent-invocations${query}`,
+    `${activityBase(scope)}${query}`,
   );
 
   return {
@@ -51,6 +53,7 @@ export async function getMyInvocations(
  */
 export async function getMyChains(
   params?: InvocationQueryParams,
+  scope?: ActivityScope,
 ): Promise<ChainListResponse> {
   const query = buildQueryString({
     view: 'chains',
@@ -65,7 +68,7 @@ export async function getMyChains(
   });
 
   const response = await apiClient.get<ChainListResponse>(
-    `/me/agent-invocations${query}`,
+    `${activityBase(scope)}${query}`,
   );
 
   return {
@@ -112,12 +115,13 @@ export async function getAllInvocations(
 export async function getMyInvocationChain(
   correlationId: string,
   includeNonTriggering?: boolean,
+  scope?: ActivityScope,
 ): Promise<InvocationChainResponse> {
   const query = buildQueryString({
     include_non_triggering: includeNonTriggering,
   });
   const response = await apiClient.get<InvocationChainResponse>(
-    `/me/agent-invocations/chain/${encodeURIComponent(correlationId)}${query}`,
+    `${activityBase(scope)}/chain/${encodeURIComponent(correlationId)}${query}`,
   );
   return response;
 }
@@ -149,9 +153,10 @@ export async function getAdminInvocationChain(
  */
 export async function getMyInvocationDetail(
   invocationId: string,
+  scope?: ActivityScope,
 ): Promise<InvocationItem> {
   return apiClient.get<InvocationItem>(
-    `/me/agent-invocations/${encodeURIComponent(invocationId)}`,
+    `${activityBase(scope)}/${encodeURIComponent(invocationId)}`,
   );
 }
 
@@ -174,13 +179,13 @@ export async function getAdminInvocationDetail(
  * Issue #3069: Returns raw markdown text (text/markdown content type).
  * Uses raw fetch because apiClient.get() expects JSON responses.
  */
-export async function getMyTranscript(invocationId: string): Promise<string> {
+export async function getMyTranscript(invocationId: string, scope?: ActivityScope): Promise<string> {
   const { getAccessToken } = await import('./auth');
   const baseUrl = deploymentSetting('VITE_API_URL') || '/api';
   const token = getAccessToken();
   // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability
   const response = await fetch(
-    `${baseUrl}/me/agent-invocations/${encodeURIComponent(invocationId)}/transcript`,
+    `${baseUrl}${activityBase(scope)}/${encodeURIComponent(invocationId)}/transcript`,
     {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       redirect: 'error',

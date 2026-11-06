@@ -23,6 +23,10 @@
 import { resilientQuery } from './utils/resilientQuery';
 import { execSync } from 'child_process';
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
+import { CommentAuthorityCache } from './utils/comment-authority';
+import { parseHealthCommand, selectPmDecision } from './utils/pm-comment-decisions';
+import { fetchApprovalComments, fetchApprovalPlan, postApprovalPlan } from './services/posted-approval';
+import { randomUUID } from 'crypto';
 
 // ============================================================================
 // Types
@@ -856,62 +860,41 @@ export async function postComment(issueNumber: number, body: string): Promise<vo
   }
 }
 
-export async function waitForUserResponse(issueNumber: number, startTime: Date): Promise<UserCommand | null> {
+const healthAuthorityCache = new CommentAuthorityCache();
+
+export async function waitForUserResponse(
+  issueNumber: number, startTime: Date,
+  proposal?: { id: string; body: string; createdAt: string; updatedAt: string; runId: string },
+): Promise<UserCommand | null> {
+  if (!proposal || !/^\d+$/.test(proposal.id) || !proposal.runId ||
+      (process.env.ADP_MESSAGE_ID && proposal.runId !== process.env.ADP_MESSAGE_ID) ||
+      proposal.updatedAt !== proposal.createdAt ||
+      !Number.isFinite(Date.parse(proposal.createdAt)) || startTime.getTime() < Date.parse(proposal.createdAt)) return null;
   const { repoOwner, repoName, userResponseTimeout, pollInterval } = config;
-
-  const deadline = startTime.getTime() + userResponseTimeout;
-
+  const deadline = Date.now() + userResponseTimeout;
   while (Date.now() < deadline) {
-    // Fetch recent comments
-    const commentsJson = execCommand(
-      `gh issue view ${issueNumber} --repo ${repoOwner}/${repoName} --json comments --jq '[.comments[-5:][] | {author: .author.login, body: .body, createdAt: .createdAt}]' 2>/dev/null || echo '[]'`
-    );
-
     try {
-      const comments = JSON.parse(commentsJson) as Array<{
-        author: string;
-        body: string;
-        createdAt: string;
-      }>;
-
-      // Look for commands in comments after our proposal
-      for (const comment of comments) {
-        const commentTime = new Date(comment.createdAt);
-        if (commentTime <= startTime) continue;
-
-        const body = comment.body.trim().toLowerCase();
-
-        if (body.startsWith('/approve')) {
-          return { type: 'approve' };
-        }
-        if (body.startsWith('/skip')) {
-          return { type: 'skip' };
-        }
-        if (body.startsWith('/retry')) {
-          return { type: 'retry' };
-        }
-        if (body.startsWith('/cleanup')) {
-          return { type: 'cleanup' };
-        }
-        if (body.startsWith('/hold')) {
-          return { type: 'hold' };
-        }
-        if (body.startsWith('/custom')) {
-          return {
-            type: 'custom',
-            customInstructions: comment.body.slice(7).trim(),
-          };
-        }
+      await refreshGitHubToken();
+      const tokenProvider = async () => process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
+      const token = await tokenProvider();
+      const comments = await fetchApprovalComments(repoOwner, repoName, issueNumber, token);
+      const target = (process.env.TARGET_REPO || `${repoOwner}/${repoName}`).split('/');
+      const context = { owner: repoOwner, repo: repoName, runId: proposal.runId,
+        effectRepo: { owner: target.length === 2 ? target[0] : '', repo: target.length === 2 ? target[1] : '' },
+        cache: healthAuthorityCache, tokenProvider };
+      const selected = await selectPmDecision(comments, context, startTime.getTime(), parseHealthCommand, undefined, proposal.id);
+      if (selected) {
+        const current = await fetchApprovalPlan(repoOwner, repoName, issueNumber, proposal.id, token);
+        if (current.id !== proposal.id || current.body !== proposal.body ||
+            current.createdAt !== proposal.createdAt || current.updatedAt !== proposal.updatedAt) return null;
+        return selected.decision;
       }
     } catch {
-      // Ignore parse errors
+      console.warn('Health response could not be verified');
     }
-
-    // Wait before polling again
     await new Promise(resolve => setTimeout(resolve, pollInterval));
   }
-
-  return null; // Timeout - no user response
+  return null;
 }
 
 // ============================================================================
@@ -1149,13 +1132,24 @@ export async function runHealthCheck(): Promise<void> {
 
     // Post proposal comment
     const proposalComment = formatProposalComment(anomaly, analysis);
-    await postComment(anomaly.item.issueNumber, proposalComment);
+    let proposal;
+    try {
+      await refreshGitHubToken();
+      const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
+      const receipt = await postApprovalPlan(repoOwner, repoName, anomaly.item.issueNumber, proposalComment, token);
+      proposal = { ...receipt, runId: process.env.ADP_MESSAGE_ID || randomUUID() };
+      if (!proposal.id || proposal.body !== proposalComment || proposal.updatedAt !== proposal.createdAt ||
+          !Number.isFinite(Date.parse(proposal.createdAt))) throw new Error('Invalid health proposal receipt');
+    } catch {
+      log('  Health proposal could not be verified; skipping action');
+      continue;
+    }
     log(`  Posted proposal comment`);
 
     // Wait for user response
-    const startTime = new Date();
+    const startTime = new Date(proposal.createdAt);
     log(`  Waiting up to ${config.userResponseTimeout / 60000} minutes for user response...`);
-    const userResponse = await waitForUserResponse(anomaly.item.issueNumber, startTime);
+    const userResponse = await waitForUserResponse(anomaly.item.issueNumber, startTime, proposal);
 
     // Determine final action
     let finalAction = analysis.proposedAction;

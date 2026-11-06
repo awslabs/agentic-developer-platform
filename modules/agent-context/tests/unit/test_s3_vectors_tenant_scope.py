@@ -138,27 +138,13 @@ class TestResolveVectorIndex:
         )
         assert index == "personal-user-xyz"
 
-    def test_tenant_without_id_falls_back_to_shared(self) -> None:
-        """Tenant visibility without tenant_id falls back to shared shard."""
-        index = _resolve_vector_index(
-            visibility="tenant",
-            org_id="org-test",
-            tenant_id=None,
-            owner_sub=None,
-            shard_count=4,
-        )
-        assert index.startswith("code-shard-")
+    @pytest.mark.parametrize("visibility", ["tenant", "personal"])
+    def test_missing_ownership_does_not_fall_back_to_shared(self, visibility) -> None:
+        from scope import ScopeValidationError
 
-    def test_personal_without_sub_falls_back_to_shared(self) -> None:
-        """Personal visibility without owner_sub falls back to shared shard."""
-        index = _resolve_vector_index(
-            visibility="personal",
-            org_id="org-test",
-            tenant_id=None,
-            owner_sub=None,
-            shard_count=4,
-        )
-        assert index.startswith("code-shard-")
+        with pytest.raises(ScopeValidationError):
+            _resolve_vector_index(visibility=visibility, org_id="org-test", tenant_id=None,
+                                  owner_sub=None, shard_count=4)
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +397,8 @@ class TestQueryScoped:
 
         # Check first shard query has filter
         first_call = mock_s3v.query_vectors.call_args_list[0]
-        assert first_call[1]["filter"] == {"org_id": {"$eq": "org-specific"}}
+        assert {"org_id": {"$eq": "org-specific"}} in first_call[1]["filter"]["$and"]
+        assert {"product_id": {"$exists": False}} in first_call[1]["filter"]["$and"]
 
     def test_tenant_query_has_no_org_filter(self, code_store: S3VectorsCodeStore, mock_s3v) -> None:
         """Tenant index queries do NOT include org_id filter (physical isolation)."""
@@ -425,9 +412,9 @@ class TestQueryScoped:
             top_k=10,
         )
 
-        # Tenant call (index 2 after 2 shards) should NOT have filter
+        # Tenant identity is physical; Product ownership is metadata-scoped.
         tenant_call = mock_s3v.query_vectors.call_args_list[2]
-        assert "filter" not in tenant_call[1]
+        assert tenant_call[1]["filter"] == {"$and": [{"product_id": {"$exists": False}}, {"visibility": {"$ne": "product"}}]}
 
 
 # ---------------------------------------------------------------------------
@@ -621,41 +608,15 @@ class TestWikiStoreScoped:
         index_names = vs.list_indexes()
         assert "personal-user-abc-123" in index_names
 
-    def test_tenant_without_id_falls_back_to_shared(self) -> None:
-        """Tenant visibility without tenant_id falls back to shared shard."""
+    def test_missing_ownership_never_writes_shared_wiki(self) -> None:
+        from scope import ScopeValidationError
+
         vs = FakeVectorStore()
-        result = store_wiki(
-            wiki_text="## Fallback\n\nShould go to shared.",
-            org_repo="org/repo",
-            org_id="org-test",
-            allowed_principals=["*"],
-            s3_writer=FakeS3Writer(),
-            vector_store=vs,
-            embedding_client=FakeEmbeddingClient(),
-            s3_bucket="bucket",
-            visibility="tenant",
-            tenant_id=None,  # Missing → fallback
-        )
-
-        assert result.vectors_success is True
-        index_names = vs.list_indexes()
-        assert len(index_names) == 1
-        assert index_names[0].startswith("code-shard-")
-
-    def test_existing_tests_unaffected_by_default(self) -> None:
-        """store_wiki without visibility param defaults to shared (backward compat)."""
-        vs = FakeVectorStore()
-        result = store_wiki(
-            wiki_text="## Legacy\n\nExisting behavior preserved.",
-            org_repo="org/legacy",
-            org_id="org-legacy",
-            allowed_principals=["*"],
-            s3_writer=FakeS3Writer(),
-            vector_store=vs,
-            embedding_client=FakeEmbeddingClient(),
-            s3_bucket="bucket",
-        )
-
-        assert result.vectors_success is True
-        index_names = vs.list_indexes()
-        assert all(name.startswith("code-shard-") for name in index_names)
+        writer = FakeS3Writer()
+        with pytest.raises(ScopeValidationError):
+            store_wiki(
+                wiki_text="## Private\n\nMust never become shared.", org_repo="org/repo", org_id="org-test",
+                allowed_principals=["*"], s3_writer=writer, vector_store=vs,
+                embedding_client=FakeEmbeddingClient(), s3_bucket="bucket", visibility="tenant", tenant_id=None,
+            )
+        assert vs.list_indexes() == []

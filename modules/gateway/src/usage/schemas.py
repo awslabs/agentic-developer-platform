@@ -169,6 +169,7 @@ class UsageLogResponse(BaseModel):
     department_id: str
     team_id: str
     user_id: str
+    root_human_id: str | None = None
     account_type: str
     model: str
     input_tokens: int

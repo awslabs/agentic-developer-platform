@@ -11,10 +11,11 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.auth.workspaces import select_workspace
-from src.shared.identity.workspaces import link_login_to_workspace
+from src.shared.identity.workspaces import link_login_to_workspace, login_subject_for_user
 from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
+from src.shared.models.vault import UserIdentity
 from tests.auth.test_workspaces import context
 
 pytestmark = pytest.mark.skipif(not os.environ.get("TEST_WORKSPACE_POSTGRES_URL"), reason="Requires disposable PostgreSQL")
@@ -55,6 +56,32 @@ async def sessions():
         async with admin.begin() as conn:
             await conn.execute(text(f"DROP SCHEMA {schema} CASCADE"))
         await admin.dispose()
+
+
+@pytest.mark.asyncio
+async def test_locked_login_link_cannot_be_revoked_during_use(sessions):
+    revoking = asyncio.Event()
+
+    async def revoke():
+        async with sessions() as db:
+            revoking.set()
+            await db.execute(delete(UserIdentity).where(UserIdentity.user_id == "work-row", UserIdentity.provider == "cognito"))
+            await db.commit()
+
+    async with sessions() as db:
+        user = await db.scalar(select(User).where(User.id == "work-row").with_for_update(read=True))
+        assert await login_subject_for_user(db, user, lock=True) == "login-sub"
+        task = asyncio.create_task(revoke())
+        try:
+            await asyncio.wait_for(revoking.wait(), 5)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), 0.1)
+        finally:
+            await db.rollback()
+            await asyncio.wait_for(task, 5)
+    async with sessions() as db:
+        user = await db.get(User, "work-row")
+        assert await login_subject_for_user(db, user, lock=True) is None
 
 
 @pytest.mark.asyncio

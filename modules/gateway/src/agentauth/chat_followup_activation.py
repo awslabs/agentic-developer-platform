@@ -91,7 +91,7 @@ def activate_followup(authority, capabilities, launch, *, after, now):
         raise ChatAuthorizationRefusedError("chat follow-up changed")
     writer.history._check_row(pending_entry, header)
     writer.history._check_row(pending_receipt, header)
-    pod = authority.workloads.verify_bound(name=previous["pod_name"]["S"], uid=launch.sandbox_uid)
+    pod = authority.workloads_for_run(launch.run_id).verify_bound(name=previous["pod_name"]["S"], uid=launch.sandbox_uid)
     require_sandbox_run(pod, launch.session_run_id)
     binding = store._read(f"POD#{launch.sandbox_uid}", "BINDING") or {}
     if (

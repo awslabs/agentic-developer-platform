@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from src.orchestration.compile import ApprovalContext, plan_hash
 from src.orchestration.continuation import digest
-from src.orchestration.execution_policy import policy_hash, stamp_policy
+from src.orchestration.execution_policy import MAX_WALL_CLOCK_SECONDS, policy_hash, stamp_policy
 from src.orchestration.models import OrchestrationDecision, OrchestrationExecution
 from src.orchestration.policy_admission import load_in_force_policy
 from src.orchestration.proposal import LoopProposal
@@ -135,7 +135,7 @@ async def test_invalid_renewal_cannot_write_or_change_deadline(window, case):
     elif case in {"decrease", "unchanged", "too_far"}:
         expiry = before - timedelta(seconds=1) if case == "decrease" else before
         if case == "too_far":
-            expiry = datetime.now(UTC) + timedelta(days=2)
+            expiry = before + timedelta(days=7, seconds=1)
         b.request = b.request.model_copy(update={"expires_at": expiry})
     elif case == "service":
         b.actor = replace(b.actor, actor_kind=ActorKind.SERVICE)
@@ -170,7 +170,7 @@ async def test_unverifiable_receipt_fails_closed(window, case):
         "future": ("plan_version", 999),
         "naive": ("expires_at", "2026-09-23T01:00:00"),
         "late": ("accepted_at", data["expires_at"]),
-        "too_far": ("expires_at", (datetime.now(UTC) + timedelta(days=3)).isoformat()),
+        "too_far": ("expires_at", (datetime.fromisoformat(data["before"]) + timedelta(days=7, seconds=1)).isoformat()),
     }.get(case, ("unused", None))
     data[key] = value
     b.s.session.add(
@@ -336,7 +336,7 @@ async def test_explicit_wall_clock_increase_retains_elapsed_time_and_consumed_wo
     assert evidence["max_wall_clock_seconds"] == b.request.max_wall_clock_seconds
 
 
-@pytest.mark.parametrize("delta", [-1, 0, 86_401])
+@pytest.mark.parametrize("delta", [-1, 0, 604_801])
 async def test_wall_clock_increase_requires_positive_bounded_explicit_ceiling(window, delta):
     b = window
     before = (await effective(b)).policy
@@ -357,7 +357,7 @@ async def test_later_expiry_renewal_retains_previously_authorized_wall_clock(win
     assert (await effective(b)).policy.limits.max_wall_clock_seconds == ceiling
 
 
-@pytest.mark.parametrize("value", [True, 0, 604_801])
+@pytest.mark.parametrize("value", [True, 0, MAX_WALL_CLOCK_SECONDS + 1])
 def test_wall_clock_request_rejects_invalid_ceiling(value):
     with pytest.raises(ValidationError):
         WindowRenewalRequest(
@@ -435,6 +435,53 @@ async def test_protected_elapsed_window_can_renew_without_changing_expiry_or_fai
     assert await flow_started_at(b.s.session, org_id=b.s.flow.org_id, flow_id=b.s.flow.id) == started
 
 
+async def test_owner_extends_week_old_flow_by_seven_days_without_resetting_history(protected_window):
+    from src.orchestration.runtime_policy import flow_started_at
+
+    b = protected_window
+    started = datetime.now(UTC) - timedelta(days=6)
+    policy = (await effective(b)).policy.model_copy(deep=True)
+    policy.limits = policy.limits.model_copy(update={"max_wall_clock_seconds": 7 * 86400})
+    policy.expires_at = started + timedelta(days=7)
+    policy.policy_id = policy.policy_hash = policy.principal_id = None
+    policy = stamp_policy(policy, principal_id=f"sub:{APPROVER}", org_id=b.s.flow.org_id)
+    document = {**b.s.plan.plan_document, "execution_policy": policy.model_dump(mode="json")}
+    b.s.plan.plan_document = document
+    b.s.plan.plan_hash = plan_hash(LoopProposal.model_validate(document))
+    b.s.session.add(
+        OrchestrationDecision(
+            org_id=b.s.flow.org_id,
+            flow_id=b.s.flow.id,
+            kind="node_dispatched",
+            actor_kind="service",
+            actor_id="engine",
+            actor_role="service",
+            created_at=started,
+        )
+    )
+    await b.s.session.flush()
+    before = (await effective(b)).policy
+    meter = await b.s.client.hgetall(b.s.target.key())
+    identity = (b.s.node.state, b.s.node.attempts, b.s.claim.active_run_id, b.s.claim.generation, b.execution.status)
+    b.request = b.request.model_copy(
+        update={
+            "expected_plan_hash": b.s.plan.plan_hash,
+            "expires_at": before.expires_at + timedelta(days=7),
+            "max_wall_clock_seconds": before.limits.max_wall_clock_seconds + 7 * 86400,
+        }
+    )
+    receipt, request = await accept(b)
+    after = (await effective(b)).policy
+    assert after.expires_at == before.expires_at + timedelta(days=7)
+    assert after.limits.max_wall_clock_seconds == 14 * 86400
+    assert after.limits.model_dump(exclude={"max_wall_clock_seconds"}) == before.limits.model_dump(exclude={"max_wall_clock_seconds"})
+    assert await flow_started_at(b.s.session, org_id=b.s.flow.org_id, flow_id=b.s.flow.id) == started
+    assert identity == (b.s.node.state, b.s.node.attempts, b.s.claim.active_run_id, b.s.claim.generation, b.execution.status)
+    assert b.s.plan.plan_document == document and await b.s.client.hgetall(b.s.target.key()) == meter
+    replay = await accept_window_renewal(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
+    assert replay["decision_id"] == receipt["decision_id"] and replay["created"] is False
+
+
 @pytest.mark.parametrize("case", ["unchanged", "decrease", "too_large", "other_owner", "expired"])
 async def test_protected_same_expiry_requires_owner_and_positive_bounded_increase(protected_window, case):
     b = protected_window
@@ -442,7 +489,7 @@ async def test_protected_same_expiry_requires_owner_and_positive_bounded_increas
     changes = {
         "unchanged": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds},
         "decrease": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds - 1},
-        "too_large": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds + 86401},
+        "too_large": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds + 604801},
         "expired": {"expires_at": datetime.now(UTC) - timedelta(seconds=1)},
     }
     b.request = b.request.model_copy(update=changes.get(case, {}))
@@ -596,7 +643,7 @@ async def test_owner_can_resume_after_multi_day_gate_wait_without_resetting_work
     assert b.s.plan.plan_document == document
 
 
-@pytest.mark.parametrize("resume,hours", [(False, 1), (True, 25)])
+@pytest.mark.parametrize("resume,hours", [(False, 169), (True, 169)])
 def test_long_expired_window_cannot_be_silently_or_excessively_renewed(resume, hours):
     from src.orchestration.shared_window import valid_wall_clock
 

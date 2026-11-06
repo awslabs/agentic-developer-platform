@@ -1,0 +1,60 @@
+{
+  "issue": 8173,
+  "source": "GET /repos/aws-e/adp/commits/3b02e7a8cd1ed47da28db10450ba33f61e5fb869/check-runs?filter=latest",
+  "response": {
+    "total_count": 3,
+    "check_runs": [
+      {
+        "id": 117644278214,
+        "name": "verify",
+        "head_sha": "3b02e7a8cd1ed47da28db10450ba33f61e5fb869",
+        "status": "completed",
+        "conclusion": "success",
+        "check_suite": {
+          "id": 106003565981
+        },
+        "app": {
+          "id": 15368,
+          "slug": "github-actions"
+        },
+        "details_url": "https://github.com/aws-e/adp/actions/runs/39116852042/job/117644278214",
+        "started_at": "2026-10-18T09:49:35Z",
+        "completed_at": "2026-10-18T09:51:01Z"
+      },
+      {
+        "id": 117644278210,
+        "name": "verify",
+        "head_sha": "3b02e7a8cd1ed47da28db10450ba33f61e5fb869",
+        "status": "completed",
+        "conclusion": "failure",
+        "check_suite": {
+          "id": 106003565956
+        },
+        "app": {
+          "id": 15368,
+          "slug": "github-actions"
+        },
+        "details_url": "https://github.com/aws-e/adp/actions/runs/39116852034/job/117644278210",
+        "started_at": "2026-10-18T09:49:36Z",
+        "completed_at": "2026-10-18T09:51:24Z"
+      },
+      {
+        "id": 117644278085,
+        "name": "verify",
+        "head_sha": "3b02e7a8cd1ed47da28db10450ba33f61e5fb869",
+        "status": "completed",
+        "conclusion": "success",
+        "check_suite": {
+          "id": 106003565924
+        },
+        "app": {
+          "id": 15368,
+          "slug": "github-actions"
+        },
+        "details_url": "https://github.com/aws-e/adp/actions/runs/39116852023/job/117644278085",
+        "started_at": "2026-10-18T09:49:35Z",
+        "completed_at": "2026-10-18T09:51:12Z"
+      }
+    ]
+  }
+}

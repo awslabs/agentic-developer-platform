@@ -1,0 +1,272 @@
+path	revision	parents	dependencies
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/001_initial.py	001_initial	null	null
+modules/agent-context/alembic/versions/001_knowledge_layer_schema.py	001_knowledge_layer_schema	null	null
+modules/gateway/alembic/versions/001_initial_schema.py	2d414a0df89d	null	null
+modules/L5-services/src/l5_services/migrations/versions/l5_configurations.py	l5_configurations	null	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/002_add_research_workspace.py	002_add_research_workspace	"""001_initial"""	null
+modules/agent-context/alembic/versions/002_add_wiki_columns.py	002_add_wiki_columns	"""001_knowledge_layer_schema"""	null
+modules/gateway/alembic/versions/002_cognito_fields.py	3e525b1eg90e	"""2d414a0df89d"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_runs_and_work.py	l5_runs_and_work	"""l5_configurations"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/003_add_research_findings.py	003_add_research_findings	"""002_add_research_workspace"""	null
+modules/agent-context/alembic/versions/003_index_run_stages.py	003_index_run_stages	"""002_add_wiki_columns"""	null
+modules/gateway/alembic/versions/003_model_pricing_columns.py	003_model_pricing	"""3e525b1eg90e"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_admission_recovery.py	l5_admission_recovery	"""l5_runs_and_work"""	null
+modules/agent-context/alembic/versions/004_add_tenant_isolation_columns.py	004_add_tenant_isolation_columns	"""003_index_run_stages"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/004_jsonb_state_columns.py	004_jsonb_state_columns	"""003_add_research_findings"""	null
+modules/gateway/alembic/versions/004_user_identities_and_credentials.py	004_vault_schema	"""003_model_pricing"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_evidence.py	l5_worker_evidence	"""l5_admission_recovery"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/005_add_research_proposals.py	005_add_research_proposals	"""004_jsonb_state_columns"""	null
+modules/agent-context/alembic/versions/005_backfill_tenant_scope.py	005_backfill_tenant_scope	"""004_add_tenant_isolation_columns"""	null
+modules/gateway/alembic/versions/005_identity_columns.py	005_identity_columns	"""004_vault_schema"""	null
+modules/agent-context/alembic/versions/005_project_scoping.py	005_project_scoping	"""004_add_tenant_isolation_columns"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_runtime.py	l5_worker_runtime	"""l5_worker_evidence"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/006_account_onboard_fields.py	006_account_onboard_fields	"""005_add_research_proposals"""	null
+modules/agent-context/alembic/versions/006_merge_005_heads.py	006_merge_005_heads	"[""005_backfill_tenant_scope"", ""005_project_scoping""]"	null
+modules/gateway/alembic/versions/006_user_roles_table.py	006_user_roles	"""005_identity_columns"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_attempts.py	l5_worker_attempts	"""l5_worker_runtime"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/006_add_default_workspace_fields.py	006_add_default_workspace_fields	"""006_account_onboard_fields"""	null
+modules/agent-context/alembic/versions/007_knowledge_assets.py	007_knowledge_assets	"""006_merge_005_heads"""	null
+modules/gateway/alembic/versions/007_scope_relaxation.py	007_scope_relaxation	"""006_user_roles"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_repair.py	l5_worker_repair	"""l5_worker_attempts"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/006_add_workspace_reconciler_fields.py	006_add_workspace_reconciler_fields	"""006_add_default_workspace_fields"""	null
+modules/agent-context/alembic/versions/008_knowledge_assets_registry_columns.py	008_ka_registry_cols	"""007_knowledge_assets"""	null
+modules/gateway/alembic/versions/008_magic_link.py	008_magic_link	"""007_scope_relaxation"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_fences.py	l5_worker_fences	"""l5_worker_repair"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/006_add_event_audit_columns.py	006_add_event_audit_columns	"""006_add_workspace_reconciler_fields"""	null
+modules/gateway/alembic/versions/009_provider_check_constraint.py	009_provider_check_constraint	"""008_magic_link"""	null
+modules/agent-context/alembic/versions/009_stage_metrics_and_pod.py	009_stage_metrics_pod	"""008_ka_registry_cols"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_devops_space_intents.py	l5_devops_space_intents	"""l5_worker_fences"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events.py	l5_events	"""l5_worker_fences"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/006_add_cognito_sub.py	006_add_cognito_sub	"""006_add_event_audit_columns"""	null
+modules/agent-context/alembic/versions/010_nullable_index_runs_repo_id.py	010_nullable_index_runs_repo_id	"""009_stage_metrics_pod"""	null
+modules/gateway/alembic/versions/010_tenant_access_requests.py	010_tenant_access_requests	"""009_provider_check_constraint"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_devops_resource_observation.py	l5_devops_resource_observation	"""l5_devops_space_intents"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events_devops_merge.py	l5_events_devops_merge	"[""l5_events"", ""l5_devops_space_intents""]"	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/007_add_quota_fields.py	007_add_quota_fields	"""006_add_cognito_sub"""	null
+modules/gateway/alembic/versions/011_tenants_table.py	011_tenants_table	"""010_tenant_access_requests"""	null
+modules/agent-context/alembic/versions/011_widen_vulnerabilities_text_columns.py	011_widen_vuln_text_cols	"""010_nullable_index_runs_repo_id"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_bindings_and_setup.py	l5_bindings_and_setup	"""l5_devops_resource_observation"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_devops_integration_observation.py	l5_devops_integration_obs	"""l5_devops_resource_observation"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events_resource_merge.py	l5_events_resource_merge	"[""l5_events_devops_merge"", ""l5_devops_resource_observation""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_and_triage.py	l5_results_and_triage	"""l5_devops_resource_observation"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/007_add_org_settings_sso.py	007_add_org_settings_sso	"""007_add_quota_fields"""	null
+modules/agent-context/alembic/versions/012_partial_unique_index_exclude_removed.py	012_partial_unique_excl_removed	"""011_widen_vuln_text_cols"""	null
+modules/gateway/alembic/versions/012_unique_cognito_sub.py	012_unique_cognito_sub	"""011_tenants_table"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events_bindings_merge.py	l5_events_bindings_merge	"[""l5_events_resource_merge"", ""l5_bindings_and_setup""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events_integration_merge.py	l5_events_integration_merge	"[""l5_events_resource_merge"", ""l5_devops_integration_obs""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_events_merge.py	l5_results_events_merge	"[""l5_results_and_triage"", ""l5_events_resource_merge""]"	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/007_add_users_table.py	007_add_users_table	"""007_add_org_settings_sso"""	null
+modules/gateway/alembic/versions/013_channel_tenant_map_metadata.py	013_channel_tenant_map_metadata	"""012_unique_cognito_sub"""	null
+modules/agent-context/alembic/versions/013_ingestion_callback_attempt.py	013_ingestion_callback_attempt	"""012_partial_unique_excl_removed"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_bindings_integration_merge.py	l5_bindings_integration_merge	"[""l5_events_bindings_merge"", ""l5_events_integration_merge""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_bindings_merge.py	l5_results_bindings_merge	"[""l5_results_events_merge"", ""l5_events_bindings_merge""]"	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/008_add_api_keys_table.py	008_add_api_keys_table	"""007_add_users_table"""	null
+modules/gateway/alembic/versions/014_member_approval_policy.py	014_member_approval_policy	"""013_channel_tenant_map_metadata"""	null
+modules/agent-context/alembic/versions/014_verified_public_acl.py	014_verified_public_acl	"""013_ingestion_callback_attempt"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_devops_knowledge_publication.py	l5_devops_knowledge_pub	"""l5_bindings_integration_merge"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_integration_merge.py	l5_results_integration_merge	"[""l5_results_bindings_merge"", ""l5_bindings_integration_merge""]"	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/009_add_budget_alerts_table.py	009_add_budget_alerts_table	"""008_add_api_keys_table"""	null
+modules/gateway/alembic/versions/015_bot_users.py	015_bot_users	"""014_member_approval_policy"""	null
+modules/agent-context/alembic/versions/015_product_knowledge.py	015_product_knowledge	"""014_verified_public_acl"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_knowledge_merge.py	l5_results_knowledge_merge	"[""l5_results_integration_merge"", ""l5_devops_knowledge_pub""]"	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/010_add_workspace_grants.py	010_add_workspace_grants	"""009_add_budget_alerts_table"""	null
+modules/gateway/alembic/versions/016_action_provenance.py	016_action_provenance	"""015_bot_users"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/011_add_observation_receiver_tables.py	011_add_observation_receiver_tables	"""010_add_workspace_grants"""	null
+modules/gateway/alembic/versions/017_parent_invocation_id.py	017_parent_invocation_id	"""016_action_provenance"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/012_adp_credential_reference.py	012_adp_credential_reference	"""011_add_observation_receiver_tables"""	null
+modules/gateway/alembic/versions/018_agent_run_cost_traceability.py	018_agent_run_cost_traceability	"""017_parent_invocation_id"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/013_add_provider_operations.py	013_add_provider_operations	"""012_adp_credential_reference"""	null
+modules/gateway/alembic/versions/019_knowledge_assets.py	019_knowledge_assets	"""018_agent_run_cost_traceability"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/014_add_provider_connections.py	014_add_provider_connections	"""013_add_provider_operations"""	null
+modules/gateway/alembic/versions/020_org_github_ids.py	020_org_github_ids	"""019_knowledge_assets"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/015_add_adp_org_binding.py	015_add_adp_org_binding	"""014_add_provider_connections"""	null
+modules/gateway/alembic/versions/021_tenant_memberships.py	021_tenant_memberships	"""020_org_github_ids"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/016_add_organization_grants.py	016_add_organization_grants	"""015_add_adp_org_binding"""	null
+modules/gateway/alembic/versions/022_installed_by_user_id.py	022_installed_by_user_id	"""021_tenant_memberships"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/017_add_workspace_bootstrap_reservations.py	017_add_workspace_bootstrap_reservations	"""016_add_organization_grants"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/017_unique_credential_reference.py	017_unique_credential_reference	"""016_add_organization_grants"""	null
+modules/gateway/alembic/versions/023_org_parent_tenant_id.py	023_org_parent_tenant_id	"""022_installed_by_user_id"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/018_add_operation_budget_reservations.py	018_add_operation_budget_reservations	"""017_add_workspace_bootstrap_reservations"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/018_bootstrap_read_tokens.py	018_bootstrap_read_tokens	"""017_add_workspace_bootstrap_reservations"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/018_controller_executions.py	018_controller_executions	"""017_add_workspace_bootstrap_reservations"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/018_create_operation_idempotency.py	018_create_operation_idempotency	"""017_unique_credential_reference"""	null
+modules/gateway/alembic/versions/024_budget_usage_bigint_tokens.py	024_budget_usage_bigint_tokens	"""023_org_parent_tenant_id"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/019_lifecycle_artifacts.py	019_lifecycle_artifacts	"""018_bootstrap_read_tokens"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/019_workspace_operation_state.py	019_workspace_operation_state	"""018_create_operation_idempotency"""	null
+modules/gateway/alembic/versions/025_org_created_via.py	025_org_created_via	"""024_budget_usage_bigint_tokens"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/020_lifecycle_effects.py	020_lifecycle_effects	"""019_lifecycle_artifacts"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/020_merge_workspace_cli.py	020_merge_workspace_cli	"[""019_workspace_operation_state"", ""017_add_workspace_bootstrap_reservations""]"	null
+modules/gateway/alembic/versions/026_channel_tenant_map_installation_id.py	026_ctm_installation_id	"""025_org_created_via"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/021_deployment_identity.py	021_deployment_identity	"""020_merge_workspace_cli"""	null
+modules/gateway/alembic/versions/027_installation_tenant_uniqueness.py	027_install_tenant_unique	"""026_ctm_installation_id"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/022_merge_budget_cli.py	022_merge_budget_cli	"[""018_add_operation_budget_reservations"", ""021_deployment_identity""]"	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/027_cli_bootstrap_foundation.py	027_cli_bootstrap_foundation	"[""021_deployment_identity"", ""018_bootstrap_read_tokens""]"	null
+modules/gateway/alembic/versions/028_usage_cache_tokens.py	028_usage_cache_tokens	"""027_install_tenant_unique"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/023_operation_governance.py	023_operation_governance	"""022_merge_budget_cli"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/028_deployment_namespace_quota.py	028_deployment_namespace_quota	"""027_cli_bootstrap_foundation"""	null
+modules/gateway/alembic/versions/029_orchestration_graph.py	029_orchestration_graph	"""028_usage_cache_tokens"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/024_approval_creation_scope.py	024_approval_creation_scope	"""023_operation_governance"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/029_add_event_principal_outcome.py	029_add_event_principal_outcome	"""028_deployment_namespace_quota"""	null
+modules/gateway/alembic/versions/030_budget_usage_cost_precision.py	030_budget_usage_cost_precision	"""029_orchestration_graph"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/025_merge_governed_runtime.py	025_merge_governed_runtime	"[""024_approval_creation_scope"", ""018_bootstrap_read_tokens"", ""018_controller_executions""]"	null
+modules/gateway/alembic/versions/031_usage_graph_address.py	031_usage_graph_address	"""030_budget_usage_cost_precision"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/026_merge_lifecycle_effects.py	026_merge_lifecycle_effects	"[""025_merge_governed_runtime"", ""020_lifecycle_effects""]"	null
+modules/gateway/alembic/versions/032_budget_usage_org_entity_type.py	032_budget_usage_org_type	"""031_usage_graph_address"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/028_merge_lifecycle_foundation.py	028_merge_lifecycle_foundation	"[""026_merge_lifecycle_effects"", ""027_cli_bootstrap_foundation""]"	null
+modules/gateway/alembic/versions/033_client_tool_capture.py	033_client_tool_capture	"""032_budget_usage_org_type"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/029_lifecycle_control_registry.py	029_lifecycle_control_registry	"""028_merge_lifecycle_foundation"""	null
+modules/gateway/alembic/versions/034_person_budget_configs.py	034_person_budget_configs	"""033_client_tool_capture"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/030_merge_audit_lifecycle.py	030_merge_audit_lifecycle	"[""029_lifecycle_control_registry"", ""029_add_event_principal_outcome""]"	null
+modules/gateway/alembic/versions/035_budget_usage_entity_key.py	035_budget_usage_entity_key	"""034_person_budget_configs"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/031_controller_deployment_registry.py	031_controller_deployment_registry	"""030_merge_audit_lifecycle"""	null
+modules/gateway/alembic/versions/036_person_budget_defaults.py	036_person_budget_defaults	"""035_budget_usage_entity_key"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/032_batch_workload_kind.py	032_batch_workload_kind	"""031_controller_deployment_registry"""	null
+modules/gateway/alembic/versions/037_bedrock_account_routing.py	037_bedrock_account_routing	"""036_person_budget_defaults"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/033_retained_batch_results.py	033_retained_batch_results	"""032_batch_workload_kind"""	null
+modules/gateway/alembic/versions/038_cli_auth_requests.py	038_cli_auth_requests	"""037_bedrock_account_routing"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/034_provider_request_region.py	034_provider_request_region	"""033_retained_batch_results"""	null
+modules/gateway/alembic/versions/039_flow_design_capture.py	039_flow_design_capture	"""038_cli_auth_requests"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/035_controller_network_journal.py	035_controller_network_journal	"""034_provider_request_region"""	null
+modules/gateway/alembic/versions/040_team_memberships.py	040_team_memberships	"""039_flow_design_capture"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/036_users_cognito_sub_per_org.py	036_users_cognito_sub_per_org	"""035_controller_network_journal"""	null
+modules/gateway/alembic/versions/041_directory_provider.py	041_directory_provider	"""040_team_memberships"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/037_shared_cluster_membership.py	037_shared_cluster_membership	"""036_users_cognito_sub_per_org"""	null
+modules/gateway/alembic/versions/042_user_identity_primary.py	042_user_identity_primary	"""041_directory_provider"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/038_cluster_grant_scopes.py	038_cluster_grant_scopes	"""037_shared_cluster_membership"""	null
+modules/gateway/alembic/versions/043_person_anchor_namespace_rekey.py	043_person_anchor_rekey	"""042_user_identity_primary"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/039_controller_node_commands.py	039_controller_node_commands	"""038_cluster_grant_scopes"""	null
+modules/gateway/alembic/versions/044_model_pricing_v2.py	044_model_pricing_v2	"""043_person_anchor_rekey"""	null
+modules/gateway/alembic/versions/044_ratelimit_org_entity_type.py	044_ratelimit_org_type	"""043_person_anchor_rekey"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/040_controller_cleanup_bindings.py	040_controller_cleanup_bindings	"""039_controller_node_commands"""	null
+modules/gateway/alembic/versions/045_pricing_seed_2026_09_12_1.py	045_pricing_seed_2026_09_12_1	"""044_model_pricing_v2"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/041_controller_workload_submissions.py	041_controller_workload_submissions	"""040_controller_cleanup_bindings"""	null
+modules/gateway/alembic/versions/046_merge_pricing_ratelimit.py	046_merge_pricing_ratelimit	"[""045_pricing_seed_2026_09_12_1"", ""044_ratelimit_org_type""]"	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/042_controller_cleanup_snapshots.py	042_controller_cleanup_snapshots	"""041_controller_workload_submissions"""	null
+modules/gateway/alembic/versions/047_claude_pricing_v2.py	047_claude_pricing_v2	"""046_merge_pricing_ratelimit"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/043_workspace_grant_changes.py	043_workspace_grant_changes	"""042_controller_cleanup_snapshots"""	null
+modules/gateway/alembic/versions/048_team_integrity_gate.py	048_team_integrity_gate	"""047_claude_pricing_v2"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/044_organization_grant_changes.py	044_organization_grant_changes	"""043_workspace_grant_changes"""	null
+modules/gateway/alembic/versions/049_bedrock_connection_grants.py	049_bedrock_connection_grants	"""048_team_integrity_gate"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/045_approval_policy.py	045_approval_policy	"""044_organization_grant_changes"""	null
+modules/gateway/alembic/versions/050_orchestration_work_claims.py	050_orchestration_work_claims	"""049_bedrock_connection_grants"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/046_dispatch_reauthorization.py	046_dispatch_reauthorization	"""045_approval_policy"""	null
+modules/gateway/alembic/versions/051_orchestration_pr_bindings.py	051_orch_pr_bindings	"""050_orchestration_work_claims"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/047_provider_recovery.py	047_provider_recovery	"""046_dispatch_reauthorization"""	null
+modules/gateway/alembic/versions/052_orchestration_executions.py	052_orchestration_executions	"""051_orch_pr_bindings"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/048_planning_recovery.py	048_planning_recovery	"""047_provider_recovery"""	null
+modules/gateway/alembic/versions/053_orchestration_flow_slug_unique.py	053_flow_slug_unique	"""052_orchestration_executions"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/049_planning_budget.py	049_planning_budget	"""048_planning_recovery"""	null
+modules/gateway/alembic/versions/054_execution_tenant_guards.py	054_execution_tenant_guards	"""053_flow_slug_unique"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/050_planning_budget_confirmation.py	050_planning_budget_confirmation	"""049_planning_budget"""	null
+modules/gateway/alembic/versions/055_orchestration_environment_leases.py	055_orch_environment_leases	"""054_execution_tenant_guards"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/051_saved_plan_completion.py	051_saved_plan_completion	"""050_planning_budget_confirmation"""	null
+modules/gateway/alembic/versions/056_persona_model_prefs.py	056_persona_model_prefs	"""055_orch_environment_leases"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/052_partial_apply_repair.py	052_partial_apply_repair	"""051_saved_plan_completion"""	null
+modules/gateway/alembic/versions/057_model_invocability_evidence.py	057_model_invocability_evidence	"""056_persona_model_prefs"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/053_partial_preparation_refresh.py	053_partial_preparation_refresh	"""052_partial_apply_repair"""	null
+modules/gateway/alembic/versions/058_model_probe_admission.py	058_model_probe_admission	"""057_model_invocability_evidence"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/054_unstarted_bootstrap.py	054_unstarted_bootstrap	"""053_partial_preparation_refresh"""	null
+modules/gateway/alembic/versions/059_gitlab_identity_provider.py	059_gitlab_identity_provider	"""058_model_probe_admission"""	null
+modules/domain-apps/superplane/src/superplane-api/alembic/versions/055_sso_provider_ownership.py	055_sso_provider_ownership	"""054_unstarted_bootstrap"""	null
+modules/gateway/alembic/versions/060_orchestration_pending_amendments.py	060_orch_pending_amend	"""059_gitlab_identity_provider"""	null
+modules/gateway/alembic/versions/061_persona_usage_evidence.py	061_persona_usage_evidence	"""060_orch_pending_amend"""	null
+modules/gateway/alembic/versions/062_persona_usage_indexes.py	062_persona_usage_indexes	"""061_persona_usage_evidence"""	null
+modules/gateway/alembic/versions/063_pr_binding_adoption.py	063_pr_binding_adoption	"""062_persona_usage_indexes"""	null
+modules/gateway/alembic/versions/064_orchestration_run_reports.py	064_orchestration_run_reports	"""063_pr_binding_adoption"""	null
+modules/gateway/alembic/versions/065_budget_enforcement_controls.py	065_budget_enforcement_controls	"""064_orchestration_run_reports"""	null
+modules/gateway/alembic/versions/066_credential_evidence_and_delegation.py	066_cred_evidence_delegation	"""065_budget_enforcement_controls"""	null
+modules/gateway/alembic/versions/066_vault_operation_fingerprint.py	066_vault_operation_fingerprint	"""066_cred_evidence_delegation"""	null
+modules/gateway/alembic/versions/067_flow_execution_pause.py	067_flow_execution_pause	"""066_cred_evidence_delegation"""	null
+modules/gateway/alembic/versions/067_aws_connection_verification.py	067_aws_connection_verify	"""066_vault_operation_fingerprint"""	null
+modules/gateway/alembic/versions/068_merge_cli_flow.py	068_merge_cli_flow	"[""067_aws_connection_verify"", ""067_flow_execution_pause""]"	null
+modules/gateway/alembic/versions/069_aws_verification_binding.py	069_aws_verification_binding	"""068_merge_cli_flow"""	null
+modules/gateway/alembic/versions/070_magic_link_delivery_method.py	070_magic_link_delivery_method	"""069_aws_verification_binding"""	null
+modules/gateway/alembic/versions/070_opus55_pricing.py	070_opus55_pricing	"""069_aws_verification_binding"""	null
+modules/gateway/alembic/versions/071_installation_revocation.py	071_installation_revocation	"""070_magic_link_delivery_method"""	null
+modules/gateway/alembic/versions/072_merge_identity_pricing.py	072_merge_identity_pricing	"[""071_installation_revocation"", ""070_opus55_pricing""]"	null
+modules/gateway/alembic/versions/073_kimi_k3_pricing.py	073_kimi_k3_pricing	"""072_merge_identity_pricing"""	null
+modules/gateway/alembic/versions/074_budget_settlement_receipts.py	074_budget_settlement_receipts	"""073_kimi_k3_pricing"""	null
+modules/gateway/alembic/versions/075_membership_revocation.py	075_membership_revocation	"""074_budget_settlement_receipts"""	null
+modules/gateway/alembic/versions/076_access_request_receipts.py	076_access_request_receipts	"""075_membership_revocation"""	null
+modules/gateway/alembic/versions/077_codex_runtime_posture.py	077_codex_runtime_posture	"""076_access_request_receipts"""	null
+modules/gateway/alembic/versions/078_gpt6_sol_luna_pricing.py	078_gpt6_sol_luna_pricing	"""077_codex_runtime_posture"""	null
+modules/gateway/alembic/versions/079_budget_pricing_corrections.py	079_budget_pricing_corrections	"""078_gpt6_sol_luna_pricing"""	null
+modules/gateway/alembic/versions/080_usage_request_index.py	080_usage_request_index	"""079_budget_pricing_corrections"""	null
+modules/gateway/alembic/versions/081_persona_platform_defaults.py	081_persona_platform_defaults	"""080_usage_request_index"""	null
+modules/gateway/alembic/versions/082_aws_connection_trust.py	082_aws_connection_trust	"""081_persona_platform_defaults"""	null
+modules/gateway/alembic/versions/083_probe_contract_revision.py	083_probe_contract_revision	"""082_aws_connection_trust"""	null
+modules/gateway/alembic/versions/084_reservation_receipt_scopes.py	084_reservation_receipt_scopes	"""083_probe_contract_revision"""	null
+modules/gateway/alembic/versions/085_amendment_issue_bindings.py	085_amendment_issue_bindings	"""084_reservation_receipt_scopes"""	null
+modules/gateway/alembic/versions/086_operations_report_receipt.py	086_operations_report_receipt	"""085_amendment_issue_bindings"""	null
+modules/gateway/alembic/versions/086_orchestration_node_metadata.py	086_orchestration_node_metadata	"""086_operations_report_receipt"""	null
+modules/gateway/alembic/versions/087_run_report_spool_document.py	087_run_report_spool_document	"""086_orchestration_node_metadata"""	null
+modules/gateway/alembic/versions/088_crew_executor_inventory.py	088_crew_executor_inventory	"""087_run_report_spool_document"""	null
+modules/gateway/alembic/versions/088_dev_box_contract.py	088_dev_box_contract	"""087_run_report_spool_document"""	null
+modules/gateway/alembic/versions/089_merge_dev_box_crew.py	089_merge_dev_box_crew	"[""088_dev_box_contract"", ""088_crew_executor_inventory""]"	null
+modules/gateway/alembic/versions/090_crew_usage_root.py	090_crew_usage_root	"""089_merge_dev_box_crew"""	null
+modules/gateway/alembic/versions/090_dev_box_release_choice.py	090_dev_box_release_choice	"""089_merge_dev_box_crew"""	null
+modules/gateway/alembic/versions/091_merge_dev_box_crew_usage.py	091_merge_dev_box_crew_usage	"[""090_dev_box_release_choice"", ""090_crew_usage_root""]"	null
+modules/gateway/alembic/versions/092_dev_box_assistant_activity.py	092_dev_box_assistant_activity	"""091_merge_dev_box_crew_usage"""	null
+modules/gateway/alembic/versions/093_dev_box_cost_policy.py	093_dev_box_cost_policy	"""092_dev_box_assistant_activity"""	null
+modules/gateway/alembic/versions/094_credential_agent_consent.py	094_credential_agent_consent	"""093_dev_box_cost_policy"""	null
+modules/gateway/alembic/versions/094_crew_checkpoints.py	094_crew_checkpoints	"""094_credential_agent_consent"""	null
+modules/gateway/alembic/versions/095_crew_restore_pins.py	095_crew_restore_pins	"""094_crew_checkpoints"""	null
+modules/gateway/alembic/versions/096_flow_archive.py	096_flow_archive	"""095_crew_restore_pins"""	null
+modules/gateway/alembic/versions/097_oauth_connection_pointer.py	097_oauth_connection_pointer	"""096_flow_archive"""	null
+modules/gateway/alembic/versions/098_tool_entitlements.py	098_tool_entitlements	"""097_oauth_connection_pointer"""	null
+modules/gateway/alembic/versions/099_dev_box_sealed_enrollment.py	099_dev_box_sealed_enrollment	"""098_tool_entitlements"""	null
+modules/gateway/alembic/versions/100_crew_host_restore_pin.py	100_crew_host_restore_pin	"""099_dev_box_sealed_enrollment"""	null
+modules/gateway/alembic/versions/101_crew_host_fingerprint.py	101_crew_host_fingerprint	"""100_crew_host_restore_pin"""	null
+modules/gateway/alembic/versions/102_crew_owner_generation.py	102_crew_owner_generation	"""101_crew_host_fingerprint"""	null
+modules/gateway/alembic/versions/103_dev_box_consolidation.py	103_dev_box_consolidation	"""102_crew_owner_generation"""	null
+modules/gateway/alembic/versions/104_decision_display_projection.py	104_decision_display_projection	"""103_dev_box_consolidation"""	null
+modules/gateway/alembic/versions/105_flow_cost_covering.py	105_flow_cost_covering	"""104_decision_display_projection"""	null
+modules/gateway/alembic/versions/107_repository_eval_display.py	107_repository_eval_display	"""105_flow_cost_covering"""	null
+modules/gateway/alembic/versions/108_native_credentials.py	108_native_credentials	"""107_repository_eval_display"""	null
+modules/gateway/alembic/versions/109_oauth_scope_snapshot.py	109_oauth_scope_snapshot	"""108_native_credentials"""	null
+modules/gateway/alembic/versions/110_oauth_provider_binding.py	110_oauth_provider_binding	"""109_oauth_scope_snapshot"""	null
+modules/gateway/alembic/versions/111_oauth_reconnect_resources.py	111_oauth_reconnect_resources	"""110_oauth_provider_binding"""	null
+modules/gateway/alembic/versions/112_product_profile_foundation.py	112_product_profile_foundation	"""111_oauth_reconnect_resources"""	null
+modules/gateway/alembic/versions/113_metering_authority.py	113_metering_authority	"""112_product_profile_foundation"""	null
+modules/gateway/alembic/versions/113_product_scope_guard.py	113_product_scope_guard	"""112_product_profile_foundation"""	null
+modules/gateway/alembic/versions/114_catalog_portfolios.py	114_catalog_portfolios	"""113_product_scope_guard"""	null
+modules/gateway/alembic/versions/114_merge_metering_product_scope.py	114_merge_metering_product_scope	"[""113_metering_authority"", ""113_product_scope_guard""]"	null
+modules/gateway/alembic/versions/115_legacy_metering_cohort.py	115_legacy_metering_cohort	"""114_merge_metering_product_scope"""	null
+modules/gateway/alembic/versions/115_product_onboarding_sessions.py	115_product_onboarding_sessions	"""114_catalog_portfolios"""	null
+modules/gateway/alembic/versions/116_catalog_initiatives.py	116_catalog_initiatives	"""115_product_onboarding_sessions"""	null
+modules/gateway/alembic/versions/116_metering_admin_result.py	116_metering_admin_result	"""115_legacy_metering_cohort"""	null
+modules/gateway/alembic/versions/117_merge_metering_catalog.py	117_merge_metering_catalog	"[""116_metering_admin_result"", ""114_catalog_portfolios""]"	null
+modules/gateway/alembic/versions/117_product_source_bindings.py	117_product_source_bindings	"""116_catalog_initiatives"""	null
+modules/gateway/alembic/versions/118_merge_metering_onboarding.py	118_merge_metering_onboarding	"[""117_merge_metering_catalog"", ""115_product_onboarding_sessions""]"	null
+modules/gateway/alembic/versions/118_product_verification_operations.py	118_product_verification_ops	"""117_product_source_bindings"""	null
+modules/gateway/alembic/versions/119_metering_binding_fence.py	119_metering_binding_fence	"""118_merge_metering_onboarding"""	null
+modules/gateway/alembic/versions/120_merge_metering_initiatives.py	120_merge_metering_initiatives	"[""119_metering_binding_fence"", ""116_catalog_initiatives""]"	null
+modules/gateway/alembic/versions/121_merge_metering_sources.py	121_merge_metering_sources	"[""120_merge_metering_initiatives"", ""118_product_verification_ops""]"	null
+modules/gateway/alembic/versions/122_product_handoff_callbacks.py	122_product_handoff_callbacks	"""121_merge_metering_sources"""	null
+modules/gateway/alembic/versions/123_dev_box_release_pins.py	123_dev_box_release_pins	"""122_product_handoff_callbacks"""	null
+modules/gateway/alembic/versions/124_flow_product_repo.py	124_flow_product_repo	"""123_dev_box_release_pins"""	null
+modules/gateway/alembic/versions/125_flow_planning_references.py	125_flow_planning_references	"""124_flow_product_repo"""	null
+modules/gateway/alembic/versions/126_tracker_publication_outbox.py	126_tracker_publication_outbox	"""125_flow_planning_references"""	null
+modules/gateway/alembic/versions/127_authoring_assignment.py	127_authoring_assignment	"""126_tracker_publication_outbox"""	null
+modules/gateway/alembic/versions/128_atlassian_setup_recovery.py	128_atlassian_setup_recovery	"""127_authoring_assignment"""	null
+modules/gateway/alembic/versions/128_native_epic_issue_links.py	128_native_epic_issue_links	"""127_authoring_assignment"""	null
+modules/gateway/alembic/versions/129_merge_native_epic_atlassian.py	129_merge_native_epic_atlassian	"[""128_native_epic_issue_links"", ""128_atlassian_setup_recovery""]"	null
+modules/gateway/alembic/versions/130_shared_publication_intent.py	130_shared_publication_intent	"""129_merge_native_epic_atlassian"""	null
+modules/gateway/alembic/versions/131_legacy_binding_migration.py	131_legacy_binding_migration	"""130_shared_publication_intent"""	null
+modules/gateway/alembic/versions/132_crew_conversations.py	132_crew_conversations	"""131_legacy_binding_migration"""	null
+modules/gateway/alembic/versions/132_dev_box_snapshot_time.py	132_dev_box_snapshot_time	"""131_legacy_binding_migration"""	null
+modules/gateway/alembic/versions/133_merge_dev_box_conversations.py	133_merge_dev_box_conversations	"[""132_crew_conversations"", ""132_dev_box_snapshot_time""]"	null
+modules/gateway/alembic/versions/134_atlassian_mcp_selected_site.py	134_atlassian_mcp_selected_site	"""133_merge_dev_box_conversations"""	null
+modules/gateway/alembic/versions/135_atlassian_mcp_completed_attempt.py	135_mcp_identity_completion	"""134_atlassian_mcp_selected_site"""	null
+modules/gateway/alembic/versions/136_tool_adapter_activation.py	136_tool_adapter_activation	"""135_mcp_identity_completion"""	null
+modules/gateway/alembic/versions/137_platform_admin_grants.py	137_platform_admin_grants	"""136_tool_adapter_activation"""	null
+modules/gateway/alembic/versions/137_credential_service_delegations.py	137_service_delegations	"""136_tool_adapter_activation"""	null
+modules/gateway/alembic/versions/138_product_source_snapshots.py	138_product_source_snapshots	"""137_service_delegations"""	null
+modules/gateway/alembic/versions/138_tool_adapter_transition.py	138_tool_adapter_transition	"""137_platform_admin_grants"""	null
+modules/gateway/alembic/versions/139_merge_admin_sources.py	139_merge_admin_sources	"[""137_platform_admin_grants"", ""138_product_source_snapshots""]"	null
+modules/gateway/alembic/versions/140_merge_adapter_sources.py	140_merge_adapter_sources	"[""139_merge_admin_sources"", ""138_tool_adapter_transition""]"	null
+modules/gateway/alembic/versions/141_normalize_profile_environments.py	141_normalize_environments	"""140_merge_adapter_sources"""	null
+modules/gateway/alembic/versions/142_conversation_identity.py	142_conversation_identity	"""141_normalize_environments"""	null
+modules/gateway/alembic/versions/143_flow_read_revisions.py	143_flow_read_revisions	"""142_conversation_identity"""	null
+modules/gateway/alembic/versions/144_request_logs.py	144_request_logs	"""143_flow_read_revisions"""	null
+modules/gateway/alembic/versions/145_conversation_list_indexes.py	145_conversation_list_indexes	"""144_request_logs"""	null

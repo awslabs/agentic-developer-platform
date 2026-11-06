@@ -1,0 +1,11 @@
+[
+  {"type": "message_start", "message": {"id": "upstream-id", "model": "upstream-model", "role": "assistant", "content": [], "usage": {"input_tokens": 87}}},
+  {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "tool_123", "name": "add", "input": {}}},
+  {"type": "ping"},
+  {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"a\":2,"}},
+  {"type": "extension_notice", "value": {"signature": "opaque"}},
+  {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "\"b\":3}"}},
+  {"type": "content_block_stop", "index": 0},
+  {"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": null}, "usage": {"output_tokens": 12}},
+  {"type": "message_stop"}
+]

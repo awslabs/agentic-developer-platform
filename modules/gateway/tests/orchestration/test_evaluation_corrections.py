@@ -13,7 +13,9 @@ from src.orchestration.evaluation_correction_state import CORRECTION_KIND, child
 from src.orchestration.evaluation_corrections import EvaluationCorrections
 from src.orchestration.evaluation_issue_provider import CorrectionIssue
 from src.orchestration.execution_policy import Action
-from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationAction, OrchestrationNode
+from src.orchestration.execution_runner import ObservationKind
+from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationAction, OrchestrationFlow, OrchestrationNode
+from src.orchestration.review_cycle import CycleBlockedError
 from tests.orchestration.test_evaluation_controller import cycle, deployment, evaluation, merge, pg_server, pg_url, runtime, store, tick  # noqa: F401
 
 pytestmark = pytest.mark.parametrize("cycle", [{"delivery": True}], indirect=True)
@@ -77,20 +79,86 @@ async def test_one_issue_and_child_survive_lost_creation_response(correction, lo
         node = await db.get(OrchestrationNode, child_id(action.operation_key))
         assert node is not None and node.kind == "story" and node.state == "ready" and node.issue_ref == "71"
         assert (await correction_link(db, node)).id == action.id
+        from src.orchestration.evaluation_correction_state import link_id, source_authorization_digest
+        from src.orchestration.models import OrchestrationDecision
+
+        source = action.detail["source_authorization"]
+        assert source["node_id"] == ctx.node.id and source["flow_id"] == ctx.flow.id
+        assert source["repository"] == ctx.binding.repo and source["provider_repository_id"] == ctx.binding.provider_repository_id
+        assert source["binding_id"] == ctx.binding.id and source["accepted_scope"] == ctx.binding.accepted_scope
+        assert source["product_id"] == ctx.flow.product_id
+        digest = source_authorization_digest(source)
+        assert action.detail["source_authorization_digest"] == digest
+        link = await db.get(OrchestrationDecision, link_id(node.id))
+        assert json.loads(link.reason)["source_authorization_digest"] == digest
         assert (await db.get(OrchestrationNode, ctx.node.id)).state == "passed"
         assert (await db.get(OrchestrationNode, ctx.eval_id)).state == "running"
     await tick(ctx)
     ctx.issue_provider.create.assert_awaited_once()
 
 
+async def test_product_correction_observation_never_posts_missing_native_parent(correction, monkeypatch):
+    ctx = correction
+    ctx.issue = CorrectionIssue(
+        71, "I_correction_71", ctx.binding.provider_repository_id, "open", f"https://github.com/{ctx.binding.repo}/issues/71", "fixture"
+    )
+    ctx.issue_provider.confirm_native_parent = AsyncMock(side_effect=CycleBlockedError("evaluation_correction_link_unconfirmed"))
+    ctx.issue_provider.read_native_parent = AsyncMock(return_value=False)
+    async with ctx.factory() as db:
+        flow = await db.get(OrchestrationFlow, ctx.flow.id)
+        flow.product_id = "fixture-product"
+        await db.commit()
+
+    async def snapshot(_context):
+        return (
+            {
+                "source_authorization": {"product_id": "fixture-product"},
+                "epic_ref": "E1",
+                "content": {"title": "fixture", "body": "fixture"},
+                "since": datetime.now(UTC).isoformat(),
+            },
+            ctx.binding,
+            None,
+        )
+
+    monkeypatch.setattr(ctx.corrections, "snapshot", snapshot)
+    monkeypatch.setattr(
+        "src.orchestration.tracker_projection.resolve_parent_reference",
+        AsyncMock(return_value=SimpleNamespace(full_name="org/planning", repository_id=124, installation_id=42, issue_number=4, issue_id=904)),
+    )
+    context = SimpleNamespace(identity=SimpleNamespace(org_id=ctx.flow.org_id), execution=SimpleNamespace(flow_id=ctx.flow.id))
+    observed = await ctx.corrections.observe(context)
+    assert observed.kind is ObservationKind.READY and observed.stage == "correction_create"
+    ctx.issue_provider.read_native_parent.assert_awaited_once()
+    ctx.issue_provider.confirm_native_parent.assert_not_awaited()
+    ctx.issue_provider.create.assert_not_awaited()
+    async with ctx.factory() as db:
+        assert await db.get(OrchestrationNode, child_id("fixture")) is None
+
+
 async def dispatch_correction(ctx, monkeypatch):
     from src.orchestration import policy_admission
     from src.orchestration.dispatch_pass import prepare_pending, run_dispatch_pass
+    from src.orchestration.repository_binding import VerifiedRepository
 
     for name, value in [("resolve_root_user_entity_id", "human"), ("resolve_user_entity_id", "sub")]:
         monkeypatch.setattr("src.shared.identity.resolver." + name, AsyncMock(return_value=value))
     monkeypatch.setattr("src.orchestration.pr_bindings.resolve_installation_id", AsyncMock(return_value=42))
     monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=123))
+
+    async def verified_source(_session, **kwargs):
+        return VerifiedRepository(
+            "github",
+            kwargs["repository_id"],
+            kwargs["name"],
+            kwargs["installation_id"],
+            kwargs["name"],
+            kwargs["issue"],
+            kwargs["operation"],
+            issue_id=kwargs["issue"],
+        )
+
+    monkeypatch.setattr("src.orchestration.repository_binding.resolve_story_repository", verified_source)
     monkeypatch.setattr("src.orchestration.evaluation_issue_provider.EvaluationIssueProvider.find", ctx.issue_provider.find)
     monkeypatch.setattr("src.agentauth.model_policy.ensure_snapshot_report_only", AsyncMock(return_value={"status": "available"}))
 
@@ -115,7 +183,10 @@ async def dispatch_correction(ctx, monkeypatch):
     async def costs(*args, **kwargs):
         from src.orchestration.cost import CostStatus
 
-        return [SimpleNamespace(address="cycle/E1/W1/N1", status=CostStatus.UNKNOWN if ctx.spend is None else CostStatus.KNOWN, amount_usd=ctx.spend)]
+        return [
+            SimpleNamespace(address=address, status=CostStatus.UNKNOWN if ctx.spend is None else CostStatus.KNOWN, amount_usd=ctx.spend)
+            for address in ("cycle/E1/W1/N1", *getattr(ctx, "extra_cost_addresses", ()))
+        ]
 
     monkeypatch.setattr(policy_admission, "resolve_authorization_context", authorization)
     monkeypatch.setattr(policy_admission, "get_cost_by_address", costs)
@@ -387,3 +458,75 @@ async def test_timeout_before_creation_can_resume_with_the_same_operation(correc
         actions = list((await db.scalars(select(OrchestrationAction).where(OrchestrationAction.kind == CORRECTION_KIND))).all())
         assert len(actions) == 1 and actions[0].status == "succeeded"
         assert await db.get(OrchestrationNode, child_id(actions[0].operation_key)) is not None
+
+
+@pytest.mark.parametrize("fault", ["wrong-repo", "removed-snapshot", "changed-digest", "product-moved"])
+async def test_correction_source_authorization_rejects_tampered_link(correction, fault):
+    from src.orchestration.evaluation_correction_state import validate_correction
+    from src.orchestration.models import OrchestrationFlow
+    from src.orchestration.review_cycle import CycleBlockedError
+
+    ctx = correction
+    await tick(ctx)
+    await tick(ctx)
+    async with ctx.factory() as db:
+        action = await db.scalar(select(OrchestrationAction).where(OrchestrationAction.kind == CORRECTION_KIND))
+        child = await db.get(OrchestrationNode, child_id(action.operation_key))
+        if fault == "wrong-repo":
+            changed = {**action.detail, "source_authorization": {**action.detail["source_authorization"], "repository": "fixture/unrelated"}}
+            action.detail = changed
+        elif fault == "removed-snapshot":
+            action.detail = {key: value for key, value in action.detail.items() if key != "source_authorization"}
+        elif fault == "changed-digest":
+            action.detail = {**action.detail, "source_authorization_digest": "0" * 64}
+        else:
+            flow = await db.get(OrchestrationFlow, child.flow_id)
+            flow.product_id = "00000000-0000-4000-8000-000000000002"
+        await db.flush()
+        with pytest.raises(CycleBlockedError, match="evaluation_correction_affected_source_changed"):
+            await validate_correction(db, child)
+
+
+def test_correction_affected_source_rejects_ambiguous_attribution_without_harness_fallback(cycle):  # noqa: F811
+    from src.orchestration.evaluation_correction_state import accepted_source_authorization
+    from src.orchestration.review_cycle import CycleBlockedError
+
+    flow = SimpleNamespace(id="flow-fixture", org_id="org-fixture", slug="cycle", product_id="product-fixture")
+    source = SimpleNamespace(
+        id="story-b",
+        org_id=flow.org_id,
+        flow_id=flow.id,
+        epic_ref="E1",
+        wave_ref="W1",
+        node_ref="B",
+        kind="story",
+        title="Client source",
+        issue_ref="18",
+        repository_identity="fixture/source-b",
+        provider_repository_id=202,
+    )
+    binding = SimpleNamespace(
+        id="binding-b",
+        org_id=flow.org_id,
+        node_id=source.id,
+        repo=source.repository_identity,
+        provider_repository_id=202,
+        installation_id=42,
+        revision=1,
+        accepted_scope=json.dumps({"node": {"kind": source.kind, "title": source.title, "issue_ref": source.issue_ref}}),
+    )
+    plan = SimpleNamespace(
+        version=2,
+        plan_hash="a" * 64,
+        plan_document={
+            "product_id": flow.product_id,
+            "nodes": [{"address": "cycle/E1/W1/B", "kind": "story", "title": source.title, "issue_ref": source.issue_ref}],
+        },
+    )
+    frozen = accepted_source_authorization(sources=[(source, binding)], flow=flow, plan=plan)
+    assert (frozen["node_id"], frozen["repository"], frozen["product_id"]) == (source.id, binding.repo, flow.product_id)
+    harness = SimpleNamespace(**{**vars(source), "id": "harness", "kind": "eval", "repository_identity": "fixture/harness"})
+    with pytest.raises(CycleBlockedError, match="evaluation_correction_affected_source_ambiguous"):
+        accepted_source_authorization(sources=[(source, binding), (harness, binding)], flow=flow, plan=plan)
+    with pytest.raises(CycleBlockedError, match="evaluation_correction_affected_source_ambiguous"):
+        accepted_source_authorization(sources=[], flow=flow, plan=plan)

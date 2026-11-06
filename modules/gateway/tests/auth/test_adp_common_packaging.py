@@ -39,6 +39,18 @@ def _pyproject() -> dict:
     return tomllib.loads((_LIB_ROOT / "pyproject.toml").read_text())
 
 
+@pytest.mark.parametrize("layout", ["checkout", "/app/tests/auth/conftest.py", "/tests/auth/conftest.py"])
+def test_auth_fixtures_only_append_libraries_present_in_the_layout(monkeypatch, layout):
+    fixture = Path(__file__).with_name("conftest.py")
+    optional = {str(_LIB_SRC), str(_REPO_ROOT / "modules/domain-apps/superplane/auth")}
+    original = [entry for entry in sys.path if entry not in optional]
+    monkeypatch.setattr(sys, "path", original.copy())
+    location = str(fixture) if layout == "checkout" else layout
+    exec(compile(fixture.read_text(), location, "exec"), {"__file__": location})
+    assert sys.path[: len(original)] == original
+    assert set(sys.path[len(original) :]) == (optional if layout == "checkout" else set())
+
+
 # --- the collision is real, not hypothetical --------------------------------
 
 
@@ -138,26 +150,10 @@ def test_the_pre_existing_logging_module_moved_with_the_package():
     assert "def configure_logging(" in moved.read_text()
 
 
-def test_the_logging_module_needs_a_dependency_the_gateway_does_not_install():
-    """Records why the test above does not simply import it.
-
-    ``logging.py`` imports ``structlog``, which is declared by this library but is
-    NOT in the gateway's dependencies, so importing it here raises
-    ``ModuleNotFoundError``. That is a property of the library's own dependency
-    set, not of the rename.
-
-    It also explains a constraint on the policy module: since the library is used
-    by consumers with different dependency sets, ``domain_auth`` is deliberately
-    standard-library-only (asserted below), so consuming the policy never drags in
-    structlog or boto3.
-    """
+def test_the_library_declares_its_logging_dependency():
+    """Gateway now installs the complete library for durable L5 consumers."""
     declared = _pyproject()["project"]["dependencies"]
     assert any(dep.startswith("structlog") for dep in declared)
-
-    with pytest.raises(ModuleNotFoundError) as failure:
-        importlib.import_module("adp_platform_common.logging")
-
-    assert "structlog" in str(failure.value)
 
 
 def test_the_policy_module_imports_only_the_standard_library():

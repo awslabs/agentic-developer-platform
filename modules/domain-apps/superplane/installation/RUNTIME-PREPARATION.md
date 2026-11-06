@@ -20,9 +20,29 @@ The composer outputs `terraform_variables`, a paid-worker configuration accepted
 
 ## Plan, apply and recovery
 
+The pinned AWS provider computes some empty IAM/SQS attributes during creation.
+The Terraform root declares empty managed-policy attachments and queue/redrive
+policies explicitly. The plan inspector accepts those unknown CREATE values only
+when the saved configuration contains the matching literal empty value and no
+prior resource exists. Role-level inline policies must be absent from the saved
+configuration; the two separately inspected inline-policy resources remain their
+only owners. Existing-state unknowns, referenced policy values, nonempty values,
+changed trust, unknown policy bodies and additional resources still refuse. This
+is provider CREATE compatibility, not permission to accept unresolved authority.
+
+Before planning under the dedicated installer role, select
+`native_runtime_state_access: true` in its app-owned access configuration and
+apply that separately reviewed access plan. The maintained
+[`plan-installer-access.py`](../scripts/plan-installer-access.py) supports fresh
+installation and `--update` against verified retained state. Its Terraform owner
+generates the exact runtime state/lock grants from the installation target;
+operators do not need to assemble IAM statements manually. See
+[installer access](../infra/installer-access/README.md#native-runtime-state-access).
+This option defaults off and does not authorize runtime or workspace execution.
+
 The Python entry point for the foreground owner is `installation.runtime_preparation.prepare(request, env, lock, operator, inspector, commands, directory, *, approved_plan_digest=None, approval_check=None)`. The caller supplies the selected installer identity and release lock, its existing authenticated AWS inspector and checked command adapter, and an absolute private directory. `prepare` copies this root's pinned Terraform sources into that directory; uses the selected account's existing `adp-terraform-state-<account>` bucket, **separate** `<environment>/modules/superplane-domain-runtime/terraform.tfstate` key and existing `adp-terraform-locks` table; and saves a mode-0600 receipt and Terraform plan. A first call without approval returns `status: planned` with semantic `plan_sha256`, exact saved-file `binary_plan_sha256`, a source digest and the exact named resources; it creates nothing. The receipt contains references and digests, not secret values. Preserve the receipt, plan and access-controlled working directory until completion/reconciliation.
 
-To apply, the selected operator must obtain independent review of **that saved plan** and pass its exact `approved_plan_digest`. The foreground must provide an authenticated, separately trusted `approval_check.verify_plan(plan_sha256=..., installation_id=..., review_id=...)` adapter returning exactly `approved: true`, the matching digest/installation/review identifiers and a distinct nonempty `approver` identity. The `review_id` in configuration, a locally written approval dict or possession of the plan file is not this authority. Without that adapter, apply refuses. The maintained CLI supplies the live GitHub plan-review adapter: a separate current repository maintainer must approve the exact committed plan manifest at the current PR head. It does not manufacture an approval or grant a new reviewer permission; local review references and evidence files remain non-authoritative.
+To apply, the selected operator must obtain authenticated approval of **that saved plan** and pass its exact `approved_plan_digest`. The foreground must provide an authenticated, separately trusted `approval_check.verify_plan(plan_sha256=..., installation_id=..., review_id=...)` adapter returning exactly `approved: true`, the matching digest/installation/review identifiers and a nonempty authenticated `approver` identity (the AWS execution role alone is not approval). The `review_id` in configuration, a locally written approval dict or possession of the plan file is not this authority. Without that adapter, apply refuses. The maintained CLI supplies the live GitHub plan-review adapter: a current repository maintainer must approve the exact committed plan manifest at the current PR head or merge the plan PR into `main`. The maintainer may also be the PR author; the merge path supports that normal GitHub workflow and checks the exact manifest at both head and merge commit. It does not manufacture an approval or grant a new reviewer permission; local review references and evidence files remain non-authoritative.
 
 The foreground must bind both command adapters to the selected authorized connection. Before any Terraform command (including backend initialization and reconciliation), preparation uses the Terraform command adapter to verify STS account, role session and immutable RoleId against IAM `GetRole`. It repeats verification after approval, before recording an apply attempt. A read-only inspector's successful check alone does not authorize the Terraform adapter. Terraform also checks the selected role's exact ARN and unique ID. This requires narrowly scoped `iam:GetRole` on the selected operator role, not broader installer privileges. Existing saved receipts from before this identity binding must not be reused; an operator must reconcile any prior attempt and obtain a fresh reviewed plan.
 

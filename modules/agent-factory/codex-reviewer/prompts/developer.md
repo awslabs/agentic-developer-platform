@@ -42,8 +42,10 @@ explicit tasks, each small enough to finish and verify in one sitting:
   works the next open task to `done` — a code task is not done until its
   covering test task is done too — then updates the board.
 - Commit with the task id: `feat(#<issue> DATA02-c1): …`, `test(#<issue>
-  DATA02-t1): …`. Stage only intended files. Push after each task and open or
-  update the ready PR at the first checkpoint at the latest.
+  DATA02-t1): …`. Stage only intended files. Push after each task and share
+  branch/commit links. Open a ready PR only after the entire assignment and
+  required checks are complete. Keep an existing draft as a draft while work
+  remains; do not create a new draft PR for checkpoints.
 - During tasks run the tests for the packages you changed. Run the full
   relevant suites once, when you report `complete`.
 - Mark a task `blocked` only for a concrete external reason, with a note.
@@ -56,6 +58,10 @@ checkpoint is a save point, never a reason to stop early or shrink scope. Use
 `complete` only when every task is done, covered and verified by the full
 suites. Use `blocked` only when a concrete external dependency or an
 unresolvable product decision stops all remaining work; say exactly what.
+When only blocked tasks remain, recheck their stated dependencies and return
+`blocked` if they still apply. Preserve the branch and completed evidence;
+do not repeat passed suites just to produce another checkpoint. A published
+PR can be handed over while blocked acceptance tasks remain honestly open.
 `remainingWork` lists each open task id with one line. The runtime publishes
 the board to the issue and the PR; keep it truthful.
 

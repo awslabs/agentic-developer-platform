@@ -11,6 +11,7 @@ import {
   PROBE_PROMPT_SHA256,
   PROBE_SDK_DATE,
   denyProbeToolUse,
+  inheritedProbeEnvironment,
   probeSdkEnvironment,
   probeSdkOptions,
 } from './request-shape';
@@ -34,7 +35,7 @@ describe('Claude invocability probe', () => {
   it('pins a generated digest for every Claude catalogue model', () => {
     expect(manifest.probe_prompt_sha256).toBe(PROBE_PROMPT_SHA256);
     expect(manifest.models['global.anthropic.claude-sonnet-5']).toBe(
-      '800704b1c354ea9933c789b2fc74c118e4747bdaedd6e22ddd7f90a8a20bd418',
+      '0868d9b173bfcf4d968a7f26ee90eef33662bf2ae9ba5e585aaa9727024e03be',
     );
     for (const [model, digest] of Object.entries(manifest.models)) {
       expect(digest).toMatch(/^[0-9a-f]{64}$/);
@@ -68,6 +69,32 @@ describe('Claude invocability probe', () => {
     expect(env.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS).toBe('1');
     expect(env.CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS).toBe('1');
     expect(env.CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT).toBe('1');
+  });
+
+  it('drops Claude Code session settings inherited from the generating shell', () => {
+    const env = { ...process.env };
+    expect(inheritedProbeEnvironment({
+      PATH: '/usr/bin', HOME: '/tmp', SHELL: '/bin/bash', CI: 'true', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1', CLAUDE_CODE_SESSION_ID: 'session', CLAUDE_PID: '1',
+      // Makes the CLI classify itself as "github-action" and append the
+      // AskUserQuestion preview description: a different tool declaration.
+      GITHUB_ACTIONS: 'true',
+    })).toEqual({ PATH: '/usr/bin', HOME: '/tmp', SHELL: '/bin/bash', CI: 'true' });
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
+    process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH = '1';
+    try {
+      const probeEnv = probeSdkEnvironment({
+        baseUrl: 'http://127.0.0.1:1234', region: 'us-east-1',
+        accessKeyId: 'LOCAL', secretAccessKey: 'LOCAL', sessionToken: 'LOCAL',
+      });
+      expect(probeEnv.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+      expect(probeEnv.CLAUDE_CODE_SKIP_BEDROCK_AUTH).toBeUndefined();
+      expect(probeEnv.CLAUDE_CODE_USE_BEDROCK).toBe('1');
+      expect(probeEnv.ANTHROPIC_BEDROCK_BASE_URL).toBe('http://127.0.0.1:1234');
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
+      Object.assign(process.env, env);
+    }
   });
 
   it('keeps tool declarations but denies every tool_use before execution', async () => {

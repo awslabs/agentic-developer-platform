@@ -17,13 +17,21 @@ spec:
   validations:
     - expression: >-
         request.operation == 'DELETE' ?
-          (oldObject != null && oldObject.spec.serviceAccountName == 'adp-chat-sandbox' &&
-           has(oldObject.metadata.labels) && oldObject.metadata.labels['adp.io/chat-sandbox'] == 'true' &&
-           oldObject.metadata.name.matches('^chat-turn-[a-f0-9]{12}-[a-z0-9]{1,20}$')) :
-          (object != null && object.spec.serviceAccountName == 'adp-chat-sandbox' &&
-           has(object.metadata.labels) && object.metadata.labels['adp.io/chat-sandbox'] == 'true' &&
+          (oldObject != null && ((oldObject.spec.serviceAccountName == 'adp-chat-sandbox' && has(oldObject.metadata.labels) && oldObject.metadata.labels['adp.io/chat-sandbox'] == 'true') ||
+           (oldObject.spec.serviceAccountName == 'adp-crew-pod' && has(oldObject.metadata.labels) && oldObject.metadata.labels['adp.io/crew-pod'] == 'true') ||
+           (oldObject.spec.serviceAccountName == 'adp-crew-checkpoint-helper' && has(oldObject.metadata.labels) && oldObject.metadata.labels['adp.io/crew-checkpoint-helper'] == 'true') ||
+           (oldObject.spec.serviceAccountName == 'adp-crew-restore-helper' && has(oldObject.metadata.labels) && oldObject.metadata.labels['adp.io/crew-restore-helper'] == 'true')) &&
+           (oldObject.metadata.name.matches('^chat-turn-[a-f0-9]{12}-[a-z0-9]{1,20}$') ||
+           oldObject.metadata.name.matches('^chat-checkpoint-[a-f0-9]{12}-[a-z0-9]{1,20}$') ||
+           oldObject.metadata.name.matches('^chat-restore-[a-f0-9]{12}-[a-z0-9]{1,20}$'))) :
+          (object != null && ((object.spec.serviceAccountName == 'adp-chat-sandbox' && has(object.metadata.labels) && object.metadata.labels['adp.io/chat-sandbox'] == 'true') ||
+           (object.spec.serviceAccountName == 'adp-crew-pod' && has(object.metadata.labels) && object.metadata.labels['adp.io/crew-pod'] == 'true') ||
+           (object.spec.serviceAccountName == 'adp-crew-checkpoint-helper' && has(object.metadata.labels) && object.metadata.labels['adp.io/crew-checkpoint-helper'] == 'true') ||
+           (object.spec.serviceAccountName == 'adp-crew-restore-helper' && has(object.metadata.labels) && object.metadata.labels['adp.io/crew-restore-helper'] == 'true')) &&
            has(object.metadata.generateName) &&
-           object.metadata.generateName.matches('^chat-turn-[a-f0-9]{12}-$'))
+           (object.metadata.generateName.matches('^chat-turn-[a-f0-9]{12}-$') ||
+           object.metadata.generateName.matches('^chat-checkpoint-[a-f0-9]{12}-$') ||
+           object.metadata.generateName.matches('^chat-restore-[a-f0-9]{12}-$')))
       message: Chat supervisor can create, update or delete only restricted sandbox pods
 ---
 apiVersion: admissionregistration.k8s.io/v1

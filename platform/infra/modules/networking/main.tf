@@ -43,9 +43,18 @@ resource "aws_subnet" "public" {
 resource "aws_subnet" "private" {
   count = var.az_count
 
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
+  vpc_id = aws_vpc.main.id
+  # /20 per AZ for the default /16 VPC, leaving the public subnet ranges clear.
+  # Existing /24 installations keep their immutable CIDRs through the lifecycle
+  # rule below; additional capacity uses separately provisioned private subnets.
+  cidr_block        = length(var.private_subnet_cidrs) > 0 ? var.private_subnet_cidrs[count.index] : cidrsubnet(var.vpc_cidr, 4, count.index + 4)
   availability_zone = data.aws_availability_zones.available.names[count.index]
+
+  lifecycle {
+    # Changing a subnet CIDR requires replacement. Default sizing improvements
+    # must never destroy an existing subnet and its running workloads.
+    ignore_changes = [cidr_block]
+  }
 
   tags = merge(var.common_tags, {
     Name                              = "${var.name_prefix}-private-${substr(data.aws_availability_zones.available.names[count.index], -1, 1)}"

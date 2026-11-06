@@ -1,0 +1,252 @@
+{
+  "status": "draft_staged_plan_not_registered_not_accepted_not_started",
+  "checked_at": "2026-10-21T21:18:38.933477+00:00",
+  "source_revision": "44b8e127deb53d5e014030994b1780f490f747db",
+  "design_revision": "df61f74723fb2d78107166fbf8f5793d463b5445",
+  "authored_proposal_sha256": "56c6bc84bc556dd953a7d4d00b8779f4beca1776067f92d1697cf35440f37d97",
+  "local_shared_validator": {
+    "passed": true,
+    "violations": []
+  },
+  "registration_transform": {
+    "passed": true,
+    "nodes": 27,
+    "edges": 93,
+    "inserted_gates": 1
+  },
+  "backlog_coverage": {
+    "unique_child_issues": 18,
+    "original_children_retained": 14,
+    "new_operational_children": 4,
+    "all_medium": true,
+    "original_native_dependencies_preserved": 18,
+    "native_dependencies": 36,
+    "child_ACs": 72,
+    "child_SCNs": 72,
+    "epic_ECs": 6
+  },
+  "authored_graph": {
+    "nodes": 26,
+    "edges": 92,
+    "engine_waves": 9,
+    "visible_baseline_checkpoints": 1,
+    "outcome_stages": 4,
+    "story_nodes": 17,
+    "manual_operator_issue_on_human_eval": 8516,
+    "machine_evaluations": 4,
+    "human_evaluations": 5
+  },
+  "gateway_preview": {
+    "http_status": 200,
+    "would_register": true,
+    "wrote_nothing": true,
+    "violations": [],
+    "nodes": 27,
+    "edges": 93,
+    "execution_is_unbounded": false,
+    "tenant_resolution": "Example tenant replaced only in private pure preview; no state persisted."
+  },
+  "repository_verifier_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986",
+  "github_identities": {
+    "repository": "aws-e/adp",
+    "repository_id": 1186991269,
+    "github_actions_app_id": 15368,
+    "workflow_ids": {
+      ".github/workflows/gateway-ci.yml": 248828769,
+      ".github/workflows/orchestration-harness-ci.yml": 359123346
+    }
+  },
+  "limitations": [
+    "Schema/graph preview is not execution readiness, deployment evidence or plan approval.",
+    "Stage 0 is an explicit manual operator task linked to issue 8516 and a human evidence evaluation, not an invented human/fixture-deployment executor.",
+    "Actual operations target/connection/credential, release, workflow and runtime receipt bindings must be resolved before activation.",
+    "Gateway runtime receipt alone does not prove frontend, CLI, fixture API/client or whole-stage acceptance.",
+    "The implementing flow remains on the existing legacy contract; Product-bound fixture flows require the new code and separately accepted fixture authority.",
+    "This dependency review changes only the draft plan and story contracts; no flow registration, worker dispatch, deployment or measured speedup is claimed.",
+    "This dependency review changes only the draft plan and story contracts; no flow registration, worker dispatch, deployment or measured speedup is claimed."
+  ],
+  "document_checks": {
+    "local_links": 6,
+    "public_files_checked": 7,
+    "public_findings": 0
+  },
+  "test_data_setup": {
+    "status": "created_and_read_back",
+    "name": "ADP Flow Qualification Test - Epic 8394",
+    "create_http_status": 201,
+    "profile_read_http_status": 200,
+    "list_read_confirmed": true,
+    "runtime_source_revision": "6fe720d29038f655d337578017e37a516fef623d",
+    "runtime_replicas_verified": 12,
+    "fix_pr": "https://github.com/aws-e/adp/pull/8470",
+    "scope": "Product test data only; flow Product binding remains an implementation deliverable. Private setup receipt holds runtime identifiers.",
+    "deployment_conclusion": "success",
+    "deployment_attempt": 2,
+    "deployment_run": "https://github.com/aws-e/adp/actions/runs/39500626138"
+  },
+  "repository_fixture_setup": {
+    "checked_at": "2026-10-21T10:02:00.394491+00:00",
+    "status": "repositories_ci_native_links_and_adp_access_verified",
+    "repositories": {
+      "planning": {
+        "repository": "aws-e/adp-qualification-planning",
+        "url": "https://github.com/aws-e/adp-qualification-planning",
+        "private": true,
+        "baseline_commit": "ab54a32fed9abe66286fcc8f0bbadb62b72b42ab",
+        "ci": null
+      },
+      "api": {
+        "repository": "aws-e/adp-qualification-api",
+        "url": "https://github.com/aws-e/adp-qualification-api",
+        "private": true,
+        "baseline_commit": "e6a861c6474871fa971bb7a9acd74ca1cb95be38",
+        "ci": {
+          "run_id": 39580924749,
+          "url": "https://github.com/aws-e/adp-qualification-api/actions/runs/39580924749",
+          "head_sha": "e6a861c6474871fa971bb7a9acd74ca1cb95be38",
+          "conclusion": "success"
+        }
+      },
+      "client": {
+        "repository": "aws-e/adp-qualification-client",
+        "url": "https://github.com/aws-e/adp-qualification-client",
+        "private": true,
+        "baseline_commit": "7915d1bb9aa5ddd63ff5936272700cb962ddfc5c",
+        "ci": {
+          "run_id": 39580934408,
+          "url": "https://github.com/aws-e/adp-qualification-client/actions/runs/39580934408",
+          "head_sha": "7915d1bb9aa5ddd63ff5936272700cb962ddfc5c",
+          "conclusion": "success"
+        }
+      }
+    },
+    "sample_issues": {
+      "planning": "https://github.com/aws-e/adp-qualification-planning/issues/1",
+      "api": "https://github.com/aws-e/adp-qualification-api/issues/1",
+      "client": "https://github.com/aws-e/adp-qualification-client/issues/1"
+    },
+    "native_child_links_verified": 2,
+    "native_dependency_verified": true,
+    "local_cross_repository_integration": "passed",
+    "dev_deployment": "not_performed",
+    "adp_installation_access": "verified for all three repositories; existing tenant installation reused",
+    "flow_started": false,
+    "agent_integration": "All three developer workers started and executed smoke checks; developer completion requires a PR, so client worker marked failed despite passing tests."
+  },
+  "agent_smoke": {
+    "checked_at": "2026-10-21T13:58:17.572307+00:00",
+    "all_agents_online": true,
+    "all_workers_exited": true,
+    "default_branches_unchanged": true,
+    "incidental_prs_closed_unmerged": 2,
+    "flow_started": false,
+    "issues": {
+      "planning": {
+        "url": "https://github.com/aws-e/adp-qualification-planning/issues/2",
+        "worker_status": "complete",
+        "connectivity": "passed"
+      },
+      "api": {
+        "url": "https://github.com/aws-e/adp-qualification-api/issues/2",
+        "worker_status": "complete",
+        "connectivity": "passed"
+      },
+      "client": {
+        "url": "https://github.com/aws-e/adp-qualification-client/issues/2",
+        "worker_status": "failed",
+        "connectivity": "passed"
+      }
+    }
+  },
+  "parallelism_review": {
+    "passed": true,
+    "document": "parallelism-review.md",
+    "before_stage_build_widths": [
+      2,
+      3,
+      1,
+      1
+    ],
+    "stage_build_widths": [
+      2,
+      3,
+      1,
+      2
+    ],
+    "maximum_independent_stories": 3,
+    "proposed_concurrent_action_limit": 4,
+    "human_outcome_gates_preserved": 5,
+    "node_contracts_unchanged": true,
+    "removed_native_dependency": [
+      8406,
+      8407
+    ],
+    "added_native_dependencies": [
+      [
+        8519,
+        8407
+      ],
+      [
+        8406,
+        8408
+      ]
+    ],
+    "issue_format_checks": 4
+  },
+  "github_publication_history": [
+    {
+      "checked_at": "2026-10-21T19:17:37.077388+00:00",
+      "design_pr": "https://github.com/aws-e/adp/pull/8434",
+      "plan_revision": "2048d0033e7dc0adf076d4a0c4e42051e06a8faa",
+      "epic": 8394,
+      "exact_issue_body_matches": 19,
+      "original_child_issues_updated": 14,
+      "new_child_issues": [
+        8516,
+        8517,
+        8518,
+        8519
+      ],
+      "native_children": 18,
+      "native_dependencies": 35,
+      "original_dependencies_preserved": 19,
+      "added_dependencies": 16,
+      "maximum_body_bytes": 7948,
+      "states_labels_assignees_milestones_preserved": true,
+      "status": "published_draft_not_started"
+    }
+  ],
+  "github_publication": {
+    "checked_at": "2026-10-21T21:20:16.346561+00:00",
+    "design_pr": "https://github.com/aws-e/adp/pull/8434",
+    "plan_revision": "5ec6cb199221023ac426e9ea0be06f4f6efc3cf1",
+    "epic": 8394,
+    "exact_issue_body_matches": 19,
+    "updated_issues": [
+      8394,
+      8406,
+      8407,
+      8408
+    ],
+    "unchanged_issue_bodies": 15,
+    "native_children": 18,
+    "native_dependencies": 36,
+    "removed_dependency": [
+      8406,
+      8407
+    ],
+    "added_dependencies": [
+      [
+        8519,
+        8407
+      ],
+      [
+        8406,
+        8408
+      ]
+    ],
+    "maximum_body_bytes": 7980,
+    "states_labels_assignees_milestones_preserved": true,
+    "status": "published_draft_not_started"
+  }
+}

@@ -59,7 +59,9 @@ def setup(monkeypatch, row):
         request=SimpleNamespace(parameters=parameters),
         grant=SimpleNamespace(
             lease=SimpleNamespace(
-                org_id=row["org_id"], workspace_id=row["workspace_id"]
+                org_id=row["org_id"],
+                workspace_id=row["workspace_id"],
+                operation_id="apply-operation",
             )
         ),
     )
@@ -75,6 +77,9 @@ def setup(monkeypatch, row):
 
     class Shared:
         async def fetchrow(self, sql, operation_id):
+            if "harness_provider_retries" in sql:
+                assert operation_id == "apply-operation"
+                return None
             assert operation_id == row["source_operation_id"]
             return source
 
@@ -165,3 +170,55 @@ def test_initial_execution_has_only_the_exact_described_phase(monkeypatch):
     parameters["execution_steps"] = "[]"
     with pytest.raises(LifecycleRefused, match="initial lifecycle descriptors"):
         asyncio.run(runtime.validate_phase(operation, context))
+
+
+@pytest.mark.asyncio
+async def test_current_authority_deadline_cancels_preflight(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from workspace_provisioning import authority
+
+    real_timeout = asyncio.timeout
+    limits = []
+    cancelled = []
+
+    def short_timeout(seconds):
+        limits.append(seconds)
+        return real_timeout(0.01)
+
+    async def preflight(operation):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    lease = SimpleNamespace(
+        **{
+            name: name
+            for name in (
+                "operation_id",
+                "org_id",
+                "workspace_id",
+                "holder",
+                "attempt_id",
+                "fence_token",
+            )
+        }
+    )
+    operation = SimpleNamespace(
+        grant=SimpleNamespace(lease=lease),
+        job_id="job",
+        plan_digest="digest",
+        reservation_state="confirmed",
+        request=SimpleNamespace(action="inspect", parameters={}),
+    )
+    context = SimpleNamespace(
+        authority=SimpleNamespace(
+            resolve=AsyncMock(return_value=operation), preflight=preflight
+        )
+    )
+    monkeypatch.setattr(authority.asyncio, "timeout", short_timeout)
+    with pytest.raises(TimeoutError):
+        await authority.current_operation(operation, context)
+    assert limits == [30] and cancelled == [True]

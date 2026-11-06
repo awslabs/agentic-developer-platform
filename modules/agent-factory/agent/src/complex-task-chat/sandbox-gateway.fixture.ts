@@ -19,6 +19,12 @@ export const gatewayBinding = { clusterIP: '10.100.42.17',
   caConfigMap: `chat-sandbox-gateway-ca-${createHash('sha256').update(gatewayCaPem).digest('hex').slice(0, 16)}` };
 export const gatewayCa = { metadata: { name: gatewayBinding.caConfigMap, namespace: 'adp-gateway-agents' },
   immutable: true, data: { 'ca.crt': gatewayCaPem } };
+/** A created chat pod as the API server reports it once the sandbox container is Running. */
+export const runningSandboxPod = (name: string, uid: string) => ({
+  metadata: { name, uid, namespace: 'adp-gateway-agents' },
+  status: { phase: 'Running', podIP: '10.100.7.42',
+    containerStatuses: [{ name: 'chat-agent', state: { running: { startedAt: '2026-10-17T01:37:57Z' } } }] },
+});
 export const gatewayService = { metadata: { name: 'chat-sandbox-gateway', namespace: 'adp-gateway' },
   spec: { type: 'ClusterIP', clusterIP: gatewayBinding.clusterIP, clusterIPs: [gatewayBinding.clusterIP],
     selector: { 'app.kubernetes.io/name': 'chat-sandbox-gateway' },

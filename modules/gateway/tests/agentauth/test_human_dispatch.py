@@ -136,6 +136,48 @@ def test_actual_human_writer_bootstraps_and_ignores_advisory_parent(store):
     assert "credential" not in final
 
 
+def test_actual_human_pr_dispatch_authorizes_standalone_reviewer_identity(store):
+    """The real writer, bootstrap, grant and queue journal agree on this review."""
+    import json
+
+    from src.agentauth.human_review_identity import authorize_human_review, original_review_dispatch
+    from src.agentauth.task_delivery import TaskDelivery
+    from src.orchestration.execution_policy import Action
+
+    original = {
+        **envelope(),
+        "channel": "github",
+        "persona": "agent-codex-reviewer",
+        "actor": {"user_id": "human", "org_id": "tenant", "github_id": 123},
+        "intent": {"trigger": "mentioned", "persona": "agent-codex-reviewer"},
+        "source_ref": {"repo": "org/repo", "issue": 42, "installation_id": 456},
+        "payload": {
+            "sender": {"type": "User", "id": 123},
+            "comment": {"body": "@agent-codex-reviewer review this PR", "user": {"type": "User", "id": 123}},
+            "issue": {"number": 42, "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/42"}},
+        },
+    }
+    now = datetime.now(UTC)
+    final = webhook.provision_human_dispatch(envelope=original, event=event(), client=store.client, now=now)
+    pod = VerifiedPod("pod-uid", "worker", "adp-agents", "agent-scaledjob-sa", "10.1.2.3")
+    record = store.bind(invocation_id=final["message_id"], digest=envelope_digest(final), pod=pod, now=now)
+    TaskDelivery(store=store, sqs=None, queue_url="queue").save(
+        pod.uid,
+        {"invocation_id": record.invocation_id, "body": json.dumps(final), "envelope_digest": envelope_digest(final)},
+        None,
+    )
+    execution = store._read("TENANT#tenant", f"EXEC#{record.invocation_id}")
+    grant = store.live_grant(invocation_id=record.invocation_id, tenant_id="tenant", attempt=1, now=now)
+    dispatch = original_review_dispatch(store, pod_uid=pod.uid, invocation_id=record.invocation_id, execution=execution)
+
+    decision = authorize_human_review(execution=execution, grant=grant, dispatch=dispatch)
+
+    assert decision.permitted, decision
+    assert decision.action is Action.REVIEW
+    assert decision.permissions == {"contents": "read", "pull_requests": "write", "metadata": "read"}
+    assert decision.not_after == grant.expires_at
+
+
 def test_actual_human_writer_carries_a_model_directive_to_the_resolver(store):
     """PMM-07: a `/model` directive must survive the real Lambda writer.
 

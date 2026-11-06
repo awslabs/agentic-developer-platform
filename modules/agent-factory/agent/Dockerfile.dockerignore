@@ -11,5 +11,7 @@ agent/coverage/
 # Canonical issue-authoring contracts copied explicitly by the runtime stage.
 !rules/agents/
 !rules/agents/issue-authoring.md
+!rules/agents/issue-delivery-review.md
 !rules/templates/
 !rules/templates/developer-issue.md
+!rules/templates/epic-issue.md

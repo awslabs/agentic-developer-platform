@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "module": "devlake-connector-api",
+  "default_enabled": false,
+  "selection": "FEATURE_DEVLAKE_CONNECTORS_ENABLED=true",
+  "requires_insights": false,
+  "requires_dsn_at_startup": false,
+  "runtime_adapter_owner": "S10",
+  "inputs": ["ADP-supplied authorized discovery context"],
+  "outputs": ["versioned scoped discovery pages"]
+}

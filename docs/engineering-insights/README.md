@@ -1,11 +1,13 @@
 # Engineering Insights — shared ADP capability
 
-Status: proposed capability architecture, reviewed 2026-10-07. This document is
+Status: proposed capability architecture; requirements/test lineage updated
+2026-10-10. This document is
 an implementation proposal, not evidence of an available API or a deployed
-service. The ADP regression catalog and selector exist on the regression
-coordinator branch; Insights onboarding, publishing, storage, ingestion and
-query APIs do not exist as a result of this document. Existing artifact uploads
-have not been switched.
+service. The ADP regression catalog and selector exist; Insights onboarding,
+publishing, ingestion and query APIs do not exist as a result of this document.
+ADP CI uses the existing private S3 evidence bucket for reports and diagnostics;
+see [implemented CI artifact storage and remaining handoffs](ci-artifact-storage.md).
+That bucket is not yet the generic Insights service or an S3 Tables data layer.
 
 Engineering Insights is an ADP capability that other projects can use to retain
 engineering evidence, analyze outcomes and understand coverage. A consuming
@@ -14,26 +16,99 @@ It does not need to run on ADP, use ADP agents, host its repository on GitHub, o
 adopt ADP's module IDs. ADP's own regression stack is the first consumer and uses
 the same published interfaces and isolation rules as an external project.
 
-The initial product scope is test/run evidence, artifacts, coverage and associated
-measurements. Builds, deployments, security findings and AI evaluations are
+The initial product scope includes versioned story briefs and acceptance criteria,
+coverage catalogs, test definitions, planned tests, runs, results and acceptance
+evidence. GitHub Issues is ADP’s requirements authoring source; other projects
+retain their registered tracker. The [v2 lineage contracts](lineage-schema.md#11-requirements-and-test-analytics-v2)
+define the records, and the [storage decision](architecture.md#31-requirements-and-test-analytics-storage-decision)
+selects S3 snapshots/JSONL → curated Parquet → DuckDB for the initial analytics path.
+These contracts are validated offline; connectors and analytics remain proposed.
+Builds, deployments, security findings and AI evaluations are
 extension domains. Do not claim delivery metrics such as deployment frequency
 or change-failure rate until the relevant source events and their semantics are
 implemented. The service does not execute tests or replace CI scheduling in v1.
 
+For authors and agents, start with [epic/story authoring and deterministic test
+mappings](issue-authoring.md). It links the canonical templates, filled examples
+and offline format checker.
+
+The [DevLake connector reuse POC](devlake-poc/README.md) brings together its
+architecture, 13 story designs and unattended delivery flow. It evaluates optional
+connector reuse for Product Profile onboarding and separate historical collection
+as inputs to the broader Engineering Insights capability.
+
+The proposed [ADP Context Model v1](../product-context/README.md) specifies the
+product/project, release and work-item context that feeds this lineage: field
+types, source authority and dated relationships. It reuses the qualified v2
+reference shape without replacing the Insights event or test-result contracts.
+The [Product Profile shared model](../product-onboarding/design/data-model.md) and
+[Insights integration contract](lineage-schema.md#52-profile-and-context-integration-contract)
+use the same optional Portfolio, Product, governed Project, cross-product Initiative, Contribution and
+Release relationships. Profile owns configuration/bindings; Context/portfolio owns
+business commitments; Insights consumes their dated revisions under current access.
+Portfolio groups Products through optional dated many-to-many membership; Program
+groups Initiatives. Both are reporting/coordination context, not access boundaries.
+Registry/relationship ingestion still needs its own versioned adapter admission;
+it is not part of the existing raw v1/v2 producer schemas.
+The proposed [AWS agent integrations](../product-context/aws-agent-capabilities.md)
+reuse provider knowledge, findings and recommendations through scoped adapters.
+Their generated summaries are sourced context; they become lineage evidence only
+through admitted contracts with explicit source/run identities and mappings.
+This proposal does not add Security/DevOps/FinOps findings to the current v2
+test-result schemas or change the initial analytics storage decision.
+
+## Outcome measurement proposal
+
+The [delivery architecture](architecture.md) traces producers, the emitter,
+Evidence Lake, metrics and scorecard through policy-gated reverse ETL. It marks
+existing sources separately from proposed services and follows the
+[Engineering Insights delivery epic (EI-E1)](https://github.com/aws-e/adp/issues/7295).
+
+The [Agentic Engineering Insights overview](agentic-engineering-insights-overview.md)
+contains the AIM319 outcome-measurement proposal, its connection to the AI ROI
+stack, six scorecard metric definitions and illustrative progression through
+Story, Epic and Release stages. It describes the broader proposed measurement
+scope; it does not change the initial service scope or establish that those
+integrations and metrics are implemented.
+
+Start with the overview's [high-level lineage](agentic-engineering-insights-overview.md#53-lineage-at-a-glance).
+It connects Products to optional cross-product Initiatives through Contributions,
+within each Tenant + governed Project evidence scope. Use the [detailed lineage schema](lineage-schema.md) for
+proposed record fields, relationships and the evidence required by each scorecard
+metric.
+
+The overview also provides [recommended systems of record for each ID](agentic-engineering-insights-overview.md#55-recommended-systems-of-record-for-a-typical-enterprise),
+with enterprise examples and ownership rules.
+
+The [checkout modernisation walkthrough](agentic-engineering-insights-overview.md#14-worked-scenario-business-case-to-roi-scorecard)
+follows an approved business case through the five ROI modules and enterprise
+systems to an illustrative scorecard and investment decision.
+
 ## Module location and integration
 
-The implementation home is [`modules/engineering-insights/`](../../modules/engineering-insights/README.md),
-a new ADP platform module. Detailed design and review material stays in
-`docs/engineering-insights/`. The module directory currently contains its README;
-its documented service, contract, adapter, client, infrastructure and test
-directories will be added with implementation.
+For the implemented L5 contribution receiver, use the [receiver installation
+procedure](receiver-installation.md). Image publication and protected configuration
+are separate from live qualification and replica activation.
+
+The independently deployable W1 Insights module skeleton lives in
+[`modules/insights/`](../../modules/insights/README.md); its [deployment
+boundary](architecture.md#6-engineering-insights-deployment-boundary-ei-c01)
+records the implemented infrastructure, CI, release and verification integration,
+not a deployed service. The earlier
+[`modules/engineering-insights/`](../../modules/engineering-insights/README.md)
+is a shared-capability proposal, not the EI-E1 module location. Detailed design and
+review material remains in `docs/engineering-insights/`. Emitter, distiller,
+generic API, analytical store and client behavior are not delivered by the
+module skeleton.
+See the [architecture's module boundary](architecture.md#5-module-and-trust-boundary)
+for current and target ownership.
 
 Engineering Insights owns its capability logic and data contracts. Reuse existing
-ADP identity and tenant authority, with gateway routing/authentication and UI
-integration in the existing gateway/frontend. Platform deployment wiring remains
-in the platform's existing integration points. This module boundary does not
-require a separate tenant directory or a new runtime/framework. ADP regression
-uses a consumer adapter rather than becoming part of the shared service core.
+ADP identity and tenant authority; gateway changes are confined to its own
+lineage/labels fields, flow project binding and bounded read-only export. The
+module boundary does not require a separate tenant directory or a new
+runtime/framework. ADP regression uses a consumer adapter rather than becoming
+part of the shared service core.
 
 ## Review findings and design changes
 
@@ -47,7 +122,7 @@ changes are recorded here; implementation and validation remain outstanding.
 | EI-R02: no external-project onboarding or publishing contract | Release blocker | Define project registration, source connections, publisher grants, artifact sessions and versioned ingestion APIs |
 | EI-R03: repository and ADP test IDs were assumed | High | Support projects with multiple/no repositories, native test identities, optional coverage catalogs and unknown coverage denominators |
 | EI-R04: publishers appeared to choose S3 destinations and write completion manifests directly | Release blocker | Issue bounded upload sessions; let the service validate and finalize the authoritative manifest |
-| EI-R05: operational state was deferred despite admission and revocation requirements | High | Keep project configuration, grants, run admission, idempotency and publication state in the transactional control plane; S3 Tables serves analytics |
+| EI-R05: operational state was deferred despite admission and revocation requirements | High | Keep project configuration, grants, run admission, idempotency and publication state in the transactional control plane; analytical datasets cannot grant authority |
 | EI-R06: source adapters and coverage verdicts were mixed with the common pipeline | High | Keep provider metadata and parser-specific behavior in adapters; version acceptance policies separately from reported test outcomes |
 | EI-R07: resource isolation and consumer-facing service behavior were unspecified | High | Add quotas, query budgets, retention/deletion, freshness states, compatibility policy and audited support access |
 | EI-R08: acceptance only described ADP's migration | Release blocker | Require two independent projects, a non-GitHub publisher, colliding native IDs, hostile inputs and cross-tenant/project isolation tests |
@@ -71,15 +146,22 @@ account or compute workspace. Reuse authoritative ADP identity, membership and
 revocation checks; do not create an Insights tenant directory. Tenant membership
 alone does not automatically grant access to every project's evidence.
 
-An Insights project is an independently administered evidence scope within that
-tenant. This is a proposed resource, not a claim that ADP already has a generic
-project model suitable for this purpose. Confirm reuse opportunities during
-implementation before adding a scoped project record to the Insights control
-plane integrated with ADP. A project may aggregate multiple repositories and CI connections. A
+An Insights project is the capability's configuration of an authorized canonical
+ADP Project, using the same `project_id` as Profile, Context and delivery flows.
+The [Project registry design](../product-onboarding/design/data-model.md) owns its
+identity; Insights owns capability settings and publisher/read grants keyed to it.
+Do not mint a second Project identity inside Insights. These are proposed registry
+and integration contracts, not a claim that shared registration is deployed.
+A Project may aggregate multiple repositories and CI connections. A
 repository may publish to different projects only through explicit authorized
 bindings. Forks, renamed repositories and transferred repositories must be
 resolved using provider identity plus current connection authorization, not a
 mutable repository name.
+
+An authorized unbound registry Project can enable Insights without a Product,
+Initiative or Release. Later Profile binding retains that Project identity and
+its evidence. Product team context does not replace current capability/source
+grants or move historical facts to another scope.
 
 Tenant and project authority comes from the authenticated identity and current
 grants. A requested project ID is a resource selector checked by the service;
@@ -94,18 +176,20 @@ procedure that creates new ownership and provenance if later required.
 |---|---|
 | Project-owned strategies, test code, catalogs and policy definitions | Consumer's versioned source/configuration system; GitHub for ADP's own consumer |
 | Tenant identity, membership and revocation | Existing ADP authority |
+| Canonical Project identity and Product managing bindings | Shared Project/Profile registry; Insights reuses the canonical ID |
 | Insights project settings, source bindings, grants, upload sessions, idempotency and run/publication state | Transactional ADP control plane; never inferred from analytical rows |
 | Logs, JUnit/JSON reports, screenshots, traces and coverage files | Private S3 general purpose artifact bucket |
 | Immutable accepted manifests, catalog snapshots and normalized input envelopes | Same artifact store, under service-controlled object keys |
-| Historical runs, test attempts, mappings, artifact references and measurements | S3 Tables table buckets, using Apache Iceberg |
-| Queries, authorized artifact delivery and stable result links | Insights API and UI; Athena executes historical queries |
+| Requirements revisions, runs, test attempts, mappings and evidence references | Immutable S3 JSON/JSONL inputs; curated Parquet with versioned dataset manifests. S3 Tables/Iceberg remains a later option |
+| Queries, authorized artifact delivery and stable result links | Insights API and UI; bounded DuckDB workers query authorized Parquet manifests for initial requirements/test analytics |
 | Test scheduling, execution and required CI checks | Consumer's CI/execution system |
 
-S3 Tables is a separate bucket type from the general purpose artifact bucket.
-Copying JSON/Parquet objects into a prefix does not commit rows to an Iceberg
-table; normalization must use an Iceberg-compatible writer/query engine. The
-transactional store handles admission and current state while analytical writes
-are delayed. It is not a second source of historical test facts.
+DuckDB is the query engine, not a shared transactional service or a database file
+committed to GitHub. S3 dataset manifests pin immutable Parquet files and their
+input/schema provenance. If the later S3 Tables option is adopted, use a supported
+Iceberg writer/catalog integration; copying Parquet to S3 is not an Iceberg commit.
+The transactional control plane handles admission and current state while
+analytical publication is delayed. It is not a second source of historical facts.
 
 GitHub Actions continues to produce its native console logs when a consumer uses
 it. S3 becomes the retained evidence store; moving uploads does not disable the
@@ -117,12 +201,15 @@ URLs. Provider retention is a consumer setting, separate from Insights policy.
 
 An external project follows the same process as ADP:
 
-1. A tenant administrator enables the capability and creates an Insights project
-   with owners, data Region, retention classes and initial resource limits.
+1. An authorized administrator selects an existing canonical Project, or creates
+   one through the shared registry, and enables Insights for that same ID with
+   owners, data Region, retention classes and initial resource limits. Existing
+   Profile Projects are reused; capability enablement creates no second Project.
 2. A project administrator registers an authenticated source connection, such as
    a GitHub repository/workflow binding or a generic machine publisher. Registration
-   stores immutable provider identities where available; a label is not evidence
-   of repository ownership.
+   reuses existing organization connections and immutable provider identities where
+   available, adding explicit Project/capability grants. A Profile source selection
+   alone is not publisher authorization; a label is not evidence of ownership.
 3. Grant the publisher only run submission and upload permissions for that project.
    Grant people or services read/download/manage permissions separately.
 4. Configure the provider adapter or generic HTTPS client. Test execution stays in
@@ -139,6 +226,7 @@ An external project follows the same process as ADP:
 | Project administrator | Manage source bindings, publisher/read grants and project settings within tenant limits |
 | Publisher service principal | Register runs, upload assigned artifacts and publish results for its connection/project; no implicit read or project-management permission |
 | Project viewer | Read authorized results and ordinary artifacts; sensitive-artifact access may require a separate grant |
+| Acceptance assessor | Record criterion assessments under a separate human/policy grant; ordinary publishers cannot self-assign acceptance |
 | Support/operator | Operate the service; inspect tenant content only through explicit, time-bounded, audited access |
 
 These are capability permissions to map onto ADP's existing role/policy system,
@@ -171,9 +259,12 @@ Version the contracts and publish schemas before implementing integrations.
 
 | Proposed operation | Contract |
 |---|---|
-| `POST /engineering-insights/v1/projects` | Authorized project creation under the resolved ADP tenant |
+| `POST /engineering-insights/v1/projects` | Enable/configure Insights for a supplied authorized canonical `project_id` under the resolved tenant; new identity creation belongs to the shared Project registry |
 | `POST /engineering-insights/v1/projects/{project_id}/connections` | Register a source binding; manage grants through authorized control-plane operations |
 | `POST /engineering-insights/v1/projects/{project_id}/catalogs` | Validate and snapshot a versioned catalog; project-local IDs and typed parent links |
+| `POST /engineering-insights/v1/projects/{project_id}/requirements/artifacts` | Allocate a bounded project/connection-scoped source-snapshot upload independently of a test run |
+| `POST /engineering-insights/v1/projects/{project_id}/requirements/publications` | Validate and finalize a story/criteria snapshot publication with exact artifact and source-version references; used by collectors and registered requirements publishers |
+| `POST /engineering-insights/v1/projects/{project_id}/assessments` | Separately authorize the assessor and record an evidence-bound criterion assessment; ignore body assertions of assessor authority |
 | `POST /engineering-insights/v1/projects/{project_id}/runs` | Admit a run with an idempotency key; return a server run ID and stable result locator |
 | `POST /engineering-insights/v1/runs/{run_id}/artifacts` | Allocate bounded uploads tied to this publisher, run and attempt; return exact upload instructions |
 | `POST /engineering-insights/v1/runs/{run_id}/publications` | Validate artifact IDs/checksums and reported completion; return durable publication receipt and ingestion state |
@@ -181,7 +272,112 @@ Version the contracts and publish schemas before implementing integrations.
 | `GET /engineering-insights/v1/projects/{project_id}/results` | Bounded, paginated analytical views with authorized filters |
 | `GET /engineering-insights/v1/artifacts/{artifact_id}/download` | Reauthorize and return a short-lived download or authenticated stream |
 
-A project-bound idempotency key is additionally scoped by connection and operation.
+### Business-context results read contract (results/1.0)
+
+The `business_context` view of `GET /engineering-insights/v1/projects/{project_id}/results`
+uses [the strict success schema](../../modules/insights/schemas/results/v1/business_context.schema.json)
+and [the strict error schema](../../modules/insights/schemas/results/v1/error.schema.json).
+These schemas define the I23 read contract; they do not mean the route has been
+deployed. An authenticated request requires `view=business_context`, `product_id`,
+and a timezone-aware RFC 3339 `as_of`; `portfolio_id` may occur more than once.
+Reject missing/unknown filters, invalid timestamps, duplicate/empty identifiers,
+and more than 20 Portfolio IDs with `invalid_request`. The Project in the URL
+is the original Insights access boundary, not a Portfolio membership or a
+caller-supplied tenant. `limit` is an optional integer from 1 to 100 (default
+100); `cursor` is an opaque continuation bound to the caller, exact filters,
+dataset version, and authorization. No direct S3 or database access is exposed.
+
+The service resolves tenant and current Project-read permission from the
+authenticated session **before** querying the projection and rechecks access
+on every page. An inaccessible or nonexistent Project has the same `not_found`
+response, with no Project name, source identity, counts, or existence hint.
+Linked Projects and source records must also pass the existing projection's
+authorization checks. A successful response is possible only when the requested
+dataset is published and `coverage` is `complete`; partial, pending, and stale
+snapshots never become a success with empty counts. The response pins
+`dataset_version`, every applicable `mapping_version`, and the requested
+`as_of` to the same projection. Its original six-field `subject_ref` values,
+Portfolio IDs, Initiative/Contribution refs, dated relationship versions,
+allocation-policy versions, and separate currency totals come from the
+authorized I22 projection. Decimal costs are JSON strings, not floats.
+`grouping` distinguishes historical context from explicit regrouping. Repeated
+Portfolio filters are a union over original native facts, **not** a sum of
+Portfolio totals. `work_count` and the currency totals describe the complete
+filtered result, not just the page; `contexts`, `associations`, and
+`allocation_versions` contain at most 100 entries per page. A non-null
+`next_cursor` means more entries remain in the same pinned dataset. The CLI
+returns the validated service result without calculating cost itself.
+
+After installing the gateway CLI and signing in with `adp login`, read a dated
+result with `adp insights context show --project example-project --product
+example-product --as-of 2026-10-19T12:00:00Z --portfolio example-commerce
+--portfolio example-shared --json`. Each `--portfolio` selects part of the same
+authorized projection; shared native work and cost are returned once, with
+their original source references. Omit `--portfolio` to read all accessible
+context for that Product. For a paginated response, pass its `next_cursor` back
+as `--cursor` with the same filters. The command uses the existing selected
+gateway login and prints the server result in the standard CLI JSON envelope;
+it cannot read S3 or recalculate costs independently.
+
+| HTTP | Error code | Client behavior |
+|---|---|---|
+| 400 | `invalid_request` | Correct the filters; no result is returned. |
+| 401 | `unauthenticated` | Sign in again using the existing CLI login. |
+| 404 | `not_found` | The Project does not exist **or** the current viewer cannot read it; do not distinguish these cases. |
+| 501 | `unsupported_capability` | The server does not offer this results view; do not synthesize an empty view. |
+| 409 | `projection_pending` or `projection_incomplete` | No complete result is available; report pending/incomplete without any partial counts or source names. |
+The CLI reports older gateways without this route and explicit 501 capability
+errors as `unsupported_operation`; a scoped Project denial remains `not_found`.
+It reports an unpublished projection as `pending` and an incomplete projection
+as `unavailable`, both with exit code 4 and their specific projection error
+code. Neither condition prints partial results or fabricated zero totals.
+
+
+Error bodies contain only `error.code` and a generic `error.message`, never
+raw upstream errors, credentials, private source names, or row counts. A 409
+`projection_pending` may include `Retry-After` with a bounded number of
+seconds; clients must not assume a pending snapshot will eventually complete.
+Unexpected server errors use the gateway's generic 5xx response, with no
+partial result body. This contract does not relax existing caller permission,
+run-admission or raw-lineage behavior.
+
+### Read-service publication and recovery
+
+The bounded results route runs in the existing authenticated gateway image;
+`gateway-deploy` builds and publishes that image and verifies its `/health` and
+`/ready` probes. The image build stages the canonical Insights reader and
+projection and fails if either cannot be imported. Changes to those two source
+files trigger both gateway CI and the gateway image publisher. Gateway
+infrastructure changes are **not** automatically applied on merge: an operator
+must review and run the protected `gateway-infra-apply` workflow at the pinned
+reviewed revision before enabling reads. Its scoped role grants only S3
+`GetObject` on `results/v1/*` in the Insights evidence bucket and KMS decrypt
+through that bucket's exact evidence-key alias. The operator sets the bucket
+name through the protected
+`/adp/<environment>/gateway/insights-results-bucket` parameter; an unset
+value leaves the command pending. No user-supplied bucket, object key or
+credentials are accepted. The upstream publisher must produce an immutable,
+version-pinned, complete I22 snapshot before this route can return success;
+this story does not create a producer or backfill source data.
+
+Gateway process health alone does **not** prove the results path. Before live
+acceptance, pin gateway image, workflow and schema revision plus the current
+snapshot version; independently read the authorized result and a denied
+Project using the installed CLI and API, then confirm the native identities,
+coverage and cost. On an incompatible release, disable upstream admissions
+first, restore the compatible gateway image and snapshot producer through the
+existing protected recovery workflows, and retain versioned snapshots and
+receipts. Clean up only run-owned test fixtures after independent readback.
+Do not interpret a passing offline HTTP mock as deployed evidence.
+
+The proposed HTTP API version is independent of the lineage payload version;
+these publications declare `schema_version=2.0`. Requirements use their own
+admission/upload/publication state because a story may exist before any test run.
+The collector uses the same project/source authorization and publication checks
+as a registered external publisher. A run links to an existing immutable
+requirements snapshot rather than causing issue history to be rewritten.
+
+For every publication, a project-bound idempotency key is scoped by connection and operation.
 The same key and semantic payload returns the existing resource; a different
 payload conflicts. A CI rerun or test retry has a new attempt identity, not a
 replacement of the old result. Return publication receipt before analytics are
@@ -243,8 +439,8 @@ flowchart LR
     E -->|Accepted manifest| D
     D -->|Manifest notification| F[SQS ingestion queue]
     F --> G[Validate and normalize in bounded workers]
-    G --> H[S3 Tables: Iceberg]
-    H --> I[Athena query service]
+    G --> H[S3 Parquet and immutable dataset manifests]
+    H --> I[Bounded DuckDB query workers]
     I --> J[Authorized Insights API and UI]
     J -->|Reauthorized artifact download| D
     F --> K[Dead-letter queue]
@@ -264,12 +460,14 @@ prefix cannot bypass admission. The manifest means evidence was durably accepted
 not that its assertions passed or are independently verified. Coordinate the
 transactional publication record and manifest notification with an outbox or
 reconciliation protocol: a crash between stores must be recoverable. Consumers
-must not assume an atomic transaction spans the control store, S3 and Iceberg.
+must not assume an atomic transaction spans the control store and S3 dataset publication.
 
-Start with micro-batched writes through a supported Iceberg writer. Athena DML
-is a candidate after catalog integration; verify the required operations and
-concurrency behavior in the chosen Region/workgroup. Do not issue a SQL write
-per log line. S3 Tables manages table maintenance, not application deduplication.
+Micro-batch and compact Parquet files, then publish an immutable dataset manifest
+and conditionally advance the authorized catalog pointer. Readers use only the
+manifest-listed files. Serialize publication or resolve pointer conflicts; retain
+the previous usable snapshot on failure. Deduplication remains an application
+responsibility. See the architecture's storage decision for future Iceberg cutover
+and DuckDB resource/isolation requirements.
 
 Register runs before tests begin when the producer supports it. A provider
 completion collector or heartbeat/timeout reconciler records cancelled/abandoned
@@ -323,13 +521,16 @@ that scope, even when physical storage is already isolated.
 
 | Table | Row grain and purpose |
 |---|---|
-| `runs` | One source run attempt with source connection, reported/verified provenance, trigger, source/deployed revisions, timing and execution verdict |
+| `story_revisions` | Tracker brief/state and exact raw snapshot; edits never overwrite history |
+| `acceptance_criteria` | Story-qualified criterion ID, text, lifecycle and exact story revision |
+| `acceptance_assessments` | Authorized criterion verdict, exact results/manual evidence, assessor, time and policy snapshot |
+| `runs` | One logical pack/workflow execution per source attempt; v2 `test_run` revisions preserve state transitions without multiplying run counts |
 | `suite_runs` | One suite/job attempt with mechanism, executor, cleanup, evidence and ingestion state |
 | `test_definitions` | One versioned stable test definition with native selector, source location when supplied, framework and mapping status |
 | `test_results` | One parameterized/fixture-qualified test instance attempt and retry, with raw/normalized outcomes, duration and failure category |
 | `coverage_definitions` | One versioned project-local module/feature/scenario definition and its typed parent relationship |
-| `test_scenario_map` | One versioned test-to-scenario relationship; shared definitions do not duplicate executed tests |
-| `selection_items` | One intended test/scenario selection with required/optional status, prerequisites and gap reasons |
+| `coverage_mappings` | v2 `coverage_mapping` criterion–scenario or scenario–test relationship; shared definitions do not duplicate executed tests |
+| `run_tests` | One v2 `run_test` planned instance, pinning run, test definition, scenarios and criteria; this replaces the earlier `selection_items` name |
 | `artifacts` | One immutable accepted object reference, checksum, media type, classification, retention and availability state |
 | `measurements` | One typed measurement with value, unit, source, observation interval and aggregation semantics |
 | `policy_evaluations` | One versioned acceptance-policy evaluation against pinned evidence, evaluator version and result; separate from producer-reported outcome |
@@ -337,7 +538,8 @@ that scope, even when physical storage is already isolated.
 Deterministic logical keys include tenant, project, connection, source-native run,
 source attempt, suite/job instance, test instance and retry. The same native IDs
 in two connections or projects must not collide. Deduplication is a writer
-responsibility; S3 Tables does not enforce application primary keys. Choose
+responsibility; neither Parquet nor a later S3 Tables projection enforces
+application primary keys. Choose
 partitioning using volume/time/query patterns, not high-cardinality test/run IDs.
 Document and benchmark table/namespace growth before broad tenant rollout.
 
@@ -362,19 +564,19 @@ consumer policies outside the shared ingestion service.
 ## Isolation, resource controls and data lifecycle
 
 For the first ADP-hosted deployment, use one regional private artifact store with
-service-enforced tenant/project prefixes and exact-object upload grants. Start
-with tenant-separated S3 Tables namespaces/table resources governed by backend
-IAM/catalog permissions. Namespace names or SQL predicates alone are not an
-authorization boundary. Within a tenant, project rows may share tables, but only
-the authorized query service can execute access-controlled views. Consumers get
-no direct bucket-list or arbitrary Athena/SQL credentials in v1. Dedicated
-buckets, accounts, customer-managed storage and direct BI access are later
+service-enforced tenant/project prefixes and exact-object upload grants. Select
+only tenant/project-authorized dataset manifests and files for each
+DuckDB query worker, backed by scoped service IAM and current project grants.
+Namespace names or SQL predicates alone are not an authorization boundary.
+Consumers get no direct bucket listing, arbitrary SQL or filesystem/extension
+access through the service. Dedicated buckets, accounts, customer-managed storage
+and direct BI access are later
 isolation tiers requiring their own policy and operational design.
 
 The query service resolves current project grants, uses approved parameterized
 query templates, enforces tenant/project filters and binds query IDs/results to
 the same scope. Pagination tokens, saved searches, caches, exports and downloads
-must be scoped too. Restrict Athena query-result storage; knowing a query ID or
+must be scoped too. Restrict query spill, cache and export storage; knowing a query ID or
 result key never grants access. Auth checks apply again when polling a query or
 retrieving an export. A project reader must not infer other projects' existence,
 names, aggregates or artifact metadata through errors or cached responses.
@@ -402,8 +604,9 @@ or cleanup state out of Insights. The ADP CLI adapter must preserve its existing
 separation between publishable reports and private state.
 
 Retention is policy-versioned by artifact class and bounded by tenant settings.
-Choose object version lifecycle, Iceberg snapshot expiry, normalized fact
-retention and backup handling together. Deletion/offboarding first revokes
+Choose object version lifecycle, dataset-manifest expiry (and Iceberg snapshot
+expiry if adopted), normalized fact retention and backup handling together.
+Deletion/offboarding first revokes
 publish/read grants, then purges or expires artifacts, query results, caches,
 analytical rows and historical snapshots according to policy. Do not describe a
 row tombstone as complete erasure while old snapshots or object versions remain.
@@ -414,8 +617,9 @@ replication are separate requirements to resolve before promising either.
 ## Reliability and compatibility
 
 Queue deliveries can repeat or arrive out of order. Deduplicate by scoped
-publication identity/checksum, coordinate conflicting writes, retry Iceberg commit
-conflicts, quarantine malformed input and replay from accepted manifests. Preserve
+publication identity/checksum, coordinate conflicting dataset publications, retry
+conditional catalog-pointer conflicts, quarantine malformed input and replay
+from accepted manifests. Preserve
 source event time, service receipt time and ingestion time. Corrections and
 reprocessing reference previous publications; repeated delivery does not count
 as another test attempt.
@@ -437,6 +641,7 @@ so a project can leave the service.
 
 | Adapter/domain | Initial responsibility | Status |
 |---|---|---|
+| GitHub Issues requirements collector | Verify scoped source events, snapshot briefs/identified criteria, reconcile missed edits and preserve requirements revisions | Proposed; v2 records and fixtures exist, collector does not |
 | Generic HTTPS publisher | Run admission, bounded artifact upload, publication receipts and status | Proposed v1 foundation |
 | JUnit XML adapter | Normalize supported pytest/JUnit results and preserve native selectors/properties | Proposed v1 parser; dialect differences require fixtures |
 | GitHub Actions publisher/collector | Bind verified workflow metadata, publish supported outputs and link checks to Insights | Proposed first provider adapter; OIDC exchange is a distinct milestone |
@@ -464,7 +669,7 @@ short check summaries and stable Insights links.
 |---|---|
 | 1. Contracts | Versioned API/envelope/catalog schemas, role mapping, source trust rules, limits and error/status semantics; fixtures from two unrelated projects |
 | 2. Shared service foundation | Project onboarding, identity/grants, transactional admission, artifact sessions, immutable manifests, audit and revocation; cross-project/tenant isolation demonstrated |
-| 3. Analytics | Queue/replay, parsers, S3 Tables integration, authorized query views, deletion/retention and resource limits; duplicate and crash recovery validated |
+| 3. Analytics | Queue/replay, parsers, Parquet snapshot publication, bounded DuckDB views, deletion/retention and resource limits; duplicate and crash recovery validated |
 | 4. External pilot plus ADP | One independent generic/non-GitHub consumer and ADP regression use the same service; qualification consumers migrated without weakening their checks |
 | 5. Product access | Project/run/module views, artifact downloads, completeness/freshness indicators, exports and operator monitoring; measured service objectives and supported adapter matrix |
 

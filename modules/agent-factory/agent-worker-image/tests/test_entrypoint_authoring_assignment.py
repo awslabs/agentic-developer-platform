@@ -202,6 +202,7 @@ def run_worker(monkeypatch, tmp_path):
         monkeypatch.setattr(entrypoint, "_start_sigv4_proxy", MagicMock())
         monkeypatch.setattr(entrypoint, "_stop_sigv4_proxy", MagicMock())
         monkeypatch.setattr(entrypoint, "BootstrapLogger", MagicMock())
+        monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", MagicMock(return_value={"status": "up_to_date"}))
         monkeypatch.setattr(entrypoint, "record_delivery_completed", MagicMock())
         # THE patch that makes the absence assertions mean anything: `aidlc` is in
         # PERSONAS_EXTENDING_BRANCH, so without this the run returns
@@ -757,3 +758,53 @@ def stub_agent_runtime(monkeypatch):
     # These bootstrap tests stub execution; deadline/process-group tests run real children.
     import subprocess
     monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))
+
+
+def test_node_lineage_reaches_codex_board_environment(run_worker):
+    run_worker(NODE_DISPATCH_ENVELOPE)
+    assert_reached_the_export_block(NODE_DISPATCH_ENVELOPE)
+    assert os.environ["ADP_BOARD_FLOW_ID"] == NODE_DISPATCH_ENVELOPE["orchestration"]["flow_id"]
+    assert os.environ["ADP_BOARD_NODE_ADDRESS"] == NODE_DISPATCH_ENVELOPE["orchestration"]["graph_address"]
+    run_worker(WEBHOOK_ENVELOPE)
+    assert_reached_the_export_block(WEBHOOK_ENVELOPE)
+    assert os.environ["ADP_BOARD_FLOW_ID"] == ""
+    assert os.environ["ADP_BOARD_NODE_ADDRESS"] == ""
+
+
+@pytest.mark.parametrize("persona", ["developer", "agent-codex-developer"])
+def test_node_lineage_reaches_child_environment_and_resets_for_webhooks(run_worker, monkeypatch, persona):
+    agent = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr("lib.agent_process.run_agent", agent)
+    monkeypatch.setenv("ADP_BOARD_FLOW_ID", "stale-flow")
+    monkeypatch.setenv("ADP_BOARD_NODE_ADDRESS", "stale/node")
+    monkeypatch.setenv("ADP_DEVELOPER_NODE_CONTEXT", "stale context")
+    envelope = json.loads(json.dumps(NODE_DISPATCH_ENVELOPE))
+    envelope["persona"] = persona
+    envelope["intent"]["persona"] = persona
+    context = {"schema_version": 1, "criteria": ["baseline/C1: Validate only this node."]}
+    envelope["orchestration"]["developer_node_context"] = context
+
+    run_worker(envelope)
+
+    agent.assert_called_once()
+    assert agent.call_args.args[0] == entrypoint.worker_command(persona)
+    child_env = agent.call_args.kwargs["env"]
+    assert child_env["ADP_BOARD_FLOW_ID"] == envelope["orchestration"]["flow_id"]
+    assert child_env["ADP_BOARD_NODE_ADDRESS"] == envelope["orchestration"]["graph_address"]
+    assert child_env["ADP_MESSAGE_ID"] == envelope["message_id"]
+    assert json.loads(child_env["ADP_DEVELOPER_NODE_CONTEXT"]) == context
+
+    agent.reset_mock()
+    webhook = json.loads(json.dumps(WEBHOOK_ENVELOPE))
+    webhook["persona"] = persona
+    webhook["intent"]["persona"] = persona
+    webhook["payload"] = {"orchestration": envelope["orchestration"]}
+
+    run_worker(webhook)
+
+    agent.assert_called_once()
+    child_env = agent.call_args.kwargs["env"]
+    assert child_env["ADP_BOARD_FLOW_ID"] == ""
+    assert child_env["ADP_BOARD_NODE_ADDRESS"] == ""
+    assert child_env["ADP_MESSAGE_ID"] == webhook["message_id"]
+    assert child_env["ADP_DEVELOPER_NODE_CONTEXT"] == ""

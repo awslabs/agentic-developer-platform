@@ -201,6 +201,9 @@ def launch(adp_bin: Path, adp_home: Path, stub_tools: Path, proxy_port: int, tmp
     def _run(args: list[str], extra_env: dict[str, str] | None = None, timeout: int = 45, shell: str = "bash") -> subprocess.CompletedProcess:
         env = os.environ.copy()
         env.pop("ADP_GATEWAY_DUMMY", None)
+        for key in list(env):
+            if key.startswith(("ANTHROPIC_", "CLAUDE_CODE_")):
+                env.pop(key)
         env.update(
             {
                 "HOME": str(adp_home),
@@ -272,6 +275,23 @@ def _seed_dead_session(home: Path) -> None:
 
 class TestCodexStartsProxy:
     """The whole point: one command, one terminal, proxy handled for you."""
+
+    def test_two_launches_ensure_one_pinned_mcp_entry(self, launch, adp_home: Path, adp_bin: Path) -> None:
+        import tomllib
+
+        _seed_valid_session(adp_home)
+        config = adp_home / ".codex" / "config.toml"
+        for _ in range(2):
+            result = launch(["codex"])
+            assert result.returncode == 0, result.stderr
+        parsed = tomllib.loads(config.read_text())
+        assert list(parsed["mcp_servers"]) == ["adp-tools"]
+        assert parsed["mcp_servers"]["adp-tools"] == {
+            "command": str(adp_bin / "adp"),
+            "args": ["--deployment", "default", "mcp"],
+            "env": {"BG_CONFIG_DIR": str(adp_home / ".bedrock-gateway"), "ADP_DEPLOYMENT_ID": "default", "ADP_DEPLOYMENT_URL": DEAD_GATEWAY_URL},
+        }
+        assert config.read_text().count("[mcp_servers.adp-tools]") == 1
 
     @pytest.mark.parametrize("tool", ["codex", "claude", "hermes"])
     def test_launch_without_arguments_works_on_system_bash(self, launch, adp_home, tool) -> None:
@@ -589,6 +609,31 @@ class TestSessionPreflight:
 class TestClaudeLauncher:
     """Claude Code needs no proxy and no env var. Adding either would be a lie."""
 
+    def test_launch_refuses_user_owned_global_name_collision(self, launch, adp_home: Path) -> None:
+        _seed_valid_session(adp_home)
+        config = adp_home / ".claude.json"
+        config.write_text(json.dumps({"mcpServers": {"adp-tools": {"command": "user-tool"}}}))
+        original = config.read_bytes()
+        result = launch(["claude"])
+        assert result.returncode != 0 and "unowned" in result.stderr
+        assert config.read_bytes() == original
+        assert not launch.record.launched("claude")
+
+    def test_two_launches_ensure_one_pinned_mcp_entry(self, launch, adp_home: Path, adp_bin: Path) -> None:
+        _seed_valid_session(adp_home)
+        for _ in range(2):
+            result = launch(["claude"])
+            assert result.returncode == 0, result.stderr
+        assert not (adp_home / ".claude.json").exists()
+        config = json.loads(launch.record.argv[-1].split(" --settings ")[0].removeprefix("--mcp-config "))
+        assert config["mcpServers"] == {
+            "adp-tools": {
+                "command": str(adp_bin / "adp"),
+                "args": ["--deployment", "default", "mcp"],
+                "env": {"BG_CONFIG_DIR": str(adp_home / ".bedrock-gateway"), "ADP_DEPLOYMENT_ID": "default", "ADP_DEPLOYMENT_URL": DEAD_GATEWAY_URL},
+            }
+        }
+
     def test_launches_claude_with_passthrough_args(self, launch, adp_home: Path) -> None:
         _seed_valid_session(adp_home)
 
@@ -598,7 +643,7 @@ class TestClaudeLauncher:
         assert launch.record.tools == ["claude"]
         assert len(launch.record.argv) == 1
         assert launch.record.argv[0].endswith(" --resume -p fix the build")
-        assert launch.record.argv[0].startswith("--settings ")
+        assert launch.record.argv[0].startswith("--mcp-config ")
 
     def test_never_starts_the_proxy(self, launch, adp_home: Path) -> None:
         _seed_valid_session(adp_home)

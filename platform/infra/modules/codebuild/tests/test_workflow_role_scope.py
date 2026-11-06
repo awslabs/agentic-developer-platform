@@ -53,7 +53,8 @@ def test_chat_and_gateway_builds_publish_to_distinct_repositories() -> None:
     ).read_text()
 
     assert yaml.safe_load(chat_buildspec)["phases"]["build"]["commands"] == [
-        "bash platform/scripts/publish-shared-image.sh adp-chat-agent"
+        "bash platform/scripts/publish-shared-image.sh adp-chat-agent",
+        "bash modules/agent-factory/agent/scripts/publish-chat-sandbox-image.sh",
     ]
     assert yaml.safe_load(gateway_buildspec)["phases"]["build"]["commands"] == [
         "bash platform/scripts/publish-shared-image.sh adp-agent-gateway"

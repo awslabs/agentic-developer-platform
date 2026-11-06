@@ -139,14 +139,16 @@ def validate_coverage(report, tool: str, source_revision: str, expected_images: 
     if len(targets) != len(expected_images) or set(by_name) != expected_images or any(item.get("status") != "succeeded" for item in by_name.values()):
         raise ValueError(f"{tool} coverage target inventory is incomplete")
     if report.get("scope") == "all" or "excluded_non_runtime" in report:
-        from security_image_targets import DOC_API_COMPAT, ORIGINAL_COVERAGE, non_runtime_fixtures
+        from security_image_targets import ORIGINAL_COVERAGE, maintenance_recipes, non_runtime_fixtures
 
-        expected_exclusion = non_runtime_fixtures(Path(__file__).resolve().parents[2])
-        if (len(expected_exclusion) != 1
-                or expected_exclusion[0]["dockerfile"] != DOC_API_COMPAT
-                or report.get("excluded_non_runtime") != expected_exclusion
-                or report.get("original_gap") != ORIGINAL_COVERAGE
-                or report.get("discovered") != len(expected_images) + len(expected_exclusion)):
+        root = Path(__file__).resolve().parents[2]
+        scope = report.get("scope", "all")
+        expected_exclusion = non_runtime_fixtures(root, scope)
+        expected_recipes = maintenance_recipes(root, scope)
+        if (report.get("excluded_non_runtime") != expected_exclusion
+                or report.get("maintenance_recipes") != expected_recipes
+                or report.get("original_gap") != (ORIGINAL_COVERAGE if scope == "all" else None)
+                or report.get("discovered") != len(expected_images) + len(expected_exclusion) + len(expected_recipes)):
             raise ValueError(f"{tool} inventory correction is missing or inconsistent")
     return by_name
 
@@ -161,7 +163,7 @@ def observed_results(evidence_root: Path, provenance_output: Path, source_revisi
         tool: validate_coverage(report, tool, source_revision, expected_images)
         for tool, report in reports.items()
     }
-    correction_fields = ("scope", "excluded_non_runtime", "original_gap", "discovered")
+    correction_fields = ("scope", "excluded_non_runtime", "maintenance_recipes", "original_gap", "discovered")
     if any(reports["grype"].get(field) != reports["syft"].get(field) for field in correction_fields):
         raise ValueError("Grype and Syft inventory corrections differ")
     provenance_output.mkdir(parents=True, exist_ok=True)

@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -37,9 +38,11 @@ _tracer = get_tracer("knowledge-layer.sqs-worker")
 
 from config import settings
 from github_auth import InstallationRevokedError, mint_github_token, mint_installation_token
-from scope import ScopeValidationError, parse_scope
+from scope import asset_storage_prefix, validate_ingestion_attempt, ScopeValidationError, parse_scope
 from source_admission import SourceAdmissionError, validate_source
 from status_callback import emit_status_callback
+from ingestion_result import RESULT_ENV, read as read_ingestion_result
+import job_client
 
 AWS_REGION = settings.aws_region
 SQS_QUEUE_URL = settings.sqs_queue_url
@@ -54,8 +57,8 @@ TIMEOUTS = {
 }
 
 # AWS clients
-sqs = boto3.client("sqs", region_name=AWS_REGION)
-dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
+sqs = None if job_client.enabled() else boto3.client("sqs", region_name=AWS_REGION)
+dynamodb = None if job_client.enabled() else boto3.resource("dynamodb", region_name=AWS_REGION)
 
 
 # ---------------------------------------------------------------------------
@@ -70,8 +73,12 @@ def update_dynamo_status(
     error: str | None = None,
     tags: dict[str, str] | None = None,
     extra_attrs: dict[str, Any] | None = None,
+    steps: dict[str, str] | None = None,
 ):
     """Update the STATE record in DynamoDB for a source."""
+    if job_client.enabled():
+        job_client.call("state", {"status": status, "error": error, "steps": steps or {}})
+        return
     table = dynamodb.Table(DYNAMO_TABLE)
     pk = f"{content_type}#{source}"
     now = datetime.now(timezone.utc).isoformat()
@@ -82,23 +89,19 @@ def update_dynamo_status(
         ":now": now,
     }
 
-    # Set per-step status fields based on the overall status
-    for step in [
-        "s3_status",
-        "deepwiki_status",
-        "graphrag_status",
-        "code_index_status",
-        "sbom_source_status",
-    ]:
-        if status == "processing":
-            update_expr += f", {step} = :pending"
-            expr_values[":pending"] = "pending"
-        elif status == "complete":
-            update_expr += f", {step} = :complete"
-            expr_values[":complete"] = "complete"
-        elif status == "failed":
-            update_expr += f", {step} = :failed"
-            expr_values[":failed"] = "failed"
+    update_expr += ", ingestion_status = :ingestion_status"
+    expr_values[":ingestion_status"] = status
+    # Project only reported stages. A clean process exit does not prove every
+    # producer ran, and skipped optional backends must stay skipped.
+    for field, stage in {
+        "s3_status": "s3_upload", "deepwiki_status": "deepwiki",
+        "graphrag_status": "graphrag", "code_index_status": "cgc_structural",
+        "sbom_source_status": "sbom_source",
+    }.items():
+        value = (steps or {}).get(stage)
+        if value is not None:
+            update_expr += f", {field} = :{field}"
+            expr_values[f":{field}"] = "complete" if value == "verified" else value
 
     if error:
         update_expr += ", last_error = :err"
@@ -141,6 +144,10 @@ def write_dynamo_run_record(
     error: str | None = None,
 ):
     """Write an append-only RUN record to DynamoDB (TTL: 30 days)."""
+    if job_client.enabled():
+        job_client.call("history", {"status": status, "duration_sec": duration_sec,
+                                    "steps": steps or {}, "error": error})
+        return
     table = dynamodb.Table(DYNAMO_TABLE)
     pk = f"{content_type}#{source}"
     now = datetime.now(timezone.utc)
@@ -178,7 +185,7 @@ def ingest_repo(
     tags: dict[str, str],
     steps: list[str] | None = None,
     scope_env: dict[str, str] | None = None,
-) -> None:
+) -> dict:
     """Run ingest-repo.py for a repository."""
     cmd = [
         sys.executable,
@@ -188,7 +195,7 @@ def ingest_repo(
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
-    _run_subprocess(cmd, timeout=TIMEOUTS["repo"], extra_env=scope_env)
+    return _run_subprocess(cmd, timeout=TIMEOUTS["repo"], extra_env=scope_env)
 
 
 def ingest_url(
@@ -196,7 +203,7 @@ def ingest_url(
     tags: dict[str, str],
     scope_env: dict[str, str] | None = None,
     registry_asset_id: str | None = None,
-) -> None:
+) -> dict:
     """Run ingest-url.py for a URL."""
     cmd = [
         sys.executable,
@@ -210,7 +217,7 @@ def ingest_url(
         cmd.extend(["--tags", json.dumps(tags)])
     if registry_asset_id:
         cmd.extend(["--registry-asset-id", registry_asset_id])
-    _run_subprocess(cmd, timeout=TIMEOUTS["url"], extra_env=scope_env)
+    return _run_subprocess(cmd, timeout=TIMEOUTS["url"], extra_env=scope_env)
 
 
 def ingest_doc(
@@ -219,7 +226,7 @@ def ingest_doc(
     title: str | None = None,
     scope_env: dict[str, str] | None = None,
     registry_asset_id: str | None = None,
-) -> None:
+) -> dict:
     """Run ingest-doc.py for a document."""
     cmd = [
         sys.executable,
@@ -233,12 +240,12 @@ def ingest_doc(
         cmd.extend(["--tags", json.dumps(tags)])
     if registry_asset_id:
         cmd.extend(["--registry-asset-id", registry_asset_id])
-    _run_subprocess(cmd, timeout=TIMEOUTS["doc"], extra_env=scope_env)
+    return _run_subprocess(cmd, timeout=TIMEOUTS["doc"], extra_env=scope_env)
 
 
 def discover_infra(
     source: str, tags: dict[str, str], scope_env: dict[str, str] | None = None
-) -> None:
+) -> dict:
     """Run discover-infra.py for an AWS account."""
     cmd = [
         sys.executable,
@@ -246,12 +253,36 @@ def discover_infra(
         "--account",
         source,
     ]
-    if tags:
-        cmd.extend(["--tags", json.dumps(tags)])
-    _run_subprocess(cmd, timeout=TIMEOUTS["infra"], extra_env=scope_env)
+    return _run_subprocess(cmd, timeout=TIMEOUTS["infra"], extra_env=scope_env)
 
 
-def _run_subprocess(cmd: list[str], timeout: int, extra_env: dict[str, str] | None = None) -> None:
+class IngestionFailed(RuntimeError):
+    def __init__(self, result: dict):
+        self.result = result
+        failed = ", ".join(k for k, v in result["steps"].items() if v == "failed")
+        super().__init__(f"Ingestion failed: {failed or 'producer reported failure'}")
+
+
+def _run_subprocess(cmd: list[str], timeout: int, extra_env: dict[str, str] | None = None) -> dict:
+    with tempfile.TemporaryDirectory(prefix="ingestion-result-") as directory:
+        path = os.path.join(directory, "result.json")
+        process_error = None
+        try:
+            _stream_subprocess(cmd, timeout, {**(extra_env or {}), RESULT_ENV: path})
+        except RuntimeError as exc:
+            process_error = exc
+        try:
+            result = read_ingestion_result(path)
+        except (OSError, ValueError, TypeError) as exc:
+            if process_error:
+                raise process_error from exc
+            raise RuntimeError("Ingestion produced no valid result") from exc
+        if process_error and result["status"] == "complete":
+            raise process_error
+        return result
+
+
+def _stream_subprocess(cmd: list[str], timeout: int, extra_env: dict[str, str] | None = None) -> int:
     """Run a subprocess with timeout, streaming output through structured logging.
 
     Streams child stdout/stderr line-by-line through the parent's logger (which
@@ -294,7 +325,7 @@ def _run_subprocess(cmd: list[str], timeout: int, extra_env: dict[str, str] | No
 
     # Stream output line-by-line in a reader thread (so timeout works even if
     # the child produces no output — e.g. a long-running computation or sleep)
-    last_lines: list[str] = []  # Keep tail for error context
+    last_lines: list[str] = []  # Bounded failure diagnostics
 
     def _read_output():
         try:
@@ -329,16 +360,17 @@ def _run_subprocess(cmd: list[str], timeout: int, extra_env: dict[str, str] | No
     returncode = process.returncode
 
     if returncode != 0:
-        tail = "\n".join(last_lines[-10:]) if last_lines else "(no output)"
         log.error(
             "subprocess.failed: %s exit_code=%d duration=%.1fs",
             cmd_summary,
             returncode,
             duration,
         )
+        tail = "\n".join(last_lines[-10:]) if last_lines else "(no output)"
         raise RuntimeError(f"Exit code {returncode}: {tail[:2000]}")
 
     log.info("subprocess.complete: %s exit_code=0 duration=%.1fs", cmd_summary, duration)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +380,15 @@ def _run_subprocess(cmd: list[str], timeout: int, extra_env: dict[str, str] | No
 
 def receive_sqs_message() -> tuple[dict[str, Any], str] | None:
     """Receive one message from SQS. Returns (message_body, receipt_handle) or None."""
+    if job_client.enabled():
+        from pathlib import Path
+        raw = json.loads(Path(os.environ["INGESTION_JOB_FILE"]).read_text())
+        if raw.get("empty") is True:
+            return None
+        admitted = job_client.job()
+        return admitted, admitted["receipt_ticket"]
+    if os.environ.get("INGESTION_ISOLATION_REQUIRED") == "true":
+        raise RuntimeError("Queue access belongs to the admission init container")
     try:
         resp = sqs.receive_message(
             QueueUrl=SQS_QUEUE_URL,
@@ -372,6 +413,9 @@ def receive_sqs_message() -> tuple[dict[str, Any], str] | None:
 
 def delete_sqs_message(receipt_handle: str) -> None:
     """Delete a message from SQS (acknowledge successful processing)."""
+    if job_client.enabled():
+        job_client.call("ack", {"receipt_ticket": receipt_handle})
+        return
     try:
         sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
         log.info("SQS message deleted")
@@ -388,6 +432,8 @@ def _mint_github_token() -> bool:
     Returns True if token was successfully obtained, False otherwise.
     Failure is non-fatal — anonymous clones still work for public repos.
     """
+    if job_client.enabled():
+        return job_client.install_github_token()
     return mint_github_token()
 
 
@@ -403,11 +449,15 @@ def _mint_per_installation_token(installation_id: int) -> bool:
         InstallationRevokedError: installation no longer exists (fail-closed).
         RuntimeError: transient/config error.
     """
+    if job_client.enabled():
+        if installation_id != job_client.job().get("installation_id"):
+            raise RuntimeError("Ingestion installation differs from admission")
+        return job_client.install_github_token()
     return mint_installation_token(installation_id)
 
 
 def main():
-    if not SQS_QUEUE_URL:
+    if not SQS_QUEUE_URL and not job_client.enabled():
         log.error("SQS_QUEUE_URL not set")
         sys.exit(1)
 
@@ -448,7 +498,14 @@ def main():
         sys.exit(1)
 
     # Export scope as env vars for child processes (S3 prefix routing in #1773)
+    if scope.is_product or registry_asset_id:
+        asset_storage_prefix(scope, "content", registry_asset_id)
     scope_env = scope.to_env()
+    scope_env["INGESTION_REGISTRY_ASSET_ID"] = registry_asset_id or ""
+    scope_env["INGESTION_ATTEMPT_ID"] = message.get("ingestion_attempt_id") or ""
+    if scope.is_product or (scope.is_personal and registry_asset_id):
+        validate_ingestion_attempt(message.get("ingestion_attempt_id"))
+    state_source = registry_asset_id if scope.is_product or (scope.is_personal and registry_asset_id) else source
 
     # Set correlation context from SQS envelope (fail-open)
     safe_emit(
@@ -476,9 +533,9 @@ def main():
                 installation_id,
                 e,
             )
-            update_dynamo_status(source, content_type, "failed", error=error_msg, tags=tags)
+            update_dynamo_status(state_source, content_type, "failed", error=error_msg, tags=tags)
             write_dynamo_run_record(
-                source,
+                state_source,
                 content_type,
                 "failed",
                 0.0,
@@ -515,7 +572,7 @@ def main():
     log.info("Processing: %s (%s) triggered_by=%s", source, content_type, triggered_by)
 
     # Update DynamoDB status to "processing"
-    update_dynamo_status(source, content_type, "processing", tags=tags)
+    update_dynamo_status(state_source, content_type, "processing", tags=tags)
 
     # Emit status callback: worker "processing" → gateway "indexing" (#2049)
     safe_emit(emit_status_callback, registry_asset_id, "indexing", tenant_id=scope.tenant_id, callback_grant=callback_grant)
@@ -529,6 +586,7 @@ def main():
         "owner_sub": scope.owner_sub or "",
         "tenant_id": scope.tenant_id or "",
         "project_id": scope.project_id or "",
+        "product_id": scope.product_id or "",
         "visibility": scope.visibility,
     }
     root_span_cm = _tracer.start_as_current_span("ingestion_run", attributes=root_span_attrs)
@@ -537,47 +595,53 @@ def main():
     start_time = time.monotonic()
     try:
         if content_type == "repo":
-            ingest_repo(source, tags=tags, steps=steps, scope_env=scope_env)
+            outcome = ingest_repo(source, tags=tags, steps=steps, scope_env=scope_env)
         elif content_type == "url":
-            ingest_url(source, tags=tags, scope_env=scope_env, registry_asset_id=registry_asset_id)
+            outcome = ingest_url(source, tags=tags, scope_env=scope_env, registry_asset_id=registry_asset_id)
         elif content_type == "doc":
-            ingest_doc(source, tags=tags, title=title, scope_env=scope_env, registry_asset_id=registry_asset_id)
+            outcome = ingest_doc(source, tags=tags, title=title, scope_env=scope_env, registry_asset_id=registry_asset_id)
         elif content_type == "infra":
-            discover_infra(source, tags=tags, scope_env=scope_env)
+            outcome = discover_infra(source, tags=tags, scope_env=scope_env)
         else:
             raise ValueError(f"Unknown content_type: {content_type}")
 
+        if outcome["status"] == "failed":
+            raise IngestionFailed(outcome)
         duration = time.monotonic() - start_time
 
-        # Mark root span as successful (fail-open)
+        # Reflect partial ingestion in telemetry as well as the registry.
         try:
             from opentelemetry.trace import StatusCode
 
             root_span.set_attribute("duration_sec", round(duration, 1))
-            root_span.set_status(StatusCode.OK)
+            if outcome["status"] == "complete":
+                root_span.set_status(StatusCode.OK)
+            else:
+                root_span.set_status(StatusCode.ERROR, "partial ingestion")
         except Exception:
             pass
 
-        # Success — update state and write run record
-        update_dynamo_status(source, content_type, "complete", tags=tags)
+        # Persist the producer result without inventing stage outcomes.
+        update_dynamo_status(state_source, content_type, outcome["status"], tags=tags, steps=outcome["steps"])
         write_dynamo_run_record(
-            source,
+            state_source,
             content_type,
-            "success",
+            "success" if outcome["status"] == "complete" else "partial",
             duration,
             trigger=triggered_by,
-            steps={s: "ok" for s in steps},
+            steps=outcome["steps"],
         )
 
-        # Emit status callback: complete with compact status_detail (#2049)
+        # Emit the actual terminal status and its compact stage projection.
         safe_emit(
             emit_status_callback,
             registry_asset_id,
-            "complete",
+            outcome["status"],
             status_detail={
                 "completed_at": datetime.now(timezone.utc).isoformat(),
                 "duration_sec": round(duration, 1),
-                "steps": {s: "ok" for s in steps},
+                "steps": outcome["steps"],
+                "run_id": outcome.get("run_id"),
             },
             tenant_id=scope.tenant_id,
             callback_grant=callback_grant,
@@ -597,6 +661,7 @@ def main():
     except Exception as e:
         duration = time.monotonic() - start_time
         error_msg = str(e)[:1000]
+        failed_steps = e.result["steps"] if isinstance(e, IngestionFailed) else {}
         log.error("Failed %s (%s) after %.1fs: %s", source, content_type, duration, error_msg)
 
         # Mark root span as failed (fail-open)
@@ -610,14 +675,15 @@ def main():
             pass
 
         # Failure — update state but don't delete message (goes back to queue for retry, then DLQ)
-        update_dynamo_status(source, content_type, "failed", error=error_msg, tags=tags)
+        update_dynamo_status(state_source, content_type, "failed", error=error_msg, tags=tags, steps=failed_steps)
         write_dynamo_run_record(
-            source,
+            state_source,
             content_type,
             "failed",
             duration,
             trigger=triggered_by,
             error=error_msg,
+            steps=failed_steps,
         )
 
         # Emit status callback: failed with error in status_detail (#2049)
@@ -626,6 +692,7 @@ def main():
             registry_asset_id,
             "failed",
             status_detail={
+                "steps": failed_steps,
                 "failed_at": datetime.now(timezone.utc).isoformat(),
                 "duration_sec": round(duration, 1),
             },

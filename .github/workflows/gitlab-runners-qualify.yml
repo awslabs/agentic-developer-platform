@@ -1,0 +1,202 @@
+name: GitLab Runners Qualify
+run-name: ADP deployment ${{ inputs.adp_correlation }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: 'Exact reviewed main commit (40 hex characters)'
+        required: false
+        type: string
+      account_id:
+        description: 'Exact target account (12 digits)'
+        required: true
+        type: string
+      region:
+        description: 'Exact runner deployment region'
+        required: true
+        type: string
+      environment:
+        description: 'Only dev is currently supported'
+        required: true
+        default: dev
+        type: string
+      qualification_run_id:
+        description: 'Run-owned qualification UUID and private bundle key scope'
+        required: false
+        type: string
+      bundle_sha256:
+        description: 'Approved SHA-256 of the private operator-collected qualification bundle'
+        required: false
+        type: string
+      adp_correlation:
+        description: 'Accepted operational release correlation'
+        required: true
+        type: string
+      adp_source_revision:
+        description: 'Accepted immutable source revision'
+        required: true
+        type: string
+      adp_definition_revision:
+        description: 'Accepted workflow definition revision'
+        required: true
+        type: string
+      adp_contract_digest:
+        description: 'Accepted delivery contract digest'
+        required: true
+        type: string
+
+concurrency:
+  group: gitlab-runners-${{ inputs.account_id }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+  ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1
+  ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+
+jobs:
+  qualify:
+    if: github.ref == 'refs/heads/main' && inputs.environment == 'dev'
+    runs-on: arc-runner-org
+    environment: adp-gitlab-deploy-dev
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      ACCOUNT_ID: ${{ inputs.account_id }}
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      EXPECTED_ROLE: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      EXPECTED_ACCOUNT: ${{ inputs.account_id }}
+      AWS_REGION: ${{ inputs.region }}
+      QUALIFICATION_RUN: ${{ inputs.qualification_run_id || vars.GITLAB_QUALIFICATION_RUN_ID }}
+      BUNDLE_SHA256: ${{ inputs.bundle_sha256 || vars.GITLAB_QUALIFICATION_BUNDLE_SHA256 }}
+      APPROVED_LOCK_SHA256: ${{ vars.GITLAB_RUNNERS_RELEASE_LOCK_SHA256 }}
+      BUNDLE_BUCKET: ${{ vars.GITLAB_RUNNERS_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind dispatch to reviewed source and workflow before AWS authentication
+        id: source
+        env:
+          APPROVED_REVISION: ${{ inputs.source_revision || inputs.adp_source_revision }}
+          ACCEPTED_REVISION: ${{ inputs.adp_source_revision }}
+          ACCEPTED_DEFINITION: ${{ inputs.adp_definition_revision }}
+          ACCEPTED_DIGEST: ${{ inputs.adp_contract_digest }}
+          PROTECTED_DIGEST: ${{ vars.GITLAB_RUNNERS_QUALIFICATION_DELIVERY_CONTRACT_DIGEST }}
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$APPROVED_REVISION"
+          git merge-base --is-ancestor "$APPROVED_REVISION" refs/remotes/origin/main
+          test "$APPROVED_REVISION" = "$ACCEPTED_REVISION"
+          [[ "$ACCEPTED_DEFINITION" =~ ^[0-9a-f]{40}$ ]]
+          test "$ACCEPTED_DEFINITION" = "${{ github.workflow_sha }}"
+          [[ "$ACCEPTED_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          test "$ACCEPTED_DIGEST" = "$PROTECTED_DIGEST"
+      - name: Bind private qualification inputs
+        id: inputs
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_ACCOUNT" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]]
+          [[ "$QUALIFICATION_RUN" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]]
+          [[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$APPROVED_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test -n "$BUNDLE_BUCKET"
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ inputs.region }}
+      - name: Confirm exact account and role
+        id: identity
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_ACCOUNT" = "${EXPECTED_ROLE:13:12}"
+          aws sts get-caller-identity --output json | python3 modules/source-control/gitlab/runners/scripts/deployment_guard.py identity --expected-role "$EXPECTED_ROLE"
+      - name: Install qualification and evidence tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/gitlab-qualification-venv"
+          "$RUNNER_TEMP/gitlab-qualification-venv/bin/pip" install --quiet ./modules/gateway boto3 jsonschema
+          echo "$RUNNER_TEMP/gitlab-qualification-venv/bin" >> "$GITHUB_PATH"
+      - name: Publish authenticated deployment context
+        env:
+          ADP_DELIVERY_CONTRACT_JSON: ${{ vars.GITLAB_RUNNERS_QUALIFICATION_DELIVERY_CONTRACT_JSON }}
+          ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+          ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ADP_DELIVERY_WORKFLOW: gitlab-runners-qualify.yml
+          ADP_DELIVERY_ACCOUNT_ID: ${{ inputs.account_id }}
+          ADP_DELIVERY_RESOURCE_KIND: ${{ vars.GITLAB_RUNNERS_QUALIFICATION_DELIVERY_RESOURCE_KIND }}
+          ADP_DELIVERY_RESOURCE_ID: ${{ vars.GITLAB_RUNNERS_QUALIFICATION_DELIVERY_RESOURCE_ID }}
+          ADP_DELIVERY_INPUTS_JSON: ${{ toJSON(inputs) }}
+        run: |
+          set -euo pipefail
+          python3 modules/source-control/gitlab/scripts/delivery_evidence.py --context
+          python3 modules/gateway/scripts/publish-deployment-evidence.py context gitlab-runners-qualify.yml "$RUNNER_TEMP/gitlab-delivery/deployment-context.json"
+      - name: Bind private operator receipts to approved bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -m 700 "$RUNNER_TEMP/gitlab-qualification" "$RUNNER_TEMP/gitlab-qualification/records"
+          if ! aws s3api get-object --bucket "$BUNDLE_BUCKET" \
+            --key "dev/gitlab-runners/qualification/$QUALIFICATION_RUN/bundle.tar.gz" \
+            "$RUNNER_TEMP/gitlab-qualification/bundle.tar.gz" >/dev/null 2>&1; then
+            echo '::error::Approved private qualification bundle unavailable'
+            exit 1
+          fi
+          python3 modules/source-control/gitlab/scripts/qualification_bundle.py \
+            --archive "$RUNNER_TEMP/gitlab-qualification/bundle.tar.gz" \
+            --directory "$RUNNER_TEMP/gitlab-qualification/records" \
+            --bundle-sha256 "$BUNDLE_SHA256" --release-lock-sha256 "$APPROVED_LOCK_SHA256" \
+            --run-id "$QUALIFICATION_RUN" --source-revision "$ADP_SOURCE_REVISION" \
+            --account-id "$EXPECTED_ACCOUNT" --region "$AWS_REGION" --expected-role "$EXPECTED_ROLE"
+      - name: Verify final acceptance against live providers
+        id: final
+        run: |
+          set -euo pipefail
+          command -v kubectl >/dev/null
+          python3 modules/source-control/gitlab/scripts/qualification_bundle.py \
+            --directory "$RUNNER_TEMP/gitlab-qualification/records" \
+            --bundle-sha256 "$BUNDLE_SHA256" --release-lock-sha256 "$APPROVED_LOCK_SHA256" \
+            --run-id "$QUALIFICATION_RUN" --source-revision "$ADP_SOURCE_REVISION" \
+            --account-id "$EXPECTED_ACCOUNT" --region "$AWS_REGION" --expected-role "$EXPECTED_ROLE" \
+            --workflow-run-id "$GITHUB_RUN_ID"
+      - name: Publish verified operational delivery
+        env:
+          ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1
+          ADP_DELIVERY_CONTRACT_JSON: ${{ vars.GITLAB_RUNNERS_QUALIFICATION_DELIVERY_CONTRACT_JSON }}
+          ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          ADP_DELIVERY_WORKFLOW: gitlab-runners-qualify.yml
+          ADP_DELIVERY_COMPONENT: ${{ vars.GITLAB_RUNNERS_QUALIFICATION_DELIVERY_COMPONENT }}
+          ADP_DELIVERY_ACCOUNT_ID: ${{ inputs.account_id }}
+          ACCOUNT_ID: ${{ inputs.account_id }}
+          ADP_DELIVERY_RESOURCE_KIND: ${{ vars.GITLAB_RUNNERS_QUALIFICATION_DELIVERY_RESOURCE_KIND }}
+          ADP_DELIVERY_RESOURCE_ID: ${{ vars.GITLAB_RUNNERS_QUALIFICATION_DELIVERY_RESOURCE_ID }}
+          ADP_QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id || vars.GITLAB_QUALIFICATION_RUN_ID }}
+          ADP_QUALIFICATION_BUNDLE_SHA256: ${{ inputs.bundle_sha256 || vars.GITLAB_QUALIFICATION_BUNDLE_SHA256 }}
+          ADP_DELIVERY_FIXTURES: ${{ runner.temp }}/gitlab-qualification/records/fixtures.json
+          ADP_DELIVERY_CLEANUP_RECEIPT: ${{ runner.temp }}/gitlab-qualification/records/final-verdict.json
+          ADP_DELIVERY_STEP_OUTCOMES: '{"source":"${{ steps.source.outcome }}","inputs":"${{ steps.inputs.outcome }}","identity":"${{ steps.identity.outcome }}","bundle":"${{ steps.bundle.outcome }}","final":"${{ steps.final.outcome }}"}'
+        run: |
+          set -euo pipefail
+          python3 modules/source-control/gitlab/scripts/delivery_evidence.py
+          python3 modules/gateway/scripts/publish-deployment-evidence.py delivery delivery-evidence "$RUNNER_TEMP/gitlab-delivery/delivery.json"
+      - name: Remove private qualification files
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/gitlab-qualification" "$RUNNER_TEMP/gitlab-qualification-venv"

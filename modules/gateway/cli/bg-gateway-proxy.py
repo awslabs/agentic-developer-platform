@@ -89,6 +89,8 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from adp_native_test import NativeTransport, NativeTransportError
+
 # Loopback only, never configurable. See module docstring.
 BIND_HOST = "127.0.0.1"
 
@@ -457,7 +459,11 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            token = self.token_source.token()
+            native = NativeTransport.configured()
+            token = native.value["access_token"] if native is not None else self.token_source.token()
+        except (NativeTransportError, OSError):
+            self._send_error_body(403, "native_transport_refused", "Original native transport is unavailable")
+            return
         except TokenError as exc:
             # 502 with an explicit proxy_ error code: a request that fails here
             # never reached the gateway, and the user must be able to tell the
@@ -466,6 +472,7 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
             self._send_error_body(502, "proxy_token_error", f"{exc}. Try: bg-cognito-auth.sh status")
             return
 
+        self.native_request_limit = 65536 if native is not None else None
         try:
             body = self._read_request_body()
         except ValueError as exc:
@@ -475,22 +482,51 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
 
         body = self._normalize_model(body)
 
-        connection = self._open_upstream()
+        attempt = None
         try:
+            headers = self._upstream_headers(token, body)
+            if native is not None:
+                if any(self.headers.get(name) for name in ("x-adp-native-test-capability", "x-adp-native-test-operation")):
+                    raise NativeTransportError("Native headers are owned by the original transport")
+                authority = self.upstream_host + (":" + str(self.upstream_port) if self.upstream_port not in (None, 443) else "")
+                url = self.upstream_scheme + "://" + authority + self._upstream_path()
+                attempt = native.begin(self.command, url, body)
+                body = attempt.body
+                replaced = {name.lower() for name in attempt.headers} | {"content-length"}
+                headers = {name: value for name, value in headers.items() if name.lower() not in replaced}
+                headers.update(attempt.headers)
+                headers["Content-Length"] = str(len(body))
+        except (ValueError, OSError):
+            self._send_error_body(403, "native_transport_refused", "Original native operation is refused or unresolved")
+            return
+
+        connection = None
+        native_response_started = False
+        try:
+            connection = self._open_upstream()
             connection.request(
                 self.command,
                 self._upstream_path(),
                 body=body,
-                headers=self._upstream_headers(token, body),
+                headers=headers,
             )
             response = connection.getresponse()
             self.log_message("%s %s -> %s", self.command, self._log_path(), response.status)
-            self._relay_response(response)
-        except (OSError, http.client.HTTPException) as exc:
-            self.log_message("%s %s -> 502 (upstream error: %s)", self.command, self._log_path(), exc)
-            self._send_error_body(502, "proxy_upstream_error", f"could not reach the gateway: {exc}")
+            if attempt is None:
+                self._relay_response(response)
+            else:
+                native_response_started = True
+                self._relay_response(response, native_attempt=attempt)
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            message = "original native operation unresolved; inspect its journal" if attempt is not None else str(exc)
+            self.log_message("%s %s -> 502 (upstream error: %s)", self.command, self._log_path(), message)
+            if native_response_started:
+                self.close_connection = True
+                return
+            self._send_error_body(502, "proxy_upstream_error", f"could not reach the gateway: {message}")
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
 
     def _open_upstream(self) -> http.client.HTTPConnection:
         if self.upstream_scheme == "https":
@@ -516,23 +552,45 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
             raise ValueError("invalid Content-Length") from exc
         if length < 0:
             raise ValueError("invalid Content-Length")
-        return self.rfile.read(length)
+        limit = getattr(self, "native_request_limit", None)
+        if limit is not None and length > limit:
+            raise NativeTransportError("Native input byte bound exceeded")
+        result = self.rfile.read(length)
+        if limit is not None and len(result) != length:
+            raise NativeTransportError("Native request body is incomplete")
+        return result
 
     def _read_chunked_body(self) -> bytes:
         chunks = []
+        total, limit = 0, getattr(self, "native_request_limit", None)
         while True:
-            size_line = self.rfile.readline().split(b";", 1)[0].strip()
+            line = self.rfile.readline(1025) if limit is not None else self.rfile.readline()
+            if limit is not None and (len(line) > 1024 or not line.endswith(b"\r\n")):
+                raise NativeTransportError("Native request framing is invalid")
+            size_line = line.split(b";", 1)[0].strip()
             try:
                 size = int(size_line, 16)
             except ValueError as exc:
                 raise ValueError("malformed chunked request body") from exc
             if size == 0:
+                if limit is not None:
+                    if self.rfile.read(2) != b"\r\n":
+                        raise NativeTransportError("Native request trailers are unsupported")
+                    break
                 # Consume the trailer section up to the terminating blank line.
                 while self.rfile.readline().strip():
                     pass
                 break
-            chunks.append(self.rfile.read(size))
-            self.rfile.readline()  # trailing CRLF
+            total += size
+            if limit is not None and (size < 0 or total > limit):
+                raise NativeTransportError("Native input byte bound exceeded")
+            chunk = self.rfile.read(size)
+            chunks.append(chunk)
+            if limit is not None:
+                if len(chunk) != size or self.rfile.read(2) != b"\r\n":
+                    raise NativeTransportError("Native request body is incomplete")
+            else:
+                self.rfile.readline()  # trailing CRLF
         return b"".join(chunks)
 
     def _normalize_model(self, body: bytes) -> bytes:
@@ -577,7 +635,25 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
         # that occasionally carries credentials.
         return self.path.split("?", 1)[0]
 
-    def _relay_response(self, response: http.client.HTTPResponse) -> None:
+    def _relay_response(self, response: http.client.HTTPResponse, *, native_attempt=None) -> None:
+        native_content = None
+        if native_attempt is not None:
+            # A native client may invoke MCP as soon as it sees the terminal
+            # model event. Confirm and fsync this original response before any
+            # of its bytes become visible; an upstream EOF delay must not turn
+            # the next legitimate operation into an unresolved-send refusal.
+            parts, size = [], 0
+            while True:
+                chunk = response.read1(RELAY_CHUNK_BYTES)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > native_attempt.maximum:
+                    raise NativeTransportError("Native response exceeded its original bound")
+                parts.append(chunk)
+            native_content = b"".join(parts)
+            native_attempt.complete(response.status, native_content)
+
         self.send_response_only(response.status, response.reason)
 
         streaming = response.getheader("Content-Length") is None
@@ -594,6 +670,11 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         if self.command == "HEAD":
+            return
+
+        if native_content is not None:
+            self.wfile.write(native_content)
+            self.wfile.flush()
             return
 
         while True:

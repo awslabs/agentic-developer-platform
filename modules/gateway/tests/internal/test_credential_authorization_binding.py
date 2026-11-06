@@ -120,6 +120,7 @@ async def db(engine) -> AsyncSession:
 
         # Seed credentials for alice (bearer for raw-read, aws_role for assume-role).
         bearer_cred = UserCredential(
+            agent_consent=True,
             id="cred-binding-bearer",
             org_id="org-binding",
             user_id=_USER_ALICE_ID,
@@ -129,6 +130,7 @@ async def db(engine) -> AsyncSession:
             secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:binding-bearer",
         )
         aws_cred = UserCredential(
+            agent_consent=True,
             id="cred-binding-aws",
             org_id="org-binding",
             user_id=_USER_ALICE_ID,

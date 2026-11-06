@@ -84,6 +84,9 @@ async def test_router_dependency_denial_is_durable(session, session_factory):
 
 
 async def test_admission_sink_failure_prevents_business_mutation(session, session_factory, monkeypatch):
+    from src.shared.accounting_health import AUDIT_WRITE_FAILURES
+
+    failures = AUDIT_WRITE_FAILURES._value.get()
     seed = await _seed_org_and_user(session)
     app = _build_admin_app(session, _platform_admin_ctx(seed["org_id"]))
     monkeypatch.setattr(audit_operation, "persist", AsyncMock(side_effect=RuntimeError("synthetic sink failure")))
@@ -91,12 +94,16 @@ async def test_admission_sink_failure_prevents_business_mutation(session, sessio
         response = await client.put(f"/admin/organizations/{seed['org_id']}", json={"name": "Must not change"})
     assert response.status_code == 503
     assert response.json()["detail"]["error"] == "admin_audit_unavailable"
+    assert AUDIT_WRITE_FAILURES._value.get() == failures + 1
     await session.close()
     async with session_factory() as fresh:
         assert (await fresh.get(Organization, seed["org_id"])).name != "Must not change"
 
 
 async def test_terminal_sink_failure_exposes_pending_operation(session, session_factory, monkeypatch):
+    from src.shared.accounting_health import AUDIT_WRITE_FAILURES
+
+    failures = AUDIT_WRITE_FAILURES._value.get()
     seed = await _seed_org_and_user(session)
     app = _build_admin_app(session, _platform_admin_ctx(seed["org_id"]))
     original = audit_operation.persist
@@ -114,6 +121,7 @@ async def test_terminal_sink_failure_exposes_pending_operation(session, session_
     assert unresolved.status_code == 200
     assert unresolved.json()["total"] == 1
     assert unresolved.json()["events"][0]["details"]["outcome"] == "pending"
+    assert AUDIT_WRITE_FAILURES._value.get() == failures + 1
     await session.close()
     assert [row.event_type for row in await rows(session_factory)] == ["admin_operation_started"]
     async with session_factory() as fresh:

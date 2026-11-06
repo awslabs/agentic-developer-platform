@@ -130,12 +130,35 @@ async def applied(scenario, *, sensitive=False):
 
 
 @pytest.mark.parametrize("sensitive", [False, True])
+@pytest.mark.parametrize("streamlined", [False, True])
 def test_native_evidence_uses_separate_read_authorities(
     harness,  # noqa: F811
     tmp_path,
     monkeypatch,
     sensitive,
+    streamlined,
 ):
+    from workspace_provisioning.tests import test_lifecycle_runtime_postgres as fixture
+
+    class Approvals(fixture._Approves):
+        async def approval_for(self, *, principal, request):
+            context = await super().approval_for(principal=principal, request=request)
+            if not streamlined:
+                return context
+            requester = context.record.binding.requester
+            status = next(iter(context.approver_statuses.values()))
+            return replace(
+                context,
+                record=replace(
+                    context.record,
+                    requires_distinct_approver=False,
+                    approvers=frozenset({requester}),
+                    decided_by=requester,
+                ),
+                approver_statuses={requester: replace(status, subject=requester)},
+            )
+
+    monkeypatch.setattr(fixture, "_Approves", Approvals)
     scenario = Scenario(
         harness, tmp_path, monkeypatch, OwnershipMode.EXISTING_ACCOUNT_MANAGED
     )
@@ -150,6 +173,11 @@ def test_native_evidence_uses_separate_read_authorities(
             current_operation_id=bootstrap.grant.lease.operation_id,
         )
         async with harness.connect() as connection:
+            assert await connection.fetchval(
+                "SELECT bool_and(requires_distinct_approver = $1) "
+                "FROM harness_approval_consumption",
+                not streamlined,
+            )
             before = await connection.fetchval(
                 "SELECT count(*) FROM harness_operations"
             )
@@ -187,6 +215,13 @@ def test_native_evidence_uses_separate_read_authorities(
             for field in ("org_id", "workspace_id"):
                 with pytest.raises(LifecycleRefused):
                     await native_evidence(composition, **{**scope, field: "other"})
+            if streamlined:
+                async with harness.connect() as connection:
+                    await connection.execute(
+                        "UPDATE harness_approval_consumption SET requires_distinct_approver=true"
+                    )
+                with pytest.raises(LifecycleRefused):
+                    await native_evidence(composition, **scope)
             async with harness.connect() as connection:
                 await connection.execute(
                     "DELETE FROM harness_approval_consumption WHERE operation_id=$1",

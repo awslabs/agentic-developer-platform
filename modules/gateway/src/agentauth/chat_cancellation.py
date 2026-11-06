@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse
 
 from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.chat_admission import _encoded
-from src.agentauth.chat_authority import ChatSessionLease, current_chat_member
+from src.agentauth.chat_authority import ChatSessionLease, current_chat_member, current_tenant_member
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatLaunch, ChatLaunchStore, Identifier
 from src.agentauth.chat_data_routes import contract_errors, enabled
 from src.agentauth.chat_delivery import ChatDelivery, delivery_lookup_key, load_delivery, load_registered_delivery, verify_delivery_session
@@ -241,10 +241,12 @@ def cancellation_service():
 async def cancel_turn(body: CancelTurn, user=Depends(get_current_user), db=Depends(get_db), service=Depends(cancellation_service)):
     if user.account_type != "human" or user.auth_source != "jwt":
         raise ChatAuthorizationRefusedError("chat cancellation refused")
+    # user.org_id is the workspace claim; the signed-in human holds that tenant
+    # through tenant membership, not through their own users.org_id (#7911).
     users = (
         await db.scalars(
             select(User.id).where(
-                User.org_id == user.org_id, User.user_kind == "human", or_(User.id == user.user_id, User.cognito_sub == user.user_id)
+                User.user_kind == "human", or_(User.id == user.user_id, User.cognito_sub == user.user_id), current_tenant_member(user.org_id)
             )
         )
     ).all()

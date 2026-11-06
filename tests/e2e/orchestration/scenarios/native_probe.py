@@ -41,9 +41,10 @@ class NativeProbe:
         target = session.manifest.runtime["engine"]
         runtime = read_runtime(session.client, target)
         allowed = {session.config.versions["engine"]}
-        allowed.update(
-            r["actual_revision"] for r in session.runtime_observations.values()
-        )
+        if session.config.product_epic is None:
+            allowed.update(
+                r["actual_revision"] for r in session.runtime_observations.values()
+            )
         if runtime["actual_revision"] not in allowed:
             raise Unsupported("native probe target changed to an unverified revision")
         request = dict(

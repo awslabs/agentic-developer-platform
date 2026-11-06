@@ -1,0 +1,33 @@
+# Pinned inputs of the Kiro Crew bundle (#8054). Sourced by
+# scripts/build-crew-bundle.sh and parsed by scripts/crew_bundle.py; the parity
+# test keeps the kirocrew wheel, awscli and embedding-model pins identical to
+# modules/agent-factory/agent/Dockerfile.sandbox. Change a pin here and in the
+# Dockerfile together. Every download is verified against its SHA-256 before use.
+CREW_VERSION=0.11.2
+KIROCREW_WHEEL_URL=https://download.crew.kiro.dev/cli/stable/0.11.2/kirocrew-0.11.2-py3-none-any.whl
+KIROCREW_WHEEL_SHA256=76f280e1716e0eb9b4b6b590d60f3cee4bed364b19ac636af1ceee5dd2fbe750
+AWSCLI_VERSION=1.46.1
+EMBEDDING_MODEL_URL=https://d3j0sthz5doyui.cloudfront.net/models/qwen3-embedding-0.6b.gguf
+EMBEDDING_MODEL_SHA256=06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439
+EMBEDDING_MODEL_FILE=qwen3-embedding-0.6b-q8_0.gguf
+# host/node and the build-time npm come from the same Node 22 LTS tarball
+# (nodejs.org/dist/v22.23.3/SHASUMS256.txt, linux-x64).
+NODE_VERSION=22.23.3
+NODE_TARBALL_URL=https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz
+NODE_TARBALL_SHA256=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
+# kirocrew 0.11.2 requires Python >= 3.12; the AL2023 guest ships 3.9 and the
+# private build instance has no package-repository egress, so the bundle carries
+# a relocatable CPython (astral-sh/python-build-standalone SHA256SUMS, release 20261013).
+PYTHON_VERSION=3.12.15
+PYTHON_TARBALL_URL=https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.12.15+20261013-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+PYTHON_TARBALL_SHA256=178d3d83b6e8e99285a65d3fce9c16b87952cc5efdb4d1a0e3ff3be18ff0fc9c
+# GitHub CLI for the box's gh wrapper (#8555): the private build instance has no egress to
+# cli.github.com, so the bundle carries the release binary (cli/cli gh_<ver>_checksums.txt, linux_amd64).
+GH_VERSION=2.103.2
+GH_TARBALL_URL=https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_linux_amd64.tar.gz
+GH_TARBALL_SHA256=62ccf747115ddc61237efffdde66a3c8f70ba249433dc64f70801089b59c59c8
+# Repository inputs (relative to the repo root) and the installed prefix the
+# venv is relocated to (install_crew.py switches /opt/adp/crew/current).
+CLIENTS_DIR=modules/agent-factory/agent/kirocrew-clients
+AGENT_DIR=modules/agent-factory/agent
+INSTALL_PREFIX=/opt/adp/crew/current

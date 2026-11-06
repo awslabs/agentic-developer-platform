@@ -1,0 +1,25 @@
+path	revision	parents	dependencies
+modules/L5-services/src/l5_services/migrations/versions/l5_admission_recovery.py	l5_admission_recovery	"""l5_runs_and_work"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_bindings_and_setup.py	l5_bindings_and_setup	"""l5_devops_resource_observation"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_bindings_integration_merge.py	l5_bindings_integration_merge	"[""l5_events_bindings_merge"", ""l5_events_integration_merge""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_configurations.py	l5_configurations	null	null
+modules/L5-services/src/l5_services/migrations/versions/l5_devops_integration_observation.py	l5_devops_integration_obs	"""l5_devops_resource_observation"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_devops_knowledge_publication.py	l5_devops_knowledge_pub	"""l5_bindings_integration_merge"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_devops_resource_observation.py	l5_devops_resource_observation	"""l5_devops_space_intents"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_devops_space_intents.py	l5_devops_space_intents	"""l5_worker_fences"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events.py	l5_events	"""l5_worker_fences"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events_bindings_merge.py	l5_events_bindings_merge	"[""l5_events_resource_merge"", ""l5_bindings_and_setup""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events_devops_merge.py	l5_events_devops_merge	"[""l5_events"", ""l5_devops_space_intents""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events_integration_merge.py	l5_events_integration_merge	"[""l5_events_resource_merge"", ""l5_devops_integration_obs""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_events_resource_merge.py	l5_events_resource_merge	"[""l5_events_devops_merge"", ""l5_devops_resource_observation""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_and_triage.py	l5_results_and_triage	"""l5_devops_resource_observation"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_bindings_merge.py	l5_results_bindings_merge	"[""l5_results_events_merge"", ""l5_events_bindings_merge""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_events_merge.py	l5_results_events_merge	"[""l5_results_and_triage"", ""l5_events_resource_merge""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_integration_merge.py	l5_results_integration_merge	"[""l5_results_bindings_merge"", ""l5_bindings_integration_merge""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_results_knowledge_merge.py	l5_results_knowledge_merge	"[""l5_results_integration_merge"", ""l5_devops_knowledge_pub""]"	null
+modules/L5-services/src/l5_services/migrations/versions/l5_runs_and_work.py	l5_runs_and_work	"""l5_configurations"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_attempts.py	l5_worker_attempts	"""l5_worker_runtime"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_evidence.py	l5_worker_evidence	"""l5_admission_recovery"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_fences.py	l5_worker_fences	"""l5_worker_repair"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_repair.py	l5_worker_repair	"""l5_worker_attempts"""	null
+modules/L5-services/src/l5_services/migrations/versions/l5_worker_runtime.py	l5_worker_runtime	"""l5_worker_evidence"""	null

@@ -25,6 +25,8 @@ EPIC A supervisor's to settle.
 
 from __future__ import annotations
 
+from dataclasses import asdict, replace
+
 import pytest
 from account_factory.modes import (
     LEGACY_FORBIDDEN_VALUES,
@@ -84,6 +86,57 @@ def test_each_valid_fixture_passes_validation():
     for mode, build in BUILDERS.items():
         problems, _ = validate(build())
         assert problems == [], f"{mode.value}: {problems}"
+
+
+@pytest.mark.parametrize(
+    "build", [existing_account_request, bring_existing_cluster_request]
+)
+def test_standalone_requires_explicit_authorization_for_same_management_account(build):
+    request = build(
+        organization_id="standalone", target_account_id=FIXTURE_MANAGEMENT_ACCOUNT
+    )
+    authorization = matching_authorization(request)
+    assert validate(request, authorization) == ([], [])
+    assert from_mapping(asdict(request)) == request
+    assert "organization_id" in validate(request)[1]
+    assert (
+        "organization_id"
+        in validate(request, replace(authorization, organization_id=None))[1]
+    )
+    with pytest.raises(ModeError, match="not the organization"):
+        ensure_valid(request, replace(authorization, organization_id=FIXTURE_ORG_ID))
+    with pytest.raises(ModeError, match="not the organization"):
+        ensure_valid(replace(request, organization_id=FIXTURE_ORG_ID), authorization)
+    with pytest.raises(ModeError, match="not the management"):
+        ensure_valid(
+            request, replace(authorization, management_account_id="000000000003")
+        )
+    # Even an authority that lists a different account cannot give standalone that scope.
+    other = replace(request, target_account_id="000000000002")
+    with pytest.raises(ModeError, match="standalone requires"):
+        ensure_valid(other, matching_authorization(other))
+
+
+def test_standalone_never_authorizes_account_creation_or_ou_placement():
+    request = new_account_request(organization_id="standalone")
+    with pytest.raises(ModeError, match="account creation is refused"):
+        ensure_valid(request, matching_authorization(request))
+    request = existing_account_request(
+        organization_id="standalone",
+        target_account_id=FIXTURE_MANAGEMENT_ACCOUNT,
+        organizational_unit_id="ou-test-fixture01",
+    )
+    with pytest.raises(ModeError, match="standalone requires"):
+        ensure_valid(request, matching_authorization(request))
+
+
+def test_explicit_standalone_binding_preserves_domain_organization_identity():
+    domain_org = "00000000-0000-4000-8000-000000000001"
+    authorization = ValidationAuthorization.from_operation_binding(
+        resolved_binding(organization_id=domain_org), aws_organization_id="standalone"
+    )
+    assert authorization.organization_id == "standalone"
+    assert authorization.operation_org_id == domain_org
 
 
 # ── AC-02: unknown mode ──────────────────────────────────────────────────────────────

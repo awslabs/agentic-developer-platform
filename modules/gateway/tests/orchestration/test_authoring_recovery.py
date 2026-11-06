@@ -41,10 +41,10 @@ What is asserted, and why each property is load-bearing:
   - **The first attempt is not raced.** A request whose own pass is still publishing it
     is excluded twice over: by an age boundary (a time heuristic) and by an exact
     identity check (not a heuristic). Both are proved, separately.
-  - **Addressing comes from server state only.** The issue from the flow's own
-    `intent_ref`, the installation from the org record through the same fail-closed
-    resolver dispatch uses. A request that cannot be addressed stays `QUEUED` rather than
-    being published somewhere nobody asked for.
+  - **Addressing stays with the approved source.** Recovery reuses the stored
+    repository, installation, issue and envelope, while the current accepted binding
+    is reverified. Revoked or legacy-unbound requests remain `QUEUED` rather than
+    publishing against a guessed target.
   - **Recovery cannot cost the tick anything.** It runs after the command rows, and a
     failure inside it leaves owed requests `QUEUED` — the state that brings them back —
     without discarding the commands the pass correctly applied.
@@ -62,8 +62,9 @@ from unittest.mock import AsyncMock
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
+from src.orchestration import repository_binding
 from src.orchestration.authoring_dispatch import (
     RECOVERY_GRACE_SECONDS,
     RECOVERY_LIMIT,
@@ -72,6 +73,7 @@ from src.orchestration.authoring_dispatch import (
     publish_authoring,
     recover_owed_authoring,
 )
+from src.orchestration.compile import plan_hash
 from src.orchestration.engine_commands import (
     _REPLAN_QUEUED_REPLY,
     _REPLAN_UNQUEUED_REPLY,
@@ -83,9 +85,11 @@ from src.orchestration.engine_commands import (
 )
 from src.orchestration.models import (
     AmendmentRequestState,
+    OrchestrationAcceptedPlan,
     OrchestrationAmendmentRequest,
     OrchestrationFlow,
 )
+from src.orchestration.proposal import LoopProposal
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
 from src.shared.models.vault import UserIdentity
@@ -194,6 +198,7 @@ def replan_row(
         envelope(
             tenant_id=org_id,
             repo=REPO,
+            repo_id=123456789,
             issue_number=issue,
             installation_id=str(installation),
             command_body=f"@agent-engine replan: {text}",
@@ -253,8 +258,30 @@ async def seed(
         org_id=org_id,
         proposal=base_proposal(org_id=org_id, flow=flow_slug, intent_ref=str(issue)),
     )
+    flow = await session.get(OrchestrationFlow, flow_id)
+    reference = dict(provider="github", repository_id=123456789, repository=REPO, installation_id=installation, issue_number=issue)
+    flow.origin_ref = reference
+    plan = (await session.scalars(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow_id))).one()
+    plan.plan_document = {**plan.plan_document, "origin_ref": reference}
+    plan.plan_hash = plan_hash(LoopProposal.model_validate(plan.plan_document))
     await session.commit()
     return flow_id
+
+
+@pytest.fixture(autouse=True)
+def verified_recovery_repository(monkeypatch):
+    async def verified(_session, **kwargs):
+        return repository_binding.VerifiedRepository(
+            "github",
+            kwargs["repository_id"],
+            kwargs["name"],
+            kwargs["installation_id"],
+            kwargs["name"],
+            kwargs["issue"],
+            kwargs["operation"],
+        )
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", verified)
 
 
 @pytest.fixture(autouse=True)
@@ -539,10 +566,10 @@ class TestOneHumanAskStaysOneAuthor:
         assert await publish_authoring(first[0], session_factory=factory, client=sqs, queue_url=QUEUE) is True
         dispatched_at = (await requests(session))[0].dispatched_at
         await session.rollback()
-        assert await publish_authoring(second[0], session_factory=factory, client=sqs, queue_url=QUEUE) is True
+        assert await publish_authoring(second[0], session_factory=factory, client=sqs, queue_url=QUEUE) is False
         await session.rollback()
 
-        assert {call["MessageDeduplicationId"] for call in sqs.calls} == {first[0].deduplication_id}
+        assert [call["MessageDeduplicationId"] for call in sqs.calls] == [first[0].deduplication_id]
         rows = await requests(session)
         assert len(rows) == 1 and rows[0].state == AmendmentRequestState.DISPATCHED.value
         assert rows[0].dispatched_at == dispatched_at, "a one-way transition must not be rewritten by a losing retry"
@@ -591,12 +618,107 @@ class TestOneHumanAskStaysOneAuthor:
 # ---------------------------------------------------------------------------------
 
 
+async def remove_requester(session, *, org_id: str = ORG_A):
+    user_id = f"{org_id}-asker"
+    await session.execute(delete(UserIdentity).where(UserIdentity.user_id == user_id))
+    await session.execute(delete(TenantMembership).where(TenantMembership.user_id == user_id))
+    await session.execute(delete(User).where(User.id == user_id))
+    await session.commit()
+
+
+class TestPersistedPlanningAssignment:
+    async def test_changed_global_repository_cannot_move_recovery(self, session, monkeypatch):
+        table, _flow_id, request_id = await stranded(session, monkeypatch)
+        original = (await requests(session))[0].authoring_assignment
+        await age_request(session, request_id)
+        monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "other/repository")
+
+        report = await engine_pass(session, table)
+        sqs = FakeSQS()
+        await flush(session, report, table=table, sqs=sqs, monkeypatch=monkeypatch)
+
+        assert report.authoring_recovered == 1
+        assert sqs.envelope(0) == original["envelope"]
+        assert len(sqs.calls) == 1
+
+    async def test_deleted_requester_cannot_recover_saved_assignment(self, session, monkeypatch):
+        from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
+
+        table, _flow_id, request_id = await stranded(session, monkeypatch)
+        await age_request(session, request_id)
+        requester = (await requests(session))[0].requested_by
+        await remove_requester(session)
+        with pytest.raises(UnresolvableUserEntityError):
+            await resolve_root_user_entity_id(session, ORG_A, requester)
+
+        report = await engine_pass(session, table)
+        sqs = FakeSQS()
+        await flush(session, report, table=table, sqs=sqs, monkeypatch=monkeypatch)
+        assert report.authoring_recovered == 0
+        assert sqs.calls == []
+        assert (await requests(session))[0].state == AmendmentRequestState.QUEUED.value
+
+    async def test_deleted_requester_after_staging_refuses_publication(self, session, monkeypatch):
+        table, _flow_id, request_id = await stranded(session, monkeypatch)
+        await age_request(session, request_id)
+        report = await engine_pass(session, table)
+        assert report.authoring_recovered == 1
+        await remove_requester(session)
+
+        sqs = FakeSQS()
+        await flush(session, report, table=table, sqs=sqs, monkeypatch=monkeypatch)
+        assert sqs.calls == []
+        assert (await requests(session))[0].state == AmendmentRequestState.QUEUED.value
+
+    async def test_revoked_planning_access_refuses_scheduled_recovery(self, session, monkeypatch):
+        table, _flow_id, request_id = await stranded(session, monkeypatch)
+        await age_request(session, request_id)
+
+        async def revoked(*args, **kwargs):
+            raise repository_binding.RepositoryBindingError("connection_revoked")
+
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", revoked)
+        report = await engine_pass(session, table)
+        sqs = FakeSQS()
+        await flush(session, report, table=table, sqs=sqs, monkeypatch=monkeypatch)
+
+        assert report.authoring_recovered == 0
+        assert sqs.calls == []
+        assert (await requests(session))[0].state == AmendmentRequestState.QUEUED.value
+
+    async def test_revoked_after_staging_refuses_publication(self, session, monkeypatch):
+        table, _flow_id, request_id = await stranded(session, monkeypatch)
+        await age_request(session, request_id)
+        report = await engine_pass(session, table)
+        assert report.authoring_recovered == 1
+
+        async def revoked(*args, **kwargs):
+            raise repository_binding.RepositoryBindingError("connection_revoked")
+
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", revoked)
+        sqs = FakeSQS()
+        await flush(session, report, table=table, sqs=sqs, monkeypatch=monkeypatch)
+        assert sqs.calls == []
+        assert (await requests(session))[0].state == AmendmentRequestState.QUEUED.value
+
+    async def test_legacy_unresolved_request_is_readable_but_not_published(self, session, monkeypatch):
+        table, _flow_id, request_id = await stranded(session, monkeypatch)
+        await session.execute(
+            update(OrchestrationAmendmentRequest).where(OrchestrationAmendmentRequest.id == request_id).values(authoring_assignment=None)
+        )
+        await age_request(session, request_id)
+        report = await engine_pass(session, table)
+        sqs = FakeSQS()
+        await flush(session, report, table=table, sqs=sqs, monkeypatch=monkeypatch)
+        assert sqs.calls == []
+        assert report.authoring_recovered == 0
+        assert (await requests(session))[0].author_run_id is not None
+        assert (await requests(session))[0].state == AmendmentRequestState.QUEUED.value
+
+
 class TestRecoveryAddressesFromServerState:
     async def test_the_issue_and_repo_come_from_server_state(self, session, monkeypatch):
-        """The issue from the flow's own intent issue, the repo from engine configuration.
-
-        Not from the consumed comment, which by now is gone anyway.
-        """
+        """The approved planning source is saved when the signed command is applied."""
         table, _flow_id, request_id = await stranded(session, monkeypatch)
         await age_request(session, request_id)
 
@@ -608,11 +730,7 @@ class TestRecoveryAddressesFromServerState:
         assert sqs.envelope(0)["source_ref"]["repo"] == REPO
 
     async def test_a_hash_prefixed_intent_ref_is_still_addressed(self, session, monkeypatch):
-        """Both `"4529"` and `"#4529"` occur in real proposals.
-
-        Matching one spelling only would fail to recover half of all flows — and fail
-        silently, because the row would simply stay `QUEUED`.
-        """
+        """Presentation changes to a flow's issue reference cannot move its saved source."""
         table, flow_id, request_id = await stranded(session, monkeypatch)
         await session.execute(update(OrchestrationFlow).where(OrchestrationFlow.id == flow_id).values(intent_ref=f"#{ISSUE}"))
         await age_request(session, request_id)
@@ -627,8 +745,8 @@ class TestRecoveryAddressesFromServerState:
         "intent_ref",
         [pytest.param(None, id="absent"), pytest.param("", id="empty"), pytest.param("see the epic", id="not-a-number")],
     )
-    async def test_a_flow_with_no_usable_intent_issue_stays_queued(self, session, monkeypatch, intent_ref):
-        """A skip, not a guess: an invented issue would post output nobody asked for."""
+    async def test_intent_display_changes_do_not_move_the_saved_issue(self, session, monkeypatch, intent_ref):
+        """Recovery uses the committed planning source even when display metadata changes."""
         table, flow_id, request_id = await stranded(session, monkeypatch)
         await session.execute(update(OrchestrationFlow).where(OrchestrationFlow.id == flow_id).values(intent_ref=intent_ref))
         await age_request(session, request_id)
@@ -637,20 +755,16 @@ class TestRecoveryAddressesFromServerState:
         sqs = FakeSQS()
         await flush(session, report, table=table, sqs=sqs, monkeypatch=monkeypatch)
 
-        assert sqs.calls == []
-        assert report.authoring_recovered == 0
-        assert (await requests(session))[0].state == AmendmentRequestState.QUEUED.value
+        assert sqs.envelope(0)["source_ref"] == {"installation_id": INSTALLATION, "repo": REPO, "issue": ISSUE}
+        assert report.authoring_recovered == 1
+        assert (await requests(session))[0].state == AmendmentRequestState.DISPATCHED.value
 
     @pytest.mark.parametrize(
         "installations",
         [pytest.param([], id="no-installation"), pytest.param([INSTALLATION, INSTALLATION_B], id="ambiguous-installation")],
     )
-    async def test_an_unresolvable_installation_stays_queued(self, session, monkeypatch, installations):
-        """The same fail-closed rule dispatch applies, on both zero and more than one.
-
-        Guessing would address an authoring run into a repository nobody asked for, so the
-        request stays owed until the ambiguity is resolved.
-        """
+    async def test_org_installation_changes_do_not_move_the_saved_connection(self, session, monkeypatch, installations):
+        """Changing a legacy singleton cannot alter an approved planning connection."""
         table, _flow_id, request_id = await stranded(session, monkeypatch)
         await session.execute(update(Organization).where(Organization.id == ORG_A).values(github_installation_ids=[str(i) for i in installations]))
         await age_request(session, request_id)
@@ -659,29 +773,23 @@ class TestRecoveryAddressesFromServerState:
         sqs = FakeSQS()
         await flush(session, report, table=table, sqs=sqs, monkeypatch=monkeypatch)
 
-        assert sqs.calls == []
-        assert report.authoring_recovered == 0
-        assert (await requests(session))[0].state == AmendmentRequestState.QUEUED.value
+        assert sqs.envelope(0)["source_ref"] == {"installation_id": INSTALLATION, "repo": REPO, "issue": ISSUE}
+        assert report.authoring_recovered == 1
+        assert (await requests(session))[0].state == AmendmentRequestState.DISPATCHED.value
 
-    async def test_an_unset_dispatch_repository_rebuilds_nothing(self, session, monkeypatch):
-        """Fail-closed, exactly as the command pass is: unaddressable is not published."""
+    async def test_recovery_does_not_require_global_execution_repo(self, session, monkeypatch):
+        """The approved planning target survives a changed global execution setting."""
         table, _flow_id, request_id = await stranded(session, monkeypatch)
         await age_request(session, request_id)
         monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "")
 
         report = await engine_pass(session, table)
 
-        assert report.authoring_recovered == 0
+        assert report.authoring_recovered == 1
         assert (await requests(session))[0].state == AmendmentRequestState.QUEUED.value
 
-    async def test_a_requester_who_can_no_longer_be_resolved_stays_queued(self, session, monkeypatch):
-        """An identity failure inside the rebuild is contained, and leaves it owed.
-
-        The human has since been removed from the tenant, so the envelope's two identity
-        namespaces cannot be resolved. `build_authoring_assignment` raises, and the honest
-        outcome is that the request is still owed — not quietly discarded, and not the
-        whole pass dying.
-        """
+    async def test_requester_mutation_refuses_saved_envelope(self, session, monkeypatch):
+        """A changed requester cannot inherit the originally approved run."""
         table, _flow_id, request_id = await stranded(session, monkeypatch)
         await session.execute(
             update(OrchestrationAmendmentRequest).where(OrchestrationAmendmentRequest.id == request_id).values(requested_by="ghost")
@@ -691,7 +799,7 @@ class TestRecoveryAddressesFromServerState:
         report = await engine_pass(session, table)
 
         assert report.authoring_recovered == 0
-        assert report.errors == 0, "a per-request identity failure is contained, not an error for the tick"
+        assert report.pending_authoring == []
         assert (await requests(session))[0].state == AmendmentRequestState.QUEUED.value
 
     async def test_each_tenants_request_is_addressed_with_its_own_installation(self, session, monkeypatch):
@@ -830,17 +938,14 @@ class TestRecoveryCannotCostTheTick:
     async def test_one_request_that_cannot_be_rebuilt_does_not_stop_the_next(self, session, monkeypatch):
         """The innermost layer: one request raising must not abandon the rest of the batch.
 
-        Distinct from the intent-ref and installation cases, which are deliberate `continue`
-        skips rather than exceptions — those leave this guard untested. Here tenant A's
-        requester genuinely cannot be resolved, so `build_authoring_assignment` raises, and
-        B (later in the same oldest-first batch) must still be rebuilt. Called directly, so
-        neither outer layer can account for the result.
+        Tenant A's planning binding is withdrawn after its request commits, so it
+        cannot be recovered. B is still recovered from the same oldest-first batch.
         """
         _table, _flow_a, request_a = await stranded(session, monkeypatch, org_id=ORG_A)
         _table_b, _flow_b, request_b = await stranded(
             session, monkeypatch, org_id=ORG_B, installation=INSTALLATION_B, issue=ISSUE_B, flow_slug="beta-flow"
         )
-        await session.execute(update(OrchestrationAmendmentRequest).where(OrchestrationAmendmentRequest.id == request_a).values(requested_by="ghost"))
+        await session.execute(update(OrchestrationFlow).where(OrchestrationFlow.id == _flow_a).values(origin_ref=None))
         # A first, B second, so a guard that abandoned the batch would drop B.
         await age_request(session, request_a, seconds=RECOVERY_GRACE_SECONDS + 3600)
         await age_request(session, request_b, seconds=RECOVERY_GRACE_SECONDS + 60)
@@ -854,14 +959,14 @@ class TestRecoveryCannotCostTheTick:
     async def test_one_tenants_unrecoverable_request_does_not_strand_anothers(self, session, monkeypatch):
         """Per-request containment. Otherwise one broken tenant blocks every other.
 
-        Tenant A's flow loses its addressable intent issue; tenant B's is fine. B must
-        still be recovered on this same pass.
+        Tenant A's accepted planning binding is withdrawn; tenant B's remains
+        authorized. B must still be recovered on this same pass.
         """
         table, flow_a, request_a = await stranded(session, monkeypatch, org_id=ORG_A)
         _table_b, _flow_b, request_b = await stranded(
             session, monkeypatch, org_id=ORG_B, installation=INSTALLATION_B, issue=ISSUE_B, flow_slug="beta-flow"
         )
-        await session.execute(update(OrchestrationFlow).where(OrchestrationFlow.id == flow_a).values(intent_ref=None))
+        await session.execute(update(OrchestrationFlow).where(OrchestrationFlow.id == flow_a).values(origin_ref=None))
         await age_request(session, request_a)
         await age_request(session, request_b)
 

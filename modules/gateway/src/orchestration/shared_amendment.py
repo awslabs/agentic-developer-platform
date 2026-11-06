@@ -140,37 +140,56 @@ async def history(session, *, flow, lock=False):
     return found
 
 
-def require_quiescence(found):
-    require(not any(n.state in {"running", "awaiting_merge"} for n in found["nodes"]), "active_nodes_cross_plan_boundary")
-    require(all(e.status in {"concluded", "superseded"} and not e.pending_action_key for e in found["executions"]), "unfinished_execution")
-    require(all(a.status in {"succeeded", "failed"} for a in found["actions"]), "unsettled_action")
+#: Node states whose execution authority an ordinary plan change would invalidate.
+ACTIVE_NODE_STATES = frozenset({"running", "awaiting_merge"})
+
+
+def quiescence_failures(found):
+    """Every reason in-flight work would not survive a plan boundary, in check order.
+
+    `require_quiescence` raises the first; the amendment impact report
+    (`amendment_impact.assess_amendment`) shows them all, from these same predicates.
+    """
+    failures = []
+    if any(n.state in ACTIVE_NODE_STATES for n in found["nodes"]):
+        failures.append("active_nodes_cross_plan_boundary")
+    if not all(e.status in {"concluded", "superseded"} and not e.pending_action_key for e in found["executions"]):
+        failures.append("unfinished_execution")
+    if not all(a.status in {"succeeded", "failed"} for a in found["actions"]):
+        failures.append("unsettled_action")
     reports = {r.run_id: r for r in found["reports"]}
-    for row in reports.values():
-        terminal = row.terminal_receipt or {}
-        require(
-            terminal.get("contract_version") == 1
-            and terminal.get("run_id") == row.run_id
-            and terminal.get("attempt") == row.attempt
-            and terminal.get("outcome") in {"complete", "failed"}
-            and terminal.get("recorded_at"),
-            "unfinished_or_unverified_worker_report",
-        )
     for claim in found["claims"]:
         if claim.state == "released":
             continue
         # A concluded cycle can retain its lane until ordinary reconciliation.
         # Preserve it, but only when its exact worker and generation are settled.
+        # Released claims and concluded executions already retired historical
+        # workers. Their missing reports cannot invalidate a new plan's authority.
         report = reports.get(claim.active_run_id)
-        require(
+        terminal = report.terminal_receipt or {} if report is not None else {}
+        if not (
             claim.state == "held"
             and report is not None
+            and terminal.get("contract_version") == 1
+            and terminal.get("run_id") == report.run_id
+            and terminal.get("attempt") == report.attempt
+            and terminal.get("outcome") in {"complete", "failed"}
+            and terminal.get("recorded_at")
             and any(
                 e.status == "concluded" and e.claim_id == claim.id and e.claim_generation == claim.generation and e.node_id == report.node_id
                 for e in found["executions"]
-            ),
-            "unsettled_work_claim",
-        )
-    require(all(r.state not in {"queued", "dispatched"} for r in found["authoring"]), "unfinished_amendment_authoring")
+            )
+        ):
+            failures.append("unsettled_work_claim")
+            break
+    if not all(r.state not in {"queued", "dispatched"} for r in found["authoring"]):
+        failures.append("unfinished_amendment_authoring")
+    return failures
+
+
+def require_quiescence(found):
+    failures = quiescence_failures(found)
+    require(not failures, failures[0] if failures else "")
 
 
 def build_append(flow, plan, found, request):

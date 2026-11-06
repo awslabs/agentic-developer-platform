@@ -4,6 +4,9 @@ Autonomous code agents powered by Claude SDK and Amazon Bedrock, orchestrated vi
 
 The hosted agents in this module run on the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk) (`@anthropic-ai/claude-agent-sdk`).
 
+Claude and Codex story workers share the [branch reconciliation policy](docs/story-branch-reconciliation.md)
+for preserving work and incorporating current base code when a run restarts.
+
 ## What It Does
 
 Agent Factory provides a team of AI agent personas that work on GitHub issues autonomously. Label an issue with `agent-developer`, and within minutes a pod spins up on EKS, clones the repo, analyzes the issue, implements changes, and opens a pull request. A reviewer agent can then automatically review and merge it.

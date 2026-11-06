@@ -14,6 +14,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
 from datetime import UTC, datetime, timedelta
 
@@ -27,6 +28,9 @@ from .models import JSON_DOC, OrchestrationFlow, OrchestrationNode
 
 REPORT_HEADER = "X-Adp-Report-Credential"
 CONTRACT_VERSION = 1
+SPOOL_GATEWAY = "gateway"
+SPOOL_PHASES = {"executing", "candidate", "failed", "review"}
+SPOOL_LIMIT = 2 * 1024 * 1024
 
 
 class RunReportError(Exception):
@@ -56,6 +60,12 @@ class OrchestrationRunReport(Base):
     worker_receipt: Mapped[dict | None] = mapped_column(JSON_DOC)
     terminal_receipt: Mapped[dict | None] = mapped_column(JSON_DOC)
     review_receipt: Mapped[dict | None] = mapped_column(JSON_DOC)
+    operations_report_receipt: Mapped[dict | None] = mapped_column(JSON_DOC)
+    task_board_snapshot: Mapped[dict | None] = mapped_column(JSON_DOC)
+    # Untrusted pending-report marker for protected workers (#7392). Written and
+    # read only through the authenticated report capability; never consulted by
+    # settlement, which still requires the locked worker/terminal receipts.
+    spool_document: Mapped[dict | None] = mapped_column(JSON_DOC)
     block_code: Mapped[str | None] = mapped_column(String(80))
     retryable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
@@ -79,6 +89,86 @@ def _mint(metadata: dict) -> str:
     return "adprpt1." + base64.urlsafe_b64encode(mac).decode().rstrip("=")
 
 
+def report_contract(credential: str) -> dict:
+    """Transport contract for the worker's reporting client.
+
+    A protected worker identity is denied every direct S3 action by its
+    permissions boundary, so it keeps its pending-report spool in the gateway
+    instead of the logs bucket. The field is omitted for shared-role dispatch so
+    existing envelopes and their digests are unchanged.
+    """
+    contract = {"contract_version": CONTRACT_VERSION, "credential": credential}
+    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+        contract["spool"] = SPOOL_GATEWAY
+    return contract
+
+
+FAILURE_CATEGORIES = {
+    "unknown",
+    "cancelled",
+    "deadline",
+    "signal",
+    "policy",
+    "provider_refusal",
+    "authentication",
+    "transport",
+    "stale_head",
+    "git_validation",
+    "inspection",
+    "contract",
+}
+
+
+def _hex_nonce(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 32 and all(char in "0123456789abcdef" for char in value)
+
+
+def validate_spool_document(row: OrchestrationRunReport, document: object) -> dict:
+    """Accept only a marker that names this exact assignment; the content stays untrusted.
+
+    Mirrors the worker's own ``read_spool`` checks so a protected worker cannot be
+    handed a marker the bucket spool would never have stored.
+    """
+    base = {"contract_version", "run_id", "attempt", "repo", "phase", "candidate_pr"}
+    if (
+        not isinstance(document, dict)
+        or document.get("contract_version") != CONTRACT_VERSION
+        or document.get("run_id") != row.run_id
+        or document.get("attempt") != row.attempt
+        or document.get("repo") != row.repo
+        or document.get("phase") not in SPOOL_PHASES
+        or not base <= set(document)
+        or len(json.dumps(document)) > SPOOL_LIMIT
+    ):
+        raise RunReportError("report_spool_scope_mismatch")
+    phase, extra = document["phase"], set(document) - base
+    if phase == "review":
+        content = document.get("review_content")
+        if (
+            extra != {"review_content", "ownership_nonce"}
+            or not isinstance(content, str)
+            or not 0 < len(content.encode()) <= 256 * 1024
+            or not _hex_nonce(document.get("ownership_nonce"))
+        ):
+            raise RunReportError("report_spool_scope_mismatch")
+    elif phase == "failed":
+        if extra - {"failure"} != {"ownership_nonce"} or document["candidate_pr"] is not None or not _hex_nonce(document.get("ownership_nonce")):
+            raise RunReportError("report_spool_scope_mismatch")
+    elif extra:
+        raise RunReportError("report_spool_scope_mismatch")
+    if "failure" in document:
+        failure = document["failure"]
+        if (
+            not isinstance(failure, dict)
+            or set(failure) != {"category", "exit_code"}
+            or failure.get("category") not in FAILURE_CATEGORIES
+            or type(failure.get("exit_code")) is not int
+            or not -255 <= failure["exit_code"] <= 255
+        ):
+            raise RunReportError("report_spool_scope_mismatch")
+    return document
+
+
 async def prepare_run_report(session: AsyncSession, envelope: dict) -> OrchestrationRunReport:
     """Persist assignment before publication; reconstruct the same token on replay.
 
@@ -91,7 +181,7 @@ async def prepare_run_report(session: AsyncSession, envelope: dict) -> Orchestra
         credential = _mint(existing.dispatch_metadata)
         if not secrets.compare_digest(existing.credential_hash, _digest(credential)):
             raise RunReportError("report_signing_key_changed", retryable=True)
-        envelope["run_report"] = {"contract_version": CONTRACT_VERSION, "credential": credential}
+        envelope["run_report"] = report_contract(credential)
         return existing
     scope = envelope["orchestration"]
     source = envelope["source_ref"]
@@ -123,7 +213,7 @@ async def prepare_run_report(session: AsyncSession, envelope: dict) -> Orchestra
     )
     session.add(row)
     await session.flush()
-    envelope["run_report"] = {"contract_version": CONTRACT_VERSION, "credential": credential}
+    envelope["run_report"] = report_contract(credential)
     return row
 
 
@@ -165,6 +255,7 @@ def report_snapshot(row: OrchestrationRunReport) -> dict:
         "run_id": row.run_id,
         "attempt": row.attempt,
         "candidate_pr": row.candidate_pr,
+        "operations_report_receipt": {key: value for key, value in (row.operations_report_receipt or {}).items() if key != "report"} or None,
         "binding_receipt": row.binding_receipt,
         "terminal_receipt": row.terminal_receipt,
         "worker_receipt": row.worker_receipt,
@@ -298,4 +389,27 @@ async def run_result_for_assignment(session: AsyncSession, *, node: Orchestratio
         "engine_attempt": row.attempt,
         "status": status,
         "status_source": "authenticated_run_report",
+        "worker_started": row.worker_receipt is not None,
+        # The worker's own last word before it exited without starting (#7419):
+        # a non-retryable refusal recorded through /block is positive evidence
+        # that this assignment cannot start under the current authority.
+        "block_code": row.block_code,
+        "retryable": row.retryable,
     }
+
+
+async def settle_unstarted_assignment(session: AsyncSession, *, run_id: str, code: str) -> bool:
+    """Record why an assignment that never reached ``/started`` will not finish (#7393).
+
+    Only an assignment with no worker and no terminal receipt can be settled this
+    way; anything a worker acknowledged keeps its receipt requirement. The block
+    code is informational for the run-reports view; settlement itself is decided
+    by the caller from the trusted startup fence. Nothing ran, so the attempt is
+    retryable: the developer-recovery pass treats a non-retryable block as a
+    failure that requires an operator, which a never-started worker is not.
+    """
+    row = await session.get(OrchestrationRunReport, run_id)
+    if row is None or row.worker_receipt is not None or row.terminal_receipt is not None:
+        return False
+    row.block_code, row.retryable = code, True
+    return True

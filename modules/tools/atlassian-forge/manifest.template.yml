@@ -1,0 +1,45 @@
+modules:
+  jira:adminPage:
+    - key: adp-jira-setup
+      resource: setup
+      resolver:
+        endpoint: adp-jira-pair
+      title: Connect ADP
+      useAsConfig: true
+  scheduledTrigger:
+    - key: adp-jira-refresh-hourly
+      endpoint: adp-jira-refresh
+      interval: hour
+  endpoint:
+    - key: adp-jira-pair
+      remote: adp
+      auth:
+        appSystemToken:
+          enabled: true
+    - key: adp-jira-refresh
+      remote: adp
+      route:
+        path: /api/auth/connections/atlassian-mcp/forge/refresh
+      auth:
+        appSystemToken:
+          enabled: true
+resources:
+  - key: setup
+    path: static/dist
+permissions:
+  scopes:
+    - read:app-system-token
+    - read:jira-work
+    - read:jira-user
+    - read:board-scope:jira-software
+    - read:board-scope.admin:jira-software
+    - read:issue-details:jira
+    - read:project:jira
+    - read:sprint:jira-software
+remotes:
+  - key: adp
+    baseUrl: __ADP_BASE_URL__
+app:
+  id: __FORGE_APP_ID__
+  runtime:
+    name: nodejs22.x

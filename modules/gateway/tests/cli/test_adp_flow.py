@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import subprocess
 import sys
 import threading
@@ -272,6 +273,35 @@ def test_a_stalled_node_is_blocked_even_while_its_state_reads_running(server):
     _, result = run_cli(["show", FLOW_ID])
 
     assert [node["id"] for node in result["detail"]["blocked"]] == ["n1"]
+
+
+def test_show_names_a_node_waiting_on_budget_instead_of_saying_nothing_is_waiting(server):
+    """#9536: the reviewer was refused at the per-run ceiling; the node stayed `running` with
+    delivery_progress.blocker budget_exhausted and `show` said nothing was waiting."""
+    engine_on(server)
+    route(
+        server,
+        "GET",
+        f"/api/orchestration/flows/{FLOW_ID}",
+        _graph(
+            [
+                {
+                    "id": "n1",
+                    "node_ref": "ready-api",
+                    "state": "running",
+                    "kind": "story",
+                    "title": "API story",
+                    "delivery_progress": {"stage": "awaiting_review", "blocker": "budget_exhausted"},
+                },
+                {"id": "n2", "node_ref": "evidence", "state": "pending", "kind": "eval", "title": "Evaluation"},
+            ]
+        ),
+    )
+    code, result = run_cli(["show", FLOW_ID])
+    assert code == 0
+    assert result["detail"]["budget_blocked"] == ["ready-api"]
+    assert "waiting on budget" in result["next_action"] and "ready-api" in result["next_action"]
+    assert "Nothing is waiting" not in result["next_action"]
 
 
 def test_show_leads_with_the_blocker_not_the_gate(server):
@@ -579,6 +609,24 @@ def test_repo_and_issue_become_context_in_the_conversation(server):
     message = [body for method, path, body in server.received if method == "POST"][0]["message"]
     assert "acme/app" in message
     assert "4120" in message
+
+
+def test_product_selection_is_sent_to_intake_and_plan(server):
+    _intake_started(server)
+    route(server, "GET", f"/api/orchestration/intake/sessions/{SESSION_ID}", _session(updated_at=200, last_response="Got it."))
+
+    run_cli(["start", "Improve checkout", "--product", "product-1", "--json"])
+
+    started = [body for method, path, body in server.received if method == "POST" and path.endswith("/intake/sessions")]
+    assert started[0]["product_id"] == "product-1"
+
+
+def test_explicit_project_selection_is_sent_to_intake(server):
+    _intake_started(server)
+    route(server, "GET", f"/api/orchestration/intake/sessions/{SESSION_ID}", _session(updated_at=200, last_response="Got it."))
+    run_cli(["start", "Improve checkout", "--product", "product-1", "--project", "project-2", "--json"])
+    started = [body for method, path, body in server.received if method == "POST" and path.endswith("/intake/sessions")]
+    assert (started[0]["product_id"], started[0]["project_id"]) == ("product-1", "project-2")
 
 
 def test_an_open_question_is_reported_not_answered_without_a_terminal(server):
@@ -1712,6 +1760,27 @@ def test_an_unreachable_dry_run_prevents_registration_and_approval(server, tmp_p
     assert all(path.endswith("/preview") for method, path, _ in server.received if method == "POST")
 
 
+def test_a_refused_dry_run_names_the_field_instead_of_blaming_the_gateway(server, tmp_path):
+    """HTTP 422 is an answer about the document. Reporting it as "upgrade the
+    gateway" (2026-11-03: an integer `spec_revision`) hid the one fact the author
+    needed; nothing is registered either way."""
+    engine_on(server)
+    route(
+        server,
+        "POST",
+        "/api/orchestration/flows/drafts/preview",
+        {"detail": [{"type": "string_type", "loc": ["body", "spec_revision"], "msg": "Input should be a valid string", "input": 5}]},
+        status=422,
+    )
+    _draft_flow(server)
+    code, result = run_cli(["create", "--file", str(_plan_file(tmp_path)), "--yes", "--expect-plan-hash", CURRENT_HASH])
+    assert code == 4
+    assert result["error"]["code"] == "preview_refused"
+    assert "spec_revision: Input should be a valid string" in result["error"]["message"]
+    assert "Upgrade the gateway" not in result["error"]["message"]
+    assert all(path.endswith("/preview") for method, path, _ in server.received if method == "POST")
+
+
 def test_the_preview_says_which_waves_run_at_the_same_time(server, tmp_path):
     """Concurrency is the fact a node list cannot express, and it drives blast radius.
 
@@ -1868,6 +1937,89 @@ def test_an_empty_tenant_is_a_complete_answer_not_a_failure(server):
 
     assert code == 0
     assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["list"], ["limit", "offset"]),
+        (["list", "--include-archived"], ["include_archived=true"]),
+        (["list", "--status", "archived"], ["status=archived"]),
+    ],
+)
+def test_archive_list_filters_and_rows_use_server_population(server, arguments, expected):
+    engine_on(server)
+    visible = "--include-archived" in arguments or "--status" in arguments
+    rows = [{"id": FLOW_ID, "status": "archived", "archived_at": "2026-10-13T12:00:00Z"}] if visible else []
+    route(
+        server,
+        "GET",
+        "/api/orchestration/flows",
+        {
+            "flows": rows,
+            "total": len(rows),
+            "limit": 25,
+            "offset": 0,
+            "status_counts": {"archived": len(rows), "running": 0},
+        },
+    )
+
+    code, result = run_cli(arguments + ["--json"])
+
+    assert code == 0
+    path = next(path for method, path, _ in server.received if method == "GET" and "/orchestration/flows" in path)
+    assert all(value in path for value in expected)
+    assert ("include_archived=" in path) is ("--include-archived" in arguments)
+    assert result["detail"]["flows"] == cli.flow_rows({"flows": rows})
+    assert result["detail"]["status_counts"]["archived"] == len(rows)
+
+
+@pytest.mark.parametrize("verb", ["archive", "unarchive"])
+def test_archive_transitions_send_reason_and_return_server_summary(server, verb):
+    engine_on(server)
+    reason = "No active work remains"
+    summary = {
+        "id": FLOW_ID,
+        "status": "archived" if verb == "archive" else "complete",
+        "archived_at": "2026-10-13T12:00:00Z" if verb == "archive" else None,
+    }
+    route(server, "POST", f"/api/orchestration/flows/{FLOW_ID}/{verb}", summary)
+
+    code, result = run_cli([verb, FLOW_ID, "--reason", reason, "--json"])
+
+    assert code == 0
+    assert result["detail"] == summary
+    assert ("POST", f"/api/orchestration/flows/{FLOW_ID}/{verb}", {"reason": reason}) in server.received
+
+
+@pytest.mark.parametrize("reason", [" ", "1234567", "a" * 4001])
+def test_archive_reason_validation_is_offline_and_never_mutates(monkeypatch, reason):
+    monkeypatch.setattr(common, "gateway_url", lambda: (_ for _ in ()).throw(AssertionError("no gateway")))
+    code, result = run_cli(["archive", FLOW_ID, "--reason", reason, "--json"])
+    assert code == 1
+    assert result["error"]["code"] == "usage_error"
+
+
+@pytest.mark.parametrize("status", [403, 404, 409])
+def test_archive_refusal_is_nonzero_machine_readable_and_does_not_claim_success(server, status):
+    engine_on(server)
+    response = (
+        {"detail": {"code": "flow_has_active_work", "message": "Resolve active work before archiving; the slug remains reserved."}}
+        if status == 409
+        else {"detail": "Forbidden" if status == 403 else "Flow not found"}
+    )
+    route(server, "POST", f"/api/orchestration/flows/{FLOW_ID}/archive", response, status=status)
+
+    code, result = run_cli(["archive", FLOW_ID, "--reason", "No active work remains", "--json"])
+
+    assert code != 0
+    assert result["status"] == "failed"
+    assert "error" in result
+    assert not result["detail"]
+    if status == 409:
+        assert result["error"]["code"] == "flow_has_active_work"
+        assert "slug remains reserved" in result["error"]["message"]
+    assert len([entry for entry in server.received if entry[0] == "POST"]) == 1
 
 
 # --- stream separation and exit codes --------------------------------------
@@ -2069,6 +2221,198 @@ def test_start_plan_sends_the_repository_to_be_resolved_not_as_prose_to_an_agent
     assert code == 0
     plan_request = next(entry[2] for entry in server.received if entry[0] == "POST" and entry[1].endswith("/plan"))
     assert plan_request["repository"] == "acme/web"
+
+
+def test_product_epic_cli_preview_keeps_child_targets_separate(monkeypatch, server):
+    engine_on(server)
+    _conversation_done(server, repository="acme/planning", requested_issue="42", product_id="product-1")
+    plan = _planned(server)
+    epic = {"provider": "github", "repository_id": 100, "repository": "acme/planning", "installation_id": 11, "issue_number": 42}
+    plan["proposal"]["product_id"] = "product-1"
+    plan["proposal"]["origin_ref"] = epic
+    plan["proposal"]["tracker_refs"] = [{"scope": "epic", "address": "rate-limiting/epic-1", "issue": epic}]
+    plan["proposal"]["proposed_execution_policy"]["repository_ids"] = ["acme/api", "acme/web"]
+    plan["proposal"]["nodes"] = [
+        {"address": "rate-limiting/epic-1/wave-1/01-api", "kind": "story", "title": "API", "issue_ref": "13", "repository_identity": "acme/api"},
+        {"address": "rate-limiting/epic-1/wave-1/02-web", "kind": "story", "title": "Web", "issue_ref": "17", "repository_identity": "acme/web"},
+    ]
+    plan.update(planning_epic=epic, story_repositories=["acme/api", "acme/web"], repository="acme/planning")
+    _preview_ok(server)
+    _draft_flow(server)
+    _execution(server, executions=[_execution_row()])
+    printed = []
+    monkeypatch.setattr(cli, "progress", printed.append)
+
+    code, result = run_cli(
+        [
+            "start",
+            "Improve checkout",
+            "--repo",
+            "acme/planning",
+            "--issue",
+            "42",
+            "--product",
+            "product-1",
+            "--plan",
+            "--yes",
+            "--expect-plan-hash",
+            CURRENT_HASH,
+            "--json",
+        ]
+    )
+
+    assert code == 0, result
+    started = next(body for method, path, body in server.received if method == "POST" and path.endswith("/intake/sessions"))
+    derived = next(body for method, path, body in server.received if method == "POST" and path.endswith("/plan"))
+    assert started["product_id"] == derived["product_id"] == "product-1"
+    assert derived["repository"] == "acme/planning"
+    assert "should land in the repository acme/planning" not in started["message"]
+    assert any("acme/planning#42" in line for line in printed)
+    assert any("acme/api#13" in line for line in printed)
+    assert any("acme/web#17" in line for line in printed)
+    assert result["detail"]["derived"]["story_repositories"] == ["acme/api", "acme/web"]
+
+
+def test_product_selection_is_restored_on_resume_and_cannot_be_changed(server):
+    engine_on(server)
+    route(server, "GET", f"/api/orchestration/intake/sessions/{SESSION_ID}", _session(product_id="product-1"))
+    _planned(server)
+    _draft_flow(server)
+
+    code, result = run_cli(["start", "--resume", SESSION_ID, "--product", "product-2", "--plan", "--json"])
+    assert code == 1 and result["error"]["code"] == "product_changed"
+    assert not any(method == "POST" for method, _, _ in server.received)
+
+    code, result = run_cli(["start", "--resume", SESSION_ID, "--plan", "--json"])
+    assert code == 4, result
+    derived = next(body for method, path, body in server.received if method == "POST" and path.endswith("/plan"))
+    assert derived["product_id"] == "product-1"
+
+
+@pytest.mark.parametrize(
+    ("selector", "value", "expected"),
+    [
+        ("--product", "product-2", "product_changed"),
+        ("--project", "different-project", "project_changed"),
+        ("--repo", "acme/web", "repository_changed"),
+    ],
+)
+def test_product_epic_resume_refuses_conflicting_selectors_before_planning(server, selector, value, expected):
+    engine_on(server)
+    route(
+        server,
+        "GET",
+        f"/api/orchestration/intake/sessions/{SESSION_ID}",
+        _session(
+            product_id="product-1",
+            repository="acme/planning",
+            requested_issue="42",
+        ),
+    )
+    _planned(server)
+    _draft_flow(server)
+
+    code, result = run_cli(["start", "--resume", SESSION_ID, selector, value, "--plan", "--json"])
+    assert code == 1 and result["error"]["code"] == expected
+    assert not any(method == "POST" for method, _, _ in server.received)
+
+
+def test_lost_start_ack_renamed_child_and_conflicting_resume_keep_cli_exit_contract(server, monkeypatch):
+    engine_on(server)
+    _conversation_done(server, repository="acme/planning", requested_issue="42", product_id="product-1")
+    derived = _planned(server)
+    epic = {"provider": "github", "repository_id": 100, "repository": "acme/planning", "installation_id": 11, "issue_number": 42}
+    derived["proposal"].update(
+        product_id="product-1",
+        origin_ref=epic,
+        tracker_refs=[{"scope": "epic", "address": "rate-limiting/epic-1", "issue": epic}],
+    )
+    derived["proposal"]["proposed_execution_policy"]["repository_ids"] = ["acme/service", "acme/web"]
+    derived["proposal"]["nodes"] = [
+        {
+            "address": "rate-limiting/epic-1/wave-1/01-api",
+            "kind": "story",
+            "title": "API",
+            "issue_ref": "13",
+            "repository_identity": "acme/service",
+            "provider_repository_id": 101,
+        },
+        {
+            "address": "rate-limiting/epic-1/wave-1/02-web",
+            "kind": "story",
+            "title": "Web",
+            "issue_ref": "17",
+            "repository_identity": "acme/web",
+            "provider_repository_id": 102,
+        },
+    ]
+    derived.update(repository="acme/planning", planning_epic=epic, story_repositories=["acme/service", "acme/web"])
+    _preview_ok(server)
+    _draft_flow(server)
+
+    original_respond = server._respond
+    lost = set()
+
+    def lose_first_ack(handler):
+        if handler.command == "POST" and handler.path == "/api/orchestration/intake/sessions" and not lost:
+            lost.add("start")
+            handler.close_connection = True
+            return
+        original_respond(handler)
+
+    monkeypatch.setattr(server, "_respond", lose_first_ack)
+    args = [
+        "start",
+        "Improve checkout",
+        "--repo",
+        "acme/planning",
+        "--issue",
+        "42",
+        "--product",
+        "product-1",
+        "--request-id",
+        "request-8401",
+        "--json",
+    ]
+    code, result = run_cli(args)
+    assert code == 4 and result["error"]["code"] == "unknown_mutation_outcome"
+    assert "do not retry blindly" in result["error"]["message"]
+    first = [body for method, path, body in server.received if method == "POST" and path == "/api/orchestration/intake/sessions"]
+    assert len(first) == 1 and first[0]["retry_token"] == "request-8401"
+    assert (first[0]["repository"], first[0]["issue"], first[0]["product_id"]) == ("acme/planning", "42", "product-1")
+
+    derived["proposal"]["nodes"][0]["repository_identity"] = "acme/backend"
+    derived["proposal"]["proposed_execution_policy"]["repository_ids"][0] = "acme/backend"
+    derived["story_repositories"][0] = "acme/backend"
+
+    code, retry = run_cli(args)
+    assert code == 0 and retry["detail"]["session_id"] == SESSION_ID
+    starts = [body for method, path, body in server.received if method == "POST" and path == "/api/orchestration/intake/sessions"]
+    assert len(starts) == 2 and starts[0] == starts[1]
+    assert retry["detail"]["request_id"] == "request-8401"
+
+    for selector, value, expected in (
+        ("--product", "product-2", "product_changed"),
+        ("--project", "different-project", "project_changed"),
+        ("--repo", "acme/other", "repository_changed"),
+        ("--issue", "43", "issue_changed"),
+    ):
+        before = len([entry for entry in server.received if entry[0] == "POST"])
+        code, conflict = run_cli(["start", "--resume", SESSION_ID, selector, value, "--plan", "--json"])
+        assert code == 1 and conflict["error"]["code"] == expected
+        assert len([entry for entry in server.received if entry[0] == "POST"]) == before
+
+    code, preview = run_cli(["start", "--resume", SESSION_ID, "--plan", "--json"])
+    assert code == 4 and preview["detail"]["derived"]["story_repositories"] == ["acme/backend", "acme/web"]
+    assert derived["proposal"]["nodes"][0]["provider_repository_id"] == 101
+    plan_requests = [body for method, path, body in server.received if method == "POST" and path.endswith("/plan")]
+    assert len(plan_requests) == 1
+    assert (plan_requests[0]["product_id"], plan_requests[0]["repository"], plan_requests[0]["issue"]) == (
+        "product-1",
+        "acme/planning",
+        "42",
+    )
+    assert not any(method == "POST" and (path.endswith("/register") or path.endswith("/accept")) for method, path, _ in server.received)
 
 
 def test_start_plan_refuses_a_repository_the_server_will_not_resolve(server):
@@ -2737,3 +3081,1104 @@ def test_preview_names_the_accepted_executor_separately_from_completion():
     rendered = "\n".join(lines)
     assert "agent-codex-developer (develop)" in rendered
     assert "merged_pr: 1 node(s)" in rendered
+
+
+# --- amendments (#5329) -----------------------------------------------------
+#
+# What these are about: the interaction is propose -> preview -> edit -> approve,
+# and the properties worth testing are the ones a careless client would break.
+#
+# **An approval binds the revision that was previewed.** Driven end to end: preview,
+# edit, then accept the pre-edit hash, and the accept must be refused with a nonzero
+# exit that NAMES the staleness — not a generic error a script cannot branch on.
+#
+# **An old gateway must not fall back to applying a plan.** A 404 from a path that
+# does not exist has to report a capability gap. Applying a fresh plan is not a
+# degraded amendment; the plan in force has started work and answered gates under it.
+#
+# **`--yes` without a bound revision is refused locally**, before any request. An
+# unattended approval of "whatever is live" is the concurrent-edit hole the whole
+# feature closes.
+#
+# **Blocking diagnostics are never buried.** An unapprovable proposal must not exit 0
+# with added nodes rendered above a blocker the reader skims past.
+
+AMENDMENTS = "/api/orchestration/flows/{flow_id}/amendments"
+DRAFT_ID = "draft-0123456789ab"
+REVISION = "c" * 64
+NEW_REVISION = "d" * 64
+
+
+def _impact(*, acceptable=True, blocking=None, nodes=None, **overrides):
+    """An impact report as `ImpactModel` serialises one."""
+    payload = {
+        "flow_id": FLOW_ID,
+        "base_plan_version": 2,
+        "base_plan_hash": CURRENT_HASH,
+        "nodes": nodes
+        if nodes is not None
+        else [{"address": "f/e/w1/new", "change": "added", "kind": "story", "title": "New work", "state": None, "attempts": 0}],
+        "edges": [{"from_address": "f/e/w1/a", "to_address": "f/e/w1/new", "change": "added"}],
+        "wave_changes": [],
+        "execution_order": [{"stage": 0, "waves": ["e/w1"]}],
+        "downstream": [],
+        "gates_added": [],
+        "gates_removed": [],
+        "blocking": list(blocking or []),
+        "acceptable": acceptable,
+        "is_noop": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _draft(*, state="pending", proposal_hash=REVISION, base_is_current=True, **overrides):
+    payload = {
+        "draft_id": DRAFT_ID,
+        "flow_id": FLOW_ID,
+        "state": state,
+        "proposal_hash": proposal_hash,
+        "base_plan_version": 2,
+        "base_plan_hash": CURRENT_HASH,
+        "base_is_current": base_is_current,
+        "requested_by": "someone",
+        "request_text": "gate the deploy wave",
+        "revision_of_draft_id": None,
+        "gate_diff": {"added": [], "removed": [], "unchanged": [], "changes_gating": False},
+        "created_at": "2026-09-22T00:00:00+00:00",
+        "decided_at": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _amendment_routes(server, *, draft=None, impact=None):
+    base = AMENDMENTS.format(flow_id=FLOW_ID)
+    route(server, "GET", f"{base}/drafts/{DRAFT_ID}", draft or _draft())
+    route(server, "POST", f"{base}/drafts/{DRAFT_ID}/preview", impact or _impact())
+    return base
+
+
+def test_yes_without_a_bound_revision_is_refused_before_any_request(server):
+    """An unattended approval of whatever is live is the hole this feature closes."""
+    engine_on(server)
+
+    code, result = run_cli(["amendment", "accept", FLOW_ID, DRAFT_ID, "--yes"])
+
+    assert code == 1
+    assert result["error"]["code"] == "usage_error"
+    assert "--expect-revision" in result["error"]["message"]
+    # And nothing was sent: a guard that refuses after the write is not a guard.
+    assert not [path for _method, path, _body in server.received if "amendments" in path]
+
+
+def test_an_empty_expect_revision_fails_closed(server):
+    """`--expect-revision "$(...)"` whose substitution produced nothing must not
+    approve unconditionally while the operator had asked to be guarded."""
+    engine_on(server)
+
+    code, result = run_cli(["amendment", "accept", FLOW_ID, DRAFT_ID, "--yes", "--expect-revision", "", "--expect-base-version", "2"])
+
+    assert code == 1
+    assert result["error"]["code"] == "usage_error"
+    assert not [path for _method, path, _body in server.received if "amendments" in path]
+
+
+def test_accepting_sends_both_preconditions_and_reports_the_new_version(server):
+    engine_on(server)
+    base = _amendment_routes(server)
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/accept",
+        {
+            "draft_id": DRAFT_ID,
+            "flow_id": FLOW_ID,
+            "plan_version": 3,
+            "superseded_version": 2,
+            "decision_id": "dec-1",
+            "gate_diff": {"added": [], "removed": [], "unchanged": [], "changes_gating": False},
+            "superseded_draft_ids": [],
+            "already_accepted": False,
+        },
+    )
+    route(
+        server,
+        "GET",
+        f"/api/orchestration/flows/{FLOW_ID}/execution",
+        {"total": 1, "legacy": False, "executions": [{"phase": "preparing", "actions": []}]},
+    )
+
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+
+    assert code == 0, result
+    assert result["detail"]["plan_version"] == 3
+    assert result["detail"]["applied"] is True
+    sent = next(body for method, path, body in server.received if method == "POST" and path.endswith("/accept"))
+    assert sent["expected_proposal_hash"] == REVISION
+    assert sent["expected_base_plan_version"] == 2
+
+
+def test_accepting_a_revision_that_moved_exits_nonzero_and_names_the_staleness(server):
+    """The requirement: a stale accept must be refused with an actionable conflict,
+    and a script must be able to tell it from an auth failure or a bad id."""
+    engine_on(server)
+    base = _amendment_routes(server)
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/accept",
+        {"detail": {"error": "revision_mismatch", "code": "revision_mismatch", "message": "draft is now revision d...", "retryable": True}},
+        status=409,
+    )
+
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+
+    assert code == 4
+    assert result["error"]["code"] == "revision_mismatch"
+    assert "NOT changed" in result["error"]["message"], "a failed approval must say the plan is untouched"
+    assert "do NOT retry with the same hash" in result["error"]["message"]
+
+
+def test_a_stale_base_is_reported_as_stale_rather_than_as_a_generic_failure(server):
+    engine_on(server)
+    base = _amendment_routes(server)
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/accept",
+        {"detail": {"error": "stale_base", "code": "stale_base", "message": "plan moved to version 4", "retryable": True}},
+        status=409,
+    )
+
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+
+    assert code == 4
+    assert result["error"]["code"] == "stale_base"
+
+
+def test_an_old_gateway_reports_a_capability_gap_and_never_applies_a_plan(server):
+    """The refusal #5329 names explicitly. A 404 from an unserved path must NOT
+    degrade into `adp flow create`: applying a fresh plan over a plan in force
+    discards started work, evidence and answered gates."""
+    engine_on(server)
+    # No amendment routes registered at all, so the harness answers 404 with a bare
+    # string detail — exactly what a gateway without these paths returns.
+
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+
+    assert code == 4
+    assert result["error"]["code"] == "amendment_api_unsupported"
+    assert "upgrade" in result["error"]["message"].lower()
+    assert "not a substitute" in result["error"]["message"].lower()
+    # Nothing was applied, and critically no plan-apply path was touched.
+    applied = [path for method, path, _body in server.received if method == "POST" and ("/drafts" in path or path.endswith("/flows"))]
+    assert applied == [], f"an unsupported server must not fall back to applying a plan: {applied}"
+
+
+def test_a_missing_draft_is_not_reported_as_an_old_gateway(server):
+    """The two 404s must stay distinct, or a mistyped id tells an operator their
+    deployment is out of date."""
+    engine_on(server)
+    base = AMENDMENTS.format(flow_id=FLOW_ID)
+    route(
+        server,
+        "GET",
+        f"{base}/drafts/{DRAFT_ID}",
+        {"detail": {"error": "draft_not_found", "code": "draft_not_found", "message": "no such draft"}},
+        status=404,
+    )
+
+    code, result = run_cli(["amendment", "show", FLOW_ID, DRAFT_ID])
+
+    assert code == 5
+    assert result["error"]["code"] == "draft_not_found"
+    # Asserted against the capability message specifically, not against the word
+    # "upgrade": `adp_common.Api`'s generic 404 hint mentions an upgrade for every
+    # 404 in the CLI, so matching on that word would pass for the wrong reason.
+    # What must not happen is this being reported as the amendment API being absent.
+    assert result["error"]["code"] != "amendment_api_unsupported"
+    assert "not a substitute" not in result["error"]["message"]
+
+
+def test_an_unapprovable_amendment_is_not_accepted_and_does_not_exit_zero(server):
+    """Blocking diagnostics must not be buried under a list of added nodes."""
+    engine_on(server)
+    _amendment_routes(
+        server,
+        impact=_impact(
+            acceptable=False,
+            blocking=[{"rule": "wave_eval_cardinality", "message": "a wave with stories must contain exactly one eval node", "where": "f/e/w1"}],
+        ),
+    )
+
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+
+    assert code == 4
+    assert result["status"] == "pending"
+    assert result["detail"]["applied"] is False
+    assert not [path for _m, path, _b in server.received if path.endswith("/accept")], "no approval may be attempted"
+
+
+def test_blocking_diagnostics_are_rendered_before_the_added_nodes(server):
+    """Order is the property: a reader who skims must hit the refusal first."""
+    text = cli.impact_text(_impact(acceptable=False, blocking=[{"rule": "wave_eval_cardinality", "message": "exactly one eval", "where": "f/e/w1"}]))
+
+    assert text.splitlines()[0].startswith("NOT APPROVABLE")
+    assert text.index("NOT APPROVABLE") < text.index("ADDED")
+    assert "wave_eval_cardinality" in text
+
+
+def test_the_preview_names_newly_blocked_downstream_work(server):
+    """The consequence a reviewer is most likely not to have intended."""
+    text = cli.impact_text(
+        _impact(
+            downstream=[
+                {
+                    "address": "f/e/w2/deploy",
+                    "state": "pending",
+                    "added_prerequisites": ["f/e/w1/new"],
+                    "removed_prerequisites": [],
+                    "newly_blocked": True,
+                }
+            ]
+        )
+    )
+
+    assert "NEWLY BLOCKED" in text
+    assert "f/e/w2/deploy" in text and "f/e/w1/new" in text
+
+
+def test_the_preview_says_which_waves_run_concurrently(server):
+    text = cli.impact_text(_impact(execution_order=[{"stage": 0, "waves": ["e/w1"]}, {"stage": 1, "waves": ["e/w2", "e/w3"]}]))
+
+    concurrent = [line for line in text.splitlines() if "stage 1" in line]
+    assert len(concurrent) == 1 and "concurrent" in concurrent[0]
+    assert "concurrent" not in next(line for line in text.splitlines() if "stage 0" in line)
+
+
+def test_gate_changes_are_called_out_separately_from_nodes(server):
+    """A gate is where a human is required, so adding or removing one changes who
+    must act — not merely what runs."""
+    text = cli.impact_text(_impact(gates_added=["f/e/w2/approve"], gates_removed=["f/e/w1/old-gate"]))
+
+    assert "requires a human answer: f/e/w2/approve" in text
+    assert "NO LONGER requires a human answer: f/e/w1/old-gate" in text
+
+
+def test_the_preview_shows_effective_limits_before_and_after(server):
+    limits = {"max_attempts_per_node": 3, "max_concurrent_actions": 2, "max_wall_clock_seconds": 3600, "expires_at": "2026-10-08T00:00:00+00:00"}
+    text = cli.impact_text(
+        _impact(
+            effective_limits_before={**limits, "max_spend_usd": "500.00"},
+            effective_limits_after={**limits, "max_spend_usd": "200.00"},
+        )
+    )
+
+    assert "EFFECTIVE LIMITS (before -> after accept):" in text
+    assert "  max_spend_usd: 500.00 -> 200.00  (changed)" in text
+    assert "  max_attempts_per_node: 3 -> 3" in text
+
+
+def test_the_preview_names_issues_accept_will_create_and_where(server):
+    text = cli.impact_text(
+        _impact(
+            issue_publications=[
+                {"address": "f/e/w1/new", "proposal_identity": "p:new", "repository": "aws-e/adp", "action": "create", "creates_issue": True},
+                {
+                    "address": "f/e/w1/old",
+                    "proposal_identity": "p:old",
+                    "repository": "aws-e/adp",
+                    "action": "reuse",
+                    "creates_issue": False,
+                    "issue_number": 41,
+                },
+            ]
+        )
+    )
+
+    assert "ISSUES TO PUBLISH ON ACCEPT (2):" in text
+    assert "f/e/w1/new -> aws-e/adp: NEW issue" in text
+    assert "f/e/w1/old -> aws-e/adp: existing issue #41" in text
+
+
+def test_preview_applies_nothing_and_reports_the_binding_values(server):
+    engine_on(server)
+    _amendment_routes(server)
+
+    code, result = run_cli(["amendment", "preview", FLOW_ID, DRAFT_ID, "--json"])
+
+    assert code == 0
+    assert result["detail"]["applied"] is False
+    assert result["detail"]["proposal_hash"] == REVISION
+    assert result["detail"]["base_plan_version"] == 2
+    assert result["detail"]["base_plan_hash"] == CURRENT_HASH
+    assert "--expect-revision" in result["next_action"]
+    assert not [path for method, path, _b in server.received if method == "POST" and path.endswith("/accept")]
+
+
+def test_amendment_preview_and_accept_warn_about_dropped_receipts_in_text_and_json(server, capsys):
+    engine_on(server)
+    dropped = [
+        {"kind": "budget", "decision_id": "budget-1", "before": "75.00", "after": "25.00", "reason": "base limits changed"},
+        {"kind": "retry", "decision_id": "retry-1", "before": 5, "after": 3, "reason": "repository changed"},
+    ]
+    limits = {
+        "max_spend_usd": "75.00",
+        "max_attempts_per_node": 5,
+        "max_concurrent_actions": 2,
+        "max_wall_clock_seconds": 3600,
+        "expires_at": "2030-01-01T01:00:00+00:00",
+    }
+    base = _amendment_routes(
+        server,
+        impact=_impact(
+            receipts_dropped=dropped,
+            effective_limits_before=limits,
+            effective_limits_after={**limits, "max_spend_usd": "25.00", "max_attempts_per_node": 3},
+        ),
+    )
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/accept",
+        {
+            "plan_version": 3,
+            "superseded_version": 2,
+            "decision_id": "amendment-1",
+            "receipts_dropped": dropped,
+            "receipts_preserved": [],
+            "effective_limits_before": limits,
+            "effective_limits_after": {**limits, "max_spend_usd": "25.00", "max_attempts_per_node": 3},
+        },
+    )
+    route(server, "GET", f"/api/orchestration/flows/{FLOW_ID}/execution", {"total": 0, "executions": []})
+
+    code, preview = run_cli(["amendment", "preview", FLOW_ID, DRAFT_ID, "--json"])
+    output = capsys.readouterr()
+    assert code == 0
+    assert json.loads(output.out)["detail"]["impact"]["receipts_dropped"] == dropped
+    assert "WARNING: ACCEPTED RECEIPTS WILL BE DROPPED ON ACCEPT" in output.err
+    assert "budget (decision budget-1): 75.00 -> 25.00" in output.err
+    assert "max_attempts_per_node: 5 -> 3" in output.err
+    assert preview["detail"]["impact"]["effective_limits_after"]["max_spend_usd"] == "25.00"
+
+    code, accepted = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+            "--json",
+        ]
+    )
+    output = capsys.readouterr()
+    assert code == 0
+    assert json.loads(output.out)["detail"]["receipts_dropped"] == dropped
+    assert accepted["detail"]["receipts_preserved"] == []
+    assert accepted["detail"]["effective_limits_before"] == preview["detail"]["impact"]["effective_limits_before"]
+    assert accepted["detail"]["effective_limits_after"] == preview["detail"]["impact"]["effective_limits_after"]
+    assert "COMMITTED EFFECTIVE LIMITS:" in accepted["next_action"]
+    assert "max_spend_usd: 75.00 -> 25.00" in accepted["next_action"]
+    assert "retry (decision retry-1): 5 -> 3" in accepted["next_action"]
+    assert "WARNING: ACCEPTED RECEIPTS DROPPED" in accepted["next_action"]
+
+    code, _ = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+    output = capsys.readouterr()
+    assert code == 0
+    assert "WARNING: ACCEPTED RECEIPTS DROPPED" in output.out
+    assert "budget (decision budget-1): 75.00 -> 25.00" in output.out
+    assert "COMMITTED EFFECTIVE LIMITS:" in output.out
+
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/accept",
+        {
+            "plan_version": 3,
+            "superseded_version": 2,
+            "decision_id": "amendment-1",
+            "already_accepted": True,
+            "receipts_dropped": dropped,
+            "effective_limits_before": limits,
+            "effective_limits_after": {**limits, "max_spend_usd": "25.00", "max_attempts_per_node": 3},
+        },
+    )
+    code, replay = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+            "--json",
+        ]
+    )
+    assert code == 0
+    assert replay["detail"]["already_accepted"] is True
+    assert replay["detail"]["receipts_dropped"] == accepted["detail"]["receipts_dropped"]
+    assert replay["detail"]["effective_limits_after"] == accepted["detail"]["effective_limits_after"]
+    assert "replay of the approval" in replay["next_action"]
+
+
+def test_amendment_preview_prints_an_executable_exact_revision_accept_command(server):
+    engine_on(server)
+    base = _amendment_routes(server)
+    route(server, "POST", f"{base}/drafts/{DRAFT_ID}/accept", {"plan_version": 3, "superseded_version": 2, "decision_id": "decision-1"})
+    code, preview = run_cli(["amendment", "preview", FLOW_ID, DRAFT_ID])
+    assert code == 0
+
+    command = shlex.split(preview["next_action"].splitlines()[-1])
+    assert command[:2] == ["adp", "flow"]
+    code, result = run_cli(command[2:])
+
+    assert code == 0, result
+    sent = next(body for method, path, body in server.received if method == "POST" and path.endswith("/accept"))
+    assert sent == {
+        "expected_proposal_hash": REVISION,
+        "expected_base_plan_version": 2,
+        "expected_base_plan_hash": CURRENT_HASH,
+        "reason": None,
+    }
+
+
+def test_proposing_files_an_inert_draft_and_sends_the_resolved_placement(server):
+    engine_on(server)
+    base = AMENDMENTS.format(flow_id=FLOW_ID)
+    route(
+        server,
+        "POST",
+        f"{base}/proposals",
+        {
+            "draft_id": DRAFT_ID,
+            "flow_id": FLOW_ID,
+            "proposal_hash": REVISION,
+            "base_plan_version": 2,
+            "added_nodes": ["f/e/w1b/migration-check"],
+            "resolved_edges": [{"from_address": "f/e/w1/eval", "to_address": "f/e/w1b/migration-check", "reason": "declared prerequisite"}],
+            "impact": _impact(),
+        },
+    )
+
+    code, result = run_cli(
+        [
+            "amendment",
+            "propose",
+            FLOW_ID,
+            "--ref",
+            "migration-check",
+            "--kind",
+            "eval",
+            "--title",
+            "Validate the migration",
+            "--placement",
+            "new_wave",
+            "--epic-ref",
+            "e",
+            "--wave-ref",
+            "w1b",
+            "--requires",
+            "f/e/w1/eval",
+            "--precedes",
+            "f/e/w2/deploy",
+            "--request-text",
+            "validate the migration",
+            "--json",
+        ]
+    )
+
+    assert code == 0, result
+    assert result["detail"]["applied"] is False
+    assert result["detail"]["resolved_edges"][0]["reason"]
+    sent = next(body for method, path, body in server.received if method == "POST" and path.endswith("/proposals"))
+    assert sent["placement"]["work"][0] == {
+        "ref": "migration-check",
+        "kind": "eval",
+        "title": "Validate the migration",
+        "requires": ["f/e/w1/eval"],
+        "precedes": ["f/e/w2/deploy"],
+    }
+    assert sent["placement"]["placement"] == {"kind": "new_wave", "epic_ref": "e", "wave_ref": "w1b"}
+    assert "accept" in result["next_action"] and REVISION in result["next_action"]
+
+
+def test_proposing_text_only_uses_the_bounded_authoring_path(server):
+    engine_on(server)
+    base = AMENDMENTS.format(flow_id=FLOW_ID)
+    route(
+        server,
+        "POST",
+        f"{base}/requests",
+        {
+            "request_id": "request-0123456789",
+            "flow_id": FLOW_ID,
+            "state": "queued",
+            "base_plan_version": 2,
+            "base_plan_hash": CURRENT_HASH,
+            "already_requested": False,
+        },
+        status=202,
+    )
+
+    code, result = run_cli(["amendment", "propose", FLOW_ID, "--request-text", "add cleanup validation", "--json"])
+
+    assert code == 4, result
+    assert result["status"] == "pending"
+    assert result["detail"]["proposal_pending"] is True
+    sent = next(body for method, path, body in server.received if method == "POST" and path.endswith("/requests"))
+    assert sent == {"request_text": "add cleanup validation"}
+    assert not [path for method, path, _body in server.received if method == "POST" and path.endswith("/proposals")]
+
+
+def test_proposing_accepts_a_structured_multi_node_file(server, tmp_path):
+    engine_on(server)
+    base = AMENDMENTS.format(flow_id=FLOW_ID)
+    route(
+        server,
+        "POST",
+        f"{base}/proposals",
+        {
+            "draft_id": DRAFT_ID,
+            "flow_id": FLOW_ID,
+            "proposal_hash": REVISION,
+            "base_plan_version": 2,
+            "added_nodes": ["f/e/w2/checker", "f/e/w2/validate"],
+            "resolved_edges": [],
+            "impact": _impact(),
+        },
+    )
+    request = {
+        "work": [
+            {"ref": "checker", "kind": "story", "title": "Implement checker", "issue_ref": "5320"},
+            {
+                "ref": "validate",
+                "kind": "eval",
+                "title": "Run live validation",
+                "issue_ref": "5321",
+                "required_inputs": [{"name": "live-account", "source": "environment-connection:prod"}],
+            },
+        ],
+        "placement": {"kind": "new_wave", "epic_ref": "e", "wave_ref": "w2"},
+    }
+    path = tmp_path / "amendment.json"
+    path.write_text(json.dumps(request))
+
+    code, result = run_cli(["amendment", "propose", FLOW_ID, "--file", str(path), "--request-text", "add checker and validation", "--json"])
+
+    assert code == 0, result
+    sent = next(body for method, route_path, body in server.received if method == "POST" and route_path.endswith("/proposals"))
+    assert len(sent["work"]) == 2
+    assert sent["work"][1]["required_inputs"][0]["name"] == "live-account"
+
+
+def test_an_unresolvable_placement_is_reported_with_its_violations(server):
+    """Ambiguity must surface before acceptance, naming what is unresolved."""
+    engine_on(server)
+    base = AMENDMENTS.format(flow_id=FLOW_ID)
+    route(
+        server,
+        "POST",
+        f"{base}/proposals",
+        {
+            "detail": {
+                "error": "placement_unresolved",
+                "code": "placement_unresolved",
+                "message": "anchor not found",
+                "violations": [{"rule": "unknown_anchor", "message": "no such node"}],
+            }
+        },
+        status=422,
+    )
+
+    code, result = run_cli(
+        [
+            "amendment",
+            "propose",
+            FLOW_ID,
+            "--ref",
+            "x",
+            "--kind",
+            "story",
+            "--title",
+            "T",
+            "--placement",
+            "insert_after",
+            "--anchor",
+            "f/e/w1/nope",
+            "--request-text",
+            "r",
+        ]
+    )
+
+    assert code == 5
+    assert result["error"]["code"] == "placement_unresolved"
+
+
+def test_editing_reports_the_new_revision_and_that_the_old_approval_is_void(server, tmp_path):
+    engine_on(server)
+    base = AMENDMENTS.format(flow_id=FLOW_ID)
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/edit",
+        {
+            "draft_id": "draft-successor",
+            "flow_id": FLOW_ID,
+            "proposal_hash": NEW_REVISION,
+            "superseded_draft_id": DRAFT_ID,
+            "unchanged": False,
+            "gate_diff": {"added": [], "removed": [], "unchanged": [], "changes_gating": False},
+            "impact": _impact(),
+        },
+    )
+
+    code, result = run_cli(["amendment", "edit", FLOW_ID, DRAFT_ID, "--file", str(_plan_file(tmp_path)), "--json"])
+
+    assert code == 0, result
+    assert result["detail"]["applied"] is False
+    assert result["detail"]["draft_id"] == "draft-successor"
+    assert "void" in result["next_action"]
+
+
+def test_a_no_op_edit_says_so_rather_than_churning_a_revision(server, tmp_path):
+    engine_on(server)
+    base = AMENDMENTS.format(flow_id=FLOW_ID)
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/edit",
+        {
+            "draft_id": DRAFT_ID,
+            "flow_id": FLOW_ID,
+            "proposal_hash": REVISION,
+            "superseded_draft_id": None,
+            "unchanged": True,
+            "gate_diff": {"added": [], "removed": [], "unchanged": [], "changes_gating": False},
+            "impact": _impact(),
+        },
+    )
+
+    code, result = run_cli(["amendment", "edit", FLOW_ID, DRAFT_ID, "--file", str(_plan_file(tmp_path)), "--json"])
+
+    assert code == 0
+    assert result["detail"]["unchanged"] is True
+    assert "identical" in result["next_action"]
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_listing_flags_pending_drafts_whose_base_no_longer_holds(server, wrapped):
+    """A pending draft written against a superseded plan cannot be approved as it
+    stands, and reading it as merely "pending" would waste a reviewer's time."""
+    engine_on(server)
+    base = AMENDMENTS.format(flow_id=FLOW_ID)
+    drafts = [_draft(base_is_current=False), _draft(draft_id="draft-two", state="accepted")]
+    route(server, "GET", f"{base}/drafts", {"drafts": drafts} if wrapped else drafts)
+
+    code, result = run_cli(["amendment", "list", FLOW_ID, "--json"])
+
+    assert code == 0
+    assert result["detail"]["stale_pending"] == 1
+    assert "no longer in force" in result["next_action"]
+
+
+@pytest.mark.parametrize("payload", [[], {"drafts": []}])
+def test_listing_an_empty_amendment_collection(server, payload):
+    engine_on(server)
+    route(server, "GET", f"{AMENDMENTS.format(flow_id=FLOW_ID)}/drafts", payload)
+
+    code, result = run_cli(["amendment", "list", FLOW_ID, "--json"])
+
+    assert code == 0
+    assert result["detail"]["drafts"] == []
+    assert result["detail"]["count"] == result["detail"]["stale_pending"] == 0
+    assert result["next_action"] == "No amendment drafts on this flow."
+
+
+def test_rejecting_records_the_decision_and_changes_no_plan(server):
+    engine_on(server)
+    base = _amendment_routes(server)
+    route(server, "POST", f"{base}/drafts/{DRAFT_ID}/reject", {"draft_id": DRAFT_ID, "flow_id": FLOW_ID, "state": "rejected"})
+
+    code, result = run_cli(["amendment", "reject", FLOW_ID, DRAFT_ID, "--reason", "not now", "--yes", "--json"])
+
+    assert code == 0, result
+    assert result["detail"]["applied"] is False
+    assert "unchanged" in result["next_action"]
+
+
+def test_rejecting_without_yes_and_without_a_terminal_refuses_rather_than_choosing(server):
+    engine_on(server)
+    _amendment_routes(server)
+
+    code, result = run_cli(["amendment", "reject", FLOW_ID, DRAFT_ID])
+
+    assert code == 1
+    assert result["error"]["code"] == "confirmation_required"
+    assert not [path for _m, path, _b in server.received if path.endswith("/reject")]
+
+
+def test_preview_then_edit_then_accepting_the_reviewed_hash_is_refused(server, tmp_path):
+    """The whole interaction, end to end, through the CLI.
+
+    If this passed, "preview then approve" would guarantee nothing: the operator
+    would have approved text they never read.
+    """
+    engine_on(server)
+    base = _amendment_routes(server)
+
+    reviewed = run_cli(["amendment", "preview", FLOW_ID, DRAFT_ID, "--json"])[1]["detail"]["proposal_hash"]
+
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/edit",
+        {
+            "draft_id": "draft-successor",
+            "flow_id": FLOW_ID,
+            "proposal_hash": NEW_REVISION,
+            "superseded_draft_id": DRAFT_ID,
+            "unchanged": False,
+            "gate_diff": {"added": [], "removed": [], "unchanged": [], "changes_gating": False},
+            "impact": _impact(),
+        },
+    )
+    run_cli(["amendment", "edit", FLOW_ID, DRAFT_ID, "--file", str(_plan_file(tmp_path)), "--json"])
+
+    # `draft_not_pending`, not `revision_mismatch`, and this is the real server
+    # behaviour rather than a convenient stub: `accept_amendment` checks the draft's
+    # STATE before it compares hashes, and `revise_amendment` marks the reviewed draft
+    # `superseded` instead of mutating it. So accepting the id the operator read is
+    # refused on state, and its hash is never reached. Stubbing `revision_mismatch`
+    # here would assert the CLI handles a code this scenario does not produce.
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/accept",
+        {
+            "detail": {
+                "error": "draft_not_pending",
+                "code": "draft_not_pending",
+                "message": f"amendment `{DRAFT_ID}` is `superseded` and can no longer be accepted. "
+                "It was replaced by revision `draft-successor`; review that one and accept it instead.",
+                "retryable": True,
+            }
+        },
+        status=409,
+    )
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            reviewed,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+
+    assert code == 4
+    assert result["error"]["code"] == "draft_not_pending"
+    # The successor is named, so the operator's next step is in the refusal itself.
+    assert "draft-successor" in result["error"]["message"]
+    assert reviewed == REVISION
+
+
+def test_every_staleness_code_the_store_emits_exits_four_and_applies_nothing(server):
+    """Each refusal `accept_amendment` can raise, checked against its real raise sites.
+
+    A code missing from the CLI's stale set does not fail loudly — it falls through to
+    a generic exit 5 with no staleness named and no "nothing was applied", which is
+    the opposite of what an operator needs after an approval was refused. That is
+    exactly how `draft_not_pending` was missed, so every code is enumerated here.
+    """
+    engine_on(server)
+    base = _amendment_routes(server)
+
+    for stale in ("draft_not_pending", "revision_mismatch", "base_version_mismatch", "stale_base"):
+        route(
+            server,
+            "POST",
+            f"{base}/drafts/{DRAFT_ID}/accept",
+            {"detail": {"error": stale, "code": stale, "message": f"refused: {stale}", "retryable": True}},
+            status=409,
+        )
+        code, result = run_cli(
+            [
+                "amendment",
+                "accept",
+                FLOW_ID,
+                DRAFT_ID,
+                "--yes",
+                "--expect-revision",
+                REVISION,
+                "--expect-base-version",
+                "2",
+                "--expect-base-hash",
+                CURRENT_HASH,
+            ]
+        )
+
+        assert code == 4, f"{stale} did not exit 4"
+        assert result["error"]["code"] == stale
+        message = result["error"]["message"]
+        assert "NOT changed" in message, f"{stale} did not state the plan was untouched"
+        assert "do NOT retry with the same hash" in message, f"{stale} gave no re-read guidance"
+
+
+def test_a_replayed_acceptance_is_reported_as_a_replay_not_a_second_approval(server):
+    engine_on(server)
+    # Live accepted drafts are terminal and their original base is superseded.
+    # Preview therefore refuses a new amendment; the acceptance endpoint alone
+    # can authenticate an exact replay and return the original decision.
+    base = _amendment_routes(
+        server,
+        draft=_draft(state="accepted", base_is_current=False),
+        impact=_impact(
+            acceptable=False,
+            blocking=[
+                {"rule": "draft_not_pending", "message": "Already accepted"},
+                {"rule": "stale_base", "message": "Original base was superseded"},
+            ],
+        ),
+    )
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/accept",
+        {
+            "draft_id": DRAFT_ID,
+            "flow_id": FLOW_ID,
+            "plan_version": 3,
+            "superseded_version": 2,
+            "decision_id": "dec-1",
+            "gate_diff": {"added": [], "removed": [], "unchanged": [], "changes_gating": False},
+            "superseded_draft_ids": [],
+            "already_accepted": True,
+        },
+    )
+    route(server, "GET", f"/api/orchestration/flows/{FLOW_ID}/execution", {"total": 0, "legacy": True, "executions": []})
+
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+
+    assert code == 0
+    assert result["detail"]["already_accepted"] is True
+    assert result["detail"]["plan_version"] == 3
+    assert result["detail"]["decision_id"] == "dec-1"
+    assert not [path for method, path, _ in server.received if method == "POST" and path.endswith("/preview")]
+    sent = next(body for method, path, body in server.received if method == "POST" and path.endswith("/accept"))
+    assert sent["expected_proposal_hash"] == REVISION
+    assert sent["expected_base_plan_version"] == 2
+    assert sent["expected_base_plan_hash"] == CURRENT_HASH
+    assert "replay" in result["next_action"]
+
+
+@pytest.mark.parametrize("refusal,status", [("revision_mismatch", 409), ("base_version_mismatch", 409), ("stale_base", 409), ("forbidden", 403)])
+def test_terminal_amendment_replay_keeps_server_preconditions_and_permission_checks(server, refusal, status):
+    engine_on(server)
+    base = _amendment_routes(server, draft=_draft(state="accepted", base_is_current=False), impact=_impact(acceptable=False))
+    route(
+        server,
+        "POST",
+        f"{base}/drafts/{DRAFT_ID}/accept",
+        {"detail": {"error": refusal, "code": refusal, "message": "Replay refused"}},
+        status=status,
+    )
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            NEW_REVISION,
+            "--expect-base-version",
+            "9",
+            "--expect-base-hash",
+            "e" * 64,
+        ]
+    )
+    assert code != 0
+    assert result["error"]["code"] == refusal
+    requests = [(method, path, body) for method, path, body in server.received if method == "POST"]
+    assert len(requests) == 1 and requests[0][1].endswith("/accept")
+    assert requests[0][2]["expected_proposal_hash"] == NEW_REVISION
+    assert requests[0][2]["expected_base_plan_version"] == 9
+    assert requests[0][2]["expected_base_plan_hash"] == "e" * 64
+
+
+@pytest.mark.parametrize("state", ["pending", "rejected", "superseded"])
+def test_unacceptable_nonaccepted_amendments_never_use_replay_path(server, state):
+    engine_on(server)
+    _amendment_routes(server, draft=_draft(state=state), impact=_impact(acceptable=False))
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+    assert code == 4 and result["detail"]["applied"] is False
+    assert not [path for method, path, _ in server.received if method == "POST" and path.endswith("/accept")]
+
+
+@pytest.mark.parametrize("confirmation", [False, None])
+def test_terminal_amendment_requires_an_explicit_replay_receipt(server, confirmation):
+    engine_on(server)
+    base = _amendment_routes(server, draft=_draft(state="accepted", base_is_current=False))
+    route(server, "POST", f"{base}/drafts/{DRAFT_ID}/accept", {"plan_version": 3, "decision_id": "dec-1", "already_accepted": confirmation})
+    code, result = run_cli(
+        [
+            "amendment",
+            "accept",
+            FLOW_ID,
+            DRAFT_ID,
+            "--yes",
+            "--expect-revision",
+            REVISION,
+            "--expect-base-version",
+            "2",
+            "--expect-base-hash",
+            CURRENT_HASH,
+        ]
+    )
+    assert code == 5 and result["error"]["code"] == "invalid_amendment_replay"
+    assert not [path for method, path, _ in server.received if path.endswith("/execution")]
+
+
+def test_the_engine_not_being_enabled_stops_every_amendment_verb(server):
+    engine_on(server, False)
+
+    for argv in (
+        ["amendment", "list", FLOW_ID],
+        ["amendment", "show", FLOW_ID, DRAFT_ID],
+        ["amendment", "preview", FLOW_ID, DRAFT_ID],
+    ):
+        code, result = run_cli(argv)
+        assert code == 4, argv
+        assert result["status"] == "unavailable"
+    assert not [path for _m, path, _b in server.received if "amendments" in path]

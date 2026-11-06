@@ -142,7 +142,8 @@ async def _seed_existing_user(factory, user_id: str, org_id: str, team_id: str, 
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
-async def test_login_creates_membership_for_matching_org(db_engine):
+@pytest.mark.parametrize("read_status_first", [False, True])
+async def test_login_creates_membership_for_matching_org(db_engine, read_status_first):
     """Existing user logs in, org tenant exists with matching GitHub org -> membership row created."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
@@ -216,6 +217,15 @@ async def test_login_creates_membership_for_matching_org(db_engine):
             patch("src.admin.connections.github_client.GitHubAppClient", return_value=mock_client),
             patch("src.admin.connections.service._get_github_app_credentials", return_value=("app-id", "fake-pem")),
         ):
+            if read_status_first:
+                with patch("src.admin.onboarding.handler.resolve_trusted_github_identity") as provider_lookup:
+                    fast = await client.get("/access/status?sync_memberships=false")
+                assert fast.status_code == 200
+                assert fast.json()["status"] == "registered"
+                provider_lookup.assert_not_called()
+                mock_client.get_installation_token.assert_not_called()
+                async with factory() as check:
+                    assert (await check.scalars(select(TenantMembership))).all() == []
             resp = await client.get(
                 "/access/status",
                 headers={"Authorization": _fake_bearer(_github_claims("loginuser", "90009"))},

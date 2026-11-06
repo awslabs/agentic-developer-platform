@@ -93,9 +93,32 @@ def test_native_emergency_stop_uses_native_client(monkeypatch):
     from unittest.mock import Mock
 
     client = Mock()
-    client.get_browser_session.return_value = {"status": "TERMINATED"}
+    client.get_browser_session.side_effect = [
+        {"status": "READY"},
+        {"status": "TERMINATED"},
+    ]
     monkeypatch.setattr("native_identity.cleanup_client", lambda _: client)
     assert stop_session("fixture-session", native=True)
     client.stop_browser_session.assert_called_once_with(
         browserIdentifier="aws.browser.v1", sessionId="fixture-session"
     )
+
+
+def test_native_emergency_stop_does_not_repeat_a_proven_stop(monkeypatch):
+    from unittest.mock import Mock
+
+    client = Mock()
+    client.get_browser_session.return_value = {"status": "TERMINATED"}
+    monkeypatch.setattr("native_identity.cleanup_client", lambda _: client)
+    assert stop_session("fixture-session", native=True)
+    client.stop_browser_session.assert_not_called()
+
+
+def test_native_emergency_stop_requires_terminal_provider_proof(monkeypatch):
+    from unittest.mock import Mock
+
+    client = Mock()
+    client.get_browser_session.return_value = {"status": "READY"}
+    monkeypatch.setattr("native_identity.cleanup_client", lambda _: client)
+    assert not stop_session("fixture-session", native=True)
+    client.stop_browser_session.assert_called_once()

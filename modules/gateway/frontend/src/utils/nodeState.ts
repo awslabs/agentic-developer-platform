@@ -90,7 +90,7 @@ export const DISPLAY_STATES: Record<DisplayState, DisplayStateStyle> = {
 };
 
 /** Render order for the bar and the legend. See the note on `DISPLAY_STATES`. */
-export const DISPLAY_STATE_ORDER: DisplayState[] = ['queued', 'in_progress', 'gate', 'stalled', 'complete'];
+export const DISPLAY_STATE_ORDER: DisplayState[] = ['complete', 'in_progress', 'gate', 'stalled', 'queued'];
 
 /**
  * Project one node onto its display state.
@@ -102,7 +102,13 @@ export const DISPLAY_STATE_ORDER: DisplayState[] = ['queued', 'in_progress', 'ga
  * too — both need intervention — but the two are told apart by the badge the node
  * chip renders, not by collapsing them here.
  */
-export function toDisplayState(node: Pick<GraphNode, 'state' | 'stalled' | 'display_state'>): DisplayState | null {
+export function toDisplayState(node: Pick<GraphNode, 'state' | 'stalled' | 'display_state' | 'delivery_progress'>): DisplayState | null {
+  // A passed code node can still own deployment/evaluation obligations. Use
+  // the engine's current acceptance projection before rendering a green tick.
+  const acceptance = node.delivery_progress?.acceptance;
+  if (node.state === 'passed' && acceptance?.status === 'in_progress') {
+    return acceptance.checks.some(check => check.status === 'blocked') ? 'stalled' : 'in_progress';
+  }
   // Completion and supersession cannot be undone by an old stall flag.
   if (node.state === 'passed' || node.state === 'superseded') return engineStateToDisplayState(node.state);
   if (node.display_state !== undefined) return node.display_state;
@@ -153,7 +159,7 @@ export function engineStateToDisplayState(state: NodeEngineState): DisplayState 
  * *at* that gate, and an operator asking "where are we" needs that answered
  * whether or not a model is burning tokens at that instant.
  */
-export function isCurrentPosition(node: Pick<GraphNode, 'state' | 'stalled' | 'display_state'>): boolean {
+export function isCurrentPosition(node: Pick<GraphNode, 'state' | 'stalled' | 'display_state' | 'delivery_progress'>): boolean {
   const display = toDisplayState(node);
   return display === 'in_progress' || display === 'gate';
 }

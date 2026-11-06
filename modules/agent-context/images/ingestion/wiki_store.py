@@ -225,6 +225,7 @@ def _resolve_vector_index(
     tenant_id: str | None,
     owner_sub: str | None,
     shard_count: int,
+    product_id: str | None = None,
 ) -> str:
     """Resolve the target vector index name based on scope visibility.
 
@@ -233,9 +234,11 @@ def _resolve_vector_index(
     - "tenant" → tenant-{tenant_id}
     - "personal" → personal-{owner_sub}
 
-    Falls back to shared if tenant/personal visibility lacks required IDs.
+    Refuses incomplete or contradictory ownership before selecting an index.
     """
-    if visibility == "tenant" and tenant_id:
+    from scope import parse_scope
+    parse_scope({"visibility": visibility, "tenant_id": tenant_id, "owner_sub": owner_sub, "product_id": product_id})
+    if visibility in {"tenant", "product"} and tenant_id:
         return f"tenant-{tenant_id}"
     elif visibility == "personal" and owner_sub:
         return f"personal-{owner_sub}"
@@ -285,6 +288,9 @@ def store_wiki(
     Returns:
         WikiStoreResult with status for each sink.
     """
+    # Validate ownership before either sink; malformed restricted scope must not
+    # write to S3 and only fail later during vector routing.
+    _resolve_vector_index(visibility, org_id, tenant_id, owner_sub, shard_count)
     result = WikiStoreResult()
     safe_name = org_repo.replace("/", "-")
     s3_key = f"{wiki_s3_prefix}/{safe_name}-wiki.md"

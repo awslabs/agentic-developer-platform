@@ -30,7 +30,8 @@ import {
   type ReactNode,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { User, AuthState, Permission, AdminRole } from '@/types';
+import { Permission, type User, type AuthState, type AdminRole } from '@/types';
+import { apiClient } from '@/services/api';
 import {
   buildLoginUrl,
   refreshToken,
@@ -57,6 +58,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const navigate = useNavigate();
+  const [workflowAccess, setWorkflowAccess] = useState<{
+    token: string; userId: string; orgId: string; permissions: Permission[];
+  } | null>(null);
+  const userId = user?.id;
+  const orgId = user?.orgId;
+
+  // Workflow rights belong to workspace members, not a role in an old JWT.
+  // Pin responses to the session so a workspace switch cannot reuse a grant.
+  useEffect(() => {
+    if (!token || !userId || !orgId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const result = await apiClient.get<{ org_id: string; permissions: Permission[] }>('/auth/workflow-permissions');
+        if (!cancelled) setWorkflowAccess(result.org_id === orgId ? { token, userId, orgId, permissions: result.permissions } : null);
+      } catch {
+        if (!cancelled) setWorkflowAccess(null);
+      }
+    };
+    void refresh();
+    window.addEventListener('focus', refresh);
+    return () => { cancelled = true; window.removeEventListener('focus', refresh); };
+  }, [token, userId, orgId]);
 
   // Initialize auth state from stored tokens
   useEffect(() => {
@@ -184,9 +208,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const hasPermission = useCallback(
     (permission: Permission): boolean => {
       if (!user) return false;
+      if (permission === Permission.PLAN_APPROVE || permission === Permission.PLAN_DRAFT) {
+        return workflowAccess?.token === token && workflowAccess.userId === user.id && workflowAccess.orgId === user.orgId
+          && workflowAccess.permissions.includes(permission);
+      }
       return user.permissions.includes(permission);
     },
-    [user]
+    [user, token, workflowAccess]
   );
 
   /**

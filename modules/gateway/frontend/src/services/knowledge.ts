@@ -27,6 +27,8 @@ import type {
 /** List/filter knowledge assets for the current user's scope. */
 export async function listAssets(params?: {
   scope?: string;
+  productId?: string;
+  search?: string;
   assetType?: string;
   status?: string;
   page?: number;
@@ -34,6 +36,8 @@ export async function listAssets(params?: {
 }): Promise<AssetListResponse> {
   const query = buildQueryString({
     scope: params?.scope,
+    product_id: params?.productId,
+    search: params?.search,
     asset_type: params?.assetType,
     status: params?.status,
     page: params?.page || 1,
@@ -41,23 +45,7 @@ export async function listAssets(params?: {
   });
 
   const response = await apiClient.get<{
-    items: Array<{
-      id: string;
-      asset_type: string;
-      source_ref: string;
-      display_name: string | null;
-      tags: Record<string, unknown>;
-      metadata: Record<string, unknown>;
-      tenant_id: string | null;
-      owner_sub: string | null;
-      project_id: string | null;
-      status: string;
-      last_error: string | null;
-      retry_count: number;
-      registered_by: string | null;
-      created_at: string;
-      updated_at: string | null;
-    }>;
+    items: Array<RawAsset>;
     total: number;
     page: number;
     page_size: number;
@@ -70,6 +58,13 @@ export async function listAssets(params?: {
   }>(`/api/agent-context/assets${query}`);
 
   const items = Array.isArray(response?.items) ? response.items : [];
+  // An older Gateway ignores an unknown Product filter. Do not label its
+  // personal/tenant results as information shared with the selected Product.
+  if (params?.scope === 'product' && (!params.productId || items.some(
+    (item) => item.product_id !== params.productId || item.owner_sub || item.project_id,
+  ))) {
+    throw new Error("Could not confirm this Product's context. Please refresh and try again.");
+  }
   return {
     items: items.map(transformAsset),
     total: response?.total ?? 0,
@@ -86,48 +81,90 @@ export async function listAssets(params?: {
   };
 }
 
+export interface KnowledgeSearchMatch {
+  asset: KnowledgeAsset;
+  excerpt: string;
+  heading: string;
+}
+
+/** Search inside the current personal or Product collection. */
+export async function searchKnowledge(params: {
+  scope: 'personal' | 'product';
+  productId?: string;
+  query: string;
+}): Promise<{ items: KnowledgeSearchMatch[]; query: string }> {
+  const response = await apiClient.post<{
+    items: Array<{ asset: RawAsset; excerpt: string; heading: string }>;
+    query: string;
+  }>('/agent-context/assets/search', {
+    scope: params.scope, product_id: params.productId, query: params.query, limit: 20,
+  });
+  if (!Array.isArray(response?.items) || response.query !== params.query || response.items.some(({ asset }) =>
+    !asset || (params.scope === 'product'
+      ? asset.product_id !== params.productId || asset.owner_sub || asset.project_id
+      : asset.product_id || !asset.owner_sub),
+  )) {
+    throw new Error('Could not confirm search results for this collection. Please try again.');
+  }
+  return {
+    items: response.items.map(({ asset, excerpt, heading }) => ({ asset: transformAsset(asset), excerpt, heading })),
+    query: response.query,
+  };
+}
+
 /** Get asset detail by ID. */
 export async function getAssetDetail(assetId: string): Promise<KnowledgeAsset> {
-  const response = await apiClient.get<{
-    id: string;
-    asset_type: string;
-    source_ref: string;
-    display_name: string | null;
-    tags: Record<string, unknown>;
-    metadata: Record<string, unknown>;
-    tenant_id: string | null;
-    owner_sub: string | null;
-    project_id: string | null;
-    status: string;
-    last_error: string | null;
-    retry_count: number;
-    registered_by: string | null;
-    created_at: string;
-    updated_at: string | null;
-  }>(`/api/agent-context/assets/${assetId}`);
+  const response = await apiClient.get<RawAsset>(`/api/agent-context/assets/${assetId}`);
   return transformAsset(response);
 }
 
 /** Register a new asset. */
 export async function createAsset(body: AssetCreateRequest): Promise<KnowledgeAsset> {
-  const response = await apiClient.post<{
-    id: string;
-    asset_type: string;
-    source_ref: string;
-    display_name: string | null;
-    tags: Record<string, unknown>;
-    metadata: Record<string, unknown>;
-    tenant_id: string | null;
-    owner_sub: string | null;
-    project_id: string | null;
-    status: string;
-    last_error: string | null;
-    retry_count: number;
-    registered_by: string | null;
-    created_at: string;
-    updated_at: string | null;
-  }>('/api/agent-context/assets', body);
+  const response = await apiClient.post<RawAsset>('/api/agent-context/assets', body);
   return transformAsset(response);
+}
+
+export interface ProductKnowledgeSource {
+  binding_id: string;
+  name?: string;
+  source_ref?: string;
+  connection_name?: string;
+  connection_id?: string;
+  project_id?: string;
+  project_name?: string;
+  included: boolean;
+  eligible: boolean;
+  needs_reconnect?: boolean;
+  can_manage: boolean;
+  asset_id?: string;
+  status?: string;
+  keep_updated?: boolean;
+  revision?: number;
+  last_refreshed_at?: string | null;
+  error?: string | null;
+}
+
+export async function listProductKnowledgeSources(productId: string, after?: string) {
+  const result = await apiClient.get<{ product_id: string; items: ProductKnowledgeSource[]; after: string | null }>(
+    `/agent-context/products/${encodeURIComponent(productId)}/sources${buildQueryString({ after })}`,
+  );
+  if (result.product_id !== productId || !Array.isArray(result.items)) throw new Error('Could not confirm Product sources.');
+  return result;
+}
+
+export async function updateKnowledgeRefresh(assetId: string, enabled: boolean, revision: number) {
+  return apiClient.patch<{ enabled: boolean; revision: number }>(
+    `/agent-context/assets/${encodeURIComponent(assetId)}/refresh`, { enabled, revision },
+  );
+}
+
+export async function includeProductKnowledgeSource(productId: string, bindingId: string, sourceRef: string, keepUpdated: boolean) {
+  const result = await apiClient.post<RawAsset>(
+    `/agent-context/products/${encodeURIComponent(productId)}/sources/${encodeURIComponent(bindingId)}`,
+    { source_ref: sourceRef, keep_updated: keepUpdated },
+  );
+  if (result.product_id !== productId || result.owner_sub || result.project_id) throw new Error('Could not confirm Product source registration.');
+  return transformAsset(result);
 }
 
 /** Soft-delete an asset. */
@@ -137,23 +174,7 @@ export async function deleteAsset(assetId: string): Promise<void> {
 
 /** Re-queue an asset for indexing. */
 export async function reindexAsset(assetId: string): Promise<KnowledgeAsset> {
-  const response = await apiClient.post<{
-    id: string;
-    asset_type: string;
-    source_ref: string;
-    display_name: string | null;
-    tags: Record<string, unknown>;
-    metadata: Record<string, unknown>;
-    tenant_id: string | null;
-    owner_sub: string | null;
-    project_id: string | null;
-    status: string;
-    last_error: string | null;
-    retry_count: number;
-    registered_by: string | null;
-    created_at: string;
-    updated_at: string | null;
-  }>(`/api/agent-context/assets/${assetId}/reindex`);
+  const response = await apiClient.post<RawAsset>(`/api/agent-context/assets/${assetId}/reindex`);
   return transformAsset(response);
 }
 
@@ -231,11 +252,13 @@ export async function getAccessibleRepos(params?: {
  */
 export async function bulkPreview(
   file: File,
-  scope: 'personal' | 'tenant' = 'tenant',
+  scope: 'personal' | 'tenant' | 'product' = 'personal',
+  productId?: string,
 ): Promise<BulkPreviewResponse> {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('scope', scope);
+  if (productId) formData.append('product_id', productId);
 
   const token = getAccessToken();
   const headers: Record<string, string> = {};
@@ -262,23 +285,7 @@ export async function bulkCommit(body: BulkCommitRequest): Promise<BulkCommitRes
   const raw = await apiClient.post<{
     created: number;
     skipped_duplicates: number;
-    assets: Array<{
-      id: string;
-      asset_type: string;
-      source_ref: string;
-      display_name: string | null;
-      tags: Record<string, unknown>;
-      metadata: Record<string, unknown>;
-      tenant_id: string | null;
-      owner_sub: string | null;
-      project_id: string | null;
-      status: string;
-      last_error: string | null;
-      retry_count: number;
-      registered_by: string | null;
-      created_at: string;
-      updated_at: string | null;
-    }>;
+    assets: Array<RawAsset>;
   }>('/api/agent-context/assets/bulk/commit', body);
 
   return {
@@ -292,7 +299,7 @@ export async function bulkCommit(body: BulkCommitRequest): Promise<BulkCommitRes
 // Transform helpers (snake_case API → camelCase frontend)
 // ---------------------------------------------------------------------------
 
-function transformAsset(raw: {
+interface RawAsset {
   id: string;
   asset_type: string;
   source_ref: string;
@@ -302,13 +309,18 @@ function transformAsset(raw: {
   tenant_id: string | null;
   owner_sub: string | null;
   project_id: string | null;
+  product_id?: string | null;
+  can_manage?: boolean;
+  can_download?: boolean;
   status: string;
   last_error: string | null;
   retry_count: number;
   registered_by: string | null;
   created_at: string;
   updated_at: string | null;
-}): KnowledgeAsset {
+}
+
+function transformAsset(raw: RawAsset): KnowledgeAsset {
   return {
     id: raw.id,
     assetType: raw.asset_type,
@@ -319,6 +331,9 @@ function transformAsset(raw: {
     tenantId: raw.tenant_id,
     ownerSub: raw.owner_sub,
     projectId: raw.project_id,
+    productId: raw.product_id ?? null,
+    canManage: raw.can_manage === true,
+    canDownload: raw.can_download === true,
     status: raw.status as KnowledgeAsset['status'],
     lastError: raw.last_error,
     retryCount: raw.retry_count ?? 0,

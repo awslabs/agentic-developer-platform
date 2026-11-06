@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { Capability } from "./persona.js";
 
@@ -9,6 +9,7 @@ export interface HostTool {
   description: string;
   capability: Capability;
   input: z.ZodObject;
+  schemaDigest?: string;
   /** Frozen schema when validation was compiled from JSON Schema. */
   parameters?: Record<string, unknown>;
   readOnly: boolean;
@@ -56,9 +57,12 @@ export async function startToolServer(tools: readonly HostTool[], host: ToolHost
       || !tool.description.trim() || tool.description.length > 4096) throw new Error("Invalid host tool definition");
     if (!policy.capabilities.includes(tool.capability)) throw new Error("Tool capability not admitted");
     const input = tool.input.strict();
+    const schema = tool.parameters ? structuredClone(tool.parameters) : z.toJSONSchema(input, { target: "draft-7" });
+    if (tool.schemaDigest && createHash("sha256").update(JSON.stringify(schema)).digest("hex") !== tool.schemaDigest)
+      throw new Error("Host tool schema digest mismatch");
     catalogue.set(tool.name, { input, definition: {
       name: tool.name, description: tool.description,
-      inputSchema: tool.parameters ? structuredClone(tool.parameters) : z.toJSONSchema(input, { target: "draft-7" }),
+      inputSchema: schema,
       annotations: { readOnlyHint: tool.readOnly, destructiveHint: !tool.readOnly, openWorldHint: false },
     } });
   }

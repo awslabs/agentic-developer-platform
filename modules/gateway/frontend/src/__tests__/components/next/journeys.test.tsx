@@ -60,6 +60,7 @@ const ORG_ADMIN: Partial<JourneyPermissions> = {
   canViewOrganizations: true,
   canViewBudgets: true,
   canViewRateLimits: true,
+  canManageTools: true,
   orgId: 'org-1',
 };
 
@@ -69,6 +70,7 @@ const PLATFORM_ADMIN: Partial<JourneyPermissions> = {
   canViewOrganizations: true,
   canViewBudgets: true,
   canViewRateLimits: true,
+  canManageTools: true,
   canViewLogs: true,
   canViewPool: true,
   canViewMetrics: true,
@@ -90,6 +92,14 @@ function adminIds(flags: Partial<FeatureFlags> = {}, perms: Partial<JourneyPermi
 
 describe('journey model — Issue #5080', () => {
   describe('Use ADP is everyone’s journey', () => {
+    it('advertises Products only when the same backend feature enables the current UI route', () => {
+      expect(useIds({ product_profile: false })).not.toContain('products');
+      const enabled = buildJourneys(features({ product_profile: true }), MEMBER);
+      expect(journeyEntries(enabled.use)).toContainEqual(expect.objectContaining({
+        id: 'products', to: '/products', currentUi: true,
+      }));
+    });
+
     it('gives a member with no permissions a usable Use ADP journey', () => {
       // The whole journey is scoped to the caller server-side, so nothing here is
       // permission-gated. A member seeing an empty journey would be the bug.
@@ -107,44 +117,23 @@ describe('journey model — Issue #5080', () => {
     });
 
     it.each([
-      ['chat', 'chats'],
-      ['chat', 'chats-new'],
       ['orchestration_engine', 'flows'],
       ['knowledge', 'knowledge'],
       ['budget_spend', 'my-spend'],
       ['connections', 'connections'],
       ['credentials', 'credentials'],
-      ['gitlab', 'gitlab'],
       ['agent_models', 'agent-models'],
     ] as const)('drops %s entries when the feature is off', (flag, entryId) => {
       expect(useIds({ [flag]: true })).toContain(entryId);
       expect(useIds({ [flag]: false })).not.toContain(entryId);
     });
 
-    it('offers both chat pages: one to start a conversation, one to read past ones', () => {
-      // #5123: only /my-chats was carried across, so the preview had no way to
-      // START a chat — and /my-chats contains no link to one, so the label that
-      // claimed otherwise led to a dead end.
-      const journey = buildJourneys(features({ chat: true }), MEMBER).use;
-      const entries = journeyEntries(journey);
-
-      const startChat = entries.find((e) => e.to === '/chat');
-      expect(startChat).toBeDefined();
-      expect(startChat?.currentUi).toBe(true);
-
-      const history = entries.find((e) => e.to === '/my-chats');
-      expect(history).toBeDefined();
-      // The description must not promise starting a chat here.
-      expect(history?.description.toLowerCase()).not.toContain('starting a new chat');
-    });
-
-    it('gates chat on the feature alone, exactly as the sidebar does', () => {
-      // Navigation.tsx pushes /chat under `features.chat` with NO role or
-      // permission predicate. Gating it more tightly here would silently take
-      // chat away from a plain member who has it today.
-      expect(useIds({ chat: true }, MEMBER)).toContain('chats-new');
-      // And it is not something only admins reach.
-      expect(useIds({ chat: true, budget_spend: true }, MEMBER)).toEqual(useIds({ chat: true, budget_spend: true }, PLATFORM_ADMIN));
+    it('hides deferred destinations from both journeys even when all features are enabled', () => {
+      const journeys = buildJourneys(allFeaturesOn(), PLATFORM_ADMIN);
+      const paths = [...journeyEntries(journeys.use), ...journeyEntries(journeys.admin)].map((entry) => entry.to);
+      for (const path of ['/chat', '/my-conversations', '/gitlab-launch', '/admin/indexing', '/superplane']) {
+        expect(paths).not.toContain(path);
+      }
     });
 
     it('shows Delivery flows and My spend to a member with no permissions', () => {
@@ -175,15 +164,19 @@ describe('journey model — Issue #5080', () => {
       });
     });
 
-    it('marks the server-owned GitLab path as external, and nothing else', () => {
-      // #5123: /gitlab/ is served by the backend and has no react-router route, so
-      // it must be flagged for the renderers to emit a real anchor. Asserting the
-      // negative too, so a future entry cannot be flagged external by accident and
-      // start hard-reloading the SPA.
+    it.each([
+      [false, false],
+      [true, true],
+    ] as const)('has no Runtime entry (folded into Dev Box, #8864): assistant_ui=%s crew_dashboard=%s', (assistant_ui, crew_dashboard) => {
+      const entry = journeyEntries(buildJourneys(features({ assistant_ui, crew_dashboard }), MEMBER).use)
+        .find((candidate) => candidate.id === 'runtime');
+      expect(entry).toBeUndefined();
+    });
+
+    it('uses client-side navigation for visible destinations', () => {
       const journeys = buildJourneys(allFeaturesOn(), PLATFORM_ADMIN);
       const all = [...journeyEntries(journeys.use), ...journeyEntries(journeys.admin)];
-      const external = all.filter((e) => e.external).map((e) => e.to);
-      expect(external).toEqual(['/gitlab/']);
+      expect(all.filter((entry) => entry.external)).toEqual([]);
     });
 
     it('never marks a Use ADP entry as platform-scoped', () => {
@@ -226,6 +219,12 @@ describe('journey model — Issue #5080', () => {
   describe('administration gating mirrors the current sidebar exactly', () => {
     it('hides Budgets from an admin lacking BUDGET_READ', () => {
       expect(adminIds({}, { ...ORG_ADMIN, canViewBudgets: false })).not.toContain('budgets');
+    });
+
+    it('shows tool access only when its dedicated permission is present', () => {
+      expect(adminIds({}, { ...ORG_ADMIN, canManageTools: false })).not.toContain('tool-entitlements');
+      expect(adminIds({}, ORG_ADMIN)).toContain('tool-entitlements');
+      expect(adminIds({}, MEMBER)).not.toContain('tool-entitlements');
     });
 
     it('hides Rate limits from an admin lacking RATELIMIT_READ', () => {
@@ -502,5 +501,14 @@ describe('journey model — Issue #5080', () => {
         isRestorablePath('/next/not-a-page', buildJourneys(features(), PLATFORM_ADMIN)),
       ).toBe(false);
     });
+  });
+});
+
+
+describe('Crew dashboard handoff', () => {
+  it('is no longer a journey entry; the Dev Box page opens the dashboard (#8864)', () => {
+    const entries = buildJourneys(features({ crew_dashboard_origin: 'https://crew.example.test', chat: true }), MEMBER)
+      .use.sections.flatMap(section => section.entries);
+    expect(entries.find(entry => entry.id === 'crew-dashboard')).toBeUndefined();
   });
 });

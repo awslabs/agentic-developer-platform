@@ -88,6 +88,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "secret_refs",
         "scenarios",
         "scenario_manifest",
+        "product_epic",
     }
 )
 _REQUIRED_TOP_LEVEL = (
@@ -140,6 +141,22 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class RepositoryTarget:
+    repository: str
+    connection_ref: str
+    repository_id: int
+    installation_id: int
+
+
+@dataclass(frozen=True)
+class ProductEpic:
+    product_id: str
+    epic: RepositoryTarget
+    epic_issue_number: int
+    stories: tuple[RepositoryTarget, RepositoryTarget]
+
+
+@dataclass(frozen=True)
 class QualificationConfig:
     """A validated, secret-free qualification config."""
 
@@ -158,10 +175,16 @@ class QualificationConfig:
     scenarios: tuple[str, ...] = ()
     source: str | None = None
     scenario_manifest: str | None = None
+    product_epic: ProductEpic | None = None
 
     @property
     def max_resources(self) -> int:
         return int(self.bounds["max_resources"])
+
+    def story_repository(self, index: int) -> str:
+        if self.product_epic is None:
+            return self.repository
+        return self.product_epic.stories[index - 1].repository
 
     @property
     def max_runs(self) -> int:
@@ -234,6 +257,19 @@ def load_config(path: str | Path) -> QualificationConfig:
         scenarios=tuple(document.get("scenarios") or ()),
         source=str(source),
         scenario_manifest=document.get("scenario_manifest"),
+        product_epic=(
+            ProductEpic(
+                product_id=document["product_epic"]["product_id"],
+                epic=RepositoryTarget(**document["product_epic"]["epic"]["target"]),
+                epic_issue_number=document["product_epic"]["epic"]["issue_number"],
+                stories=tuple(
+                    RepositoryTarget(**target)
+                    for target in document["product_epic"]["stories"]
+                ),
+            )
+            if document.get("product_epic") is not None
+            else None
+        ),
     )
     return config
 
@@ -340,6 +376,29 @@ def _check_shape(document: dict[str, Any], problems: list[str]) -> None:
     _check_artifacts(document.get("artifacts"), problems)
     _check_secret_refs(document.get("secret_refs"), problems)
     _check_scenarios(document.get("scenarios"), problems)
+    _check_product_epic(document.get("product_epic"), problems)
+    if (
+        isinstance(document.get("scenarios"), list)
+        and any(
+            name in {"product-epic-delivery", "product-epic-recovery"}
+            for name in document["scenarios"]
+        )
+        and document.get("product_epic") is None
+    ):
+        problems.append("product_epic is required for Product-bound scenarios")
+    if (
+        document.get("product_epic") is not None
+        and isinstance(document.get("scenarios"), list)
+        and document["scenarios"]
+        and document["scenarios"]
+        not in (
+            ["product-epic-delivery"],
+            ["product-epic-recovery"],
+        )
+    ):
+        problems.append(
+            "product_epic must select exactly one Product-bound scenario to avoid duplicate fixtures"
+        )
     manifest = document.get("scenario_manifest")
     if manifest is not None and (
         not isinstance(manifest, str)
@@ -350,6 +409,73 @@ def _check_shape(document: dict[str, Any], problems: list[str]) -> None:
         problems.append(
             "scenario_manifest must be a nonempty repository-relative path without '..'"
         )
+
+
+def _check_product_epic(value: Any, problems: list[str]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        problems.append("product_epic must be an object")
+        return
+    if set(value) != {"product_id", "epic", "stories"}:
+        problems.append("product_epic requires exactly product_id, epic and stories")
+    _check_ref(value.get("product_id"), "product_epic.product_id", problems)
+    epic = value.get("epic")
+    if not isinstance(epic, dict) or set(epic) != {"target", "issue_number"}:
+        problems.append("product_epic.epic requires exactly target and issue_number")
+        epic = {}
+    issue_number = epic.get("issue_number")
+    if type(issue_number) is not int or issue_number < 1:
+        problems.append("product_epic.epic.issue_number must be a positive integer")
+    stories = value.get("stories")
+    if not isinstance(stories, list) or len(stories) != 2:
+        problems.append("product_epic.stories must contain exactly two targets")
+        stories = []
+    targets = [epic.get("target"), *stories]
+    for index, target in enumerate(targets):
+        label = (
+            "product_epic.epic.target"
+            if index == 0
+            else f"product_epic.stories[{index - 1}]"
+        )
+        if not isinstance(target, dict) or set(target) != {
+            "repository",
+            "connection_ref",
+            "repository_id",
+            "installation_id",
+        }:
+            problems.append(
+                f"{label} requires repository, connection_ref, repository_id and installation_id"
+            )
+            continue
+        repository = target["repository"]
+        if not isinstance(repository, str) or not _REPOSITORY.fullmatch(repository):
+            problems.append(f"{label}.repository must be 'owner/repo'")
+        _check_ref(target["connection_ref"], f"{label}.connection_ref", problems)
+        for field_name in ("repository_id", "installation_id"):
+            identifier = target[field_name]
+            if type(identifier) is not int or identifier < 1:
+                problems.append(f"{label}.{field_name} must be a positive integer")
+    if len(targets) == 3 and all(
+        isinstance(target, dict)
+        and set(target)
+        == {"repository", "connection_ref", "repository_id", "installation_id"}
+        for target in targets
+    ):
+        for field_name in ("repository", "connection_ref", "repository_id"):
+            if (
+                len(
+                    {
+                        target[field_name]
+                        for target in targets
+                        if isinstance(target[field_name], (str, int))
+                    }
+                )
+                != 3
+            ):
+                problems.append(
+                    f"product_epic epic and story {field_name} values must be distinct"
+                )
 
 
 def _check_environment(environment: Any, problems: list[str]) -> None:

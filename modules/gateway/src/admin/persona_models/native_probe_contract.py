@@ -10,7 +10,7 @@ _REPORT_MANIFEST = json.loads(Path(__file__).with_name("report-probe-manifest.js
 if (
     _REPORT_MANIFEST.get("schema_version") != 1
     or _REPORT_MANIFEST.get("sdk") != "0.155.1"
-    or _REPORT_MANIFEST.get("normalization") != "codex-report-probe-v1"
+    or _REPORT_MANIFEST.get("normalization") != "codex-report-probe-v2"
 ):
     raise RuntimeError("Unsupported report Codex probe manifest")
 # Both use actual SDK capture; Task profiles remain a separate registry.

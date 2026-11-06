@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from src.internal.auth_deps import verify_internal_or_irsa
@@ -28,6 +30,11 @@ async def test_endpoint(
 ):
     """Dummy endpoint protected by the dual-auth dependency."""
     return {"ok": True}
+
+
+@app.get("/test-identity")
+async def identity_endpoint(request: Request, _: None = Depends(verify_internal_or_irsa)):
+    return asdict(request.state.internal_identity)
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +218,7 @@ class TestNeitherPresent:
 class TestInternalPlaneScope:
     """Issue #3985 (A2): only internal-plane scopes may use the IRSA path.
 
-    Every /internal/* route trusts its caller to assert org/tenant identity, so
+    Internal-plane scope authenticates the workload, not its asserted tenant, so
     holding valid IRSA credentials for an unrelated registered agent must not be
     sufficient. Neither "internal" nor "platform" is self-assignable via the
     agent_registry admin API (pattern-constrained to shared|personal on both the
@@ -371,3 +378,46 @@ def test_registry_requirement_is_carried_for_new_worker_names():
 def test_every_shared_key_is_rejected_without_iam(client, value):
     headers = {} if value is None else {"X-Internal-Api-Key": value}
     assert client.get("/test-endpoint", headers=headers).status_code == 403
+
+
+@pytest.mark.parametrize("org_id, expected", [("tenant-a", "tenant-a"), ("__platform__", None), ("", None)])
+@patch("src.internal.auth_deps.extract_iam_identity_from_headers")
+def test_internal_identity_keeps_unbound_tenant_out_of_authority(mock_extract, client, org_id, expected):
+    context = _mock_token_context()
+    context.org_id = org_id
+    context.agent_registry_id = "service-reader"
+    mock_extract.return_value = context
+    result = client.get(
+        "/test-identity",
+        headers={"X-Caller-Identity": "arn:aws:sts::123456789012:assumed-role/adp-dev-service-reader/session"},
+    )
+    assert result.status_code == 200
+    assert result.json() == {
+        "kind": "service",
+        "service_id": "service-reader",
+        "tenant_id": expected,
+        "provenance": "iam",
+    }
+
+
+@pytest.mark.parametrize(
+    "attributes, service_id, tenant_id",
+    [
+        ({"org_id": "tenant-a"}, None, "tenant-a"),
+        ({"agent_registry_id": "service-reader"}, "service-reader", None),
+    ],
+)
+@patch("src.internal.auth_deps.extract_iam_identity_from_headers")
+def test_partial_legacy_context_cannot_gain_metadata_authority(mock_extract, client, attributes, service_id, tenant_id):
+    mock_extract.return_value = SimpleNamespace(user_id="service-reader", scope="internal", **attributes)
+    response = client.get(
+        "/test-identity",
+        headers={"X-Caller-Identity": "arn:aws:sts::123456789012:assumed-role/adp-dev-service-reader/session"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "kind": "service",
+        "service_id": service_id,
+        "tenant_id": tenant_id,
+        "provenance": "iam",
+    }

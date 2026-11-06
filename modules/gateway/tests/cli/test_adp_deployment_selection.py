@@ -103,6 +103,31 @@ def three_deployments(adp):
 
 
 class TestDeploymentVerb:
+    def test_client_entries_pin_selected_store_without_aws(
+        self, three_deployments, resolved, seed_session, adp_home: Path, adp_bin: Path, tmp_path: Path
+    ) -> None:
+        import tomllib
+
+        fake_bin = tmp_path / "no-aws"
+        fake_bin.mkdir()
+        aws = fake_bin / "aws"
+        aws.write_text("#!/bin/sh\nexit 99\n")
+        aws.chmod(0o755)
+        environment = {"PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]}
+        for name, url, client_name in (("dev", DEV_URL, "codex"), ("integration", INT_URL, "claude")):
+            store = Path(resolved(name)["config_dir"])
+            seed_session(store, url)
+            result = three_deployments(["--deployment", name, client_name, "setup"], environment)
+            assert result.returncode == 0, result.stderr
+            if client_name == "codex":
+                entry = tomllib.loads((adp_home / ".codex/config.toml").read_text())["mcp_servers"]["adp-tools"]
+            else:
+                entry = json.loads((adp_home / ".claude.json").read_text())["mcpServers"]["adp-tools"]
+            assert entry["command"] == str(adp_bin / "adp")
+            assert entry["args"] == ["--deployment", name, "mcp"]
+            assert entry["env"]["BG_CONFIG_DIR"] == str(store)
+            assert entry["env"]["ADP_DEPLOYMENT_ID"] == resolved(name)["deployment_id"]
+
     @pytest.mark.parametrize("mode", [0o755, 0o777])
     def test_default_install_root_allows_reads_but_not_foreign_writes(self, adp, adp_home, adp_bin, mode) -> None:
         # The shipped installer creates ~/.adp/bin with mkdir -p under the

@@ -34,6 +34,11 @@ from door.browse_backend import (
 ZOEKT_URL = "http://zoekt:6070"
 
 
+@pytest.fixture(autouse=True)
+def configured_backend_key(monkeypatch):
+    monkeypatch.setenv("ZOEKT_API_KEY", "offline-backend-key-" * 4)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -743,6 +748,80 @@ class TestRepoScopedRead:
         )
         assert len(results) == 1
         assert "# Vibe Trading Wiki" in results[0].data["content"]
+
+
+class TestCanonicalRepoRead:
+    """Full source URIs work without treating a governed project as a repo slug."""
+
+    @pytest.mark.parametrize("repo_name", ["example/service", "other/project.name"])
+    @respx.mock
+    async def test_full_uri_reads_authorized_source(self, repo_name):
+        content = "def greeting():\n    return 'hello'\n"
+        route = respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200, text=_zoekt_whole_file_response(repo_name, "src/app.py", content)
+            )
+        )
+        results = await browse(
+            "read",
+            f"/{repo_name}/src/app.py",
+            zoekt_url=ZOEKT_URL,
+            allowed_repos={repo_name},
+        )
+        assert route.called
+        assert len(results) == 1
+        assert results[0].repo_name == repo_name
+        assert results[0].data["path"] == "src/app.py"
+        assert results[0].data["content"] == content
+        payload = json.loads(route.calls[0].request.content)
+        assert payload["opts"]["Whole"] is True
+
+    @pytest.mark.parametrize(
+        "uri,allowed",
+        [
+            ("/foreign/service/src/app.py", {"example/service"}),
+            ("/example/service-fork/src/app.py", {"example/service"}),
+            ("/example/service/src/app.py", set()),
+            ("/example/service/src/app.py", None),
+            ("/example/service", {"example/service"}),
+            ("/example/service/../secret.py", {"example/service"}),
+            ("/example/service/%2e%2e/secret.py", {"example/service"}),
+            ("/example/service/src%2fsecret.py", {"example/service"}),
+            ("/example/service/src\\secret.py", {"example/service"}),
+        ],
+    )
+    @respx.mock
+    async def test_unauthorized_or_invalid_uri_never_fetches_bytes(self, uri, allowed):
+        assert await browse("read", uri, zoekt_url=ZOEKT_URL, allowed_repos=allowed) == []
+        assert len(respx.calls) == 0
+
+    @pytest.mark.parametrize("project_repos", [{"example/service"}, {"other/service"}, set()])
+    @respx.mock(assert_all_called=False)
+    async def test_governed_project_narrows_full_uri_reads(self, monkeypatch, project_repos, respx_mock):
+        from door import server
+        from door.acl import CallerPrincipal
+        from door.project_filter import ProjectScope
+
+        acl_store = MagicMock()
+        acl_store.get_allowed_repos.return_value = {"example/service", "other/service"}
+        monkeypatch.setattr(server.state, "acl_store", acl_store)
+        monkeypatch.setattr(server.config, "zoekt_url", ZOEKT_URL)
+        route = respx_mock.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(200, text=_zoekt_whole_file_response(
+                "example/service", "src/app.py", "print('hello')\n"
+            ))
+        )
+        result = await server._handle_browse(
+            {"action": "read", "uri": "/example/service/src/app.py", "project": "my-project"},
+            CallerPrincipal(github_login="fixture-user"),
+            ProjectScope(project_id="my-project", repo_names=frozenset(project_repos)),
+        )
+        if "example/service" in project_repos:
+            assert result["entries"][0]["content"] == "print('hello')\n"
+            assert route.called
+        else:
+            assert result["entries"] == []
+            assert not route.called
 
 
 class TestUnscopedOrgRepoListing:

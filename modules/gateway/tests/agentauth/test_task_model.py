@@ -55,7 +55,7 @@ def model(runtime, monkeypatch):
     readiness = AsyncMock(
         return_value=(grant["model_binding"], SimpleNamespace(context=context), SimpleNamespace(region="us-east-1", account_id="123456789012"))
     )
-    monkeypatch.setattr(module, "quote_request", AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("0.01"))))
+    monkeypatch.setattr(module, "quote_request", AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("0.01"), maximum_cost_usd=Decimal("0.01"))))
     monkeypatch.setattr(module, "confirm_quote_spendable", AsyncMock(return_value=None))
     service = module.TaskModel(
         repository,
@@ -90,9 +90,18 @@ async def test_confirmed_operation_replay_never_calls_provider_twice(model):
     assert await execute(model) == first
     model.provider.assert_awaited_once()
     model.service.usage_writer.assert_awaited_once()
+    assert model.service.usage_writer.call_args.kwargs["reservation_usage_known"] is True
     stored = model.service._read(model.identity.task_id, model.turn_id)
     assert stored["provider_request_id"] == "provider-actual" and stored["usage_logged"]
     assert stored["pricing_decision"]["ledger_cost_usd"] == "0.001"
+
+
+async def test_verified_usage_above_estimate_is_charged_within_provider_ceiling(model):
+    module.quote_request.return_value.total_usd = Decimal("0.0001")
+    result = await execute(model)
+    assert result["operation_status"] == "confirmed" and result["reservation_status"] == "settled"
+    assert result["usage"]["estimated_usd"] == 0.001
+    model.provider.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -112,6 +121,62 @@ async def test_budget_denial_prevents_send(model):
     assert receipt["operation_status"] == "rejected"
     assert receipt["error_code"] == "budget_exceeded"
     model.provider.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "runtime",
+    [
+        {
+            "work_scope": {
+                "tenant_id": "tenant-a",
+                "product_id": "test-product",
+                "project_id": "test-project",
+                "relationship_revision": 1,
+                "run_id": None,
+                "flow_id": None,
+            }
+        }
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_project_scope_from_protected_grant_controls_model_and_usage(model, monkeypatch, allowed):
+    from src.products import work_scope
+
+    scope = work_scope.ProjectAttribution("tenant-a", "test-product", "test-project", 1)
+    authorize = AsyncMock(return_value=scope)
+    bind = AsyncMock(return_value=scope)
+    monkeypatch.setattr(work_scope, "authorize_project_selection", authorize)
+    monkeypatch.setattr(work_scope, "bind_run", bind)
+    model.service.db = SimpleNamespace(commit=AsyncMock())
+
+    async def enforce(context, *args, **kwargs):
+        assert context._project_attribution == scope
+        return SimpleNamespace(allowed=allowed)
+
+    model.enforcement.check_budget_hierarchy.side_effect = enforce
+    result = await execute(model)
+    authorize.assert_awaited_once_with(
+        model.service.db,
+        user_id=model.identity.canonical_principal.removeprefix("human:"),
+        tenant_id="tenant-a",
+        product_id="test-product",
+        project_id="test-project",
+    )
+    bind.assert_awaited_once()
+    assert bind.call_args.kwargs["scope"] == scope
+    assert bind.call_args.kwargs["run_id"] == model.identity.invocation_id
+    model.enforcement.check_budget_hierarchy.assert_awaited_once()
+    if allowed:
+        assert result["operation_status"] == "confirmed"
+        model.provider.assert_awaited_once()
+        assert model.service.usage_writer.call_args.kwargs["context"]._project_attribution == scope
+        assert model.service.usage_writer.call_args.kwargs["reservation_usage_known"] is True
+    else:
+        assert result["operation_status"] == "rejected"
+        assert result["error_code"] == "budget_exceeded"
+        model.provider.assert_not_awaited()
+        model.service.usage_writer.assert_not_awaited()
 
 
 @pytest.mark.asyncio

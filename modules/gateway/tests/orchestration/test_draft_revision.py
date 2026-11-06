@@ -14,7 +14,7 @@ from src.orchestration.compile import ApprovalContext
 from src.orchestration.draft_revision_routes import get_access_control, router
 from src.orchestration.genesis import APPROVAL_DECISION_KINDS
 from src.orchestration.models import OrchestrationFlow
-from src.orchestration.proposal import ProposedEdge
+from src.orchestration.proposal import NodeLineage, ProposedEdge
 from src.orchestration.registration import register_draft_proposal
 from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.state import ActorKind, NodeState
@@ -67,6 +67,148 @@ async def save(session, draft, operator, request=None):
 async def records(session, flow_id):
     repo = OrchestrationRepository(session)
     return await repo.list_plan_versions(org_id=reg.ORG_A, flow_id=flow_id), await repo.list_decisions(org_id=reg.ORG_A, flow_id=flow_id)
+
+
+async def test_operations_draft_can_be_saved_before_activation(session, draft, operator, monkeypatch):
+    from src.orchestration.executor_assignment import selected_executor
+
+    monkeypatch.delenv("ADP_ENGINE_OPERATIONS_EXECUTOR", raising=False)
+    request = request_for(draft).model_dump(mode="json")
+    node = next(n for n in request["proposal"]["nodes"] if n["kind"] == "story")
+    node["executor"] = {"kind": "agent", "role": "operate", "persona": "agent-codex-operations"}
+    node["evidence_expectations"] = ["runtime_verified:tools-facade"]
+    node["required_inputs"] = [
+        {"name": name, "source": source}
+        for name, source in (
+            ("workflow", "deployment_workflow:tools-facade-deploy.yml"),
+            ("source", "deployment_source_revision:" + "a" * 40),
+            ("definition", "deployment_definition_revision:" + "b" * 40),
+            ("branch", "deployment_branch:main"),
+        )
+    ]
+    result, _ = await save(session, draft, operator, revision.DraftRevisionRequest.model_validate(request))
+    assert result["execution_authorized"] is False
+    assert result["proposal"]["execution_policy"] is None
+    stored = next(n for n in result["proposal"]["nodes"] if n["address"] == node["address"])
+    assert stored["required_inputs"] == [{**i, "description": None} for i in node["required_inputs"]]
+    with pytest.raises(ValueError, match="unsupported_node_executor"):
+        selected_executor(result["proposal"], node["address"], default="developer", accepted=True)
+    assert (await reg.nodes_by_ref(session))["accept"].state == NodeState.AWAITING_GATE.value
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["deployment_workflow:../gateway.yml", "deployment_source_revision:main", "deployment_definition_revision:latest", "deployment_branch:main/path"],
+)
+def test_operations_draft_refuses_malformed_workflow_inputs(monkeypatch, source):
+    from src.orchestration.proposal import LoopProposal, validate_proposal
+
+    monkeypatch.delenv("ADP_ENGINE_OPERATIONS_EXECUTOR", raising=False)
+    raw = reg.gateless_proposal().model_dump(mode="json")
+    node = next(n for n in raw["nodes"] if n["kind"] == "story")
+    node["executor"] = {"kind": "agent", "role": "operate", "persona": "operations"}
+    node["required_inputs"] = [{"name": "invalid", "source": source}]
+    assert any(v.rule == "required_input_source_unsupported" for v in validate_proposal(LoopProposal.model_validate(raw)))
+
+
+def _release_proposal():
+    from src.orchestration.proposal import LoopProposal
+
+    raw = reg.gateless_proposal().model_dump(mode="json")
+    node = next(item for item in raw["nodes"] if item["address"] == reg.address("story-c", wave="wave-2"))
+    predecessor = reg.address("story-a")
+    node["executor"] = {"kind": "agent", "role": "operate", "persona": "operations"}
+    node["repository_identity"] = "aws-e/adp"
+    node["required_inputs"] = [
+        {"name": "build", "source": f"node:{predecessor}"},
+        {"name": "workflow", "source": "deployment_workflow:gateway-deploy.yml"},
+    ]
+    node["operational_release_binding"] = {
+        "predecessors": [{"address": predecessor, "receipt_kind": "verified_merge"}],
+        "build_prerequisites": [predecessor],
+        "repository": "aws-e/adp",
+        "target": "gateway-dev",
+        "component": "gateway",
+        "workflows": ["gateway-deploy.yml"],
+        "default_branch": "main",
+    }
+    return LoopProposal.model_validate(raw)
+
+
+def test_future_release_binding_round_trips_without_changing_literal_nodes():
+    from src.orchestration.proposal import LoopProposal, validate_proposal
+
+    proposal = _release_proposal()
+    serialized = proposal.model_dump(mode="json")
+    assert "operational_release_binding" not in serialized["nodes"][0]
+    assert LoopProposal.model_validate(serialized).model_dump(mode="json") == serialized
+    assert not any(violation.rule == "operational_release_binding_invalid" for violation in validate_proposal(proposal))
+
+
+@pytest.mark.parametrize(
+    "component,workflow,selected",
+    [
+        ("gateway-backend", "gateway-deploy.yml", "api_product_lifecycle,api_denial_oracle,api_recovery_cleanup"),
+        ("gateway-frontend", "gateway-frontend-deploy.yml", "live_browser_create,live_browser_conflict_denial,live_browser_evidence"),
+        ("gateway-frontend", "gateway-frontend-deploy.yml", "live_scope_isolation,live_scope_denials,live_scope_history_cleanup"),
+    ],
+)
+def test_product_inventory_requires_reviewed_gateway_deployment_binding(component, workflow, selected):
+    from src.orchestration.proposal import LoopProposal
+
+    raw = _release_proposal().model_dump(mode="json")
+    node = next(item for item in raw["nodes"] if item.get("operational_release_binding"))
+    binding = node["operational_release_binding"]
+    assert "product_cases" not in binding
+    binding.update(component=component, workflows=[workflow], product_cases=selected)
+    accepted = LoopProposal.model_validate(raw)
+    persisted = next(item for item in accepted.model_dump(mode="json")["nodes"] if item.get("operational_release_binding"))
+    assert persisted["operational_release_binding"]["product_cases"] == selected
+    for field, value in (("component", "gateway"), ("workflows", ["other.yml"]), ("product_cases", "api_product_lifecycle")):
+        invalid = {**binding, field: value}
+        node["operational_release_binding"] = invalid
+        with pytest.raises(ValueError):
+            LoopProposal.model_validate(raw)
+
+
+async def test_future_release_binding_is_stored_without_revisions(session, draft, operator):
+    from src.orchestration.accepted_node import AcceptedNodeContract, operational_revision_inputs
+    from src.orchestration.proposal import LoopProposal
+
+    request = request_for(draft).model_dump(mode="json")
+    node = next(item for item in request["proposal"]["nodes"] if item["address"].endswith("/story-c"))
+    release = next(item for item in _release_proposal().model_dump(mode="json")["nodes"] if item.get("operational_release_binding"))
+    node.update(
+        executor=release["executor"],
+        repository_identity=release["repository_identity"],
+        required_inputs=release["required_inputs"],
+        operational_release_binding=release["operational_release_binding"],
+    )
+    result, _ = await save(session, draft, operator, revision.DraftRevisionRequest.model_validate(request))
+    stored = next(item for item in result["proposal"]["nodes"] if item["address"] == node["address"])
+    assert stored["operational_release_binding"] == release["operational_release_binding"]
+    accepted = LoopProposal.model_validate(result["proposal"])
+    operating = next(item for item in accepted.nodes if item.address == node["address"])
+    assert operational_revision_inputs(AcceptedNodeContract(1, operating, frozenset(), frozenset())) is None
+
+
+@pytest.mark.parametrize("invalid", ["literal", "foreign_predecessor", "wrong_repository", "wrong_workflow"])
+def test_future_release_binding_rejects_inconsistent_authority(invalid):
+    from src.orchestration.proposal import LoopProposal, validate_proposal
+
+    raw = _release_proposal().model_dump(mode="json")
+    node = next(item for item in raw["nodes"] if item.get("operational_release_binding"))
+    binding = node["operational_release_binding"]
+    if invalid == "literal":
+        node["required_inputs"].append({"name": "source", "source": "deployment_source_revision:" + "a" * 40})
+    elif invalid == "foreign_predecessor":
+        binding["predecessors"][0]["address"] = reg.address("story-b")
+        binding["build_prerequisites"] = [reg.address("story-b")]
+    elif invalid == "wrong_repository":
+        binding["repository"] = "another/repository"
+    else:
+        binding["workflows"] = ["other-deploy.yml"]
+    assert any(violation.rule == "operational_release_binding_invalid" for violation in validate_proposal(LoopProposal.model_validate(raw)))
 
 
 async def test_preview_writes_nothing(session, draft, operator):
@@ -133,6 +275,45 @@ async def test_metadata_only_edit_is_saved_and_bound_to_preview(session, draft, 
     result, _ = await save(session, draft, operator, request)
     assert result["plan_version"] == 2 and result["plan_hash"] == draft[0].plan_hash
     assert (await session.get(OrchestrationFlow, draft[0].flow_id)).description == "Clarified intent"
+
+
+@pytest.mark.parametrize(
+    ("lineage", "labels"),
+    [(NodeLineage(story_id="EI-S02", size="M"), {}), (None, {"source": "issue"}), (NodeLineage(story_id="EI-S02"), {"source": "issue"})],
+)
+async def test_lineage_and_labels_only_revision_changes_hash_and_preserves_gate(session, draft, operator, lineage, labels):
+    before = await reg.nodes_by_ref(session)
+    proposal = draft[1]
+    story = proposal.nodes[0].model_copy(update={"lineage": lineage, "labels": labels})
+    proposal = proposal.model_copy(update={"nodes": [story, *proposal.nodes[1:]]})
+    request = request_for(draft, proposal=proposal)
+    preview = await revision.preview_draft_revision(session, draft[0].flow_id, request, operator)
+    assert preview["proposal_hash"] != revision.draft_hash(draft[1])
+    assert preview["proposal"]["nodes"][1].get("lineage", {}).get("story_id") == (lineage.story_id if lineage else None)
+    assert preview["acceptance_gate_id"] == before["accept"].id
+    result, _ = await save(session, draft, operator, request)
+    await session.commit()
+    assert result["plan_version"] == 2
+    assert result["plan_hash"] != draft[0].plan_hash
+    assert (await reg.nodes_by_ref(session))["accept"].id == before["accept"].id
+    plans, _ = await records(session, draft[0].flow_id)
+    revised = next(plan for plan in plans if plan.version == 2)
+    saved = next(node for node in revised.plan_document["nodes"] if node["address"] == story.address)
+    assert saved.get("lineage", {}).get("story_id") == (lineage.story_id if lineage else None)
+    assert saved.get("labels", {}) == labels
+    stored = (await reg.nodes_by_ref(session))[story.address.rsplit("/", 1)[-1]]
+    assert stored.lineage == saved.get("lineage")
+    assert stored.labels == labels
+
+
+async def test_invalid_revision_lineage_and_labels_are_rejected_before_save(session, draft, operator):
+    proposal = draft[1]
+    story = proposal.nodes[0].model_copy(update={"lineage": NodeLineage(story_id="  "), "labels": {"unregistered": "value"}})
+    proposal = proposal.model_copy(update={"nodes": [story, *proposal.nodes[1:]]})
+    with pytest.raises(revision.ProposalRejectedError) as error:
+        await revision.preview_draft_revision(session, draft[0].flow_id, request_for(draft, proposal=proposal), operator)
+    assert {violation.rule for violation in error.value.violations} >= {"lineage_invalid", "label_key_unknown"}
+    assert len((await records(session, draft[0].flow_id))[0]) == 1
 
 
 async def test_retry_is_bound_to_actor_and_base_hash(session, draft, operator):
@@ -318,11 +499,16 @@ async def test_service_actor_cannot_revise(session, draft, registrar):
 
 async def test_revised_gate_accepts_only_the_new_hash(session, draft, operator, access):
     from src.orchestration.adapters.github_comments import InputPath, apply_gate_answer_for_context
+    from tests.orchestration.product_fixture import seed_product
 
-    await reg.seed_principal(session, org_id=reg.ORG_A, role=AdminRole.ORG_ADMIN.value)
-    result, _ = await save(session, draft, operator)
+    user_id = await reg.seed_principal(session, org_id=reg.ORG_A, role=AdminRole.ORG_ADMIN.value)
+    await seed_product(session, org_id=reg.ORG_A, actor_id=reg.HUMAN_USER_ID, user_id=user_id)
+    request = request_for(draft)
+    request.proposal.product_id = f"product-{reg.ORG_A}"
+    result, _ = await save(session, draft, operator, request)
+    assert (await session.get(OrchestrationFlow, draft[0].flow_id)).product_id == request.proposal.product_id
     gate = (await reg.nodes_by_ref(session))["accept"]
-    context = reg.token_context(reg.ORG_A, user_id=reg.HUMAN_USER_ID)
+    context = reg.token_context(reg.ORG_A, user_id=reg.HUMAN_USER_ID, account_type="human")
     stale = await apply_gate_answer_for_context(
         session,
         context=context,
@@ -371,17 +557,23 @@ async def test_failed_plan_write_rolls_back_graph_mutation(session, draft, opera
 
 @pytest.fixture
 async def client(session, access, operator):
+    from fastapi.responses import JSONResponse
+
+    from src.shared.exceptions import BedrockGatewayError
+
     await reg.seed_principal(session, org_id=reg.ORG_A, role=AdminRole.ORG_ADMIN.value)
     app = FastAPI()
     app.include_router(router, prefix="/orchestration")
+
+    @app.exception_handler(BedrockGatewayError)
+    async def gateway_error(_request, exc):
+        return JSONResponse(status_code=exc.status_code, content={"error": exc.error, "message": exc.message})
 
     async def db():
         yield session
 
     app.dependency_overrides[get_db] = db
-    app.dependency_overrides[get_current_user] = lambda: reg.token_context(reg.ORG_A, user_id=reg.HUMAN_USER_ID).model_copy(
-        update={"account_type": "human"}
-    )
+    app.dependency_overrides[get_current_user] = lambda: reg.token_context(reg.ORG_A, user_id=reg.HUMAN_USER_ID, account_type="human")
     app.dependency_overrides[get_access_control] = lambda: access
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
         yield http, app
@@ -410,15 +602,15 @@ async def test_http_permissions_are_checked_before_flow_lookup(client, access):
     # The application handles AccessDeniedError globally; here assert the
     # dependency refuses before the deliberately nonexistent flow is resolved.
     access.check_permission = deny
-    with pytest.raises(AccessDeniedError):
-        await http.post(
-            "/orchestration/flows/missing/draft/preview",
-            json={
-                "proposal": reg.gateless_proposal().model_dump(mode="json"),
-                "expected_plan_version": 1,
-                "expected_plan_hash": "0" * 64,
-            },
-        )
+    response = await http.post(
+        "/orchestration/flows/missing/draft/preview",
+        json={
+            "proposal": reg.gateless_proposal().model_dump(mode="json"),
+            "expected_plan_version": 1,
+            "expected_plan_hash": "0" * 64,
+        },
+    )
+    assert response.status_code == 403
 
 
 @pytest.mark.parametrize(
@@ -428,7 +620,7 @@ async def test_http_permissions_are_checked_before_flow_lookup(client, access):
         ("tenant", 404, "flow_not_found"),
         ("stale", 409, "stale_draft_revision"),
         ("invalid", 422, "invalid_draft_revision"),
-        ("service", 403, "draft_revision_operator_required"),
+        ("service", 403, "access_denied"),
     ],
 )
 async def test_http_refusal_contracts(client, draft, session, case, status, code):
@@ -446,12 +638,10 @@ async def test_http_refusal_contracts(client, draft, session, case, status, code
     elif case == "invalid":
         body["proposal"]["org_id"] = "other"
     else:
-        app.dependency_overrides[get_current_user] = lambda: reg.token_context(reg.ORG_A, user_id=reg.HUMAN_USER_ID).model_copy(
-            update={"account_type": "service"}
-        )
+        app.dependency_overrides[get_current_user] = lambda: reg.token_context(reg.ORG_A, user_id=reg.HUMAN_USER_ID, account_type="service")
     response = await http.post(f"/orchestration/flows/{flow_id}/draft/preview", json=body)
     assert response.status_code == status, response.text
-    assert response.json()["detail"]["error"] == code
+    assert response.json().get("detail", response.json())["error"] == code
 
 
 async def test_wave_display_edit_preserves_execution_and_replays(session, draft, operator):

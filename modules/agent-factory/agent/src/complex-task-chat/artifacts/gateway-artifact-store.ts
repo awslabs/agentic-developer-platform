@@ -4,7 +4,7 @@ import { mkdir, open, realpath, rename, unlink } from 'fs/promises';
 import path from 'path';
 import { z } from 'zod';
 import { AgentTool } from '../context/types';
-import { ChatDataClient, ChatDataError } from '../gateway/chat-data-client';
+import { ChatDataClient, ChatDataError, isStoreUnconfigured } from '../gateway/chat-data-client';
 import { ArtifactRef, ArtifactStore, CallerIdentity, TurnScope } from './port';
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -47,10 +47,30 @@ const contentTypes: Record<string, string> = {
 };
 
 export class GatewayArtifactStore implements ArtifactStore {
+  #unconfigured = false;
+
   constructor(private readonly client: ChatDataClient, private readonly sessionId: string, private readonly workspaceRoot: string) {
     if (!workspaceRoot || !path.isAbsolute(workspaceRoot) || path.resolve(workspaceRoot) === path.parse(workspaceRoot).root || !sessionId) {
       throw new ChatDataError('invalid_request');
     }
+  }
+
+  /** True once this gateway answered 503 `chat_artifacts_unconfigured`: no artifact tools for this sandbox. */
+  get unconfigured(): boolean { return this.#unconfigured; }
+
+  /**
+   * Artifacts are optional (#8028). A gateway without ARTIFACTS_TABLE/ARTIFACTS_BUCKET answers
+   * every artifact operation with 503 `chat_artifacts_unconfigured`; that is recorded once,
+   * logged once, and reported as true so the caller continues without artifacts. Every other
+   * failure returns false and keeps its existing handling. The port methods themselves still
+   * throw: a fetch cannot land a file it never received, so the decision to continue is the
+   * caller's (sandbox-data.ts), not the store's.
+   */
+  degradedBy(error: unknown): boolean {
+    if (!isStoreUnconfigured(error, 'chat_artifacts_unconfigured')) return false;
+    if (!this.#unconfigured) console.error('[sandbox] artifact store unconfigured on this gateway; continuing without artifact tools');
+    this.#unconfigured = true;
+    return true;
   }
 
   #session(sessionId: string): void {
@@ -223,6 +243,7 @@ export class GatewayArtifactStore implements ArtifactStore {
 
   toolsForTurn(scope: TurnScope): AgentTool[] {
     this.#session(scope.sessionId);
+    if (this.#unconfigured) return [];
     return [
       {
         name: 'publish_artifact',

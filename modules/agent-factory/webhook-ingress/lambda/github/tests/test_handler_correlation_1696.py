@@ -34,6 +34,7 @@ class MockResolvedIdentity:
     user_provisioning_mode: str = "strict"
     user_kind: str = "human"
     bot_kind: str = ""
+    identity_proven: bool = True
 
 
 def _bot_identity(bot_kind="operations"):
@@ -77,7 +78,11 @@ def _chain(correlation_id, root_human_id, is_human_rooted, chain_depth):
 
 def _payload() -> dict:
     """Signature-verified payload fields the A09 job context is derived from."""
-    return {"repository": {"full_name": REPO}, "installation": {"id": INSTALLATION}}
+    return {
+        "repository": {"full_name": REPO},
+        "installation": {"id": INSTALLATION},
+        "sender": {"id": 56, "type": "User", "login": "alice"},
+    }
 
 
 class TestDetermineCorrelationPrecedence:
@@ -240,8 +245,8 @@ class TestDetermineCorrelationPrecedence:
         assert result["is_new_chain"] is False
 
     @patch("handler._get_correlation_store")
-    def test_no_pointer_no_marker_new_chain(self, mock_store_fn):
-        """Neither pointer nor marker → new bot-initiated chain."""
+    def test_no_pointer_no_marker_refuses_bot_root(self, mock_store_fn):
+        """Neither pointer nor marker can establish a bot chain."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -253,11 +258,13 @@ class TestDetermineCorrelationPrecedence:
             _payload(), identity, "github:repo=org/repo,issue=55", marker_text=None
         )
 
-        assert result["correlation_id"]  # UUID generated
-        assert result["root_human_id"] == "bot-ops-123"
+        assert result["correlation_id"] == ""
+        assert result["root_human_id"] == ""
         assert result["parent_invocation_id"] is None
-        assert result["chain_depth"] == 0
-        assert result["is_new_chain"] is True
+        from intent_parser import MAX_CHAIN_DEPTH
+
+        assert result["chain_depth"] >= MAX_CHAIN_DEPTH
+        assert result["is_new_chain"] is False
         assert result["is_human_rooted"] is False
 
     @patch("handler._get_correlation_store")

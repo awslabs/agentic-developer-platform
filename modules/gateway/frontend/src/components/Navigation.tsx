@@ -1,7 +1,8 @@
 import { NavLink } from 'react-router-dom';
 import { usePermissions } from '@/hooks/usePermissions';
+import { Permission } from '@/types';
 import { useFeatures } from '@/hooks/useFeatures';
-import { GITLAB_PATH, handleGitlabSsoClick } from '@/services/gitlabSso';
+import { LineIcon } from '@/components/ui/LineIcon';
 
 interface NavItem {
   to: string;
@@ -36,9 +37,9 @@ const iconPaths: Record<string, string> = {
 
 function NavIcon({ icon }: { icon: string }) {
   return (
-    <svg className="blueprint-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <LineIcon className="blueprint-nav-icon">
       <path d={iconPaths[icon] ?? iconPaths['📊']} />
-    </svg>
+    </LineIcon>
   );
 }
 
@@ -54,6 +55,7 @@ export function Navigation() {
     canViewPool,
     canViewBudgets,
     canViewRateLimits,
+    hasPermission,
   } = usePermissions();
   const features = useFeatures();
 
@@ -61,6 +63,9 @@ export function Navigation() {
 
   // Dashboard link — all users see this, points to /runs (Issue #3634)
   navItems.push({ to: '/runs', label: 'Dashboard', icon: '📊' });
+  if (features.product_profile) {
+    navItems.push({ to: '/products', label: 'Products', icon: '📋' });
+  }
 
   // Platform admin sees org/pool/metrics links (now under /admin/system — Issue #3634).
   // These are anchors INTO the system dashboard, so they share its feature gate.
@@ -115,9 +120,9 @@ export function Navigation() {
     navItems.push({ to: '/ratelimits', label: 'Rate Limits', icon: '⏱️' });
   }
 
-  // Knowledge management for all authenticated users (Issue #1794)
+  // Context for all authenticated users (Issue #1794)
   if (features.knowledge) {
-    navItems.push({ to: '/knowledge', label: 'Knowledge', icon: '📚' });
+    navItems.push({ to: '/knowledge', label: 'Context', icon: '📚' });
   }
 
   // Agent Activity for all authenticated users (Issue #1457)
@@ -143,31 +148,14 @@ export function Navigation() {
     navItems.push({ to: '/budget', label: 'Budget & Spend', icon: '💵' });
   }
 
-  // Superplane domain app (Issue #5037, EPIC #4910).
-  //
-  // Feature-gated because `superplane` is fail-CLOSED in `ALL_FEATURES_ENABLED`: an
-  // environment not running the domain app must not advertise a menu item whose route
-  // redirects straight back to the dashboard. Deliberately UNGATED by permission —
-  // nothing tenant-scoped ships behind this flag yet, so there is no permission to
-  // check, and inventing one here would hide the entry from the operators enabling it.
-  if (features.superplane) {
-    navItems.push({ to: '/superplane', label: 'Superplane', icon: '🛩️' });
-  }
+  // Desktop apps and CLI tools share the existing route for all authenticated users.
+  navItems.push({ to: '/setup', label: 'Apps & CLI Setup', icon: '⚙️' });
 
-  // Agent Chat for all authenticated users (Issue #97)
-  if (features.chat) {
-    navItems.push({ to: '/chat', label: 'Agent Chat', icon: '🤖' });
+  // Dev Box — the owner's EC2 Crew box (Issue #8094). Same flag as the route's FeatureGate;
+  // the page itself shows the policy-denied state when the tenant has no Dev Box policy.
+  if (features.crew_dashboard) {
+    navItems.push({ to: '/settings/dev-box', label: 'Dev Box', icon: '🖥️' });
   }
-
-  // My Chats page for all authenticated users (Issue #179)
-  if (features.chat) {
-    navItems.push({ to: '/my-chats', label: 'My Chats', icon: '💬' });
-  }
-
-  // Setup page for all authenticated users
-  // Label is "CLI Setup", not "Claude Code Setup": the page covers Codex too
-  // (Issue #4159). Route is unchanged.
-  navItems.push({ to: '/setup', label: 'CLI Setup', icon: '⚙️' });
 
   // Connections page — link external services (Issue #465)
   if (features.connections) {
@@ -203,9 +191,8 @@ export function Navigation() {
     navItems.push({ to: '/admin/access-requests', label: 'Access Requests', icon: '📋' });
   }
 
-  // Indexing Status page for platform admins (Issue #1424)
-  if (features.indexing && isPlatformAdmin()) {
-    navItems.push({ to: '/admin/indexing', label: 'Indexing Status', icon: '🔍' });
+  if (hasPermission(Permission.TOOLS_MANAGE)) {
+    navItems.push({ to: '/admin/tools', label: 'Tool access', icon: '⚙️' });
   }
 
   // Legacy Tenant Org Links menu, controlled per deployment.
@@ -237,26 +224,6 @@ export function Navigation() {
           <span>{item.label}</span>
         </NavLink>
       ))}
-      {/* External: GitLab SSO (Issue #3775, Wave 2).
-          `/gitlab/` is a server path with an authenticated handoff, not a client
-          route: /api/auth/gitlab-sso mints an RS256 JWT and 302s to GitLab's JWT
-          callback. A plain <a href> cannot carry the Bearer token (sessionStorage),
-          so the click handler does the fetch and follows the redirect, falling back
-          to plain /gitlab/ navigation on any failure. The handler now lives in
-          services/gitlabSso.ts because the new UI needs the same behaviour (#5123).
-          Feature-gated: fail-closed behind FEATURE_GITLAB_ENABLED (Issue #3773). */}
-      {features.gitlab && (
-        <a
-          href={GITLAB_PATH}
-          onClick={handleGitlabSsoClick}
-          className="blueprint-nav-link flex items-center gap-3 px-3 py-2 rounded-md transition-colors"
-        >
-          <span className="text-xl" aria-hidden="true">
-            🦊
-          </span>
-          <span>GitLab</span>
-        </a>
-      )}
     </nav>
   );
 }

@@ -10,6 +10,7 @@ from installation.config import Refusal
 from installation.runner import atomic
 
 from .test_runtime_approval import save_plan, review_setup
+from installation.runtime_approval import review_document
 
 __all__ = ["review_setup"]
 
@@ -65,6 +66,15 @@ def test_default_runtime_mode_plans_and_exports_reviewable_manifest(
             "target"
         ]["cluster"]
         == environment["cluster"]
+    )
+    private_manifest = json.loads(
+        (arguments.output / "runtime-plan-manifest.json").read_text()
+    )
+    assert json.loads(
+        (arguments.output / "runtime-plan-review.json").read_text()
+    ) == review_document(private_manifest)
+    assert result["review_document"] == str(
+        arguments.output / "runtime-plan-review.json"
     )
 
 
@@ -156,3 +166,20 @@ def test_inspector_uses_selected_commands_and_refuses_mutations():
     with pytest.raises(Refusal):
         inspector.aws("iam", "create-role")
     assert len(calls) == 1
+
+
+def test_empty_sqs_inventory_remains_json_without_masking_other_responses():
+    import jmespath
+
+    calls = []
+    inspector = runtime_cli.RuntimeInspector(
+        "us-east-1", SimpleNamespace(call=lambda args, **kw: calls.append(args))
+    )
+    inspector.aws("sqs", "list-queues", "--queue-name-prefix", "selected-queue")
+    query = calls[0][calls[0].index("--query") + 1]
+    assert jmespath.search(query, {}) == {"QueueUrls": []}
+    assert jmespath.search(query, {"QueueUrls": ["existing"]}) == {
+        "QueueUrls": ["existing"]
+    }
+    with pytest.raises(Refusal, match="response is invalid"):
+        inspector.json(SimpleNamespace(stdout=""))

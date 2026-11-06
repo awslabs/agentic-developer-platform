@@ -131,7 +131,7 @@ from .identity import MAX_ALLOCATION_ID_LENGTH
 # returned. That is the safe direction, but it fails quietly as "nothing to release"
 # rather than loudly as "the schema is behind", which is exactly what
 # `check_schema_version` exists to convert into the latter.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 18
 
 
 class SupportsExecute(Protocol):
@@ -1756,9 +1756,223 @@ UPGRADES: dict[int, tuple[str, ...]] = {
     # Refresh already installed trigger bodies. Changing Python's effect map or
     # the historical v7 entry alone cannot upgrade an existing v8 database.
     9: (_ALLOCATION_EPOCH_TRIGGER_FUNCTION, _PROVIDER_CALL_BINDING_FUNCTION),
+    # Preserve the policy actually checked at admission. Historical rows predate
+    # streamlined approval and must retain the separate-person requirement.
+    10: (
+        "ALTER TABLE harness_approval_consumption ADD COLUMN IF NOT EXISTS "
+        "requires_distinct_approver boolean NOT NULL DEFAULT true",
+    ),
+    11: (
+        """CREATE TABLE harness_dispatch_reauthorizations (
+            operation_id text PRIMARY KEY REFERENCES harness_operations(operation_id),
+            org_id text NOT NULL, workspace_id text NOT NULL,
+            reauthorization_id text NOT NULL UNIQUE, original_approval_id text NOT NULL,
+            requester text NOT NULL, approved_by text NOT NULL,
+            plan_digest text NOT NULL,
+            expected_version bigint NOT NULL, restored_version bigint NOT NULL,
+            outbox_snapshot text NOT NULL, transport_proof text NOT NULL,
+            recorded_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        )""",
+        """CREATE FUNCTION harness_dispatch_reauthorization_immutable()
+        RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+            RAISE EXCEPTION 'dispatch reauthorization receipts are immutable';
+        END $$""",
+        """CREATE TRIGGER harness_dispatch_reauthorization_immutable
+        BEFORE UPDATE OR DELETE ON harness_dispatch_reauthorizations
+        FOR EACH ROW EXECUTE FUNCTION harness_dispatch_reauthorization_immutable()""",
+    ),
 }
 
+UPGRADES[12] = (
+    """CREATE TABLE harness_provider_retries (
+        operation_id text PRIMARY KEY REFERENCES harness_operations(operation_id),
+        org_id text NOT NULL, workspace_id text NOT NULL, plan_digest text NOT NULL,
+        reauthorization_id text NOT NULL UNIQUE, original_approval_id text NOT NULL,
+        requester text NOT NULL, approved_by text NOT NULL,
+        expected_version bigint NOT NULL, restored_version bigint NOT NULL,
+        original_key text NOT NULL UNIQUE
+            REFERENCES harness_provider_call_intent(idempotency_key),
+        replacement_key text NOT NULL UNIQUE,
+        source_fence bigint NOT NULL, source_attempt_id text NOT NULL,
+        source_intent text NOT NULL, proof text NOT NULL,
+        recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        CHECK(original_key<>replacement_key), CHECK(restored_version=expected_version+1)
+    )""",
+    """CREATE TRIGGER harness_provider_retry_immutable
+    BEFORE UPDATE OR DELETE ON harness_provider_retries
+    FOR EACH ROW EXECUTE FUNCTION harness_dispatch_reauthorization_immutable()""",
+)
+
+# Preserve every immutable receipt while permitting a separately proven, freshly
+# authorized next planning attempt. Older consumers must not read a chain.
+UPGRADES[13] = (
+    "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+    "harness_provider_retries_pkey",
+    "ALTER TABLE harness_provider_retries ADD PRIMARY KEY(operation_id, source_fence)",
+    "ALTER TABLE harness_provider_retries ADD COLUMN recovery_scope "
+    "text NOT NULL DEFAULT 'uncredentialed-planning'",
+    "ALTER TABLE harness_provider_retries ADD CHECK(recovery_scope IN "
+    "('uncredentialed-planning','unstarted-planning'))",
+    "ALTER TABLE harness_provider_retries ADD UNIQUE(operation_id, expected_version)",
+)
+
+# A saved proposal may be completed only through its own owner-attested scope.
+UPGRADES[14] = (
+    "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+    "harness_provider_retries_recovery_scope_check",
+    "ALTER TABLE harness_provider_retries ADD CONSTRAINT "
+    "harness_provider_retries_recovery_scope_check "
+    "CHECK(recovery_scope IN ('uncredentialed-planning','unstarted-planning',"
+    "'saved-plan-completion'))",
+)
+
+UPGRADES[15] = (
+    "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+    "harness_provider_retries_recovery_scope_check",
+    "ALTER TABLE harness_provider_retries ADD CONSTRAINT "
+    "harness_provider_retries_recovery_scope_check "
+    "CHECK(recovery_scope IN ('uncredentialed-planning','unstarted-planning',"
+    "'saved-plan-completion','partial-apply-repair'))",
+)
+
+UPGRADES[16] = (
+    "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+    "harness_provider_retries_recovery_scope_check",
+    "ALTER TABLE harness_provider_retries ADD CONSTRAINT "
+    "harness_provider_retries_recovery_scope_check "
+    "CHECK(recovery_scope IN ('uncredentialed-planning','unstarted-planning',"
+    "'saved-plan-completion','partial-apply-repair','unstarted-bootstrap'))",
+)
+
+UPGRADES[17] = (
+    "ALTER TABLE harness_recovery_settlements DROP CONSTRAINT IF EXISTS "
+    "harness_recovery_settlements_operation_id_key",
+    "CREATE UNIQUE INDEX IF NOT EXISTS harness_recovery_settlements_claim_key "
+    "ON harness_recovery_settlements(operation_id,claim_fence_token)",
+)
+
+UPGRADES[18] = (
+    "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+    "harness_provider_retries_recovery_scope_check",
+    "ALTER TABLE harness_provider_retries ADD CONSTRAINT "
+    "harness_provider_retries_recovery_scope_check "
+    "CHECK(recovery_scope IN ('uncredentialed-planning','unstarted-planning',"
+    "'saved-plan-completion','partial-apply-repair','unstarted-bootstrap','interrupted-planning'))",
+)
+
 DOWNGRADES: dict[int, tuple[str, ...]] = {
+    18: (
+        """DO $$ BEGIN
+            LOCK TABLE harness_provider_retries IN ACCESS EXCLUSIVE MODE;
+            IF EXISTS(SELECT 1 FROM harness_provider_retries
+                      WHERE recovery_scope='interrupted-planning') THEN
+                RAISE EXCEPTION 'cannot discard interrupted plan recovery history';
+            END IF;
+            ALTER TABLE harness_provider_retries DROP CONSTRAINT
+                harness_provider_retries_recovery_scope_check;
+            ALTER TABLE harness_provider_retries ADD CONSTRAINT
+                harness_provider_retries_recovery_scope_check
+                CHECK(recovery_scope IN ('uncredentialed-planning','unstarted-planning',
+                    'saved-plan-completion','partial-apply-repair','unstarted-bootstrap'));
+        END $$""",
+    ),
+    17: (
+        """DO $$ BEGIN
+            IF EXISTS(SELECT 1 FROM harness_recovery_settlements
+                      GROUP BY operation_id HAVING count(*)>1)
+               OR EXISTS(SELECT 1 FROM harness_provider_retries
+                         WHERE proof::jsonb ? 'settled_bootstrap') THEN
+                RAISE EXCEPTION 'cannot discard per-claim recovery history';
+            END IF;
+        END $$""",
+        "ALTER TABLE harness_recovery_settlements ADD CONSTRAINT "
+        "harness_recovery_settlements_operation_id_key UNIQUE(operation_id)",
+        "DROP INDEX harness_recovery_settlements_claim_key",
+    ),
+    16: (
+        """DO $$ BEGIN
+            IF EXISTS(SELECT 1 FROM harness_provider_retries
+                      WHERE recovery_scope='unstarted-bootstrap') THEN
+                RAISE EXCEPTION 'cannot discard bootstrap retry history';
+            END IF;
+        END $$""",
+        "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+        "harness_provider_retries_recovery_scope_check",
+        "ALTER TABLE harness_provider_retries ADD CONSTRAINT "
+        "harness_provider_retries_recovery_scope_check "
+        "CHECK(recovery_scope IN ('uncredentialed-planning','unstarted-planning',"
+        "'saved-plan-completion','partial-apply-repair'))",
+    ),
+    15: (
+        """DO $$ BEGIN
+            IF EXISTS(SELECT 1 FROM harness_provider_retries
+                      WHERE recovery_scope='partial-apply-repair') THEN
+                RAISE EXCEPTION 'cannot discard partial apply repair history';
+            END IF;
+        END $$""",
+        "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+        "harness_provider_retries_recovery_scope_check",
+        "ALTER TABLE harness_provider_retries ADD CONSTRAINT "
+        "harness_provider_retries_recovery_scope_check "
+        "CHECK(recovery_scope IN ('uncredentialed-planning','unstarted-planning',"
+        "'saved-plan-completion'))",
+    ),
+    14: (
+        """DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM harness_provider_retries
+                       WHERE recovery_scope='saved-plan-completion') THEN
+                RAISE EXCEPTION 'cannot discard saved plan completion history';
+            END IF;
+        END $$""",
+        "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+        "harness_provider_retries_recovery_scope_check",
+        "ALTER TABLE harness_provider_retries ADD CONSTRAINT "
+        "harness_provider_retries_recovery_scope_check "
+        "CHECK(recovery_scope IN ('uncredentialed-planning','unstarted-planning'))",
+    ),
+    13: (
+        """DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM harness_provider_retries
+                       WHERE recovery_scope<>'uncredentialed-planning') THEN
+                RAISE EXCEPTION 'cannot discard planning recovery history';
+            END IF;
+        END $$""",
+        "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+        "harness_provider_retries_pkey",
+        "ALTER TABLE harness_provider_retries ADD PRIMARY KEY(operation_id)",
+        "ALTER TABLE harness_provider_retries DROP COLUMN recovery_scope",
+        "ALTER TABLE harness_provider_retries DROP CONSTRAINT "
+        "harness_provider_retries_operation_id_expected_version_key",
+    ),
+    12: (
+        """DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM harness_provider_retries) THEN
+                RAISE EXCEPTION 'cannot discard provider retry history';
+            END IF;
+        END $$""",
+        "DROP TABLE harness_provider_retries",
+    ),
+    11: (
+        """DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM harness_dispatch_reauthorizations) THEN
+                RAISE EXCEPTION 'cannot discard dispatch reauthorization history';
+            END IF;
+        END $$""",
+        "DROP TABLE harness_dispatch_reauthorizations",
+        "DROP FUNCTION harness_dispatch_reauthorization_immutable()",
+    ),
+    10: (
+        """
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM harness_approval_consumption
+                       WHERE NOT requires_distinct_approver) THEN
+                RAISE EXCEPTION 'cannot discard recorded streamlined approval policy';
+            END IF;
+        END $$
+        """,
+        "ALTER TABLE harness_approval_consumption DROP COLUMN IF EXISTS "
+        "requires_distinct_approver",
+    ),
     # Restore v8's exact action fence without deleting durable calls or evidence.
     # Drain Superplane retirement first; old code cannot execute these adapters.
     9: (_V7_ALLOCATION_EPOCH_TRIGGER_FUNCTION, _V7_PROVIDER_CALL_BINDING_FUNCTION),

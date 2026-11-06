@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import uuid
+from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 from urllib.parse import unquote
@@ -67,8 +68,9 @@ def make_engine():
 def load_credential(app: FastAPI, credential_id: str) -> UserCredential:
     async def load() -> UserCredential:
         dependency = app.dependency_overrides[get_db]
-        async for session in dependency():
-            return await session.get(UserCredential, credential_id)
+        async with aclosing(dependency()) as sessions:
+            async for session in sessions:
+                return await session.get(UserCredential, credential_id)
         raise AssertionError("database dependency did not yield a session")
 
     return asyncio.run(load())
@@ -230,7 +232,11 @@ def app_and_client(mock_sm):
     app.dependency_overrides[get_secrets_manager] = lambda: mock_sm
 
     client = TestClient(app)
-    return app, client
+    try:
+        yield app, client
+    finally:
+        client.close()
+        asyncio.run(engine.dispose())
 
 
 @pytest.fixture
@@ -247,12 +253,50 @@ def bob_client(app_and_client):
     return client
 
 
+@pytest.mark.parametrize("resource", ["client", "database"])
+def test_app_fixture_closes_resources(request, monkeypatch, resource):
+    engine = make_engine()
+    monkeypatch.setattr(f"{__name__}.make_engine", lambda: engine)
+
+    def verify_cleanup():
+        try:
+            if resource == "client":
+                assert client.is_closed
+            else:
+                with pytest.raises(ValueError, match="no active connection"):
+                    asyncio.run(driver.execute("SELECT 1"))
+        finally:
+            client.close()
+            asyncio.run(engine.dispose())
+
+    request.addfinalizer(verify_cleanup)
+    _, client = request.getfixturevalue("app_and_client")
+
+    async def get_driver():
+        async with engine.connect() as connection:
+            pooled_connection = await connection.get_raw_connection()
+            return pooled_connection.driver_connection
+
+    driver = asyncio.run(get_driver())
+
+
 # ---------------------------------------------------------------------------
 # Tests: connect/start
 # ---------------------------------------------------------------------------
 
 
 class TestConnectStart:
+    @pytest.mark.parametrize("consent", [None, False, True])
+    def test_new_connection_defaults_to_agent_access_and_honors_opt_out(self, app_and_client, alice_client, consent):
+        app, _ = app_and_client
+        body = {"nickname": "devbox", "account_id": "123456789012"}
+        if consent is not None:
+            body["agent_consent"] = consent
+        response = alice_client.post("/auth/credentials/aws/connect", json=body)
+        assert response.status_code == 201
+        row = load_credential(app, response.json()["credential_id"])
+        assert row.agent_consent is (consent is not False)
+
     def test_creates_pending_row_and_returns_launch_url(self, alice_client, mock_sm):
         resp = alice_client.post(
             "/auth/credentials/aws/connect",
@@ -841,6 +885,15 @@ class TestConnectImport:
         assert stored["external_id"] == body["external_id"]
         assert str(uuid.UUID(body["external_id"])) == body["external_id"]
         assert body["trust_policy"]["Statement"][0]["Condition"]["StringEquals"]["sts:ExternalId"] == body["external_id"]
+        # ExternalId is an AssumeRole-only condition key; a TagSession statement
+        # carrying it would deny every tagged assume (verified live 2026-10-14).
+        by_action = {statement["Action"]: statement for statement in body["trust_policy"]["Statement"]}
+        assert set(by_action) == {"sts:AssumeRole", "sts:TagSession"}
+        assert "sts:ExternalId" not in by_action["sts:TagSession"]["Condition"]["StringEquals"]
+        assert (
+            by_action["sts:TagSession"]["Condition"]["StringEquals"]["aws:RequestTag/adp:user_id"]
+            == by_action["sts:AssumeRole"]["Condition"]["StringEquals"]["aws:RequestTag/adp:user_id"]
+        )
         assert stored["account_id"] == "123456789012"
 
         # Owned by Alice and resolvable as a canonical connection: the setup read
@@ -1077,6 +1130,36 @@ def test_import_refuses_reserved_targets_before_secret_write(alice_client, mock_
     assert response.json()["detail"]["reason"] == reason
     assert hint in response.json()["detail"]["hint"]
     assert not mock_sm._secrets
+
+
+def test_import_accepts_only_the_exact_platform_operator_roles_the_administrator_listed(alice_client, mock_sm, monkeypatch):
+    operator = "arn:aws:iam::999999999999:role/ADP-Agent-dev-platform"
+    monkeypatch.setenv("BG_PLATFORM_OPERATOR_ROLE_ARNS", f" {operator} , not-an-arn")
+    accepted = alice_client.post(
+        "/auth/credentials/aws/import",
+        json={"nickname": "dev-platform", "account_id": "999999999999", "role_arn": operator},
+    )
+    assert accepted.status_code == 201, accepted.text
+    assert accepted.json()["role_arn"] == operator
+    # Any other role in the platform account, including a sibling in the same
+    # namespace, is still refused: the allow-list is exact ARNs, not a prefix.
+    sibling = alice_client.post(
+        "/auth/credentials/aws/import",
+        json={"nickname": "sibling", "account_id": "999999999999", "role_arn": operator + "-2"},
+    )
+    assert sibling.status_code == 422
+    assert sibling.json()["detail"]["reason"] == "platform_account_not_allowed"
+
+
+def test_platform_operator_role_list_ignores_malformed_entries():
+    from types import SimpleNamespace
+
+    from src.shared.aws_role_trust import platform_operator_role_arns
+
+    good = "arn:aws:iam::999999999999:role/ADP-Agent-dev-platform"
+    listed = platform_operator_role_arns(SimpleNamespace(platform_operator_role_arns=f"{good}, arn:aws:iam::999999999999:root ,, *"))
+    assert listed == frozenset({good})
+    assert platform_operator_role_arns(SimpleNamespace(platform_operator_role_arns="")) == frozenset()
 
 
 @pytest.mark.parametrize("endpoint", ["connect", "import"])

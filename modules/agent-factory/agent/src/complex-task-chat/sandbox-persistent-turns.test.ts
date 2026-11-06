@@ -7,7 +7,8 @@ jest.mock('../lib/projectedWorkloadToken', () => ({ readIdentityToken: jest.fn((
 
 const env: NodeJS.ProcessEnv = {
   ADP_CHAT_DATA_ENABLED: 'true', ADP_CHAT_MODEL_POLICY_ENABLED: 'true',
-  ADP_CHAT_DATA_URL: 'https://gateway.example.test', CONTEXT_STRATEGY: 'gateway',
+  ADP_CHAT_DATA_URL: 'https://chat-sandbox-gateway.adp-gateway.svc:8443',
+  ADP_RUN_ID: '00000000-0000-4000-8000-000000000001', ADP_EXECUTOR: 'sandbox-loop', CONTEXT_STRATEGY: 'gateway',
   MEMORY_STRATEGY: 'gateway', ARTIFACT_STRATEGY: 'gateway', ADP_WORKLOAD_TOKEN_FILE: '/var/run/adp-model/token',
 };
 
@@ -24,12 +25,14 @@ test('interleaves five turns in two exclusive runtimes retaining only their own 
   jest.spyOn(ChatDataClient.prototype, 'sessionScope').mockImplementation(async function (this: ChatDataClient) { return scope(this); });
   jest.spyOn(ChatDataClient.prototype, 'sessionMode').mockResolvedValue('persistent');
   jest.spyOn(ChatDataClient.prototype, 'renewSession').mockImplementation(async function (this: ChatDataClient) { return { ...scope(this), session_mode: 'persistent' }; });
+  const decisions = jest.spyOn(ChatDataClient.prototype, 'modelDecision').mockImplementation(async function (this: ChatDataClient) {
+    return { modelId: 'approved-model', runId: scope(this).run_id, tenantId: 'tenant-a', userId: 'owner', generation: state(this).sequence,
+      posture: 'enforcing' as const, postureVerified: true };
+  });
   jest.spyOn(ChatDataClient.prototype, 'nextTurn').mockImplementation(async function (this: ChatDataClient) {
+    if (state(this).sequence === 1) expect(decisions.mock.calls.length).toBeGreaterThan(0);
     return { ref: `user_${createHash('sha256').update(scope(this).run_id).digest('hex')}`, session_sequence: state(this).sequence,
       message: { role: 'user', content: `Message ${state(this).sequence}`, ts: '2026-10-04T12:00:00Z', tokens: 3, parts: [] } };
-  });
-  jest.spyOn(ChatDataClient.prototype, 'modelDecision').mockImplementation(async function (this: ChatDataClient) {
-    return { modelId: 'approved-model', runId: scope(this).run_id, tenantId: 'tenant-a', generation: state(this).sequence };
   });
   const prepare = jest.spyOn(SandboxDataRuntime.prototype, 'prepare').mockResolvedValue({
     messages: [], protectedMessageCount: 0, memories: [], attachments: [], userMessage: 'Current user message',
@@ -80,5 +83,9 @@ test('interleaves five turns in two exclusive runtimes retaining only their own 
   }
   expect(tools).toHaveBeenCalledTimes(2);
   expect(record).toHaveBeenCalledTimes(10);
+  for (let sequence = 1; sequence <= 5; sequence++) {
+    expect(record.mock.calls.filter(([reply]) => reply === `Reply ${sequence}`)).toHaveLength(2);
+  }
+  expect(decisions).toHaveBeenCalledTimes(10);
   expect(prepare).toHaveBeenCalledTimes(10);
 });

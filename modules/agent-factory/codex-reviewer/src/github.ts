@@ -1,4 +1,5 @@
-import type { ReviewVerdict } from "./contracts.js";
+import { setTimeout as sleep } from "node:timers/promises";
+import { requiresChanges, type ReviewVerdict } from "./contracts.js";
 
 interface PullRequestResponse {
   number: number;
@@ -33,7 +34,7 @@ export function formatIssueReviewComment(
 ): string {
   const blockers = verdict.findings.filter((finding) => finding.blocking);
   const lines = [
-    `## agent-codex-reviewer — ${verdict.verdict === "approve" ? "ISSUE READY" : "ISSUE CHANGES REQUESTED"}`,
+    `## agent-codex-reviewer — ${requiresChanges(verdict) ? "ISSUE CHANGES REQUESTED" : "ISSUE READY"}`,
     "",
     `**Reviewed issue:** #${issueNumber}`,
     `**Blockers:** ${blockers.length}`,
@@ -59,7 +60,7 @@ export function formatIssueReviewComment(
     );
   }
   if (verdict.validationGaps.length > 0) {
-    lines.push("", "### Validation gaps", "", ...verdict.validationGaps.map((gap) => `- ${gap}`));
+    lines.push("", "### Evidence notes (non-blocking)", "", ...verdict.validationGaps.map((gap) => `- ${gap}`));
   }
   return `${lines.join("\n")}\n`;
 }
@@ -139,7 +140,23 @@ export class GitHubClient {
     private readonly tokenProvider: (force?: boolean) => Promise<string>,
   ) {}
 
-  private async request<T>(path: string, init: RequestInit = {}, refreshed = false): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    // Reads can be safely retried; writes retain operation-specific reconciliation.
+    // Share one deadline across retries, redirects and credential refresh.
+    const signal = init.signal ?? AbortSignal.timeout(30_000);
+    for (let attempt = 0; ; attempt++) {
+      signal.throwIfAborted();
+      try {
+        return await this.requestOnce<T>(path, { ...init, signal });
+      } catch (error) {
+        if (!["GET", "HEAD"].includes(init.method ?? "GET") || attempt >= 3 ||
+            !(error instanceof GitHubRequestError) || ![500, 502, 503, 504].includes(error.status)) throw error;
+        await sleep(1000 * 2 ** attempt, undefined, { signal });
+      }
+    }
+  }
+
+  private async requestOnce<T>(path: string, init: RequestInit, refreshed = false): Promise<T> {
     if (!isRootedPath(path)) {
       throw new Error(`GitHub request path must start with "/": ${path}`);
     }
@@ -164,6 +181,9 @@ export class GitHubClient {
     let url = `${GITHUB_API_ORIGIN}${path}`;
     let response: Response;
     for (let redirects = 0; ; redirects += 1) {
+      // Initial URL has the fixed GitHub origin; every redirect is checked below
+      // before another request, including credentials/port/protocol restrictions.
+      // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
       response = await fetch(url, options);
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       const location = response.headers.get("location");
@@ -191,7 +211,7 @@ export class GitHubClient {
     // replayed here; they retain operation-specific reconciliation.
     if (response.status === 401 && !refreshed) {
       await response.body?.cancel();
-      return this.request<T>(path, init, true);
+      return this.requestOnce<T>(path, init, true);
     }
     if (!response.ok) {
       throw new GitHubRequestError(
@@ -348,7 +368,7 @@ export function formatReviewComment(
 ): string {
   const blockers = verdict.findings.filter((finding) => finding.blocking);
   const lines = [
-    `## agent-codex-reviewer — ${verdict.verdict === "approve" ? "APPROVE" : "REQUEST CHANGES"}`,
+    `## agent-codex-reviewer — ${requiresChanges(verdict) ? "REQUEST CHANGES" : "APPROVE"}`,
     "",
     `**Reviewed head:** \`${sha}\``,
     `**Blockers:** ${blockers.length}`,
@@ -374,7 +394,7 @@ export function formatReviewComment(
     );
   }
   if (verdict.validationGaps.length > 0) {
-    lines.push("", "### Validation gaps", "", ...verdict.validationGaps.map((gap) => `- ${gap}`));
+    lines.push("", "### Evidence notes (non-blocking)", "", ...verdict.validationGaps.map((gap) => `- ${gap}`));
   }
   return `${lines.join("\n")}\n`;
 }

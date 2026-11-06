@@ -1,0 +1,21 @@
+{
+  "scenario": "SCN-03",
+  "fixed_clock": "2026-01-01T00:00:00Z",
+  "products": [
+    {"product_id":"product-alpha","tenant_id":"tenant-alpha","project_id":"project-alpha"},
+    {"product_id":"product-beta","tenant_id":"tenant-beta","project_id":"project-beta"}
+  ],
+  "source_row_ids": ["profile","product","broker","task","core","adapter","archive","sdk-host","provider-gap","migrations","build","lambda-grant","dispatch","router","cli","mcp","release"],
+  "archive": {"source_row":"archive","candidate":".zip","rejected":".tar.gz"},
+  "sdk": {"source_row":"sdk-host","gateway_pin":"1.43.111","worker_candidate":"1.43.114","worker_model_qualified":false},
+  "gaps": [
+    {"source_row":"product","owner":"SA02 / #8148","phase":"setup_and_run"},
+    {"source_row":"provider-gap","owner":"SA04 / SA08","phase":"capability_enablement"},
+    {"source_row":"migrations","owner":"SA05 / SA15","phase":"rollout"},
+    {"source_row":"lambda-grant","owner":"SA15","phase":"rollout"}
+  ],
+  "registry_mapping": {"state":"unmapped","owner":"SA01 / PranavSharma1000"},
+  "rollout_order": ["contracts","host_authorization_flag_off","additive_migrations","manual_infra_apply","worker_dispatch_disabled","client_publication","synthetic_recovery","enable_fixture"],
+  "live_access": "not_checked",
+  "enable_capability": false
+}

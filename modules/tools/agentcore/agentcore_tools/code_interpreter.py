@@ -24,6 +24,28 @@ HANDLE = r"^[a-f0-9]{64}$"
 PATH = re.compile(r"^/tmp/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$")
 
 
+class ProviderExecutionRefused(HTTPException):
+    def __init__(self):
+        super().__init__(502, "Provider execution refused")
+
+
+class NativeInterpreterStream:
+    """Bound bytes consumed by the AWS event decoder and its total read window."""
+
+    def __init__(self, raw, deadline):
+        self.raw, self.deadline, self.bytes_read = raw, deadline, 0
+
+    def stream(self, *args, **kwargs):
+        for chunk in self.raw.stream(*args, **kwargs):
+            self.bytes_read += len(chunk)
+            if self.bytes_read > 65536 or time.monotonic() >= self.deadline:
+                raise HTTPException(413, "Native Interpreter stream exceeds bound")
+            yield chunk
+
+    def close(self):
+        self.raw.close()
+
+
 class Body(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: str = Field(pattern=r"^1\.0$")
@@ -150,20 +172,34 @@ class CodeInterpreter:
             raise HTTPException(409, "Operation claim conflict") from None
         return entry, True
 
-    def invoke(self, session, name, arguments):
+    def invoke(self, session, name, arguments, *, native=False):
+        deadline = time.monotonic() + 20
         response = self.provider.invoke_code_interpreter(
             codeInterpreterIdentifier=self.identifier, sessionId=session,
             name=name, arguments=arguments,
         )
         result = []
         byte_length = 0
-        for event in response["stream"]:
-            if "result" not in event or event["result"].get("isError"):
-                raise HTTPException(502, "Provider execution refused")
-            byte_length += len(json.dumps(event["result"], default=lambda item: base64.b64encode(item).decode() if isinstance(item, bytes) else str(item)).encode())
-            if byte_length > 20000:
-                raise HTTPException(413, "Provider output exceeds bound")
-            result.append(json.loads(json.dumps(event["result"], default=lambda item: base64.b64encode(item).decode() if isinstance(item, bytes) else str(item))))
+        stream = response["stream"]
+        if native and getattr(stream, "_raw_stream", None) is not None:
+            stream._raw_stream = NativeInterpreterStream(stream._raw_stream, deadline)
+        try:
+            for index, event in enumerate(stream):
+                if native and (index >= 64 or time.monotonic() >= deadline):
+                    raise HTTPException(413, "Native Interpreter stream exceeds bound")
+                if "result" not in event:
+                    raise HTTPException(502, "Provider execution refused")
+                if event["result"].get("isError") is True:
+                    raise ProviderExecutionRefused()
+                if event["result"].get("isError"):
+                    raise HTTPException(502, "Unexpected provider response")
+                byte_length += len(json.dumps(event["result"], default=lambda item: base64.b64encode(item).decode() if isinstance(item, bytes) else str(item)).encode())
+                if byte_length > 20000:
+                    raise HTTPException(413, "Provider output exceeds bound")
+                result.append(json.loads(json.dumps(event["result"], default=lambda item: base64.b64encode(item).decode() if isinstance(item, bytes) else str(item))))
+        finally:
+            if native and callable(getattr(stream, "close", None)):
+                stream.close()
         if not result:
             raise HTTPException(502, "Provider result unavailable")
         return result

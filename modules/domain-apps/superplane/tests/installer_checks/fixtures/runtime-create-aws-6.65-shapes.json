@@ -1,0 +1,55 @@
+{
+  "provenance": {
+    "description": "Provider-generated CREATE unknown-field shapes only; extracted from an unapplied plan. No target values, policy documents or raw plan included.",
+    "terraform_version": "1.14.0",
+    "aws_provider": "6.65.0",
+    "private_plan_json_sha256": "92ad817ddd90669cc83dfa79692d289009e1f94bc5dc4f3bc13a52c46e820785"
+  },
+  "after_unknown": {
+    "aws_iam_role.observer": {
+      "arn": true,
+      "create_date": true,
+      "id": true,
+      "inline_policy": true,
+      "managed_policy_arns": true,
+      "name_prefix": true,
+      "tags": {},
+      "tags_all": {},
+      "unique_id": true
+    },
+    "aws_iam_role.worker": {
+      "arn": true,
+      "create_date": true,
+      "id": true,
+      "inline_policy": true,
+      "managed_policy_arns": true,
+      "name_prefix": true,
+      "tags": {},
+      "tags_all": {},
+      "unique_id": true
+    },
+    "aws_iam_role_policy.observer": {
+      "id": true,
+      "name_prefix": true,
+      "role": true
+    },
+    "aws_iam_role_policy.worker": {
+      "id": true,
+      "name_prefix": true,
+      "role": true
+    },
+    "aws_sqs_queue.operations": {
+      "arn": true,
+      "deduplication_scope": true,
+      "fifo_throughput_limit": true,
+      "id": true,
+      "name_prefix": true,
+      "policy": true,
+      "redrive_allow_policy": true,
+      "redrive_policy": true,
+      "tags": {},
+      "tags_all": {},
+      "url": true
+    }
+  }
+}

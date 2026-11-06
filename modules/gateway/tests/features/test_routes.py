@@ -42,6 +42,10 @@ class TestFeaturesDefaults:
         # Clear any existing feature flags
         for var in [
             "FEATURE_CHAT_ENABLED",
+            "FEATURE_ASSISTANT_UI_ENABLED",
+            "FEATURE_CREW_DASHBOARD",
+            "CREW_PROXY_ENABLED",
+            "CREW_DASHBOARD_ORIGIN",
             "FEATURE_KNOWLEDGE_ENABLED",
             "FEATURE_INDEXING_ENABLED",
             "FEATURE_TENANT_ORG_LINKS_ENABLED",
@@ -57,6 +61,9 @@ class TestFeaturesDefaults:
             "FEATURE_NEW_UI_ENABLED",
             "FEATURE_SUPERPLANE_ENABLED",
             "FEATURE_AGENT_MODELS_ENABLED",
+            "BG_PRODUCT_PROFILE_ENABLED",
+            "BG_PRODUCT_ONBOARDING_ENABLED",
+            "FEATURE_DEVLAKE_CONNECTORS_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -66,7 +73,12 @@ class TestFeaturesDefaults:
         data = response.json()
         assert data == {
             "features": {
+                "product_profile": False,
+                "product_onboarding": False,
+                "devlake_connectors": False,
                 "chat": True,
+                "assistant_ui": False,
+                "crew_dashboard": False,
                 "knowledge": True,
                 "indexing": True,
                 "tenant_org_links": False,
@@ -375,3 +387,24 @@ class TestRouterPrefix:
 def test_legacy_links_flag(client, monkeypatch, value, expected):
     monkeypatch.setenv("FEATURE_TENANT_ORG_LINKS_ENABLED", value)
     assert client.get("/features").json()["features"]["tenant_org_links"] is expected
+
+
+def test_crew_dashboard_origin_is_advertised_only_with_enabled_proxy(client, monkeypatch):
+    monkeypatch.setenv("CREW_DASHBOARD_ORIGIN", "https://crew.example.test")
+    monkeypatch.delenv("CREW_PROXY_ENABLED", raising=False)
+    assert "crew_dashboard_origin" not in client.get("/features").json()["features"]
+    monkeypatch.setenv("CREW_PROXY_ENABLED", "true")
+    assert client.get("/features").json()["features"]["crew_dashboard_origin"] == "https://crew.example.test"
+    monkeypatch.delenv("CREW_DASHBOARD_ORIGIN")
+    assert "crew_dashboard_origin" not in client.get("/features").json()["features"]
+
+
+@pytest.mark.parametrize("setting,expected", [(None, False), ("false", False), ("yes", False), ("TRUE", True)])
+def test_optional_connector_flag_is_only_a_deployment_signal(client, monkeypatch, setting, expected):
+    if setting is None:
+        monkeypatch.delenv("FEATURE_DEVLAKE_CONNECTORS_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("FEATURE_DEVLAKE_CONNECTORS_ENABLED", setting)
+    flags = client.get("/features").json()["features"]
+    assert flags["devlake_connectors"] is expected
+    assert flags["connections"] is True

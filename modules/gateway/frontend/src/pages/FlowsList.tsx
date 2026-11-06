@@ -29,14 +29,19 @@
  * `utils/cost.ts`. There is no formatter in this file: five of them existed before
  * #4207 consolidated the lot, and they disagreed on exactly this case.
  *
- * The status chips are **unfiltered and tenant-wide** by design — they describe
+ * The status chips cover the selected Product or tenant, before search/status
+ * filtering — they describe
  * the population being chosen among, so with a filter on the summary reads
  * "Showing 3 of 5" while the chips still total 5. A chip scoped to the filtered
  * set would read 0 for every unselected status, which is noise.
  */
 
-import { Link } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import { StoryProgress } from '@/components/orchestration/StoryProgress';
+import { intentLabel } from '@/utils/flowSummary';
 import { FlowExecutionControl } from '@/components/orchestration/FlowExecutionControl';
+import { FlowArchiveControl } from '@/components/orchestration/FlowArchiveControl';
 import { RollupBar } from '@/components/orchestration/RollupBar';
 import { PlanSummary } from '@/components/orchestration/PlanSummary';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
@@ -73,8 +78,9 @@ export const WAVE_RAIL_HEIGHT_CLASS = 'h-10';
 
 /** Human labels for the six statuses. The chips and the card badge share them. */
 const STATUS_LABELS: Record<FlowStatus, string> = {
+  archived: 'Archived',
   attention_needed: 'Needs attention',
-  awaiting_you: 'Waiting on you',
+  awaiting_you: 'Awaiting review',
   running: 'Running',
   queued: 'Queued',
   complete: 'Complete',
@@ -83,6 +89,7 @@ const STATUS_LABELS: Record<FlowStatus, string> = {
 
 /** Badge variants, worst-news-first like the status precedence itself. */
 const STATUS_VARIANTS: Record<FlowStatus, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
+  archived: 'default',
   attention_needed: 'danger',
   awaiting_you: 'warning',
   running: 'info',
@@ -90,6 +97,11 @@ const STATUS_VARIANTS: Record<FlowStatus, 'default' | 'success' | 'warning' | 'd
   complete: 'success',
   empty: 'default',
 };
+
+/** Titles (or refs) of the waves that currently hold an open gate. */
+function gatedWaves(flow: FlowSummary): string[] {
+  return flow.waves.filter((wave) => (wave.display_counts?.gate ?? 0) > 0).map((wave) => wave.title || wave.wave_ref);
+}
 
 const SORT_LABELS: Record<FlowSort, string> = {
   created: 'Newest first',
@@ -311,109 +323,55 @@ function DesignStrip({ history }: { history: DesignHistory | null }) {
  * reachable, middle-clickable, and announced as a link.
  */
 function FlowCard({ flow }: { flow: FlowSummary }) {
+  const location = useLocation();
+  const allStories = flow.eval_story_count !== undefined && flow.completed_eval_story_count !== undefined;
+  const total = flow.story_count === undefined ? undefined : flow.story_count + (allStories ? flow.eval_story_count! : 0);
+  const complete = flow.completed_story_count === undefined ? undefined : flow.completed_story_count + (allStories ? flow.completed_eval_story_count! : 0);
+  const action = flow.status === 'archived' ? 'View archived flow' : flow.awaiting_gate_count > 0 ? 'Review decisions' : flow.display_counts.stalled > 0 ? 'Inspect blockers' : 'Open flow';
+  const currentWave = flow.waves.find(wave => wave.wave_ref === flow.current_wave_ref && !isFinished(wave));
   return (
-    <li className="blueprint-flow-card overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-      <Link
-        to={`/flows/${flow.id}`}
+    <li className="blueprint-flow-card min-w-0 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+      <Link to={`/flows/${flow.id}`} state={{ flowsReturn: `${location.pathname}${location.search}`, flowsScroll: window.scrollY }}
+        onClick={() => {
+          try { sessionStorage.setItem(`flows-scroll:${location.pathname}${location.search}`, String(window.scrollY)); } catch { /* Navigation still works without storage. */ }
+        }}
         data-testid={`flow-card-${flow.id}`}
-        className="block p-4 transition-colors hover:border-primary-400 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:hover:bg-gray-800"
-      >
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="truncate font-medium text-gray-900 dark:text-gray-100">{flow.title}</h2>
-            {/* `slug` and the intent number only — never the internal graph
-                address (§7.2), which is the cost join key. */}
-            <p className="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">
-              <span className="font-mono">{flow.slug}</span>
-              {flow.intent_ref && (
-                <span className="font-mono"> · from intent #{String(flow.intent_ref).replace(/^#/, '')}</span>
-              )}
-            </p>
+        className="block space-y-2 p-4 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:hover:bg-gray-800">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 title={flow.title} className="line-clamp-2 font-medium text-gray-900 dark:text-gray-100">{flow.title}</h2>
+            <p className="mt-0.5 truncate text-xs text-gray-500">{flow.product_id ? 'Product-bound · ' : ''}{flow.intent_ref ? intentLabel(String(flow.intent_ref)) : flow.slug}</p>
           </div>
-
-          <div className="flex flex-col items-end gap-1">
-            <Badge variant={STATUS_VARIANTS[flow.status]}>
-              {flow.changes_requested_count ? 'Changes requested' : STATUS_LABELS[flow.status]}
-            </Badge>
-            <CostFigureDisplay figure={flow.delivery_cost} label="Spend" />
-          </div>
+          <Badge variant={STATUS_VARIANTS[flow.status]}>{flow.status !== 'archived' && flow.changes_requested_count ? 'Changes requested' : STATUS_LABELS[flow.status]}</Badge>
         </div>
-
-        {/* What this loop is FOR, in the author's words (#4885). Above the progress
-            bars because it is the question an operator scanning a list of flows asks
-            first — a title and a slug say what a plan is called, not what it does.
-            Clamped to two lines: 500 chars would otherwise dominate the card and
-            push the rollup below the fold. Rendered only when present; a null
-            description means nobody recorded one, which is not a blank line. */}
-        {flow.description && (
-          <p
-            data-testid="flow-description"
-            className="mt-2 line-clamp-2 text-sm text-gray-700 dark:text-gray-300"
-          >
-            {flow.description}
-          </p>
-        )}
-
-        {/* The two calls to action, surfaced separately from `status`. `status` is
-            first-match-wins, so a flow that is both stalled and gated reports only
-            `attention_needed` — and the gate still needs answering. */}
-        {(flow.awaiting_gate_count > 0 || flow.display_counts.stalled > 0) && (
-          <div className="mt-2 flex flex-wrap gap-2">
-            {flow.awaiting_gate_count > 0 && (
-              <span
-                data-testid="awaiting-you"
-                className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-900 dark:text-amber-100"
-              >
-                <span aria-hidden="true">🚦</span>
-                {flow.awaiting_gate_count} waiting on you
-              </span>
-            )}
-            {flow.display_counts.stalled > 0 && (
-              <span
-                data-testid="stalled-count"
-                className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-900 dark:bg-orange-900 dark:text-orange-100"
-              >
-                <span aria-hidden="true">⚠</span>
-                {flow.display_counts.stalled} stalled
-              </span>
-            )}
-          </div>
-        )}
-
-        <div className="mt-3 space-y-3">
-          {flow.story_count !== undefined && flow.gate_count !== undefined && flow.eval_count !== undefined && (
-            <PlanSummary stories={flow.story_count} evaluationStories={flow.eval_story_count} waves={flow.wave_count} gates={flow.gate_count} evaluations={flow.eval_count} />
-          )}
-          {(flow.changes_requested_count ?? 0) > 0 && (
-            <p className="text-sm text-orange-800 dark:text-orange-200" data-testid="changes-requested-summary">
-              {flow.changes_requested_count} {flow.changes_requested_count === 1 ? 'gate needs' : 'gates need'} changes.
-              {' '}Work behind these gates is paused. Open the flow to review the feedback and next steps.
-            </p>
-          )}
-          {/* The same five-value rollup the graph page draws, from the same
-              component — a second bar is how a legend ends up describing a fill
-              the graph no longer uses. */}
-          <RollupBar
-            counts={flow.display_counts}
-            total={flow.total_nodes}
-            storyScope={flow.eval_story_count !== undefined && flow.completed_eval_story_count !== undefined ? 'all' : 'implementation'}
-            stories={flow.completed_story_count !== undefined && flow.story_count !== undefined
-              ? {
-                complete: flow.completed_story_count + (flow.eval_story_count !== undefined ? flow.completed_eval_story_count ?? 0 : 0),
-                total: flow.story_count + (flow.completed_eval_story_count !== undefined ? flow.eval_story_count ?? 0 : 0),
-              }
-              : undefined}
-          />
-          <WaveRail flow={flow} />
-          {/* Last: the design loop is how this plan came to exist, which matters
-              less at a glance than what it is doing now. Renders nothing at all when
-              no history was captured. */}
-          <DesignStrip history={flow.design_history} />
+        <p className="line-clamp-1 text-sm text-gray-600 dark:text-gray-400" data-testid="flow-next-step">
+          {flow.execution_paused && flow.status !== 'complete' && flow.status !== 'archived' ? 'Execution is paused. ' : ''}
+          {flow.status !== 'archived' && flow.awaiting_gate_count > 0 && <span data-testid="awaiting-you">{flow.awaiting_gate_count} awaiting review{gatedWaves(flow).length ? ` · ${gatedWaves(flow).join(', ')}` : ''}. </span>}
+          {flow.status !== 'archived' && flow.display_counts.stalled > 0 && <span data-testid="stalled-count">{flow.display_counts.stalled} stalled steps. </span>}
+          {flow.status === 'complete' ? 'All required work is complete.' : flow.status === 'archived' ? 'Archived flow; open to inspect its history.' : flow.changes_requested_count ? 'Review feedback before reopening the affected gates.' : currentWave ? `Current group: ${currentWave.title || currentWave.wave_ref}` : flow.description || 'Open the plan to inspect progress and next steps.'}
+        </p>
+        {total !== undefined && complete !== undefined
+          ? <StoryProgress total={total} complete={complete} scope={allStories ? 'stories' : 'implementation stories'} />
+          : <p className="text-xs">{flow.display_counts.complete} of {flow.total_nodes} work items complete</p>}
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <CostFigureDisplay figure={flow.delivery_cost} label="Agent spend" />
+          <span className="font-medium text-primary-700 dark:text-primary-300">{action} →</span>
         </div>
       </Link>
-      <div className="border-t border-gray-200 px-4 py-3 dark:border-gray-700">
-        <FlowExecutionControl flowId={flow.id} paused={flow.execution_paused} compact />
-      </div>
+      <details className="border-t border-gray-100 px-4 text-xs dark:border-gray-700">
+        <summary className="cursor-pointer py-2 text-gray-500">More details and controls</summary>
+        <div className="space-y-3 pb-3">
+          <p className="text-xs text-gray-500">{flow.slug}</p>
+          {flow.description && <p data-testid="flow-description" className="text-sm">{flow.description}</p>}
+          {!!flow.changes_requested_count && <p data-testid="changes-requested-summary">{flow.changes_requested_count} gates need changes. Work behind these gates is paused. Review feedback before reopening review.</p>}
+          {flow.story_count !== undefined && flow.gate_count !== undefined && flow.eval_count !== undefined && <PlanSummary stories={flow.story_count} evaluationStories={flow.eval_story_count} waves={flow.wave_count} gates={flow.gate_count} evaluations={flow.eval_count} />}
+          <RollupBar counts={flow.display_counts} total={flow.total_nodes} />
+          <WaveRail flow={flow} />
+          <DesignStrip history={flow.design_history} />
+          {flow.status !== 'archived' && <FlowExecutionControl flowId={flow.id} paused={flow.execution_paused} compact />}
+          <FlowArchiveControl flowId={flow.id} archived={flow.status === 'archived'} compact />
+        </div>
+      </details>
     </li>
   );
 }
@@ -447,33 +405,53 @@ function hasActiveFilters(filters: FlowFilters): boolean {
   return Boolean(filters.q) || Boolean(filters.status) || filters.needsMe;
 }
 
-export function FlowsList() {
+function flowLoadError(error: unknown): string {
+  const failure = error as { message?: unknown; detail?: unknown } | null;
+  if (typeof failure?.detail === 'string') return failure.detail;
+  if (typeof failure?.message === 'string') return failure.message;
+  return 'The list could not be fetched. Try again in a moment.';
+}
+
+export function FlowsList({ productId, projectId, readerKey }: { productId?: string; projectId?: string; readerKey?: string } = {}) {
   const { filters, setFilters } = useFlowFilters();
-  const { data, isPending, isError, error, dataUpdatedAt, isFetching } = useFlows(filters);
+  const { data, isPending, isError, error, dataUpdatedAt, isFetching, refetch } = useFlows(filters, productId, projectId, readerKey);
+  const location = useLocation();
+  useEffect(() => {
+    try {
+      const key = `flows-scroll:${location.pathname}${location.search}`;
+      const saved = sessionStorage.getItem(key);
+      if (data && saved !== null) {
+        window.scrollTo(0, Number(saved));
+        sessionStorage.removeItem(key);
+      }
+    } catch { /* The list remains usable without storage. */ }
+  }, [data, location.pathname, location.search]);
+  const clearFilters = () => setFilters({ q: '', status: undefined, needsMe: false, includeArchived: false, offset: 0 });
 
   const total = data?.total ?? 0;
   const shown = data?.flows.length ?? 0;
   const filtered = hasActiveFilters(filters);
+  const Heading = productId ? 'h2' : 'h1';
 
   return (
     <div className="space-y-4">
       <header className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Delivery Flows</h1>
+            <Heading className="text-xl font-semibold text-gray-900 dark:text-gray-100">Delivery Flows</Heading>
+            <div className="flex gap-4 text-sm text-primary-700 dark:text-primary-300"><Link className="underline" to={productId ? `/flows/new?${new URLSearchParams({ product: productId, ...(projectId ? { project: projectId } : {}) })}` : '/flows/new'}>New flow</Link><Link className="underline" to={`${location.pathname}?needs_me=true&sort=stalled`}>Attention view</Link></div>
             <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
-              Every delivery plan in your organisation — what it is doing, what it is waiting on, and what it
-              has cost so far.
+              {projectId ? 'Delivery flows in this project share its total AI usage budget.' : productId ? 'Track delivery across all projects in this product.' : 'Track delivery, review decisions and inspect agent spend.'}
             </p>
           </div>
           <LastUpdated dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
         </div>
 
-        {/* Chips: tenant-wide counts, never scoped to the active filter. Clicking
+        {/* Chips: Product/tenant counts, never scoped to the active filter. Clicking
             one filters; clicking the selected one clears it, so a chip is not a
             trap you can only leave via the sort control. */}
         {data && (
-          <ul className="flex flex-wrap gap-2" data-testid="status-chips">
+          <ul className="flex gap-2 overflow-x-auto pb-1 [&>li]:shrink-0" data-testid="status-chips">
             {FLOW_STATUSES.map((status) => {
               const selected = filters.status === status;
               return (
@@ -502,7 +480,7 @@ export function FlowsList() {
         )}
 
         <div className="flex flex-wrap items-end gap-3">
-          <div className="w-64">
+          <div className="w-full sm:w-64">
             <Input
               name="flows-search"
               label="Search"
@@ -512,7 +490,7 @@ export function FlowsList() {
             />
           </div>
 
-          <div className="w-52">
+          <div className="w-40">
             <Select
               name="flows-sort"
               label="Sort"
@@ -530,11 +508,23 @@ export function FlowsList() {
               onChange={(event) => setFilters({ needsMe: event.target.checked })}
               className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
             />
-            Only what needs me
+            Needs attention or review
+          </label>
+
+          <label className="flex items-center gap-2 pb-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              data-testid="include-archived-filter"
+              checked={filters.includeArchived}
+              onChange={(event) => setFilters({ includeArchived: event.target.checked })}
+              className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+            Include archived flows
           </label>
         </div>
       </header>
 
+      {filtered && <button type="button" className="rounded border px-3 py-2 text-sm" onClick={clearFilters}>Clear filters</button>}
       {isPending && <SkeletonCards />}
 
       {isError && (
@@ -542,14 +532,19 @@ export function FlowsList() {
         // organisation, and the truth here is that the request failed.
         <div data-testid="flows-error">
           <Alert variant="error" title="Delivery flows could not be loaded">
-            {(error as { message?: string } | null)?.message ||
-              'The list could not be fetched. Try again in a moment.'}
+            {flowLoadError(error)}
           </Alert>
+          <button type="button" className="mt-2 rounded border px-3 py-2 text-sm" onClick={() => void refetch()}>Retry loading flows</button>
         </div>
       )}
 
       {data && (
         <>
+          {data.flows.some((flow) => flow.delivery_cost.reason === 'cost_refresh_unavailable') && (
+            <Alert variant="info" title="Spend is temporarily unavailable">
+              Delivery progress is available. Spend will refresh automatically.
+            </Alert>
+          )}
           <p className="text-sm text-gray-600 dark:text-gray-400" data-testid="flows-summary">
             {/* `total` is the count of rows matching the filters across ALL pages,
                 not this page's length — so this sentence stays true while paging. */}
@@ -561,13 +556,13 @@ export function FlowsList() {
             (filtered ? (
               <div data-testid="flows-empty-filtered">
                 <Alert variant="info" title="No flows match these filters">
-                  Nothing in your organisation matches this search. Clear the filters to see every flow.
+                  {productId ? 'No flows in this product match your filters. Clear the filters to see all its flows.' : 'Nothing in your organisation matches this search. Clear the filters to see every flow.'}
                 </Alert>
               </div>
             ) : (
               <div data-testid="flows-empty">
                 <Alert variant="info" title="No delivery flows yet">
-                  Your organisation has no delivery plans. One appears here as soon as a plan is registered.
+                  {projectId ? 'No delivery flows are linked to this project yet.' : productId ? 'No delivery flows are linked to this product yet.' : 'Your organisation has no delivery plans. One appears here as soon as a plan is registered.'}
                 </Alert>
               </div>
             ))}

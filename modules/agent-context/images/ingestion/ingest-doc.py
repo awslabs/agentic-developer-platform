@@ -37,7 +37,8 @@ log = get_logger("ingest-doc")
 
 from config import settings
 from s3_store import S3ContentStore
-from scope import ScopeValidationError, compute_s3_prefix, parse_scope_from_env
+from code_embedder import embed_registered_documents
+from scope import ScopeValidationError, asset_storage_prefix, parse_scope_from_env, validate_ingestion_attempt
 
 # Source admission guards (#5658). --source is caller-supplied: an s3:// URI is
 # checked against a bucket/prefix allowlist rather than against what the task role
@@ -127,7 +128,8 @@ def _fetch_from_s3(s3_uri: str, dest_dir: str) -> str | None:
         # Handle S3 folder (ends with /)
         if key.endswith("/"):
             log.info("S3 folder detected: %s — listing objects", s3_uri)
-            s3 = boto3.client("s3")
+            from job_client import enabled, ObjectClient
+            s3 = ObjectClient() if enabled() else boto3.client("s3")
             resp = s3.list_objects_v2(Bucket=bucket, Prefix=key, MaxKeys=100)
             paths = []
             for obj in resp.get("Contents", []):
@@ -163,7 +165,8 @@ def _fetch_from_s3(s3_uri: str, dest_dir: str) -> str | None:
         filename = safe_download_name(os.path.basename(key))
         dest_path = os.path.join(dest_dir, filename)
 
-        s3 = boto3.client("s3")
+        from job_client import enabled, ObjectClient
+        s3 = ObjectClient() if enabled() else boto3.client("s3")
         s3.download_file(bucket, key, dest_path)
         log.info("Downloaded s3://%s/%s -> %s", bucket, key, dest_path)
         return dest_path
@@ -336,6 +339,14 @@ Content (first 5000 chars):
         entities = json.loads(match.group())
         log.info("Extracted %d entities from %s", len(entities), source)
 
+        from job_client import enabled, call
+        if enabled():
+            return call("graph.put", {"entities": [
+                {"entity_id": e["name"], "name": e["name"], "type": e.get("type", "concept"),
+                 "description": e.get("description", ""), "source": "wiki"}
+                for e in entities[:50] if isinstance(e, dict) and e.get("name")
+            ], "relationships": []})
+
         # Write to Neptune
         ws_url = f"wss://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin"
         gc = gremlin_client.Client(
@@ -408,10 +419,21 @@ def ingest_document(
         "tags": tags,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "steps": {},
+        # Fetch/conversion failures return early, before the final status calculation.
+        "status": "failed",
     }
 
     try:
         scope = parse_scope_from_env()
+        content_prefix = asset_storage_prefix(scope, settings.s3_content_prefix, registry_asset_id)
+        from job_client import enabled
+        if enabled():
+            from scope import compute_s3_prefix
+            content_prefix = f"{compute_s3_prefix(scope, settings.s3_content_prefix)}/assets/{registry_asset_id}"
+        ingestion_attempt_id = os.environ.get("INGESTION_ATTEMPT_ID")
+        if enabled() or scope.is_product or (scope.is_personal and registry_asset_id):
+            ingestion_attempt_id = validate_ingestion_attempt(ingestion_attempt_id)
+            content_prefix += f"/attempts/{ingestion_attempt_id}"
     except ScopeValidationError:
         result.update(status="refused", error="invalid_scope")
         return result
@@ -430,7 +452,7 @@ def ingest_document(
     # Initialize S3 content store
     store = S3ContentStore(
         bucket_name=settings.s3_bucket_name,
-        prefix=compute_s3_prefix(scope, settings.s3_content_prefix),
+        prefix=content_prefix,
         region_name=settings.aws_region,
     )
 
@@ -446,6 +468,7 @@ def ingest_document(
                     ctx.fail(f"Failed to fetch {source}")
                 tracker.finalize()
                 result["run_id"] = tracker.run_id
+                result["stage_results"] = {stage.stage: stage.status for stage in tracker.results}
             return result
         result["steps"]["fetch"] = "ok"
 
@@ -466,6 +489,7 @@ def ingest_document(
                     ctx.fail(f"Failed to convert {local_path}")
                 tracker.finalize()
                 result["run_id"] = tracker.run_id
+                result["stage_results"] = {stage.stage: stage.status for stage in tracker.results}
             return result
         result["steps"]["convert"] = "ok"
         result["markdown_length"] = len(markdown)
@@ -502,8 +526,24 @@ def ingest_document(
                 else:
                     ctx.fail(f"S3 upload failed for {s3_path}")
 
+        if scope.is_product or (scope.is_personal and registry_asset_id):
+            embedded = embed_registered_documents(
+                [{"source": source, "source_type": "doc", "text": markdown,
+                  "s3_key": f"{content_prefix}/{s3_path}"}] if uploaded else [],
+                scope, registry_asset_id, ingestion_attempt_id=ingestion_attempt_id,
+            )
+            result["steps"]["embed_vectors"] = "ok" if embedded["status"] == "complete" else "failed"
+            if tracker:
+                with tracker.stage("embed_vectors") as ctx:
+                    if embedded["status"] == "complete":
+                        ctx.set_artifact(f"s3vectors://{embedded['index']}/{registry_asset_id}")
+                        ctx.set_metrics({"vectors": embedded["vectors"]})
+                        ctx.verify(lambda: embedded["vectors"] > 0)
+                    else:
+                        ctx.fail(embedded.get("error", "Document embedding failed"))
+
         # Step 4: GraphRAG extraction (tracked as "graphrag" stage)
-        if GRAPHRAG_ENABLED:
+        if GRAPHRAG_ENABLED and not (scope.is_product or (scope.is_personal and registry_asset_id)):
             log.info("Step 4: GraphRAG entity extraction")
             graphrag_ok = extract_entities_graphrag(markdown, source, tags)
             result["steps"]["graphrag"] = "ok" if graphrag_ok else "failed"
@@ -516,7 +556,7 @@ def ingest_document(
                         ctx.verify(lambda: graphrag_ok)
                     else:
                         ctx.fail("GraphRAG entity extraction failed")
-        else:
+        elif not (scope.is_product or (scope.is_personal and registry_asset_id)):
             result["steps"]["graphrag"] = "skipped"
             if tracker:
                 tracker.mark_skipped("graphrag", "GraphRAG disabled")
@@ -538,6 +578,7 @@ def ingest_document(
         try:
             tracker.finalize()
             result["run_id"] = tracker.run_id
+            result["stage_results"] = {stage.stage: stage.status for stage in tracker.results}
         except Exception as e:
             log.warning("Stage tracker finalize failed (non-fatal): %s", e)
 
@@ -568,9 +609,16 @@ def main():
         registry_asset_id=args.registry_asset_id,
     )
 
+    from ingestion_result import publish, stage_status, summarize
+
+    publish(summarize(
+        {**{k: stage_status(v) for k, v in result.get("steps", {}).items()}, **result.get("stage_results", {})} or {"ingestion": "failed"},
+        status=result.get("status"), run_id=result.get("run_id"),
+    ))
     print(json.dumps(result, indent=2))
 
-    if result.get("status") == "failed":
+    # Keep the standalone CLI failure signal; the worker reads the precise result.
+    if result.get("status") != "complete":
         sys.exit(1)
 
 

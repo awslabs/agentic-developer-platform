@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { type GitHubConnectionItem } from '@/services/connections';
 import { VerificationRow, hasUnhealthyCheck, type CheckState } from './VerificationRow';
+import { InstallationDeploymentStatus } from './InstallationDeploymentStatus';
 
 interface InstallationCardProps {
   connection: GitHubConnectionItem;
@@ -83,6 +84,7 @@ export function InstallationCard({ connection, onDisconnect, readOnly = false }:
         <span className="text-sm text-gray-500 dark:text-gray-400">
           {repoLabel} · Installation #{connection.installation_id}
         </span>
+        {!readOnly && !connection.revocation_pending && <InstallationDeploymentStatus installationId={String(connection.installation_id)} />}
         {repos.length > 0 && (
           <ul className="mt-1 flex flex-wrap gap-1">
             {repos.map((name) => (

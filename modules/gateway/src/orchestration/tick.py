@@ -48,6 +48,7 @@ another's view.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -56,7 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.base import utcnow
 
-from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationEdge, OrchestrationNode
+from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationEdge, OrchestrationFlow, OrchestrationNode
 from .state import ActorKind, NodeState, transition
 
 logger = logging.getLogger("bedrockgateway.orchestration.tick")
@@ -117,6 +118,10 @@ class TickReport:
     pages_read: int = 0
     # True when the backstop cut the scan short — there was more work to do.
     truncated: bool = False
+    # True when another tick held the engine lock and this invocation did nothing
+    # (#7889). Overlapping ticks wait on each other's row locks until an
+    # observation outlives its budget; skipping is the correct outcome, not an error.
+    skipped_overlap: bool = False
     # Per-org counts so metrics can be dimensioned without cross-org aggregation.
     per_org: dict[str, dict[str, int]] = field(default_factory=dict)
     # node_id -> the predecessor node_ids that are holding it back. Answers
@@ -168,16 +173,23 @@ async def _fetch_candidate_page(session: AsyncSession, *, after_id: str | None, 
     this tick to do, and `ix_orchestration_nodes_org_id_state` serves this
     predicate rather than requiring a scan of every flow.
     """
-    stmt = select(
-        OrchestrationNode.id,
-        OrchestrationNode.org_id,
-        OrchestrationNode.flow_id,
-        OrchestrationNode.state,
-        OrchestrationNode.kind,
-    ).where(
-        or_(
-            OrchestrationNode.state == NodeState.PENDING.value,
-            and_(OrchestrationNode.kind == NodeKind.GATE.value, OrchestrationNode.state == NodeState.READY.value),
+    stmt = (
+        select(
+            OrchestrationNode.id,
+            OrchestrationNode.org_id,
+            OrchestrationNode.flow_id,
+            OrchestrationNode.state,
+            OrchestrationNode.kind,
+        )
+        .join(OrchestrationFlow, (OrchestrationFlow.id == OrchestrationNode.flow_id) & (OrchestrationFlow.org_id == OrchestrationNode.org_id))
+        .where(
+            OrchestrationFlow.archived_at.is_(None),
+            or_(
+                OrchestrationNode.state == NodeState.PENDING.value,
+                and_(OrchestrationNode.kind == NodeKind.GATE.value, OrchestrationNode.state == NodeState.READY.value),
+                and_(OrchestrationNode.kind == NodeKind.EVAL.value, OrchestrationNode.state == NodeState.READY.value),
+                and_(OrchestrationNode.kind == NodeKind.EVAL.value, OrchestrationNode.state == NodeState.AWAITING_GATE.value),
+            ),
         )
     )
 
@@ -185,7 +197,7 @@ async def _fetch_candidate_page(session: AsyncSession, *, after_id: str | None, 
         stmt = stmt.where(OrchestrationNode.id > after_id)
 
     # Keep dependency reads coherent with an amendment's topology replacement.
-    stmt = stmt.order_by(OrchestrationNode.id).limit(limit).with_for_update(skip_locked=True)
+    stmt = stmt.order_by(OrchestrationNode.id).limit(limit).with_for_update(of=OrchestrationNode, skip_locked=True)
 
     rows = (await session.execute(stmt)).all()
     return [_Candidate(node_id=row[0], org_id=row[1], flow_id=row[2], observed_state=row[3], kind=row[4]) for row in rows]
@@ -332,8 +344,55 @@ async def apply_guarded_transition(
     return rows, True
 
 
+async def _record_evaluation_wait(session, node, code):
+    from .delivery_progress import EVALUATION_WAIT_DETAILS
+    from .repository import OrchestrationRepository
+
+    if code is not None and code not in EVALUATION_WAIT_DETAILS:
+        code = "evaluation_evidence_unverifiable"
+    previous = await session.scalar(
+        select(OrchestrationDecision)
+        .where(
+            OrchestrationDecision.org_id == node.org_id,
+            OrchestrationDecision.flow_id == node.flow_id,
+            OrchestrationDecision.node_id == node.id,
+            OrchestrationDecision.kind.in_(("evaluation_evidence_wait", "evaluation_evidence_ready")),
+        )
+        .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+        .limit(1)
+    )
+    if code is None and previous is None:
+        return
+    plan = await OrchestrationRepository(session).get_accepted_plan(org_id=node.org_id, flow_id=node.flow_id)
+    scope = {"attempt": node.attempts, "plan_version": plan.version if plan else None, "block_code": code}
+    if previous is not None and json.loads(previous.reason or "{}") == scope:
+        return
+    session.add(
+        OrchestrationDecision(
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            kind="evaluation_evidence_wait" if code else "evaluation_evidence_ready",
+            actor_id=_TICK_ACTOR_ID,
+            actor_role=_TICK_ACTOR_ROLE,
+            actor_kind=_TICK_ACTOR.value,
+            reason=json.dumps(scope, sort_keys=True),
+        )
+    )
+    await session.flush()
+
+
 async def _advance_node(session: AsyncSession, candidate: _Candidate, report: TickReport) -> None:
     """Decide and effect one candidate's move. Records why it did not move."""
+    flow = await session.scalar(
+        select(OrchestrationFlow)
+        .where(OrchestrationFlow.org_id == candidate.org_id, OrchestrationFlow.id == candidate.flow_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if flow is None or flow.archived_at is not None:
+        report.blocked[candidate.node_id] = ["flow_archived"]
+        return
     predecessors = await _predecessor_states(session, org_id=candidate.org_id, node_id=candidate.node_id)
     blocking = _unsatisfied(predecessors)
 
@@ -343,31 +402,109 @@ async def _advance_node(session: AsyncSession, candidate: _Candidate, report: Ti
         report.blocked[candidate.node_id] = blocking
         return
 
+    node = await session.get(OrchestrationNode, candidate.node_id)
+    if node is not None and node.org_id == candidate.org_id:
+        from .accepted_node import unresolved_required_inputs
+
+        unresolved = await unresolved_required_inputs(session, node)
+        if unresolved:
+            report.blocked[candidate.node_id] = [f"required_input:{item.name}:{item.source}" for item in unresolved]
+            return
+
+    human = None
     if candidate.kind == NodeKind.EVAL.value:
         from datetime import UTC, datetime
 
-        from .evaluation_plan import accepted_evaluation, managed_evaluation, predecessor_deployments
+        from .evaluation_contract import MULTI_REPOSITORY_SCHEMA, EvaluationVersionError
+        from .evaluation_plan import (
+            accepted_evaluation,
+            human_evaluation,
+            human_gate_evidence,
+            latest_human_gate_evidence,
+            legacy_worker_gate,
+            managed_evaluation,
+            predecessor_deployments,
+            record_human_gate_evidence,
+        )
         from .review_cycle import CycleBlockedError
 
         evaluation = await session.get(OrchestrationNode, candidate.node_id)
         if evaluation is not None and evaluation.org_id == candidate.org_id:
             try:
-                if await managed_evaluation(session, evaluation):
+                selected = await accepted_evaluation(session, evaluation)
+                if selected is not None and selected[1].evidence_schema == MULTI_REPOSITORY_SCHEMA:
+                    from .repository_evaluation import repository_mode_supported
+
+                    if not repository_mode_supported(selected[1]):
+                        raise CycleBlockedError("evaluation_adapter_unavailable")
+                human = await human_evaluation(session, evaluation)
+                if (
+                    selected is not None
+                    and selected[1].evidence_schema == MULTI_REPOSITORY_SCHEMA
+                    and candidate.observed_state != NodeState.AWAITING_GATE.value
+                ):
+                    human = None
+                if human is not None:
+                    evidence = await human_gate_evidence(session, evaluation, *human, now=datetime.now(UTC))
+                elif await managed_evaluation(session, evaluation):
                     accepted = await accepted_evaluation(session, evaluation)
                     if accepted is None:
                         report.blocked[candidate.node_id] = ["evaluation_specification_missing"]
+                        await _record_evaluation_wait(session, evaluation, "evaluation_specification_missing")
                         return
-                    if accepted[1].evidence_schema not in {"repository-evaluation/v1", "cli-live-evaluation/v1", "workflow-evaluation/v1"}:
+                    if accepted[1].evidence_schema not in {
+                        "repository-evaluation/v1",
+                        "cli-live-evaluation/v1",
+                        "workflow-evaluation/v1",
+                        MULTI_REPOSITORY_SCHEMA,
+                    }:
                         deployed = await predecessor_deployments(session, evaluation, accepted[0].version, now=datetime.now(UTC))
                         if not deployed:
                             report.blocked[candidate.node_id] = ["verified_deployment_required"]
+                            await _record_evaluation_wait(session, evaluation, "verified_deployment_required")
                             return
-            except (CycleBlockedError, ValueError):
-                report.blocked[candidate.node_id] = ["deployment_authority_unverifiable"]
+            except CycleBlockedError as error:
+                report.blocked[candidate.node_id] = [str(error)]
+                await _record_evaluation_wait(session, evaluation, str(error))
                 return
+            except ValueError as error:
+                reason = str(error) if isinstance(error, EvaluationVersionError) else "deployment_authority_unverifiable"
+                report.blocked[candidate.node_id] = [reason]
+                await _record_evaluation_wait(session, evaluation, reason)
+                return
+            await _record_evaluation_wait(session, evaluation, None)
 
+    if candidate.kind == NodeKind.EVAL.value and candidate.observed_state == NodeState.AWAITING_GATE.value:
+        if evaluation is None or evaluation.org_id != candidate.org_id:
+            report.blocked[candidate.node_id] = ["evaluation_human_contract_changed"]
+            return
+        if human is None:
+            if not await legacy_worker_gate(session, evaluation):
+                report.blocked[candidate.node_id] = ["evaluation_human_contract_changed"]
+            return
+        _, bound = await latest_human_gate_evidence(session, evaluation)
+        if bound != evidence:
+            await record_human_gate_evidence(session, evaluation, evidence, actor_id=_TICK_ACTOR_ID)
+            session.add(
+                OrchestrationDecision(
+                    org_id=candidate.org_id,
+                    flow_id=candidate.flow_id,
+                    node_id=candidate.node_id,
+                    kind="gate_refreshed",
+                    actor_id=_TICK_ACTOR_ID,
+                    actor_role=_TICK_ACTOR_ROLE,
+                    actor_kind=_TICK_ACTOR.value,
+                    reason="Human evaluation evidence changed; review the refreshed gate before approving.",
+                )
+            )
+            await session.flush()
+            report.record(candidate.org_id, "transitions_effected")
+        return
+
+    if candidate.kind == NodeKind.EVAL.value and candidate.observed_state == NodeState.READY.value and human is None:
+        return
     targets = [NodeState.READY] if candidate.observed_state == NodeState.PENDING.value else []
-    if candidate.kind == NodeKind.GATE.value:
+    if candidate.kind == NodeKind.GATE.value or human is not None:
         # Present a decision using existing legal edges, without a worker or an
         # attempt charge. The savepoint makes the intermediate RUNNING invisible.
         # Neither this path nor any service actor can answer the gate.
@@ -383,13 +520,15 @@ async def _advance_node(session: AsyncSession, candidate: _Candidate, report: Ti
                 observed_state=observed,
                 to_state=target,
                 reason=f"all {len(predecessors)} predecessor(s) satisfied; "
-                + ("human decision required" if candidate.kind == NodeKind.GATE.value else "ready for execution"),
+                + ("human decision required" if candidate.kind == NodeKind.GATE.value or human is not None else "ready for execution"),
             )
             if not allowed or rows != 1:
                 if observed != candidate.observed_state:
                     raise RuntimeError("gate presentation did not complete; rolling back its intermediate states")
                 break
             observed = target.value
+            if target is NodeState.AWAITING_GATE and human is not None:
+                await record_human_gate_evidence(session, evaluation, evidence, actor_id=_TICK_ACTOR_ID)
 
     if not allowed:
         # The authority guard refused the edge. Already recorded as a decision
@@ -458,7 +597,8 @@ async def run_tick(session: AsyncSession) -> TickReport:
     while report.nodes_examined < _ITEM_BACKSTOP:
         remaining = _ITEM_BACKSTOP - report.nodes_examined
         try:
-            page = await _fetch_candidate_page(session, after_id=after_id, limit=min(_PAGE_SIZE, remaining))
+            async with session.begin_nested():
+                page = await _fetch_candidate_page(session, after_id=after_id, limit=min(_PAGE_SIZE, remaining))
         except Exception:
             # A page we cannot read is a real failure, not an empty page.
             # Returning success here would be the silent stall (R-NF3).
@@ -473,8 +613,14 @@ async def run_tick(session: AsyncSession) -> TickReport:
 
         for candidate in page:
             report.record(candidate.org_id, "nodes_examined")
+            node_report = TickReport()
             try:
-                await _advance_node(session, candidate, report)
+                # A PostgreSQL statement failure aborts its transaction. Catching
+                # the exception alone poisons every later node and the caller's
+                # commit. Keep both partial writes and their counters local until
+                # this node's savepoint has succeeded.
+                async with session.begin_nested():
+                    await _advance_node(session, candidate, node_report)
             except Exception:
                 # Per-node containment: log, count, force non-success, keep going.
                 logger.exception(
@@ -483,6 +629,11 @@ async def run_tick(session: AsyncSession) -> TickReport:
                     candidate.org_id,
                 )
                 report.record(candidate.org_id, "errors")
+            else:
+                for org_id, counts in node_report.per_org.items():
+                    for key, amount in counts.items():
+                        report.record(org_id, key, amount)
+                report.blocked |= node_report.blocked
 
         after_id = page[-1].node_id
 

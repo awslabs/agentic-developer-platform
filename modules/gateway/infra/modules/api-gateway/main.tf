@@ -168,10 +168,7 @@ locals {
   internal_plane_alb_arn = var.internal_plane_alb_arn != "" ? var.internal_plane_alb_arn : var.internal_alb_arn
 }
 
-resource "random_password" "edge_provenance" {
-  length  = 64
-  special = false
-}
+
 
 # Issue #5653 (A01): the identity header must never be forwarded from the client.
 #
@@ -194,12 +191,16 @@ resource "random_password" "edge_provenance" {
 # 'single-quoted' is API Gateway mapping syntax for a static string literal.
 locals {
   blank_caller_identity = {
-    "integration.request.header.X-Caller-Identity"     = "''"
-    "integration.request.header.X-Adp-Edge-Provenance" = "''"
+    "integration.request.header.X-Adp-Client-IP"         = "context.identity.sourceIp"
+    "integration.request.header.X-Adp-Client-Provenance" = "'${var.edge_provenance_secret}'"
+    "integration.request.header.X-Caller-Identity"       = "''"
+    "integration.request.header.X-Adp-Edge-Provenance"   = "''"
   }
   verified_caller_identity = {
-    "integration.request.header.X-Caller-Identity"     = "context.identity.userArn"
-    "integration.request.header.X-Adp-Edge-Provenance" = "'${random_password.edge_provenance.result}'"
+    "integration.request.header.X-Adp-Client-IP"         = "context.identity.sourceIp"
+    "integration.request.header.X-Adp-Client-Provenance" = "'${var.edge_provenance_secret}'"
+    "integration.request.header.X-Caller-Identity"       = "context.identity.userArn"
+    "integration.request.header.X-Adp-Edge-Provenance"   = "'${var.edge_provenance_secret}'"
   }
 }
 
@@ -290,6 +291,45 @@ resource "aws_api_gateway_rest_api" "main" {
               local.blank_caller_identity,
             )
             cacheKeyParameters = ["method.request.path.proxy"]
+          }
+        }
+      }
+      "/agent/tools" = {
+        x-amazon-apigateway-any-method = {
+          security                   = [{ sigv4 = [] }]
+          "x-amazon-apigateway-auth" = { type = "AWS_IAM" }
+          x-amazon-apigateway-integration = {
+            type                 = "http_proxy"
+            httpMethod           = "ANY"
+            uri                  = "http://${var.internal_alb_dns}/agent/tools"
+            timeoutInMillis      = var.integration_timeout_ms
+            responseTransferMode = "STREAM"
+            passthroughBehavior  = "when_no_match"
+            connectionType       = "VPC_LINK"
+            connectionId         = aws_apigatewayv2_vpc_link.main.id
+            integrationTarget    = var.internal_alb_arn
+            requestParameters    = local.verified_caller_identity
+          }
+        }
+      }
+      "/agent/tools/{proxy+}" = {
+        x-amazon-apigateway-any-method = {
+          security                   = [{ sigv4 = [] }]
+          "x-amazon-apigateway-auth" = { type = "AWS_IAM" }
+          parameters                 = [{ name = "proxy", in = "path", required = true, type = "string" }]
+          x-amazon-apigateway-integration = {
+            type                 = "http_proxy"
+            httpMethod           = "ANY"
+            uri                  = "http://${var.internal_alb_dns}/agent/tools/{proxy}"
+            timeoutInMillis      = var.integration_timeout_ms
+            responseTransferMode = "STREAM"
+            passthroughBehavior  = "when_no_match"
+            connectionType       = "VPC_LINK"
+            connectionId         = aws_apigatewayv2_vpc_link.main.id
+            integrationTarget    = var.internal_alb_arn
+            requestParameters = merge({
+              "integration.request.path.proxy" = "method.request.path.proxy"
+            }, local.verified_caller_identity)
           }
         }
       }
@@ -909,7 +949,7 @@ resource "aws_ssm_parameter" "edge_provenance_secret" {
   name        = "/adp/${var.environment}/gateway/apigw-provenance-secret"
   description = "Shared proof injected only by API Gateway AWS_IAM integrations and validated by the gateway pod. Issue #5653."
   type        = "SecureString"
-  value       = random_password.edge_provenance.result
+  value       = var.edge_provenance_secret
 
   tags = var.common_tags
 }

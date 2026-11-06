@@ -6,7 +6,9 @@ enforces rate limits using the RateLimitService.
 """
 
 import logging
+import os
 from collections.abc import Awaitable, Callable
+from urllib.parse import urlsplit
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -46,6 +48,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         app: Callable,
         rate_limit_service: RateLimitService | None = None,
         exempt_paths: set[str] | None = None,
+        crew_dashboard_host: str | None = None,
     ) -> None:
         """
         Initialize the middleware.
@@ -60,6 +63,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._exempt_paths = self.EXEMPT_PATHS.copy()
         if exempt_paths:
             self._exempt_paths.update(exempt_paths)
+        # #9596: the Kiro Crew dashboard is served on its own origin (CREW_DASHBOARD_ORIGIN) and
+        # loads dozens of immutable, content-hashed chunks from /assets/ on first paint; counting
+        # those against the owner's per-user request limit answered 429 on a cold open (dev
+        # 2026-11-04, "This page could not finish loading"). Static chunks on that host are exempt;
+        # the dashboard's /api/* and the gateway's own routes stay limited.
+        self._crew_dashboard_host = (
+            crew_dashboard_host if crew_dashboard_host is not None else (urlsplit(os.environ.get("CREW_DASHBOARD_ORIGIN", "")).hostname or "")
+        )
 
     async def dispatch(
         self,
@@ -68,7 +79,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         """Process the request with rate limiting."""
         # Skip rate limiting for exempt paths
-        if self._is_exempt(request.url.path):
+        if self._is_exempt(request.url.path) or self._is_crew_dashboard_asset(request):
             return await call_next(request)
 
         # Get token context from request state (set by auth middleware)
@@ -115,6 +126,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 return True
 
         return False
+
+    def _is_crew_dashboard_asset(self, request: Request) -> bool:
+        """Static dashboard chunks on the Crew origin are never rate limited (#9596)."""
+        if not self._crew_dashboard_host:
+            return False
+        host = (request.headers.get("host") or "").split(":", 1)[0].lower()
+        return host == self._crew_dashboard_host.lower() and request.url.path.startswith("/assets/")
 
     def _create_rate_limit_response(self, check_result) -> JSONResponse:
         """Create a 429 rate limit response."""

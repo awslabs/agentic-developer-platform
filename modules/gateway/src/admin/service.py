@@ -560,8 +560,10 @@ class AdminService:
             ).scalar_one_or_none()
             if user is None:
                 raise ResourceNotFoundError("User", entity_id)
-            department = await self.db.scalar(select(Team.department_id).where(Team.id == user.team_id, Team.org_id == org_id))
-            return resolved, department
+            from src.shared.identity.workspaces import primary_team_for_workspace
+
+            team = await primary_team_for_workspace(self.db, user, org_id)
+            return resolved, team.department_id if team else None
         model = {"org": Organization, "department": Department, "team": Team}.get(entity_type)
         if model is None or (entity_type == "org" and entity_id != org_id):
             raise ResourceNotFoundError("BudgetTarget", entity_id)
@@ -575,6 +577,12 @@ class AdminService:
         return entity_id, department
 
     async def exact_budget(self, org_id, entity_type, entity_id, period_type, *, lock=False):
+        if lock:
+            from src.budget.metering_policy_gates import lock_policy_mutation
+
+            await lock_policy_mutation(
+                self.db, tenant_id=org_id, scope_kind="user" if entity_type == "service_account" else entity_type, identity=entity_id
+            )
         query = select(BudgetConfig).where(
             BudgetConfig.org_id == org_id,
             BudgetConfig.entity_type == entity_type,
@@ -1885,6 +1893,14 @@ class AdminService:
             user.name = request.name
 
         if request.role is not None:
+            from src.admin.platform_authority import PLATFORM_ROLES, set_platform_admin_grant
+            from src.shared.identity.workspaces import login_subject_for_user
+
+            if request.role in PLATFORM_ROLES or previous_role in PLATFORM_ROLES:
+                subject = await login_subject_for_user(self.db, user, lock=True)
+                if not subject:
+                    raise ResourceConflictError("User", "cognito_sub", "Global role changes require a canonical login identity")
+                await set_platform_admin_grant(self.db, subject, enabled=request.role in PLATFORM_ROLES)
             await set_membership_role(
                 self.db,
                 user_id=user.id,
@@ -2272,8 +2288,24 @@ class AdminService:
 
         if department_id is not None:
             teams = select(Team.id).where(Team.org_id == org_id, Team.department_id == department_id)
-            users = select(User.id).where(User.org_id == org_id, User.team_id.in_(teams))
-            subjects = select(User.cognito_sub).where(User.org_id == org_id, User.team_id.in_(teams))
+            from src.shared.models.organization import TeamMembership
+
+            memberships = select(TeamMembership.id).where(TeamMembership.user_id == User.id, TeamMembership.org_id == org_id)
+            primary_count = (
+                select(func.count())
+                .select_from(TeamMembership)
+                .where(TeamMembership.user_id == User.id, TeamMembership.org_id == org_id, TeamMembership.is_primary.is_(True))
+                .scalar_subquery()
+            )
+            primary_in_department = memberships.where(TeamMembership.is_primary.is_(True), TeamMembership.team_id.in_(teams)).exists()
+            # Match primary_team_for_workspace: membership wins over the legacy
+            # pointer; absent or ambiguous primaries never lend another scope.
+            in_department = or_(
+                (primary_count == 1) & primary_in_department,
+                ~memberships.exists() & User.team_id.in_(teams),
+            )
+            users = select(User.id).where(User.org_id == org_id, in_department)
+            subjects = select(User.cognito_sub).where(User.org_id == org_id, in_department)
             allowed = or_(
                 (BudgetConfig.entity_type == "department") & (BudgetConfig.entity_id == department_id),
                 (BudgetConfig.entity_type == "team") & BudgetConfig.entity_id.in_(teams),
@@ -2504,6 +2536,15 @@ class AdminService:
         # uq_budget_config.
         entity_id = await self._resolve_person_entity_id(org_id, request.entity_type, request.entity_id)
 
+        from src.budget.metering_policy_gates import lock_policy_mutation
+
+        await lock_policy_mutation(
+            self.db,
+            tenant_id=org_id,
+            scope_kind="user" if request.entity_type == "service_account" else request.entity_type,
+            identity=entity_id,
+        )
+
         # Check for existing budget with same entity and period
         existing = await self.db.execute(
             select(BudgetConfig).where(
@@ -2616,6 +2657,11 @@ class AdminService:
         Raises:
             ResourceNotFoundError: If budget not found
         """
+        from src.budget.metering_policy_gates import lock_policy_mutation
+
+        await lock_policy_mutation(
+            self.db, tenant_id=org_id, scope_kind="user" if entity_type == "service_account" else entity_type, identity=entity_id
+        )
         result = await self.db.execute(
             select(BudgetConfig).where(
                 BudgetConfig.org_id == org_id,

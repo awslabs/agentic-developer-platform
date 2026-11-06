@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "name": "New environment E2E smoke",
+  "mandatory_modules": [
+    "MOD-005",
+    "MOD-023",
+    "MOD-024"
+  ],
+  "default_modules": [
+    "MOD-001",
+    "MOD-002",
+    "MOD-005",
+    "MOD-007",
+    "MOD-010",
+    "MOD-011",
+    "MOD-023",
+    "MOD-024",
+    "MOD-045"
+  ],
+  "modules": {
+    "MOD-001": {
+      "cli": [
+        "E38"
+      ],
+      "scope": "Read persona/model catalogue and costs; no inference or selection mutation."
+    },
+    "MOD-002": {
+      "cli": [
+        "E29"
+      ],
+      "scope": "Read administrator organization hierarchy; no organization creation or isolation qualification."
+    },
+    "MOD-005": {
+      "cli": [
+        "C01",
+        "E23"
+      ],
+      "browser": [
+        "tests/e2e/chat/test_auth.py::TestLoginRoundTrip::test_login_stores_tokens_in_session_storage",
+        "tests/e2e/chat/test_auth.py::TestSessionRestoration::test_supplied_tokens_restore_authenticated_session"
+      ],
+      "scope": "Native CLI login, memberships, real browser OAuth and session restoration."
+    },
+    "MOD-006": {
+      "cli": [
+        "E28"
+      ],
+      "scope": "GitHub maintenance status and previews; no repository access or webhook delivery qualification."
+    },
+    "MOD-007": {
+      "cli": [
+        "E24"
+      ],
+      "scope": "Credential metadata and mutation previews; no real AWS connection execution."
+    },
+    "MOD-008": {
+      "cli": [
+        "E30"
+      ],
+      "scope": "GitLab discovery and invalid project refusal; no provider writes."
+    },
+    "MOD-010": {
+      "cli": [
+        "E26"
+      ],
+      "scope": "Budget period and uncapped read semantics; no spend-through enforcement."
+    },
+    "MOD-011": {
+      "cli": [
+        "E36"
+      ],
+      "scope": "Rate-limit hierarchy reads; no throttling/load test."
+    },
+    "MOD-016": {
+      "cli": [
+        "E40"
+      ],
+      "browser_on": [
+        "tests/e2e/chat/test_persistence.py::TestMessagePersistence::test_messages_persist_after_send_and_reply"
+      ],
+      "browser_off": [
+        "tests/e2e/chat/test_disabled.py::test_disabled_chat_routes_and_navigation"
+      ],
+      "scope": "Chat readiness/history plus one browser response and local persistence when enabled; disabled-route behavior otherwise. Enabled mode can incur model spend and retain server-side test history."
+    },
+    "MOD-023": {
+      "browser": [
+        "tests/e2e/new_ui/test_coexistence.py::test_legacy_routes_unchanged",
+        "tests/e2e/new_ui/test_coexistence.py::test_entry_link_matches_verified_flag",
+        "tests/e2e/new_ui/test_coexistence.py::test_signed_out_redirects_to_actual_login"
+      ],
+      "scope": "Existing core pages and page-initiated API reads, preview entry flag and signed-out redirects. Shared route parameters include budget, connections, activity and dashboard."
+    },
+    "MOD-024": {
+      "cli": [
+        "E01",
+        "E20"
+      ],
+      "scope": "Install served CLI on disposable EC2; capabilities and bounded doctor checks."
+    },
+    "MOD-045": {
+      "scope": "Before/after gateway revision and target identity checks; no full component attestation."
+    }
+  }
+}

@@ -7,6 +7,7 @@ The explicit --quiesce upgrade operation pauses scheduling and drains invocation
 
 import argparse
 import json
+from pathlib import Path
 import re
 import subprocess
 import time
@@ -19,13 +20,22 @@ def command(args, timeout=360):
 def admission_settings(environment):
     """Match the runtime's fail-closed defaults without changing authority."""
     names = ('AGENT_AUTHORITY_ENABLED', 'ADP_WORK_CLAIMS_ENABLED')
-    settings = {name: environment.get(name, 'false').lower() == 'true' for name in names}
+    def setting(name):
+        value = environment.get(name, 'false')
+        if not isinstance(value, str) or value.lower() not in ('true', 'false'):
+            raise ValueError('Invalid admission setting ' + name + '; expected true or false')
+        return value.lower() == 'true'
+
+    settings = {name: setting(name) for name in names}
     if len(set(settings.values())) != 1:
         raise ValueError('Protected authority and work-claim admission differ; apply matching Terraform rollout settings')
+    # Product-bound delivery is a separate rollout decision. It must agree on
+    # the reader and dispatcher, but need not equal the authority migration.
+    settings['ADP_PRODUCT_STORY_DISPATCH_ENABLED'] = setting('ADP_PRODUCT_STORY_DISPATCH_ENABLED')
     return settings
 
 
-def quiesce(*, account, region, environment):
+def quiesce(*, account, region, environment, product_dispatch_inputs=None):
     """Stop an installed engine and drain its maximum invocation lifetime."""
     current_image_digest(account=account, region=region, environment=environment)
     name = f'adp-{environment}-orchestration-tick'
@@ -34,6 +44,18 @@ def quiesce(*, account, region, environment):
     timeout = config['Timeout']
     if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 900:
         raise ValueError('Invalid engine invocation timeout')
+    if product_dispatch_inputs is not None:
+        # The gateway currently running may omit this flag; this upgrade is
+        # repairing it. Check the exact retained inputs that Terraform will
+        # apply, before the first schedule mutation, not the old gateway pod.
+        desired = json.loads(Path(product_dispatch_inputs).read_text()).get('orchestration_product_story_dispatch_enabled')
+        if type(desired) is not bool:
+            raise ValueError('Upgrade inputs must retain a boolean Product dispatch setting; rerun upgrade preflight')
+        live = admission_settings(config.get('Environment', {}).get('Variables', {}))
+        if live['ADP_PRODUCT_STORY_DISPATCH_ENABLED'] != desired:
+            raise ValueError('Product dispatch differs from retained upgrade inputs; review the live target before pausing its schedule')
+    # Safety shutdown callers omit upgrade inputs: malformed release settings
+    # must never prevent an explicit emergency stop from pausing work.
     # A missing/denied rule is a failure; do not proceed with an unpaused engine.
     command(['aws', 'events', 'disable-rule', '--name', name, '--region', region])
     remaining = timeout + 5
@@ -135,7 +157,7 @@ def synchronize(*, image, account, region, environment, namespace, verify_only=F
                     'kubectl', 'exec', 'pod/' + pod_name, '-n', namespace,
                     '-c', 'bedrockgateway', '--', 'python', '-S', '-c',
                     'import json,os; print(json.dumps({k:os.environ.get(k,"false") for k in '
-                    '["AGENT_AUTHORITY_ENABLED","ADP_WORK_CLAIMS_ENABLED"]}))',
+                    '["AGENT_AUTHORITY_ENABLED","ADP_WORK_CLAIMS_ENABLED","ADP_PRODUCT_STORY_DISPATCH_ENABLED"]}))',
                 ]))
                 break
             except subprocess.CalledProcessError:
@@ -147,8 +169,11 @@ def synchronize(*, image, account, region, environment, namespace, verify_only=F
     function = f'arn:aws:lambda:{region}:{account}:function:adp-{environment}-orchestration-tick'
     # Missing function and permission errors are failures, not evidence of parity.
     before = aws('lambda', 'get-function', '--function-name', function)
-    if admission_settings(before['Configuration'].get('Environment', {}).get('Variables', {})) != gateway_admission:
-        raise ValueError('Gateway and engine admission settings differ; apply matching Terraform rollout settings')
+    engine_admission = admission_settings(before['Configuration'].get('Environment', {}).get('Variables', {}))
+    differing = sorted(name for name in gateway_admission if gateway_admission[name] != engine_admission[name])
+    if differing:
+        raise ValueError('Gateway and engine admission settings differ: ' + ', '.join(differing)
+                         + '; apply matching Terraform rollout settings before updating the engine')
     if not verify_only and before['Code']['ResolvedImageUri'] != expected:
         aws('lambda', 'update-function-code', '--function-name', function,
             '--image-uri', expected, '--revision-id', before['Configuration']['RevisionId'])
@@ -176,13 +201,18 @@ def main():
     parser.add_argument('--allow-missing', action='store_true', help='Bootstrap discovery only; never permits permission or readiness failures')
     parser.add_argument('--namespace', default='adp-gateway')
     parser.add_argument('--verify-only', action='store_true')
+    parser.add_argument('--product-dispatch-inputs', help='Private retained gateway tfvars JSON; checked before an upgrade pause')
     args = vars(parser.parse_args())
     allow_missing = args.pop('allow_missing')
     current_digest = args.pop('current_image_digest')
+    product_dispatch_inputs = args.pop('product_dispatch_inputs')
+    if product_dispatch_inputs and not args['quiesce']:
+        parser.error('--product-dispatch-inputs requires --quiesce')
     if args.pop('quiesce'):
         if allow_missing or args['verify_only']:
             parser.error('--quiesce cannot be combined with --allow-missing or --verify-only')
-        print(json.dumps(quiesce(**{key: args[key] for key in ('account', 'region', 'environment')})))
+        print(json.dumps(quiesce(**{key: args[key] for key in ('account', 'region', 'environment')},
+                                 product_dispatch_inputs=product_dispatch_inputs)))
     elif current_digest:
         if args['verify_only']:
             parser.error('--verify-only requires --image')

@@ -1,0 +1,60 @@
+name: DevLake POC / independent infrastructure measurement
+on:
+  workflow_dispatch:
+    inputs:
+      launch_manifest:
+        description: Path to approved private campaign manifest on protected runner
+        type: string
+        required: true
+      phase:
+        description: Measure active sources or inspect finalized artifacts
+        type: choice
+        options: [active, finalized]
+        required: true
+permissions:
+  contents: read
+jobs:
+  observe:
+    if: github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: arc-runner-org
+    environment: ${{ inputs.phase == 'finalized' && 'adp-devlake-finalizer' || 'adp-devlake-campaign' }}
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      ADP_DEVLAKE_SOURCE_CONFIG: ${{ secrets.ADP_DEVLAKE_SOURCE_CONFIG }}
+      LAUNCH_MANIFEST: ${{ inputs.launch_manifest }}
+      SOURCE_PHASE: ${{ inputs.phase }}
+      ADP_DEVLAKE_PILOT_ID: ${{ vars.ADP_DEVLAKE_PILOT_ID }}
+      ADP_DEVLAKE_LEDGER_TABLE: ${{ vars.ADP_DEVLAKE_LEDGER_TABLE }}
+      ADP_DEVLAKE_ACCOUNT: ${{ vars.ADP_DEVLAKE_ACCOUNT }}
+      ADP_DEVLAKE_REGION: ${{ vars.ADP_DEVLAKE_REGION }}
+      ADP_DEVLAKE_FINALIZE_ROLE: ${{ vars.ADP_DEVLAKE_FINALIZE_ROLE }}
+      ADP_DEVLAKE_PUBLISH_ROLE: ${{ vars.ADP_DEVLAKE_PUBLISH_ROLE }}
+      ADP_DEVLAKE_CONNECTION_LABEL: ${{ secrets.ADP_DEVLAKE_FINALIZE_CONNECTION_LABEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python3 modules/insights/poc/devlake/infrastructure_source.py \
+            --config "$ADP_DEVLAKE_SOURCE_CONFIG" --manifest "$LAUNCH_MANIFEST" \
+            --revision "$GITHUB_SHA" --phase "$SOURCE_PHASE" \
+            --output "$RUNNER_TEMP/observation.json"
+      - uses: ./.github/actions/upload-ci-evidence-s3
+        if: inputs.phase == 'active'
+        with:
+          name: devlake-infrastructure-active-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observation.json
+          if-no-files-found: error
+          retention-days: 7
+      # source_reader.approved_reader consumes this exact finalized cleanup handoff.
+      - uses: actions/upload-artifact@v4
+        if: inputs.phase == 'finalized'
+        with:
+          name: devlake-infrastructure-finalized-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observation.json
+          if-no-files-found: error
+          retention-days: 7

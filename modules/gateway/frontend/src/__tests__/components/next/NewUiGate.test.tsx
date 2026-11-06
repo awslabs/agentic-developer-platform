@@ -215,7 +215,7 @@ describe('NewUiGate — Issue #5079', () => {
     expect(fetchFeatures).toHaveBeenCalledTimes(2);
   });
 
-  it('polls an unfocused tab', async () => {
+  it('pauses hidden polling and revalidates immediately on focus', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     fetchFeatures.mockResolvedValue(flags({ new_ui: true }));
     renderGate();
@@ -225,6 +225,8 @@ describe('NewUiGate — Issue #5079', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(FEATURES_REVALIDATE_MS + 1_000);
     });
+    expect(fetchFeatures).toHaveBeenCalledTimes(1);
+    await act(async () => { focusManager.setFocused(true); });
     expect(await screen.findByTestId('current-home')).toBeInTheDocument();
   });
 

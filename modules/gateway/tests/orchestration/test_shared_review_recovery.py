@@ -32,6 +32,7 @@ async def recovery(shared, monkeypatch):  # noqa: F811
         AsyncMock(
             side_effect=lambda **kw: SimpleNamespace(
                 head_sha=shared.head,
+                repo=shared.binding.repo,
                 provider_repository_id=shared.binding.provider_repository_id,
                 provider_pr_node_id=shared.binding.provider_pr_node_id,
             )
@@ -61,6 +62,16 @@ async def request(ctx, *, accept=False, role="owner"):
         if accept:
             await db.commit()
         return result
+
+
+async def test_shared_transport_cannot_accept_protected_reviewer_model_override(recovery):
+    recovery.body.reviewer_model = "gpt6-sol"
+    before = await protocol.state(recovery.ctx)
+    with pytest.raises(CycleBlockedError, match="reviewer_model_override_unsupported"):
+        await request(recovery)
+    after = await protocol.state(recovery.ctx)
+    assert after[0].revision == before[0].revision and after[1].generation == before[1].generation
+    assert len(recovery.ctx.calls) == 1
 
 
 @pytest.mark.parametrize("failed_node", [False, True])

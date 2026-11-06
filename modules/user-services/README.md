@@ -14,12 +14,15 @@ For the full cluster-wide framing and invariants, see [`docs/user-services-overv
 | v2 | `knowledge/` | Personal knowledge repo — notes, meeting history, preferences, docs the user owns; agents reason over it | (to be written) |
 | v3 | `agents/` | User-scoped bespoke agents — per-user instances of platform-provided agent templates | [`docs/user-scoped-agents-design.md`](../../docs/user-scoped-agents-design.md) |
 | v3+ | `chief-of-staff/` | Opinionated preconfigured agent built on the three above | (to be written) |
+| host | `dev-box/` | Owner-scoped persistent machine contract | [`docs/decisions/dev-box-user-service.md`](../../docs/decisions/dev-box-user-service.md) |
 
 The order reflects real dependency: agents need credentials (vault) before they can act; bespoke user agents need a knowledge source (knowledge repo) to reason over; chief-of-staff is a preconfigured composition of all three.
 
 ## Current state
 
-No services built yet. Only this README and the design docs linked above exist. The vault is the first service planned for implementation.
+The Dev Box schema, owner admission API and contract fixture are implemented in
+the gateway and `dev-box/`. No EC2 host controller is deployed by this slice;
+the other user services remain design sketches.
 
 ## Folder shape (target)
 
@@ -64,6 +67,11 @@ modules/user-services/
 10. No arbitrary user code. Users configure, customize, compose — they do not submit runnable code.
 
 If a new service does not fit all ten, it is not a user service. It belongs elsewhere.
+
+Dev Box is the narrowly approved exception for administrative template/policy
+metadata, asynchronous verified release and isolated per-owner code execution.
+It never permits code execution in the gateway/controller or administrative
+access to user files. See the [Dev Box decision](../../docs/decisions/dev-box-user-service.md).
 
 ## What does not belong here
 

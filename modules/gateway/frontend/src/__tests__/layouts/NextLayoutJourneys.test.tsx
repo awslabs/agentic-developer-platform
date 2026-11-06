@@ -46,6 +46,7 @@ interface Perms {
   canViewOrganizations?: boolean;
   canViewBudgets?: boolean;
   canViewRateLimits?: boolean;
+  canManageTools?: boolean;
   canViewLogs?: boolean;
   canViewPool?: boolean;
   canViewMetrics?: boolean;
@@ -77,6 +78,7 @@ function setPerms(perms: Perms) {
     canViewOrganizations: () => perms.canViewOrganizations ?? false,
     canViewBudgets: () => perms.canViewBudgets ?? false,
     canViewRateLimits: () => perms.canViewRateLimits ?? false,
+    hasPermission: () => perms.canManageTools ?? false,
     canViewLogs: () => perms.canViewLogs ?? false,
     canViewPool: () => perms.canViewPool ?? false,
     canViewMetrics: () => perms.canViewMetrics ?? false,

@@ -5,12 +5,25 @@ No Terraform apply: only worker images and the gateway image-trust configuration
 are changed. The persisted release supplies subsequent webhook CI Terraform inputs.
 """
 import argparse
+import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 KEYS = ('AGENT_WORKER_IMAGE_DIGESTS', 'ADP_TASK_WORKER_IMAGE_DIGESTS')
+
+
+def writer_module():
+    path = Path(__file__).resolve().parents[2] / 'modules/gateway/scripts/sync-gateway-writers.py'
+    spec = importlib.util.spec_from_file_location('gateway_writer_sync', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def command(*args):
@@ -47,20 +60,83 @@ class Rollout:
         patch = [{'op': 'test', 'path': '/metadata/resourceVersion', 'value': obj['metadata']['resourceVersion']}, *changes]
         self.kube(namespace, 'patch', kind, obj['metadata']['name'], '--type=json', '-p', json.dumps(patch))
 
+    # The optimistic lock (`test` on metadata.resourceVersion) protects against
+    # overwriting a concurrent change, but a DaemonSet or Deployment bumps its
+    # resourceVersion on every status update (a node joining is enough), so the
+    # first attempt can lose the race through no fault of ours. Re-read and retry
+    # the same intent a bounded number of times before giving up.
+    PATCH_ATTEMPTS = 5
+
+    TRUST_RETENTION_DAYS = 30
+    TRUST_MAX_ENTRIES = 60
+
+    def live_worker_digests(self):
+        digests = set()
+        for kind, name in (('scaledjob', 'agent-scaledjob'), ('daemonset', 'agent-image-prepull'), ('deployment', 'agent-warm-pool')):
+            obj = self.get('adp-agents', kind, name)
+            if obj is None:
+                continue
+            spec = obj['spec']['jobTargetRef']['template']['spec'] if kind == 'scaledjob' else obj['spec']['template']['spec']
+            for container in spec.get('containers', []):
+                if '@' in container.get('image', ''):
+                    digests.add(container['image'].split('@', 1)[1])
+        return digests
+
+    def recent_image_digests(self):
+        """Digests pushed to the worker repository within the retention window, newest first."""
+        pushed = {}
+        token = None
+        while True:
+            args = ['ecr', 'describe-images', '--repository-name', 'adp-agent-runtime', '--max-items', '500']
+            if token:
+                args += ['--starting-token', token]
+            page = self.aws(*args)
+            for item in page.get('imageDetails', []):
+                when = item.get('imagePushedAt')
+                if isinstance(when, (int, float)):
+                    when = datetime.fromtimestamp(when, tz=timezone.utc)
+                elif isinstance(when, str):
+                    when = datetime.fromisoformat(when.replace('Z', '+00:00'))
+                else:
+                    when = datetime.now(timezone.utc)
+                pushed[item['imageDigest']] = when
+            token = page.get('NextToken')
+            if not token:
+                break
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.TRUST_RETENTION_DAYS)
+        recent = sorted((d for d, when in pushed.items() if when >= cutoff), key=lambda d: pushed[d], reverse=True)
+        return recent
+
+    def bounded_trust(self, trust, digest, current_image):
+        keep = {digest} | self.live_worker_digests()
+        if '@' in current_image:
+            keep.add(current_image.split('@', 1)[1])
+        recent = [d for d in self.recent_image_digests() if d in trust and d not in keep]
+        room = max(0, self.TRUST_MAX_ENTRIES - len(keep))
+        return keep | set(recent[:room])
+
     def image(self, kind, name, container, image):
-        obj = self.get('adp-agents', kind, name)
-        if obj is None:
+        for attempt in range(1, self.PATCH_ATTEMPTS + 1):
+            obj = self.get('adp-agents', kind, name)
+            if obj is None:
+                if kind == 'scaledjob':
+                    raise RuntimeError('Worker ScaledJob is missing; install webhook ingress first')
+                return
+            base = '/spec/jobTargetRef/template/spec' if kind == 'scaledjob' else '/spec/template/spec'
+            spec = obj['spec']['jobTargetRef']['template']['spec'] if kind == 'scaledjob' else obj['spec']['template']['spec']
+            index = next(i for i, value in enumerate(spec['containers']) if value['name'] == container)
+            changes = [{'op': 'replace', 'path': f'{base}/containers/{index}/image', 'value': image}]
             if kind == 'scaledjob':
-                raise RuntimeError('Worker ScaledJob is missing; install webhook ingress first')
-            return
-        base = '/spec/jobTargetRef/template/spec' if kind == 'scaledjob' else '/spec/template/spec'
-        spec = obj['spec']['jobTargetRef']['template']['spec'] if kind == 'scaledjob' else obj['spec']['template']['spec']
-        index = next(i for i, value in enumerate(spec['containers']) if value['name'] == container)
-        changes = [{'op': 'replace', 'path': f'{base}/containers/{index}/image', 'value': image}]
-        if kind == 'scaledjob':
-            # KEDA's default rollout deletes existing jobs. Preserve those jobs.
-            changes.append({'op': 'add', 'path': '/spec/rollout', 'value': {**obj['spec'].get('rollout', {}), 'strategy': 'gradual'}})
-        self.patch('adp-agents', kind, obj, changes)
+                # KEDA's default rollout deletes existing jobs. Preserve those jobs.
+                changes.append({'op': 'add', 'path': '/spec/rollout', 'value': {**obj['spec'].get('rollout', {}), 'strategy': 'gradual'}})
+            try:
+                self.patch('adp-agents', kind, obj, changes)
+                return
+            except subprocess.CalledProcessError:
+                if attempt == self.PATCH_ATTEMPTS:
+                    raise
+                print(f'{kind}/{name} changed while patching (attempt {attempt}); re-reading and retrying', file=sys.stderr)
+                time.sleep(attempt)
 
     def terraform_vars(self):
         release = self.release()
@@ -74,6 +150,18 @@ class Rollout:
         if image.split('@')[1] not in trust:
             raise RuntimeError('Persisted worker image is missing from gateway trust')
         return {'agent_image': image, 'agent_authority_worker_image_digests': trust}
+
+    def gateway_writers(self, gateway):
+        module = writer_module()
+        primary = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'bedrockgateway')
+        writers = module.WorkerTrust(namespace='adp-gateway', image=primary['image'],
+            inventory=module.bindings(os.environ.get('ADP_GATEWAY_WRITER_INVENTORY', '[]')))
+        # Refuse missing enrollment, replaced UIDs, ambiguous processes, duplicate
+        # trust keys or insufficient privileges before changing shared trust.
+        writers.permissions()
+        managed, _ = writers.inspect(writers.snapshot())
+        writers.patch_permissions(managed)
+        return writers
 
     def deploy(self, revision):
         if not re.fullmatch(r'[0-9a-f]{40}', revision):
@@ -103,6 +191,7 @@ class Rollout:
         container = next(c for c in gateway['spec']['template']['spec']['containers'] if c['name'] == 'bedrockgateway')
         if not any(e.get('configMapRef', {}).get('name') == 'adp-worker-authority-config' for e in container.get('envFrom', [])):
             raise RuntimeError('Gateway must consume the worker authority ConfigMap before worker rollout')
+        writers = self.gateway_writers(gateway)
         trust_name = self.prefix + '/gateway/agent-authority-worker-images'
         parameter = self.aws('ssm', 'get-parameter', '--name', trust_name, '--with-decryption')['Parameter']
         trust = {digest}
@@ -110,28 +199,22 @@ class Rollout:
             trust.update(x for x in value.split(',') if x and x != 'disabled')
         if not all(re.fullmatch(r'sha256:[0-9a-f]{64}', item) for item in trust):
             raise RuntimeError('Invalid existing image trust value')
+        # Retain old digests so active jobs remain authorized throughout the rollout,
+        # but the list cannot grow forever: SSM refuses values over 8192 characters
+        # (113 digests broke the dev rollout). Keep the new digest, every digest a
+        # worker workload still runs, and recently pushed images; drop the rest.
+        trust = self.bounded_trust(trust, digest, current)
         value = ','.join(sorted(trust))
-        # Retain old digests so active jobs remain authorized throughout the rollout.
         metadata = self.aws('ssm', 'describe-parameters', '--parameter-filters', f'Key=Name,Option=Equals,Values={trust_name}')['Parameters']
         if len(metadata) != 1:
             raise RuntimeError('Cannot resolve existing image-trust encryption key')
         self.put(trust_name, value, parameter['Type'], metadata[0].get('KeyId'))
         self.patch('adp-gateway', 'configmap', cm, [{'op': 'add', 'path': '/data/' + key, 'value': value} for key in KEYS])
-        # Explicit env entries override envFrom. Keep both sources consistent.
-        # Use a strategic merge by name to retain all other env and pod settings.
-        self.kube('adp-gateway', 'patch', 'deployment', 'bedrockgateway', '--type=strategic', '-p', json.dumps({
-            'spec': {'template': {'metadata': {'annotations': {'adp.dev/worker-image': digest}}, 'spec': {'containers': [{
-                'name': 'bedrockgateway', 'env': [{'name': key, 'value': value, 'valueFrom': None} for key in KEYS]
-            }]}}}}))
-        self.kube('adp-gateway', 'rollout', 'status', 'deployment/bedrockgateway', '--timeout=1200s')
-        selector = ','.join(f'{k}={v}' for k, v in gateway['spec']['selector']['matchLabels'].items())
-        pods = json.loads(self.kube('adp-gateway', 'get', 'pods', '-l', selector, '-o', 'json'))['items']
-        live = [p for p in pods if not p['metadata'].get('deletionTimestamp')]
-        if not live:
-            raise RuntimeError('No live gateway pods after rollout')
-        for pod in live:
-            self.kube('adp-gateway', 'exec', pod['metadata']['name'], '-c', 'bedrockgateway', '--', 'python', '-S', '-c',
-                      'import os,sys; assert all(sys.argv[1] in os.environ.get(k, "").split(",") for k in sys.argv[2:])', digest, *KEYS)
+        # Explicit env overrides envFrom in every application writer, including
+        # restricted chat and operator-enrolled gateways. The shared reconciler
+        # preserves their full specs and waits for old processes to leave.
+        writers.trust = {key: value for key in KEYS}
+        writers.run()
         self.image('daemonset', 'agent-image-prepull', 'prepull', image)
         self.image('deployment', 'agent-warm-pool', 'balloon', image)
         self.image('scaledjob', 'agent-scaledjob', 'agent-worker', image)

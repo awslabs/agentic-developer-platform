@@ -97,6 +97,8 @@ def _no_budget_session() -> MagicMock:
     tests therefore comes from the run/chain cap and nowhere else.
     """
     session = MagicMock()
+    session.get = AsyncMock(return_value=None)
+    session.commit = AsyncMock()
 
     async def execute(statement):
         result = MagicMock()
@@ -126,6 +128,8 @@ def _tenant_override_session(amount_usd: str) -> MagicMock:
         return result
 
     session = MagicMock()
+    session.get = AsyncMock(return_value=None)
+    session.commit = AsyncMock()
     session.execute = AsyncMock(side_effect=execute)
     return session
 
@@ -311,6 +315,14 @@ async def _drive(
 # Roughly $0.75 of opus input, plus the pricing module's output estimate. Sized so
 # a handful of these crosses a small cap while one does not.
 _BIG_BODY = b"x" * 200_000
+
+
+async def test_unavailable_project_attribution_never_uses_legacy_fail_open(redis_client, clock):
+    service = _service(redis_client, clock, _registry(**{RUN_ID: "chain"}))
+    session = _no_budget_session()
+    session.get.side_effect = RuntimeError("Project attribution unavailable")
+    result = await _drive(service, session, _config(), body=_BIG_BODY, request_id="project-read-failure")
+    assert result.status == 503 and not result.app_invoked
 
 
 # =============================================================================
@@ -638,6 +650,31 @@ class TestLifetimeAccumulator:
 
         assert later.status == 402, "run spend must not evaporate on the 120s hierarchy TTL"
         assert later.app_invoked is False
+
+    @pytest.mark.asyncio
+    async def test_tool_estimate_survives_short_model_reservation(self, redis_client, clock):
+        from dataclasses import replace
+
+        from src.budget.reservations import ReservationTarget
+
+        store = ReservationStore(redis_url=None, ttl_seconds=RESERVATION_TTL, clock=lambda: clock[0], client=redis_client)
+        tool = ReservationTarget(
+            org_id=TENANT,
+            entity_type="user",
+            entity_id=CALLER,
+            period_type="daily",
+            period_start="2026-08-27",
+            headroom_usd=Decimal("10.00"),
+            ttl_seconds=7200,
+        )
+        model = replace(tool, ttl_seconds=None)
+        assert (await store.reserve("tool-call", Decimal("5"), [tool])).admitted
+        assert (await store.reserve("model-call", Decimal("1"), [model])).admitted
+        assert await redis_client.ttl(tool.key()) > 7000
+        clock[0] += RESERVATION_TTL + 1
+        denied = await store.reserve("later-call", Decimal("6"), [model])
+        assert denied is not None and not denied.admitted
+        assert denied.exhausted.entity_id == CALLER
 
     @pytest.mark.asyncio
     async def test_hierarchy_reservations_keep_the_short_ttl(self, redis_client, clock):
@@ -1265,6 +1302,95 @@ class TestRunScopeReservationRelease:
         assert "_run_scope_reservations" not in forged.model_dump(), "internal plumbing must stay out of the serialized shape"
 
 
+class TestProjectCeilingStaysOnTheProjectMeter:
+    """Issue #9536: a Project-attributed run is admitted against its request estimate.
+
+    Since #9082 a run whose work belongs to a Product reserved the provider quote's
+    full-context ceiling against EVERY cap, including the per-run cap. A reviewer's
+    first request (about 0.5 USD, ceiling about 30 USD) was refused by a 25 USD run
+    cap with nothing spent. The ceiling belongs on the Project meter only.
+    """
+
+    @staticmethod
+    def _quote(total: str, ceiling: str):
+        from src.orchestration.provider_quotes import ProviderQuote
+
+        issued = datetime.now(UTC)
+        return ProviderQuote(
+            provider="openai",
+            endpoint="/openai/v1/responses",
+            capability="responses_text",
+            billing_model_id="gpt-5-codex",
+            request_sha256="0" * 64,
+            pricing_revision="test",
+            currency="USD",
+            issued_at=issued,
+            expires_at=issued + timedelta(minutes=5),
+            max_input_tokens=400_000,
+            max_output_tokens=128_000,
+            max_tool_tokens=0,
+            max_cache_write_tokens=0,
+            total_usd=Decimal(total),
+            evidence_source="test",
+            input_count_method="request_bytes_with_margin",
+            upper_bound_usd=Decimal(ceiling),
+        )
+
+    @staticmethod
+    def _project_target():
+        from src.budget.reservations import ReservationTarget
+
+        return ReservationTarget(
+            org_id=TENANT,
+            entity_type="project",
+            entity_id="project-1",
+            period_type="run",
+            period_start="2026-11-04",
+            headroom_usd=Decimal("100"),
+            ttl_seconds=RUN_TTL,
+        )
+
+    async def _drive_project_run(self, redis_client, clock, monkeypatch, *, run_cap: str):
+        from src.products.work_scope import ProjectAttribution
+
+        config = _config(budget_run_cap_usd=Decimal(run_cap))
+        service = _service(redis_client, clock, _registry(**{RUN_ID: CHAIN_ID}))
+        project_target = self._project_target()
+        monkeypatch.setattr(
+            "src.budget.project_budget.prepare_project_budget",
+            AsyncMock(return_value=project_target),
+        )
+        context = _context()
+        context._project_attribution = ProjectAttribution(TENANT, "product-1", "project-1", 1, RUN_ID)
+        context._policy_quote = self._quote("0.50", "30")
+        harness = await _drive(service, _no_budget_session(), config, body=_BIG_BODY, request_id="review-first-call", context=context)
+        return harness, service, project_target, context
+
+    @pytest.mark.asyncio
+    async def test_first_request_is_admitted_when_the_ceiling_exceeds_the_run_cap(self, redis_client, clock, monkeypatch):
+        """GATE: fails on #9082 behaviour, which reserved the 30 USD ceiling against the 25 USD run cap."""
+        harness, service, project_target, context = await self._drive_project_run(redis_client, clock, monkeypatch, run_cap="25.00")
+
+        assert harness.status == 200, harness.messages
+        assert harness.app_invoked is True
+
+        store = service._get_reservations()
+        project_amounts = await store.live_request_amounts(project_target)
+        assert project_amounts == {"review-first-call": Decimal("30")}, "the Project meter still holds the provider ceiling"
+        run_target = next(t for t in context._run_scope_reservations if t.entity_type == "run")
+        run_amount = (await store.live_request_amounts(run_target))["review-first-call"]
+        assert Decimal("0") < run_amount < Decimal("25"), "the run cap holds the request estimate, not the ceiling"
+
+    @pytest.mark.asyncio
+    async def test_the_run_cap_still_refuses_an_estimate_it_cannot_afford(self, redis_client, clock, monkeypatch):
+        """The estimate, not the ceiling, is what the run cap judges; an unaffordable estimate is still refused."""
+        harness, _, _, _ = await self._drive_project_run(redis_client, clock, monkeypatch, run_cap="0.10")
+
+        assert harness.status == 402
+        assert harness.app_invoked is False
+        assert harness.body["details"]["scope"] == "run"
+
+
 class TestDenialShape:
     """A cap denial must be a 402 the client will not retry."""
 
@@ -1318,6 +1444,8 @@ class TestDenialShape:
             return result
 
         session = MagicMock()
+        session.get = AsyncMock(return_value=None)
+        session.commit = AsyncMock()
         session.execute = AsyncMock(side_effect=execute)
 
         harness = await _drive(service, session, config, body=_BIG_BODY, request_id="req-0")

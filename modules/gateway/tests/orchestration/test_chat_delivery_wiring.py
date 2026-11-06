@@ -72,9 +72,9 @@ def test_only_trusted_gateway_can_publish_to_exact_response_queue():
     sandbox = ROOT / "modules/agent-factory/agent"
     for path in [*sandbox.glob("k8s/chat-sandbox*.yaml"), sandbox / "src/complex-task-chat/sandbox-entrypoint.ts"]:
         assert "ADP_CHAT_RESPONSE_QUEUE_URL" not in path.read_text()
-    inventory = (ROOT / "docs/architecture/assistant-runtime-access-inventory.md").read_text()
+    inventory = (ROOT / "docs/chief-of-staff/architecture.md").read_text()
     assert "gateway-chat-response-access.tf" in inventory
-    assert "authenticated owner cancellation are wired; final completion remains unfinished" in inventory
+    assert "Terminal delivery is distinct from input acknowledgement" in inventory
     assert "fences both pod binding and lease admission against cancellation races" in inventory
     assert "immutable `result_candidate`" in inventory
     assert "receipt explicitly remains nonterminal" in inventory

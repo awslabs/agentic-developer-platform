@@ -20,14 +20,14 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.coordinator import resolve_repository_fan_out
 from src.agentauth.dispatch import FAN_OUT_CAPABILITY, FAN_OUT_CAPABILITY_FIELD, FAN_OUT_REPOSITORY_FIELD
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, router
 from src.agentauth.workload import WORKLOAD_HEADER, VerifiedPod
-from src.orchestration.models import OrchestrationFlow
+from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationFlow, OrchestrationNode
 from tests.agentauth.test_graph_dispatch import engine as engine_fixture
 from tests.agentauth.test_graph_dispatch import session as session_fixture
 from tests.agentauth.test_graph_dispatch import session_factory as session_factory_fixture
@@ -66,7 +66,7 @@ async def fan_out_context(store, child_dispatch, session, session_factory, monke
     }
     from src.agentauth.run_credential import CREDENTIAL_KEY_ENV
 
-    env = {CREDENTIAL_KEY_ENV: "gateway-test-key-not-shared-with-workers", "BG_ORCH_DISPATCH_REPO": "org/repo"}
+    env = {CREDENTIAL_KEY_ENV: "gateway-test-key-not-shared-with-workers"}
     runtime = AgentRuntime(store=store, workloads=SimpleNamespace(verify=lambda token: pods[token]), env=env, dispatcher=child_dispatch.service)
     app = FastAPI()
     app.include_router(router)
@@ -278,15 +278,42 @@ async def test_gate_decision_root_cannot_bypass_the_graph_with_this_scope(
     await _make_org(session, org_id="tenant", installations=[123])
     flow = await _make_flow(session, org_id="tenant")
     flow.intent_ref = "42"
-    await _make_approval(session, flow, actor_id="human")
-    await _make_node(session, flow, issue_ref="43")
+    flow.origin_ref = {"provider": "github", "repository_id": 987, "repository": "org/repo", "installation_id": 123, "issue_number": 42}
+    approval = await _make_approval(session, flow, actor_id="human")
+    node = await _make_node(session, flow, issue_ref="43")
+    node.repository_identity = "org/repo"
+    node.provider_repository_id = 987
+    node.repository_connection = {"provider": "github", "installation_id": 123}
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id="tenant",
+            flow_id=flow.id,
+            version=1,
+            plan_hash="a" * 64,
+            accepted_by_decision_id=approval.id,
+            plan_document={
+                "origin_ref": flow.origin_ref,
+                "nodes": [
+                    {
+                        "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                        "kind": "story",
+                        "title": node.title,
+                        "issue_ref": node.issue_ref,
+                        "repository_identity": node.repository_identity,
+                        "provider_repository_id": node.provider_repository_id,
+                        "repository_connection": node.repository_connection,
+                    }
+                ],
+            },
+        )
+    )
     await session.commit()
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: session_factory)
     monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", AsyncMock())
     from src.agentauth.run_credential import CREDENTIAL_KEY_ENV
 
     pod = VerifiedPod("pod-a", "worker-a", "adp-agents", "agent-scaledjob-sa", "10.0.1.2")
-    env = {CREDENTIAL_KEY_ENV: "gateway-test-key-not-shared-with-workers", "BG_ORCH_DISPATCH_REPO": "org/repo"}
+    env = {CREDENTIAL_KEY_ENV: "gateway-test-key-not-shared-with-workers"}
     runtime = AgentRuntime(store=store, workloads=SimpleNamespace(verify=lambda token: pod), env=env, dispatcher=child_dispatch.service)
     app = FastAPI()
     app.include_router(router)
@@ -320,8 +347,7 @@ async def test_gate_decision_root_cannot_bypass_the_graph_with_this_scope(
         assert envelope["orchestration"]["flow_id"] == flow.id
 
 
-@pytest.mark.parametrize("configured_repo", ["org/repo", ""])
-async def test_fan_out_refuses_a_graph_owned_target(fan_out_context, session_factory, configured_repo):
+async def test_fan_out_refuses_a_graph_owned_target(fan_out_context, session_factory):
     """Graph-sequenced work is dispatched by the graph, not out of band.
 
     Starting a second agent on a node's issue is the double dispatch the graph
@@ -329,7 +355,6 @@ async def test_fan_out_refuses_a_graph_owned_target(fan_out_context, session_fac
     though this coordinator is otherwise cleared for its repository.
     """
     ctx = fan_out_context
-    ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = configured_repo
     await enroll(ctx)
     async with session_factory() as db:
         flow = await _make_flow(db, org_id="tenant", slug="owns-5337")
@@ -342,20 +367,8 @@ async def test_fan_out_refuses_a_graph_owned_target(fan_out_context, session_fac
     assert (await send(ctx, story_body(5333))).status_code == 202
 
 
-async def test_graph_node_ownership_is_scoped_to_the_engines_repository(fan_out_context, session_factory):
-    """A node's issue *number* does not make the same number elsewhere graph-owned.
-
-    Flow rows carry bare issue numbers because the engine governs one configured
-    repository, so the node lookup must be scoped to that repository. Otherwise
-    `org/repo#5337` being a node would block `another/repo#5337` purely on a
-    numeric collision.
-
-    Asserted against the resolver directly because the dispatch gate refuses
-    cross-repository targets on its own signed-scope terms
-    (``test_fan_out_does_not_reach_another_repository``), which would mask which
-    check produced the refusal. The launch issue here is deliberately NOT this
-    flow's intent, so this isolates node ownership from the launch rule below.
-    """
+async def test_unbound_graph_node_blocks_cross_repo_same_number(fan_out_context, session_factory):
+    """Without accepted repository identity, numeric issue collisions stay held."""
     ctx = fan_out_context
     async with session_factory() as db:
         flow = await _make_flow(db, org_id="tenant", slug="same-number-other-repo")
@@ -364,15 +377,53 @@ async def test_graph_node_ownership_is_scoped_to_the_engines_repository(fan_out_
         await db.commit()
         execution = ctx.store._read("TENANT#tenant", f"EXEC#{ctx.child.invocation}")
         grant = ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant")
-        common = {"session": db, "execution": execution, "grant": grant, "target_issue": 5337, "orchestration_repo": "org/repo"}
-        # In the engine's own repository the node owns the issue: refused.
+        common = {"session": db, "execution": execution, "grant": grant, "target_issue": 5337}
         assert not await resolve_repository_fan_out(target_repo="org/repo", **common)
-        # The same number in another repository is not this engine's node.
+        assert not await resolve_repository_fan_out(target_repo="another/repo", **common)
+
+
+async def test_accepted_repository_binding_scopes_fan_out_issue_collisions(fan_out_context, session_factory):
+    ctx = fan_out_context
+    async with session_factory() as db:
+        flow = await _make_flow(db, org_id="tenant", slug="bound-same-number")
+        flow.intent_ref = "900"
+        approval = await _make_approval(db, flow)
+        node = await _make_node(db, flow, issue_ref="5337")
+        node.repository_identity = "org/repo"
+        node.provider_repository_id = 987
+        node.repository_connection = {"provider": "github", "installation_id": 123}
+        db.add(
+            OrchestrationAcceptedPlan(
+                org_id="tenant",
+                flow_id=flow.id,
+                version=1,
+                plan_hash="a" * 64,
+                accepted_by_decision_id=approval.id,
+                plan_document={
+                    "nodes": [
+                        {
+                            "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                            "kind": node.kind,
+                            "title": node.title,
+                            "issue_ref": node.issue_ref,
+                            "repository_identity": node.repository_identity,
+                            "provider_repository_id": node.provider_repository_id,
+                            "repository_connection": node.repository_connection,
+                        }
+                    ]
+                },
+            )
+        )
+        await db.commit()
+        execution = ctx.store._read("TENANT#tenant", f"EXEC#{ctx.child.invocation}")
+        grant = ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant")
+        common = {"session": db, "execution": execution, "grant": grant, "target_issue": 5337}
+        assert not await resolve_repository_fan_out(target_repo="org/repo", **common)
         assert await resolve_repository_fan_out(target_repo="another/repo", **common)
 
 
-@pytest.mark.parametrize("configured_repo", ["org/repo", ""])
-async def test_flow_launch_never_uses_generic_fan_out(fan_out_context, session_factory, configured_repo):
+@pytest.mark.parametrize("bound", [True, False])
+async def test_flow_launch_never_uses_generic_fan_out(fan_out_context, session_factory, bound):
     """A flow launch reaches repository work only through graph dispatch.
 
     ``resolve_coordinator_assignment`` refuses to widen a coordinator whose flow
@@ -383,7 +434,6 @@ async def test_flow_launch_never_uses_generic_fan_out(fan_out_context, session_f
     dispatch through ``dispatch_graph``.
     """
     ctx = fan_out_context
-    ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = configured_repo
     async with session_factory() as db:
         flow = await _make_flow(db, org_id="tenant", slug="awaiting-approval")
         flow.intent_ref = "42"
@@ -397,7 +447,36 @@ async def test_flow_launch_never_uses_generic_fan_out(fan_out_context, session_f
 
     async with session_factory() as db:
         approved = await db.get(OrchestrationFlow, flow_id)
-        await _make_approval(db, approved, actor_id="approver-5365")
+        approval = await _make_approval(db, approved, actor_id="approver-5365")
+        if bound:
+            approved.origin_ref = {"provider": "github", "repository_id": 987, "repository": "org/repo", "installation_id": 123, "issue_number": 42}
+            node = await db.scalar(select(OrchestrationNode).where(OrchestrationNode.flow_id == flow_id, OrchestrationNode.issue_ref == "5337"))
+            node.repository_identity = "org/repo"
+            node.provider_repository_id = 987
+            node.repository_connection = {"provider": "github", "installation_id": 123}
+            db.add(
+                OrchestrationAcceptedPlan(
+                    org_id="tenant",
+                    flow_id=flow_id,
+                    version=1,
+                    plan_hash="a" * 64,
+                    accepted_by_decision_id=approval.id,
+                    plan_document={
+                        "origin_ref": approved.origin_ref,
+                        "nodes": [
+                            {
+                                "address": f"{approved.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                                "kind": "story",
+                                "title": node.title,
+                                "issue_ref": node.issue_ref,
+                                "repository_identity": node.repository_identity,
+                                "provider_repository_id": node.provider_repository_id,
+                                "repository_connection": node.repository_connection,
+                            }
+                        ],
+                    },
+                )
+            )
         await db.execute(update(OrchestrationFlow).where(OrchestrationFlow.id == flow_id).values(state="running"))
         await db.commit()
 
@@ -407,9 +486,8 @@ async def test_flow_launch_never_uses_generic_fan_out(fan_out_context, session_f
     assert ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant").authority.kind == "github_event"
 
     await enroll(ctx)
-    if not configured_repo:
-        # Missing engine configuration cannot enrol a flow coordinator, even
-        # after approval. It must remain on the restricted launch authority.
+    if not bound:
+        # An unresolved repository cannot enrol a flow coordinator after approval.
         assert ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant").authority.kind == "github_event"
         assert (await send(ctx, story_body(5337))).status_code == 404
         assert messages(ctx) == []

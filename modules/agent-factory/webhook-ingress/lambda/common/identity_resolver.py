@@ -101,7 +101,7 @@ def _is_proven(verification_method: str | None) -> bool:
 _dynamodb = None
 _cloudwatch = None
 # Exposed for callers that need the tenant_item after resolve() completes
-# (e.g. handler's _check_min_author_association). Set during resolve().
+# (e.g. handler's GitHub dispatch admission). Set during resolve().
 last_tenant_item: dict | None = None
 
 

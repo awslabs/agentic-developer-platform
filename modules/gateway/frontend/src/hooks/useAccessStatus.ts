@@ -58,7 +58,9 @@ export function useAccessStatus(): UseAccessStatusResult {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await getAccessStatus();
+      // Authoritative local status gates the page. WorkspaceSelector performs
+      // provider discovery separately so it cannot delay list/detail rendering.
+      const data = await getAccessStatus(false);
       setCachedStatus(data);
       setStatus(data.status);
       setRequestId(data.request_id ?? null);

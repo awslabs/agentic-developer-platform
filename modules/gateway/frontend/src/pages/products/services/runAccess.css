@@ -1,0 +1,18 @@
+.run-access .devops-setup-dialog { position: fixed; inset: 0 0 0 auto; margin: 0; width: min(600px, 100vw); max-width: 100vw; height: 100dvh; max-height: 100dvh; padding: 0; border: 0; background: var(--color-white, #fff); color: var(--color-gray-900, #172033); box-shadow: -12px 0 40px #0f172a26; }
+.run-access .devops-setup-dialog::backdrop { background: #0f172a66; }
+.run-access .devops-setup-dialog > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 24px; border-bottom: 1px solid #e2e8f0; }
+.run-access .devops-setup-dialog-content { padding: 24px; }
+.run-access .devops-setup-dialog-content > * + * { margin-top: 20px; }
+.run-access pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 320px; overflow: auto; }
+.run-access-summary { display: grid; gap: 16px; padding: 16px; border-radius: 8px; background: #f8fafc; }
+.run-access-summary dt { color: #64748b; font-size: 12px; }
+.run-access-summary dd { margin-top: 4px; font-weight: 500; overflow-wrap: anywhere; }
+.security-workspace .security-start-run { padding-bottom: 24px; border-bottom: 1px solid var(--security-line); }
+.security-workspace .security-start-run > * + * { margin-top: 20px; }
+
+.run-access > button { white-space: nowrap; }
+
+.devops-run-target { margin-top: 10px; list-style: none; padding: 0; }
+.devops-run-target li + li { margin-top: 6px; }
+.devops-run-target span { display: inline-block; width: 76px; color: #64748b; }
+.run-access .devops-setup-dialog-content > a { display: block; margin-top: 20px; }

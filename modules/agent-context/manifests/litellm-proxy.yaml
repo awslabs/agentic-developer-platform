@@ -20,6 +20,15 @@ spec:
         # startup. Keep LiteLLM on its built and tested Python dependencies.
         cloudwatch.aws.amazon.com/auto-annotate-python: "false"
         instrumentation.opentelemetry.io/inject-python: "false"
+        # The Application Signals operator auto-annotates every other language too.
+        # Its Node.js/.NET init containers set OTEL_PROPAGATORS=tracecontext,baggage,xray
+        # on *this* container, and the Python runtime then fails at import with
+        # "Propagator xray not found" because the image does not ship the X-Ray
+        # propagator (#7809). LiteLLM is a Python service: no injection of any kind.
+        cloudwatch.aws.amazon.com/auto-annotate-nodejs: "false"
+        instrumentation.opentelemetry.io/inject-nodejs: "false"
+        cloudwatch.aws.amazon.com/auto-annotate-dotnet: "false"
+        instrumentation.opentelemetry.io/inject-dotnet: "false"
       labels:
         app: litellm-proxy
         app.kubernetes.io/part-of: agent-context-platform

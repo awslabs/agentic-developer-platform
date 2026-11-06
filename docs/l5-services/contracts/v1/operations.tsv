@@ -1,0 +1,35 @@
+operation_id	method	path	input	output	effect	UI	CLI (adp service)	MCP
+listServices	GET	../services	-	ServiceList	read	Available services	list	l5___list_services
+getConfiguration	GET	/configuration	-	Configuration	read	Configuration	config show	l5___get_configuration
+listConfigurationVersions	GET	/configuration/versions	-	ConfigurationList	read	Configuration history	config history	l5___list_configuration_versions
+getConfigurationVersion	GET	/configuration/versions/{revision}	-	Configuration	read	Pinned configuration version	config version	l5___get_configuration_version
+saveConfiguration	PUT	/configuration	ConfigurationInput	Configuration	conditional	Save / enable / disable / triggers	config update	l5___save_configuration
+getOptions	GET	/configuration/options	-	Options	read	Authorized choices	options	l5___get_options
+refreshConfiguration	POST	/configuration/refresh	RefreshInput	Configuration	conditional	Refresh inherited values	config refresh	l5___refresh_configuration
+checkConfiguration	POST	/configuration/check	-	Check	read	Check configuration only	check	l5___check_configuration
+listBindings	GET	/bindings	-	BindingList	read	Bindings	binding list	l5___list_bindings
+getBinding	GET	/bindings/{binding_id}	-	Binding	read	Binding detail	binding show	l5___get_binding
+getDevopsPrevention	GET	/bindings/{binding_id}/prevention	-	DevopsPreventionStatus	read	Selected native goal schedule and observed state	prevention status	l5___get_devops_prevention
+configureDevopsPrevention	POST	/bindings/{binding_id}/prevention	DevopsPreventionInput	DevopsPreventionStatus	conditional	Enable, pause or resume selected native goal	prevention configure	l5___configure_devops_prevention
+launchNativeBrowser	POST	/bindings/{binding_id}/browser-launch	BrowserLaunchInput	BrowserLaunch	launch	Launch scoped native browser session (UI only)	-	-
+listBindingEvents	GET	/bindings/{binding_id}/events	-	DevopsEventList	read	Native event receipts and reconciliation	binding events	l5___list_binding_events
+startBindingOperation	POST	/binding-operations	BindingInput	Operation	binding	Create / link / verify / update / suspend / resume / unlink / owned cleanup / explicit knowledge synchronization; may provision billable resources	binding create|link|check|update|suspend|resume|unlink|cleanup|sync_knowledge	l5___start_binding_operation
+getBindingOperation	GET	/binding-operations/{operation_id}	-	Operation	read	Setup progress and uncertain outcome	binding status	l5___get_binding_operation
+reconcileBindingOperation	POST	/binding-operations/{operation_id}/reconcile	Reason	Operation	mutate	Reconcile original setup without another create	binding reconcile	l5___reconcile_binding_operation
+submitRun	POST	/runs	RunInput	Run	mutate	Submit selected revision; may incur paid provider work. Reuse the idempotency key to recover the original run	run	l5___submit_run
+listRuns	GET	/runs	-	RunList	read	Run history	runs	l5___list_runs
+getRun	GET	/runs/{run_id}	-	Run	read	Run detail	status	l5___get_run
+cancelRun	POST	/runs/{run_id}/cancel	Reason	Run	mutate	Request cancellation	cancel	l5___cancel_run
+reconcileRun	POST	/runs/{run_id}/reconcile	Reason	Run	mutate	Recover uncertain outcome	reconcile	l5___reconcile_run
+retryRun	POST	/runs/{run_id}/retry	Reason	Run	mutate	Security-only retry after definitive no-effect proof; DevOps run retry is unavailable	retry	l5___retry_run
+listResults	GET	/results	-	ResultList	read	Results	results	l5___list_results
+getResult	GET	/results/{result_id}	-	Result	read	Result detail and coverage	result show	l5___get_result
+getResultPublicationStatus	GET	/results/{result_id}/publication-status	-	ResultPublicationStatus	read	Publication debt and acknowledged consumer receipts for one result revision	result publication	l5___get_result_publication_status
+listFindings	GET	/results/{result_id}/findings	-	FindingList	read	Findings	findings	l5___list_findings
+setTriage	PUT	/results/{result_id}/findings/{finding_id}/triage	TriageInput	Triage	conditional	Human triage	triage set	l5___set_triage
+listTriage	GET	/results/{result_id}/findings/{finding_id}/triage	-	TriageList	read	Triage history	triage history	l5___list_triage
+compareResults	POST	/comparisons	ComparisonInput	Comparison	read	Compare compatible results	compare	l5___compare_results
+getPublication	GET	/publications/{publication_id}	-	Publication	read	Publication status	publication show	l5___get_publication
+retryPublication	POST	/publications/{publication_id}/retry	Reason	Publication	mutate	Retry publication only	publication retry	l5___retry_publication
+getArtifactAccess	GET	/artifacts/{artifact_id}	-	ArtifactAccess	read	Authorized artifact download path and expiry; no bearer session URL	artifact	l5___get_artifact_access
+downloadArtifact	GET	/artifacts/{artifact_id}/content	-	binary	read	Return an authorized artifact reference; download bytes through the scoped HTTP path	artifact download	l5___download_artifact

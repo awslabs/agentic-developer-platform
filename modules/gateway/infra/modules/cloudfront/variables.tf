@@ -197,3 +197,10 @@ variable "enable_broker_cloudfront_route" {
   type        = bool
   default     = true
 }
+
+variable "client_provenance_secret" {
+  description = "Shared origin proof used only to authenticate the viewer address for rate limiting."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

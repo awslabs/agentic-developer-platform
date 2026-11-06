@@ -33,6 +33,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from src.internal.tools_dynamic_catalogue import target_binding
+
 ROOT = Path(__file__).resolve().parents[4]
 DEPLOYMENT = ROOT / "modules/gateway/k8s/deployment.yaml"
 CONFIGMAP = ROOT / "modules/gateway/k8s/configmap.yaml"
@@ -48,6 +50,10 @@ REQUIRED_SECRET_ENV = {
     # Issue #5656: separated from BG_TOKEN_SECRET_KEY so the identity-linking and
     # session purposes are independently rotatable.
     "BG_MAGIC_LINK_SECRET": "magic-link-secret",
+    # Issue #7901: HMAC key deriving each owner's AgentCore memory namespace. SSM
+    # SecureString, read with --with-decryption by both renderers; a leaked key
+    # would let anyone address another owner's namespace.
+    "ADP_AGENTCORE_NAMESPACE_KEY": "agentcore-namespace-key",
 }
 
 SECRET_NAME = "bedrockgateway-secrets"
@@ -66,6 +72,34 @@ def _gateway_container() -> dict:
 
 def _env_by_name() -> dict[str, dict]:
     return {e["name"]: e for e in _gateway_container().get("env", [])}
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    (
+        "ADP_TOOLS_KNOWLEDGE_MEDIATOR_ENABLED",
+        "ADP_TOOLS_KNOWLEDGE_MEDIATOR_URL",
+        "ADP_TOOLS_KNOWLEDGE_EDGE_PROVENANCE",
+        "ADP_TOOLS_KNOWLEDGE_GATEWAY_ID",
+        "ADP_TOOLS_KNOWLEDGE_TARGET_ID",
+        "ADP_TOOLS_KNOWLEDGE_SOURCE_REVISION",
+    ),
+)
+def test_private_knowledge_setting_is_optional_and_secret_backed(env_name):
+    entries = [entry for entry in _gateway_container()["env"] if entry["name"] == env_name]
+    assert entries == [
+        {
+            "name": env_name,
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "adp-tools-knowledge-mediator",
+                    "key": env_name,
+                    "optional": True,
+                }
+            },
+        }
+    ]
+    assert env_name not in CONFIGMAP.read_text()
 
 
 class TestDeploymentProjectsSecretsByReference:
@@ -164,3 +198,121 @@ class TestNoInlineSecretValuesInGatewayManifests:
         rendered = " ".join(container.get("command", []) + container.get("args", []))
         for env_name in REQUIRED_SECRET_ENV:
             assert env_name not in rendered, f"{env_name} must not be passed as a container command/argument"
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    [
+        f"ADP_TOOLS_{provider}_{field}"
+        for provider in ("GITHUB", "JIRA", "SLACK")
+        for field in ("MEDIATOR_ENABLED", "MEDIATOR_URL", "GATEWAY_ID", "TARGET_ID", "SOURCE_REVISION")
+    ]
+    + ["ADP_TOOLS_SLACK_POST_ENABLED", "ADP_TOOLS_SLACK_POST_FIXTURE"],
+)
+def test_connection_mediator_binding_survives_canonical_rollout_without_default_enablement(env_name):
+    entries = [entry for entry in _gateway_container()["env"] if entry["name"] == env_name]
+    source, name = ("secretKeyRef", "adp-tools-oauth-mediators") if "_POST_" in env_name else ("configMapKeyRef", "adp-tool-adapter-runtime")
+    assert entries == [
+        {
+            "name": env_name,
+            "valueFrom": {source: {"name": name, "key": env_name, "optional": True}},
+        }
+    ]
+    assert env_name not in CONFIGMAP.read_text()
+
+
+def _connector_environment(secrets, configmaps):
+    """Resolve the manifest's ordered envFrom sources, then explicit env overrides."""
+    values = {}
+    for entry in _gateway_container()["envFrom"]:
+        for source, documents in (("secretRef", secrets), ("configMapRef", configmaps)):
+            if source in entry:
+                reference = entry[source]
+                if reference["name"] not in documents:
+                    assert reference.get("optional")
+                    continue
+                values.update(documents[reference["name"]])
+    for entry in _gateway_container()["env"]:
+        if not entry["name"].startswith(("ADP_TOOLS_GITHUB_", "ADP_TOOLS_JIRA_", "ADP_TOOLS_SLACK_")):
+            continue
+        if "value" in entry:
+            values[entry["name"]] = entry["value"]
+            continue
+        for source, documents in (("secretKeyRef", secrets), ("configMapKeyRef", configmaps)):
+            if source in entry.get("valueFrom", {}):
+                reference = entry["valueFrom"][source]
+                data = documents.get(reference["name"], {})
+                if reference["key"] not in data:
+                    assert reference.get("optional")
+                    continue
+                values[entry["name"]] = data[reference["key"]]
+    return values
+
+
+@pytest.mark.parametrize("provider", ("github", "jira", "slack"))
+@pytest.mark.parametrize("phase", ("before-configmap", "empty-configmap", "active-redeploy", "rollback-redeploy"))
+def test_legacy_connector_binding_survives_rollout_and_runtime_takes_precedence(provider, phase, monkeypatch):
+    prefix = f"ADP_TOOLS_{provider.upper()}_"
+
+    def settings(release):
+        return {
+            prefix + "MEDIATOR_ENABLED": "true",
+            prefix + "MEDIATOR_URL": f"https://{release}.execute-api.us-east-1.amazonaws.com/dev/internal/v1/tools/{provider}/mcp",
+            prefix + "GATEWAY_ID": f"{release}-gateway",
+            prefix + "TARGET_ID": f"{release}-{provider}",
+            prefix + "SOURCE_REVISION": ("a" if release == "legacy" else "b") * 40,
+        }
+
+    legacy = settings("legacy")
+    runtime = settings("active") if phase == "active-redeploy" else {}
+    if phase == "rollback-redeploy":
+        runtime = {"ADP_TOOL_ADAPTER_RELEASE": '{"group_generation":3}', "ADP_TOOL_ADAPTER_LEGACY_ENABLED": "false"}
+    maps = {"bedrockgateway-config": {}}
+    if phase != "before-configmap":
+        maps["adp-tool-adapter-runtime"] = runtime
+    environment = _connector_environment({"adp-tools-oauth-mediators": legacy}, maps)
+    expected = settings("active") if phase == "active-redeploy" else legacy
+    for name in legacy:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    role = "arn:aws:iam::123456789012:role/fixture-tools"
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("ADP_TOOLS_GATEWAY_ROLE_ARN", role)
+    gateway = {
+        "gatewayId": expected[prefix + "GATEWAY_ID"],
+        "gatewayArn": "fixture-gateway-arn",
+        "roleArn": role,
+        "status": "READY",
+        "authorizerType": "AWS_IAM",
+        "interceptorConfigurations": [{"fixture": "interceptor"}],
+        "updatedAt": "2026-01-01T00:00:00Z",
+    }
+    target = {
+        "targetId": expected[prefix + "TARGET_ID"],
+        "gatewayArn": gateway["gatewayArn"],
+        "name": provider,
+        "status": "READY",
+        "updatedAt": "2026-01-01T00:00:00Z",
+        "targetConfiguration": {"mcp": {"mcpServer": {"endpoint": expected[prefix + "MEDIATOR_URL"], "listingMode": "DYNAMIC"}}},
+        "privateEndpoint": {"managedVpcResource": {"vpcIdentifier": "vpc-00000000"}},
+        "credentialProviderConfigurations": [
+            {"credentialProviderType": "GATEWAY_IAM_ROLE", "credentialProvider": {"iamCredentialProvider": {"service": "execute-api"}}}
+        ],
+    }
+    binding = target_binding(gateway["gatewayId"], target, gateway)
+    assert binding["target_id"] == expected[prefix + "TARGET_ID"]
+    assert binding["source_revision"] == expected[prefix + "SOURCE_REVISION"]
+
+
+def test_runtime_disablement_overrides_legacy_enablement():
+    name = "ADP_TOOLS_JIRA_MEDIATOR_ENABLED"
+    environment = _connector_environment(
+        {"adp-tools-oauth-mediators": {name: "true"}},
+        {"bedrockgateway-config": {}, "adp-tool-adapter-runtime": {name: "false"}},
+    )
+    assert environment[name] == "false"
+
+
+def test_optional_connector_sources_do_not_enable_fresh_installations():
+    assert _connector_environment({}, {"bedrockgateway-config": {}}) == {}

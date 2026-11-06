@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.audit_operation import current_operation
+from src.shared.accounting_health import AUDIT_WRITE_FAILURES, record_health_event
 from src.shared.models.audit import AuditLog
 from src.shared.schemas.auth import TokenContext
 
@@ -83,17 +84,28 @@ async def write_admin_audit(
             if user is None:
                 raise RuntimeError("Audit target owner unavailable")
             target_org = user.org_id
+        tool_fields = (
+            {"revision", "team_id", "enabled", "max_cost_usd"}
+            if target_type == "tool_entitlement"
+            else {"revision", "allowed_tools", "consented_tools", "tool_max_cost_usd"}
+            if target_type == "tools_policy"
+            else set()
+        )
+        allowed_fields = {
+            "user_id",
+            "provider",
+            "github_org_id",
+            "expected_projection_org_id",
+            "observed_projection_org_id",
+            "authoritative_org_id",
+        } | tool_fields
         operation.terminal = {
             "event_type": f"{_PREFIX}{action}",
             "outcome": outcome,
             "target_type": target_type,
             "target_id": target_id,
             "org_id": target_org,
-            "extra": {
-                k: v
-                for k, v in (extra or {}).items()
-                if k in {"user_id", "provider", "github_org_id", "expected_projection_org_id", "observed_projection_org_id", "authoritative_org_id"}
-            },
+            "extra": {k: v for k, v in (extra or {}).items() if k in allowed_fields},
         }
         return
     try:
@@ -113,6 +125,7 @@ async def write_admin_audit(
         )
         await db.flush()
     except Exception:  # noqa: BLE001
+        record_health_event(AUDIT_WRITE_FAILURES)
         if not best_effort:
             raise
         logger.exception(
@@ -159,6 +172,7 @@ async def write_admin_audit_on_refusal(
         )
         await db.commit()
     except Exception:  # noqa: BLE001 — the refusal must survive an audit-write failure
+        record_health_event(AUDIT_WRITE_FAILURES)
         logger.exception(
             "Could not record admin audit refusal",
             extra={"action": action, "actor": actor.user_id},

@@ -6,6 +6,11 @@ name: Regression deployment snapshot
         description: Verified deployed full SHA
         value: ${{ jobs.snapshot.outputs.revision }}
     inputs:
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
       expected_revision:
         description: Optional source SHA of a completed gateway deployment
         type: string
@@ -17,7 +22,7 @@ jobs:
   snapshot:
     name: Snapshot deployed gateway revision
     if: github.ref == 'refs/heads/main'
-    environment: dev
+    environment: ${{ inputs.target_environment || 'dev' }}
     permissions:
       contents: read
       id-token: write

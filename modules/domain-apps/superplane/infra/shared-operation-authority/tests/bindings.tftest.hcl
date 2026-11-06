@@ -6,6 +6,7 @@ variables {
   environment                 = "dev"
   aws_region                  = "us-east-1"
   gateway_namespace           = "adp-gateway"
+  agent_authority_table_arn   = "arn:aws:dynamodb:us-east-1:123456789012:table/adp-dev-agent-authority"
   agent_authority_provisioned = false
 }
 override_data {
@@ -66,6 +67,10 @@ run "explicit_binding_uses_exact_resources_and_separate_schemas" {
     error_message = "The actual Gateway payload must retain exact separate credentials/schemas and worker identity."
   }
   assert {
+    condition     = output.gateway_bindings[0].current_identity_enforced == true && output.domain_operation_binding_revisions.superplane == sha256(jsonencode(output.gateway_bindings[0]))
+    error_message = "Native bindings must enforce current human identity, and the published revision must cover that effective setting."
+  }
+  assert {
     condition     = jsondecode(aws_iam_role_policy.gateway_domain_operations[0].policy).Statement[0].Resource == ["arn:aws:sqs:us-east-1:123456789012:adp-dev-superplane-domain-operations"] && !strcontains(aws_iam_role_policy.gateway_domain_operations[0].policy, "*") && alltrue([for rule in kubernetes_role.gateway_domain_operation_read["superplane"].rule : toset(rule.verbs) == toset(["get"]) && !contains(rule.resources, "secrets")])
     error_message = "Shared owner permissions must be exact, read-only Kubernetes metadata and no worker grants."
   }
@@ -73,6 +78,11 @@ run "explicit_binding_uses_exact_resources_and_separate_schemas" {
     condition     = jsondecode(aws_iam_role_policy.gateway_domain_operations[0].policy).Statement[2].Action == ["iam:GetRole"] && jsondecode(aws_iam_role_policy.gateway_domain_operations[0].policy).Statement[2].Resource == ["arn:aws:iam::123456789012:role/adp-dev-superplane-api-producer", "arn:aws:iam::123456789012:role/adp-dev-superplane-domain-worker"]
     error_message = "Runtime immutable identity verification may read only the exact producer and worker IAM roles."
   }
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.gateway_domain_operations[0].policy).Statement[3].Action == ["dynamodb:DescribeTable"] && jsondecode(aws_iam_role_policy.gateway_domain_operations[0].policy).Statement[3].Resource == [var.agent_authority_table_arn]
+    error_message = "Producer readiness may describe only the existing shared authority table; it must not gain data access or table mutation."
+  }
+
 }
 
 run "shared_schema_is_refused" {

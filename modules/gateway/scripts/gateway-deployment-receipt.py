@@ -113,7 +113,7 @@ def artifact_release(api, prefix, run, repo_id):
         return json.loads(zipped.read(entries[0]))
 
 
-def resolve(env, api):
+def resolve_release(env, api):
     expected = target(env)
     prefix = "repos/" + env["GITHUB_REPOSITORY"]
     runs = pages(api, f"{prefix}/actions/workflows/gateway-deploy.yml/runs?branch=main", "workflow_runs")
@@ -158,12 +158,17 @@ def resolve(env, api):
             url = f"https://github.com/{env['GITHUB_REPOSITORY']}/actions/runs/{run['id']}/attempts/{run['run_attempt']}"
             require(statuses and statuses[0].get("state") in ("success", "inactive"), "receipt not successful")
             require(any(s.get("state") == "success" and s.get("log_url") == url for s in statuses), "receipt successful-run binding missing")
-            return source
+            return receipt["payload"]
         require(not any(s.get("name") == RECEIPT_STEP for s in steps), "durable receipt missing for maintained workflow")
         # Only legacy workflows lacking the receipt step use authenticated artifacts.
         data = artifact_release(api, prefix, run, expected["repository_id"])
-        return validate_release(data, run, expected)
+        validate_release(data, run, expected)
+        return data
     raise ValueError("no verified successful Gateway deployment baseline")
+
+
+def resolve(env, api):
+    return resolve_release(env, api)["source_revision"]
 
 
 def publish(env, api):
@@ -207,7 +212,7 @@ def publish(env, api):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("resolve", "publish"))
+    parser.add_argument("command", choices=("resolve", "readback", "publish"))
     args = parser.parse_args()
 
     def api(path, binary=False, body=None):
@@ -224,6 +229,10 @@ def main():
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write("baseline=" + source + "\n")
         print("Verified deployed Gateway source: " + source)
+    elif args.command == "readback":
+        release = resolve_release(os.environ, api)
+        print(json.dumps({"source_revision": release["source_revision"],
+                          "image_digest": release["image_digest"]}, sort_keys=True))
     else:
         print("Recorded Gateway source receipt: " + str(publish(os.environ, api)))
 

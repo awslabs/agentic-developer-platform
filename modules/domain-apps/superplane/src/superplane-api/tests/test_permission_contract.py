@@ -266,7 +266,7 @@ def test_sensitive_actions_have_independent_requirements():
         "provider_connection.create", "provider_connection.validate", "provider_connection.rotate", "provider_connection.revoke"
     ))
     assert actions["approval.decision"]["principal"] == "human"
-    assert "selected_distinct_current_human_approver" in actions["approval.decision"]["extra"]
+    assert "selected_current_human_approver_with_recorded_separation_policy" in actions["approval.decision"]["extra"]
     assert actions["workspace.access.manage"]["routes"] == [
         "POST /workspaces/{workspace_id}/access/v1/grants"
     ]
@@ -331,7 +331,7 @@ def test_approval_delegation_and_domain_human_checks_stay_separate():
     assert actions["approval.request"]["principal"] == "human"
     assert {"requester_exact_workspace_grant", "organization_scope_for_first_workspace", "approval_not_execution"} <= set(actions["approval.request"]["extra"])
     assert actions["approval.decision"]["principal"] == "human"
-    assert {"selected_distinct_current_human_approver", "exact_request_workspace_plan_binding", "approval_not_execution"} <= set(actions["approval.decision"]["extra"])
+    assert {"selected_current_human_approver_with_recorded_separation_policy", "exact_request_workspace_plan_binding", "approval_not_execution"} <= set(actions["approval.decision"]["extra"])
     for action_id, conditional in (
         ("workspace.lifecycle_proposal", "exact_human_approval_on_continue"),
         ("workspace.retirement", "exact_human_approval_on_admit"),
@@ -345,7 +345,7 @@ def test_approval_delegation_and_domain_human_checks_stay_separate():
     decision_method = next(node for node in methods.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "decide")
     decision_source = ast.unparse(decision_method)
     assert "caller.account_type != 'human'" in decision_source
-    assert "caller.subject == row.requester" in decision_source
+    assert "row.requires_distinct_approver and caller.subject == row.requester" in decision_source
     assert "status.may_approve" in decision_source
     assert "row.revoked" in decision_source
     authority_source = (DOMAIN / "src/superplane-api/app/adapters/operation_authority_source.py").read_text()
@@ -370,7 +370,13 @@ def test_maintained_ui_action_names_and_routes_are_real():
             unserved_routes.add(route)
     assert len(ui_actions) > 30
     mapped = {}
-    for action in MATRIX["actions"]:
+    for action in [*MATRIX["actions"], *MATRIX["gateway_actions"]]:
+        if action in MATRIX["gateway_actions"]:
+            assert action["id"] == "provider_authority.validate"
+            assert action["principal"] == "human"
+            assert action["routes"] == ["POST /provider-authorities/{credential_id}/validation"]
+            gateway = (REPO / "modules/gateway/src/domain_proxy/superplane.py").read_text()
+            assert '@router.post("/v1/provider-authorities/{credential_id}/validation")' in gateway
         if action["surface"].startswith("ui:"):
             for name in action["surface"].removeprefix("ui:").split(","):
                 assert name not in mapped
@@ -596,7 +602,7 @@ async def test_named_tenant_and_principal_grant_cases(case, client, monkeypatch)
         for producer.active, producer.enabled in ((False, True), (True, False)):
             response = await client.get(path, headers=headers)
             assert response.status_code == 403
-            assert response.json()["detail"] == "current ADP identity required"
+            assert response.json()["detail"] == "not authorized for this workspace"
         assert producer.calls == 3
         allowed = response.status_code == 200
     assert allowed is case["allow"]

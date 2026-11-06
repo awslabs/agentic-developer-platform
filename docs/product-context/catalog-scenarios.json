@@ -1,0 +1,70 @@
+{
+  "state":"planned manual contract; not live acceptance",
+  "scenario_owner":"V12 #8273 verification executor after approved rollout",
+  "controls": {
+    "fixtures":"run-owned only; durable manifest, two scoped tenants and governed Projects",
+    "as_of_clock":"2026-10-20T12:00:00Z for local fixtures; record an explicit live UTC clock at execution",
+    "revisions":"capture requirements/source SHA, authority source revision, relationship/mapping revisions and schema head before each attempt",
+    "poll_deadline_seconds":120,
+    "poll_max_cadence_seconds":2,
+    "page_size_max":100,
+    "cleanup":"delete only run-owned fixtures through owning API, independently verify absence; preserve receipts/history; failed cleanup is incomplete",
+    "report":"AC -> scenario/test -> run/attempt -> result/evidence -> source/requirements revision; separate surface reports"
+  },
+  "scenarios": [
+    {
+      "id":"SCN-01",
+      "acceptance_id":"AC-01",
+      "state":"planned manual; not executed",
+      "fixture_source_revision":"catalog-r1",
+      "given":"Two Products in distinct governed Projects and two optional Portfolios; one Initiative shared across Products; explicit source revision and effective/decision clocks",
+      "when":"Create Commerce->Checkout, Commerce->Accounts, Shared->Accounts; write one Initiative x Product x Project commitment; close one membership with a new relationship revision; retry duplicate and invalid-dated writes",
+      "then":[
+        "Authorized independent readback shows Commerce with Checkout and Accounts and Shared with Accounts; one Product belongs to two Portfolios without a nested Portfolio.",
+        "Duplicate current Initiative x Product x Project commitments and duplicate Portfolio/Product membership are rejected without another receipt/change or native work copy.",
+        "At an as-of effective time before closure, prior membership remains visible under the decision-time revision; after closure it is absent, and immutable recorded history keeps both relationship versions.",
+        "Invalid intervals and stale supersedes revisions fail without changing current state; no Portfolio allocation target is created."
+      ],
+      "schema_cases":["commerce-portfolio","shared-portfolio","initiative","checkout-contribution","commerce-checkout","commerce-accounts","shared-accounts","nested-portfolio-rejected","extra-allocation-target-rejected"],
+      "transactions":["first-membership","other-product-same-portfolio","same-product-other-portfolio","duplicate-pair-different-projection","close-membership","stale-supersedes","invalid-interval","first-commitment","duplicate-current-commitment"],
+      "independent_observation":"new authorized API session reads history at pinned effective/recorded clocks; verify native backlog and allocation service are unchanged",
+      "evidence":"catalog_contract_examples with source/requirements revision, recorded attempt and cleanup receipts"
+    },
+    {
+      "id":"SCN-02",
+      "acceptance_id":"AC-02",
+      "state":"planned manual; not executed",
+      "fixture_source_revision":"catalog-r1",
+      "given":"One actor currently sees two overlapping governed Project projections; another Project is foreign; a formerly permitted Project and source can be revoked before page two",
+      "when":"List authorized Portfolios at limit 1, follow the signed cursor, list member edges, mutate one permitted Project; retry the old cursor after revocation and request foreign/unknown IDs, stale write and revoked source",
+      "then":[
+        "Independent Project-scoped readback yields Commerce once despite two projections and Shared once; authorized member edges only and no hidden total count or copied native work.",
+        "A valid second page contains Shared, not a duplicate Commerce; revoked or expired cursors are rejected without an unauthorized cached result.",
+        "A foreign Portfolio ID and an unknown ID return the identical public 404 body; foreign member and revoked-source reads do not disclose names, counts or IDs.",
+        "Only a caller with catalog edit and the current Product/Project write grant can mutate a visible member; foreign/revoked/stale writes produce no receipt, change, permission grant or new work item."
+      ],
+      "scope_cases":["overlapping-projects-deduplicated","first-page-filter-before-fill","second-page-no-duplicate","authorized-members-only","no-hidden-count","revoked-project-cursor","expired-cursor","foreign-id","nonexistent-id","foreign-mutation","visible-but-no-edit-right","visible-but-no-project-write","stale-expected-revision","valid-membership-mutation","revoked-source","revoked-project-mutation","foreign-member-rejected"],
+      "independent_observation":"new authorized API session under each actor/scope after each grant change, compare Project authority and source entitlement, independently inspect work and mutation receipts",
+      "evidence":"catalog_scope_contract with separate actor/surface attempts, source/requirements revision, denial/readback and cleanup receipts"
+    },
+    {
+      "id":"SCN-03",
+      "acceptance_id":"AC-03",
+      "state":"planned manual; not executed",
+      "inspected_source_revision":"ad4d0e96a60896e8d639bee8de27618473bcabdc",
+      "requirements_revision":"6c875c6b5a29f54bbd94a98dda9a37bc8e411db5",
+      "given":"Gateway catalog unit selected as proposed owner; existing gateway migration/deploy path inspected; implementation artifacts, approved target and live fixture authority are not assumed",
+      "when":"Review pinned gateway routes, Alembic and workflow source; after implementation/approved target, record migration result, served artifact identities, source/requirements revision and fixture manifest, exercise catalog read/write through real surface, then recovery under existing approval",
+      "then":[
+        "Repository audit identifies the Gateway catalog API/PostgreSQL owner and real CI, pre-serving migration and deploy workflow; no new runtime pipeline or synthetic endpoint is asserted.",
+        "Before live admissions, independent deployment observation matches reviewed source/workflow SHA, schema head and gateway image digest; separately published CLI/UI artifact identities are recorded when exercised.",
+        "Additive migrations retain catalog history/receipts and an incompatible or failed migration does not enable new writes; disable admissions before a compatible rollback and independently read back accepted history.",
+        "Only run-owned fixture resources are removed from the durable manifest; independent source/owner readback confirms cleanup without deleting reused assets or retained audit receipts. A missing target, mismatched revision or failed cleanup remains incomplete."
+      ],
+      "workflow_paths":["modules/gateway/src/app.py","modules/gateway/alembic/env.py",".github/workflows/gateway-ci.yml",".github/workflows/gateway-deploy.yml","modules/gateway/scripts/migrate-before-rollout.py",".github/workflows/gateway-frontend-deploy.yml",".github/workflows/eval-cli-uplift.yml",".github/workflows/e2e-new-ui-playwright.yml"],
+      "live_evidence":["requirements SHA","source SHA","workflow definition SHA","schema head","gateway image digest","CLI checksum","frontend manifest","deployment receipt","independent API/source readback","fixture cleanup receipt"],
+      "independent_observation":"pinned repository workflow audit now; later authorized gateway deployment receipt and fresh API/source/fixture-owner readback after each release or rollback",
+      "evidence":"catalog_rollout_decision plus source/requirements revision, distinct pre-review observation, later separate V12 run/attempt/surface report and durable cleanup receipts"
+    }
+  ]
+}

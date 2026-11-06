@@ -21,6 +21,10 @@ variable "aws_region" {
 variable "gateway_namespace" {
   type = string
 }
+variable "agent_authority_table_arn" {
+  description = "Existing shared authority table used by producer readiness; the shared owner retains its lifecycle."
+  type        = string
+}
 variable "agent_authority_provisioned" {
   type = bool
 }
@@ -103,7 +107,8 @@ locals {
     }
   }
   domain_operation_gateway_bindings = [for key in sort(keys(var.domain_operation_bindings)) : merge(var.domain_operation_bindings[key].binding, {
-    worker_image_digests = sort(tolist(var.domain_operation_bindings[key].binding.worker_image_digests))
+    worker_image_digests      = sort(tolist(var.domain_operation_bindings[key].binding.worker_image_digests))
+    current_identity_enforced = true
   })]
   domain_operation_queue_arns = [for value in values(var.domain_operation_bindings) : "arn:aws:sqs:${var.aws_region}:${var.account_id}:${element(reverse(split("/", value.binding.queue_url)), 0)}"]
   domain_operation_secrets    = flatten([for value in values(var.domain_operation_bindings) : [value.binding.database_secret_id, value.binding.domain_database_secret_id, value.binding.observation_credential_secret_id]])
@@ -113,7 +118,8 @@ locals {
     Statement = concat([
       { Sid = "GovernedDomainQueue", Effect = "Allow", Action = ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:ChangeMessageVisibility", "sqs:DeleteMessage", "sqs:GetQueueAttributes"], Resource = local.domain_operation_queue_arns },
       { Sid = "ExactDomainServiceSecrets", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = local.domain_operation_secrets },
-      { Sid = "VerifyDomainRoleIdentity", Effect = "Allow", Action = ["iam:GetRole"], Resource = flatten([for value in values(var.domain_operation_bindings) : [value.producer_role_arn, value.worker_role_arn]]) }
+      { Sid = "VerifyDomainRoleIdentity", Effect = "Allow", Action = ["iam:GetRole"], Resource = flatten([for value in values(var.domain_operation_bindings) : [value.producer_role_arn, value.worker_role_arn]]) },
+      { Sid = "VerifyDomainAuthorityAvailability", Effect = "Allow", Action = ["dynamodb:DescribeTable"], Resource = [var.agent_authority_table_arn] }
       ], length(local.domain_operation_kms_keys) > 0 ? [{
         Sid       = "DecryptExactDomainSecrets", Effect = "Allow", Action = ["kms:Decrypt"], Resource = local.domain_operation_kms_keys,
         Condition = { StringEquals = { "kms:ViaService" = "secretsmanager.${var.aws_region}.amazonaws.com", "kms:EncryptionContext:SecretARN" = local.domain_operation_secrets } }
@@ -242,8 +248,7 @@ resource "kubernetes_role_binding" "gateway_domain_operation_read" {
 
 output "domain_operation_binding_revisions" {
   description = "Canonical configured binding revision; independent live proof is still required. No readiness is asserted."
-  value = { for key, value in var.domain_operation_bindings : key => sha256(jsonencode(merge(value.binding, { worker_image_digests = sort(tolist(value.binding.worker_image_digests)) })))
-  }
+  value       = { for index, key in sort(keys(var.domain_operation_bindings)) : key => sha256(jsonencode(local.domain_operation_gateway_bindings[index])) }
 }
 
 output "gateway_bindings" {

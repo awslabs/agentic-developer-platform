@@ -11,6 +11,11 @@ name: E2E New UI Playwright Acceptance Suite
 on:
   workflow_call:
     inputs:
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
       modules:
         type: string
         required: false
@@ -27,6 +32,36 @@ on:
         type: string
         required: false
         default: auto
+      product_v11:
+        description: Run only pinned, onboarding-enabled V11 Product cases
+        type: boolean
+        required: false
+        default: false
+      product_scope:
+        description: Run only the fixed B03 Product scope cases from the correlated frontend release
+        type: boolean
+        required: false
+        default: false
+      product_source_revision:
+        type: string
+        required: false
+        default: ''
+      product_recovery_run_id:
+        type: string
+        required: false
+        default: ''
+      product_release_run_id:
+        type: string
+        required: false
+        default: ''
+      product_release_attempt:
+        type: string
+        required: false
+        default: ''
+      product_release_workflow_revision:
+        type: string
+        required: false
+        default: ''
   workflow_dispatch:
     inputs:
       environment:
@@ -46,6 +81,31 @@ on:
         type: choice
         options: [auto, 'on', 'off']
         default: auto
+      product_v11:
+        description: 'Run only pinned, onboarding-enabled V11 Product cases.'
+        required: false
+        type: boolean
+        default: false
+      product_source_revision:
+        description: 'Matched frontend and API source commit for Product cases.'
+        required: false
+        default: ''
+      product_recovery_run_id:
+        description: 'Original Product run to recover before starting this attempt.'
+        required: false
+        default: ''
+      product_release_run_id:
+        description: 'Published frontend release workflow run ID.'
+        required: false
+        default: ''
+      product_release_attempt:
+        description: 'Published frontend release attempt.'
+        required: false
+        default: ''
+      product_release_workflow_revision:
+        description: 'Published frontend release workflow definition commit.'
+        required: false
+        default: ''
 
 permissions:
   id-token: write
@@ -54,26 +114,63 @@ permissions:
 concurrency:
   # A nightly run and a post-deploy run must not drive the same environment at
   # the same time; queue instead of cancelling so neither result is lost.
-  group: cli-live-eval-dev
+  group: cli-live-eval-${{ inputs.target_environment || 'dev' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   e2e-new-ui:
     name: Playwright New UI Acceptance
     # Coordinators own deploy-success gating; live execution requires main.
     if: github.ref == 'refs/heads/main'
-    environment: adp-browser-checks-${{ inputs.environment || 'dev' }}
+    environment: adp-browser-checks-${{ inputs.target_environment || inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     timeout-minutes: 30
     env:
-      PYTHONPATH: ${{ github.workspace }}/.github/scripts:${{ github.workspace }}
+      PYTHONPATH: ${{ github.workspace }}/.github/scripts:${{ github.workspace }}/modules/gateway:${{ github.workspace }}
       REGRESSION_MODULES: ${{ inputs.modules }}
       REGRESSION_KIND: ${{ inputs.modules != '' && 'E2E' || 'all' }}
+      E2E_SCREENSHOT_DIR: ${{ github.workspace }}/test-results/screenshots
       REGRESSION_INVENTORY: ${{ github.workspace }}/test-results/new-ui-inventory.json
+      ADP_CHECKS_ROLE_ARN: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+      GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+      PRODUCT_V11_MODE: ${{ inputs.product_v11 && 'true' || 'false' }}
+      PRODUCT_B03_MODE: ${{ inputs.product_scope && 'true' || 'false' }}
+      PRODUCT_EXPECTED_REVISION: ${{ inputs.product_source_revision }}
+      PRODUCT_RELEASE_RUN_ID: ${{ inputs.product_release_run_id }}
+      PRODUCT_RELEASE_ATTEMPT: ${{ inputs.product_release_attempt }}
+      PRODUCT_RELEASE_WORKFLOW_REVISION: ${{ inputs.product_release_workflow_revision }}
+      PRODUCT_BROWSER_WORKFLOW_REVISION: ${{ github.workflow_sha }}
 
     steps:
+      - name: Require explicit live browser authorization
+        id: live-browser-policy
+        shell: bash
+        env:
+          LIVE_BROWSER_AUTHORIZED: ${{ vars.ADP_LIVE_BROWSER_AUTOMATION_ENABLED }}
+        run: |
+          if [ "$LIVE_BROWSER_AUTHORIZED" != true ]; then
+            echo "::error::live_browser_not_authorized: browser checks were not run. The target owner must explicitly authorize live browser automation in the selected protected GitHub environment."
+            echo 'BLOCKED: live browser automation is not authorized for this target. No browser acceptance evidence was produced. After target-owner authorization, set ADP_LIVE_BROWSER_AUTOMATION_ENABLED=true in the selected protected GitHub environment and rerun. Keep it false when automation is prohibited.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # Browser code has its own recorded revision. A test repair must be
+          # usable against the separately pinned, already deployed application.
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Require selected Product source on reviewed main
+        if: inputs.product_source_revision != ''
+        run: |
+          set -euo pipefail
+          [[ "$PRODUCT_EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$PRODUCT_EXPECTED_REVISION" HEAD
 
       # Use the browser fixture identity before SSM and Secrets Manager reads.
       - name: Establish trusted browser checks identity
@@ -169,18 +266,61 @@ jobs:
       # why the suite could not be run by hand.
       - name: Install dependencies
         run: |
-          pip install pytest pytest-html pytest-timeout playwright boto3 requests
-          playwright install chromium --with-deps
+          pip install ./modules/gateway pytest pytest-html pytest-timeout playwright requests 'PyJWT[crypto]'
+          for attempt in 1 2 3; do
+            if playwright install chromium --with-deps; then break; fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "::warning::Browser dependency installation failed; retrying after a package-mirror delay."
+            sleep "$((attempt * 10))"
+          done
 
       # No -x: this is an acceptance run and the per-test picture is the point,
       # so one failure must not hide the state of the remaining tests.
       # Credentials are read from Secrets Manager by the suite's shared helper
       # (tests/e2e/chat/helpers.py) at runtime; none appear in this file.
+      - name: Recover an interrupted owned Product run
+        if: inputs.product_source_revision != '' && inputs.product_recovery_run_id != ''
+        env:
+          PRODUCT_RECOVERY_RUN_ID: ${{ inputs.product_recovery_run_id }}
+        run: |
+          umask 077
+          python -m tests.e2e.new_ui.product_fixture_provider
+
       - name: Run E2E new UI suite
+        id: browser-run
         run: |
           set -euo pipefail
+          umask 077
           mkdir -p test-results
-          python -m pytest tests/e2e/new_ui/ -p regression_pytest \
+          if [ "${PRODUCT_B03_MODE:-false}" = 'true' ] && [ "$PRODUCT_V11_MODE" = 'true' ]; then
+            echo '::error::Product scope and V11 inventories cannot overlap'
+            exit 1
+          fi
+          if [ "${PRODUCT_B03_MODE:-false}" = 'true' ]; then
+            if [[ ! "$PRODUCT_EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ ]] || [ "$E2E_NEW_UI_EXPECTED_FLAG" != 'on' ] || [ -z "$PRODUCT_RELEASE_RUN_ID" ] || [ -z "$PRODUCT_RELEASE_ATTEMPT" ] || [[ ! "$PRODUCT_RELEASE_WORKFLOW_REVISION" =~ ^[a-f0-9]{40}$ ]]; then
+              echo '::error::B03 needs a correlated, pinned release and enabled preview target'
+              exit 1
+            fi
+            mapfile -t selected_cases < <(python -m tests.e2e.product_onboarding.product_v04_selection --selectors)
+            [ "${#selected_cases[@]}" -eq 4 ] || { echo '::error::Missing B03 API/browser selectors'; exit 1; }
+          elif [ "$PRODUCT_V11_MODE" = 'true' ]; then
+            if [[ ! "$PRODUCT_EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ ]] || [ "$E2E_NEW_UI_EXPECTED_FLAG" != 'on' ]; then
+              echo '::error::V11 needs a pinned Product revision and onboarding-enabled preview target'
+              exit 1
+            fi
+            mapfile -t selected_cases < <(python -m tests.e2e.product_onboarding.product_v11_selection --selectors)
+            [ "${#selected_cases[@]}" -eq 5 ] || { echo '::error::Missing V11 browser selectors'; exit 1; }
+          elif [ -n "$PRODUCT_EXPECTED_REVISION" ]; then
+            if [[ ! "$PRODUCT_EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ ]] || [ "$E2E_NEW_UI_EXPECTED_FLAG" != 'on' ]; then
+              echo '::error::B02 needs a pinned Product revision and preview target'
+              exit 1
+            fi
+            mapfile -t selected_cases < <(python -m tests.e2e.product_onboarding.product_v02_selection --selectors)
+            [ "${#selected_cases[@]}" -eq 3 ] || { echo '::error::Missing B02 browser selectors'; exit 1; }
+          else
+            selected_cases=(tests/e2e/new_ui/)
+          fi
+          python -m pytest "${selected_cases[@]}" -p regression_pytest \
             -v \
             --tb=short \
             --junitxml=test-results/e2e-new-ui-junit.xml \
@@ -194,13 +334,27 @@ jobs:
           E2E_CLOUDFRONT_URL: ${{ env.E2E_CLOUDFRONT_URL }}
           AWS_REGION: us-east-1
           ENVIRONMENT: ${{ env.ENVIRONMENT }}
+          ADP_CHECKS_ROLE_ARN: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.product_source_revision }}
+          PRODUCT_RELEASE_RUN_ID: ${{ inputs.product_release_run_id }}
+          PRODUCT_RELEASE_ATTEMPT: ${{ inputs.product_release_attempt }}
+          PRODUCT_RELEASE_WORKFLOW_REVISION: ${{ inputs.product_release_workflow_revision }}
+          PRODUCT_BROWSER_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+
+      - name: Recover remaining owned Product fixtures
+        id: product-cleanup
+        if: always() && steps.live-browser-policy.outcome == 'success' && inputs.product_source_revision != '' && (!inputs.product_scope || steps.browser-run.outcome != 'success')
+        run: |
+          umask 077
+          python -m tests.e2e.new_ui.product_fixture_provider
 
       # The primary failure mode for this suite is a VACUOUS pass: a missing or
       # malformed E2E_NEW_UI_ENABLED makes conftest.py skip every test, and
       # pytest still exits 0. A green check that asserted nothing is worse than
       # no check, so assert on the executed count, not just the exit code.
       - name: Assert the run was not vacuous
-        if: always()
+        if: always() && steps.live-browser-policy.outcome == 'success'
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -239,28 +393,219 @@ jobs:
           PY
 
       - name: Verify complete scenario evidence
-        if: always()
-        run: >-
-          python .github/scripts/regression_report.py junit
-          --suite new-ui --junit test-results/e2e-new-ui-junit.xml
-          --inventory test-results/new-ui-inventory.json
-          --output test-results/new-ui-result.json
+        id: browser-report
+        if: always() && steps.live-browser-policy.outcome == 'success'
+        run: |
+          umask 077
+          python .github/scripts/regression_report.py junit \
+            --suite new-ui --junit test-results/e2e-new-ui-junit.xml \
+            --inventory test-results/new-ui-inventory.json \
+            --output test-results/new-ui-result.json
+
+      - name: Verify exact V11 browser case inventory
+        id: v11-inventory
+        if: always() && steps.live-browser-policy.outcome == 'success' && inputs.product_v11
+        run: |
+          python -m tests.e2e.product_onboarding.product_v11_selection \
+            --inventory test-results/new-ui-inventory.json
+
+      - name: Verify exact B03 browser and API inventory
+        id: b03-inventory
+        if: always() && steps.live-browser-policy.outcome == 'success' && inputs.product_scope
+        run: |
+          python -m tests.e2e.product_onboarding.product_v04_selection \
+            --inventory test-results/new-ui-inventory.json
+
+      - name: Bind private B03 surface and cleanup evidence
+        id: b03-bind
+        if: always() && steps.live-browser-policy.outcome == 'success' && inputs.product_scope
+        env:
+          B03_SOURCE_REVISION: ${{ inputs.product_source_revision }}
+          B03_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          umask 077
+          python -m tests.e2e.product_onboarding.product_v04_publish \
+            --browser test-results/product-v04-browser-results.json \
+            --cli test-results/product-v04-cli-results.json \
+            --junit test-results/e2e-new-ui-junit.xml \
+            --inventory test-results/new-ui-inventory.json \
+            --suite test-results/new-ui-result.json \
+            --output test-results/product-v04-packet.json \
+            --release-revision "$B03_SOURCE_REVISION" \
+            --checkout-revision "$GITHUB_SHA" \
+            --workflow-revision "$B03_WORKFLOW_REVISION" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT"
+
+      - name: Bind Product B02 evidence to the browser result
+        id: bind-product
+        if: always() && steps.live-browser-policy.outcome == 'success' && inputs.product_source_revision != '' && !inputs.product_v11 && !inputs.product_scope
+        env:
+          PRODUCT_RELEASE_REVISION: ${{ inputs.product_source_revision }}
+          BROWSER_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          umask 077
+          python -m tests.e2e.product_onboarding.product_v02_selection \
+            --inventory test-results/new-ui-inventory.json
+          python -m tests.e2e.product_onboarding.product_v02_publish \
+            --inputs test-results/product-v02-inputs.json \
+            --junit test-results/e2e-new-ui-junit.xml \
+            --inventory test-results/new-ui-inventory.json \
+            --suite test-results/new-ui-result.json \
+            --output test-results/product-v02-packet.json \
+            --release-revision "$PRODUCT_RELEASE_REVISION" \
+            --checkout-revision "$GITHUB_SHA" \
+            --workflow-revision "$BROWSER_WORKFLOW_REVISION" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT"
+
+      - name: Bind V11 reports to the reviewed browser result
+        id: v11-bind
+        if: always() && steps.live-browser-policy.outcome == 'success' && inputs.product_v11
+        env:
+          V11_SOURCE_REVISION: ${{ inputs.product_source_revision }}
+          V11_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          umask 077
+          python -m tests.e2e.product_onboarding.product_v11_publish \
+            --directory test-results/screenshots \
+            --inventory test-results/new-ui-inventory.json \
+            --junit test-results/e2e-new-ui-junit.xml \
+            --suite test-results/new-ui-result.json \
+            --output test-results/product-v11-packet.json \
+            --release-revision "$V11_SOURCE_REVISION" \
+            --checkout-revision "$GITHUB_SHA" \
+            --workflow-revision "$V11_WORKFLOW_REVISION" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-attempt "$GITHUB_RUN_ATTEMPT"
 
       - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v7
+        id: upload-results
+        if: always() && steps.live-browser-policy.outcome == 'success'
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: e2e-new-ui-results
           path: test-results/
           retention-days: 14
 
+      - name: Expose B03 only after complete private publication
+        if: always() && steps.live-browser-policy.outcome == 'success' && inputs.product_scope
+        env:
+          B03_BROWSER_STATUS: ${{ steps.browser-run.outcome }}
+          B03_CLEANUP_STATUS: ${{ steps.browser-run.outcome == 'success' && 'success' || steps.product-cleanup.outcome }}
+          B03_REPORT_STATUS: ${{ steps.browser-report.outcome }}
+          B03_INVENTORY_STATUS: ${{ steps.b03-inventory.outcome }}
+          B03_BIND_STATUS: ${{ steps.b03-bind.outcome }}
+          B03_UPLOAD_STATUS: ${{ steps.upload-results.outcome }}
+          B03_MANIFEST_VERSION: ${{ steps.upload-results.outputs.manifest-version }}
+        run: |
+          python - <<'PYCODE'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from tests.e2e.product_onboarding.product_v04_publish import review_status
+
+          try:
+              packet = json.loads(Path('test-results/product-v04-packet.json').read_text())
+          except (OSError, ValueError):
+              packet = {}
+          steps = {name: os.environ.get('B03_' + name.upper() + '_STATUS')
+                   for name in ('browser', 'cleanup', 'report', 'inventory', 'bind', 'upload')}
+          status = review_status(packet, steps, os.environ.get('B03_MANIFEST_VERSION'))
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+              summary.write('\n### Product B03 evidence\n')
+              if status == 'review_ready':
+                  summary.write('Review-ready packet revision: `' + packet['packet_revision'] + '`. '
+                                'Private report: `e2e-new-ui-results`; human acceptance is separate.\n')
+              else:
+                  summary.write('Incomplete: required API/browser/installed-CLI results or cleanup are missing.\n')
+          if status != 'review_ready':
+              sys.exit('::error::B03 evidence or private upload is incomplete')
+          PYCODE
+
+      - name: Expose the reviewed B02 packet revision
+        if: always() && steps.live-browser-policy.outcome == 'success' && inputs.product_source_revision != '' && !inputs.product_v11 && !inputs.product_scope
+        env:
+          PRODUCT_BROWSER_STATUS: ${{ steps.browser-run.outcome == 'success' && steps.product-cleanup.outcome == 'success' && 'success' || 'failure' }}
+          PRODUCT_REPORT_STATUS: ${{ steps.browser-report.outcome }}
+          PRODUCT_BIND_STATUS: ${{ steps.bind-product.outcome }}
+          PRODUCT_UPLOAD_STATUS: ${{ steps.upload-results.outcome }}
+          PRODUCT_MANIFEST_VERSION: ${{ steps.upload-results.outputs.manifest-version }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from tests.e2e.product_onboarding.product_v02_publish import review_status
+
+          try:
+              packet = json.loads(Path('test-results/product-v02-packet.json').read_text())
+          except (OSError, ValueError):
+              packet = {}
+          steps = {
+              'browser': os.environ.get('PRODUCT_BROWSER_STATUS'),
+              'report': os.environ.get('PRODUCT_REPORT_STATUS'),
+              'bind': os.environ.get('PRODUCT_BIND_STATUS'),
+              'upload': os.environ.get('PRODUCT_UPLOAD_STATUS'),
+          }
+          status = review_status(packet, steps, os.environ.get('PRODUCT_MANIFEST_VERSION'))
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+              summary.write('\n### Product B02 evidence\n')
+              if status == 'review_ready':
+                  summary.write('Review-ready packet revision: `' + packet['packet_revision'] + '`. '
+                                'Private report: `e2e-new-ui-results` in this run; human acceptance is separate.\n')
+              else:
+                  summary.write('Incomplete: no packet revision is ready for human acceptance.\n')
+          if status != 'review_ready':
+              sys.exit('::error::Product B02 evidence or private upload is incomplete')
+          PY
+
+      - name: Expose V11 contribution only after private upload
+        if: always() && steps.live-browser-policy.outcome == 'success' && inputs.product_v11
+        env:
+          V11_BROWSER_STATUS: ${{ steps.browser-run.outcome }}
+          V11_REPORT_STATUS: ${{ steps.browser-report.outcome }}
+          V11_INVENTORY_STATUS: ${{ steps.v11-inventory.outcome }}
+          V11_BIND_STATUS: ${{ steps.v11-bind.outcome }}
+          V11_CLEANUP_STATUS: ${{ steps.product-cleanup.outcome }}
+          V11_UPLOAD_STATUS: ${{ steps.upload-results.outcome }}
+          V11_MANIFEST_VERSION: ${{ steps.upload-results.outputs.manifest-version }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from tests.e2e.product_onboarding.product_v11_publish import contribution_status
+
+          try:
+              packet = json.loads(Path('test-results/product-v11-packet.json').read_text())
+          except (OSError, ValueError):
+              packet = {}
+          steps = {name: os.environ.get('V11_' + name.upper() + '_STATUS')
+                   for name in ('browser', 'report', 'inventory', 'bind', 'cleanup', 'upload')}
+          status = contribution_status(packet, steps, os.environ.get('V11_MANIFEST_VERSION'))
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+              summary.write('\n### Product V11 evidence\n')
+              if status == 'contribution_ready':
+                  summary.write('V11 contribution revision: `' + packet['packet_revision'] + '`. '
+                                'Private artifact: `e2e-new-ui-results` in this run. '
+                                'B09 still requires V10 evidence and one human decision.\n')
+              else:
+                  summary.write('Incomplete V11 evidence; no B09 acceptance claim.\n')
+          if status != 'contribution_ready':
+              sys.exit('::error::V11 evidence or private upload is incomplete')
+          PY
+
       # Screenshots contain real UI data (see tests/e2e/new_ui/README.md) and the
       # suite writes them 0600 locally; review before sharing.
       - name: Upload failure screenshots
-        if: failure()
-        uses: actions/upload-artifact@v7
+        if: failure() && steps.live-browser-policy.outcome == 'success'
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: e2e-new-ui-screenshots
-          path: /tmp/e2e-chat-*.png
+          path: test-results/screenshots/
           retention-days: 14
           if-no-files-found: ignore

@@ -45,6 +45,7 @@ from src.auth.magic_link import (
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding_metrics import observe_identity_binding
 from src.internal.service_authorization import require_service_operation, service_tenant
+from src.internal.tools_authorize import router as tools_authorize_router
 from src.knowledge.github_app_service import (
     AGENT_RUN_PERMISSIONS,
     DEFAULT_IDENTITY,
@@ -193,6 +194,12 @@ class GithubInstallationTokenResponse(BaseModel):
     # tries, whether a formal verdict is even possible — and if it is not, to say so
     # explicitly instead of silently downgrading to a comment that sets no verdict.
     identity: str = DEFAULT_IDENTITY
+    # Issue #9550: every repository (``owner/name``) the delivered token can
+    # reach. The run's own repository is always first. More than one entry only
+    # when the run's repository is a source of exactly one Product and that
+    # Product binds other repositories in the same installation; the worker
+    # exports the list as ``TARGET_REPOS`` for the emit step.
+    repositories: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +706,48 @@ async def _revalidate_github_binding(request: Request, binding, permissions=None
 _TOKEN_ROUTE = "github-installation-token"
 
 
+async def _product_repository_scope(binding, body, app_id: str, private_key: str):
+    """Resolve the Product-bound repository set for this run, or ``None`` (#9550).
+
+    Imported lazily: ``src.products`` is not orchestration state, but the token
+    route must stay cheap to import and the resolver is only needed on a mint.
+    Every failure inside degrades to the single repository and never blocks.
+
+    The lookup runs on ITS OWN database session, never the route's. The resolver
+    bounds itself with a timeout, and a cancelled query leaves the session it ran
+    on in a pending-rollback state; on the route's session that would make the
+    mandatory audit flush fail after the token was minted (revoked, no response).
+    A private session is simply discarded.
+    """
+    from src.admin.connections.github_client import GitHubAppClient
+    from src.products.token_scope import product_repository_scope
+    from src.shared.database import get_session_factory
+
+    github = None
+    try:
+        github = GitHubAppClient(app_id, private_key)
+        async with get_session_factory()() as scope_db:
+            return await product_repository_scope(
+                scope_db,
+                tenant_id=binding.tenant_id,
+                installation_id=binding.installation_id,
+                repo_full_name=f"{body.repo_owner}/{body.repo_name}",
+                repository_id=getattr(binding, "repository_id", None),
+                github=github,
+            )
+    except Exception as exc:  # noqa: BLE001 - never block a mint on the widening
+        logger.warning("github-installation-token: Product scope unavailable, single repository kept: %s", type(exc).__name__)
+        return None
+    finally:
+        # The per-mint client owns an httpx pool; release it on every exit path
+        # (resolved, degraded, cancelled) rather than leaving it to collection.
+        if github is not None:
+            try:
+                await github.aclose()
+            except Exception:  # noqa: BLE001 - closing is best effort
+                logger.debug("github-installation-token: GitHub client close failed", exc_info=True)
+
+
 def _assert_token_repo_binding(binding, requested_repo: str) -> None:
     """Refuse a mint for a repository the run was not assigned (#5663, A09).
 
@@ -953,7 +1002,11 @@ async def github_installation_token(
     mint_installation_id = binding.installation_id
     authorized_action = getattr(request.state, "agent_authorized_action", None)
     authorized_action_value = getattr(authorized_action, "value", authorized_action)
-    action_is_review = authorized_action_value == REVIEW_ACTION_VALUE
+    # A reviewer that owns delivery is continued as a `repair` action after it
+    # leaves an open defect (#7482). It is still the review identity that must
+    # publish the verdict afterwards; the engine wrote the persona, not the body.
+    reviewer_owned_repair = authorized_action_value == "repair" and getattr(request.state, "agent_execution_persona", None) == "agent-codex-reviewer"
+    action_is_review = authorized_action_value == REVIEW_ACTION_VALUE or reviewer_owned_repair
     if body.identity == REVIEW_IDENTITY and not action_is_review:
         raise HTTPException(
             status_code=403,
@@ -1010,13 +1063,24 @@ async def github_installation_token(
     minted_permissions = permissions
     if granted_identity == REVIEW_IDENTITY:
         minted_permissions = {key: "read" if key == "contents" else value for key, value in permissions.items() if key in REVIEW_IDENTITY_PERMISSIONS}
+    # Issue #9550: a run whose repository is a source of exactly one Product may
+    # list that Product's other repositories in the same installation. Derived
+    # from the trusted binding and owner-configured Product bindings only (see
+    # ``src/products/token_scope.py``); the review identity keeps one repository.
+    minted_repositories = [f"{body.repo_owner}/{body.repo_name}"]
+    product_scope = None
+    if granted_identity == DEFAULT_IDENTITY:
+        product_scope = await _product_repository_scope(binding, body, app_id, private_key)
+        if product_scope is not None:
+            minted_repositories = list(product_scope.repositories)
+    minted_repository_names = [full.split("/", 1)[1] for full in minted_repositories]
     token = None
     try:
         token, expires_at = await mint_installation_token_with_expiry(
             app_id,
             private_key,
             mint_installation_id,
-            repositories=[body.repo_name],
+            repositories=minted_repository_names,
             permissions=minted_permissions,
         )
         await _revalidate_github_binding(request, binding, permissions, authorized_action)
@@ -1063,7 +1127,12 @@ async def github_installation_token(
             details={
                 "installation_id": mint_installation_id,
                 "repo": f"{body.repo_owner}/{body.repo_name}",
-                "repositories": [body.repo_name],
+                # The ``repositories`` argument as sent to GitHub (names only), as
+                # before #9550; the full names and the Product that widened the set
+                # are recorded alongside.
+                "repositories": minted_repository_names,
+                "repository_full_names": minted_repositories,
+                "product_id": product_scope.product_id if product_scope is not None else None,
                 # The permissions actually minted, which for the reviewer identity are
                 # narrower than the run's authorized set. Auditing the authorized set
                 # here would overstate what the delivered token can do.
@@ -1097,4 +1166,9 @@ async def github_installation_token(
         granted_identity,
     )
     response.headers["Cache-Control"] = "no-store"
-    return GithubInstallationTokenResponse(token=token, expires_at=expires_at, app_id=str(app_id), identity=granted_identity)
+    return GithubInstallationTokenResponse(
+        token=token, expires_at=expires_at, app_id=str(app_id), identity=granted_identity, repositories=minted_repositories
+    )
+
+
+router.include_router(tools_authorize_router)

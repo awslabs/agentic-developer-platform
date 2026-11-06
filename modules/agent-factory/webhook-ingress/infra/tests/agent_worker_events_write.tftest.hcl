@@ -51,11 +51,11 @@ run "gateway_task_activity_discovery" {
       Action   = ["dynamodb:Query"]
       Resource = [aws_dynamodb_table.agent_authority.arn]
       Condition = {
-        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["TENANT#*"] }
+        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["TENANT#*", "CHAT-MODEL#*"] }
         "Null"                    = { "dynamodb:LeadingKeys" = "false" }
       }
     }
-    error_message = "Activity discovery needs tenant-partition Query on the authority table only, without Scan, indexes, or writes."
+    error_message = "Activity discovery needs Query on the tenant and chat-model partitions of the authority table only, without Scan, indexes, or writes."
   }
 }
 

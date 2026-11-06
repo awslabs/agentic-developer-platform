@@ -2,6 +2,29 @@
 # GitLab CE Infrastructure — EC2 Instance
 # =============================================================================
 
+locals {
+  gitlab_user_data = templatefile("${path.module}/user_data.sh", {
+    gitlab_external_url = var.cloudfront_domain != "" ? "https://${var.cloudfront_domain}/gitlab" : "http://${var.gitlab_domain}"
+    backup_bucket_name  = var.backup_enabled ? aws_s3_bucket.backup[0].id : ""
+    backup_script = var.backup_enabled ? templatefile("${path.module}/templates/backup_script.sh.tpl", {
+      bucket_name = aws_s3_bucket.backup[0].id
+    }) : ""
+    gitlab_domain          = var.gitlab_domain
+    cloudfront_domain      = var.cloudfront_domain
+    environment            = var.environment
+    aws_region             = var.aws_region
+    gitlab_package_version = var.gitlab_package_version
+    portal_sso_enabled     = var.portal_sso_enabled
+    portal_sso_setup       = file("${path.module}/../scripts/configure-portal-sso.py")
+    portal_sso_guard       = file("${path.module}/templates/adp_jwt_validation.rb")
+    cli_oauth_guard        = file("${path.module}/templates/adp_cli_oauth.rb")
+    # Scopes GitLab's monitoring_whitelist to the VPC instead of 0.0.0.0/0
+    # (issue #5685). The ALB's own health check probes nginx's /-/health and does
+    # not consult this allowlist, so narrowing it cannot affect target health.
+    vpc_cidr_block = local.vpc_cidr_block
+  })
+}
+
 resource "aws_instance" "gitlab" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.instance_type
@@ -10,35 +33,22 @@ resource "aws_instance" "gitlab" {
   iam_instance_profile   = aws_iam_instance_profile.gitlab.name
   key_name               = var.key_name != "" ? var.key_name : null
 
-  # GitLab is stateful (repos/DB on the root volume, delete_on_termination):
-  # replacing the instance on user_data edits would destroy all data. With
+  # GitLab is stateful (repos/DB on a retained root volume): replacing the
+  # instance on user_data edits would leave its data on an unattached disk. With
   # false, the provider updates user_data via stop/start (~2-3 min outage,
   # volume preserved); the new user_data only executes on a from-scratch
   # rebuild, so config changes must be applied manually via gitlab-ctl
   # reconfigure (see issue #3588 Deployment notes).
   user_data_replace_on_change = false
 
-  user_data = templatefile("${path.module}/user_data.sh", {
-    gitlab_external_url = var.cloudfront_domain != "" ? "https://${var.cloudfront_domain}/gitlab" : "http://${var.gitlab_domain}"
-    backup_bucket_name  = var.backup_enabled ? aws_s3_bucket.backup[0].id : ""
-    backup_script = var.backup_enabled ? templatefile("${path.module}/templates/backup_script.sh.tpl", {
-      bucket_name = aws_s3_bucket.backup[0].id
-    }) : ""
-    gitlab_domain     = var.gitlab_domain
-    cloudfront_domain = var.cloudfront_domain
-    environment       = var.environment
-    aws_region        = var.aws_region
-    # Scopes GitLab's monitoring_whitelist to the VPC instead of 0.0.0.0/0
-    # (issue #5685). The ALB's own health check probes nginx's /-/health and does
-    # not consult this allowlist, so narrowing it cannot affect target health.
-    vpc_cidr_block = local.vpc_cidr_block
-  })
+  # Cloud-init accepts gzip payloads; EC2 limits the decoded upload to 16 KiB.
+  user_data_base64 = base64gzip(local.gitlab_user_data)
 
   root_block_device {
     volume_size           = var.root_volume_size
     volume_type           = var.root_volume_type
     encrypted             = true
-    delete_on_termination = true
+    delete_on_termination = false
 
     tags = merge(local.common_tags, {
       Name    = "${local.name_prefix}-root"

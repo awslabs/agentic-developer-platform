@@ -81,7 +81,7 @@ ENGINE_FEATURE = "orchestration_engine"
 # Statuses `GET /flows` accepts (src/orchestration/display_state.py FlowStatus).
 # Validated locally so a typo is the usage error it is, reported before a gateway
 # is resolved, instead of an opaque 422 from the server's enum coercion.
-FLOW_STATUSES = ("attention_needed", "awaiting_you", "running", "queued", "complete", "empty")
+FLOW_STATUSES = ("attention_needed", "awaiting_you", "running", "queued", "complete", "empty", "archived")
 
 # Node states that mean a human is being waited on, and states that mean the work
 # needs attention. Both from src/orchestration/state.py's NodeState; `rejected`
@@ -223,6 +223,8 @@ def engine_available(api):
     their administrator over a transient error. The caller proceeds and the real
     call reports the real failure.
     """
+    if common.crew_binding():
+        return True
     try:
         return bool(api.request("GET", FEATURES).get("features", {}).get(ENGINE_FEATURE, False))
     except CliError:
@@ -273,6 +275,7 @@ def flow_rows(payload):
             "id": flow.get("id"),
             "title": flow.get("title"),
             "status": flow.get("status"),
+            "archived_at": flow.get("archived_at"),
             "awaiting_gate_count": flow.get("awaiting_gate_count"),
             "stalled_count": flow.get("stalled_count"),
             "total_nodes": flow.get("total_nodes"),
@@ -288,7 +291,16 @@ def list_flows(args, api):
         return unavailable
     payload = api.request(
         "GET",
-        query(FLOWS, {"status": args.status, "limit": args.limit, "offset": args.offset, "needs_me": "true" if args.needs_me else None}),
+        query(
+            FLOWS,
+            {
+                "status": args.status,
+                "limit": args.limit,
+                "offset": args.offset,
+                "needs_me": "true" if args.needs_me else None,
+                "include_archived": "true" if args.include_archived else None,
+            },
+        ),
     )
     detail = {
         "flows": flow_rows(payload),
@@ -309,6 +321,34 @@ def list_flows(args, api):
             f"No flows{filtered}. Start one in the ADP dashboard, or run 'adp flow create --file plan.json'.",
         )
     return common.envelope("ok", "flow list", detail, "Run 'adp flow show FLOW_ID' for a flow's graph, gates and next eligible work.")
+
+
+def change_archive_state(args, api):
+    command = f"flow {args.command}"
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+    try:
+        result = api.request(
+            "POST",
+            f"{FLOWS}/{urllib.parse.quote(args.flow_id, safe='')}/{args.command}",
+            {"reason": args.reason.strip()},
+        )
+    except CliError as error:
+        if args.command == "archive" and error.status_code == 409:
+            raise CliError(
+                error.server_message or "Resolve active work before archiving; the slug remains reserved.",
+                "flow_has_active_work",
+                error.exit_code,
+            ) from None
+        raise
+    next_action = (
+        "Archived flows remain readable, their slugs remain reserved, and archiving does not cancel active work. "
+        "Use 'adp flow list --include-archived' to find them."
+        if args.command == "archive"
+        else "Unarchiving preserves execution pause and attempt state. Use 'adp flow show FLOW_ID' to inspect the flow."
+    )
+    return common.envelope("ok", command, result, next_action)
 
 
 def node_summary(node):
@@ -345,11 +385,17 @@ def graph_readback(payload):
         state = node.get("state") or "unknown"
         counts[state] = counts.get(state, 0) + 1
     policy = payload.get("execution_policy")
+    budget_blocked = [
+        node.get("node_ref") or node.get("title") or node.get("id", "")
+        for node in nodes
+        if (node.get("delivery_progress") or {}).get("blocker") == "budget_exhausted"
+    ]
     return {
         "flow_id": payload.get("flow_id"),
         "title": payload.get("title"),
         "state": payload.get("state"),
         "node_states": counts,
+        "budget_blocked": budget_blocked,
         "total_nodes": len(nodes),
         "outstanding_gates": [node_summary(node) for node in gates],
         "blocked": [
@@ -385,6 +431,15 @@ def show_next_action(detail):
     person who is not told about the block will wait on work that cannot clear
     it. Ordering this by graph position instead would bury the blocker.
     """
+    # #9536: a node refused at a budget ceiling keeps its state (running/awaiting_review), so it is
+    # not in `blocked`; "Nothing is waiting on you" hid an owner action for an hour on dev.
+    if detail.get("budget_blocked"):
+        names = ", ".join(detail["budget_blocked"])
+        return (
+            f"{len(detail['budget_blocked'])} node(s) are waiting on budget ({names}): a run was refused at a spend "
+            f"ceiling. Raise the flow's limits (dashboard Budget panel, or the flow's budget increase preview/accept) "
+            f"and the engine rechecks on its own; a recorded increase needs no resume."
+        )
     if detail["blocked"]:
         return f"{len(detail['blocked'])} node(s) need attention. Inspect them with --json, then resume or re-plan in the dashboard."
     if detail["outstanding_gates"]:
@@ -564,10 +619,13 @@ def list_plans(args, api):
     detail["acceptance_status"] = acceptance
     if proposed:
         row = proposed[-1]
-        action = (
-            f"Version {row['version']} is proposed and not accepted. Read it with --json, then bind your approval to it: "
-            f"'adp flow gate approve GATE_ID --expect-plan-hash {row['plan_hash']}'."
-        )
+        if common.crew_binding():
+            action = f"Version {row['version']} is proposed and not accepted. Read it with --json; approve from the laptop CLI or dashboard."
+        else:
+            action = (
+                f"Version {row['version']} is proposed and not accepted. Read it with --json, then bind your approval to it: "
+                f"'adp flow gate approve GATE_ID --expect-plan-hash {row['plan_hash']}'."
+            )
     elif accepted:
         action = "The current plan has a recorded human approval; see flow show for pause state and remaining gates."
     else:
@@ -1072,8 +1130,8 @@ def expiry_text(expires_at):
     if moment.tzinfo is None:
         # Every expiry ADP writes is UTC; reading a naive one as local time would
         # shift the comparison by the offset and could call a dead grant live.
-        moment = moment.replace(tzinfo=timezone.utc)
-    if moment <= datetime.now(tz=timezone.utc):
+        moment = moment.replace(tzinfo=timezone.utc)  # noqa: UP017 - installed CLI supports Python 3.9
+    if moment <= datetime.now(tz=timezone.utc):  # noqa: UP017 - installed CLI supports Python 3.9
         return f"{expires_at} — ALREADY EXPIRED: accepting this plan is refused. Request a new plan and accept that one."
     return expires_at
 
@@ -1121,7 +1179,22 @@ def registration_refusal(api, document):
     """
     try:
         preview = api.request("POST", DRAFTS_PREVIEW, document)
-    except CliError:
+    except CliError as exc:
+        # The gateway READ the document and refused it (HTTP 400/422): that is an
+        # answer about this plan, not an unavailable preview. Reporting it as
+        # "upgrade the gateway" sent an author hunting for a gateway problem when
+        # one field of their document was wrong (an integer `spec_revision`,
+        # 2026-11-03). Everything else — unreachable, 404 on an older gateway,
+        # 5xx — still means "no preview", and the caller fails closed on that.
+        if exc.status_code in (400, 422):
+            reason = exc.server_message or str(exc)
+            raise CliError(
+                f"ADP refused to preview this plan: {reason}. Fix the document and re-run; nothing was registered.",
+                "preview_refused",
+                4,
+                status_code=exc.status_code,
+                server_message=exc.server_message,
+            ) from None
         return None, None
 
     if not isinstance(preview, dict):
@@ -1385,6 +1458,8 @@ def create_flow(args, api):
     unavailable = require_engine(api, "flow create")
     if unavailable:
         return unavailable
+    if common.crew_binding() and args.yes:
+        raise CliError("A Dev Box cannot approve a flow. Register the draft here, then use the laptop adp CLI or ADP dashboard.", "usage_error", 2)
     return register_preview_accept(
         api, read_plan_file(args.file), verb="flow create", reason=args.reason, assume_yes=args.yes, expected_hash=args.expect_plan_hash
     )
@@ -1462,6 +1537,15 @@ def register_preview_accept(api, document, *, verb, reason, assume_yes, expected
             f"Registration changed the previewed revision. Flow {flow_id} remains unapproved; review its current plan before accepting.",
             "stale_plan_revision",
             4,
+        )
+
+    if common.crew_binding():
+        detail["preview"] = dry_run
+        return common.envelope(
+            "pending",
+            verb,
+            detail,
+            f"Flow {flow_id} is registered as an inert draft. Review its plan and approve it from the laptop adp CLI or ADP dashboard.",
         )
 
     # Step 2 — preview the EFFECTIVE graph, from the server.
@@ -1745,7 +1829,7 @@ def start_flow(args, api):
         if unavailable:
             return unavailable
     resuming = args.resume is not None
-    detail = {"session_id": None, "resumed": resuming, "repo": args.repo, "issue": args.issue, "planned": bool(args.plan)}
+    detail = {"session_id": None, "resumed": resuming, "repo": args.repo, "issue": args.issue, "product_id": args.product, "planned": bool(args.plan)}
 
     if resuming:
         # `--resume` with no value resolves the caller's newest conversation. An
@@ -1768,7 +1852,13 @@ def start_flow(args, api):
             if args.issue and str(args.issue) != state["requested_issue"]:
                 raise CliError("This session belongs to another issue. Resume without changing --issue.", "issue_changed", 1)
             args.issue = int(state["requested_issue"])
-        detail.update(session_id=session_id, repo=args.repo, issue=args.issue)
+        if args.product and args.product != (state.get("product_id") or None):
+            raise CliError("Product selection is fixed when the session opens. Start a new session to change --product.", "product_changed", 1)
+        if args.project and args.project != state.get("project_id"):
+            raise CliError("Project selection is fixed when the session opens.", "project_changed", 1)
+        args.project = state.get("project_id") or None
+        args.product = state.get("product_id") or None
+        detail.update(session_id=session_id, repo=args.repo, issue=args.issue, product_id=args.product)
         progress(f"Resumed planning session {session_id}.")
         if state.get("working"):
             # The agent still holds the turn. Waiting is right; sending would
@@ -1799,7 +1889,11 @@ def start_flow(args, api):
             )
         opening = outcome
         if args.repo:
-            opening += f"\n\nThis should land in the repository {args.repo}."
+            opening += (
+                f"\n\nUse the issue in repository {args.repo} as planning context; verify each story's target separately."
+                if args.product and args.issue
+                else f"\n\nThis should land in the repository {args.repo}."
+            )
         if args.issue:
             opening += f"\n\nStart from issue #{args.issue} in that repository."
 
@@ -1811,7 +1905,14 @@ def start_flow(args, api):
         started = api.request(
             "POST",
             INTAKE,
-            {"message": opening, "repository": args.repo, "issue": str(args.issue) if args.issue else None, "retry_token": request_id},
+            {
+                "message": opening,
+                "repository": args.repo,
+                "issue": str(args.issue) if args.issue else None,
+                "product_id": args.product,
+                **({"project_id": args.project} if args.project else {}),
+                "retry_token": request_id,
+            },
         )
         session_id = started["session_id"]
         detail["session_id"] = session_id
@@ -1868,7 +1969,7 @@ def start_flow(args, api):
         # agent to interpret. A repository name decides where autonomous work
         # lands, so it is checked, and an unconnected one is refused here rather
         # than at dispatch on a plan a human already approved.
-        {"repository": args.repo or None, "issue": str(args.issue) if args.issue else None, "flow_slug": None},
+        {"repository": args.repo or None, "issue": str(args.issue) if args.issue else None, "product_id": args.product, "flow_slug": None},
     )
     document = derived.get("proposal") or {}
     if derived.get("prerequisites"):
@@ -1883,10 +1984,19 @@ def start_flow(args, api):
         "repository": derived.get("repository"),
         "repository_verified_live": derived.get("repository_verified_live"),
         "issue_ref": derived.get("issue_ref"),
+        "product_id": document.get("product_id"),
+        "planning_epic": derived.get("planning_epic"),
+        "story_repositories": derived.get("story_repositories"),
         # The server's own statement that deriving wrote nothing. Echoed rather
         # than assumed, so a deployment that changed that would show up here.
         "wrote_nothing": derived.get("wrote_nothing"),
     }
+    if derived.get("planning_epic"):
+        planning_epic = derived["planning_epic"]
+        progress(f"Planning epic: {planning_epic['repository']}#{planning_epic['issue_number']} (Product {document.get('product_id')}).")
+        for node in document.get("nodes", []):
+            if node.get("kind") == "story":
+                progress(f"  {node.get('address')}: {node.get('repository_identity')}#{node.get('issue_ref')} (verified target)")
     if not document.get("nodes"):
         raise CliError(
             "ADP derived a plan with no work in it, so there is nothing to register or approve. Keep refining the "
@@ -1918,6 +2028,846 @@ def start_flow(args, api):
     # to the intent a person actually described.
     accepted["detail"] = {**detail, **(accepted.get("detail") or {})}
     return accepted
+
+
+# --- amendments (#5329) -----------------------------------------------------
+#
+# propose -> preview the graph change -> edit -> approve -> a new plan version.
+#
+# Every rule lives on the server and is reported, never re-derived here. That is
+# not deference for its own sake: a client that decided locally whether a
+# placement is ambiguous, whether a revision is stale, or whether an eval may join
+# a wave would be a second implementation of authority rules, and the weaker copy
+# would be the one on the newer path. So this layer resolves nothing, validates
+# nothing beyond "is this argument shaped like an argument", and renders what came
+# back.
+
+AMENDMENTS = "/orchestration/flows/{flow_id}/amendments"
+AUTHORING_REQUESTS = AMENDMENTS + "/requests"
+PROPOSALS = AMENDMENTS + "/proposals"
+DRAFT_LIST = AMENDMENTS + "/drafts"
+DRAFT_ONE = DRAFT_LIST + "/{draft_id}"
+
+# Placement kinds, from `amendment_placement.PlacementKind`'s VALUES. Underscored,
+# matching the wire form: `insert-after` is refused by the server's enum, and
+# accepting it here then sending it through would turn a typo into a 422 the user
+# cannot connect to what they typed. Validated locally for the same reason
+# FLOW_STATUSES is — a typo is a usage error, reported before a gateway is even
+# resolved.
+PLACEMENT_KINDS = ("insert_before", "insert_after", "parallel_branch", "existing_wave", "new_wave")
+
+# Draft states, from `PendingAmendmentState`. Used to validate `--state` locally.
+DRAFT_STATES = ("pending", "accepted", "rejected", "superseded")
+
+# Which kinds require an anchor, and which refuse one. Mirrored from
+# `ProposedPlacement`'s docstring so the error arrives before a request is sent;
+# the server remains the authority and will refuse either way.
+ANCHORED_KINDS = ("insert_before", "insert_after", "parallel_branch")
+WAVE_KINDS = ("existing_wave", "new_wave")
+
+# Stated wherever an acceptance is refused for naming a revision that moved. The
+# point being made is that this is NOT a lost race the caller should paper over
+# with a retry loop: re-reading and re-approving is a human act, because the thing
+# that changed is what they would be approving.
+STALE_AMENDMENT_GUIDANCE = (
+    "This was refused because the amendment or the plan it was written against moved after you read it. "
+    "Nothing was applied. Re-read it with 'adp flow amendment show', preview it again, and approve the revision "
+    "you actually reviewed — do NOT retry with the same hash, and do not script around this by omitting the hash, "
+    "which would approve whatever is live."
+)
+
+# The capability message for a deployment whose gateway predates these routes.
+# Worth stating explicitly what it must NOT do: fall back to `adp flow create` or
+# to a plan apply. An amendment is a change to a plan already in force, with
+# started work, evidence and gates under it; applying a fresh plan instead is not
+# a degraded version of that, it is a different and destructive act.
+AMENDMENT_UNSUPPORTED = (
+    "This deployment's gateway does not serve the amendment review API, so nothing was proposed, previewed, "
+    "edited, declined or approved. Ask an ADP administrator to upgrade it. There is deliberately no fallback: "
+    "applying a plan is NOT a substitute for amending one, because the plan in force has started work, recorded "
+    "evidence and answered gates beneath it."
+)
+
+
+def amendment_unsupported(command, detail=None):
+    return common.envelope("unavailable", command, {**(detail or {}), "supported": False, "applied": False}, AMENDMENT_UNSUPPORTED)
+
+
+#: Conflict codes that mean "what you reviewed is not what you would be applying".
+#: From `pending_amendments`' own vocabulary — verified against its raise sites, not
+#: guessed: it emits exactly `draft_not_pending`, `revision_mismatch`,
+#: `base_version_mismatch` and `stale_base`. Grouped because they need one answer from
+#: the caller — read it again — and a different exit code from a usage error.
+#:
+#: `draft_not_pending` is in this set, and it is the one that matters most: `accept`
+#: checks the draft's STATE before it compares the revision hash, so the flagship
+#: scenario — review revision 1, someone edits it, accept the id you read — comes back
+#: as `draft_not_pending` (state `superseded`), NOT as `revision_mismatch`. Omitting it
+#: left the headline case falling through to a generic exit 5 with no staleness named.
+#: `draft_already_accepted` is deliberately absent: it is terminal for this draft, and
+#: "preview it again" is the wrong advice for a plan already in force.
+STALE_CODES = ("stale_base", "revision_mismatch", "base_version_mismatch", "base_hash_mismatch", "draft_not_pending")
+
+
+def amendment_call(api, method, path, *, body=None, applied=False):
+    """One amendment request, translating the refusals a caller must distinguish.
+
+    Four classes, and conflating any two of them is a real misreport:
+
+    * **404 on the route itself** — the gateway predates this API. Reported as a
+      capability gap that applied nothing, NEVER as a missing draft and never by
+      falling through to a plan apply. `engine_available` cannot answer this: the
+      engine flag is on for deployments whose build simply lacks these routes, so the
+      flag says "engine present" while these seven paths are absent.
+    * **409 stale / superseded / already-decided** — the server's own conflict. Its
+      code is preserved so a script can branch, and its message is shown rather than
+      rewritten because `pending_amendments` composes the specific ids and versions
+      into it and, for a superseded draft, decides whether to name a successor to
+      read or to route the human to a fresh replan.
+    * **422 unresolved placement or rejected proposal** — the proposal is not
+      approvable. The named violations are the answer, not an error string.
+    * **anything else** — passed through unchanged.
+
+    `applied=True` marks the ONE call that changes a plan (the accept itself). Every
+    refusal message it raises states that nothing was applied, because that is the
+    question a reader of a failed approval has and leaving it to inference is how
+    someone re-approves work that already landed — or walks away from work that did
+    not. The reads pass `applied=False` and say nothing about it, since "nothing was
+    applied" on a `show` is noise that trains people to skip the line.
+    """
+    try:
+        return api.request(method, path, body)
+    except CliError as exc:
+        status = getattr(exc, "status_code", None)
+        # Stated on the refusals raised below, and only when it is both true and
+        # non-obvious: the accept is the only call here with anything to disclaim.
+        untouched = " The plan in force was NOT changed." if applied else ""
+        if status == 404 and exc.code not in ("flow_not_found", "draft_not_found"):
+            # A 404 with no code of its own: FastAPI's routing answered, not a handler.
+            # Every real 404 these routes raise carries `flow_not_found` or
+            # `draft_not_found` (`amendment_review_routes._not_found`), so a codeless
+            # one means the path is not served — an old gateway. Keyed on the code's
+            # ABSENCE rather than on a version probe because there is no version
+            # endpoint to ask, and `engine_available` cannot answer it: the engine flag
+            # is on for a deployment whose build simply lacks these seven paths.
+            raise CliError(AMENDMENT_UNSUPPORTED, "amendment_api_unsupported", 4) from None
+        if exc.code in STALE_CODES:
+            # Exit 4, not 5: this is "your input is out of date", which a caller
+            # handles differently from a failure, and #5329 requires a nonzero exit
+            # that names the staleness rather than a generic error.
+            #
+            # The server's own sentence is included because the generic transport
+            # replaces it with "read its current status before retrying" — throwing away
+            # the successor revision id `pending_amendments` composed into it, which is
+            # the operator's actual next step. Guidance follows it rather than leading,
+            # so the specific answer is read before the general one.
+            served = f" {exc.server_message}" if getattr(exc, "server_message", None) else ""
+            raise CliError(f"{exc}{served}{untouched}\n{STALE_AMENDMENT_GUIDANCE}", exc.code, 4) from None
+        if untouched:
+            raise CliError(f"{exc}{untouched}", exc.code, exc.exit_code, status_code=status) from None
+        raise
+
+
+def amendment_path(template, flow_id, draft_id=None, **params):
+    path = template.format(flow_id=segment(flow_id), draft_id=segment(draft_id) if draft_id else "")
+    return query(path, params) if params else path
+
+
+def receipt_disposition_text(dropped, *, preview=False):
+    if not dropped:
+        return ""
+    timing = "WILL BE DROPPED ON ACCEPT" if preview else "DROPPED"
+    lines = [f"WARNING: ACCEPTED RECEIPTS {timing} — re-apply these increases if needed:"]
+    for receipt in dropped:
+        lines.append(f"  {receipt['kind']} (decision {receipt['decision_id']}): {receipt['before']} -> {receipt['after']} — {receipt['reason']}")
+    return "\n".join(lines)
+
+
+def effective_limits_text(before, after, *, committed=False):
+    if not before and not after:
+        return ""
+    label = "COMMITTED EFFECTIVE LIMITS" if committed else "EFFECTIVE LIMITS (before -> after accept)"
+    lines = [f"{label}:"]
+    for key in ("max_spend_usd", "max_attempts_per_node", "max_concurrent_actions", "max_wall_clock_seconds", "expires_at"):
+        was = (before or {}).get(key, "none")
+        now = (after or {}).get(key, "none")
+        mark = "" if was == now else "  (changed)"
+        lines.append(f"  {key}: {was} -> {now}{mark}")
+    return "\n".join(lines)
+
+
+def impact_text(impact):
+    """Render the whole proposed graph change, in the order a reviewer needs it.
+
+    Blockers FIRST, and unconditionally, because the one thing this output must never
+    do is let a reader skim added nodes and conclude the amendment is approvable.
+    Then the graph change, then what it does to work that already exists.
+
+    `newly_blocked` downstream nodes and `state` on each disposition are the parts
+    that distinguish this from a diff of two documents: they say what the change does
+    to a plan that is already running.
+    """
+    if not isinstance(impact, dict):
+        return "The impact of this amendment could not be read, so it must not be approved."
+
+    lines = []
+    blocking = impact.get("blocking") or []
+    if blocking:
+        lines.append(f"NOT APPROVABLE — {len(blocking)} blocking diagnostic(s):")
+        for violation in blocking:
+            where = f" [{violation.get('where')}]" if violation.get("where") else ""
+            lines.append(f"  * {violation.get('rule')}: {violation.get('message')}{where}")
+    elif impact.get("is_noop"):
+        lines.append("This amendment changes nothing in the plan in force.")
+    else:
+        lines.append("No blocking diagnostics.")
+
+    warning = receipt_disposition_text(impact.get("receipts_dropped"), preview=True)
+    if warning:
+        lines.append(warning)
+
+    base = impact.get("base_plan_version")
+    if base is not None:
+        lines.append(f"Against plan version {base} ({(impact.get('base_plan_hash') or '')[:12] or 'unknown'}).")
+
+    if impact.get("policy_changed"):
+        lines.append("EXECUTION POLICY CHANGES:")
+        lines.append(f"  before: {json.dumps(impact.get('policy_before'), sort_keys=True)}")
+        lines.append(f"  after:  {json.dumps(impact.get('policy_after'), sort_keys=True)}")
+
+    limits_before = impact.get("effective_limits_before")
+    limits_after = impact.get("effective_limits_after")
+    summary = effective_limits_text(limits_before, limits_after)
+    if summary:
+        lines.append(summary)
+
+    publications = impact.get("issue_publications") or []
+    if publications:
+        # Creating a public issue is an effect of accepting, so it is named before the
+        # graph: which work gets a NEW issue, and in which repository.
+        lines.append(f"ISSUES TO PUBLISH ON ACCEPT ({len(publications)}):")
+        for item in publications:
+            if item.get("creates_issue"):
+                effect = "NEW issue" if item.get("action") == "create" else "reconcile an interrupted publication (no second issue)"
+            else:
+                effect = f"existing issue #{item.get('issue_number')}" + (" (content refreshed)" if item.get("action") == "update" else "")
+            lines.append(f"  {item.get('address')} -> {item.get('repository')}: {effect}")
+
+    by_change = {}
+    for node in impact.get("nodes") or []:
+        by_change.setdefault(node.get("change"), []).append(node)
+    for change in ("added", "removed", "modified", "unchanged"):
+        nodes = by_change.get(change) or []
+        # `unchanged` is counted, not listed: on a real plan it is most of the graph,
+        # and printing it would bury the three lines that matter.
+        if not nodes:
+            continue
+        if change == "unchanged":
+            lines.append(f"{len(nodes)} node(s) unchanged.")
+            continue
+        lines.append(f"{change.upper()} ({len(nodes)}):")
+        for node in nodes:
+            state = f" state={node.get('state')}" if node.get("state") else ""
+            attempts = f" attempts={node['attempts']}" if node.get("attempts") else ""
+            lines.append(f"  {node.get('address')} [{node.get('kind')}] {node.get('title')}{state}{attempts}")
+            if change == "modified":
+                lines.append(f"    before: {json.dumps(node.get('before'), sort_keys=True)}")
+                lines.append(f"    after:  {json.dumps(node.get('after'), sort_keys=True)}")
+
+    for label in ("before", "after"):
+        graph_nodes = impact.get(f"{label}_nodes") or []
+        graph_edges = impact.get(f"{label}_edges") or []
+        if graph_nodes or graph_edges:
+            lines.append(f"{label.upper()} GRAPH: {len(graph_nodes)} node(s), {len(graph_edges)} edge(s)")
+            for edge in graph_edges:
+                lines.append(f"  {edge.get('from_address')} -> {edge.get('to_address')}")
+
+    edges = impact.get("edges") or []
+    if edges:
+        lines.append(f"EDGES ({len(edges)}):")
+        for edge in edges:
+            arrow = "+" if edge.get("change") == "added" else "-" if edge.get("change") == "removed" else "="
+            lines.append(f"  {arrow} {edge.get('from_address')} -> {edge.get('to_address')}")
+
+    for wave in impact.get("wave_changes") or []:
+        marks = []
+        if wave.get("is_new"):
+            marks.append("NEW WAVE")
+        if wave.get("is_emptied"):
+            marks.append("EMPTIED")
+        added = ", ".join(wave.get("added_addresses") or [])
+        removed = ", ".join(wave.get("removed_addresses") or [])
+        detail = "; ".join(filter(None, [f"+{added}" if added else "", f"-{removed}" if removed else ""]))
+        lines.append(f"WAVE {wave.get('wave')}{' (' + ', '.join(marks) + ')' if marks else ''}: {detail or 'membership unchanged'}")
+
+    stages = impact.get("execution_order") or []
+    if stages:
+        lines.append("PROPOSED EXECUTION ORDER:")
+        for stage in stages:
+            waves = stage.get("waves") or []
+            concurrent = " (concurrent)" if len(waves) > 1 else ""
+            lines.append(f"  stage {stage.get('stage')}: {', '.join(waves)}{concurrent}")
+
+    downstream = impact.get("downstream") or []
+    blocked = [node for node in downstream if node.get("newly_blocked")]
+    if blocked:
+        # The consequence a reviewer is most likely to have not intended: work that
+        # could run before this amendment, and cannot after it.
+        lines.append(f"NEWLY BLOCKED ({len(blocked)}) — these wait on new prerequisites:")
+        for node in blocked:
+            lines.append(f"  {node.get('address')} (state={node.get('state')}) now waits on: {', '.join(node.get('added_prerequisites') or [])}")
+    elif downstream:
+        lines.append(f"{len(downstream)} downstream node(s) affected, none newly blocked.")
+
+    gates_added = impact.get("gates_added") or []
+    gates_removed = impact.get("gates_removed") or []
+    if gates_added or gates_removed:
+        # Called out separately from nodes: a gate is where a human is required, so
+        # adding or removing one changes who must act, not merely what runs.
+        lines.append(f"GATES: +{len(gates_added)} -{len(gates_removed)}")
+        for address in gates_added:
+            lines.append(f"  + requires a human answer: {address}")
+        for address in gates_removed:
+            lines.append(f"  - NO LONGER requires a human answer: {address}")
+
+    return "\n".join(lines)
+
+
+def draft_rows(payload):
+    # The API returns a list[DraftSummary]; retain wrapped-response compatibility.
+    drafts = payload if isinstance(payload, list) else payload.get("drafts") or []
+    return [
+        {
+            "draft_id": draft.get("draft_id"),
+            "state": draft.get("state"),
+            "proposal_hash": (draft.get("proposal_hash") or "")[:12],
+            "base_plan_version": draft.get("base_plan_version"),
+            # The field that decides whether this is approvable at all, so it is in
+            # the table rather than only in `show`.
+            "base_is_current": draft.get("base_is_current"),
+            "requested_by": draft.get("requested_by"),
+            "request_text": draft.get("request_text"),
+            "changes_gating": (draft.get("gate_diff") or {}).get("changes_gating"),
+            "revision_of": draft.get("revision_of_draft_id"),
+        }
+        for draft in drafts
+    ]
+
+
+def read_json_object(path):
+    source = Path(path)
+    try:
+        if source.stat().st_size > 4_000_000:
+            raise CliError(f"{path} is too large to be an amendment request. Nothing was proposed.", "usage_error", 1)
+        document = json.loads(source.read_text())
+    except OSError as exc:
+        raise CliError(f"Could not read {path}. Nothing was proposed.", "usage_error", 1) from exc
+    except ValueError as exc:
+        raise CliError(f"{path} is not valid JSON. Nothing was proposed.", "usage_error", 1) from exc
+    if not isinstance(document, dict):
+        raise CliError(f"{path} must contain a JSON object. Nothing was proposed.", "usage_error", 1)
+    return document
+
+
+def propose_amendment(args, api):
+    """Ask the server to resolve a placement into explicit edges and file it as a draft.
+
+    The placement is sent as the caller described it and resolved server-side. This
+    command deliberately cannot say where work "should" go: `resolve_placement` returns
+    named blockers for an ambiguous placement and the server refuses to file one, which
+    is the requirement that ambiguity must surface BEFORE acceptance rather than be
+    guessed one way and approved.
+
+    Nothing is applied. A proposal is an inert draft; the new plan version comes only
+    from `accept`.
+    """
+    command = "flow amendment propose"
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+
+    explicit_values = (args.ref, args.kind, args.title, args.placement, args.anchor, args.epic_ref, args.wave_ref)
+    text_only = not args.file and not any(explicit_values) and not args.rejoin_at and not args.requires and not args.precedes and args.issue is None
+    if text_only:
+        request = amendment_call(
+            api,
+            "POST",
+            amendment_path(AUTHORING_REQUESTS, args.flow_id),
+            body={"request_text": args.request_text},
+        )
+        detail = {**request, "applied": False, "proposal_pending": True}
+        return common.envelope(
+            "pending",
+            command,
+            detail,
+            f"Recorded amendment request {request.get('request_id')} against plan version "
+            f"{request.get('base_plan_version')}. The bounded authoring path will file a reviewable draft; "
+            f"nothing was applied. Use 'adp flow amendment list {args.flow_id}' to read it when ready.",
+        )
+
+    if args.file:
+        body = read_json_object(args.file)
+        if "placement" not in body:
+            body = {"placement": body, "request_text": args.request_text}
+        elif "request_text" not in body:
+            body["request_text"] = args.request_text
+    else:
+        work = {"ref": args.ref, "kind": args.kind, "title": args.title}
+        if args.issue:
+            work["issue_ref"] = str(args.issue)
+        if args.requires:
+            work["requires"] = args.requires
+        if args.precedes:
+            work["precedes"] = args.precedes
+
+        placement = {"kind": args.placement}
+        if args.anchor:
+            placement["anchor"] = args.anchor
+        if args.rejoin_at:
+            placement["rejoin_at"] = args.rejoin_at
+        if args.epic_ref:
+            placement["epic_ref"] = args.epic_ref
+        if args.wave_ref:
+            placement["wave_ref"] = args.wave_ref
+
+        body = {"placement": {"work": [work], "placement": placement}, "request_text": args.request_text}
+        if args.purpose:
+            body["placement"]["purpose"] = args.purpose
+
+    created = amendment_call(api, "POST", amendment_path(PROPOSALS, args.flow_id), body=body)
+    impact = created.get("impact") or {}
+    detail = {
+        "draft_id": created.get("draft_id"),
+        "flow_id": created.get("flow_id"),
+        "proposal_hash": created.get("proposal_hash"),
+        "base_plan_version": created.get("base_plan_version"),
+        "added_nodes": created.get("added_nodes"),
+        # The explicit edges. This, not wave membership, is what makes the placement
+        # reviewable — see #5329's "Wave membership or visual order alone is insufficient".
+        "resolved_edges": created.get("resolved_edges"),
+        "impact": impact,
+        "applied": False,
+        "acceptable": impact.get("acceptable"),
+    }
+    progress(impact_text(impact))
+    if not impact.get("acceptable"):
+        return common.envelope(
+            "pending",
+            command,
+            detail,
+            f"Proposal {created.get('draft_id')} was filed but is NOT approvable as it stands — see the blocking "
+            f"diagnostics above. Nothing was applied. Revise it with 'adp flow amendment edit' or decline it with "
+            f"'adp flow amendment reject'.",
+        )
+    return common.envelope(
+        "ok",
+        command,
+        detail,
+        f"Filed proposal {created.get('draft_id')} on flow {created.get('flow_id')} as an inert draft — nothing is applied yet.\n"
+        f"Review it, then approve that exact revision:\n"
+        f"  adp flow amendment accept {args.flow_id} {created.get('draft_id')} "
+        f"--expect-revision {created.get('proposal_hash')} --expect-base-version {created.get('base_plan_version')} "
+        f"--expect-base-hash {impact.get('base_plan_hash')} --yes",
+    )
+
+
+def list_amendments(args, api):
+    """List what is waiting on this flow, newest first."""
+    command = "flow amendment list"
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+
+    params = {"state": args.state} if args.state else {}
+    payload = amendment_call(api, "GET", amendment_path(DRAFT_LIST, args.flow_id, **params))
+    rows = draft_rows(payload)
+    stale = [row for row in rows if row["state"] == "pending" and row["base_is_current"] is False]
+    detail = {"flow_id": args.flow_id, "drafts": rows, "count": len(rows), "stale_pending": len(stale)}
+    if not rows:
+        return common.envelope("ok", command, detail, "No amendment drafts on this flow.")
+    return common.envelope(
+        "ok",
+        command,
+        detail,
+        f"{len(rows)} draft(s)."
+        + (
+            f" {len(stale)} pending draft(s) were written against a plan version that is no longer in force and cannot be "
+            f"approved as they stand; each needs re-authoring against the current plan."
+            if stale
+            else ""
+        ),
+    )
+
+
+def show_amendment(args, api):
+    """Read one draft, including the proposal document it would apply."""
+    command = "flow amendment show"
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+
+    draft = amendment_call(api, "GET", amendment_path(DRAFT_ONE, args.flow_id, args.draft_id))
+    detail = {key: draft.get(key) for key in draft}
+    detail["applied"] = False
+    return common.envelope(
+        "ok",
+        command,
+        detail,
+        f"Draft {draft.get('draft_id')} is {draft.get('state')}, revision {(draft.get('proposal_hash') or '')[:12]}, "
+        f"written against plan version {draft.get('base_plan_version')}"
+        + ("" if draft.get("base_is_current") else " which is NO LONGER in force — it cannot be approved as it stands")
+        + f".\nPreview what it would do: adp flow amendment preview {args.flow_id} {draft.get('draft_id')}",
+    )
+
+
+def preview_amendment(args, api):
+    """Show the whole proposed graph change before anyone approves it.
+
+    Read-only on the server and applies nothing. This is the call whose output the
+    acceptance is meant to be bound to, which is why it reports the revision hash and
+    base version to pass back to `accept`.
+    """
+    command = "flow amendment preview"
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+
+    draft = amendment_call(api, "GET", amendment_path(DRAFT_ONE, args.flow_id, args.draft_id))
+    impact = amendment_call(api, "POST", amendment_path(DRAFT_ONE + "/preview", args.flow_id, args.draft_id))
+    revision = draft.get("proposal_hash")
+    base_version = draft.get("base_plan_version")
+    base_hash = draft.get("base_plan_hash")
+    detail = {
+        "draft_id": args.draft_id,
+        "flow_id": args.flow_id,
+        "state": draft.get("state"),
+        "proposal_hash": revision,
+        "base_plan_version": base_version,
+        "base_plan_hash": base_hash,
+        "base_is_current": draft.get("base_is_current"),
+        "gate_diff": draft.get("gate_diff"),
+        "impact": impact,
+        "acceptable": impact.get("acceptable"),
+        "applied": False,
+    }
+    progress(impact_text(impact))
+    if not impact.get("acceptable"):
+        return common.envelope(
+            "pending",
+            command,
+            detail,
+            "This amendment is NOT approvable as it stands — see the blocking diagnostics above. Nothing was applied.",
+        )
+    return common.envelope(
+        "ok",
+        command,
+        detail,
+        f"Nothing was applied. To approve exactly this revision:\n"
+        f"  adp flow amendment accept {args.flow_id} {args.draft_id} --expect-revision {revision} "
+        f"--expect-base-version {base_version} --expect-base-hash {base_hash} --yes",
+    )
+
+
+def edit_amendment(args, api):
+    """Replace a pending draft's proposal with a revised document.
+
+    Produces a NEW revision and supersedes the one being edited, which is what
+    invalidates any approval of the earlier text: an accept naming the old hash is
+    refused rather than quietly applying the new one.
+    """
+    command = "flow amendment edit"
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+
+    document = read_plan_file(args.file)
+    revision = amendment_call(
+        api,
+        "POST",
+        amendment_path(DRAFT_ONE + "/edit", args.flow_id, args.draft_id),
+        body={"proposal": document, "reason": args.reason},
+    )
+    impact = revision.get("impact") or {}
+    detail = {
+        "draft_id": revision.get("draft_id"),
+        "flow_id": revision.get("flow_id"),
+        "proposal_hash": revision.get("proposal_hash"),
+        "superseded_draft_id": revision.get("superseded_draft_id"),
+        "unchanged": revision.get("unchanged"),
+        "gate_diff": revision.get("gate_diff"),
+        "impact": impact,
+        "acceptable": impact.get("acceptable"),
+        "applied": False,
+    }
+    if revision.get("unchanged"):
+        return common.envelope(
+            "ok",
+            command,
+            detail,
+            f"That document is identical to the draft's current revision, so no new revision was created and "
+            f"draft {revision.get('draft_id')} still stands. Nothing was applied.",
+        )
+    progress(impact_text(impact))
+    return common.envelope(
+        "ok" if impact.get("acceptable") else "pending",
+        command,
+        detail,
+        f"Revision {(revision.get('proposal_hash') or '')[:12]} is now draft {revision.get('draft_id')}; "
+        f"draft {revision.get('superseded_draft_id') or args.draft_id} is superseded and any approval of it is void. "
+        f"Nothing was applied."
+        + ("" if impact.get("acceptable") else " This revision is NOT approvable as it stands — see the blocking diagnostics above."),
+    )
+
+
+def reject_amendment_draft(args, api):
+    """Decline a pending draft. Records who declined it and why; applies nothing."""
+    command = "flow amendment reject"
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+
+    draft = amendment_call(api, "GET", amendment_path(DRAFT_ONE, args.flow_id, args.draft_id))
+    confirm(
+        f"Declining amendment {args.draft_id} on flow {args.flow_id}: {draft.get('request_text') or '(no stated request)'}\n"
+        "This records your decision against your identity. It does not change the plan in force.",
+        args.yes,
+    )
+    rejected = amendment_call(
+        api,
+        "POST",
+        amendment_path(DRAFT_ONE + "/reject", args.flow_id, args.draft_id),
+        body={"reason": args.reason},
+    )
+    return common.envelope(
+        "ok",
+        command,
+        {**rejected, "applied": False},
+        "Declined. The plan in force is unchanged, and no work was added or removed.",
+    )
+
+
+def accept_amendment_draft(args, api):
+    """Apply one reviewed amendment as a new plan version, bound to the exact revision.
+
+    The binding is the point of the command. `--expect-revision` and
+    `--expect-base-version` are sent as server-side preconditions and compared inside
+    the same transaction that writes the new version, so an amendment that was edited,
+    superseded, or written against a plan that has since moved is refused with the plan
+    untouched. Under `--yes` they are REQUIRED: a script that accepts whatever is live
+    is exactly the hole this interaction exists to close.
+
+    Retry-safe. Re-accepting the same draft with the same revision replays the original
+    decision — same plan version, `already_accepted: true` — rather than creating a
+    second version, so a caller whose response was lost can learn the outcome it
+    already has.
+    """
+    command = "flow amendment accept"
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+
+    draft = amendment_call(api, "GET", amendment_path(DRAFT_ONE, args.flow_id, args.draft_id))
+    replaying = draft.get("state") == "accepted"
+    # A terminal draft's preview correctly refuses a NEW amendment against its
+    # superseded base. Only the acceptance endpoint authenticates an exact replay
+    # and returns the original receipt, with all caller preconditions intact.
+    impact = None if replaying else amendment_call(api, "POST", amendment_path(DRAFT_ONE + "/preview", args.flow_id, args.draft_id))
+    revision = args.expect_revision or draft.get("proposal_hash")
+    base_version = args.expect_base_version if args.expect_base_version is not None else draft.get("base_plan_version")
+    base_hash = args.expect_base_hash or draft.get("base_plan_hash")
+    detail = {
+        "draft_id": args.draft_id,
+        "flow_id": args.flow_id,
+        "expected_revision": revision,
+        "expected_base_plan_version": base_version,
+        "expected_base_plan_hash": base_hash,
+        "impact": impact,
+        "applied": False,
+    }
+
+    if impact is not None:
+        progress(impact_text(impact))
+    if not replaying and not impact.get("acceptable"):
+        # Fail closed, before asking for consent. The server would refuse this too;
+        # stopping here means the human is not asked to approve something unapprovable.
+        return common.envelope(
+            "pending",
+            command,
+            detail,
+            "This amendment is NOT approvable as it stands, so nothing was applied and no approval was recorded. See the blocking diagnostics above.",
+        )
+
+    confirmation = (
+        (
+            f"Read back the recorded approval for amendment {args.draft_id} on flow {args.flow_id}, "
+            f"revision {(revision or '')[:12]}, against original plan version {base_version}. "
+            "The server verifies the exact revision and original base before returning the existing decision."
+        )
+        if replaying
+        else (
+            f"Approving amendment {args.draft_id} on flow {args.flow_id}, revision {(revision or '')[:12]}, "
+            f"against plan version {base_version}.\n"
+            "This applies the graph change shown above as a new plan version and authorizes the engine to schedule the "
+            "eligible work in it. The approval is recorded against your identity."
+        )
+    )
+    confirm(confirmation, args.yes)
+    applied = amendment_call(
+        api,
+        "POST",
+        amendment_path(DRAFT_ONE + "/accept", args.flow_id, args.draft_id),
+        body={
+            "expected_proposal_hash": revision,
+            "expected_base_plan_version": base_version,
+            "expected_base_plan_hash": base_hash,
+            "reason": args.reason,
+        },
+        applied=True,
+    )
+    if replaying and applied.get("already_accepted") is not True:
+        raise CliError("The gateway did not confirm the original acceptance receipt. Read the flow before retrying.", "invalid_amendment_replay", 5)
+    detail.update(
+        plan_version=applied.get("plan_version"),
+        superseded_version=applied.get("superseded_version"),
+        decision_id=applied.get("decision_id"),
+        gate_diff=applied.get("gate_diff"),
+        superseded_draft_ids=applied.get("superseded_draft_ids"),
+        # Surfaced rather than hidden: a retry whose first response was lost must be
+        # able to tell it re-read its own result instead of applying a second version.
+        already_accepted=applied.get("already_accepted"),
+        receipts_preserved=applied.get("receipts_preserved") or [],
+        receipts_dropped=applied.get("receipts_dropped") or [],
+        effective_limits_before=applied.get("effective_limits_before"),
+        effective_limits_after=applied.get("effective_limits_after"),
+        applied=True,
+    )
+
+    # The engine schedules eligible work itself; confirm that against its own ledger
+    # rather than against the acceptance response, which says nothing about dispatch.
+    confirmed, dispatch = dispatch_confirmation(api, args.flow_id)
+    detail["dispatch"] = dispatch
+    detail["dispatch_confirmed"] = confirmed
+    replayed = " This was a replay of the approval already recorded, not a second one." if applied.get("already_accepted") else ""
+    warning = receipt_disposition_text(applied.get("receipts_dropped"))
+    summary = effective_limits_text(applied.get("effective_limits_before"), applied.get("effective_limits_after"), committed=True)
+    outcome = "\n".join(item for item in (warning, summary) if item)
+    if outcome:
+        outcome += "\n"
+    return common.envelope(
+        "ok",
+        command,
+        detail,
+        f"Applied as plan version {applied.get('plan_version')} (was {applied.get('superseded_version')}).{replayed}\n"
+        f"{outcome}{dispatch_text(args.flow_id, confirmed, dispatch)}",
+    )
+
+
+def validate_amendment_arguments(args):
+    """Reject the caller's own arguments before a gateway is resolved.
+
+    Local checks only where the answer cannot depend on server state, for the reason
+    stated on `flow_id_argument`: a typo must read as the usage error it is rather than
+    as a complaint about gateway configuration. The server remains the authority on
+    every one of these — it refuses an anchored placement with no anchor too.
+
+    The `--yes` rule is the one that carries weight rather than convenience. An
+    unattended approval that names no revision is an approval of whatever is live,
+    which is precisely the concurrent-edit hole this interaction closes, so it is
+    refused here instead of being sent as an unbound accept.
+    """
+    if getattr(args, "command", None) != "amendment":
+        return
+    action = getattr(args, "amendment_action", None)
+
+    if action == "accept":
+        missing = [
+            name
+            for name, value in (
+                ("--expect-revision", args.expect_revision),
+                ("--expect-base-version", args.expect_base_version),
+                ("--expect-base-hash", args.expect_base_hash),
+            )
+            if value is None
+        ]
+        if args.yes and missing:
+            raise CliError(
+                f"--yes needs {' and '.join(missing)} so the approval is bound to the revision you reviewed. "
+                f"Nothing was applied. Read the current values with 'adp flow amendment preview "
+                f"{args.flow_id} {args.draft_id}' and pass them, or drop --yes to be asked.",
+                "usage_error",
+                1,
+            )
+        # Presence, not truthiness — same reasoning as `answer_gate`'s empty-hash
+        # guard. `--expect-revision ""` is typically a command substitution that
+        # produced nothing, and treating it as "no precondition" would approve
+        # unconditionally while the operator had asked to be guarded. Fail closed.
+        if args.expect_revision is not None and not args.expect_revision.strip():
+            raise CliError(
+                "--expect-revision was given an empty value, so the revision could not be checked and nothing was "
+                "applied. Pass the hash from 'adp flow amendment preview', or omit the flag to be asked instead.",
+                "usage_error",
+                1,
+            )
+        if args.expect_base_version is not None and args.expect_base_version < 1:
+            raise CliError("Use --expect-base-version 1 or greater.", "usage_error", 1)
+        if args.expect_base_hash is not None and not args.expect_base_hash.strip():
+            raise CliError("Use a nonempty --expect-base-hash from the preview.", "usage_error", 1)
+
+    if action == "propose":
+        if args.file:
+            return
+        explicit_values = (args.ref, args.kind, args.title, args.placement, args.anchor, args.epic_ref, args.wave_ref)
+        if not any(explicit_values) and not args.rejoin_at and not args.requires and not args.precedes and args.issue is None:
+            return
+        missing = [
+            name
+            for name, value in (("--ref", args.ref), ("--kind", args.kind), ("--title", args.title), ("--placement", args.placement))
+            if not value
+        ]
+        if missing:
+            raise CliError(
+                f"Use {' ,'.join(missing)} for flag mode, or use --file for a structured multi-node proposal. Nothing was proposed.",
+                "usage_error",
+                1,
+            )
+        if args.placement in ANCHORED_KINDS and not args.anchor:
+            raise CliError(f"--placement {args.placement} needs --anchor ADDRESS. Nothing was proposed.", "usage_error", 1)
+        if args.placement in WAVE_KINDS and args.anchor:
+            raise CliError(
+                f"--placement {args.placement} takes no --anchor: it would be ignored, and an ignored anchor means "
+                f"believing something about the result that is not true. Use --epic-ref and --wave-ref. Nothing was proposed.",
+                "usage_error",
+                1,
+            )
+        if args.placement == "parallel_branch" and not args.rejoin_at:
+            # The one placement that cannot be resolved without it: a branch with no
+            # rejoin is work whose result nothing waits for.
+            raise CliError(
+                "--placement parallel_branch needs --rejoin-at ADDRESS (repeatable): a branch that rejoins nothing "
+                "produces work no later step waits for. Nothing was proposed.",
+                "usage_error",
+                1,
+            )
+        if args.placement == "new_wave" and not args.wave_ref:
+            raise CliError("--placement new_wave needs --wave-ref REF. Nothing was proposed.", "usage_error", 1)
+
+    if action in ("show", "preview", "edit", "reject", "accept") and not getattr(args, "draft_id", "").strip():
+        raise CliError("Use a draft id as ADP issued it. Run 'adp flow amendment list FLOW_ID' to see them.", "usage_error", 1)
+
+
+def amendment(args, api):
+    return AMENDMENT_HANDLERS[args.amendment_action](args, api)
+
+
+AMENDMENT_HANDLERS = {
+    "propose": propose_amendment,
+    "list": list_amendments,
+    "show": show_amendment,
+    "preview": preview_amendment,
+    "edit": edit_amendment,
+    "reject": reject_amendment_draft,
+    "accept": accept_amendment_draft,
+}
 
 
 # --- dispatch --------------------------------------------------------------
@@ -2062,8 +3012,10 @@ def parser():
         metavar="OUTCOME",
         help='What you want, in your own words: "Add per-tenant rate limiting to the public API"',
     )
-    start.add_argument("--repo", metavar="OWNER/NAME", help="The repository the flow delivers into")
+    start.add_argument("--repo", metavar="OWNER/NAME", help="Repository containing --issue; story targets are verified separately for an epic")
     start.add_argument("--issue", type=int, metavar="NUMBER", help="Use an existing issue in that repository as context")
+    start.add_argument("--project", metavar="PROJECT_ID", help="Use this Project instead of the Product base")
+    start.add_argument("--product", metavar="PRODUCT_ID", help="Select an accessible Product for this planning session")
     start.add_argument("--answer", help="Send an answer to a resumed planning session, including from a script")
     start.add_argument("--request-id", help="Stable idempotency token for retrying the same opening message or --answer")
     start.add_argument(
@@ -2115,9 +3067,16 @@ def parser():
     listing = commands.add_parser("list", help="List the flows you can see")
     listing.add_argument("--status", choices=FLOW_STATUSES, help="Only flows with this status")
     listing.add_argument("--needs-me", action="store_true", help="Only flows waiting on a decision from you")
+    listing.add_argument("--include-archived", action="store_true", help="Include archived flows in the list and status counts")
     listing.add_argument("--limit", type=int, default=25, metavar="N", help="Page size (1-100)")
     listing.add_argument("--offset", type=int, default=0, metavar="N", help="Skip N flows")
     listing.add_argument("--json", action="store_true", help="Print machine-readable output")
+
+    for verb in ("archive", "unarchive"):
+        change = commands.add_parser(verb, help=f"{verb.title()} a flow without deleting its history or cost")
+        change.add_argument("flow_id", metavar="FLOW_ID")
+        change.add_argument("--reason", required=True, help="Decision reason, 8–4000 characters")
+        change.add_argument("--json", action="store_true", help="Print machine-readable output")
 
     # Every flow-scoped read takes the same positional, so they are built in a
     # loop: a divergent spelling between `show` and `watch` is a papercut a user
@@ -2173,6 +3132,100 @@ def parser():
         recovery.add_argument("--dry-run", action="store_true")
         recovery.add_argument("--yes", action="store_true")
         recovery.add_argument("--json", action="store_true")
+
+    # --- amendments (#5329) -------------------------------------------------
+    amend = commands.add_parser("amendment", help="Propose, preview, revise, decline or approve a change to a plan in force")
+    amend_actions = amend.add_subparsers(dest="amendment_action", required=True)
+
+    propose = amend_actions.add_parser("propose", help="Propose work with an explicit graph placement")
+    propose.add_argument("flow_id", metavar="FLOW_ID")
+    propose.add_argument("--file", metavar="PATH", help="Structured placement/work request JSON; supports multiple nodes and dependencies")
+    propose.add_argument("--ref", metavar="REF", help="Final address segment for the new node, e.g. 'migration-check'")
+    propose.add_argument("--kind", metavar="KIND", help="Node kind: story, eval or gate")
+    propose.add_argument("--title", help="What the work is")
+    # Named --placement rather than --kind to keep it distinct from the NODE kind
+    # above; two arguments called kind on one command is a mistake waiting to happen.
+    propose.add_argument(
+        "--placement",
+        required=False,
+        choices=PLACEMENT_KINDS,
+        help="Where it goes: insert_before, insert_after, parallel_branch (needs --rejoin-at), existing_wave or new_wave",
+    )
+    propose.add_argument("--anchor", metavar="ADDRESS", help="Existing node address the placement is relative to (the three anchored kinds)")
+    propose.add_argument(
+        "--rejoin-at",
+        action="append",
+        default=[],
+        metavar="ADDRESS",
+        help="Where a parallel branch rejoins; repeatable, required for parallel_branch",
+    )
+    propose.add_argument("--epic-ref", metavar="REF", help="Epic segment (the two wave kinds)")
+    propose.add_argument("--wave-ref", metavar="REF", help="Wave segment (the two wave kinds)")
+    propose.add_argument("--requires", action="append", default=[], metavar="ADDRESS", help="Additional prerequisite address; repeatable")
+    propose.add_argument("--precedes", action="append", default=[], metavar="ADDRESS", help="Additional address this must precede; repeatable")
+    propose.add_argument("--issue", type=int, metavar="NUMBER", help="Existing issue this node adopts (nothing is created)")
+    propose.add_argument("--purpose", help="Why this addition is proposed, shown next to the graph it produces")
+    propose.add_argument(
+        "--request-text",
+        required=True,
+        help="Text-only authored suggestion when no placement flags/file are given; otherwise the request this explicit proposal answers",
+    )
+    propose.add_argument("--json", action="store_true", help="Print machine-readable output")
+
+    amendment_list = amend_actions.add_parser("list", help="List amendment drafts on a flow, newest first")
+    amendment_list.add_argument("flow_id", metavar="FLOW_ID")
+    amendment_list.add_argument("--state", action="append", default=[], choices=DRAFT_STATES, help="Only drafts in this state; repeatable")
+    amendment_list.add_argument("--json", action="store_true", help="Print machine-readable output")
+
+    for action, help_text in (
+        ("show", "Read one draft, including the proposal document it would apply"),
+        ("preview", "Show the whole proposed graph change without applying it"),
+    ):
+        read = amend_actions.add_parser(action, help=help_text)
+        read.add_argument("flow_id", metavar="FLOW_ID")
+        read.add_argument("draft_id", metavar="DRAFT_ID")
+        read.add_argument("--json", action="store_true", help="Print machine-readable output")
+
+    edit = amend_actions.add_parser("edit", help="Replace a pending draft's proposal, creating a new revision")
+    edit.add_argument("flow_id", metavar="FLOW_ID")
+    edit.add_argument("draft_id", metavar="DRAFT_ID")
+    edit.add_argument("--file", required=True, metavar="PATH", help="The revised proposal document (JSON)")
+    edit.add_argument("--reason", help="Why it was revised (recorded on the decision)")
+    edit.add_argument("--json", action="store_true", help="Print machine-readable output")
+
+    decline = amend_actions.add_parser("reject", help="Decline a pending draft; the plan in force is unchanged")
+    decline.add_argument("flow_id", metavar="FLOW_ID")
+    decline.add_argument("draft_id", metavar="DRAFT_ID")
+    decline.add_argument("--reason", help="Why it was declined (recorded on the decision)")
+    decline.add_argument("--yes", action="store_true", help="State the decision without a prompt, for scripts")
+    decline.add_argument("--json", action="store_true", help="Print machine-readable output")
+
+    approve = amend_actions.add_parser("accept", help="Apply a reviewed amendment as a new plan version")
+    approve.add_argument("flow_id", metavar="FLOW_ID")
+    approve.add_argument("draft_id", metavar="DRAFT_ID")
+    # Both preconditions are separate arguments rather than one combined token
+    # because they answer different questions — "is this the text I read?" and "is it
+    # still written against the plan I read it against?" — and a draft can fail either
+    # independently.
+    approve.add_argument(
+        "--expect-revision",
+        metavar="HASH",
+        help="Refuse unless the draft is still this exact revision. Required with --yes",
+    )
+    approve.add_argument(
+        "--expect-base-version",
+        type=int,
+        metavar="N",
+        help="Refuse unless the draft is still written against this plan version. Required with --yes",
+    )
+    approve.add_argument(
+        "--expect-base-hash",
+        metavar="HASH",
+        help="Refuse unless the draft is still based on this exact accepted-plan hash. Required with --yes",
+    )
+    approve.add_argument("--reason", help="Why it is being approved (recorded on the decision)")
+    approve.add_argument("--yes", action="store_true", help="With all --expect-* values, approve that exact revision without a prompt")
+    approve.add_argument("--json", action="store_true", help="Print machine-readable output")
     return root
 
 
@@ -2183,12 +3236,15 @@ HANDLERS = {
     "create": create_flow,
     "draft": revise_draft,
     "list": list_flows,
+    "archive": change_archive_state,
+    "unarchive": change_archive_state,
     "show": show_flow,
     "watch": watch_flow,
     "plans": list_plans,
     "decisions": list_decisions,
     "cost": flow_cost,
     "gate": answer_gate,
+    "amendment": amendment,
 }
 
 
@@ -2200,7 +3256,7 @@ def run(args, api):
         operation = "flows.draft.write"
     elif args.command == "gate":
         operation = "flows.approve.write"
-    if operation:
+    if operation and not (operation == "flows.draft.write" and args.command == "create" and common.crew_binding()):
         common.ensure_can_mutate(operation, request=api.request)
     return HANDLERS[args.command](args, api)
 
@@ -2231,6 +3287,9 @@ def main(argv=None):
         # sent a request to the collection path instead.
         if hasattr(args, "flow_id"):
             args.flow_id = flow_id_argument(args.flow_id)
+        if args.command in {"archive", "unarchive"} and not 8 <= len(args.reason.strip()) <= 4000:
+            raise CliError("Use a --reason of 8 to 4000 non-whitespace characters.", "usage_error", 1)
+        validate_amendment_arguments(args)
         if getattr(args, "limit", None) is not None and not 1 <= args.limit <= 100:
             raise CliError("Use --limit between 1 and 100.", "usage_error", 1)
         if getattr(args, "offset", None) is not None and args.offset < 0:

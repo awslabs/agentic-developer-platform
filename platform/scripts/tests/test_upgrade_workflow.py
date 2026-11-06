@@ -15,6 +15,116 @@ spec.loader.exec_module(network)
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_factory_fresh_configuration_avoids_legacy_role_and_inline_quota(self):
+        source = (ROOT / 'platform/scripts/deploy-all.sh').read_text()
+        start = source.index('  if [ "$UPDATE_MODE" = false ]; then',
+                             source.index('# Step 10/11: Agent Factory'))
+        block = source[start:source.index('  terraform init', start)]
+        prefix = """set -euo pipefail
+aws() { return 1; }
+kubectl() { return 1; }
+"""
+        for environment in ('dev', 'customer-test'):
+            for update in (False, True):
+                with self.subTest(environment=environment, update=update), tempfile.TemporaryDirectory() as tmp:
+                    config = Path(tmp) / 'terraform.tfvars'
+                    original = 'runner_role_name = "existing-owned-role"\ngateway_intake_managed_policy = false\n'
+                    config.write_text(original)
+                    recovered = Path(tmp) / 'agent-factory.tfvars.json'
+                    recovered.write_text('{"runner_role_name":"recovered-owned-role"}')
+                    env = dict(os.environ, ENVIRONMENT=environment, AWS_REGION='eu-west-1',
+                               ADP_GITHUB_ORG='customer-org', UPDATE_MODE=str(update).lower(),
+                               UPGRADE_RUN_DIR=tmp)
+                    result = subprocess.run(['bash', '-c', prefix + block +
+                                             '\nprintf "%s" "${FACTORY_VAR_FILE:-}"'],
+                                            cwd=tmp, env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(recovered.read_text(), '{"runner_role_name":"recovered-owned-role"}')
+                    if update:
+                        self.assertEqual(config.read_text(), original)
+                        self.assertEqual(result.stdout, str(recovered))
+                    else:
+                        values = dict(re.findall(r'^(\w+)\s*=\s*(.+)$', config.read_text(), re.M))
+                        self.assertEqual(values['runner_role_name'], f'"adp-{environment}-agent-factory-runner-role"')
+                        self.assertNotEqual(values['runner_role_name'], f'"adp-{environment}-agent-runner-role"')
+                        self.assertEqual(values['gateway_intake_managed_policy'], 'true')
+                        self.assertEqual(values['environment'], f'"{environment}"')
+                        self.assertEqual(values['aws_region'], '"eu-west-1"')
+                        self.assertEqual(values['enable_github_apps'], 'false')
+                        self.assertEqual(result.stdout, '')
+
+    def test_gateway_initial_manifests_defer_capacity_to_selected_bundle(self):
+        source = (ROOT / 'platform/scripts/deploy-all.sh').read_text()
+        start = source.index('  for f in k8s/*.yaml; do')
+        block = source[start:source.index('\n  done', start)] + '\n  done\n'
+        prefix = '''set -euo pipefail
+kubectl() {
+  if [ "$1" = create ]; then
+    case "$*" in *namespace.yaml*) echo Namespace ;; *) echo Service ;; esac
+  else
+    echo "$*"
+  fi
+}
+'''
+        for update in (False, True):
+            with self.subTest(update=update), tempfile.TemporaryDirectory() as tmp:
+                k8s = Path(tmp) / 'k8s'
+                k8s.mkdir()
+                for name in ('hpa', 'pdb', 'namespace', 'service', 'configmap', 'deployment',
+                             'serviceaccount', 'targetgroupbinding'):
+                    (k8s / f'{name}.yaml').touch()
+                result = subprocess.run(['bash', '-c', prefix + block], cwd=tmp,
+                                        env=dict(os.environ, UPDATE_MODE=str(update).lower()),
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = ['apply -f k8s/service.yaml -n adp-gateway']
+                self.assertEqual(result.stdout.splitlines(), expected)
+
+    def test_fresh_gateway_verification_enables_autoscaling_and_requires_readiness(self):
+        source = (ROOT / 'platform/scripts/deploy-all.sh').read_text()
+        start = source.index('if [ "$DEPLOY_GATEWAY" = true ]; then',
+                             source.index('if deploy_phase_begin verify; then'))
+        block = source[start:source.index('\nif [ "$CI_MODE"', start)]
+        prefix = '''set -euo pipefail
+step() { :; }
+fail() { echo "$*" >&2; exit 1; }
+record() { echo "$*" >> "$CALLS"; [ "$FAIL_AT" != "$1" ]; }
+capacity_lock() { record "capacity-$1"; }
+python3() {
+  if [ "$1" = "$SCRIPT_DIR/render-gateway-capacity.py" ]; then record "$4"; return; fi
+  command python3 "$@"
+}
+kubectl() { record kubectl "$@"; }
+wait_for_gateway_rollout() { record ready; }
+aws() { echo example.test; }
+curl() { record health || return; echo '{"status":"healthy"}'; }
+'''
+        cases = [(False, True, ''), (True, True, ''), (False, False, '')]
+        cases += [(False, True, failure) for failure in
+                  ('capacity-verify', '--verify-bundle', 'kubectl', 'ready', 'health', '--verify-applied', 'capacity-release')]
+        cases += [(True, True, failure) for failure in ('capacity-verify', '--verify-applied')]
+        for update, gateway, failure in cases:
+            with self.subTest(update=update, gateway=gateway, failure=failure), tempfile.TemporaryDirectory() as tmp:
+                calls = Path(tmp) / 'calls'
+                calls.touch()
+                env = dict(os.environ, ROOT_DIR=str(ROOT), ENVIRONMENT='dev', CALLS=str(calls),
+                           UPDATE_MODE=str(update).lower(), DEPLOY_GATEWAY=str(gateway).lower(),
+                           SCRIPT_DIR=str(ROOT / 'platform/scripts'), CAPACITY_BUNDLE=f'{tmp}/bundle',
+                           CAPACITY_LOCK_DIR=f'{tmp}/lock', FAIL_AT=failure)
+                result = subprocess.run(['bash', '-c', prefix + block], env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, not failure, result.stderr)
+                expected = []
+                if gateway:
+                    if not update:
+                        expected.extend(['capacity-verify', '--verify-bundle',
+                                         f'kubectl apply -f {tmp}/bundle/hpa.json -n adp-gateway', 'ready'])
+                    expected.extend(['health', 'capacity-verify', '--verify-applied', 'capacity-release'])
+                if failure:
+                    stopped = next(index for index, event in enumerate(expected) if event.split()[0] == failure)
+                    expected = expected[:stopped + 1]
+                self.assertEqual(calls.read_text().splitlines(), expected)
+
     def test_initial_gateway_plan_preserves_engine_and_refuses_failed_discovery(self):
         source = (ROOT / 'platform/scripts/deploy-all.sh').read_text()
         start = source.index('if deploy_phase_begin gateway-infra; then')
@@ -36,6 +146,8 @@ terraform() { echo init >> "$CALLS"; }
 bash() { :; }
 gateway_alb_vars() { GATEWAY_ALB_ARGS=(-var preserved-albs); }
 terraform_update_apply() { printf '%s\\n' "$*" >> "$CALLS"; }
+tf_adopt_existing() { :; }
+gateway_role_policy_cutover() { :; }
 '''
         for failure in (False, True):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
@@ -44,6 +156,7 @@ terraform_update_apply() { printf '%s\\n' "$*" >> "$CALLS"; }
                 env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(ROOT / 'platform/scripts'),
                            UPDATE_MODE='true', DEPLOY_GATEWAY='true', ACCOUNT_ID='123456789012',
                            ENVIRONMENT='dev', AWS_REGION='us-east-1', GATEWAY_UPDATE_VAR_FILE='gateway.json',
+                           UPGRADE_RUN_DIR=tmp,
                            CALLS=str(calls), OLD_DIGEST=digest, DISCOVERY_FAIL=str(failure).lower())
                 result = subprocess.run(['bash', '-c', prefix + block], env=env, capture_output=True, text=True)
                 if failure:
@@ -56,7 +169,8 @@ terraform_update_apply() { printf '%s\\n' "$*" >> "$CALLS"; }
 
     def test_gateway_retry_does_not_restart_unchanged_pods(self):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
-        start = source.index('  if [ "$UPDATE_MODE" = true ]; then', source.index('DEPLOYMENT_APPLY_RESULT='))
+        start = source.rindex('  if [ "$UPDATE_MODE" = true ]; then', 0,
+                              source.index('    # Applying a changed pod template'))
         block = source[start:source.index('    # Post-rollout health check', start)] + '  fi\n'
         stub = '''set -euo pipefail
 fail() { echo "$1" >&2; exit 1; }
@@ -165,6 +279,7 @@ deploy_phase_begin() { return 0; }
 deploy_phase_complete() { :; }
 step() { :; }
 fail() { echo "$*" >&2; exit 1; }
+capacity_lock() { echo "capacity $1" >> "$CALLS"; }
 python3() {
   if [ "$1" = -c ]; then command python3 "$@"; return; fi
   echo "python $*" >> "$CALLS"
@@ -190,6 +305,7 @@ curl() { echo '{"status":"healthy"}'; }
         with tempfile.TemporaryDirectory() as tmp:
             calls = Path(tmp) / "calls"
             env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(ROOT / "platform/scripts"),
+                       CAPACITY_BUNDLE=f"{tmp}/bundle", CAPACITY_LOCK_DIR=f"{tmp}/lock",
                        UPDATE_MODE="true", DEPLOY_GATEWAY="true", DEPLOY_FACTORY="true", SKIP_FRONTEND="false", UPGRADE_RUN_DIR=tmp,
                        GATEWAY_UPDATE_VAR_FILE="/tmp/gateway.tfvars.json", IMAGE_TAG="a" * 40,
                        GATEWAY_IMAGE="customer-gateway@sha256:" + "b" * 64, ACCOUNT_ID="925091290508",
@@ -209,7 +325,10 @@ curl() { echo '{"status":"healthy"}'; }
         self.assertIn("deploy-frontend.sh", calls[5])
         self.assertIn("upgrade-state.py verify", calls[6])
         self.assertIn("--require-module agent-factory", calls[6])
-        self.assertIn("enable-bedrock-models.sh --verify", calls[7])
+        self.assertEqual(calls[7], "capacity verify")
+        self.assertIn("render-gateway-capacity.py --environment test --verify-applied", calls[8])
+        self.assertEqual(calls[9], "capacity release")
+        self.assertIn("enable-bedrock-models.sh --verify", calls[10])
 
     def test_final_engine_mismatch_prevents_frontend_and_success(self):
         result, calls = self.finalize(engine_fail=True)

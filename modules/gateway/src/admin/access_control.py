@@ -2,6 +2,7 @@
 
 import logging
 import time
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,6 +61,7 @@ _ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
         # has; omitting it would let a principal with an empty `org_id` skip the
         # membership-deny below and short-circuit the `target_org_id` check, and
         # register plan rows with no tenant at all.
+        Permission.TOOLS_MANAGE,
         Permission.PLAN_DRAFT,
     }
 )
@@ -144,15 +146,25 @@ class AccessControl:
         # must never lend its role to this token's org/team/billing context.
         return membership_role_to_admin_role(pair[1].role), context.org_id
 
+    async def _resolve_department(self, context: TokenContext) -> str | None:
+        """Resolve department scope from current workspace membership, never JWT hints."""
+        if self.db is None:
+            return None
+        from src.shared.identity.workspaces import primary_team_for_workspace, workspace_user
+
+        user = await workspace_user(self.db, context.user_id, context.org_id, username=context.cognito_username)
+        team = await primary_team_for_workspace(self.db, user, context.org_id) if user else None
+        return team.department_id if team else None
+
     async def get_user_role(self, context: TokenContext) -> tuple[AdminRole, str | None, str | None]:
         """
         Get the admin role for a user.
 
         Authority model (Issue #3987): the token establishes *identity*; the
         database establishes *authority*. Org-level role comes from the caller's
-        token-scoped ``tenant_memberships`` row. Platform admin remains a token claim
-        (``is_admin``) — a tracked follow-up will back it with a server-side
-        platform-admin membership lookup.
+        token-scoped ``tenant_memberships`` row. Authentication resolves
+        ``is_admin`` against current platform authority (durable grants or the
+        live IdP for existing/bootstrap admins), rather than trusting a JWT claim.
 
         Args:
             context: The authenticated user's token context
@@ -160,8 +172,7 @@ class AccessControl:
         Returns:
             Tuple of (role, org_id, dept_id) - org_id/dept_id are the scope limits
         """
-        # Platform admin resolves from the token claim alone and needs no DB hit,
-        # so this path stays valid when no session was injected.
+        # is_admin is the current authority decision made by authentication.
         if context.is_admin:
             return (AdminRole.PLATFORM_ADMIN, None, None)
 
@@ -171,8 +182,11 @@ class AccessControl:
             return cached
 
         resolved: tuple[AdminRole, str | None] | None = None
+        department = None
         try:
             resolved = await self._resolve_membership_role(context)
+            if resolved is not None and resolved[0] == AdminRole.DEPT_ADMIN:
+                department = await self._resolve_department(context)
         except Exception as exc:
             # Fail closed: never fall through to a higher role because a query
             # errored. Logged at WARN with a greppable event name.
@@ -182,11 +196,12 @@ class AccessControl:
                 context.org_id,
                 exc,
             )
-            resolved = None
+            # A known department role must not fall through to the legacy
+            # org-admin fallback if only its department lookup failed.
 
         if resolved is not None:
             role, tenant_id = resolved
-            result = (role, tenant_id, None)
+            result = (role, tenant_id, department)
         else:
             # No membership row (or no session). Issue #3987 PR 2 made least
             # privilege the default, so this path now demotes to MEMBER rather
@@ -230,8 +245,11 @@ class AccessControl:
         if cache_key in self._discovery_role_unavailable or self.db is None:
             return None
 
+        department = None
         try:
             resolved = await self._resolve_membership_role(context)
+            if resolved is not None and resolved[0] == AdminRole.DEPT_ADMIN:
+                department = await self._resolve_department(context)
         except Exception as exc:
             logger.warning(
                 "rbac_role_lookup_failed user=%s org=%s error=%s",
@@ -244,7 +262,7 @@ class AccessControl:
 
         if resolved is not None:
             role, tenant_id = resolved
-            result = (role, tenant_id, None)
+            result = (role, tenant_id, department)
         else:
             least_privilege = get_admin_config().rbac_least_privilege_default
             role = AdminRole.MEMBER if least_privilege else AdminRole.ORG_ADMIN
@@ -304,7 +322,7 @@ class AccessControl:
                     allowed_scope=f"org:{allowed_org_id}",
                     requested_scope=f"org:{target_org_id}",
                 )
-            if target_dept_id and allowed_dept_id and target_dept_id != allowed_dept_id:
+            if role == AdminRole.DEPT_ADMIN and target_dept_id and target_dept_id != allowed_dept_id:
                 raise InvalidScopeError(
                     message="Cannot access resources from another department",
                     allowed_scope=f"dept:{allowed_dept_id}",
@@ -334,8 +352,39 @@ class AccessControl:
         Raises:
             AccessDeniedError: If the user does not have the permission
         """
+        if permission == Permission.PLAN_APPROVE or (permission == Permission.PLAN_DRAFT and context.account_type == "human"):
+            if await self._workflow_permission(context, target_org_id):
+                return True
+            raise AccessDeniedError(
+                message="Workflow actions require a signed-in member of this workspace",
+                required_permission=permission.value,
+            )
         resolved = await self.get_user_role(context)
         return self._check_resolved_permission(*resolved, permission, target_org_id, target_dept_id)
+
+    async def _workflow_permission(self, context: TokenContext, target_org_id: str | None) -> bool | None:
+        """One live membership rule for workflow writes and capability discovery.
+
+        None denotes an unavailable membership store, never an authorization.
+        Do not use the role cache or its MEMBER fallback to establish membership.
+        """
+        from src.shared.identity.workflow_access import is_workflow_member
+
+        if (
+            context.account_type != "human"
+            or context.auth_source != "jwt"
+            or context.expires_at <= datetime.now(UTC)
+            or not context.org_id
+            or (target_org_id is not None and target_org_id != context.org_id)
+        ):
+            return False
+        if self.db is None:
+            return None
+        try:
+            return await is_workflow_member(self.db, user_id=context.user_id, org_id=context.org_id, username=context.cognito_username)
+        except Exception:
+            logger.warning("workflow_membership_lookup_failed user=%s org=%s", context.user_id, context.org_id, exc_info=True)
+            return None
 
     async def check_permission_for_discovery(
         self,
@@ -345,6 +394,14 @@ class AccessControl:
         target_dept_id: str | None = None,
     ) -> bool | None:
         """Return a tri-state permission answer without authorizing an action."""
+        if permission == Permission.PLAN_APPROVE or (permission == Permission.PLAN_DRAFT and context.account_type == "human"):
+            key = (context.user_id, context.org_id)
+            if key in self._discovery_role_unavailable:
+                return None
+            allowed = await self._workflow_permission(context, target_org_id)
+            if allowed is None:
+                self._discovery_role_unavailable.add(key)
+            return allowed
         resolved = await self.get_user_role_for_discovery(context)
         if resolved is None:
             return None

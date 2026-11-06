@@ -55,7 +55,7 @@ async def test_lifecycle_provider_has_exact_read_policy_and_bounded_no_retry_cli
                 await provider.aws_read(service, method)
         assert not hasattr(provider, "delivery_role")
         assert not hasattr(provider, "session")
-        provider.reads = 64
+        provider.reads = 512
         with pytest.raises(HTTPException):
             await provider.aws_read("sts", "get_caller_identity")
     read.get_caller_identity.assert_called_once_with()
@@ -225,7 +225,31 @@ async def test_live_observation_accepts_renewal_but_refuses_changed_claim(
     )
     latest = replace(operation, grant=RecoveryGrant(actor, renewed))
     artifact = {"artifact_id": "b" * 64, "account_id": "123456789012"}
-    source, context = SimpleNamespace(region="us-east-1"), object()
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    source, context = (
+        SimpleNamespace(region="us-east-1"),
+        SimpleNamespace(connect=connect),
+    )
+    from harness_jobs.execution import CallStage, CallOutcome
+
+    monkeypatch.setattr(
+        "harness_jobs.execution.read_call",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                stage=CallStage.OBSERVED,
+                outcome=CallOutcome.SUCCEEDED,
+                provider_ref=None,
+            )
+        ),
+    )
+    seal = AsyncMock()
+    monkeypatch.setattr(
+        "workspace_provisioning.applied_inventory.seal_verified_inventory", seal
+    )
     calls = 0
 
     async def resolve(*_):
@@ -236,7 +260,7 @@ async def test_live_observation_accepts_renewal_but_refuses_changed_claim(
     @asynccontextmanager
     async def provider(**arguments):
         await arguments["current"]()
-        yield object()
+        yield SimpleNamespace(inventory_session=object())
 
     monkeypatch.setattr(recovery, "lifecycle_context", resolve)
     monkeypatch.setattr(recovery, "observation_provider", provider)
@@ -250,6 +274,7 @@ async def test_live_observation_accepts_renewal_but_refuses_changed_claim(
         result = await recovery.observe_lifecycle(object(), body)
         assert result["result_artifact_id"] == artifact["artifact_id"]
         assert calls == 3
+        seal.assert_awaited_once()
     else:
         with pytest.raises(HTTPException):
             await recovery.observe_lifecycle(object(), body)

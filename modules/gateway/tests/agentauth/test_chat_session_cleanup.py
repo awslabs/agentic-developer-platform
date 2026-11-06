@@ -288,7 +288,14 @@ async def test_notification_scan_replays_cleanup_after_end_without_another_turn(
     _, runtime, _, _, _ = mailbox
     authority, now = runtime[1], runtime[-1]
     request_session_end(runtime[2], session_id="session-a", owner=OWNER, now=now, reason="user")
-    notifications.recover_notification_page(authority, transport.sessions, now=now, capabilities=service(authority), transport=wakeup)
+    notifications.recover_notification_page(
+        authority,
+        transport.sessions,
+        now=now,
+        capabilities=service(authority),
+        transport=wakeup,
+        crew_store=SimpleNamespace(revoke_for_lease=lambda **_: False),
+    )
     assert marker(runtime)["publishedAt"] == now
     assert runtime[2].get_item(Key={"PK": "session#session-a", "SK": "header"})["Item"]["sessionState"] == "recovering"
 
@@ -304,3 +311,41 @@ async def test_expired_root_cleans_original_pod_without_minting_new_authority(ma
     assert header["chatLease"]["expires_at"] == 1
     assert header["sessionEndReason"] == "authority"
     assert not authority.current(launch, expiry)
+
+
+@pytest.mark.parametrize("mailbox", ["persistent"], indirect=True)
+@pytest.mark.parametrize("reason", ["user", "idle"])
+async def test_session_fence_deletes_spendable_crew_run(mailbox, wakeup, reason):
+    import boto3
+
+    from src.agentauth.chat_crew_run import CrewRunStore
+
+    _, runtime, _, _, _ = mailbox
+    authority, now, context = runtime[1], runtime[-1], runtime[2]
+    lease = context.get_item(Key={"PK": "session#session-a", "SK": "header"}, ConsistentRead=True)["Item"]["chatLease"]
+    registry = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName="crew-run-fence",
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+    )
+    crew_store = CrewRunStore(registry)
+    run_id = crew_store.mint(
+        tenant_id="tenant",
+        user_id="human",
+        session_id="session-a",
+        lease_generation=int(lease["generation"]),
+        lease_expires_at=int(lease["expires_at"]),
+        target_kind="eks-pod",
+        target_ref="chat-pod",
+        now=now,
+    )
+    if reason == "user":
+        request_session_end(context, session_id="session-a", owner=OWNER, now=now, reason="user", crew_store=crew_store)
+    else:
+        assert (
+            publish_session_cleanup(authority, service(authority), marker(runtime), now=now + 301, transport=wakeup, crew_store=crew_store)
+            == "notified"
+        )
+    assert CrewRunStore(registry).read_run(run_id) is None
+    assert registry.get_item(Key={"event_id": f"crew-lease#tenant#session-a#{lease['generation']}", "arrived_at": "crew"}).get("Item") is None

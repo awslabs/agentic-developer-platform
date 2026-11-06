@@ -1579,6 +1579,7 @@ async def _seed_org_workspace_credentials(*credential_ids, workspaces=1):
     """
     from app.models.credential import CredentialRegistry
     from app.models.organization import Organization
+    from app.models.user import USER_STATUS_ACTIVE, User
     from app.models.workspace import Workspace
 
     org = uuid.uuid4()
@@ -1589,6 +1590,15 @@ async def _seed_org_workspace_credentials(*credential_ids, workspaces=1):
         )
         await session.commit()
     async with async_session_test() as session:
+        for subject in ("user-abc", "other-principal", "reader-only"):
+            session.add(
+                User(
+                    org_id=org,
+                    email=f"{subject}@example.invalid",
+                    cognito_sub=subject,
+                    status=USER_STATUS_ACTIVE,
+                )
+            )
         for index, workspace_id in enumerate(workspace_ids):
             session.add(
                 Workspace(

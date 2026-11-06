@@ -1,0 +1,61 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title":"Proposed catalog API (not deployed)","version":"0.1.0","description":"Design checkpoint for #8269; paths are proposals, not implemented routes."},
+  "servers": [{"url":"https://adp.example.com/api/v1/catalog","description":"Fictional gateway base"}],
+  "security": [{"Session":[]}],
+  "components": {
+    "securitySchemes": {"Session":{"type":"http","scheme":"bearer"}},
+    "parameters": {
+      "id":{"name":"id","in":"path","required":true,"schema":{"type":"string","minLength":1,"maxLength":512}},
+      "project_id":{"name":"project_id","in":"path","required":true,"schema":{"type":"string","minLength":1,"maxLength":512}},
+      "relationship_id":{"name":"relationship_id","in":"path","required":true,"schema":{"type":"string","minLength":1,"maxLength":512}},
+      "limit":{"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":100,"default":50}},
+      "cursor":{"name":"cursor","in":"query","schema":{"type":"string","minLength":1,"maxLength":2048}},
+      "key":{"name":"Idempotency-Key","in":"header","required":true,"schema":{"type":"string","minLength":1,"maxLength":128}},
+      "revision":{"name":"If-Match","in":"header","required":true,"schema":{"type":"string","minLength":1,"maxLength":512}}
+    },
+    "responses": {
+      "error":{"description":"Scoped error; see catalog-api.md for status-specific rules","content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/error"}}}},
+      "receipt":{"description":"Committed mutation receipt","content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/receipt"}}}}
+    }
+  },
+  "paths": {
+    "/portfolios": {
+      "get":{"operationId":"listCatalogPortfolios","parameters":[{"$ref":"#/components/parameters/limit"},{"$ref":"#/components/parameters/cursor"}],"responses":{"200":{"description":"Authorized deduplicated page; no total count","content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/portfolio_page"}}}},"400":{"$ref":"#/components/responses/error"},"401":{"$ref":"#/components/responses/error"}}},
+      "post":{"operationId":"createCatalogPortfolio","parameters":[{"$ref":"#/components/parameters/key"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/create_portfolio"}}}},"responses":{"201":{"$ref":"#/components/responses/receipt"},"400":{"$ref":"#/components/responses/error"},"401":{"$ref":"#/components/responses/error"},"403":{"$ref":"#/components/responses/error"},"409":{"$ref":"#/components/responses/error"},"422":{"$ref":"#/components/responses/error"}}}
+    },
+    "/portfolios/{id}": {
+      "parameters":[{"$ref":"#/components/parameters/id"}],
+      "get":{"operationId":"getCatalogPortfolio","responses":{"200":{"description":"Authorized Portfolio projection","content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/portfolio"}}}},"401":{"$ref":"#/components/responses/error"},"404":{"$ref":"#/components/responses/error"}}},
+      "patch":{"operationId":"reviseCatalogPortfolio","parameters":[{"$ref":"#/components/parameters/key"},{"$ref":"#/components/parameters/revision"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/create_portfolio"}}}},"responses":{"200":{"$ref":"#/components/responses/receipt"},"403":{"$ref":"#/components/responses/error"},"404":{"$ref":"#/components/responses/error"},"409":{"$ref":"#/components/responses/error"},"412":{"$ref":"#/components/responses/error"},"422":{"$ref":"#/components/responses/error"},"428":{"$ref":"#/components/responses/error"}}}
+    },
+    "/portfolios/{id}/memberships": {
+      "parameters":[{"$ref":"#/components/parameters/id"}],
+      "get":{"operationId":"listCatalogMemberships","parameters":[{"$ref":"#/components/parameters/limit"},{"$ref":"#/components/parameters/cursor"}],"responses":{"200":{"description":"Authorized edge page","content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/membership_page"}}}},"400":{"$ref":"#/components/responses/error"},"404":{"$ref":"#/components/responses/error"}}},
+      "post":{"operationId":"createCatalogMembership","parameters":[{"$ref":"#/components/parameters/key"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/create_membership"}}}},"responses":{"201":{"$ref":"#/components/responses/receipt"},"403":{"$ref":"#/components/responses/error"},"404":{"$ref":"#/components/responses/error"},"409":{"$ref":"#/components/responses/error"},"422":{"$ref":"#/components/responses/error"}}}
+    },
+    "/portfolios/{id}/memberships/{relationship_id}": {
+      "parameters":[{"$ref":"#/components/parameters/id"},{"$ref":"#/components/parameters/relationship_id"}],
+      "patch":{"operationId":"closeCatalogMembership","parameters":[{"$ref":"#/components/parameters/key"},{"$ref":"#/components/parameters/revision"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/close_membership"}}}},"responses":{"200":{"$ref":"#/components/responses/receipt"},"403":{"$ref":"#/components/responses/error"},"404":{"$ref":"#/components/responses/error"},"409":{"$ref":"#/components/responses/error"},"412":{"$ref":"#/components/responses/error"},"422":{"$ref":"#/components/responses/error"},"428":{"$ref":"#/components/responses/error"}}}
+    },
+    "/initiatives": {
+      "get":{"operationId":"listCatalogInitiatives","parameters":[{"$ref":"#/components/parameters/limit"},{"$ref":"#/components/parameters/cursor"}],"responses":{"200":{"description":"Authorized Initiative page","content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/initiative_page"}}}},"400":{"$ref":"#/components/responses/error"}}},
+      "post":{"operationId":"createCatalogInitiative","parameters":[{"$ref":"#/components/parameters/key"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/create_initiative"}}}},"responses":{"201":{"$ref":"#/components/responses/receipt"},"403":{"$ref":"#/components/responses/error"},"409":{"$ref":"#/components/responses/error"},"422":{"$ref":"#/components/responses/error"}}}
+    },
+    "/initiatives/{id}": {
+      "parameters":[{"$ref":"#/components/parameters/id"}],
+      "get":{"operationId":"getCatalogInitiative","responses":{"200":{"description":"Authorized Initiative projection","content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/initiative"}}}},"404":{"$ref":"#/components/responses/error"}}},
+      "patch":{"operationId":"reviseCatalogInitiative","parameters":[{"$ref":"#/components/parameters/key"},{"$ref":"#/components/parameters/revision"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/create_initiative"}}}},"responses":{"200":{"$ref":"#/components/responses/receipt"},"403":{"$ref":"#/components/responses/error"},"404":{"$ref":"#/components/responses/error"},"409":{"$ref":"#/components/responses/error"},"412":{"$ref":"#/components/responses/error"},"422":{"$ref":"#/components/responses/error"},"428":{"$ref":"#/components/responses/error"}}}
+    },
+    "/projects/{project_id}/contributions": {
+      "parameters":[{"$ref":"#/components/parameters/project_id"}],
+      "get":{"operationId":"listCatalogContributions","parameters":[{"$ref":"#/components/parameters/limit"},{"$ref":"#/components/parameters/cursor"}],"responses":{"200":{"description":"Project-scoped Contributions","content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/contribution_page"}}}},"400":{"$ref":"#/components/responses/error"},"404":{"$ref":"#/components/responses/error"}}},
+      "post":{"operationId":"createCatalogContribution","parameters":[{"$ref":"#/components/parameters/key"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/create_contribution"}}}},"responses":{"201":{"$ref":"#/components/responses/receipt"},"403":{"$ref":"#/components/responses/error"},"404":{"$ref":"#/components/responses/error"},"409":{"$ref":"#/components/responses/error"},"422":{"$ref":"#/components/responses/error"}}}
+    },
+    "/projects/{project_id}/contributions/{id}": {
+      "parameters":[{"$ref":"#/components/parameters/project_id"},{"$ref":"#/components/parameters/id"}],
+      "get":{"operationId":"getCatalogContribution","responses":{"200":{"description":"Project-scoped Contribution","content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/contribution"}}}},"404":{"$ref":"#/components/responses/error"}}},
+      "patch":{"operationId":"reviseCatalogContribution","parameters":[{"$ref":"#/components/parameters/key"},{"$ref":"#/components/parameters/revision"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"catalog-schemas.json#/$defs/create_contribution"}}}},"responses":{"200":{"$ref":"#/components/responses/receipt"},"403":{"$ref":"#/components/responses/error"},"404":{"$ref":"#/components/responses/error"},"409":{"$ref":"#/components/responses/error"},"412":{"$ref":"#/components/responses/error"},"422":{"$ref":"#/components/responses/error"},"428":{"$ref":"#/components/responses/error"}}}
+    }
+  }
+}

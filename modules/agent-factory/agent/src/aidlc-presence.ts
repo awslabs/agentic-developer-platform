@@ -7,14 +7,15 @@
  * derived from the triggering comment's metadata.
  *
  * This satisfies mint-presence.ts's anti-fabrication check while maintaining
- * the security invariant: a real human (or authorized agent) DID act — the
- * gate-answering comment IS the proof.
+ * the security invariant: only a current, unedited gate reply from a verified
+ * human repository writer can supply synthetic presence evidence.
  *
  * Issue #3232, EPIC #3158 — hardening wave (Decision 3).
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { authorizeComment, type CommentAuthorityContext, type CommentEnvelope } from './utils/comment-authority';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -311,77 +312,26 @@ export function buildHumanTurnEvent(stage: string, comment: TriggerComment): str
 `;
 }
 
-// ---------------------------------------------------------------------------
-// Comment Extraction Helper
-// ---------------------------------------------------------------------------
-
-/**
- * Extract the gate-answering comment from a list of issue comments.
- *
- * The gate answer is the most recent comment after the gate marker comment
- * (identified by `<!-- aidlc-gate:<stage> -->`) that is NOT from a bot.
- */
-export function extractGateAnswerComment(
-  comments: Array<{ author: string; body: string; createdAt: string }>,
-  stage: string,
-  repoOwner: string,
-  repoName: string,
-  issueNumber: string,
-): TriggerComment | null {
-  // Find the gate marker comment index
-  const marker = `<!-- aidlc-gate:${stage} -->`;
-  let markerIdx = -1;
-
-  for (let i = comments.length - 1; i >= 0; i--) {
-    if (comments[i].body.includes(marker)) {
-      markerIdx = i;
-      break;
-    }
-  }
-
-  if (markerIdx === -1) {
-    // No gate marker found — use the most recent non-bot comment as fallback
-    for (let i = comments.length - 1; i >= 0; i--) {
-      const c = comments[i];
-      if (!isBotComment(c.author)) {
-        return {
-          author: c.author,
-          createdAt: c.createdAt,
-          url: buildCommentUrl(repoOwner, repoName, issueNumber, i),
-        };
-      }
-    }
-    return null;
-  }
-
-  // Find the first non-bot comment AFTER the gate marker
-  for (let i = markerIdx + 1; i < comments.length; i++) {
-    const c = comments[i];
-    if (!isBotComment(c.author)) {
-      return {
-        author: c.author,
-        createdAt: c.createdAt,
-        url: buildCommentUrl(repoOwner, repoName, issueNumber, i),
-      };
-    }
-  }
-
-  return null;
-}
-
-function isBotComment(author: string): boolean {
-  if (!author) return true;
-  if (author.endsWith('[bot]')) return true;
-  if (author.startsWith('aws-e-adp-agent-')) return true;
-  return false;
-}
-
-function buildCommentUrl(
-  owner: string,
-  repo: string,
-  issue: string,
-  _commentIndex: number,
-): string {
-  // We don't have the actual comment ID, so construct a best-effort URL
-  return `https://github.com/${owner}/${repo}/issues/${issue}`;
+export async function resolveVerifiedGateAnswer(
+  comments: CommentEnvelope[], stage: string, owner: string, repo: string, issueNumber: number,
+  triggerId: string | undefined, senderId: number | undefined, context: CommentAuthorityContext,
+): Promise<TriggerComment | null> {
+  if (!stage || !triggerId || !Number.isSafeInteger(senderId) || !senderId ||
+      context.owner !== owner || context.repo !== repo || !context.runId) return null;
+  const markerText = `<!-- aidlc-gate:${stage} -->`;
+  const markers = comments.filter(comment => comment.body.startsWith(markerText) &&
+    comment.authorType === 'Bot' && comment.updatedAt === comment.createdAt &&
+    Number.isFinite(Date.parse(comment.createdAt)));
+  const marker = markers.sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)).at(-1);
+  const answer = comments.find(comment => comment.id === triggerId && comment.authorId === senderId);
+  if (!marker || !answer || !/^@agent-aidlc[ \t]+(?:approve|skip|feedback:[ \t]*[^\r\n]+)$/i.test(answer.body.trim())) return null;
+  const markerTime = Date.parse(marker.createdAt);
+  const answerTime = Date.parse(answer.createdAt);
+  if (!(answerTime > markerTime ||
+    (answerTime === markerTime && /^\d+$/.test(answer.id) && /^\d+$/.test(marker.id) &&
+      BigInt(answer.id) > BigInt(marker.id)))) return null;
+  if (!(await authorizeComment(answer, context, true)).allowed) return null;
+  return { author: answer.author, createdAt: answer.createdAt,
+    url: `https://github.com/${owner}/${repo}/issues/${issueNumber}#issuecomment-${answer.id}` };
 }

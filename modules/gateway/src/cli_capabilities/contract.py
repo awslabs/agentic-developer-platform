@@ -145,6 +145,8 @@ _STRICT_FEATURES = frozenset(
         "FEATURE_SUPERPLANE_ENABLED",
         "FEATURE_GITLAB_ENABLED",
         "FEATURE_NEW_UI_ENABLED",
+        "BG_PRODUCT_PROFILE_ENABLED",
+        "BG_PRODUCT_ONBOARDING_ENABLED",
     }
 )
 
@@ -211,12 +213,18 @@ def _model_route_ready() -> bool | None:
     return None
 
 
+def _devbox_ssh_ready() -> bool | None:
+    return None if os.getenv("BG_DEV_BOX_SSH_GRANT_ROLE_ARN") else False
+
+
 _READINESS = {
+    "devbox_ssh": _devbox_ssh_ready,
     "ingestion_queue": _queue_ready,
     "agent_worker": _agent_worker_ready,
     "model_route": _model_route_ready,
     # Provider tables/pools require actual service observation; discovery does not probe or mint identities.
     "machine_provider": lambda: None,
+    "l5": lambda: None,
 }
 
 
@@ -227,7 +235,27 @@ _READINESS = {
 # IDs are `area.action[.scope]` and are STABLE — a client keys off them, so an ID
 # is renamed only with a schema version bump.
 OPERATIONS = (
+    Operation("insights.context.read", summary="Read authorized dated business context"),
+    Operation("service.read", summary="Read scoped L5 Product service state", readiness="l5"),
+    Operation("service.mutate", summary="Change scoped L5 Product service state", readiness="l5", mutates=True),
+    Operation("product.list", summary="List accessible Products"),
+    Operation("product.show", summary="Read an accessible Product profile"),
+    Operation("product.history", summary="Read scoped Product change history"),
+    Operation("product.create", summary="Create a Product and new Project", feature="BG_PRODUCT_PROFILE_ENABLED", mutates=True),
+    Operation("product.update", summary="Update an accessible Product profile", feature="BG_PRODUCT_PROFILE_ENABLED", mutates=True),
+    Operation("product.lifecycle", summary="Archive or restore an accessible Product", feature="BG_PRODUCT_PROFILE_ENABLED", mutates=True),
+    Operation("product.project.list", summary="List authorized governed Projects"),
+    Operation("product.project.bindings", summary="Read binding IDs for an authorized Project"),
+    Operation("product.project.bind", summary="Create or link a Project to an owned Product", feature="BG_PRODUCT_PROFILE_ENABLED", mutates=True),
+    Operation("product.project.update", summary="Update an accessible Project configuration", feature="BG_PRODUCT_PROFILE_ENABLED", mutates=True),
+    Operation(
+        "product.project.unbind",
+        summary="Close a Project binding without deleting its configuration",
+        feature="BG_PRODUCT_PROFILE_ENABLED",
+        mutates=True,
+    ),
     Operation("access.self.read", summary="Read membership access separately from login"),
+    Operation("devbox.ssh.access", summary="Request temporary SSH access to an owned running Dev Box", readiness="devbox_ssh", mutates=True),
     Operation("access.self.request", summary="Submit a pending request to join an existing tenant", mutates=True),
     Operation("access.managed.read", summary="Review exact visible tenant requests", permission=Permission.USER_MANAGE),
     Operation("access.managed.decide", summary="Decide an exact reviewed access request", mutates=True, permission=Permission.USER_MANAGE),
@@ -504,6 +532,10 @@ async def _permitted(operation: Operation, caller: TokenContext, access: AccessC
     """
     if operation.id.startswith("machine.") and (caller.account_type != "human" or caller.auth_source != "jwt"):
         return False
+    if operation.id.startswith("devbox.") and (caller.account_type != "human" or not caller.org_id):
+        return False
+    if operation.id.startswith("service."):
+        return None
     if operation.permission is None:
         if operation.platform_admin:
             return caller.is_admin

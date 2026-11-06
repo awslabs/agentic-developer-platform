@@ -58,6 +58,11 @@ on:
         description: 'True only after the cleanup sweep succeeds'
         value: ${{ jobs.eval.outputs.cleanup_ok }}
     inputs:
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
       environment:
         required: false
         type: string
@@ -86,8 +91,9 @@ on:
 # more importantly, case 8/11's rate-limit assertions read a SHARED token bucket:
 # a second run's traffic would show up as the first run's 429s and vice versa.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.environment || 'dev') }}
+  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.target_environment || inputs.environment || 'dev') }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -147,7 +153,7 @@ jobs:
     outputs:
       cleanup_ok: ${{ steps.cleanup.outcome == 'success' }}
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    environment: adp-deploy-${{ inputs.target_environment || inputs.environment || 'dev' }}
     # Longer than cli-onboarding's 45: cases 8-11 must each sleep out the
     # limiter's 60s DB config-reload interval (ratelimit/service.py:29), which
     # cannot be polled around — there is no endpoint that reports the ENFORCING

@@ -22,6 +22,10 @@ resolve_deploy_scope() {
   if [ "${AGENT_CONTEXT_ONLY:-false}" = true ]; then
     DEPLOY_GATEWAY=false; DEPLOY_WEBHOOK=false; DEPLOY_FACTORY=false
   fi
+  # Dev Box only (#7998): platform plus the optional module, nothing else.
+  if [ "${DEV_BOX_ONLY:-false}" = true ]; then
+    DEPLOY_GATEWAY=false; DEPLOY_WEBHOOK=false; DEPLOY_FACTORY=false; DEPLOY_AGENT_CONTEXT=false
+  fi
   [ "${SKIP_WEBHOOK_INGRESS:-false}" != true ] || DEPLOY_WEBHOOK=false
   [ "${SKIP_AGENT_CONTEXT:-false}" != true ] || DEPLOY_AGENT_CONTEXT=false
   if [ "${UPDATE_MODE:-false}" = true ]; then

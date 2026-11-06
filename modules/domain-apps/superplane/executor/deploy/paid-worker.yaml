@@ -27,6 +27,7 @@ spec:
         restartPolicy: Never
         securityContext:
           fsGroup: 65532
+          fsGroupChangePolicy: OnRootMismatch
           seccompProfile: {type: RuntimeDefault}
         initContainers:
           - name: scoped-controller

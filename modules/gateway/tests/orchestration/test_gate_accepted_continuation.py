@@ -13,16 +13,33 @@ from src.orchestration.compile import plan_hash
 from src.orchestration.continuation import ContinuationRefusedError, ContinuationRequest
 from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationNode
 from src.orchestration.proposal import LoopProposal
+from src.products.models import Product
+from src.shared.models.base import Base
+from src.shared.models.onboarding import TenantMembership
+from src.shared.models.organization import Organization, Team, TeamMembership, User
+from tests.orchestration.product_fixture import seed_product
 from tests.orchestration.test_continuation import accept, preview
 from tests.orchestration.test_draft_continuation import draft, legacy, pg_server, pg_url  # noqa: F401
+from tests.orchestration.test_registration import seed_org, token_context
 
 
 @pytest.fixture
 async def gate_accepted(draft):  # noqa: F811
     ctx = draft
+    async with ctx.factory.kw["bind"].begin() as connection:
+        await connection.run_sync(
+            lambda connection: Base.metadata.create_all(
+                connection, tables=[model.__table__ for model in (Organization, Team, User, TeamMembership, TenantMembership, Product)]
+            )
+        )
     async with ctx.factory() as db:
+        await seed_org(db, "org")
+        await seed_product(db, org_id="org", actor_id="owner")
         plan = await db.scalar(select(OrchestrationAcceptedPlan))
         document = copy.deepcopy(plan.plan_document)
+        document["product_id"] = "product-org"
+        ctx.flow.product_id = "product-org"
+        await db.merge(ctx.flow)
         document["proposed_execution_policy"]["allowed_actions"].remove("evaluate")
         proposal = LoopProposal.model_validate(document)
         plan.plan_document = proposal.model_dump(mode="json")
@@ -31,7 +48,7 @@ async def gate_accepted(draft):  # noqa: F811
         access = SimpleNamespace(get_user_role=AsyncMock(return_value=(SimpleNamespace(value="owner"), None, None)), check_permission=AsyncMock())
         result = await apply_gate_answer_for_context(
             db,
-            context=SimpleNamespace(org_id="org", user_id="owner"),
+            context=token_context("org", user_id="owner", account_type="human"),
             node_id=ctx.gate_id,
             approve=True,
             reason="Accept the reviewed draft for implementation",

@@ -291,7 +291,7 @@ async def scoped_gateway(setup, db_session_factory, monkeypatch):
         return POD
 
     app.dependency_overrides[chat_data_routes.runtime] = lambda: (
-        SimpleNamespace(context_table=table, workloads=SimpleNamespace(verify=verify_workload)),
+        SimpleNamespace(context_table=table, verify_workload=verify_workload),
         service,
     )
 
@@ -362,3 +362,29 @@ async def test_valid_sandbox_capability_is_not_admin_authentication(scoped_gatew
     client, token, _ = scoped_gateway
     response = await client.request(method, path, headers={"Authorization": f"Bearer {token}", "X-Adp-Workload-Token": "sandbox-token"})
     assert response.status_code == 401, response.text
+
+
+@pytest.mark.parametrize("method", ["post", "delete"])
+async def test_valid_sandbox_capability_cannot_write_crew_runs(scoped_gateway, monkeypatch, method):
+    client, token, _ = scoped_gateway
+    monkeypatch.setenv(
+        "ADP_MODEL_ROOT_BINDINGS",
+        json.dumps(
+            [
+                {
+                    "source": "chat",
+                    "producer_role": "arn:aws:iam::123456789012:role/webhook",
+                    "chat_supervisor_role": "arn:aws:iam::123456789012:role/chat-supervisor",
+                    "tenant_id": "tenant-a",
+                    "personas": ["developer"],
+                }
+            ]
+        ),
+    )
+    path = "/internal/v1/agent/chat/crew-run"
+    headers = {"Authorization": f"Bearer {token}"}
+    if method == "post":
+        response = await client.post(path, json={"session_id": "session-a", "target_kind": "eks-pod", "target_ref": "chat-pod"}, headers=headers)
+    else:
+        response = await client.delete(f"{path}/run-a", headers=headers)
+    assert response.status_code == 403, response.text

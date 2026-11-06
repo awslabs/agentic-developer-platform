@@ -55,6 +55,7 @@ from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
+from src.shared.model_admission import ModelAdmissionStatus
 
 # ``/self``, not bare ``/internal/v1/agent``, and the segment is load-bearing
 # twice over.
@@ -102,6 +103,8 @@ class StatusRequest(BaseModel):
     status: str = Field(min_length=1, max_length=64)
     run_id: str | None = Field(default=None, max_length=_MAX_FIELD_CHARS)
     summary: str | None = Field(default=None, max_length=_MAX_FIELD_CHARS)
+    model_admission_status: ModelAdmissionStatus | None = None
+    model_admission_sequence: str | None = Field(default=None, pattern=r"^[0-9]{1,16}$")
     transcript_key: str | None = Field(default=None, max_length=_MAX_FIELD_CHARS)
     session_id: str | None = Field(default=None, max_length=_MAX_FIELD_CHARS)
     token_mode: str | None = Field(default=None, max_length=_MAX_FIELD_CHARS)
@@ -365,7 +368,11 @@ async def record_status(
                 invocation_id=caller.invocation_id,
                 terminal=body.status != "in_progress",
                 store=runtime.runtime.store,
-                reason=ReleaseReason.COMPLETED if body.status == "completed" else ReleaseReason.FAILED,
+                # The worker's terminal status literal is "complete" (checked above and
+                # recorded as EXEC.terminal_outcome). Comparing against "completed" released
+                # every clean exit as `failed`, and the results pass then settled the
+                # attempt as a worker failure and retried it (#7764).
+                reason=ReleaseReason.COMPLETED if body.status == "complete" else ReleaseReason.FAILED,
             )
         except WorkClaimError:
             raise HTTPException(409, "work ownership refused") from None

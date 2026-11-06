@@ -179,3 +179,16 @@ future scan receipt or declare the dated epic clean. The engine records the actu
 post-merge run and evaluates its artifacts against the accepted per-finding
 criteria. A pre-merge diagnostic run does not replace that final observation.
 No additional workflow or recurring scan is implicitly authorized by this handoff.
+
+## S3 transport cutover — 12 October 2026
+
+The current workflow declares `ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1` and
+`ADP_REPOSITORY_EVIDENCE_STORE: s3-oidc-v1`. The GitHub artifact instructions above
+describe the historical transport. Current context is a signed S3 JSON envelope;
+`adp-repository-scan-<attempt>`, `adp-repository-scan-cleanup-<attempt>` and
+`security-reconciliation-<attempt>` retain their accepted logical names and ZIP
+file layouts in signed, version-bound S3 archives. Artifact receipts carry
+`artifact_id: null` and a versioned `artifact_ref`; old GitHub receipts retain
+their artifact IDs. The authenticated gateway reader verifies the signature,
+source/run/attempt/target, archive digest and existing predicates. No evidence or
+coverage gate is waived. See [storage and retrieval](../engineering-insights/ci-artifact-storage.md#security-scan-evidence).

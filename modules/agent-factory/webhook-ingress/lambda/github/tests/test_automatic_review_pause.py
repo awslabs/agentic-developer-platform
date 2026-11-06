@@ -88,7 +88,7 @@ def test_explicit_issue_requests_still_reach_the_queue(monkeypatch, engine_enabl
     assert publish.call_args.args[0]["persona"] == persona
 
 
-def test_iam_agent_trigger_remains_independent_of_engine_and_auto_review_pause(monkeypatch):
+def test_retired_iam_trigger_cannot_reopen_with_engine_or_review_flags(monkeypatch):
     from agent_trigger import handle_agent_trigger
     from test_agent_trigger import _chain_record, _make_event, _valid_body
 
@@ -103,5 +103,5 @@ def test_iam_agent_trigger_remains_independent_of_engine_and_auto_review_pause(m
         ) as spawn,
     ):
         response = handle_agent_trigger(_make_event(_valid_body()), None)
-    assert response["statusCode"] == 202
-    spawn.assert_called_once()
+    assert response["statusCode"] == 410
+    spawn.assert_not_called()

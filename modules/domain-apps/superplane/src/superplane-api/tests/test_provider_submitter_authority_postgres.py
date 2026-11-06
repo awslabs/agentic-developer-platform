@@ -50,9 +50,13 @@ from app.routers.provider_handles import router
 from app.services import observations, provider_authority
 from tests.test_operation_budget_ledger_postgres import (
     envelope,
-    installation_postgres_url as installation_postgres_url,
-    ledger as ledger,
     postgres_available,
+)
+from tests.test_operation_budget_ledger_postgres import (
+    installation_postgres_url as installation_postgres_url,
+)
+from tests.test_operation_budget_ledger_postgres import (
+    ledger as ledger,
 )
 
 pytestmark = [] if os.environ.get("CI") else postgres_available
@@ -260,7 +264,7 @@ async def test_authenticated_machine_records_handle_without_user_context(handles
         ("allocation_id", "foreign-allocation"),
         ("operation", "release"),
         ("idempotency_key", "another-call"),
-        ("workspace", str(uuid.uuid4())),
+        pytest.param("workspace", str(uuid.uuid4()), id="workspace-foreign"),
         ("operation_authority", "foreign-operation"),
     ],
 )

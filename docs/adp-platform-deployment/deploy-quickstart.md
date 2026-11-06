@@ -54,7 +54,8 @@ customer deployment. Follow the
 ## 2. Install or upgrade
 
 ```bash
-# First installation into a new account:
+# First installation into a new account (use your real operator email):
+export ADP_BOOTSTRAP_ADMIN_EMAIL='operator@your-company.example'
 ./deploy.sh --aws-profile customer --release v1.2.0
 
 # Upgrade an existing deployment:
@@ -71,6 +72,16 @@ The launcher fetches the release's exact source into a clean checkout. A fresh
 install bootstraps the Terraform state backend and runs the full deployment.
 An upgrade uses the existing backend and guarded update procedure. **An upgrade
 does not fall back to a fresh installation when prerequisites are missing.**
+
+Fresh installs use an [operator-selected administrator](bootstrap-administrator.md)
+and a Cognito temporary-password invitation. Portable releases do not create
+shared test accounts. Updates preserve existing administrator configuration.
+
+Release upgrades also retain the target's chat and assistant UI enablement and
+model-root bindings. For older releases that omitted these inputs from their
+saved configuration, the upgrader recovers the target's Terraform-managed
+parameters. Fresh installations keep the module defaults until those settings
+are configured for the account.
 
 Both paths build from the selected release's source in the target account;
 they do not consume prebuilt GitHub release assets. The original checkout stays
@@ -120,6 +131,47 @@ For a direct source upgrade, retain its reviewed target-specific configuration:
 
 See [advanced upgrades](platform_upgrades.md) for module scope, retained inputs,
 plan gates and recovery. Do not rerun manual phases after a successful full install.
+
+### Chat mode
+
+Step 10 decides what happens to Chief-of-Staff chat (`--chat`, or
+`ADP_CHAT_MODE`; passed through by `deploy.sh`). The default, `--chat retire`,
+is today's behaviour: the legacy credentialed `chat-agent-worker` is drained and
+removed and chat becomes unavailable. `--chat keep-legacy` leaves that worker
+running and skips every retirement step (the journal records that a credentialed
+worker remains). `--chat delegated --chat-exception <record>` deploys delegated
+chat (supervisor + sandbox ScaledJob with Kiro Crew in the sandbox image) with
+no GitHub Actions environment: both images are built, the sandbox gateway TLS
+endpoint is provisioned (`platform/scripts/apply-chat-tls.sh`; a dev-only
+issuer is generated into Secrets Manager `adp/<env>/chat-sandbox-gateway/issuer`
+when none exists), the ScaledJob and Crew controls are applied, and the legacy
+worker is retired only after the delegated ScaledJob is Ready. Delegated chat is
+gated on the #6937 qualification, so the record reference is mandatory and is
+written to the deployment journal; the run refuses before any build without it.
+
+```bash
+./deploy.sh --aws-profile customer --env dev --region us-east-1 --update \
+  --chat delegated --chat-exception "#6937 evidence <id>"
+```
+
+### Dev Box (optional module)
+
+The EC2 developer desktop is not part of the core platform. `--dev-box on` (or
+`ADP_DEV_BOX=on`; passed through by `deploy.sh`) runs its stage after the agent
+factory; `--dev-box-only` adds it to an existing environment on its own. Both call
+`modules/user-services/dev-box/scripts/deploy-dev-box.sh`, which needs
+`environments/<env>/modules/dev-box.tfvars` and `dev-box-platform.tfvars` (dev ships
+them with `stage_enabled = true`, so dev runs the stage by default; `--dev-box off`
+skips it). Without the module nothing changes. See the "Dev Box" sections of
+[deployment-reference.md](deployment-reference.md).
+
+```bash
+./deploy.sh --aws-profile customer --env dev --region us-east-1 --update --dev-box-only
+
+# Upgrade a published release while leaving Dev Box uninstalled and chat retired:
+./deploy.sh --aws-profile customer --env dev --region us-east-1 --update \
+  --release v1.2.0 --dev-box off --chat retire
+```
 
 ## 3. Sign in and connect GitHub
 

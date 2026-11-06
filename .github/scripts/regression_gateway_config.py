@@ -1,5 +1,6 @@
 """Resolve reviewed gateway test bindings without historical deployment defaults."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ def resolve(raw, account):
         "gateway_url": "GATEWAY_URL",
         "api_gateway_url": "API_GATEWAY_URL",
         "m2m_secret_name": "GATEWAY_M2M_SECRET",
+        "admin_secret_name": "GATEWAY_ADMIN_SECRET",
         "organization_id": "GATEWAY_TEST_ORG_ID",
         "organization_name": "GATEWAY_TEST_ORG_NAME",
     }
@@ -48,6 +50,30 @@ def resolve(raw, account):
         )
     result["GATEWAY_URL"] = bindings["gateway_url"].rstrip("/")
     result["CLOUDFRONT_DOMAIN"] = urlsplit(bindings["gateway_url"]).netloc
+    # Share the installer's runtime defaults instead of pinning a retired model
+    # in the test suite. A reviewed target may select another explicit model.
+    spec = importlib.util.spec_from_file_location(
+        "regression_bedrock_models",
+        Path(__file__).resolve().parents[2]
+        / "platform/scripts/bedrock-model-access.py",
+    )
+    models = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(models)
+    model = bindings.get("test_bedrock_model", models.runtime_models()[0])
+    try:
+        models.validate_models([model])
+    except models.AccessError as exc:
+        raise ValueError("Invalid gateway test_bedrock_model binding") from exc
+    result["TEST_BEDROCK_MODEL"] = model
+    if "iam_role_arn" in bindings:
+        role = bindings["iam_role_arn"]
+        if not isinstance(role, str) or not re.fullmatch(
+            rf"arn:aws:iam::{account}:role/eval-regression-[A-Za-z0-9_+=,.@-]+", role
+        ):
+            raise ValueError(
+                "IAM regression requires an account-local eval-regression-* role"
+            )
+        result["GATEWAY_IAM_ROLE_ARN"] = role
     return result
 
 

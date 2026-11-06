@@ -36,6 +36,7 @@ from src.orchestration.deployment_manifest import (
     parse_manifest,
     resolve_manifest_entry,
 )
+from src.orchestration.deployment_workflows import components_for_paths
 
 # A syntactically valid 40-character SHA. Not a real commit: these tests never
 # resolve it against the repository, and using a recognisable filler makes it
@@ -92,6 +93,8 @@ def _enabled_entry(**overrides) -> ManifestEntry:
         "verification_adapter": "gateway-health-verification",
         "artifact_revision": SHA_ARTIFACT,
     }
+    if overrides.get("release_group"):
+        defaults["mutation_role_arn"] = "arn:aws:iam::000000000000:role/adp-dev-trusted-deployment"
     defaults.update(overrides)
     return ManifestEntry(**defaults)
 
@@ -927,12 +930,12 @@ class TestShippedManifest:
             else:
                 assert entry.unresolved_reason, entry.entry_id
 
-    def test_every_shipped_workflow_path_exists_in_this_repository(self):
-        """A pinned path that does not exist is an approval for nothing.
+    def test_enabled_workflows_are_local_or_explicit_external_pins(self):
+        """Only explicitly reviewed external workflows may be absent locally.
 
-        Only the path is checked here, not the revision: resolving a SHA needs git
-        history the test environment may not have, and #5151 owns the
-        revision-match refusal at dispatch time.
+        Resolving external revisions needs provider access. The scheduled
+        dispatcher independently checks repository identity and workflow bytes;
+        offline CI preserves the reviewed exception list and source pins.
         """
         # Derived from this test file, not from the manifest's own path: the
         # manifest now lives several levels inside the package, so a relative walk
@@ -940,10 +943,32 @@ class TestShippedManifest:
         # tests/orchestration/ -> tests/ -> modules/gateway/ -> modules/ -> repo root
         repo_root = Path(__file__).resolve().parents[4]
         manifest = load_manifest_document(self._path.read_text(encoding="utf-8"))
+        # These reviewed workflows belong to the two Product fixture repositories.
+        # Live provider preflight verifies their repository IDs and content at
+        # these exact merges; an arbitrary missing local workflow is still refused.
+        external = {
+            "qualification-api-8394": (
+                ".github/workflows/qualification-api-deploy.yml",
+                "8b72cfe13fdb4ae94c5112473286fc9f3515ef87",
+            ),
+            "qualification-client-8394": (
+                ".github/workflows/qualification-client-deploy.yml",
+                "f99487960b2cb169f9d0f6a6b9237def4176f374",
+            ),
+        }
         for entry in manifest.entries:
             if entry.workflow is None:
                 continue
-            assert (repo_root / entry.workflow.path).is_file(), f"{entry.entry_id} pins a missing workflow: {entry.workflow.path}"
+            if entry.entry_id in external:
+                path, revision = external[entry.entry_id]
+                assert entry.workflow.path == path
+                assert entry.workflow.definition_revision == entry.artifact_revision == revision
+                continue
+            if (repo_root / entry.workflow.path).is_file():
+                continue
+            assert entry.status is EntryStatus.UNRESOLVED, entry.entry_id
+            assert entry.workflow.definition_revision is None, entry.entry_id
+            assert entry.workflow.path.rsplit("/", 1)[-1] in entry.unresolved_reason, entry.entry_id
 
     def test_no_shipped_entry_approves_a_non_dev_environment(self):
         """The pilot manifest approves dev only.
@@ -957,3 +982,380 @@ class TestShippedManifest:
             if entry.workflow is None:
                 continue
             assert entry.workflow.allowed_inputs.get("environment", frozenset()) <= frozenset({"dev"}), entry.entry_id
+
+    # test_new_dev_component_has_one_safe_entry was retired on 2026-10-15 when its last
+    # case, knowledge-door, moved to the enabled set (see
+    # test_knowledge_door_entry_is_enabled_and_pinned_to_distinct_reviewed_revisions).
+
+    @pytest.mark.parametrize(
+        ("component", "resource_kind", "resource_id", "workflow_path", "adapter", "revision"),
+        [
+            (
+                "tools-platform",
+                "agentcore-gateway",
+                "arn:aws:bedrock-agentcore:us-east-1:879318057152:gateway/adp-tools-ftgob4rcuu",
+                ".github/workflows/tools-platform-deploy.yml",
+                "agentcore-gateway-verification",
+                "ba28822e50a6bde22d4805835dcadda22b41f92e",
+            ),
+            # The interceptor and façade workflows changed in #7740 (pinned-definition
+            # guard); their pins must be at or after that merge.
+            (
+                "tools-interceptor",
+                "lambda-function",
+                "arn:aws:lambda:us-east-1:879318057152:function:adp-tools-dev-interceptor",
+                ".github/workflows/tools-interceptor-deploy.yml",
+                "lambda-version-verification",
+                "c9ca5556031aa23149f6689be846608aa6bca6bc",
+            ),
+            (
+                "tools-facade",
+                "eks-deployment",
+                "adp-dev-eks-cluster/adp-gateway/tools-facade",
+                ".github/workflows/tools-facade-deploy.yml",
+                "tools-facade-health-verification",
+                "c9ca5556031aa23149f6689be846608aa6bca6bc",
+            ),
+        ],
+    )
+    def test_dev_tools_entries_are_enabled_and_fully_pinned(self, component, resource_kind, resource_id, workflow_path, adapter, revision):
+        """The enabled dev tools entries: each approves one workflow revision, one build and one target.
+
+        Enabling them is a permission grant (owner decision 2026-10-14 for the tools
+        flow's dev deployments), so the exact values are pinned here rather than
+        trusted to review. All three share the dev connection, principal and revision.
+        """
+        manifest = load_packaged_manifest()
+        matches = [entry for entry in manifest.entries if entry.covers(component)]
+        assert len(matches) == 1
+        entry = matches[0]
+        assert entry.status is EntryStatus.ENABLED
+        assert entry.connection_id == "3cac43fc-f877-4cb0-9b36-9eb68244266c"
+        assert entry.resource_kind == resource_kind
+        assert entry.resource_id == resource_id
+        assert entry.workflow.path == workflow_path
+        assert entry.workflow.definition_revision == entry.artifact_revision == revision
+        assert entry.workflow.allowed_inputs["environment"] == frozenset({"dev"})
+        assert entry.workflow.allowed_inputs["customer_account_id"] == frozenset({"879318057152"})
+        assert entry.workflow.allowed_inputs["customer_user_id"] == frozenset({"1fb07e6f-8108-41a2-964d-5f76d63895fe"})
+        assert entry.verification_adapter == adapter
+
+    def test_knowledge_door_entry_is_enabled_and_pinned_to_distinct_reviewed_revisions(self):
+        """The Door entry (tools flow L2, 2026-10-15) pins one reviewed main commit for workflow and image.
+
+        The Door image is rebuilt at the same commit that fixed the deploy guard
+        (#7794, #7802), so the workflow's imageTag lookup, the deploy scripts it calls
+        and the identity verifier all name one revision.
+        """
+        manifest = load_packaged_manifest()
+        (entry,) = [entry for entry in manifest.entries if entry.covers("knowledge-door")]
+        assert entry.status is EntryStatus.ENABLED
+        assert entry.connection_id == "3cac43fc-f877-4cb0-9b36-9eb68244266c"
+        # cluster/namespace, as the engine's target model expects for every EKS component
+        # except tools-facade and as door_release_evidence.py publishes (#7829).
+        assert (entry.resource_kind, entry.resource_id) == ("eks-namespace", "adp-dev-eks-cluster/agent-context")
+        assert entry.workflow.path == ".github/workflows/agent-context-deploy.yml"
+        assert entry.workflow.definition_revision == "0fe14cc01be22a3fbe72f00086bc25e4ed72da8c"
+        assert entry.artifact_revision == "0fe14cc01be22a3fbe72f00086bc25e4ed72da8c"
+        assert entry.workflow.allowed_inputs["environment"] == frozenset({"dev"})
+        assert entry.workflow.allowed_inputs["customer_account_id"] == frozenset({"879318057152"})
+        assert entry.verification_adapter == "door-identity-verification"
+
+    def test_product_dev_gateway_binding_uses_verified_target_and_exact_pins(self):
+        manifest = load_packaged_manifest()
+        entry = manifest.entry("adp-dev-gateway")
+        assert entry.status is EntryStatus.ENABLED
+        assert entry.component_selectors == ("gateway-backend",)
+        assert entry.connection_id == "3cac43fc-f877-4cb0-9b36-9eb68244266c"
+        assert (entry.resource_kind, entry.resource_id) == ("eks-namespace", "adp-dev-eks-cluster/adp-gateway")
+        assert entry.workflow.path == ".github/workflows/gateway-deploy.yml"
+        assert entry.workflow.definition_revision == entry.artifact_revision == "8ccec3882c6ab9e9f4bf18cf148e5e0855aa0db4"
+        assert entry.workflow.allowed_inputs == {"environment": frozenset({"dev"})}
+        assert entry.verification_adapter == "gateway-health-verification"
+        assert manifest.entry("adp-dev-embark1-gateway").status is EntryStatus.UNRESOLVED
+        assert entry.workflow.correlation_input == "adp_correlation"
+
+        def resolve(**overrides):
+            arguments = dict(
+                entry_id=entry.entry_id,
+                component="gateway-backend",
+                policy_connection_ids=frozenset({entry.connection_id}),
+                target_lookup=lambda _: _target(resource_id=entry.resource_id),
+                requested_inputs={"environment": "dev"},
+                resolved_workflow_revision=entry.workflow.definition_revision,
+            )
+            arguments.update(overrides)
+            return resolve_manifest_entry(manifest, **arguments)
+
+        assert resolve().resolved
+        for overrides in (
+            {"policy_connection_ids": frozenset()},
+            {"component": "gateway-frontend"},
+            {"requested_inputs": {"environment": "prod"}},
+            {"requested_inputs": {"manual_source_revision": entry.artifact_revision}},
+            {"resolved_workflow_revision": "f" * 40},
+        ):
+            assert not resolve(**overrides).resolved
+
+    def test_product_frontend_binding_resolves_only_the_reviewed_dev_surface(self):
+        from src.orchestration.deployment_controller import ADAPTERS
+
+        manifest = load_packaged_manifest()
+        entry = manifest.entry("adp-dev-gateway-frontend")
+        backend = manifest.entry("adp-dev-gateway")
+        assert entry.status is EntryStatus.ENABLED
+        assert entry.component_selectors == ("gateway-frontend",)
+        assert entry.connection_id == backend.connection_id
+        assert (entry.resource_kind, entry.resource_id) == (backend.resource_kind, backend.resource_id)
+        assert entry.workflow.path == ".github/workflows/gateway-frontend-deploy.yml"
+        assert entry.workflow.definition_revision == entry.artifact_revision == "18435f88cbe77c500c676747bf1a677015478d9d"
+        assert entry.workflow.allowed_inputs == {"environment": frozenset({"dev"})}
+        assert entry.workflow.correlation_input == "adp_correlation"
+        assert "gateway-frontend" in ADAPTERS[entry.verification_adapter]
+        assert entry.rollback_adapter is None and not entry.docs_only
+
+        def resolve(**overrides):
+            arguments = dict(
+                entry_id=entry.entry_id,
+                component="gateway-frontend",
+                policy_connection_ids=frozenset({entry.connection_id}),
+                target_lookup=lambda _: _target(resource_id=entry.resource_id),
+                requested_inputs={"environment": "dev"},
+                resolved_workflow_revision=entry.workflow.definition_revision,
+            )
+            arguments.update(overrides)
+            return resolve_manifest_entry(manifest, **arguments)
+
+        assert resolve().resolved
+        for overrides in (
+            {"policy_connection_ids": frozenset()},
+            {"component": "gateway-backend"},
+            {"target_lookup": lambda _: _target(resource_id="another-cluster/adp-gateway")},
+            {"target_lookup": lambda _: _target(resource_kind="cloudfront-distribution", resource_id=entry.resource_id)},
+            {"requested_inputs": {"environment": "prod"}},
+            {"requested_inputs": {"account_id": "000000000000"}},
+            {"requested_inputs": {"adp_source_revision": entry.artifact_revision}},
+            {"resolved_workflow_revision": "f" * 40},
+        ):
+            assert not resolve(**overrides).resolved
+
+    def test_no_other_runtime_entry_is_enabled(self):
+        """Runtime grants remain explicit after temporary flow-read verification is retired."""
+        manifest = load_packaged_manifest()
+        enabled = sorted(e.entry_id for e in manifest.entries if e.status is EntryStatus.ENABLED and not e.docs_only)
+        assert enabled == [
+            "adp-dev-atlassian-foundation-gateway",
+            "adp-dev-gateway",
+            "adp-dev-gateway-frontend",
+            "adp-dev-knowledge-door",
+            "adp-dev-tool-adapters",
+            "adp-dev-tools-facade",
+            "adp-dev-tools-interceptor",
+            "adp-dev-tools-platform",
+            "qualification-api-8394",
+            "qualification-client-8394",
+        ]
+
+    def test_unpinned_workflow_can_only_be_recorded_as_unresolved(self):
+        pending = WorkflowRef(path=".github/workflows/tools-platform-deploy.yml", definition_revision=None)
+        with pytest.raises(ManifestError, match="workflow.definition_revision"):
+            _enabled_entry(workflow=pending)
+
+
+def test_adapter_foundation_paths_resolve_to_the_dedicated_approved_group():
+    manifest = load_packaged_manifest()
+    for path in (
+        "modules/tools/adapters/deploy.py",
+        "modules/tools/adapters/infra/main.tf",
+        "modules/tools/adp_tools/adapter_contracts.py",
+        "codebuild/bs-tools-adapters-build.yml",
+        ".github/workflows/tools-adapters-deploy.yml",
+    ):
+        assert manifest.path_rule(path).component == "tool-adapters"
+    for path in (
+        "modules/tools/adapters/tests/test_runtime_deploy.py",
+        "modules/tools/adapters/infra/README.md",
+        ".github/workflows/tools-adapters-ci.yml",
+    ):
+        assert manifest.path_rule(path).component == "ignore"
+    assert manifest.path_rule("modules/tools/platform/infra/main.tf").component == "tools-platform"
+    entry = manifest.entry("adp-dev-tool-adapters")
+    assert entry.status is EntryStatus.ENABLED
+    assert entry.component_selectors == ("tool-adapters",)
+    assert entry.release_group == "atlassian-foundation"
+    assert entry.connection_id == manifest.entry("adp-dev-gateway").connection_id
+    assert entry.resource_kind == "eks-namespace"
+    assert entry.resource_id == "adp-dev-eks-cluster/adp-tools-adapters"
+    assert entry.workflow.path == ".github/workflows/tools-platform-deploy.yml"
+    assert entry.workflow.allowed_inputs == {"environment": frozenset({"dev"}), "mode": frozenset({"release"}), "stage": frozenset({"tool-adapters"})}
+    assert entry.artifact_revision == entry.workflow.definition_revision == "166dfa700e2b10fcfa419ffafa6a1461d8c519a7"
+    assert entry.mutation_role_arn.endswith(":role/adp-dev-tools-trusted-deployment")
+    gateway = manifest.entry("adp-dev-atlassian-foundation-gateway")
+    ordinary = manifest.entry("adp-dev-gateway")
+    assert gateway.status is EntryStatus.ENABLED
+    assert gateway.connection_id == entry.connection_id
+    assert gateway.resource_id == ordinary.resource_id
+    assert gateway.component_selectors == ("gateway-backend",)
+    assert gateway.release_group == entry.release_group
+    assert gateway.workflow.path == ordinary.workflow.path
+    assert gateway.workflow.allowed_inputs == {"environment": frozenset({"dev"}), "release_group": frozenset({"atlassian-foundation"})}
+    assert gateway.workflow.definition_revision == gateway.artifact_revision == entry.artifact_revision
+    assert gateway.mutation_role_arn.endswith(":role/adp-dev-gateway-trusted-deployment")
+    assert ordinary.release_group is None
+    assert ordinary.workflow.allowed_inputs == {"environment": frozenset({"dev"})}
+    assert ordinary.artifact_revision == ordinary.workflow.definition_revision == "8ccec3882c6ab9e9f4bf18cf148e5e0855aa0db4"
+
+
+def test_chat_worker_crew_paths_resolve_to_one_blocked_deployment():
+    paths = (
+        "modules/agent-factory/agent/k8s/chat-crew-pod-admission.yaml",
+        "modules/agent-factory/agent/k8s/chat-supervisor-job.yaml",
+        "modules/agent-factory/agent/k8s/chat-scaledjob.yaml",
+        ".github/workflows/chat-agent-deploy.yml",
+    )
+    assert components_for_paths(paths) == ("agent-worker",)
+    manifest = load_packaged_manifest()
+    entries = [entry for entry in manifest.entries if "agent-worker" in entry.component_selectors]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert "chat-worker" in entry.component_selectors
+    assert entry.workflow.path == ".github/workflows/chat-agent-deploy.yml"
+    assert entry.workflow.correlation_input == "adp_correlation"
+    assert entry.verification_adapter == "crew-pod-verification"
+    resolution = resolve_manifest_entry(
+        manifest,
+        entry_id=entry.entry_id,
+        component="agent-worker",
+        policy_connection_ids=frozenset(),
+        target_lookup=lambda _: None,
+        resolved_workflow_revision=entry.workflow.definition_revision,
+    )
+    assert resolution.block.code == TargetBlockCode.TARGET_UNRESOLVED
+
+
+def test_shared_release_group_requires_reviewed_slug_and_runtime_entry():
+    assert _enabled_entry(release_group="tool-connectors").release_group == "tool-connectors"
+    for invalid in ("", "foo/bar", "UPPER", "too-long-" * 10):
+        with pytest.raises(ManifestError, match="reviewed, nonempty slug"):
+            _enabled_entry(release_group=invalid)
+    with pytest.raises(ManifestError, match="reviewed, nonempty slug"):
+        _enabled_entry(release_group="tool-connectors", docs_only=True)
+
+
+def test_enabled_group_requires_reviewed_mutation_role():
+    with pytest.raises(ManifestError, match="mutation_role_arn"):
+        _enabled_entry(release_group="atlassian-foundation", mutation_role_arn=None)
+    for invalid in ("arn:aws:iam::000000000000:role/not-approved", "arn:aws:iam::000000000000:role/adp-dev-trusted-deployment?"):
+        with pytest.raises(ManifestError, match="trusted deployment role"):
+            _enabled_entry(release_group="atlassian-foundation", mutation_role_arn=invalid)
+    entry = _enabled_entry(release_group="atlassian-foundation")
+    assert entry.mutation_role_arn == "arn:aws:iam::000000000000:role/adp-dev-trusted-deployment"
+
+
+def test_foundation_release_scope_is_reviewed_and_excludes_other_deployments():
+    from types import SimpleNamespace
+
+    from src.orchestration.environment_leases import LeaseError, foundation_release_scope
+
+    flow = SimpleNamespace(id="accepted-flow", org_id="tenant", slug="atlassian-adapters-8445-parallel")
+    node = SimpleNamespace(id="stage-one", flow_id=flow.id, org_id=flow.org_id, wave_ref="w03b-foundation-release")
+    backend = _enabled_entry(component_selectors=("gateway-backend",), release_group="atlassian-foundation")
+    adapter = _enabled_entry(component_selectors=("tool-adapters", "tools-platform"), release_group="atlassian-foundation")
+    first, owner = foundation_release_scope(
+        node=node, flow=flow, entry=backend, component="gateway-backend", target=_target(), environment="dev", source_revision="a" * 40
+    )
+    other, second_owner = foundation_release_scope(
+        node=node,
+        flow=flow,
+        entry=adapter,
+        component="tool-adapters",
+        target=_target(resource_kind="agentcore-gateway", resource_id="different"),
+        environment="dev",
+        source_revision="a" * 40,
+    )
+    assert first.canonical_key == other.canonical_key
+    assert owner != second_owner
+    assert (
+        owner
+        != foundation_release_scope(
+            node=node, flow=flow, entry=backend, component="gateway-backend", target=_target(), environment="dev", source_revision="b" * 40
+        )[1]
+    )
+    for wave in ("w04-identity", "w05b-connections", "w05-reads-ui", "w06b-clients", "w06-writes-clients"):
+        scoped, _ = foundation_release_scope(
+            node=SimpleNamespace(id=wave, flow_id=flow.id, org_id=flow.org_id, wave_ref=wave),
+            flow=flow,
+            entry=backend,
+            component="gateway-backend",
+            target=_target(),
+            environment="dev",
+            source_revision="a" * 40,
+        )
+        assert scoped.canonical_key == first.canonical_key
+    assert (
+        foundation_release_scope(
+            node=node, flow=flow, entry=_enabled_entry(), component="gateway-backend", target=_target(), environment="dev", source_revision="a" * 40
+        )
+        is None
+    )
+    with pytest.raises(LeaseError, match="accepted flow and node"):
+        foundation_release_scope(
+            node=SimpleNamespace(flow_id="other", org_id="tenant", wave_ref=node.wave_ref),
+            flow=flow,
+            entry=backend,
+            component="gateway-backend",
+            target=_target(),
+            environment="dev",
+            source_revision="a" * 40,
+        )
+    with pytest.raises(LeaseError, match="reviewed entry does not cover"):
+        foundation_release_scope(
+            node=node, flow=flow, entry=backend, component="tool-adapters", target=_target(), environment="dev", source_revision="a" * 40
+        )
+    with pytest.raises(LeaseError, match="pinned node and source"):
+        foundation_release_scope(
+            node=node, flow=flow, entry=backend, component="gateway-backend", target=_target(), environment="dev", source_revision="invalid"
+        )
+
+
+def test_security_operations_registration_is_scoped_and_unresolved():
+    manifest = load_packaged_manifest()
+    entry = manifest.entry("l5-security-target-pending")
+    assert entry.status is EntryStatus.UNRESOLVED
+    assert entry.connection_id is None
+    assert entry.resource_id is None
+    assert entry.artifact_revision is None
+    assert entry.verification_adapter is None
+    assert entry.rollback_adapter is None
+    assert entry.workflow.path == ".github/workflows/l5-services-worker-lifecycle.yml"
+    assert entry.workflow.allowed_inputs == {"operation": frozenset({"status"}), "environment": frozenset({"dev"})}
+    assert components_for_paths(("modules/L5-services/infra/iam.tf",)) == ("l5-security",)
+    assert components_for_paths((".github/workflows/l5-services-worker-lifecycle.yml",)) == ("l5-security",)
+    assert components_for_paths(("modules/L5-services/tests/deployment/test_scope_policy.py",)) == ("documentation",)
+    assert components_for_paths((".github/workflows/l5-services-ci.yml",)) == ("documentation",)
+
+
+def test_qualification_components_select_only_their_reviewed_entries():
+    manifest = load_packaged_manifest()
+    api = (
+        "qualification-api/qualification/q-fixture/pricing.py",
+        "app.py",
+        "qualification-api/Dockerfile",
+        ".github/workflows/qualification-api-deploy.yml",
+    )
+    client = (
+        "qualification-client/qualification/q-fixture/quote.py",
+        "client.py",
+        "qualification-client/Dockerfile",
+        ".github/workflows/qualification-client-deploy.yml",
+    )
+    assert components_for_paths(api) == ("qualification-api",)
+    assert components_for_paths(client) == ("qualification-client",)
+    assert components_for_paths(api + client) == ("qualification-api", "qualification-client")
+    for component in ("qualification-api", "qualification-client"):
+        entries = [entry for entry in manifest.entries if entry.covers(component)]
+        assert [entry.entry_id for entry in entries] == [f"{component}-8394"]
+        assert entries[0].status is EntryStatus.ENABLED
+        assert entries[0].workflow.path == f".github/workflows/{component}-deploy.yml"
+    patterns = [rule.pattern for rule in manifest.path_rules]
+    assert len(patterns) == len(set(patterns))

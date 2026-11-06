@@ -17,7 +17,6 @@ RUN python -c 'import sys; assert sys.version_info[:2] == (3, 12), "Python 3.12 
 
 # Copy dependency spec and install
 COPY pyproject.toml .
-RUN pip install --no-cache-dir --prefix=/install .
 
 # Stage the maintained auth, contracts, shared executor, account and workspace
 # lifecycle packages from the same reviewed checkout. Docker's component context
@@ -49,11 +48,15 @@ RUN set -eu; \
         exit 1; \
       fi; \
     done; \
-    pip install --no-cache-dir --prefix=/install \
+    pip install --no-cache-dir --prefix=/install . \
       ./vendor/superplane-auth ./vendor/superplane-contracts ./vendor/harness-jobs \
       ./vendor/account-factory ./vendor/account-provisioning \
       ./vendor/superplane-bootstrap ./vendor/workspace-provisioning \
       ./vendor/superplane-executor
+
+# Resolve the API and its local packages together. Repeated prefix installs can
+# retain metadata from an older dependency beside newly downloaded code.
+RUN PYTHONPATH=/install/lib/python3.12/site-packages python -m pip check
 
 # Exercise installed wheels and their maintained data during the remote image
 # build, without importing the source checkout or contacting a provider.
@@ -62,6 +65,12 @@ RUN PYTHONPATH=/install/lib/python3.12/site-packages python -c \
 
 # Stage 2: Runtime image
 FROM ${PYTHON_IMAGE}
+
+# The builder's system pip is not part of /install. Refresh the runtime's vendored
+# certifi bundle explicitly so the compromised root cannot survive the rebuild.
+ADD --checksum=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70 https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl /tmp/pip-26.2.2-py3-none-any.whl
+RUN --network=none python -m pip install --no-index --no-deps --no-cache-dir /tmp/pip-26.2.2-py3-none-any.whl \
+    && rm /tmp/pip-26.2.2-py3-none-any.whl
 
 # Install runtime system deps
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \

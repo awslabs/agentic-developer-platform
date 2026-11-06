@@ -195,6 +195,10 @@ class AbortRepair:
     reason: str
 
 
+VANISHED_RECONCILED_BY = "vanished_pod_reconciliation"
+VANISHED_STATUS = "failed"
+
+
 def repair_aborted_terminal_status(
     *,
     authority_client,
@@ -216,70 +220,156 @@ def repair_aborted_terminal_status(
     outcome than a stale dashboard row that gets another attempt in 60 seconds.
     """
     if execution.get("tenant_id") != {"S": tenant_id}:
-        # The caller's tenant and the record's must agree before a key is built from
-        # either. This mirrors `registration._update_row`: the events table is not the
-        # protected one, so a disagreement means the two tables describe different
-        # things and no write may land.
         return AbortRepair(False, "tenant_mismatch")
     if "abort_command_id" not in execution:
         return AbortRepair(False, "not_aborted")
+    return _write_terminal_status(
+        authority_client=authority_client,
+        events_table=events_table,
+        execution=execution,
+        invocation_id=invocation_id,
+        tenant_id=tenant_id,
+        status=ABORTED_STATUS,
+        stop_reason="operator_aborted",
+        reconciled_by_attribute="abort_reconciled_by",
+        reconciled_by=RECONCILED_BY,
+        requested_at=execution.get("abort_requested_at", {}).get("S", ""),
+        subject="an aborted run",
+    )
+
+
+def repair_vanished_terminal_status(
+    *,
+    authority_client,
+    events_table: str,
+    execution: dict,
+    invocation_id: str,
+    tenant_id: str,
+    authority_table: str | None = None,
+) -> AbortRepair:
+    """Write the terminal ``failed`` row for a bound run whose pod object no longer exists (#7783).
+
+    The sweep established that the pod the run was bound to is positively gone (404
+    NotFound) and that the claim has been silent for the grace period. The run can no
+    longer report, so its events row would say ``in_progress`` forever: the dashboard
+    would show it live, and ``compute_liveness`` would keep every exit-gated path
+    (review recovery, continuation discharge) refusing with "unverified". Same
+    fail-closed shape as the abort repair: never overwrite a terminal status, never
+    raise, let the next pass retry a transient failure.
+    """
+    if execution.get("tenant_id") != {"S": tenant_id}:
+        return AbortRepair(False, "tenant_mismatch")
+    if not execution.get("workload_binding", {}).get("S"):
+        return AbortRepair(False, "not_bound")
+    result = _write_terminal_status(
+        authority_client=authority_client,
+        events_table=events_table,
+        execution=execution,
+        invocation_id=invocation_id,
+        tenant_id=tenant_id,
+        status=VANISHED_STATUS,
+        stop_reason="pod_vanished",
+        reconciled_by_attribute="terminal_reconciled_by",
+        reconciled_by=VANISHED_RECONCILED_BY,
+        requested_at=None,
+        subject="a vanished pod's run",
+    )
+    if result.reason == TRANSIENT_REPAIR_FAILURE:
+        return result
+    # The protected EXEC record is the authority every exit-gated engine path reads
+    # (`protected_failure_for_assignment`, protected review recovery); mark it
+    # terminal too, under the same fences retained-abort recovery uses, so the run
+    # reads as a failed exit rather than staying `active` forever.
+    exec_repaired = _mark_execution_vanished(
+        authority_client=authority_client, authority_table=authority_table, execution=execution, invocation_id=invocation_id, tenant_id=tenant_id
+    )
+    if exec_repaired == TRANSIENT_REPAIR_FAILURE:
+        return AbortRepair(False, TRANSIENT_REPAIR_FAILURE)
+    return result if result.repaired or exec_repaired != "repaired" else AbortRepair(True, "repaired")
+
+
+def _mark_execution_vanished(*, authority_client, authority_table: str | None, execution: dict, invocation_id: str, tenant_id: str) -> str:
+    """Conditionally conclude an ``active`` EXEC row as ``completed``/``failed`` for a vanished pod."""
+    if not authority_table or execution.get("status") != {"S": "active"}:
+        return "not_active"
+    if not execution.get("workload_binding", {}).get("S") or not execution.get("current_attempt", {}).get("N"):
+        return "not_bound"
+    try:
+        authority_client.update_item(
+            TableName=authority_table,
+            Key={"pk": {"S": f"TENANT#{tenant_id}"}, "sk": {"S": f"EXEC#{invocation_id}"}},
+            ConditionExpression="#s = :active AND tenant_id = :tenant AND workload_binding = :uid AND current_attempt = :attempt",
+            UpdateExpression="SET #s = :complete, terminal_outcome = :outcome, terminal_reconciled_by = :source, exit_reason = :exit_reason",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":active": {"S": "active"},
+                ":complete": {"S": "completed"},
+                ":tenant": {"S": tenant_id},
+                ":uid": execution["workload_binding"],
+                ":attempt": execution["current_attempt"],
+                ":outcome": {"S": VANISHED_STATUS},
+                ":source": {"S": VANISHED_RECONCILED_BY},
+                ":exit_reason": {"S": "pod_vanished"},
+            },
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return "execution_changed"
+        logger.error("Could not conclude a vanished pod's execution record", extra={"invocation_id": invocation_id})
+        return TRANSIENT_REPAIR_FAILURE
+    except BotoCoreError:
+        logger.error("Could not conclude a vanished pod's execution record", extra={"invocation_id": invocation_id})
+        return TRANSIENT_REPAIR_FAILURE
+    logger.warning("Concluded a vanished pod's execution record as failed (invocation=%s)", invocation_id)
+    return "repaired"
+
+
+def _write_terminal_status(
+    *,
+    authority_client,
+    events_table: str,
+    execution: dict,
+    invocation_id: str,
+    tenant_id: str,
+    status: str,
+    stop_reason: str,
+    reconciled_by_attribute: str,
+    reconciled_by: str,
+    requested_at: str | None,
+    subject: str,
+) -> AbortRepair:
     arrived_at = execution.get("arrived_at", {}).get("S")
     if not arrived_at or not invocation_id or not events_table:
-        # The sort key is only ever the one the protected record captured at trusted
-        # dispatch. Deriving it by querying for the newest row under this event_id
-        # would let a second planted row decide which row this repair writes.
         return AbortRepair(False, "row_key_unavailable")
 
-    names = {"#st": "status", "#tid": "tenant_id"}
+    names = {"#st": "status", "#tid": "tenant_id", "#rb": reconciled_by_attribute}
     values = {
-        ":status": {"S": ABORTED_STATUS},
+        ":status": {"S": status},
         ":updated_at": {"S": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")},
         ":tid": {"S": tenant_id},
-        ":reconciled_by": {"S": RECONCILED_BY},
-        ":stop_reason": {"S": "operator_aborted"},
-        ":requested_at": {"S": execution.get("abort_requested_at", {}).get("S", "")},
+        ":reconciled_by": {"S": reconciled_by},
+        ":stop_reason": {"S": stop_reason},
     }
-    # This is the report transition time, not the time the operator requested
-    # cancellation. Activity derives completed_at from this field, so retaining
-    # an in-progress timestamp would put completion before the abort request.
-    # Keep abort_requested_at separately; the repair marker makes delayed
-    # observation explicit without inventing an exact container exit time.
+    sets = ["#st = :status", "status_updated_at = :updated_at", "stop_reason = :stop_reason", "#rb = :reconciled_by"]
+    if requested_at is not None:
+        values[":requested_at"] = {"S": requested_at}
+        sets.append("abort_requested_at = :requested_at")
     protected = []
-    for index, status in enumerate(_PROTECTED_STATUSES):
-        values[f":p{index}"] = {"S": status}
+    for index, terminal in enumerate(_PROTECTED_STATUSES):
+        values[f":p{index}"] = {"S": terminal}
         protected.append(f"#st <> :p{index}")
-    condition = (
-        # Repair an existing report, never fabricate a run; the gateway role holds no
-        # PutItem on this table for the same reason.
-        #
-        # `attribute_exists(event_id)` is redundant *today* — `#tid = :tid` already
-        # fails on a missing row, because a comparison against an absent attribute is
-        # false rather than true, so an UpdateItem on a nonexistent key is refused by
-        # the tenant clause alone (verified against DynamoDB semantics, not assumed).
-        # It is kept because it states the intent structurally instead of relying on
-        # that emergent property: if the tenant check is ever narrowed or moved, this
-        # clause is what still stops an update from creating the row. Stated plainly
-        # because removing it does NOT fail the suite, and a future reader deleting it
-        # as dead weight deserves to know that is expected, not a gap in coverage.
-        "attribute_exists(event_id) AND #tid = :tid AND (" + " AND ".join(protected) + ")"
-    )
+    condition = "attribute_exists(event_id) AND #tid = :tid AND (" + " AND ".join(protected) + ")"
     try:
         authority_client.update_item(
             TableName=events_table,
             Key={"event_id": {"S": invocation_id}, "arrived_at": {"S": arrived_at}},
-            UpdateExpression=(
-                "SET #st = :status, status_updated_at = :updated_at, stop_reason = :stop_reason, "
-                "abort_reconciled_by = :reconciled_by, abort_requested_at = :requested_at "
-                "REMOVE " + ", ".join(CONTROL_ATTRIBUTES)
-            ),
+            UpdateExpression="SET " + ", ".join(sets) + " REMOVE " + ", ".join(CONTROL_ATTRIBUTES),
             ConditionExpression=condition,
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
         )
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            # A failed condition also covers missing and foreign-tenant rows.
-            # Read the exact key before claiming another reporter completed it.
             try:
                 row = authority_client.get_item(
                     TableName=events_table,
@@ -296,16 +386,17 @@ def repair_aborted_terminal_status(
                 return AbortRepair(False, "already_terminal")
             return AbortRepair(False, "event_row_not_repairable")
         logger.error(
-            "Could not repair an aborted run's terminal status",
+            "Could not repair %s terminal status",
+            subject,
             extra={"invocation_id": invocation_id, "code": exc.response.get("Error", {}).get("Code")},
         )
         return AbortRepair(False, TRANSIENT_REPAIR_FAILURE)
     except BotoCoreError:
-        logger.error("Could not repair an aborted run's terminal status", extra={"invocation_id": invocation_id})
+        logger.error("Could not repair %s terminal status", subject, extra={"invocation_id": invocation_id})
         return AbortRepair(False, TRANSIENT_REPAIR_FAILURE)
     logger.warning(
-        "Repaired an aborted run's terminal status after its pod exited without reporting it; "
-        "the dashboard showed this run as live until now (invocation=%s)",
+        "Repaired %s terminal status after its pod stopped without reporting it; the dashboard showed this run as live until now (invocation=%s)",
+        subject,
         invocation_id,
     )
     return AbortRepair(True, "repaired")

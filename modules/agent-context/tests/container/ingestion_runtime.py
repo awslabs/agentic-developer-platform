@@ -93,6 +93,17 @@ def main():
     for script in ["sqs-worker.py", "refresh-repos.py", "scan-vulns.py", "ingest-repo.py"]:
         imports[script] = runpy.run_path("/app/" + script, run_name="image_validation")
     importlib.import_module("personal_context.synthesis")
+    # These imports are deferred until repository ingestion actually starts.
+    # Entrypoint --help/import checks alone cannot catch missing image files.
+    from source_snapshot import source_snapshot
+
+    importlib.import_module("isolated_runner")
+    importlib.import_module("isolated_parser")
+    with source_snapshot("/tmp", ("/platform-data",)) as snapshot:
+        snapshot_parent = Path(snapshot).parent
+        Path(snapshot).mkdir()
+        (Path(snapshot) / "README.md").write_text("temporary source snapshot\n")
+    assert not snapshot_parent.exists(), "Source snapshot did not clean up its owned directory"
     # Load the real Alembic environment and generate SQL without connecting to DB.
     run(
         "alembic",
@@ -133,6 +144,33 @@ def main():
     shards.mkdir()
     run("zoekt-git-index", "-index", str(shards), str(repo))
     assert list(shards.glob("*.zoekt")), "no real lexical shards"
+
+    # Real producer + real indexer: identical scratch basenames must retain two
+    # distinct admitted repository identities and coexist in the flat index.
+    # Only the remote object transport is replaced with disposable local files.
+    class LocalObjects:
+        def __init__(self):
+            self.uploaded = {}
+
+        def upload_file(self, *, Filename, Bucket, Key, ExtraArgs):
+            destination = shards / Path(Key).name
+            assert not destination.exists(), "Canonical repositories collided in the flat index"
+            shutil.copyfile(Filename, destination)
+            self.uploaded[Key] = destination
+
+        def head_object(self, *, Bucket, Key):
+            assert self.uploaded[Key].is_file()
+            return {"ContentLength": self.uploaded[Key].stat().st_size}
+
+    objects = LocalObjects()
+    store = type("LocalStore", (), {"_s3": objects, "bucket_name": "fixture"})()
+    for name in ("one", "two"):
+        clone = Path("/tmp") / name / "source"
+        shutil.copytree(repo, clone)
+        result = imports["ingest-repo.py"]["_run_zoekt_index"](str(clone), f"fixture/{name}", store)
+        assert result["status"] == "complete", result
+        assert Path(result["artifact_key"]).name.startswith(f"fixture%2F{name}_"), result
+    assert len(objects.uploaded) == 2
     import scip_indexer
 
     structural = scip_indexer.index_repo(str(repo), "fixture/ordinary", ["python"])

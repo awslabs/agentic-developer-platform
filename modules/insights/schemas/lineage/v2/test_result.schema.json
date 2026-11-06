@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "test_result (section 11.9)",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "const": "test_result"
+    },
+    "run_test_ref": {
+      "allOf": [
+        {
+          "$ref": "references.schema.json#/$defs/record_ref"
+        },
+        {
+          "properties": {
+            "record_type": {
+              "const": "run_test"
+            }
+          }
+        }
+      ]
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "error",
+        "skipped",
+        "blocked",
+        "cancelled"
+      ]
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ended_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "duration_ms": {
+      "anyOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "failure_category": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "references.schema.json#/$defs/artifact_ref"
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "run_test_ref",
+    "attempt",
+    "outcome",
+    "started_at",
+    "ended_at",
+    "duration_ms",
+    "failure_category",
+    "artifact_refs"
+  ],
+  "unevaluatedProperties": false
+}

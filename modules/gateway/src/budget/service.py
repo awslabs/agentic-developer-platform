@@ -7,6 +7,8 @@ from typing import Any
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.budget.metering_policy_gates import lock_policy_mutation
+from src.budget.settlement import lock_legacy_metering_gates
 from src.shared.database import get_session_factory
 from src.shared.exceptions import ValidationError
 from src.shared.interfaces.budget import IBudgetService
@@ -69,6 +71,12 @@ class BudgetService(IBudgetService):
     async def create_budget(self, request: BudgetCreateRequest, org_id: str) -> BudgetResponse:
         """Create a new budget configuration."""
         async with self._get_session() as session:
+            await lock_policy_mutation(
+                session,
+                tenant_id=org_id,
+                scope_kind="user" if request.entity_type == EntityType.SERVICE_ACCOUNT else request.entity_type.value,
+                identity=request.entity_id,
+            )
             # Validate budget amount
             if not validate_budget_amount(request.budget_amount_usd):
                 raise ValidationError("Budget amount must be positive and reasonable")
@@ -134,10 +142,17 @@ class BudgetService(IBudgetService):
     async def update_budget(self, budget_id: str, request: BudgetUpdateRequest, org_id: str) -> BudgetResponse | None:
         """Update an existing budget configuration."""
         async with self._get_session() as session:
+            await lock_policy_mutation(session, tenant_id=org_id)
             result = await session.execute(select(BudgetConfig).where(and_(BudgetConfig.id == budget_id, BudgetConfig.org_id == org_id)))
             budget = result.scalar_one_or_none()
             if not budget:
                 return None
+            await lock_policy_mutation(
+                session,
+                tenant_id=org_id,
+                scope_kind="user" if budget.entity_type == "service_account" else budget.entity_type,
+                identity=budget.entity_id,
+            )
 
             # Validate new budget amount if provided
             if request.budget_amount_usd is not None:
@@ -162,10 +177,17 @@ class BudgetService(IBudgetService):
     async def delete_budget(self, budget_id: str, org_id: str) -> bool:
         """Delete a budget configuration."""
         async with self._get_session() as session:
+            await lock_policy_mutation(session, tenant_id=org_id)
             result = await session.execute(select(BudgetConfig).where(and_(BudgetConfig.id == budget_id, BudgetConfig.org_id == org_id)))
             budget = result.scalar_one_or_none()
             if not budget:
                 return False
+            await lock_policy_mutation(
+                session,
+                tenant_id=org_id,
+                scope_kind="user" if budget.entity_type == "service_account" else budget.entity_type,
+                identity=budget.entity_id,
+            )
 
             await session.delete(budget)
             await session.commit()
@@ -294,104 +316,88 @@ class BudgetService(IBudgetService):
         # the authenticated one, so a hosted run bills the tenant that
         # triggered it rather than __platform__. Attribution defaults to
         # org_id, so non-internal callers are unaffected.
-        # Record for user
-        await self.record_cost(
-            CostRecordRequest(
-                entity_type=EntityType.USER,
-                entity_id=context.user_id,
-                model_name=model,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                request_cost_usd=cost,
-            ),
-            context.attributed_org_id,
+        entities = (
+            (EntityType.USER, context.user_id),
+            (EntityType.TEAM, context.team_id),
+            (EntityType.DEPARTMENT, context.department_id),
+            (EntityType.ORGANIZATION, context.attributed_org_id),
         )
-
-        # Record for team
-        await self.record_cost(
-            CostRecordRequest(
-                entity_type=EntityType.TEAM,
-                entity_id=context.team_id,
-                model_name=model,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                request_cost_usd=cost,
-            ),
-            context.attributed_org_id,
-        )
-
-        # Record for department
-        await self.record_cost(
-            CostRecordRequest(
-                entity_type=EntityType.DEPARTMENT,
-                entity_id=context.department_id,
-                model_name=model,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                request_cost_usd=cost,
-            ),
-            context.attributed_org_id,
-        )
-
-        # Record for organization
-        await self.record_cost(
-            CostRecordRequest(
-                entity_type=EntityType.ORGANIZATION,
-                entity_id=context.attributed_org_id,
-                model_name=model,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                request_cost_usd=cost,
-            ),
-            context.attributed_org_id,
-        )
+        async with self._get_session() as session:
+            root = context.attributed_user_id or (context.user_id if context.account_type != "service" else None)
+            if context.account_type == "service" and root == context.user_id:
+                root = None
+            await lock_legacy_metering_gates(
+                session, org_id=context.attributed_org_id, root_user_id=root, human_root=context.account_type != "service"
+            )
+            for entity_type, entity_id in entities:
+                await self._record_cost_in_session(
+                    session,
+                    CostRecordRequest(
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        model_name=model,
+                        tokens_in=tokens_in,
+                        tokens_out=tokens_out,
+                        request_cost_usd=cost,
+                    ),
+                    context.attributed_org_id,
+                )
+            await session.commit()
 
     async def record_cost(self, request: CostRecordRequest, org_id: str) -> None:
         """Record a cost entry against entity budgets."""
         async with self._get_session() as session:
-            # Calculate cost if not provided
-            if request.request_cost_usd is None:
-                cost, _, _ = calculate_model_cost(request.model_name, request.tokens_in, request.tokens_out)
-            else:
-                cost = request.request_cost_usd
+            await lock_legacy_metering_gates(
+                session,
+                org_id=org_id,
+                root_user_id=request.entity_id if request.entity_type in {EntityType.USER, EntityType.ROOT_USER} else None,
+            )
+            await self._record_cost_in_session(session, request, org_id)
+            await session.commit()
 
-            # Get or create usage record for each period type
-            for period_type in [PeriodType.DAILY, PeriodType.WEEKLY, PeriodType.MONTHLY]:
-                period_start, _ = get_period_start_end(period_type)
+    @staticmethod
+    async def _record_cost_in_session(session: AsyncSession, request: CostRecordRequest, org_id: str) -> None:
+        # Calculate cost if not provided
+        if request.request_cost_usd is None:
+            cost, _, _ = calculate_model_cost(request.model_name, request.tokens_in, request.tokens_out)
+        else:
+            cost = request.request_cost_usd
 
-                # Get or create usage record
-                result = await session.execute(
-                    select(BudgetUsage).where(
-                        and_(
-                            BudgetUsage.org_id == org_id,
-                            BudgetUsage.entity_type == request.entity_type.value,
-                            BudgetUsage.entity_id == request.entity_id,
-                            BudgetUsage.period_type == period_type.value,
-                            BudgetUsage.period_start == period_start,
-                        )
+        # Get or create usage record for each period type
+        for period_type in [PeriodType.DAILY, PeriodType.WEEKLY, PeriodType.MONTHLY]:
+            period_start, _ = get_period_start_end(period_type)
+
+            # Get or create usage record
+            result = await session.execute(
+                select(BudgetUsage).where(
+                    and_(
+                        BudgetUsage.org_id == org_id,
+                        BudgetUsage.entity_type == request.entity_type.value,
+                        BudgetUsage.entity_id == request.entity_id,
+                        BudgetUsage.period_type == period_type.value,
+                        BudgetUsage.period_start == period_start,
                     )
                 )
-                usage = result.scalar_one_or_none()
+            )
+            usage = result.scalar_one_or_none()
 
-                if not usage:
-                    usage = BudgetUsage(
-                        org_id=org_id,
-                        entity_type=request.entity_type.value,
-                        entity_id=request.entity_id,
-                        period_start=period_start,
-                        period_type=period_type.value,
-                        total_cost_usd=Decimal("0"),
-                        total_tokens=0,
-                        request_count=0,
-                    )
-                    session.add(usage)
+            if not usage:
+                usage = BudgetUsage(
+                    org_id=org_id,
+                    entity_type=request.entity_type.value,
+                    entity_id=request.entity_id,
+                    period_start=period_start,
+                    period_type=period_type.value,
+                    total_cost_usd=Decimal("0"),
+                    total_tokens=0,
+                    request_count=0,
+                )
+                session.add(usage)
 
-                # Update usage
-                usage.total_cost_usd += cost
-                usage.total_tokens += request.tokens_in + request.tokens_out
-                usage.request_count += 1
-
-            await session.commit()
+            # Update usage
+            usage.total_cost_usd += cost
+            usage.total_tokens += request.tokens_in + request.tokens_out
+            usage.request_count += 1
 
     # Cost Calculation Methods
 

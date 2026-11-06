@@ -4,10 +4,12 @@ import hashlib
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import boto3
 import pytest
 
 from src.agentauth import chat_data_routes, chat_model
 from src.agentauth.bootstrap import envelope_digest
+from src.agentauth.chat_crew_run import CrewRunStore
 from src.agentauth.chat_session_mailbox import AcceptedTurn, ChatSessionMailbox
 from src.agentauth.external_roots import provision_root
 from src.agentauth.workload import VerifiedPod, WorkloadRefusedError
@@ -27,6 +29,17 @@ store = store_fixture
 sts = sts_fixture
 retained_input_table = retained_input_table_fixture
 PATH = "/v1/chat/turn/next"
+
+
+@pytest.fixture(autouse=True)
+def crew_registry(runtime, monkeypatch):
+    table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName="mailbox-crew-runs",
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+    )
+    monkeypatch.setattr(chat_data_routes, "current_crew_store", lambda: CrewRunStore(table))
 
 
 @pytest.fixture
@@ -65,6 +78,9 @@ async def mailbox(client, runtime, monkeypatch, request):
         def is_absent(self, **kwargs):
             return state["removed"]
 
+        def is_terminating(self, **kwargs):
+            return False
+
         def approved_sandbox_image(self, image):
             return image == sandbox.image_digest
 
@@ -96,8 +112,18 @@ async def next_turn(client, token, *, workload="sandbox-token", **changes):
     )
 
 
-async def test_bound_sandbox_reads_only_its_accepted_turn(mailbox):
-    client, _, token, _, envelope = mailbox
+async def test_bound_sandbox_reads_only_its_accepted_turn(mailbox, monkeypatch):
+    client, runtime, token, _, envelope = mailbox
+    # Prompt rendering happens after fixture admission. Its audit timestamp is
+    # the request clock, and must not depend on staying in the same wall second.
+    rendered_at = runtime[-1] + 2
+
+    class RenderClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromtimestamp(rendered_at, tz)
+
+    monkeypatch.setattr(chat_model, "datetime", RenderClock)
     response = await next_turn(client, token)
     assert response.status_code == 200, response.text
     assert response.headers["cache-control"] == "no-store"
@@ -107,6 +133,24 @@ async def test_bound_sandbox_reads_only_its_accepted_turn(mailbox):
     assert response.json()["turn"]["message"]["content"] == envelope["message"]
     assert response.json()["turn"]["message"]["parts"] == [{"type": "file", "artifactId": "art_0123456789ab"}]
     assert token not in response.text
+    # The gateway renders the system prompt (#8113): platform preamble plus the EXEC persona,
+    # content-addressed and recorded on the EXEC record for audit.
+    from src.agentauth.chat_persona_prompt import PLATFORM_PREAMBLE, render_system_prompt
+
+    rendered = render_system_prompt("developer")
+    assert rendered.persona_source == "rules"
+    assert response.json()["system_prompt"] == rendered.system_prompt
+    assert response.json()["system_prompt"].startswith(PLATFORM_PREAMBLE)
+    assert response.json()["prompt_revision"] == rendered.prompt_revision
+    execution = runtime[1].store._read("TENANT#tenant", "EXEC#run-user")
+    assert execution["chat_prompt_revision"] == {"S": rendered.prompt_revision}
+    assert execution["chat_prompt_persona_source"] == {"S": "rules"}
+    assert execution["chat_prompt_rendered_at"] == {"N": str(rendered_at)}
+    rendered_at += 2
+    again = await next_turn(client, token)
+    assert again.status_code == 200, again.text
+    assert again.json()["prompt_revision"] == rendered.prompt_revision
+    assert runtime[1].store._read("TENANT#tenant", "EXEC#run-user") == execution
 
 
 @pytest.mark.parametrize("forgery", [{"run_id": "run-a"}, {"session_id": "session-other"}, {"user_id": "other"}])
@@ -707,7 +751,7 @@ async def test_followup_root_guard_with_synthetic_committed_cursor(mailbox, chan
             "message": "Follow up",
             "team_id": "team",
         }
-        provision_root(runtime[1].store, envelope, source="chat", human_id="another", now=datetime.fromtimestamp(runtime[-1], UTC))
+        provision_root(runtime[1].store, envelope, source="chat", human_id="another", team_id="team", now=datetime.fromtimestamp(runtime[-1], UTC))
     elif change != "missing_root":
         changes = {"session_id": "other-session", "source_ref": {"repo": "chat/other-session"}} if change == "other_session" else {}
         prepare(runtime, message_id="run-followup", message="Follow up", team_id="team", **changes)

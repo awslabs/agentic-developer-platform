@@ -39,6 +39,18 @@ class SwitchWorkspaceRequest(BaseModel):
     org_id: str = Field(min_length=1, max_length=255)
 
 
+@router.get("/workflow-permissions")
+async def workflow_permissions(current_user: TokenContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
+    """UI capability hints use the same live membership check as workflow writes."""
+    from src.admin.access_control import AccessControl
+    from src.admin.config import Permission
+
+    allowed = await AccessControl(db).check_permission_for_discovery(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    if allowed is None:
+        raise HTTPException(status_code=503, detail="Workspace membership is temporarily unavailable")
+    return {"org_id": current_user.org_id, "permissions": [Permission.PLAN_DRAFT.value, Permission.PLAN_APPROVE.value] if allowed else []}
+
+
 class CognitoWorkspaceClaims:
     """Strict write: a switch must never claim success after a failed sync."""
 

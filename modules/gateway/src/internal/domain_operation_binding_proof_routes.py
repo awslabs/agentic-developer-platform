@@ -85,7 +85,10 @@ def installed_worker(binding, runtime, state="executable"):
             or metadata.get("deletionTimestamp")
             or state not in {"prepared", "executable"}
             or type(spec["maxReplicaCount"]) is not int
-            or (state == "prepared" and (metadata.get("annotations", {}).get("autoscaling.keda.sh/paused") != "true" or spec["maxReplicaCount"] != 0))
+            or (
+                state == "prepared"
+                and (metadata.get("annotations", {}).get("autoscaling.keda.sh/paused") != "true" or not 1 <= spec["maxReplicaCount"] <= 4)
+            )
             or (
                 state == "executable"
                 and (metadata.get("annotations", {}).get("autoscaling.keda.sh/paused") == "true" or not 1 <= spec["maxReplicaCount"] <= 4)

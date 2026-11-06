@@ -53,3 +53,48 @@ roleRef:
   kind: Role
   name: ingestion-pipeline-role
   apiGroup: rbac.authorization.k8s.io
+---
+# Read-only runtime verification of the Knowledge Door (context-mcp) by the
+# environment connection role (ADP-Agent-${ENVIRONMENT}-platform, EKS access
+# entry group adp:runtime-verifier-${ENVIRONMENT}). The orchestration engine's
+# deployment verifier reads the Deployment, its ReplicaSets and Pods, and probes
+# the Door through the API server's scoped service proxy with an invalid identity
+# header, expecting the Door's own 401. Mirrors adp-gateway/adp-runtime-verifier.
+# Without this Role the verifier's first read is refused (403) and the door
+# story ends "exited without verified runtime evidence" (TLS-X02 door5, #7289).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: adp-runtime-verifier
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: adp-orchestration
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    resourceNames: ["http:context-mcp:5100", "context-mcp"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: adp-runtime-verifier
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: adp-orchestration
+    app.kubernetes.io/component: rbac
+subjects:
+  - kind: Group
+    name: adp:runtime-verifier-${ENVIRONMENT}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: adp-runtime-verifier
+  apiGroup: rbac.authorization.k8s.io

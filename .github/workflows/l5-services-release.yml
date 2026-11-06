@@ -1,0 +1,625 @@
+name: L5 Services Release
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || inputs.operation == 'publish' && 'L5 artifact publication' || inputs.operation == 'install' && 'L5 installation (consumers disabled)' || 'L5 release and qualification' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Full release, standalone installation, or artifact and image publication only
+        required: true
+        type: choice
+        default: release
+        options: [release, install, publish]
+      reviewed_source_sha:
+        description: Reviewed main source for standalone publication; engine runs use adp_source_revision
+        required: false
+        type: string
+      adp_correlation:
+        description: Engine delivery correlation; supply all four adp inputs together
+        required: false
+        type: string
+      adp_source_revision:
+        description: Engine-selected reviewed main source
+        required: false
+        type: string
+      adp_definition_revision:
+        description: Engine-selected workflow definition revision
+        required: false
+        type: string
+      adp_contract_digest:
+        description: Accepted version-2 delivery contract digest
+        required: false
+        type: string
+      service:
+        description: Service consuming the shared wheel and worker package
+        type: choice
+        default: security
+        options: [security, devops, finops, transform, well_architected, well-architected]
+      installation_services:
+        description: Comma-separated service roots to install with foundation; must include selected service
+        required: false
+        type: string
+      environment:
+        description: Protected target for the explicit artifact publication
+        required: true
+        type: choice
+        options: [dev, test, prod]
+
+permissions:
+  contents: read
+
+env:
+  ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1
+  L5_RELEASE_OPERATION: ${{ inputs.operation || 'release' }}
+
+concurrency:
+  # All services use the same package and target; serialize their publication.
+  group: l5-services-release-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish immutable L5 artifacts and images
+    if: github.ref == 'refs/heads/main'
+    # ARC intentionally has no Docker daemon. Only Transform's image build
+    # uses an isolated hosted VM; private install/qualification stay on ARC.
+    runs-on: ${{ inputs.service == 'transform' && 'ubuntu-24.04' || 'arc-runner-org' }}
+    timeout-minutes: 30
+    environment: adp-gateway-deploy-${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+      ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+      REVIEWED_SOURCE_SHA: ${{ inputs.reviewed_source_sha }}
+      L5_SERVICE: ${{ inputs.service || 'security' }}
+      # Protected target policy; never selected by a fixture or dispatch input.
+      L5_AWS_CONSOLE_AUTOMATION: ${{ vars.ADP_L5_AWS_CONSOLE_AUTOMATION || 'disabled' }}
+      L5_BROWSER_AUTOMATION: ${{ vars.ADP_L5_BROWSER_AUTOMATION || 'disabled' }}
+      L5_ENVIRONMENT: ${{ inputs.environment }}
+      L5_RELEASE_ROLE_ARN: ${{ vars.ADP_L5_RELEASE_ROLE_ARN || vars.ADP_FOUNDATION_CONNECTION_ROLE_ARN }}
+      L5_MUTATION_ROLE_ARN: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+      ADP_GATEWAY_BASE_URL: ${{ vars.ADP_FOUNDATION_GATEWAY_URL }}
+      RELEASE_BUCKET: ${{ vars.ADP_L5_RELEASE_BUCKET }}
+    outputs:
+      wheel_digest: ${{ steps.pinned.outputs.wheel_digest }}
+      archive_digest: ${{ steps.pinned.outputs.archive_digest }}
+      manifest_version: ${{ steps.pinned.outputs.manifest_version }}
+      publication_receipt_key: ${{ steps.transform_receipts.outputs.publication_receipt_key }}
+      publication_receipt_version: ${{ steps.transform_receipts.outputs.publication_receipt_version_id }}
+      publication_receipt_sha256: ${{ steps.transform_receipts.outputs.publication_receipt_sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || inputs.reviewed_source_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify reviewed source and private target
+        env:
+          SOURCE_SHA: ${{ inputs.adp_source_revision || inputs.reviewed_source_sha }}
+          PRIVATE_FIXTURE_JSON: ${{ (inputs.operation == 'release' || inputs.operation == '') && (inputs.service == 'devops' && secrets.ADP_L5_DEVOPS_LIVE_CONFIG_JSON || inputs.service == 'finops' && secrets.ADP_L5_FINOPS_LIVE_CONFIG_JSON || inputs.service == 'transform' && secrets.ADP_L5_TRANSFORM_LIVE_CONFIG_JSON || (inputs.service == 'well_architected' || inputs.service == 'well-architected') && secrets.ADP_L5_WELL_ARCHITECTED_LIVE_CONFIG_JSON || (inputs.service == 'security' || inputs.service == '') && secrets.ADP_L5_SECURITY_LIVE_CONFIG_JSON) || '' }}
+          ADP_L5_INFRA_CONFIG_JSON: ${{ inputs.operation != 'publish' && secrets.ADP_L5_INFRA_CONFIG_JSON || '' }}
+          ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON: ${{ (inputs.operation == 'release' || inputs.operation == '') && (inputs.service == 'security' || inputs.service == '') && secrets.ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON || '' }}
+          ADP_L5_TRANSFORM_IMAGE_CONFIG_JSON: ${{ inputs.service == 'transform' && secrets.ADP_L5_TRANSFORM_IMAGE_CONFIG_JSON || '' }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          # checkout's authenticated full-history fetch already populated main.
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          test -n "$RELEASE_BUCKET"
+          test -n "$L5_RELEASE_ROLE_ARN"
+          # Validate selected protected inputs before publication or installation.
+          python3 modules/L5-services/scripts/check-release-prerequisites.py "$L5_SERVICE" "$SOURCE_SHA" --operation "$L5_RELEASE_OPERATION"
+          # UI and management-console access are separate protected policies.
+          # Standalone installation/publication has no browser or acceptance stage.
+          if [[ "$L5_RELEASE_OPERATION" == release ]]; then
+            python3 modules/L5-services/scripts/qualification-dispatch.py check-browser-policy "$L5_SERVICE"
+            python3 modules/L5-services/scripts/qualification-dispatch.py check-console-policy "$L5_SERVICE"
+          fi
+          # Refuse an incomplete service package before publication or Terraform.
+          python3 modules/L5-services/scripts/qualification-dispatch.py check-driver "$L5_SERVICE"
+          L5_CHECKOUT_REVISION="$(git rev-parse HEAD)"
+          export L5_CHECKOUT_REVISION
+          echo "L5_CHECKOUT_REVISION=$L5_CHECKOUT_REVISION" >> "$GITHUB_ENV"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/l5-services-release"
+          python3 modules/L5-services/scripts/release_context.py > "$RUNNER_TEMP/l5-services-release/publication-context.json"
+      - name: Verify isolated Transform Docker builder
+        if: inputs.service == 'transform'
+        run: |
+          set -euo pipefail
+          if ! docker info >/dev/null 2>&1; then
+            echo "::error title=Transform image builder unavailable::The isolated Ubuntu publication runner has no usable Docker daemon. Restore the hosted Ubuntu Docker service and rerun this publication job with the same reviewed source. No images or qualification were published."
+            exit 1
+          fi
+      - name: Validate protected Transform image inputs
+        if: inputs.service == 'transform'
+        env:
+          ADP_L5_TRANSFORM_IMAGE_CONFIG_JSON: ${{ secrets.ADP_L5_TRANSFORM_IMAGE_CONFIG_JSON }}
+        run: python3 modules/L5-services/scripts/release-transform-images.py --check-config
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Build and publish one pinned release
+        id: shared_artifacts
+        env:
+          SOURCE_SHA: ${{ inputs.adp_source_revision || inputs.reviewed_source_sha }}
+        run: |
+          set -euo pipefail
+          # The runner image ships an externally managed (PEP 668) system
+          # Python, so the pinned build tool goes into a scoped user install.
+          PYTHONUSERBASE="$RUNNER_TEMP/l5-release-tools"
+          export PYTHONUSERBASE
+          python3 -m pip install --user --break-system-packages uv==0.13.5
+          export PATH="$PYTHONUSERBASE/bin:$PATH"
+          uv --version
+          wheel="$(modules/L5-services/scripts/build-package.sh "$RUNNER_TEMP/l5-services-release" | tail -1)"
+          echo "L5_RELEASE_WHEEL=$wheel" >> "$GITHUB_ENV"
+          modules/L5-services/scripts/build-workers.sh "$wheel" "$RUNNER_TEMP/l5-services-release/l5-workers.zip"
+          # Recheck engine ownership after the build and before publication.
+          python3 modules/L5-services/scripts/release_context.py --check-aws > /dev/null
+          modules/L5-services/scripts/publish-workers.sh "$wheel" "$RUNNER_TEMP/l5-services-release/l5-workers.zip" "$RELEASE_BUCKET" "$SOURCE_SHA"
+          python3 modules/L5-services/scripts/release-artifacts.py \
+            "$wheel" "$RUNNER_TEMP/l5-services-release/l5-workers.zip" \
+            "$RUNNER_TEMP/l5-services-release/publication-context.json" \
+            "$RUNNER_TEMP/l5-services-release/release-artifacts.json"
+      - name: Pass verified immutable artifact coordinates to the qualification job
+        id: pinned
+        run: |
+          set -euo pipefail
+          {
+            jq -er '"wheel_digest=\(.artifacts.wheel.sha256)"' "$RUNNER_TEMP/l5-services-release/release-artifacts.json"
+            jq -er '"archive_digest=\(.artifacts.archive.sha256)"' "$RUNNER_TEMP/l5-services-release/release-artifacts.json"
+            jq -er '"manifest_version=\(.manifest.version_id)"' "$RUNNER_TEMP/l5-services-release/release-artifacts.json"
+          } >> "$GITHUB_OUTPUT"
+      - name: Publish Transform executor images through the selected release role
+        id: transform_images
+        if: inputs.service == 'transform'
+        env:
+          ADP_L5_TRANSFORM_IMAGE_CONFIG_JSON: ${{ secrets.ADP_L5_TRANSFORM_IMAGE_CONFIG_JSON }}
+          AWS_REGION: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+        run: |
+          set -euo pipefail
+          python3 modules/L5-services/scripts/release_context.py --check-aws > /dev/null
+          python3 modules/L5-services/scripts/release-transform-images.py --publish \
+            "$RUNNER_TEMP/l5-services-release/publication-context.json" \
+            "$RUNNER_TEMP/l5-services-release/release-artifacts.json" \
+            "$L5_RELEASE_WHEEL" \
+            "$RUNNER_TEMP/l5-services-release/validation-images.json"
+      - name: Retain Transform publication receipts with protected release authority
+        id: transform_receipts
+        if: always() && inputs.service == 'transform' && steps.shared_artifacts.outcome == 'success'
+        env:
+          PUBLICATION_OUTCOME: ${{ steps.transform_images.outcome }}
+        run: |
+          set -euo pipefail
+          python3 modules/L5-services/scripts/release-publication-receipts.py \
+            "$RUNNER_TEMP/l5-services-release" "$PUBLICATION_OUTCOME"
+      - name: Retain private artifact handoff for runtime qualification
+        if: inputs.service != 'transform'
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: l5-release-artifacts
+          path: |
+            ${{ runner.temp }}/l5-services-release/publication-context.json
+            ${{ runner.temp }}/l5-services-release/release-artifacts.json
+            ${{ runner.temp }}/l5-services-release/validation-images.json
+          if-no-files-found: error
+          retention-days: 14
+
+  diagnose-transform-hosted-runner:
+    name: Explain unavailable Transform hosted capacity
+    if: always() && inputs.service == 'transform' && needs.publish.result == 'failure'
+    needs: publish
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Check whether GitHub assigned the publication runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > "$RUNNER_TEMP/transform-publication-jobs.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          jobs = json.loads((Path(os.environ["RUNNER_TEMP"]) / "transform-publication-jobs.json").read_text())["jobs"]
+          selected = [job for job in jobs if job["name"] == "Publish immutable L5 artifacts and images"]
+          if len(selected) != 1:
+              raise SystemExit("Cannot identify the original Transform publication job; inspect this workflow attempt's Jobs view.")
+          if not selected[0].get("runner_name"):
+              print("::error title=Transform hosted runner was not assigned::GitHub could not start the isolated ubuntu-24.04 image publication job. Check this repository's hosted-runner policy, organization Actions usage limits and billing status, then rerun the original publication job with the same reviewed source. No images or qualification were published by that job.")
+              raise SystemExit(1)
+          print("GitHub assigned the isolated publication runner. Inspect the failed publication step for its specific build or registry error.")
+          PY
+
+  install:
+    name: Install independent L5 infrastructure
+    if: github.ref == 'refs/heads/main' && inputs.operation != 'publish'
+    needs: publish
+    runs-on: arc-runner-org
+    timeout-minutes: 40
+    environment: adp-gateway-deploy-${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+      ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+      REVIEWED_SOURCE_SHA: ${{ inputs.reviewed_source_sha }}
+      L5_CHECKOUT_REVISION: ${{ inputs.adp_source_revision || inputs.reviewed_source_sha }}
+      L5_RELEASE_ROLE_ARN: ${{ vars.ADP_L5_RELEASE_ROLE_ARN || vars.ADP_FOUNDATION_CONNECTION_ROLE_ARN }}
+      L5_MUTATION_ROLE_ARN: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+      ADP_GATEWAY_BASE_URL: ${{ vars.ADP_FOUNDATION_GATEWAY_URL }}
+      L5_SERVICE: ${{ inputs.service || 'security' }}
+      L5_INSTALL_SERVICES: ${{ inputs.installation_services || inputs.service || 'security' }}
+      L5_ENVIRONMENT: ${{ inputs.environment }}
+      RELEASE_BUCKET: ${{ vars.ADP_L5_RELEASE_BUCKET }}
+      WHEEL_DIGEST: ${{ needs.publish.outputs.wheel_digest }}
+      MANIFEST_VERSION: ${{ needs.publish.outputs.manifest_version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || inputs.reviewed_source_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+          terraform_version: 1.14.0
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Validate private target and install selected roots
+        env:
+          L5_INFRA_CONFIG_JSON: ${{ secrets.ADP_L5_INFRA_CONFIG_JSON }}
+          L5_TARGET_REGION: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$L5_CHECKOUT_REVISION"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          python3 - <<'PYSELECT'
+          import importlib.util
+          import os
+          from pathlib import Path
+
+          location = Path('modules/L5-services/scripts/deploy-infra.py').resolve()
+          spec = importlib.util.spec_from_file_location('l5_release_deploy', location)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          services = module.selection('foundation,' + os.environ['L5_INSTALL_SERVICES'])
+          selected = os.environ['L5_SERVICE'].replace('_', '-')
+          if selected not in services:
+              raise SystemExit('Selected qualification service must be in the installed group')
+          PYSELECT
+          python3 modules/L5-services/scripts/release_context.py --check-aws > /dev/null
+          umask 077
+          mkdir -p "$RUNNER_TEMP/l5-infrastructure"
+          python3 - <<'PYCONFIG'
+          import json, os
+          from pathlib import Path
+          config = json.loads(os.environ['L5_INFRA_CONFIG_JSON'])
+          assert config['environment'] == os.environ['L5_ENVIRONMENT']
+          assert config['role_arn'] == os.environ['L5_MUTATION_ROLE_ARN']
+          assert config['region'] == os.environ['L5_TARGET_REGION']
+          Path(os.environ['RUNNER_TEMP'], 'l5-infrastructure', 'config.json').write_text(json.dumps(config))
+          PYCONFIG
+          python3 modules/L5-services/scripts/deploy-infra.py apply \
+            --config "$RUNNER_TEMP/l5-infrastructure/config.json" \
+            --services "foundation,$L5_INSTALL_SERVICES" --bucket "$RELEASE_BUCKET" \
+            --source-sha "$L5_CHECKOUT_REVISION" --wheel-sha256 "$WHEEL_DIGEST" \
+            --manifest-version "$MANIFEST_VERSION" --receipt-dir "$RUNNER_TEMP/l5-infrastructure/receipts"
+      - name: Roll out selected service workers without enabling consumers
+        if: inputs.service != 'security' || inputs.operation == 'install'
+        run: |
+          set -euo pipefail
+          python3 modules/L5-services/scripts/release_context.py --check-aws > /dev/null
+          account=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["account_id"])' "$RUNNER_TEMP/l5-infrastructure/config.json")
+          python3 modules/L5-services/scripts/worker-lifecycle.py rollout \
+            --service "${L5_SERVICE//-/_}" --environment "$L5_ENVIRONMENT" \
+            --account "$account" --role-arn "$L5_MUTATION_ROLE_ARN" \
+            --bucket "$RELEASE_BUCKET" --source-sha "$L5_CHECKOUT_REVISION" \
+            --gateway-wheel-sha256 "$WHEEL_DIGEST" --manifest-version "$MANIFEST_VERSION" \
+            --receipt "$RUNNER_TEMP/l5-infrastructure/receipts/${L5_SERVICE//_/-}/rollout-receipt.json"
+      - name: Retain private infrastructure receipts
+        if: always()
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: l5-infrastructure
+          path: ${{ runner.temp }}/l5-infrastructure/receipts/*/*receipt.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  qualify-security:
+    name: L5 release and live qualification
+    if: github.ref == 'refs/heads/main' && inputs.service == 'security' && (inputs.operation == 'release' || inputs.operation == '')
+    needs: [publish, install]
+    runs-on: arc-runner-org
+    timeout-minutes: 120
+    environment: adp-gateway-deploy-${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+      deployments: read
+    env:
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+      ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+      REVIEWED_SOURCE_SHA: ${{ inputs.reviewed_source_sha }}
+      L5_RELEASE_ROLE_ARN: ${{ vars.ADP_L5_RELEASE_ROLE_ARN || vars.ADP_FOUNDATION_CONNECTION_ROLE_ARN }}
+      L5_MUTATION_ROLE_ARN: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+      ADP_GATEWAY_BASE_URL: ${{ vars.ADP_FOUNDATION_GATEWAY_URL }}
+      RELEASE_BUCKET: ${{ vars.ADP_L5_RELEASE_BUCKET }}
+      L5_ENVIRONMENT: ${{ inputs.environment }}
+      L5_SERVICE: security
+      L5_BROWSER_AUTOMATION: ${{ vars.ADP_L5_BROWSER_AUTOMATION || 'disabled' }}
+      SOURCE_SHA: ${{ inputs.adp_source_revision || inputs.reviewed_source_sha }}
+      WHEEL_DIGEST: ${{ needs.publish.outputs.wheel_digest }}
+      ARCHIVE_DIGEST: ${{ needs.publish.outputs.archive_digest }}
+      MANIFEST_VERSION: ${{ needs.publish.outputs.manifest_version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || inputs.reviewed_source_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify reviewed source and owner-authorized private Security fixtures
+        env:
+          PRIVATE_FIXTURE_JSON: ${{ secrets.ADP_L5_SECURITY_LIVE_CONFIG_JSON }}
+          ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON: ${{ secrets.ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          export L5_CHECKOUT_REVISION="$SOURCE_SHA"
+          echo "L5_CHECKOUT_REVISION=$SOURCE_SHA" >> "$GITHUB_ENV"
+          python3 modules/L5-services/scripts/qualification-dispatch.py check-browser-policy security
+          python3 modules/L5-services/scripts/qualification-dispatch.py check-driver security
+          python3 modules/L5-services/scripts/qualification-dispatch.py prepare security
+          PRIVATE_FIXTURE="$RUNNER_TEMP/l5-services-qualification/security/fixture.json"
+          PRIVATE_EVIDENCE_DIR="$RUNNER_TEMP/l5-services-qualification/security/evidence"
+          export PRIVATE_FIXTURE PRIVATE_EVIDENCE_DIR
+          L5_FIXTURE_DIGEST="$(sha256sum "$PRIVATE_FIXTURE" | cut -d ' ' -f1)"
+          export L5_FIXTURE_DIGEST
+          test -n "$PRIVATE_FIXTURE" && test -n "$PRIVATE_EVIDENCE_DIR"
+          test -n "$ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON"
+          test -x modules/L5-services/scripts/qualify-security-readbacks.py
+          test -x modules/L5-services/scripts/emit-security-qualification.py
+          L5_QUALIFICATION_PREFLIGHT=1 modules/L5-services/scripts/emit-security-qualification.py
+          python3 modules/L5-services/tests/live/run_security_live.py \
+            preflight "$SOURCE_SHA" "$PRIVATE_FIXTURE" "$PRIVATE_EVIDENCE_DIR"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install native selector dependencies
+        run: |
+          python -m pip install -e 'modules/L5-services[dev]' -e 'modules/gateway[dev]' 'playwright==1.58.0'
+          python -m playwright install --with-deps chromium
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Install reviewed worker code and resume scoped consumers
+        run: |
+          set -euo pipefail
+          [[ "$L5_MUTATION_ROLE_ARN" =~ ^arn:aws:iam::([0-9]{12}):role/[A-Za-z0-9+=,.@_/-]+$ ]]
+          ACCOUNT="${BASH_REMATCH[1]}"
+          [[ "$WHEEL_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          test -n "$MANIFEST_VERSION"
+          python3 modules/L5-services/scripts/release_context.py --check-aws > /dev/null
+          umask 077
+          mkdir -p "$RUNNER_TEMP/l5-services-release"
+          lifecycle=(python3 modules/L5-services/scripts/worker-lifecycle.py)
+          selection=(--environment "$L5_ENVIRONMENT" --account "$ACCOUNT" --role-arn "$L5_MUTATION_ROLE_ARN"
+            --bucket "$RELEASE_BUCKET" --source-sha "$SOURCE_SHA"
+            --gateway-wheel-sha256 "$WHEEL_DIGEST" --manifest-version "$MANIFEST_VERSION")
+          "${lifecycle[@]}" status "${selection[@]}" --receipt "$RUNNER_TEMP/l5-services-release/status.json"
+          "${lifecycle[@]}" rollout "${selection[@]}" --receipt "$RUNNER_TEMP/l5-services-release/rollout.json"
+          "${lifecycle[@]}" resume "${selection[@]}" --receipt "$RUNNER_TEMP/l5-services-release/resume.json"
+      - name: Run bounded native Security selectors against the installed service
+        env:
+          ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON: ${{ secrets.ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON }}
+        run: |
+          set -euo pipefail
+          for scenario in setup assessments recovery context; do
+            python3 modules/L5-services/tests/live/run_security_live.py \
+              "$scenario" "$SOURCE_SHA" "$PRIVATE_FIXTURE" "$PRIVATE_EVIDENCE_DIR"
+          done
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Read current Product results, provider jobs and installed code independently
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON: ${{ secrets.ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON }}
+        run: |
+          set -euo pipefail
+          modules/L5-services/scripts/qualify-security-readbacks.py
+      - name: Require evaluated delivery evidence before qualification succeeds
+        run: |
+          set -euo pipefail
+          test -x modules/L5-services/scripts/emit-security-qualification.py
+          modules/L5-services/scripts/emit-security-qualification.py
+
+      - name: Stage bounded reports for delivery verification
+        id: reports
+        if: always()
+        run: python3 modules/L5-services/scripts/publish-release-reports.py
+      - name: Publish qualification metadata
+        if: always() && steps.reports.outputs.qualification == 'staged'
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: l5-security-qualification
+          path: ${{ runner.temp }}/l5-published-reports/l5-security-qualification/qualification.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish verified delivery contract
+        if: always() && steps.reports.outputs.delivery == 'staged'
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID="$(cut -d: -f5 <<< "$L5_MUTATION_ROLE_ARN")"
+          export ACCOUNT_ID
+          python3 modules/gateway/scripts/publish-deployment-evidence.py delivery delivery-evidence \
+            "$RUNNER_TEMP/l5-published-reports/delivery-evidence/delivery-evidence.json"
+
+  qualify-selected:
+    name: L5 release and live qualification
+    if: github.ref == 'refs/heads/main' && inputs.service != 'security' && (inputs.operation == 'release' || inputs.operation == '')
+    needs: [publish, install]
+    runs-on: arc-runner-org
+    timeout-minutes: 120
+    environment: adp-gateway-deploy-${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+      deployments: read
+    env:
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+      ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+      REVIEWED_SOURCE_SHA: ${{ inputs.reviewed_source_sha }}
+      L5_RELEASE_ROLE_ARN: ${{ vars.ADP_L5_RELEASE_ROLE_ARN || vars.ADP_FOUNDATION_CONNECTION_ROLE_ARN }}
+      L5_MUTATION_ROLE_ARN: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+      ADP_GATEWAY_BASE_URL: ${{ vars.ADP_FOUNDATION_GATEWAY_URL }}
+      RELEASE_BUCKET: ${{ vars.ADP_L5_RELEASE_BUCKET }}
+      L5_ENVIRONMENT: ${{ inputs.environment }}
+      L5_SERVICE: ${{ inputs.service }}
+      L5_AWS_CONSOLE_AUTOMATION: ${{ vars.ADP_L5_AWS_CONSOLE_AUTOMATION || 'disabled' }}
+      L5_BROWSER_AUTOMATION: ${{ vars.ADP_L5_BROWSER_AUTOMATION || 'disabled' }}
+      SOURCE_SHA: ${{ inputs.adp_source_revision || inputs.reviewed_source_sha }}
+      WHEEL_DIGEST: ${{ needs.publish.outputs.wheel_digest }}
+      ARCHIVE_DIGEST: ${{ needs.publish.outputs.archive_digest }}
+      MANIFEST_VERSION: ${{ needs.publish.outputs.manifest_version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || inputs.reviewed_source_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select native driver and materialize private fixture before provider work
+        env:
+          PRIVATE_FIXTURE_JSON: ${{ inputs.service == 'devops' && secrets.ADP_L5_DEVOPS_LIVE_CONFIG_JSON || inputs.service == 'finops' && secrets.ADP_L5_FINOPS_LIVE_CONFIG_JSON || inputs.service == 'transform' && secrets.ADP_L5_TRANSFORM_LIVE_CONFIG_JSON || (inputs.service == 'well_architected' || inputs.service == 'well-architected') && secrets.ADP_L5_WELL_ARCHITECTED_LIVE_CONFIG_JSON || '' }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          export L5_CHECKOUT_REVISION="$SOURCE_SHA"
+          echo "L5_CHECKOUT_REVISION=$SOURCE_SHA" >> "$GITHUB_ENV"
+          # Recheck target policy before credentials, browser setup or consumer resume.
+          python3 modules/L5-services/scripts/qualification-dispatch.py check-browser-policy "$L5_SERVICE"
+          python3 modules/L5-services/scripts/qualification-dispatch.py check-console-policy "$L5_SERVICE"
+          python3 modules/L5-services/scripts/qualification-dispatch.py check-driver "$L5_SERVICE"
+          python3 modules/L5-services/scripts/qualification-dispatch.py prepare "$L5_SERVICE"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install selected native driver dependencies
+        run: |
+          python -m pip install -e 'modules/L5-services[dev]' -e 'modules/gateway[dev]' 'playwright==1.58.0'
+          python -m playwright install --with-deps chromium
+      - uses: actions/setup-node@v7
+        if: inputs.service == 'finops'
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: modules/gateway/frontend/package-lock.json
+      - name: Install locked FinOps UI dependencies
+        if: inputs.service == 'finops'
+        working-directory: modules/gateway/frontend
+        run: npm ci --include=dev
+      - name: Share FinOps browser cache across isolated client homes
+        if: inputs.service == 'finops'
+        run: printf 'PLAYWRIGHT_BROWSERS_PATH=%s/l5-finops-browsers\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Install matching FinOps Chromium
+        if: inputs.service == 'finops'
+        working-directory: modules/gateway/frontend
+        run: npx playwright install chromium --with-deps
+      - name: Smoke-test FinOps browser dependencies without provider access
+        if: inputs.service == 'finops'
+        run: python3 modules/L5-services/scripts/qualify-finops-release.py check-browser "$SOURCE_SHA" "$PRIVATE_FIXTURE" "$PRIVATE_EVIDENCE_DIR"
+      - name: Prove native driver can use the selected private inputs
+        run: |
+          set -euo pipefail
+          service="${L5_SERVICE//_/-}"
+          python3 "modules/L5-services/scripts/qualify-${service}-release.py" \
+            preflight "$SOURCE_SHA" "$PRIVATE_FIXTURE" "$PRIVATE_EVIDENCE_DIR"
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Resume only the installed selected service
+        run: |
+          set -euo pipefail
+          [[ "$L5_MUTATION_ROLE_ARN" =~ ^arn:aws:iam::([0-9]{12}):role/[A-Za-z0-9+=,.@_/-]+$ ]]
+          account="${BASH_REMATCH[1]}"
+          python3 modules/L5-services/scripts/release_context.py --check-aws > /dev/null
+          selection=(--service "${L5_SERVICE//-/_}" --environment "$L5_ENVIRONMENT"
+            --account "$account" --role-arn "$L5_MUTATION_ROLE_ARN"
+            --bucket "$RELEASE_BUCKET" --source-sha "$SOURCE_SHA"
+            --gateway-wheel-sha256 "$WHEEL_DIGEST" --manifest-version "$MANIFEST_VERSION")
+          python3 modules/L5-services/scripts/worker-lifecycle.py status "${selection[@]}" \
+            --receipt "$RUNNER_TEMP/l5-services-qualification/status.json"
+          python3 modules/L5-services/scripts/worker-lifecycle.py resume "${selection[@]}" \
+            --receipt "$RUNNER_TEMP/l5-services-qualification/resume.json"
+      - name: Run selected native driver
+        run: |
+          set -euo pipefail
+          service="${L5_SERVICE//_/-}"
+          python3 "modules/L5-services/scripts/qualify-${service}-release.py" \
+            run "$SOURCE_SHA" "$PRIVATE_FIXTURE" "$PRIVATE_EVIDENCE_DIR"
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Independently read native results and require delivery evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          service="${L5_SERVICE//_/-}"
+          python3 "modules/L5-services/scripts/emit-${service}-qualification.py" \
+            "$SOURCE_SHA" "$PRIVATE_FIXTURE" "$PRIVATE_EVIDENCE_DIR"
+      - name: Stage bounded reports for delivery verification
+        id: reports
+        if: always()
+        run: python3 modules/L5-services/scripts/publish-release-reports.py
+      - name: Publish qualification metadata
+        if: always() && steps.reports.outputs.qualification == 'staged'
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: l5-${{ steps.reports.outputs.service }}-qualification
+          path: ${{ runner.temp }}/l5-published-reports/l5-${{ steps.reports.outputs.service }}-qualification/qualification.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish verified delivery contract
+        if: always() && steps.reports.outputs.delivery == 'staged'
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID="$(cut -d: -f5 <<< "$L5_MUTATION_ROLE_ARN")"
+          export ACCOUNT_ID
+          python3 modules/gateway/scripts/publish-deployment-evidence.py delivery delivery-evidence \
+            "$RUNNER_TEMP/l5-published-reports/delivery-evidence/delivery-evidence.json"

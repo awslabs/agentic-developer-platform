@@ -427,6 +427,8 @@ export class ControlStateStore {
     const started = performance.now();
     let allowed = false;
     let receipt: string | null = null;
+    let deliveryConsumed = false;
+    let deliveryOutcomeUnknown = false;
     try {
       const outcome = await this.revalidate?.(entry.authorization, this.generation);
       // Both shapes are accepted. A bare boolean is the answer for every verb whose
@@ -436,6 +438,8 @@ export class ControlStateStore {
       // off a boolean as `undefined` and silently mean "absent".
       if (typeof outcome === 'object' && outcome !== null) {
         allowed = outcome.allowed === true;
+        deliveryConsumed = outcome.deliveryConsumed === true;
+        deliveryOutcomeUnknown = outcome.deliveryOutcomeUnknown === true;
         if (allowed && typeof outcome.abortReceipt === 'string' && outcome.abortReceipt.length > 0) {
           receipt = outcome.abortReceipt;
         }
@@ -446,12 +450,19 @@ export class ControlStateStore {
     entry.checking = false;
     if (entry.record.status !== 'pending') return false;
     if (!allowed || performance.now() - started >= MAX_REVALIDATION_MS) {
+      if (deliveryOutcomeUnknown || deliveryConsumed) {
+        this.settle(commandId, 'unknown', 'queued delivery authority outcome unknown; instruction was not handed off');
+        return false;
+      }
       this.settle(commandId, 'rejected', 'authorization unavailable or revoked before delivery');
       return false;
     }
     // Runtime readiness may change while authority is checked. A closed
     // boundary leaves the command pending for a later, freshly authorized try.
-    if (ready && !ready()) return false;
+    if (ready && !ready()) {
+      if (deliveryConsumed) this.settle(commandId, 'unknown', 'delivery authority consumed before SDK boundary closed');
+      return false;
+    }
     // Recorded before the handoff, because the executor reads it *during* the
     // handoff — the abort path writes its sentinel synchronously inside `run()`.
     // Assigning after would leave the receipt absent at the only moment it is read.

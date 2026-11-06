@@ -38,6 +38,8 @@ python3 platform/scripts/prepare-release-config.py \
   --root "$PWD" --env dev --region us-east-1
 
 # Review portable inputs and apply any required target-specific overrides first.
+# Select the operator who will receive the Cognito administrator invitation.
+export ADP_BOOTSTRAP_ADMIN_EMAIL='operator@your-company.example'
 ADP_PORTABLE_RELEASE_CONFIG=true ./deploy.sh \
   --aws-profile customer --env dev --region us-east-1
 ```
@@ -62,6 +64,11 @@ into it. Record the reviewed commit and target privately; do not describe an
 unreleased commit as a published release. The full launcher handles bootstrap;
 do not run the manual phases again. `--dry-run` checks identity and selected
 prerequisites, but does not create a Terraform plan or establish readiness.
+
+For fresh installations, obtain the operator administrator email before provisioning
+and follow [first-administrator setup](bootstrap-administrator.md). Do not enable
+shared test users to avoid selecting a real administrator. Updates preserve the
+existing administrator and skip bootstrap.
 
 ### Check environment overlays before provisioning
 

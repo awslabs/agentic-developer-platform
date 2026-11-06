@@ -1,0 +1,36 @@
+{
+  "tenant_id": "tenant-example",
+  "project_id": "project-example",
+  "source_connection_id": "connection-example",
+  "source_system": "fixture",
+  "source_event_id": "RUN-001:revision-1",
+  "event_time": "2026-10-10T10:00:00Z",
+  "ingested_at": "2026-10-10T10:01:00Z",
+  "schema_version": "2.0",
+  "record_type": "test_run",
+  "record_id": "RUN-001",
+  "record_revision": "revision-1",
+  "source_run_id": "build-42",
+  "source_attempt": 1,
+  "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "environment": "test",
+  "execution_status": "completed",
+  "started_at": "2026-10-10T09:59:00Z",
+  "ended_at": "2026-10-10T10:00:00Z",
+  "selection_status": "complete",
+  "catalog_snapshot": {
+    "artifact_id": "artifact-example",
+    "version_id": "version-example",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "requirements_snapshot": {
+    "artifact_id": "artifact-example",
+    "version_id": "version-example",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "selection_snapshot": {
+    "artifact_id": "artifact-example",
+    "version_id": "version-example",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

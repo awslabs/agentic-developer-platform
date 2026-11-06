@@ -1,0 +1,133 @@
+name: GitLab Runners AMI
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: 'Exact reviewed main commit (40 hex characters)'
+        required: true
+        type: string
+      account_id:
+        description: 'Exact build account (12 digits)'
+        required: true
+        type: string
+      region:
+        description: 'Reviewed image and AMI region'
+        required: true
+        type: string
+      operation_id:
+        description: 'Fixed reviewed AMI operation UUID; reconcile failures before retry'
+        required: true
+        type: string
+      images_receipt_sha256:
+        description: 'Reviewed SHA-256 of the successful private runtime-images.json receipt'
+        required: true
+        type: string
+
+concurrency:
+  group: gitlab-runners-build-${{ inputs.account_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    environment: adp-build-dev
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      EXPECTED_ACCOUNT: ${{ inputs.account_id }}
+      AWS_REGION: ${{ inputs.region }}
+      EXPECTED_ROLE: ${{ vars.GITLAB_RUNNERS_AMI_BUILD_ROLE_ARN }}
+      SOURCE_BUCKET: ${{ vars.GITLAB_RUNNERS_BUILD_SOURCE_BUCKET }}
+      ADP_SOURCE_SHA: ${{ github.sha }}
+      OPERATION_ID: ${{ inputs.operation_id }}
+      IMAGES_RECEIPT_SHA256: ${{ inputs.images_receipt_sha256 }}
+    steps:
+      - name: Bind dispatch to the reviewed source before AWS authentication
+        env:
+          APPROVED_REVISION: ${{ inputs.source_revision }}
+          DISPATCH_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Reviewed source revision missing'; exit 1; }
+          test "$DISPATCH_REVISION" = "$APPROVED_REVISION" || { echo '::error::Dispatch source differs from the reviewed revision'; exit 1; }
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Bind the private AMI configuration to this reviewed operation
+        env:
+          AMI_BUILD_CONFIG: ${{ secrets.GITLAB_RUNNERS_AMI_BUILD_CONFIG }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          try:
+              config = json.loads(os.environ['AMI_BUILD_CONFIG'])
+              for key, variable in [('account_id', 'EXPECTED_ACCOUNT'), ('region', 'AWS_REGION'),
+                                    ('expected_role_arn', 'EXPECTED_ROLE'), ('source_revision', 'ADP_SOURCE_SHA'),
+                                    ('operation_id', 'OPERATION_ID')]:
+                  if config[key] != os.environ[variable]:
+                      raise ValueError('binding differs')
+              if not re.fullmatch(r'[0-9a-f]{64}', os.environ['IMAGES_RECEIPT_SHA256']):
+                  raise ValueError('receipt hash missing')
+              if not re.fullmatch(r'[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]', os.environ['SOURCE_BUCKET']):
+                  raise ValueError('source bucket missing')
+              if not re.fullmatch(r'[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', config['operation_id']):
+                  raise ValueError('operation UUID missing')
+              path = Path(os.environ['RUNNER_TEMP']) / 'gitlab-ami-config.json'
+              with path.open('x') as output:
+                  json.dump(config, output)
+              path.chmod(0o600)
+          except Exception:
+              raise SystemExit('Private AMI configuration does not match the reviewed dispatch') from None
+          PY
+      - name: Prepare pinned build tools without system installation
+        run: |
+          set -euo pipefail
+          python3 modules/source-control/gitlab/runners/scripts/prepare_ami_tools.py "$RUNNER_TEMP/gitlab-ami-tools"
+      - uses: ./.github/actions/trusted-build
+        with:
+          role_arn: ${{ vars.GITLAB_RUNNERS_AMI_BUILD_ROLE_ARN }}
+          region: ${{ inputs.region }}
+      - name: Confirm selected identity and obtain the reviewed image receipt
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$EXPECTED_ACCOUNT" = "${EXPECTED_ROLE:13:12}"
+          aws sts get-caller-identity --output json | python3 modules/source-control/gitlab/runners/scripts/deployment_guard.py identity --expected-role "$EXPECTED_ROLE"
+          aws s3api get-object --bucket "$SOURCE_BUCKET" --expected-bucket-owner "$EXPECTED_ACCOUNT" \
+            --key "gitlab-runners/artifacts/$ADP_SOURCE_SHA/$AWS_REGION/runtime-images.json" \
+            "$RUNNER_TEMP/gitlab-runtime-images.json" > /dev/null
+      - name: Build and verify a private AMI candidate
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/gitlab-ami-tools:$PATH"
+          export PACKER_PLUGIN_PATH="$RUNNER_TEMP/gitlab-ami-tools/plugins"
+          python3 modules/source-control/gitlab/runners/scripts/build_job_ami.py \
+            --config "$RUNNER_TEMP/gitlab-ami-config.json" \
+            --images "$RUNNER_TEMP/gitlab-runtime-images.json" \
+            --images-sha256 "$IMAGES_RECEIPT_SHA256" \
+            --output "$RUNNER_TEMP/gitlab-ami-evidence" --execute
+      - name: Retain private build evidence for success or failure
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -d "$RUNNER_TEMP/gitlab-ami-evidence" ]; then
+            for file in "$RUNNER_TEMP/gitlab-ami-evidence"/*; do
+              test -f "$file" || continue
+              aws s3api put-object --bucket "$SOURCE_BUCKET" --expected-bucket-owner "$EXPECTED_ACCOUNT" \
+                --key "gitlab-runners/ami/$ADP_SOURCE_SHA/$AWS_REGION/$OPERATION_ID/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/$(basename "$file")" \
+                --body "$file" --server-side-encryption AES256 > /dev/null
+            done
+          fi
+      - name: Remove the temporary private configuration
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/gitlab-ami-config.json" "$RUNNER_TEMP/gitlab-runtime-images.json"

@@ -176,6 +176,7 @@ async def _seed_credential(
     secret_arn: str = "arn:aws:secretsmanager:us-east-1:123:secret:test",
 ) -> UserCredential:
     cred = UserCredential(
+        agent_consent=True,
         id=cred_id,
         org_id="org-cap",
         user_id="user-cap",
@@ -456,8 +457,8 @@ class TestMaterializeCapabilityGate:
     }
 
     @patch("src.internal.credential_routes.get_settings")
-    def test_registry_granted_materialize_succeeds(self, mock_settings, db: AsyncSession):
-        """Caller with registry credential:materialize -> 201 + presigned URL."""
+    def test_registry_grant_requires_private_cleanup(self, mock_settings, db: AsyncSession):
+        """A valid scope does not grant persistent secret-bearing S3 objects."""
         mock_settings.return_value = _settings_mock(bucket="test-bucket")
         asyncio.get_event_loop().run_until_complete(
             _seed_credential(
@@ -471,27 +472,17 @@ class TestMaterializeCapabilityGate:
         sm = _mock_sm("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
         ctx = _fake_token_context(credential_scopes=["credential:materialize"])
 
-        fake_url = "https://s3.amazonaws.com/test-bucket/vault/materialize/test"
-
-        from src.internal.credential_binding import resolve_credential_binding
-
-        async def _selective_to_thread(fn, *args, **kwargs):
-            if fn is resolve_credential_binding:
-                return fn(*args, **kwargs)
-            return fake_url
-
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
-            patch("asyncio.to_thread", new=_selective_to_thread),
+            patch("boto3.client") as aws,
         ):
             client = _make_app(db, mock_sm=sm, token_context=ctx)
             resp = client.post("/internal/v1/credential-materialize", json=self.MATERIALIZE_BODY)
 
-        assert resp.status_code == 201
-        body = resp.json()
-        assert "materialize_url" in body
-        assert "expires_at" in body
-        assert "provenance_id" in body
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error"] == "credential_materialization_cleanup_unavailable"
+        sm.get_secret.assert_not_called()
+        aws.assert_not_called()
 
     @patch("src.internal.credential_routes.get_settings")
     def test_no_scopes_returns_403_and_no_secret_fetch(self, mock_settings, db: AsyncSession):
@@ -590,8 +581,8 @@ class TestMaterializeCapabilityGate:
         sm.get_secret.assert_not_called()
 
     @patch("src.internal.credential_routes.get_settings")
-    def test_valid_grant_without_header_succeeds(self, mock_settings, db: AsyncSession):
-        """Caller with registry scope but NO X-Agent-Scopes header -> 201."""
+    def test_valid_grant_without_header_requires_private_cleanup(self, mock_settings, db: AsyncSession):
+        """A registry scope without a header still reaches the cleanup refusal."""
         mock_settings.return_value = _settings_mock(bucket="test-bucket")
         asyncio.get_event_loop().run_until_complete(
             _seed_credential(
@@ -605,24 +596,18 @@ class TestMaterializeCapabilityGate:
         sm = _mock_sm("-----BEGIN CERT-----\ntest\n-----END CERT-----")
         ctx = _fake_token_context(credential_scopes=["credential:materialize"])
 
-        fake_url = "https://s3.amazonaws.com/test-bucket/vault/materialize/noheader"
-
-        from src.internal.credential_binding import resolve_credential_binding
-
-        async def _selective_to_thread(fn, *args, **kwargs):
-            if fn is resolve_credential_binding:
-                return fn(*args, **kwargs)
-            return fake_url
-
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
-            patch("asyncio.to_thread", new=_selective_to_thread),
+            patch("boto3.client") as aws,
         ):
             client = _make_app(db, mock_sm=sm, token_context=ctx)
             # No X-Agent-Scopes header
             resp = client.post("/internal/v1/credential-materialize", json=self.MATERIALIZE_BODY)
 
-        assert resp.status_code == 201
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error"] == "credential_materialization_cleanup_unavailable"
+        sm.get_secret.assert_not_called()
+        aws.assert_not_called()
 
     @patch("src.internal.credential_routes.get_settings")
     def test_non_file_type_still_blocked_after_scope_check(self, mock_settings, db: AsyncSession):
@@ -651,8 +636,8 @@ class TestMaterializeCapabilityGate:
         assert resp.json()["detail"]["error"] == "invalid_credential_type"
 
     @patch("src.internal.credential_routes.get_settings")
-    def test_both_scopes_grants_materialize(self, mock_settings, db: AsyncSession):
-        """Identity with BOTH scopes -> materialize succeeds."""
+    def test_both_scopes_still_require_private_cleanup(self, mock_settings, db: AsyncSession):
+        """Both scopes cannot bypass the absent recipient and cleanup."""
         mock_settings.return_value = _settings_mock(bucket="test-bucket")
         asyncio.get_event_loop().run_until_complete(
             _seed_credential(
@@ -666,23 +651,17 @@ class TestMaterializeCapabilityGate:
         sm = _mock_sm("cert-data")
         ctx = _fake_token_context(credential_scopes=["credential:raw-read", "credential:materialize"])
 
-        fake_url = "https://s3.amazonaws.com/test-bucket/vault/materialize/both"
-
-        from src.internal.credential_binding import resolve_credential_binding
-
-        async def _selective_to_thread(fn, *args, **kwargs):
-            if fn is resolve_credential_binding:
-                return fn(*args, **kwargs)
-            return fake_url
-
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
-            patch("asyncio.to_thread", new=_selective_to_thread),
+            patch("boto3.client") as aws,
         ):
             client = _make_app(db, mock_sm=sm, token_context=ctx)
             resp = client.post("/internal/v1/credential-materialize", json=self.MATERIALIZE_BODY)
 
-        assert resp.status_code == 201
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error"] == "credential_materialization_cleanup_unavailable"
+        sm.get_secret.assert_not_called()
+        aws.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

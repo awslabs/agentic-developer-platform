@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .developer_personas import DEVELOPER_PERSONAS
+from .developer_personas import DEVELOPER_PERSONAS, OPERATIONS_PERSONAS, operations_executor_enabled
 
 
 class ExecutorAssignment(BaseModel):
@@ -16,13 +16,17 @@ class ExecutorAssignment(BaseModel):
 
     schema_version: Literal[1] = 1
     kind: Literal["agent"]
-    role: Literal["develop"]
+    role: Literal["develop", "operate"]
     persona: str = Field(min_length=1, max_length=128)
 
 
-def validate_executor(node_kind, assignment):
-    if node_kind != "story" or assignment.role != "develop" or assignment.persona not in DEVELOPER_PERSONAS:
-        raise ValueError("unsupported_node_executor: only story development with a supported developer persona is implemented")
+def validate_executor(node_kind, assignment, *, require_enabled=True):
+    if node_kind == "story" and (
+        (assignment.role == "develop" and assignment.persona in DEVELOPER_PERSONAS)
+        or (assignment.role == "operate" and assignment.persona in OPERATIONS_PERSONAS and (not require_enabled or operations_executor_enabled()))
+    ):
+        return
+    raise ValueError("unsupported_node_executor: unsupported story executor role or persona")
 
 
 def selected_executor(document, address, *, default, accepted):

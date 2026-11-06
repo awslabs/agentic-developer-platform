@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 from botocore.exceptions import ClientError
@@ -87,6 +88,22 @@ class TaskAdmission:
         tool_profile = bool(tool_grants) and persona_compatibility_class(submit["persona"]) == "codex-sdk"
 
         human_owner = caller.principal_id.startswith("human:")
+        project_scope = None
+        if submit.get("product_id") or submit.get("project_id"):
+            if not human_owner:
+                raise TaskAdmissionError("project_owner_required", 403)
+            from src.products.work_scope import ProjectScopeError, authorize_project_selection
+
+            try:
+                project_scope = await authorize_project_selection(
+                    db,
+                    user_id=caller.principal_id.removeprefix("human:"),
+                    tenant_id=caller.tenant_id,
+                    product_id=submit.get("product_id"),
+                    project_id=submit.get("project_id"),
+                )
+            except ProjectScopeError:
+                raise TaskAdmissionError("project_access_denied", 403) from None
         binding = await self.model_resolver(
             db,
             tenant=caller.tenant_id,
@@ -135,6 +152,8 @@ class TaskAdmission:
         }
         immutable_input = {key: submit[key] for key in ("instructions", "inputs", "acceptance_criteria") if key in submit}
         immutable_input.update(input_digest=digest)
+        if project_scope is not None:
+            immutable_input["work_scope"] = asdict(project_scope)
         if refs:
             immutable_input["artifacts"] = refs
         turn_limit = int(policy["limits"]["max_turns"])

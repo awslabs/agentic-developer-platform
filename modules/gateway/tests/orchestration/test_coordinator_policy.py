@@ -270,7 +270,7 @@ class TestCoordinationScopeSchema:
         with pytest.raises(ValidationError, match="cannot delegate coordination authority onward"):
             _scope(allowed_child_actions=[Action.DEVELOP, Action.COORDINATE])
 
-    @pytest.mark.parametrize("action", [Action.MERGE, Action.DEPLOY, Action.EVALUATE])
+    @pytest.mark.parametrize("action", [Action.MERGE, Action.DEPLOY, Action.EVALUATE, Action.OPERATE])
     def test_merge_deploy_and_evaluate_are_not_delegable(self, action: Action) -> None:
         """Refused at acceptance so the accepted document cannot misread as granting them."""
         with pytest.raises(ValidationError, match="not delegable through coordination authority"):
@@ -494,7 +494,7 @@ class TestCoordinationDoesNotSubstituteForChildAuthority:
         decision = authorize_child_request(_coordinator_context(policy=rehydrated), ChildPersona.DEVELOPER, Action.MERGE, _at(), 1)
         assert decision.reason is DenyReason.CHILD_ACTION_NOT_PERMITTED
 
-    @pytest.mark.parametrize("action", [Action.MERGE, Action.DEPLOY, Action.EVALUATE, Action.COORDINATE])
+    @pytest.mark.parametrize("action", [Action.MERGE, Action.DEPLOY, Action.EVALUATE, Action.COORDINATE, Action.OPERATE])
     def test_a_non_delegable_action_is_refused_even_when_the_policy_permits_it(self, action: Action) -> None:
         """The case the two tests above cannot reach, and the reason the guard exists.
 
@@ -510,7 +510,16 @@ class TestCoordinationDoesNotSubstituteForChildAuthority:
         invariant its code did not enforce for exactly this document.
         """
         permissive = _stamped_coordinator(
-            allowed_actions=[Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE, Action.DEPLOY, Action.EVALUATE, Action.COORDINATE],
+            allowed_actions=[
+                Action.DEVELOP,
+                Action.REVIEW,
+                Action.REPAIR,
+                Action.MERGE,
+                Action.DEPLOY,
+                Action.EVALUATE,
+                Action.COORDINATE,
+                Action.OPERATE,
+            ],
             human_gates=[],
         )
         rehydrated = permissive.model_construct(

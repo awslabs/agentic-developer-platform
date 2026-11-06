@@ -67,8 +67,14 @@ async def test_lost_notification_and_supervisor_restart_recover_same_registered_
         "envelope_digest": authority.store._read("INVOCATION#run-user", "DISPATCH")["envelope_digest"]["S"],
     }
     assert publish_notification(authority, transport.sessions, notification(mailbox), now=now + 10, transport=wakeup) == "waiting"
+    # The wake-up names the session's selected executor once the owner picked one (#8115).
+    runtime[2].update_item(
+        Key={"PK": "session#session-a", "SK": "header"},
+        UpdateExpression="SET sessionExecutor = :executor",
+        ExpressionAttributeValues={":executor": "claude-code"},
+    )
     assert publish_notification(authority, transport.sessions, notification(mailbox), now=now + 60, transport=wakeup) == "published"
-    assert receive(wakeup) == [notice]
+    assert receive(wakeup) == [{**notice, "executor": "claude-code"}]
     supervisor(sts, monkeypatch)
     recovered = await call(mailbox, "resume")
     assert recovered.status_code == 200, recovered.text
@@ -214,10 +220,11 @@ async def test_persistent_pending_handoff_recovers_publication_after_lock_promot
             **envelope,
             "persona": "developer",
             "session_mode": "persistent",
+            "executor": "claude-code",
             "source_ref": {"repo": "chat/session-a"},
             "correlation": {"correlation_id": "run-next", "root_human_id": "human", "is_human_rooted": True},
         }
-        provision_root(runtime[1].store, final, source="chat", human_id="human", now=datetime.fromtimestamp(runtime[-1], UTC))
+        provision_root(runtime[1].store, final, source="chat", human_id="human", team_id="team", now=datetime.fromtimestamp(runtime[-1], UTC))
         ChatSessionMailbox(runtime[2]).accept(
             session_id="session-a",
             owner=("tenant", "team", "human"),
@@ -255,6 +262,8 @@ async def test_persistent_pending_handoff_recovers_publication_after_lock_promot
     assert completed.status_code == 200, completed.text
     published = receive(wakeup)[0]
     assert published["message_id"] == "run-next" and published["session_mode"] == "persistent"
+    # The handoff recovered the registered shape including the session executor (#8115).
+    assert published["executor"] == "claude-code"
     assert runtime[1].store._read("INVOCATION#run-next", "DISPATCH")["envelope_digest"] == {"S": envelope_digest(published)}
     assert ChatSessionMailbox(runtime[2]).state(session_id="session-a", owner=("tenant", "team", "human"), now=runtime[-1])["sequence"] == 2
 

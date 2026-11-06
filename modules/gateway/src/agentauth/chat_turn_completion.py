@@ -9,6 +9,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from src.agentauth import chat_delivery
+from src.agentauth.agentcore_capture import eligible_capture
 from src.agentauth.chat_admission import _encoded
 from src.agentauth.chat_authority import ChatSessionLease
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, ChatLaunchStore
@@ -57,10 +58,28 @@ def complete_delivered_turn(authority, capabilities, body, *, now, persistent=Fa
         ]
 
     binding = {field: terminal[field] for field in ("run_id", "session_id", "attempt", "lease_generation", "sandbox_uid")}
-    return complete_owner_delivery(authority, terminal, item, binding, first_completion_checks, now=now)
+    return complete_owner_delivery(
+        authority,
+        terminal,
+        item,
+        binding,
+        first_completion_checks,
+        capture=lambda: eligible_capture(writer, launch, terminal, now=now),
+        now=now,
+    )
 
 
-def complete_owner_delivery(authority, terminal, item, binding, first_completion_checks, *, now):
+def complete_owner_delivery(authority, terminal, item, binding, first_completion_checks, *, now, capture=None):
+    """Release the thread's processing lock once the owner can read the terminal reply.
+
+    The delivery boundary is the owner's sessions row: the response Lambda appends the reply to
+    ``messages`` and ``last_response`` and records ``threads.<thread>.terminal_delivery`` with
+    status ``persisted`` in one conditional write, which is what REST polling, the ``adp`` CLI and
+    a reconnecting browser read. The WebSocket push that may follow (status ``sent``) is a
+    best-effort notification: a session without a live connection never reaches ``sent``, so
+    completion accepts either status (#8047). A receipt that is missing, carries another task or
+    digest, or has any other status still refuses completion.
+    """
     store = authority.store
     queue_receipt = (item or {}).get("queue_message_id", {}).get("S")
     if item is None or item.get("status") != {"S": "queued"} or not isinstance(queue_receipt, str) or not 1 <= len(queue_receipt) <= 128:
@@ -78,6 +97,25 @@ def complete_owner_delivery(authority, terminal, item, binding, first_completion
     if "completion_receipt" in item or "completion_pending" in item:
         previous = TypeDeserializer().deserialize(item.get("completion_receipt", item.get("completion_pending")))
         completed_at = previous.get("completed_at") if isinstance(previous, dict) else None
+        previous_capture = previous.get("memory_capture") if isinstance(previous, dict) else None
+        if previous_capture is not None:
+            capture_id = previous_capture.get("receipt_id") if isinstance(previous_capture, dict) else None
+            if (
+                not isinstance(capture_id, str)
+                or len(capture_id) != 64
+                or any(character not in "0123456789abcdef" for character in capture_id)
+                or previous_capture != {"status": "captured_for_processing", "receipt_id": capture_id}
+            ):
+                raise ChatAuthorizationUnavailableError("chat capture receipt inconsistent")
+            record = authority.context_table.get_item(Key={"PK": f"memory-capture#{capture_id}", "SK": "capture"}, ConsistentRead=True).get("Item")
+            if (
+                not record
+                or record.get("receiptId") != capture_id
+                or record.get("runId") != binding["run_id"]
+                or record.get("sessionId") != binding["session_id"]
+            ):
+                raise ChatAuthorizationUnavailableError("chat capture receipt unavailable")
+            receipt["memory_capture"] = previous_capture
         if (
             isinstance(completed_at, bool)
             or not isinstance(completed_at, int | Decimal)
@@ -102,11 +140,17 @@ def complete_owner_delivery(authority, terminal, item, binding, first_completion
         "digest": hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         "status": "sent",
     }
+    persisted = {**sent, "status": "persisted"}
     _, _, sessions = chat_delivery.response_transport()
     if sessions is None:
         raise ChatAuthorizationUnavailableError("chat owner storage unavailable")
     try:
         checks = first_completion_checks()
+        capture_candidate = capture() if capture is not None else None
+        if capture_candidate is not None:
+            capture_checks, capture_receipt = capture_candidate
+            checks.extend(capture_checks)
+            receipt["memory_capture"] = capture_receipt
         row = sessions.get_item(Key={"session_id": delivery.session_id}, ConsistentRead=True).get("Item", {})
         thread = row.get("threads", {}).get(delivery.thread_id, {})
         checked_at = int(time.time())
@@ -118,7 +162,7 @@ def complete_owner_delivery(authority, terminal, item, binding, first_completion
             or thread.get("processing_task_id") != delivery.task_id
         ):
             raise ChatAuthorizationRefusedError("chat completion owner or task changed")
-        if thread.get("terminal_delivery") != sent:
+        if thread.get("terminal_delivery") not in (sent, persisted):
             raise ChatHistoryConflictError("chat owner delivery receipt required")
         evidence = ChatTeardown(authority, None)
         promotion = prepare_pending_handoff(authority, evidence, delivery, thread, now=now)
@@ -143,6 +187,7 @@ def complete_owner_delivery(authority, terminal, item, binding, first_completion
             ":now": checked_at,
             ":task": delivery.task_id,
             ":sent": sent,
+            ":persisted": persisted,
             ":next_task": "" if promotion is None else promotion["task_id"],
             ":archive": {**archived, document["delivery_id"]: {**sent, "status": "completed", "thread_id": delivery.thread_id}},
         }
@@ -181,7 +226,8 @@ def complete_owner_delivery(authority, terminal, item, binding, first_completion
                         "UpdateExpression": session_update,
                         "ConditionExpression": (
                             "owner_principal = :owner AND created_at = :generation AND #channel = :channel AND expires_at > :now "
-                            "AND threads.#thread.processing_task_id = :task AND threads.#thread.terminal_delivery = :sent AND "
+                            "AND threads.#thread.processing_task_id = :task AND "
+                            "(threads.#thread.terminal_delivery = :sent OR threads.#thread.terminal_delivery = :persisted) AND "
                             + archive_condition
                             + " AND "
                             + message_condition

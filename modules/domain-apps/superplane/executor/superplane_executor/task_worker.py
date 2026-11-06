@@ -6,6 +6,8 @@ import json
 import os
 import signal
 import ssl
+import sys
+import traceback
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,7 +32,12 @@ from .workspace import Workspace
 PREFIX = "/internal/v1/controller-execution"
 TERMINAL = {"succeeded", "failed", "unknown", "cancelled"}
 LIFECYCLE_PHASES = frozenset(
-    {"prepare-infrastructure", "apply-infrastructure", "bootstrap-workspace"}
+    {
+        "prepare-infrastructure",
+        "apply-infrastructure",
+        "bootstrap-workspace",
+        "prepare-partial-apply",
+    }
 )
 RETIREMENT_ACCESS_PHASE = "prepare-retirement-access"
 RETIREMENT_PHASE = "retire-workspace"
@@ -68,10 +75,14 @@ def write_private(path, value, *, mode=0o600):
 
 
 async def bootstrap(transport):
+    from .observation_only import require_selected, selector
+
+    selector()  # Refuse malformed deployment configuration before acquiring a task.
     result = await transport.post(PREFIX + "/task/acquire", {}, bootstrap=True)
     if result.get("body") is None:
         return None
     envelope = json.loads(result["body"])
+    require_selected(envelope.get("domain_operation"))
     digest = hashlib.sha256(
         json.dumps(
             envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -254,6 +265,9 @@ async def controller_task(
 
 
 async def execute(transport, original, deadline, stop):
+    from .observation_only import require_selected
+
+    require_selected(original)
     async with AsyncExitStack() as stack:
         if original["mode"] == "recovery":
             scope = await transport.post(PREFIX + "/recovery/scope", {})
@@ -304,7 +318,16 @@ async def execute(transport, original, deadline, stop):
         require_selected_task_mode(lifecycle=lifecycle, phase=phase)
         transport.brokered_provider = lifecycle
         if lifecycle and phase is None:
-            raise OperationRefused("paid worker lifecycle phase is missing")
+            from workspace_provisioning.artifacts import native_lifecycle_phase
+            from workspace_provisioning.runtime_config import LifecycleRefused
+
+            try:
+                phase = native_lifecycle_phase(parameters)
+            except LifecycleRefused:
+                raise OperationRefused(
+                    "paid worker lifecycle phase is missing"
+                ) from None
+            require_selected_task_mode(lifecycle=True, phase=phase)
         if (
             phase in LIFECYCLE_PHASES | {RETIREMENT_PHASE}
             and "runtime_config_sha256" not in parameters
@@ -399,6 +422,24 @@ def main():
 
     try:
         asyncio.run(entry())
-    except Exception:
+    except Exception as error:
         # Transport/provider exception strings may contain credentials or bodies.
+        # Retain code locations without source lines, locals or exception text.
+        print(
+            json.dumps(
+                {
+                    "event": "paid_worker_stopped",
+                    "exception_type": type(error).__name__,
+                    "frames": [
+                        {
+                            "file": Path(frame.filename).name,
+                            "line": frame.lineno,
+                            "function": frame.name,
+                        }
+                        for frame in traceback.extract_tb(error.__traceback__)[-12:]
+                    ],
+                }
+            ),
+            file=sys.stderr,
+        )
         raise SystemExit("paid task stopped; durable recovery required") from None

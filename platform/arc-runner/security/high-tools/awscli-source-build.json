@@ -3,12 +3,13 @@
   "awscli_version": "2.37.4",
   "source_commit": "d22f2115447d212da4af5fc35e440ec7f960aad4",
   "source_sha256": "c4d840d5975cea7f3bb51441c6f602312e9ec9dae9afaf725561a250eee73a90",
-  "python_version": "3.14.7",
-  "python_base": "public.ecr.aws/docker/library/python:3.14.7-slim-trixie@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d",
+  "python_version": "3.14.8",
+  "python_base": "public.ecr.aws/docker/library/python:3.14.8-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170",
   "selected_findings": [
     "CVE-2026-15308",
     "CVE-2026-11940",
-    "CVE-2026-11972"
+    "CVE-2026-11972",
+    "CVE-2026-19445"
   ],
   "dependency_policy": "Upstream requirements/download-deps hash locks without overrides"
 }

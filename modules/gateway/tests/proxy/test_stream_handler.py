@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,6 +23,28 @@ class TestStreamHandler:
         """Create a mock stream from chunks."""
         for chunk in chunks:
             yield json.dumps(chunk).encode("utf-8")
+
+    @pytest.mark.asyncio
+    async def test_stream_fixture_tool_loop_preserves_events(self, stream_handler: StreamHandler) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "tool_loop_stream.json"
+        events = json.loads(fixture.read_text())
+        source_events = events + [{"type": "message_stop"}]
+        frames = [
+            chunk.decode()
+            async for chunk in stream_handler.create_sse_response(
+                self._create_mock_stream(source_events), "anthropic", "client-model", "client-response-id"
+            )
+        ]
+
+        expected_events = json.loads(fixture.read_text())
+        expected_events[0]["message"].update({"id": "client-response-id", "model": "client-model"})
+        assert [json.loads(frame.split("\ndata: ", 1)[1]) for frame in frames] == expected_events
+        assert [frame.split("\n", 1)[0] for frame in frames] == [f"event: {event['type']}" for event in expected_events]
+        assert sum(frame.startswith("event: message_stop\n") for frame in frames) == 1
+        assert [event["delta"]["partial_json"] for event in expected_events if event["type"] == "content_block_delta"] == [
+            '{"a":2,',
+            '"b":3}',
+        ]
 
     @pytest.mark.asyncio
     async def test_create_sse_response_openai(
@@ -238,6 +261,42 @@ class TestStreamHandlerErrorHandling:
         return StreamHandler()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("api_format", ["openai", "anthropic"])
+    @pytest.mark.parametrize("partial", [False, True])
+    async def test_eof_without_terminal_is_failure(self, stream_handler: StreamHandler, api_format: str, partial: bool) -> None:
+        events = [{"type": "message_start", "message": {"id": "partial"}}]
+        if partial:
+            events += [
+                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "partial"}},
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+            ]
+
+        async def source() -> AsyncIterator[bytes]:
+            for event in events:
+                yield json.dumps(event).encode()
+
+        frames = []
+        with pytest.raises(StreamingError, match="without message_stop"):
+            async for frame in stream_handler.create_sse_response(source(), api_format, "model", "id"):
+                frames.append(frame)
+        assert b"data: [DONE]" not in b"".join(frames)
+        assert b'"finish_reason": "stop"' not in b"".join(frames)
+        assert b"event: message_stop" not in b"".join(frames)
+
+    @pytest.mark.asyncio
+    async def test_provider_error_never_completes(self, stream_handler: StreamHandler) -> None:
+        async def error_stream() -> AsyncIterator[bytes]:
+            yield b'{"type":"message_start"}'
+            yield b'{"type":"error","error":{"message":"upstream failed"}}'
+            yield b'{"type":"message_stop"}'
+
+        frames = []
+        with pytest.raises(StreamingError, match="Provider reported"):
+            async for frame in stream_handler.create_sse_response(error_stream(), "openai", "model", "id"):
+                frames.append(frame)
+        assert b"data: [DONE]" not in b"".join(frames)
+
+    @pytest.mark.asyncio
     async def test_streaming_error_handling(self, stream_handler: StreamHandler) -> None:
         """Test handling of errors during streaming."""
 
@@ -271,21 +330,32 @@ class TestStreamHandlerErrorHandling:
             await task
 
     @pytest.mark.asyncio
-    async def test_malformed_chunk_handling(self, stream_handler: StreamHandler) -> None:
-        """Test handling of malformed chunks in stream."""
-
+    @pytest.mark.parametrize("malformed", [b'{"type":"content_block_delta","delta":BROKEN}', b"not-json-content", b"\xff\xfe", b"null", b"[]"])
+    async def test_malformed_content_cannot_complete(self, stream_handler: StreamHandler, malformed: bytes) -> None:
         async def mixed_stream() -> AsyncIterator[bytes]:
-            yield json.dumps({"type": "message_start"}).encode()
-            yield b"invalid json chunk"
-            yield json.dumps({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hi"}}).encode()
-            yield json.dumps({"type": "message_stop"}).encode()
+            yield b'{"type":"message_start"}'
+            yield malformed
+            yield b'{"type":"message_delta","delta":{"stop_reason":"end_turn"}}'
+            yield b'{"type":"message_stop"}'
 
-        chunks = []
-        async for chunk in stream_handler.create_sse_response(mixed_stream(), "openai", "claude-3.5-sonnet", "id"):
-            chunks.append(chunk)
+        frames = []
+        with pytest.raises(StreamingError, match="Malformed provider stream chunk"):
+            async for frame in stream_handler.create_sse_response(mixed_stream(), "openai", "model", "id"):
+                frames.append(frame)
+        assert b"[DONE]" not in b"".join(frames)
+        assert b'"finish_reason": "stop"' not in b"".join(frames)
 
-        # Should still produce output despite malformed chunk
-        assert len(chunks) > 0
+    @pytest.mark.asyncio
+    async def test_valid_ping_does_not_interrupt(self, stream_handler: StreamHandler) -> None:
+        async def ping_stream() -> AsyncIterator[bytes]:
+            yield b'{"type":"message_start"}'
+            yield b'{"type":"ping"}'
+            yield b'{"type":"content_block_delta","delta":{"type":"text_delta","text":"answer"}}'
+            yield b'{"type":"message_stop"}'
+
+        frames = [frame async for frame in stream_handler.create_sse_response(ping_stream(), "openai", "model", "id")]
+        assert frames[-1] == b"data: [DONE]\n\n"
+        assert b"answer" in b"".join(frames)
 
 
 class TestMergeWithKeepalive:

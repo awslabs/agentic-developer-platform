@@ -24,6 +24,16 @@ variable "az_count" {
   }
 }
 
+variable "private_subnet_cidrs" {
+  type        = list(string)
+  default     = []
+  description = "Optional initial private subnet CIDRs, in AZ order. Empty uses larger capacity defaults. Existing subnet CIDRs are retained; expand existing networks additively."
+  validation {
+    condition     = length(var.private_subnet_cidrs) == 0 || (length(var.private_subnet_cidrs) == var.az_count && alltrue([for cidr in var.private_subnet_cidrs : can(cidrnetmask(cidr))]))
+    error_message = "Provide one valid IPv4 private subnet CIDR per availability zone, or leave the list empty."
+  }
+}
+
 variable "name_prefix" {
   type        = string
   description = "Name prefix for resources"
@@ -47,11 +57,11 @@ variable "single_nat_gateway" {
 variable "alb_ingress_cidr_blocks" {
   type        = list(string)
   description = "CIDR blocks allowed to access ALB. Defaults to VPC CIDR for internal ALB."
-  default     = []  # Empty means use VPC CIDR
+  default     = [] # Empty means use VPC CIDR
 }
 
 variable "alb_internal" {
   type        = bool
   description = "Whether the ALB is internal (true) or internet-facing (false)"
-  default     = true  # Issue #133: Internal by default for security
+  default     = true # Issue #133: Internal by default for security
 }

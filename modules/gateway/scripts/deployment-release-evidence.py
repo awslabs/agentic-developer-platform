@@ -1,6 +1,7 @@
 """Emit build hashes for D3. These hashes do not attest current runtime health."""
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -8,6 +9,34 @@ import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+
+GATEWAY_ROOT = Path(__file__).resolve().parents[1]
+
+
+def migration_head(directory):
+    revisions = set()
+    parents = set()
+    for path in directory.glob("*.py"):
+        if path.is_symlink():
+            raise ValueError("migration symlink is not allowed")
+        assignments = {}
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                if node.targets[0].id in {"revision", "down_revision"}:
+                    assignments[node.targets[0].id] = ast.literal_eval(node.value)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if node.target.id in {"revision", "down_revision"}:
+                    assignments[node.target.id] = ast.literal_eval(node.value)
+        revision = assignments.get("revision")
+        if not isinstance(revision, str) or revision in revisions:
+            raise ValueError("migration revision is missing or duplicated")
+        revisions.add(revision)
+        previous = assignments.get("down_revision")
+        parents.update((previous,) if isinstance(previous, str) else (previous or ()))
+    heads = revisions - parents
+    if len(heads) != 1 or not parents <= revisions:
+        raise ValueError("migration graph must have one complete head")
+    return heads.pop()
 
 
 def produce(env, component, read, frontend=Path("modules/gateway/frontend/dist")):
@@ -44,7 +73,7 @@ def produce(env, component, read, frontend=Path("modules/gateway/frontend/dist")
             raise ValueError("release image digest invalid")
     cluster = env.get("EKS_CLUSTER") or f"adp-{env['ENVIRONMENT']}-eks-cluster"
     namespace = env.get("NAMESPACE") or "adp-gateway"
-    return {
+    result = {
         "schema_version": 1,
         "repository_id": int(env["GITHUB_REPOSITORY_ID"]),
         "run_id": int(env["GITHUB_RUN_ID"]),
@@ -60,6 +89,26 @@ def produce(env, component, read, frontend=Path("modules/gateway/frontend/dist")
         "assets": assets,
         "produced_at": datetime.now(UTC).isoformat(),
     }
+    if component == "gateway-backend":
+        profile = env.get("ADP_PRODUCT_PROFILE_ENABLED")
+        onboarding = env.get("ADP_PRODUCT_ONBOARDING_ENABLED")
+        if profile not in ("true", "false") or onboarding not in ("true", "false"):
+            raise ValueError("Product rollout flags must be resolved by the deployment")
+        gateway_root = Path(env["GITHUB_WORKSPACE"]) / "modules/gateway" if env.get("GITHUB_WORKSPACE") else GATEWAY_ROOT
+        result.update(
+            product_profile_enabled=profile == "true",
+            product_onboarding_enabled=onboarding == "true",
+            product_profile_schema_version="1.0",
+            migration_head=migration_head(gateway_root / "alembic/versions"),
+            cli_manifest_sha256=hashlib.sha256((gateway_root / "cli/command-manifest.json").read_bytes()).hexdigest(),
+        )
+        if env.get("ADP_PROFILE_ROLLBACK") == "true":
+            if profile != "false" or onboarding != "false":
+                raise ValueError("Product recovery release must leave admissions disabled")
+            result["product_recovery"] = json.loads(
+                (Path(env["RUNNER_TEMP"]) / "product-recovery.json").read_text()
+            )
+    return result
 
 
 def main():

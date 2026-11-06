@@ -335,13 +335,14 @@ class TestSupportedVerbBoundary:
 
     @BOTH_ADAPTERS
     @pytest.mark.parametrize("action", ALL_ACTIONS)
-    def test_501_reaches_no_pod(self, action, orchestration, regular_user, mock_db):
+    def test_501_reaches_no_pod(self, action, orchestration, regular_user, mock_db, monkeypatch):
         """A 501 is a promise that nothing happened — including no transport call."""
+        monkeypatch.setattr("src.activity.control_service.SUPPORTED_ACTIONS", frozenset(set(ALL_ACTIONS) - {action}))
         service = make_service(items=[row()])
         client = build_client(service, regular_user, mock_db, orchestration=orchestration)
 
-        client.post(command_path(action, orchestration), json=valid_body(action))
-
+        response = client.post(command_path(action, orchestration), json=valid_body(action))
+        assert response.status_code == 501
         service._http_client.request.assert_not_awaited()
 
     @BOTH_ADAPTERS

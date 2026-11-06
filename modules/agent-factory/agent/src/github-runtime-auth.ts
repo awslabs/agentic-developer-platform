@@ -34,6 +34,11 @@ export function sanitizedSdkEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const result = { ...env };
   delete result.GH_APP_PRIVATE_KEY;
   delete result.GH_APP_KEY;
+  if (result.ADP_ENGINE_OPERATIONS_STORY === 'true') {
+    for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_ROLE_ARN',
+      'AWS_WEB_IDENTITY_TOKEN_FILE', 'AWS_PROFILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE',
+      'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', 'AWS_CONTAINER_CREDENTIALS_FULL_URI']) delete result[name];
+  }
   return result;
 }
 

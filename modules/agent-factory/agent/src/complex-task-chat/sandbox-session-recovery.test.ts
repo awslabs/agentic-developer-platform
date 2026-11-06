@@ -5,13 +5,14 @@ import { reconcileSupervisorDelivery, restoreSupervisorTurn } from './sandbox-su
 import { registeredSandboxAssignment } from './sandbox-supervisor-admission';
 import type { SandboxPodApi } from './sandbox-launcher';
 import { sandboxCreationName } from './sandbox-pod';
-import { gatewayBinding } from './sandbox-gateway.fixture';
+import { gatewayBinding, runningSandboxPod } from './sandbox-gateway.fixture';
 
 const image = `registry.example.test/chat@sha256:${'a'.repeat(64)}`;
 const identity = { roleArn: 'arn:aws:iam::000000000000:role/chat-supervisor', tokenFile: '/var/run/secrets/chat-supervisor/token', region: 'us-east-1' };
 const load = jest.fn(() => async () => ({ accessKeyId: 'TESTKEY', secretAccessKey: 'TESTSECRET', sessionToken: 'TESTSESSION' })) as unknown as typeof fromTokenFile;
-const assignment = (runId: string) => registeredSandboxAssignment(JSON.stringify({ message_id: runId, session_id: 'session-a',
-  task_id: `task-${runId}`, session_generation: 1, session_mode: 'persistent' }), image, 'https://gateway.example.test');
+const assignment = (runId: string) => ({ ...registeredSandboxAssignment(JSON.stringify({ message_id: runId, session_id: 'session-a',
+  task_id: `task-${runId}`, session_generation: 1, session_mode: 'persistent' }), image, 'https://gateway.example.test'),
+  ownerKey: 'a'.repeat(52) });
 const pod = (runId: string) => ({ name: sandboxCreationName(runId), uid: `pod-uid-${runId}` });
 const scope = (runId: string) => ({ run_id: runId, session_id: 'session-a', task_id: `task-${runId}`, session_generation: 1 });
 const reserved = (runId: string) => ({ ...scope(runId), state: 'creation_reserved', session_mode: 'persistent',
@@ -46,6 +47,7 @@ test.each(['creation_reserved', 'creation_bound', 'admitted', 'session_recovery'
   const target = state === 'session_recovery' ? 'run-b' : 'run-a';
   const api: SandboxPodApi = {
     resolveGateway: jest.fn(async () => gatewayBinding),
+    inspect: jest.fn(async (name: string, uid: string) => runningSandboxPod(name, uid)),
     create: jest.fn(async template => {
       const runId = template.metadata.name === pod('run-a').name ? 'run-a' : 'run-b';
       events.push(`${runId}:create`);
@@ -64,7 +66,8 @@ test.each(['creation_reserved', 'creation_bound', 'admitted', 'session_recovery'
         state === 'creation_reserved' || (runId === 'run-b' && previousCompleted) ? reserved(runId) :
         runId === 'run-b' ? { ...scope(runId), state: 'session_recovery', recovery: { ...scope('run-a'),
           envelope_digest: assignment('run-a').envelopeDigest, image_digest: image.split('@')[1] } } : admitted(runId);
-    } else if (operation === 'admit') response = { run_id: runId, session_id: 'session-a', lease_generation: 1, session_mode: 'persistent' };
+    } else if (operation === 'crew-run') response = { run_id: '00000000-0000-4000-8000-000000000001', lease_generation: 1 };
+    else if (operation === 'admit') response = { run_id: runId, session_id: 'session-a', lease_generation: 1, session_mode: 'persistent' };
     else if (operation === 'exit') response = { run_id: runId, pod_uid: pod(runId).uid, terminated: true };
     else if (operation === 'teardown') response = { run_id: runId, pod_uid: pod(runId).uid, removed: true };
     else if (operation === 'finalize') response = terminal(runId, true);

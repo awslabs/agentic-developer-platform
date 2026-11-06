@@ -1,7 +1,5 @@
 """Regression cases found while reviewing the complete CLI intake boundary."""
 
-from types import SimpleNamespace
-
 import pytest
 
 from src.orchestration import intake_routes
@@ -11,15 +9,25 @@ from tests.orchestration.test_intake_routes import ORG, OTHER_ORG, SESSION, SESS
 @pytest.mark.asyncio
 async def test_repository_resolution_stays_within_the_active_tenant(monkeypatch):
     from src.admin.connections import service
+    from src.admin.connections.schemas import ConnectionsListResponse, ConnectionVerification, GitHubConnectionItem
 
     calls = []
 
     async def connections(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(
+        return ConnectionsListResponse(
             connections=[
-                SimpleNamespace(installation_id=1, repositories=["acme/web"], repositories_live=True, tenant_id=ORG),
-                SimpleNamespace(installation_id=2, repositories=["other/private"], repositories_live=True, tenant_id=OTHER_ORG),
+                GitHubConnectionItem(
+                    installation_id=installation,
+                    repositories=[repository],
+                    tenant_id=tenant,
+                    verification=ConnectionVerification(repositories_live=True),
+                    account_login=repository.split("/", 1)[0],
+                    account_type="Organization",
+                    repository_selection="selected",
+                    configure_url=f"https://github.com/settings/installations/{installation}",
+                )
+                for installation, repository, tenant in [(1, "acme/web", ORG), (2, "other/private", OTHER_ORG)]
             ]
         )
 

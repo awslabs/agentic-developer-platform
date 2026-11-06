@@ -27,7 +27,9 @@ import boto3
 from fastapi import FastAPI, Request, Response
 
 from .acl import (
+    KnowledgeScopeLimitError,
     CallerPrincipal,
+    PostgresACLStore,
     SearchHit,
     extract_caller_principal,
     filter_results,
@@ -37,6 +39,7 @@ from .acl import (
 )
 from .browse_backend import browse, _safe_name_index
 from .config import config
+from .l5_contributions import router as l5_contribution_router
 from .metrics import record_query, setup_door_metrics
 from .project_filter import (
     ProjectFilterError,
@@ -45,7 +48,7 @@ from .project_filter import (
     resolve_project_repos,
 )
 from .remember_backend import recall_memory, remember
-from .search_backend import ZoektSearchBackend
+from .search_backend import ZoektSearchBackend, ZoektUnavailable
 from .structural_backend import impact, understand
 from .tracing import get_tracer, setup_tracing, shutdown_tracing
 
@@ -59,12 +62,13 @@ ACL_READINESS_TIMEOUT_SECONDS = 1.5
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "search",
-        "description": "Find relevant code, documentation, and past learnings",
+        "description": "Search code or knowledge content. Use scope=personal for your knowledge, or scope=docs with product_id for Product knowledge. Product access requires current team membership. General docs search is not admitted by agent tools; code (default) is exact repository search",
         "parameters": {
             "query": {"type": "string", "required": True},
             "scope": {"type": "string", "required": False},
             "limit": {"type": "integer", "required": False},
             "project": {"type": "string", "required": False},
+            "product_id": {"type": "string", "required": False},
         },
     },
     {
@@ -395,6 +399,8 @@ class _NoOpBackend:
 
 app = FastAPI(title="Context MCP Server", lifespan=lifespan)
 
+app.include_router(l5_contribution_router(state))
+
 
 # ---------------------------------------------------------------------------
 # Identity-enrichment middleware (stamps caller identity onto current OTel span)
@@ -443,6 +449,25 @@ async def enrich_span_with_identity(request: Request, call_next):
 async def authenticate_request(request: Request, call_next):
     """Require verified request-bound identity for REST and mounted MCP."""
     from .auth import check_request_auth
+
+    from adp_platform_common.l5_contributions.http import authenticate, is_receiver_path
+    from fastapi import HTTPException
+    from starlette.responses import JSONResponse
+
+    if is_receiver_path(request.url.path, "context"):
+        try:
+            await authenticate(request, destination="product-context",
+                               keys=json.loads(config.door_verification_keys))
+        except HTTPException as error:
+            return JSONResponse(error.detail, status_code=error.status_code)
+        # L5 routes read only verified L5 assertions and never Door identity
+        # headers. Strip those headers before identity tracing middleware runs.
+        from .auth import IDENTITY_HEADERS
+        request.scope["headers"] = [(key, value) for key, value in request.scope["headers"]
+                                    if key.decode().lower() not in IDENTITY_HEADERS]
+        if hasattr(request, "_headers"):
+            del request._headers
+        return await call_next(request)
 
     denial = await check_request_auth(request)
     if denial is not None:
@@ -661,15 +686,35 @@ async def _dispatch_tool(
     if name not in DISPATCH_VERBS:
         return {"error": f"Unknown tool: {name}"}
 
+    requested_product = arguments.get("product_id")
+    authorized_product = caller.product_id if caller else ""
+    if requested_product or authorized_product:
+        if not authorized_product or requested_product != authorized_product or not caller.run_bound:
+            return {"error": "Product knowledge authority required", "code": "product_access_denied"}
+        if name != "search" or arguments.get("scope", "code") not in {"code", "docs"} or arguments.get("project"):
+            return {"error": "Product knowledge supports search without a legacy project scope", "code": "unsupported_product_operation"}
+
     # Gate 1: the ACL store must be live for any verb that authorises against
     # it. No store → no reads (#5658), checked before any backend call.
     if name in ACL_ENFORCED_VERBS and state.acl_store is None:
+        if name == "secure":
+            repo = arguments.get("repo")
+            record_acl_denial(
+                caller=extract_caller_principal(headers),
+                requested=[repo] if isinstance(repo, str) and repo else [],
+                reason="acl_store_unavailable",
+            )
         return _acl_unavailable_response(name)
 
-    # Resolve project scope for retrieval verbs (search/understand/impact/browse)
+    if name == "secure":
+        return await _handle_secure(
+            arguments,
+            extract_caller_principal(headers),
+            acl_store=state.acl_store,
+        )
+
     project_scope = _resolve_project_scope(arguments, caller)
     if isinstance(project_scope, dict):
-        # Error dict — return immediately
         return project_scope
 
     if name == "search":
@@ -684,9 +729,6 @@ async def _dispatch_tool(
         return await _handle_remember(arguments, headers)
     elif name == "experience":
         return await _handle_experience(arguments, headers)
-    elif name == "secure":
-        return await _handle_secure(arguments, caller, project_scope, headers=headers)
-
     # Unreachable: DISPATCH_VERBS is validated above. Kept as a fail-closed
     # backstop so a verb added to the table but not to this chain returns an
     # error rather than falling through to None.
@@ -740,6 +782,47 @@ def _resolve_project_scope(
 # ---------------------------------------------------------------------------
 
 
+def _project_code_index_ready(project_scope: ProjectScope) -> bool:
+    if not project_scope.repo_names:
+        return True
+    if state.db_pool is None:
+        return False
+    repos = sorted(project_scope.repo_names)
+    try:
+        connection = state.db_pool.getconn()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT repo.repo_name, stage.status
+                    FROM repositories AS repo
+                    LEFT JOIN LATERAL (
+                        SELECT run.id
+                        FROM index_runs AS run
+                        WHERE run.repo_id = repo.id
+                        ORDER BY run.started_at DESC, run.id DESC
+                        LIMIT 1
+                    ) AS latest ON true
+                    LEFT JOIN LATERAL (
+                        SELECT status
+                        FROM index_run_stages
+                        WHERE run_id = latest.id AND repo = repo.repo_name AND stage = 'zoekt_index'
+                        ORDER BY started_at DESC NULLS LAST, id DESC
+                        LIMIT 1
+                    ) AS stage ON true
+                    WHERE repo.repo_name = ANY(%s)
+                    """,
+                    (repos,),
+                )
+                statuses = dict(cursor.fetchall())
+        finally:
+            state.db_pool.putconn(connection)
+    except Exception:
+        log.warning("Knowledge index status unavailable")
+        return False
+    return set(statuses) == set(repos) and all(status == "verified" for status in statuses.values())
+
+
 async def _handle_search(
     arguments: dict[str, Any],
     caller: CallerPrincipal | None,
@@ -757,8 +840,16 @@ async def _handle_search(
     scope = arguments.get("scope", "code")
     limit = arguments.get("limit", 20)
 
+    if not isinstance(query, str) or len(query) > 4096 or type(limit) is not int or not 1 <= limit <= 100:
+        return {"error": "Search requires a query up to 4096 characters and a limit from 1 to 100.", "code": "invalid_search"}
+    query = query.strip()
     if not query:
         return {"results": [], "total": 0, "query": ""}
+
+    if caller is not None and caller.product_id:
+        return await _handle_semantic_search(query, limit, caller)
+    if scope == "personal":
+        return await _handle_semantic_search(query, limit, caller, project_scope, personal_only=True)
 
     # Route by scope
     if scope == "memory":
@@ -774,17 +865,22 @@ async def _handle_search(
         )
         return {"results": results, "total": len(results), "query": query}
 
-    if scope == "docs" and config.semantic_enabled:
+    if scope == "docs":
         # Semantic search via S3 Vectors — scoped per caller (#1774)
         return await _handle_semantic_search(query, limit, caller, project_scope)
 
     # Default: exact code search via Zoekt
+    if project_scope is not None and not _project_code_index_ready(project_scope):
+        return {"error": "Knowledge code index is not ready.", "code": "knowledge_index_not_ready"}
     if state.zoekt is None:
-        return {"results": [], "total": 0, "query": query}
+        return {"error": "Knowledge code index is not ready.", "code": "knowledge_index_not_ready"}
 
     # Request more results than needed to compensate for file-level dedup + re-ranking
     raw_limit = limit * 10
-    hits = await state.zoekt.search(query, limit=raw_limit)
+    try:
+        hits = await state.zoekt.search(query, limit=raw_limit)
+    except ZoektUnavailable:
+        return {"error": "Knowledge search backend is unavailable.", "code": "knowledge_backend_unavailable"}
 
     # ACL filter (Step 2: #1721 isolation)
     filtered = _apply_acl(hits, caller)
@@ -860,27 +956,67 @@ async def _handle_semantic_search(
     limit: int,
     caller: CallerPrincipal | None,
     project_scope: ProjectScope | None = None,
+    *,
+    personal_only: bool = False,
 ) -> dict[str, Any]:
     """Scoped semantic search via S3 Vectors (Story 5, #1774).
 
-    Unions results from shared + caller's tenant + caller's personal indexes.
+    Product calls search only their scoped registrations in the tenant index.
+    Other calls union shared + tenant + personal indexes, excluding Product data.
     Requires semantic_enabled=True, s3_vectors_bucket configured, and a resolved caller.
     Uses singleton code_store and async HTTP client initialized at startup.
     """
-    if caller is None or not caller.is_resolved:
-        return {"results": [], "total": 0, "query": query}
+    model = "amazon.titan-embed-text-v2:0"
+    usage = {"version": 1, "model": model, "status": "not_started"}
 
-    if state.semantic_code_store is None or state.semantic_http_client is None:
-        return {"results": [], "total": 0, "query": query}
+    def completed(result):
+        # The signed Gateway-to-Door call is the trusted transport. Provider
+        # usage must survive subsequent vector/ACL failures so they can settle.
+        return {**result, "embedding_usage": usage}
+
+    if caller is None or not caller.is_resolved:
+        return completed({"error": "Knowledge identity is unavailable.", "code": "knowledge_access_denied", "results": [], "total": 0})
+
+    if not config.semantic_enabled or state.semantic_code_store is None or state.semantic_http_client is None:
+        return completed({"error": "Content search is unavailable. Please try again.", "code": "semantic_search_unavailable", "results": [], "total": 0})
 
     try:
+        # Resolve live generations before nearest-neighbor selection. Filtering
+        # stale hits only afterwards lets old duplicate chunks consume top-K.
+        active_attempt_ids = set()
+        if caller.run_bound:
+            if state.acl_store is None:
+                return completed(_acl_unavailable_response("search"))
+            active_attempt_ids = state.acl_store.get_active_ingestion_attempts(caller)
         # Generate query embedding via LiteLLM (async — does not block event loop)
+        usage = {**usage, "status": "unknown"}
         embed_response = await state.semantic_http_client.post(
             f"{config.litellm_url}/embeddings",
-            json={"input": query, "model": "bedrock/amazon.titan-embed-text-v2:0"},
+            json={
+                "input": query,
+                "model": "bedrock/" + model,
+                # One admitted provider call. Do not silently multiply the
+                # embedding budget on router retries, SDK retries or fallbacks.
+                "num_retries": 0,
+                "max_retries": 0,
+                "fallbacks": [],
+                "context_window_fallbacks": [],
+                "content_policy_fallbacks": [],
+            },
         )
         embed_response.raise_for_status()
-        query_vector = embed_response.json()["data"][0]["embedding"]
+        embedding = embed_response.json()
+        reported = embedding.get("usage", {})
+        tokens = reported.get("prompt_tokens")
+        if (
+            embedding.get("model") not in {model, "bedrock/" + model}
+            or type(tokens) is not int or not 1 <= tokens <= 8192
+            or type(reported.get("total_tokens")) is not int or reported["total_tokens"] != tokens
+            or type(reported.get("completion_tokens", 0)) is not int or reported.get("completion_tokens", 0) != 0
+        ):
+            raise ValueError("Embedding usage is unavailable")
+        usage = {**usage, "status": "measured", "input_tokens": tokens}
+        query_vector = embedding["data"][0]["embedding"]
 
         # Determine caller's org_id from tenant_id (best effort)
         org_id = caller.tenant_id or ""
@@ -892,6 +1028,9 @@ async def _handle_semantic_search(
             tenant_id=caller.tenant_id or None,
             owner_sub=caller.owner_sub or None,
             top_k=limit,
+            active_attempt_ids=active_attempt_ids,
+            **({"product_id": caller.product_id} if caller.product_id else {}),
+            **({"personal_only": True} if personal_only else {}),
         )
 
         # Index selection bounds the tenant but does not authorize every private
@@ -908,19 +1047,29 @@ async def _handle_semantic_search(
                     "source_type": metadata.get("source_type", ""),
                     "section_heading": metadata.get("section_heading", ""),
                     "chunk_text": metadata.get("chunk_text", ""),
+                    "product_id": metadata.get("product_id", ""),
+                    "tenant_id": metadata.get("tenant_id", ""),
+                    "owner_sub": metadata.get("owner_sub", ""),
+                    "asset_id": metadata.get("asset_id", ""),
+                    "ingestion_attempt_id": metadata.get("ingestion_attempt_id", ""),
+                    "visibility": metadata.get("visibility", ""),
+                    "source_ref": metadata.get("source_ref", ""),
+                    "content_s3_key": metadata.get("content_s3_key", ""),
                 })
             )
-        filtered = apply_project_filter(_apply_acl(hits, caller), project_scope)
+        filtered = apply_project_filter(_apply_acl(hits, caller, strict=True), project_scope)
         formatted = [hit.data for hit in filtered]
-        return {"results": formatted[:limit], "total": len(formatted), "query": query}
+        return completed({"results": formatted[:limit], "total": len(formatted), "query": query})
+    except KnowledgeScopeLimitError as exc:
+        return completed({"error": str(exc), "code": "knowledge_scope_limit", "results": [], "total": 0})
     except Exception:
         log.warning("Semantic search failed", exc_info=True)
-        return {"results": [], "total": 0, "query": query}
+        return completed({"error": "Content search is unavailable. Please try again.", "code": "semantic_search_unavailable", "results": [], "total": 0})
 
 
 def _authorized_structural_request(target: str, caller: CallerPrincipal | None) -> tuple[str, str] | None:
     """Resolve a fully qualified permitted repo before any graph or object read."""
-    if caller is None or not caller.is_resolved or state.acl_store is None:
+    if caller is None or not caller.is_resolved or caller.product_id or state.acl_store is None:
         return None
     try:
         allowed = state.acl_store.get_allowed_repos(caller)
@@ -970,6 +1119,7 @@ async def _handle_understand(
     resolved_target, index_prefix = request
     hits = await understand(
         resolved_target,
+        resolved_repo=resolved_target.split("::", 1)[0],
         s3_client=state.s3_client,
         bucket=config.s3_bucket,
         prefix=index_prefix,
@@ -1019,6 +1169,7 @@ async def _handle_impact(
     resolved_target, index_prefix = request
     hits = await impact(
         resolved_target,
+        resolved_repo=resolved_target.split("::", 1)[0],
         s3_client=state.s3_client,
         bucket=config.s3_bucket,
         prefix=index_prefix,
@@ -1092,17 +1243,14 @@ async def _handle_browse(
 ) -> dict[str, Any]:
     """Handle the browse verb: catalog + S3 + Zoekt file listing.
 
-    The optional ``project`` argument doubles as a **repo scope**: when present,
-    a non content-root URI is treated as a repo-relative path within that repo
-    (``browse list uri=agent/ project=HKUDS/Vibe-Trading``) and served from
-    Zoekt. This is the repo directory-tree browse contract. The raw ``project``
-    string is used directly as the repo name — the eval dataset passes the
-    "org/repo" repo name in the ``project`` field.
+    A resolved project narrows the allowed repositories. Only the legacy path
+    without a resolved project treats ``project`` as a repository slug and
+    accepts repository-relative URIs.
     """
     action = arguments.get("action", "ls")
     uri = arguments.get("uri", "/")
     depth = arguments.get("depth", 1)
-    repo_scope = arguments.get("project") or None
+    repo_scope = (arguments.get("project") or None) if project_scope is None else None
 
     if caller is None or not caller.is_resolved or state.acl_store is None:
         return {"action": action, "uri": uri, "entries": []}
@@ -1111,6 +1259,9 @@ async def _handle_browse(
     except Exception:
         record_acl_denial(caller=caller, requested=[repo_scope or uri], reason="acl_store_unavailable")
         return {"action": action, "uri": uri, "entries": []}
+
+    if project_scope is not None:
+        allowed_repos = allowed_repos.intersection(project_scope.repo_names)
 
     hits = await browse(
         action,
@@ -1128,13 +1279,7 @@ async def _handle_browse(
     # ACL filter (Step 2: #1721 isolation)
     filtered = _apply_acl(hits, caller)
 
-    # Project filter (Step 3: narrow to project repos).
-    # When a repo_scope is active the URI is already scoped to that single repo
-    # via Zoekt, so skip the project-set intersection (which requires the
-    # PROJECT_FILTER_ENABLED catalog and would otherwise drop the repo-scoped
-    # hits). The unscoped catalog/content paths keep the intersection.
-    if repo_scope is None:
-        filtered = apply_project_filter(filtered, project_scope)
+    filtered = apply_project_filter(filtered, project_scope)
 
     entries = [hit.data for hit in filtered]
     return {"action": action, "uri": uri, "entries": entries}
@@ -1175,9 +1320,8 @@ async def _handle_experience(arguments: dict[str, Any], headers: dict[str, str])
 async def _handle_secure(
     arguments: dict[str, Any],
     caller: CallerPrincipal | None,
-    project_scope: ProjectScope | None = None,
     *,
-    headers: dict[str, str] | None = None,
+    acl_store: PostgresACLStore | None,
 ) -> dict[str, Any]:
     """Handle the secure verb: vulnerability identification, planning, verification.
 
@@ -1247,7 +1391,7 @@ async def _handle_secure(
             severity_min=severity_min,
             reachable_only=reachable_only,
             db_pool=state.db_pool,
-            acl_store=state.acl_store,
+            acl_store=acl_store,
             caller=caller,
             zoekt_backend=state.zoekt,
             neptune_driver=state.neptune_driver,
@@ -1260,7 +1404,7 @@ async def _handle_secure(
             cve=cve,
             repo=repo,
             db_pool=state.db_pool,
-            acl_store=state.acl_store,
+            acl_store=acl_store,
             caller=caller,
             zoekt_backend=state.zoekt,
             neptune_driver=state.neptune_driver,
@@ -1274,7 +1418,7 @@ async def _handle_secure(
             repo=repo or "",
             db_pool=state.db_pool,
             caller=caller,
-            acl_store=state.acl_store,
+            acl_store=acl_store,
         )
 
     return {"error": f"Unhandled action: {action}", "code": "internal_error"}
@@ -1285,7 +1429,7 @@ async def _handle_secure(
 # ---------------------------------------------------------------------------
 
 
-def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[SearchHit]:
+def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None, *, strict: bool = False) -> list[SearchHit]:
     """The single authorisation step every Door read passes through.
 
     FAIL-CLOSED on all three of its preconditions (#5658):
@@ -1323,13 +1467,20 @@ def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[Se
         )
         return []
 
+    if caller.product_id:
+        return filter_results(hits, caller, state.acl_store, strict=strict)
+
     # Split on provenance. Unattributed hits are only served when their storage
     # key is positively identified as shared platform content.
     shared_hits: list[SearchHit] = []
     unattributed: list[SearchHit] = []
     repo_hits: list[SearchHit] = []
     for hit in hits:
-        if hit.repo_name:
+        if hit.data.get("product_id") or hit.data.get("visibility") == "product":
+            unattributed.append(hit)
+        elif hit.data.get("visibility") == "personal":
+            repo_hits.append(hit)  # Registration provenance authorizes URL/doc hits too.
+        elif hit.repo_name:
             repo_hits.append(hit)
         elif is_shared_content_path(str(hit.data.get("path", ""))):
             shared_hits.append(hit)
@@ -1343,7 +1494,7 @@ def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[Se
             reason="no_provenance_not_shared_content",
         )
 
-    filtered_repo = filter_results(repo_hits, caller, state.acl_store)
+    filtered_repo = filter_results(repo_hits, caller, state.acl_store, strict=strict)
     return shared_hits + filtered_repo
 
 

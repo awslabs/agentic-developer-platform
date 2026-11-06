@@ -15,7 +15,39 @@ Fixture code lives below `modules/gateway/src/qualification/<qualification-id>`
 so the gateway image contains it. Its pinned tests live below
 `modules/gateway/tests/qualification/<qualification-id>` so gateway CI collects
 them. This child changes harness code only; those real-code changes occur during
-the separately approved Q3 run.
+the separately approved Q3 run. Product-bound stories instead pin
+`qualification-api/qualification/<qualification-id>` and
+`qualification-client/qualification/<qualification-id>` in their respective
+change repositories. Their reviewed application entrypoints (`app.py` and
+`client.py`) must be updated alongside the fixture code. Story B includes its own
+pricing module; it does not
+import the API repository's source. Each story supplies a flat unittest under
+`tests/` so the actual `unittest discover -s tests -v` baseline CI collects it.
+The harness checks the PR-head test bytes and repository-local
+source files before accepting development evidence. The packaged deployment
+manifest maps the two source prefixes to different components but grants neither
+a live target; a separately reviewed, source-pinned manifest entry is still
+required for each. The private scenario manifest must name distinct API and
+client runtime workloads and deployment workflows. Pin `required_checks` to the
+actual protected CI contexts in both change repositories (including their
+`python -m unittest discover -s tests -v` job); a passing unrelated check is
+not story verification. The API Deployment and completed client Job must each
+resolve to their own merged source revision through the registered AWS role,
+while the engine remains at its separately pinned revision. The Q2 definition
+hash and Gateway paths for Product-less
+delivery are unchanged.
+
+For Product-bound recovery, select `product-epic-recovery` in the reviewed
+private config and pass the qualification ID to the existing `--resume` or
+`--cleanup` mode. This selector reuses the Product issue, flow and worker
+providers but plans no new fixtures and cannot start a new `--run`; the default
+Product selector remains `product-epic-delivery`. Follow the versioned
+[manual recovery procedure](PRODUCT_EPIC_RECOVERY.md) to restore the latest
+inventory across workflow runs. For explicit Product-less legacy
+checks, select `legacy-attribution`; main-flow and issue readbacks refuse
+unexpected Product attribution. Leaving `scenarios` empty retains the existing
+legacy or Product default. Selectors do not inject a fault, override target
+verification or turn offline reconciliation into live acceptance.
 
 ## Inputs and dispatch
 

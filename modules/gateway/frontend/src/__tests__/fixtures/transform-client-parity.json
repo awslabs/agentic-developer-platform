@@ -1,0 +1,25 @@
+{
+  "run": {
+    "run_id": "run-one",
+    "revision": 2,
+    "state": "outcome_unknown",
+    "provider_state": "unknown",
+    "scope": {"tenant_id": "tenant-example", "product_id": "product-example", "project_id": "project-example", "relationship_revision": "1"}
+  },
+  "patch_text": "--- original\n+++ candidate\n",
+  "result": {
+    "service_id": "transform",
+    "result_id": "result-example",
+    "run_id": "run-one",
+    "revision": 3,
+    "scope": {"tenant_id": "tenant-example", "product_id": "product-example", "project_id": "project-example", "relationship_revision": "1"},
+    "verification_status": "partial",
+    "scope_status": "passed",
+    "original_patch": {"sha256": "ad3fa14fbb8fc79ae6bb5247910ef781c328066d3db43ffb0fd759c43f0a7387", "bytes": 27},
+    "retained_artifacts": {"original_patch": {"artifact_id": "artifact-example", "version": "1", "sha256": "ad3fa14fbb8fc79ae6bb5247910ef781c328066d3db43ffb0fd759c43f0a7387", "bytes": 27, "media_type": "text/x-diff", "tenant_id": "tenant-example", "project_id": "project-example", "expires_at": "2026-11-30T00:00:00Z"}},
+    "tests_before": [{"status": "passed"}],
+    "tests_after": [{"status": "failed"}],
+    "limitations": ["candidate test failed"],
+    "cost_status": "unknown"
+  }
+}

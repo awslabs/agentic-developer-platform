@@ -56,6 +56,16 @@ LOCAL_REMOTE_DIR = PACKAGE_DIR / "remote"
 # predates this directory and is imported by remote/personal_aws.py. It ships
 # flat alongside the remote modules so that import resolves on the instance.
 EXTRA_SOURCES = ("personal_aws_worker.py",)
+PRODUCT_DRIVER_SOURCES = (
+    "tests/__init__.py",
+    "tests/e2e/__init__.py",
+    "tests/e2e/cli_uplift/__init__.py",
+    "tests/e2e/cli_uplift/ports.py",
+    "tests/e2e/cli_uplift/statestore.py",
+    "tests/e2e/product_onboarding/live.py",
+    "tests/e2e/product_onboarding/product_profile_api.py",
+    "tests/e2e/product_onboarding/product_recovery.py",
+)
 
 
 class BundleError(RuntimeError):
@@ -87,6 +97,11 @@ def sources():
                 f"{extra} is referenced by the bundle but is not in the tree"
             )
         found.append((f"remote/{extra}", path.read_bytes()))
+    for source in PRODUCT_DRIVER_SOURCES:
+        path = PACKAGE_DIR.parents[2] / source
+        if not path.is_file():
+            raise BundleError(f"Product driver source {source} is missing")
+        found.append((f"remote/{source}", path.read_bytes()))
     return sorted(found)
 
 

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "test_definition (section 11.5)",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "const": "test_definition"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "selector": {
+      "type": "string",
+      "minLength": 1
+    },
+    "framework": {
+      "type": "string",
+      "minLength": 1
+    },
+    "layer": {
+      "enum": [
+        "unit",
+        "integration",
+        "e2e",
+        "manual",
+        "check"
+      ]
+    },
+    "source_revision": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "name",
+    "source_path",
+    "selector",
+    "framework",
+    "layer",
+    "source_revision"
+  ],
+  "unevaluatedProperties": false
+}

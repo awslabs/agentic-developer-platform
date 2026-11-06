@@ -243,6 +243,7 @@ async def _seed_workspace(
 ):
     """Create an org + workspace, optionally granting `principal` on it."""
     from tests.conftest import async_session_test
+    from app.models.user import User, USER_STATUS_ACTIVE
 
     org_uuid = org_id or uuid.uuid4()
     workspace_id = uuid.uuid4()
@@ -263,6 +264,11 @@ async def _seed_workspace(
                 status="active",
             )
         )
+        if principal_type == "human":
+            session.add(User(
+                org_id=org_uuid, email=f"{principal}@example.test",
+                cognito_sub=principal, status=USER_STATUS_ACTIVE,
+            ))
         if permissions is not None:
             session.add(
                 WorkspaceGrantRecord(
@@ -287,6 +293,7 @@ async def _seed_organization_grant(org_id, principal, permissions):
     `workspace_id` is a foreign key to `workspaces.id`).
     """
     from tests.conftest import async_session_test
+    from app.models.user import User, USER_STATUS_ACTIVE
 
     async with async_session_test() as session:
         session.add(
@@ -303,6 +310,10 @@ async def _seed_organization_grant(org_id, principal, permissions):
                 granted_by="bootstrap",
             )
         )
+        session.add(User(
+            org_id=org_id, email=f"{principal}@example.test",
+            cognito_sub=principal, status=USER_STATUS_ACTIVE,
+        ))
         await session.commit()
 
 
@@ -1149,10 +1160,7 @@ class TestWorkspaceAuthorizationEnforcement:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_service_grant_is_scoped_and_rechecked(self, client, enforcing):
-        from sqlalchemy import update
-        from tests.conftest import async_session_test
-
+    async def test_service_grant_cannot_admit_a_human_domain_route(self, client, enforcing):
         org_id, workspace_id = await _seed_workspace(
             "workspace:read", principal="worker-svc", principal_type="service"
         )
@@ -1163,23 +1171,12 @@ class TestWorkspaceAuthorizationEnforcement:
         )
         headers = {"Authorization": f"Bearer {token}"}
 
-        allowed = await client.get(f"/workspaces/{workspace_id}", headers=headers)
+        refused = await client.get(f"/workspaces/{workspace_id}", headers=headers)
         denied = await client.post(
             f"/workspaces/{workspace_id}/kubeconfig", headers=headers
         )
-        assert allowed.status_code == 200
+        assert refused.status_code == 403
         assert denied.status_code == 403
-
-        async with async_session_test() as session:
-            await session.execute(
-                update(WorkspaceGrantRecord)
-                .where(WorkspaceGrantRecord.workspace_id == workspace_id)
-                .values(revoked_at=datetime.now(UTC))
-            )
-            await session.commit()
-
-        revoked = await client.get(f"/workspaces/{workspace_id}", headers=headers)
-        assert revoked.status_code == 403
 
     @pytest.mark.asyncio
     async def test_role_claims_never_replace_workspace_grants(self, client, enforcing):
@@ -1329,6 +1326,12 @@ class TestNoPermissionUnionAcrossOrganizationsOrWorkspaces:
                     permissions="workspace:administer",
                 )
             )
+            from app.models.user import User, USER_STATUS_ACTIVE
+
+            session.add(User(
+                org_id=org_id, email="user-v@example.test",
+                cognito_sub="user-v", status=USER_STATUS_ACTIVE,
+            ))
             await session.commit()
 
         token_u = _mint(enforcing, sub="user-u", **{"custom:org_id": str(org_id)})
@@ -1555,14 +1558,14 @@ class TestIdentitySpoofing:
         self, client, enforcing, monkeypatch
     ):
         observed = []
-        verify = domain_auth.require_verified_caller
+        verify = domain_auth.require_verified_candidate
 
         async def capture(request, credentials):
-            caller = await verify(request, credentials)
-            observed.append((request.state.safe_headers, caller))
-            return caller
+            candidate, safe_headers = await verify(request, credentials)
+            observed.append((request.state.safe_headers, safe_headers, candidate))
+            return candidate, safe_headers
 
-        monkeypatch.setattr(domain_auth, "require_verified_caller", capture)
+        monkeypatch.setattr(domain_auth, "require_verified_candidate", capture)
         org_id, workspace_id = await _seed_workspace("workspace:read")
         token = _mint(enforcing, **{"custom:org_id": str(org_id)})
         response = await client.get(
@@ -1579,8 +1582,9 @@ class TestIdentitySpoofing:
 
         assert response.status_code == 200
         assert len(observed) == 1
-        safe_headers, caller = observed[0]
-        assert safe_headers == caller.safe_headers
+        safe_headers, returned_headers, candidate = observed[0]
+        assert safe_headers == returned_headers
+        assert candidate.subject == "user-abc"
         assert safe_headers["x-probe-metadata"] == "kept"
         assert all(
             header not in safe_headers
@@ -1588,8 +1592,8 @@ class TestIdentitySpoofing:
                 "x-adp-principal", "x-caller-id", "x-org-id", "x-forwarded-user"
             )
         )
-        assert caller.principal.subject == "user-abc"
-        assert caller.principal.org_id == str(org_id)
+        assert candidate.subject == "user-abc"
+        assert candidate.org_id == str(org_id)
 
     @pytest.mark.asyncio
     async def test_body_supplied_approver_is_not_trusted(self, client, enforcing):
@@ -2261,9 +2265,20 @@ class TestOrganizationScopedAuthorization:
 
     @pytest.mark.asyncio
     async def test_malformed_org_claim_is_denied_not_a_server_error(
-        self, client, enforcing
+        self, client, enforcing, monkeypatch
     ):
         """A verified-but-unusable org claim is a 403, never a 500."""
+        from app.current_identity import CurrentIdentity
+
+        class Reader:
+            async def read(self, *, subject, principal_type, adp_org_id):
+                return CurrentIdentity(
+                    subject, principal_type, adp_org_id, "membership", True, True
+                )
+
+        monkeypatch.setattr(
+            fastapi_app.state, "current_identity_reader", Reader(), raising=False
+        )
         token = _mint(enforcing, **{"custom:org_id": "not-a-uuid"})
         response = await client.get(
             "/orgs/current/quota", headers={"Authorization": f"Bearer {token}"}
@@ -2401,7 +2416,7 @@ class TestEnforcementDisabledPath:
         assert response.status_code not in (401, 403)
 
     @pytest.mark.asyncio
-    async def test_require_verified_caller_refuses_without_a_policy(self):
+    async def test_require_verified_candidate_refuses_without_a_policy(self):
         """Called directly with no policy configured: refuse, never fall back."""
         from fastapi import HTTPException
         from starlette.datastructures import Headers
@@ -2413,7 +2428,7 @@ class TestEnforcementDisabledPath:
                 self.headers = Headers({})
 
         with pytest.raises(HTTPException) as exc:
-            await domain_auth.require_verified_caller(_Req(), None)
+            await domain_auth.require_verified_candidate(_Req(), None)
         assert exc.value.status_code == 403
 
 
@@ -2838,6 +2853,15 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
         ):
             path = path.replace(placeholder, str(uuid.uuid4()))
         return path
+
+    @pytest.fixture(autouse=True)
+    def isolate_authorization_from_request_throttling(self, monkeypatch):
+        # This inventory deliberately makes hundreds of requests from one caller.
+        # Exercise every route's auth guard, including those after the quota would
+        # trip; real quota enforcement has separate end-to-end regression tests.
+        from app.middleware.rate_limit import RateLimitEntry
+
+        monkeypatch.setattr(RateLimitEntry, "is_allowed", lambda *args: True)
 
     @pytest.mark.asyncio
     async def test_no_credential_is_always_401_or_403(self, client, enforcing):

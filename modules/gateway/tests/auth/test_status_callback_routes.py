@@ -78,7 +78,7 @@ def payload(**changes):
     return {"asset_id": _ASSET_ID, "status": "indexing", "callback_grant": grant(), **changes}
 
 
-@pytest.mark.parametrize("status", ["indexing", "complete", "failed"])
+@pytest.mark.parametrize("status", ["indexing", "complete", "partial", "failed"])
 def test_valid_attempt_updates_only_knowledge_asset(client, db, status):
     response = post(client, payload(status=status, error="failure" if status == "failed" else None))
     assert response.status_code == 200, response.text
@@ -150,3 +150,13 @@ def test_missing_or_stale_attempt_returns_not_found(client, db):
     db.exists = False
     assert post(client, payload()).status_code == 404
     assert not db.committed
+
+
+def test_partial_status_preserves_available_and_failed_capabilities(client, db):
+    import json
+
+    detail = {"steps": {"cgc_structural": "verified", "deepwiki": "failed", "graphrag": "skipped"}}
+    response = post(client, payload(status="partial", status_detail=detail))
+    assert response.status_code == 200
+    assert db.last_params["status"] == "partial"
+    assert json.loads(db.last_params["status_detail"]) == detail

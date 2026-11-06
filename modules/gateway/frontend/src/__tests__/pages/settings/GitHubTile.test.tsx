@@ -16,6 +16,8 @@ import userEvent from '@testing-library/user-event';
 import { GitHubTile } from '@/pages/settings/components/GitHubTile';
 import type { AppStatusResponse, GitHubConnectionItem } from '@/services/connections';
 
+vi.mock('@/hooks/useFeatures', () => ({ useRevalidatingFeaturesQuery: () => ({ data: { assistant_ui: false } }) }));
+
 // Default props for a minimal render
 const defaultProps = {
   connections: [] as GitHubConnectionItem[],

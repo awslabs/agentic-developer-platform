@@ -32,25 +32,69 @@ from .execution_store import load_execution
 from .genesis import resolve_engine_genesis
 from .models import OrchestrationAction, OrchestrationDecision, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
 from .policy_admission import SpendObservation, authorize_node_dispatch, load_in_force_policy, resolve_authorization_context
-from .pr_bindings import active_binding_for_node, binding_scope_matches
-from .review_cycle import DISPATCH_KIND, CycleBlockedError, CycleObservation
+from .pr_bindings import active_binding_for_node, binding_scope_matches, continuation_binding_hold
+from .review_cycle import DISPATCH_KIND, CycleBlockedError, CycleObservation, block
 from .run_store import EngineRunStore
 from .stage_attempts import stage_attempts
-from .startup_recovery import is_retryable_bootstrap_failure
+from .startup_recovery import attested_review_startup, is_retryable_bootstrap_failure
 
 ACTOR = "system:review-cycle"
 
 
 def failed_review(raw):
-    """A terminal failed review may retry within its remaining stage allowance."""
+    """A terminal failed reviewer continuation may retry within its remaining stage allowance.
+
+    This covers the review itself and the reviewer-owned repair the engine hands
+    an open defect to (#7482): a reviewer that pushed its repair and then could
+    not publish the verdict has exited failed on the same lane, and the bounded
+    retry is the recovery, not a human.
+    """
     return bool(
         raw
         and raw.get("persona") == {"S": "agent-codex-reviewer"}
-        and raw.get("orchestration_continuation_action") == {"S": "review"}
+        and raw.get("orchestration_continuation_action") in ({"S": "review"}, {"S": "repair"})
         and raw.get("orchestration_continuation_receipt")
         and raw.get("status") == {"S": "completed"}
-        and raw.get("terminal_outcome") == {"S": "failed"}
+        and raw.get("terminal_outcome") in ({"S": "failed"}, {"S": "budget_stopped"})
     )
+
+
+async def require_budget_recovery(session, *, node, active_run_id, raw, policy):
+    """Hold native protected budget exits without repeatedly spending stage attempts.
+
+    Only the gateway's terminal status transaction supplies this timestamp.
+    A later in-force budget receipt permits normal admission to be tried again;
+    it does not prove affordability or reset any attempts.
+    """
+    if raw.get("terminal_outcome") != {"S": "budget_stopped"}:
+        return
+    if (
+        not failed_review(raw)
+        or raw.get("tenant_id") != {"S": node.org_id}
+        or raw.get("invocation_id") != {"S": active_run_id}
+        or raw.get("orchestration_node_id") != {"S": node.id}
+    ):
+        raise CycleBlockedError("review_budget_failure_unverifiable", BlockCode.AUTHORITY_UNVERIFIABLE)
+    try:
+        failed_at = datetime.fromisoformat(raw["terminal_recorded_at"]["S"].replace("Z", "+00:00"))
+        if failed_at.tzinfo is None:
+            raise ValueError("unverified timestamp")
+    except (KeyError, AttributeError, TypeError, ValueError):
+        # Older gateways recorded the outcome without time. Keep it visibly held;
+        # explicit protected recovery can release it after the budget is fixed.
+        raise CycleBlockedError("review_worker_budget_exhausted", BlockCode.BUDGET_EXHAUSTED) from None
+    decision_id = policy._shared_budget_decision_id
+    decision = await session.get(OrchestrationDecision, decision_id) if decision_id else None
+    if (
+        decision is not None
+        and decision.org_id == node.org_id
+        and decision.flow_id == node.flow_id
+        and decision.kind == "budget_increased"
+        and decision.actor_kind == "human"
+        and decision.created_at.replace(tzinfo=decision.created_at.tzinfo or UTC) > failed_at
+    ):
+        return
+    raise CycleBlockedError("review_worker_budget_exhausted", BlockCode.BUDGET_EXHAUSTED)
 
 
 def continuation_run_id(key):
@@ -183,9 +227,35 @@ class ReviewCycleServices:
     async def protected(self, org_id, run_id):
         return await asyncio.to_thread(self.writer.store._read, f"TENANT#{org_id}", f"EXEC#{run_id}")
 
-    async def authority_context(self, session, context, node, binding, run_id, action, *, delivery=False):
+    async def authority_context(self, session, context, node, binding, run_id, action, *, delivery=False, recovery_decision_id=None):
         if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
             raise CycleBlockedError("protected_authority_required", BlockCode.AUTHORITY_UNVERIFIABLE)
+        if delivery and run_id.startswith("delivery-recovery:"):
+            from .delivery_recovery import authority_context
+
+            return await authority_context(self, session, context, node, binding, run_id, action)
+        if recovery_decision_id:
+            from .developer_review_protocol import reservation_id, verified_decision
+
+            if delivery or action not in {Action.REVIEW, Action.REPAIR}:
+                raise CycleBlockedError("recovery_action_not_authorized", BlockCode.AUTHORITY_UNVERIFIABLE)
+            if run_id != reservation_id(recovery_decision_id):
+                raise CycleBlockedError("recovery_claim_changed", BlockCode.OWNERSHIP_LOST)
+            recovered, values = await verified_decision(
+                session,
+                decision_id=recovery_decision_id,
+                context=context,
+                node=node,
+                binding=binding,
+                services=self,
+                head_sha=await self.head(binding),
+            )
+            from .released_reviewer_recovery import CONTRACT as RELEASED_REVIEWER_CONTRACT
+            from .retained_work_recovery import CONTRACT as RETAINED_WORK_CONTRACT
+
+            if recovered.get("contract") in {RETAINED_WORK_CONTRACT, RELEASED_REVIEWER_CONTRACT} and action is not Action.REVIEW:
+                raise CycleBlockedError("recovery_action_not_authorized", BlockCode.AUTHORITY_UNVERIFIABLE)
+            return await self.policy_context(session, context, node, binding, run_id, action, values[0], values[1])
         claim = await session.scalar(
             select(OrchestrationWorkClaim).where(OrchestrationWorkClaim.org_id == node.org_id, OrchestrationWorkClaim.id == context.identity.claim_id)
         )
@@ -221,13 +291,38 @@ class ReviewCycleServices:
             )
         except BootstrapRefusedError:
             raise CycleBlockedError("grant_revoked_or_unverifiable", BlockCode.AUTHORITY_UNVERIFIABLE) from None
+        return await self.policy_context(session, context, node, binding, run_id, action, raw, grant)
+
+    async def policy_context(self, session, context, node, binding, run_id, action, raw, grant, *, read_only=False):
+        """Resolve current policy independently of the caller's ownership proof."""
         inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
-        if inputs.refusal or inputs.policy is None or inputs.plan_version != context.identity.accepted_plan_version:
+        from .plan_lineage import execution_plan_matches
+
+        # Amendments that preserved this node keep its policy authority (#7535).
+        if (
+            inputs.refusal
+            or inputs.policy is None
+            or not await execution_plan_matches(
+                session,
+                org_id=node.org_id,
+                flow_id=node.flow_id,
+                node_id=node.id,
+                version=context.identity.accepted_plan_version,
+                current_version=inputs.plan_version,
+            )
+        ):
             raise CycleBlockedError("policy_changed", BlockCode.AUTHORITY_UNVERIFIABLE)
-        from .flow_meter import read_flow_meter
+        from .flow_meter import read_flow_meter, reconcile_flow_meter
         from .runtime_policy import flow_started_at, policy_github_permissions
 
-        meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+        # Repair missed settlement first: a review cycle admits no new dispatch,
+        # so without this an abandoned strict marker left the meter unreadable and
+        # every reviewer refused with spend_unknown for the rest of the flow (#7451).
+        meter = (
+            await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+            if read_only
+            else await reconcile_flow_meter(session, org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+        )
         principal = await resolve_root_user_entity_id(session, node.org_id, grant.authority.human_id)
         auth = await resolve_authorization_context(
             session,
@@ -248,8 +343,14 @@ class ReviewCycleServices:
             raise CycleBlockedError("wall_clock_limit_exceeded", BlockCode.ATTEMPTS_EXHAUSTED)
         return raw, grant, inputs, principal, meter, auth
 
-    async def authorize(self, session, context, node, binding, run_id, action, *, reserve=False):
-        raw, grant, inputs, principal, meter, auth = await self.authority_context(session, context, node, binding, run_id, action)
+    async def authorize(self, session, context, node, binding, run_id, action, *, reserve=False, recovery_decision_id=None):
+        hold = await continuation_binding_hold(session, node, binding)
+        if hold:
+            raise CycleBlockedError(
+                hold, BlockCode.AUTHORITY_UNVERIFIABLE if hold == "repository_connection_unavailable" else BlockCode.HUMAN_INPUT_REQUIRED
+            )
+        recovery = {"recovery_decision_id": recovery_decision_id} if recovery_decision_id else {}
+        raw, grant, inputs, principal, meter, auth = await self.authority_context(session, context, node, binding, run_id, action, **recovery)
         flow = await session.get(OrchestrationFlow, node.flow_id)
         decision = authorize_action(
             auth,
@@ -277,7 +378,12 @@ class ReviewCycleServices:
                 continuing_node=True,
             )
             if not admission.permitted:
-                raise CycleBlockedError(admission.reason.value, BlockCode.BUDGET_EXHAUSTED)
+                code = (
+                    BlockCode.BUDGET_EXHAUSTED
+                    if "spend" in admission.reason.value or "budget" in admission.reason.value
+                    else BlockCode.AUTHORITY_UNVERIFIABLE
+                )
+                raise CycleBlockedError(admission.reason.value, code)
         return raw, grant, inputs, principal, meter
 
     async def head(self, binding):
@@ -309,26 +415,78 @@ class ReviewCycleServices:
         return status == "completed"
 
     async def recovery_snapshot(self, session, context, node, binding, dispatches):
+        from .developer_review_protocol import recovery_snapshot as developer_recovery
+
+        recovered = await developer_recovery(session, context, node, binding, self, dispatches)
+        if recovered is not None:
+            return recovered
         from .protected_review_recovery import recovery_snapshot
 
         return await recovery_snapshot(session, context, node, binding, self, dispatches)
 
-    async def facts(self, session, context, node, binding, dispatches):
+    async def facts(self, session, context, node, binding, dispatches, *, budget_recovery_verified=False):
         active = continuation_run_id(dispatches[-1].operation_key) if dispatches else attempt_run_id(node.id, node.attempts)
         raw, grant, inputs, _, meter = await self.authorize(session, context, node, binding, active, Action.REVIEW)
         status = raw.get("status", {}).get("S")
         bootstrap_failed = bool(dispatches) and is_retryable_bootstrap_failure(raw)
+        reset = await session.scalar(
+            select(OrchestrationDecision)
+            .where(
+                OrchestrationDecision.org_id == node.org_id,
+                OrchestrationDecision.node_id == node.id,
+                OrchestrationDecision.kind == "review_bootstrap_reset",
+            )
+            .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+            .limit(1)
+        )
+        history = dispatches
+        if reset is not None:
+            try:
+                reset_data = json.loads(reset.reason)
+            except (TypeError, ValueError):
+                reset_data = {}
+            if reset_data.get("execution_id") == context.execution.id:
+                for index, prior in enumerate(dispatches):
+                    if prior.operation_key == reset_data.get("last_action_key"):
+                        history = dispatches[index + 1 :]
+                        break
+        prior_failures = 0
+        for prior in reversed(history[:-1]):
+            if (prior.detail or {}).get("startup_classification", {}).get("exemption_status") != "bootstrap_exempt":
+                break
+            prior_failures += 1
+        if bootstrap_failed and (dispatches[-1].detail or {}).get("action") == Action.REVIEW.value:
+            from .run_reports import OrchestrationRunReport
+
+            latest = dispatches[-1]
+            classification = attested_review_startup(raw, invocation_id=active, receipt=receipt_id(latest.operation_key))
+            report = await session.get(OrchestrationRunReport, active)
+            if classification is None or report is not None and (report.worker_receipt or report.terminal_receipt):
+                raise CycleBlockedError("review_startup_evidence_unverifiable", BlockCode.AUTHORITY_UNVERIFIABLE)
+            if not (latest.detail or {}).get("startup_classification"):
+                classification["failure_ordinal"] = prior_failures + 1
+                latest.detail = {**latest.detail, "startup_classification": classification}
+                await session.commit()
+        current_classification = (dispatches[-1].detail or {}).get("startup_classification") if bootstrap_failed and history else None
+        bootstrap_failures = prior_failures + 1 if current_classification is not None else 0
         review_failed = bool(dispatches) and failed_review(raw)
+        if review_failed and not budget_recovery_verified:
+            await require_budget_recovery(session, node=node, active_run_id=active, raw=raw, policy=inputs.policy)
         if (status in {"cancelled", "revoked"} and not bootstrap_failed) or (
             status == "completed" and raw.get("terminal_outcome") != {"S": "complete"} and not bootstrap_failed and not review_failed
         ):
             raise CycleBlockedError("worker_failed_or_halted", BlockCode.HUMAN_INPUT_REQUIRED)
+        worker_complete = status == "completed" or bootstrap_failed
         return {
             "active_run_id": active,
-            "worker_complete": status == "completed" or bootstrap_failed,
+            "worker_complete": worker_complete,
             "bootstrap_retry_of": active if bootstrap_failed else None,
+            "bootstrap_classification": current_classification,
+            "bootstrap_failures": bootstrap_failures,
             "review_retry_of": active if review_failed else None,
-            "head_sha": await self.head(binding),
+            # An in-flight worker cannot advance this cycle. Its next transition
+            # still resolves the provider head after protected completion.
+            "head_sha": await self.head(binding) if worker_complete else None,
             "remaining_spend_usd": str(inputs.policy.limits.max_spend_usd - meter.total_usd)
             if inputs.policy._budget_enforcement_enabled and meter
             else None,
@@ -339,7 +497,20 @@ class ReviewCycleServices:
         }
 
     async def recheck(self, session, context, node, binding, facts):
-        await self.authorize(session, context, node, binding, facts["active_run_id"], Action.REVIEW)
+        # Shared transport inherits this controller hook and has its own
+        # authorization interface. A protected recovery keyword belongs only to
+        # observations carrying that protocol's explicit receipt.
+        recovery_id = facts.get("developer_recovery_decision_id")
+        recovery = {"recovery_decision_id": recovery_id} if recovery_id else {}
+        await self.authorize(
+            session,
+            context,
+            node,
+            binding,
+            facts["active_run_id"],
+            Action.REVIEW,
+            **recovery,
+        )
         if await self.head(binding) != facts["head_sha"]:
             raise CycleBlockedError("head_changed_during_observation")
 
@@ -366,6 +537,22 @@ class ReviewCycleServices:
                 or binding.revision != action.detail["binding_revision"]
             ):
                 raise CycleBlockedError("bound_pr_or_scope_changed", BlockCode.HUMAN_INPUT_REQUIRED)
+            recovery_id = action.detail.get("developer_recovery_decision_id")
+            if recovery_id and raw is None:
+                from .developer_review_protocol import verified_decision
+
+                committed = await session.get(OrchestrationDecision, receipt_id(action.operation_key))
+                await verified_decision(
+                    session,
+                    decision_id=recovery_id,
+                    context=context,
+                    node=node,
+                    binding=binding,
+                    services=self,
+                    head_sha=await self.head(binding),
+                    successor_action=action if committed is not None else None,
+                )
+                return CycleObservation(ObservationKind.READY, operation_key=action.operation_key, snapshot={"replay": dict(action.detail)})
             source_run = continuation_run_id(action.operation_key) if raw else action.detail["active_run_id"]
             source = raw or await self.protected(node.org_id, source_run)
             if not source:
@@ -385,12 +572,30 @@ class ReviewCycleServices:
                 await self.authorize(session, context, node, binding, source_run, Action(action.detail["action"]))
             elif claim.active_run_id != continuation_run_id(action.operation_key):
                 raise CycleBlockedError("active_claim_changed", BlockCode.OWNERSHIP_LOST)
-            if await self.head(binding) != action.detail["head_sha"]:
+            current_head = await self.head(binding)
+            if current_head != action.detail["head_sha"]:
+                # Preparation commits a SQL receipt and transfers the claim
+                # before it can provision or publish. Only an intent that never
+                # crossed that boundary can be retired without a worker receipt.
+                receipt = await session.get(OrchestrationDecision, receipt_id(action.operation_key))
+                if raw is None and receipt is None and claim.active_run_id == action.detail["active_run_id"]:
+                    return CycleObservation(
+                        ObservationKind.READY,
+                        snapshot={
+                            "retire_unstarted_dispatch": {
+                                "action_id": action.id,
+                                "operation_key": action.operation_key,
+                                "detail": dict(action.detail),
+                                "current_head": current_head,
+                            }
+                        },
+                    )
                 raise CycleBlockedError("head_changed_before_dispatch")
         return CycleObservation(ObservationKind.READY, operation_key=action.operation_key, snapshot={"replay": dict(action.detail)})
 
     async def dispatch(self, context, effect):
         try:
+            finite_receipt = None
             envelope, grant, metadata = await self.prepare(context, effect)
             await asyncio.to_thread(self.provision, envelope, grant, metadata)
             # Recheck SQL assignment and current grant after provisioning, before
@@ -407,9 +612,50 @@ class ReviewCycleServices:
                 )
                 await validate_engine_authority(session=session, execution=raw, grant=live, store=self.writer.store)
                 binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
-                await self.authorize(session, context, node, binding, envelope["message_id"], effect.action, reserve=True)
+                if recovery_id := effect.intent.detail.get("developer_recovery_decision_id"):
+                    from .developer_review_protocol import verified_decision
+
+                    action = await session.scalar(
+                        select(OrchestrationAction).where(
+                            OrchestrationAction.org_id == node.org_id,
+                            OrchestrationAction.execution_id == context.execution.id,
+                            OrchestrationAction.operation_key == effect.intent.operation_key,
+                        )
+                    )
+                    recovered, _ = await verified_decision(
+                        session,
+                        decision_id=recovery_id,
+                        context=context,
+                        node=node,
+                        binding=binding,
+                        services=self,
+                        head_sha=await self.head(binding),
+                        successor_action=action,
+                    )
+                    from . import released_reviewer_recovery, retained_work_recovery
+
+                    for finite in (retained_work_recovery, released_reviewer_recovery):
+                        if recovered.get("contract") == finite.CONTRACT:
+                            finite_receipt = (finite, recovered)
+                _, _, _, principal, _ = await self.authorize(session, context, node, binding, envelope["message_id"], effect.action, reserve=True)
                 if await self.head(binding) != effect.intent.detail["head_sha"]:
                     raise CycleBlockedError("head_changed_before_dispatch")
+                if recovery_id := effect.intent.detail.get("protected_recovery_decision_id"):
+                    from .protected_review_recovery import verified_decision, verify_reviewer_configuration
+
+                    recovered = await verified_decision(
+                        session,
+                        decision_id=recovery_id,
+                        context=context,
+                        node=node,
+                        binding=binding,
+                        services=self,
+                        prior_run_id=effect.intent.detail["active_run_id"],
+                        head_sha=effect.intent.detail["head_sha"],
+                    )
+                    selected = await verify_reviewer_configuration(session, recovered, org_id=node.org_id, user_id=principal)
+                    if selected is not None and any(envelope.get(key) != value for key, value in selected.items()):
+                        raise CycleBlockedError("reviewer_model_selection_changed")
                 # Continuations transfer an existing claim rather than calling
                 # admit_pending. Attach the parent's immutable model settings
                 # here, while the protected child is still pending and before
@@ -420,23 +666,33 @@ class ReviewCycleServices:
                 await ensure_snapshot_report_only(session, store=self.writer.store, invocation_id=envelope["message_id"])
             cfg = self.config or DispatchPassConfig.from_env()
             queue = self.queue or _get_sqs_client(cfg.aws_region)
-            await asyncio.to_thread(
-                queue.send_message,
-                QueueUrl=cfg.queue_url,
-                MessageBody=json.dumps(envelope),
-                MessageGroupId=f"review-cycle-{context.execution.claim_id}",
-                MessageDeduplicationId=envelope["message_id"],
-            )
+
+            def publish():
+                if finite_receipt is not None:
+                    finite, receipt = finite_receipt
+                    finite.require_unexpired(receipt, reconciliation_required=True)
+                return queue.send_message(
+                    QueueUrl=cfg.queue_url,
+                    MessageBody=json.dumps(envelope),
+                    MessageGroupId=f"review-cycle-{context.execution.claim_id}",
+                    MessageDeduplicationId=envelope["message_id"],
+                )
+
+            await asyncio.to_thread(publish)
             return EffectResult(EffectOutcome.SUCCEEDED, receipt_ref=f"dispatch:{envelope['message_id']}")
         except CycleBlockedError as error:
-            # Typed conditions are picked up by observe on the next bounded tick;
-            # the intent remains recoverable and no second identity is minted.
-            return EffectResult(EffectOutcome.UNCERTAIN, detail=error.reason)
+            # A replay can refuse on every tick without observe seeing the refusal.
+            # Persist the budget hold while retaining this same recoverable intent.
+            return EffectResult(
+                EffectOutcome.UNCERTAIN,
+                detail=error.reason,
+                block=block(error.reason, error.code) if error.code is BlockCode.BUDGET_EXHAUSTED else None,
+            )
 
     async def prepare(self, context, effect):
         cfg = self.config or DispatchPassConfig.from_env()
         detail = effect.intent.detail
-        if not cfg.configured or cfg.repo != detail["repo"]:
+        if not cfg.configured:
             raise CycleBlockedError("dispatch_configuration_unavailable", BlockCode.CREDENTIAL_UNAVAILABLE)
         run_id = continuation_run_id(effect.intent.operation_key)
         async with self.factory() as session:
@@ -473,25 +729,79 @@ class ReviewCycleServices:
                 or binding.id != detail["binding_id"]
                 or binding.accepted_scope != detail["accepted_scope"]
                 or binding.revision != detail["binding_revision"]
+                or binding.repo != detail["repo"]
             ):
                 raise CycleBlockedError("bound_pr_or_scope_changed", BlockCode.HUMAN_INPUT_REQUIRED)
             old = await session.get(OrchestrationDecision, receipt_id(action.operation_key))
+            recovery_id = detail.get("developer_recovery_decision_id")
             if old is not None:
+                claim = await session.get(OrchestrationWorkClaim, context.identity.claim_id, populate_existing=True)
+                if claim is None or claim.active_run_id not in {detail["active_run_id"], run_id}:
+                    raise CycleBlockedError("active_claim_changed", BlockCode.OWNERSHIP_LOST)
+                if recovery_id and await self.protected(node.org_id, claim.active_run_id) is None:
+                    hold = await continuation_binding_hold(session, node, binding)
+                    if hold:
+                        raise CycleBlockedError(
+                            hold, BlockCode.AUTHORITY_UNVERIFIABLE if hold == "repository_connection_unavailable" else BlockCode.HUMAN_INPUT_REQUIRED
+                        )
+                else:
+                    await self.authorize(
+                        session,
+                        context,
+                        node,
+                        binding,
+                        claim.active_run_id,
+                        effect.action,
+                        recovery_decision_id=recovery_id if claim.active_run_id == detail["active_run_id"] else None,
+                    )
                 saved = json.loads(old.reason)
                 # Only this trusted producer may replay this action's receipt.
                 if old.org_id != node.org_id or old.actor_id != ACTOR or saved.get("run_id") != run_id:
                     raise CycleBlockedError("dispatch_receipt_conflict", BlockCode.AUTHORITY_UNVERIFIABLE)
-                parent = await self.protected(node.org_id, detail["active_run_id"])
-                parent_grant = await asyncio.to_thread(
-                    self.writer.store.live_grant,
-                    invocation_id=detail["active_run_id"],
-                    tenant_id=node.org_id,
-                    attempt=int(parent["current_attempt"]["N"]),
-                    now=datetime.now(UTC),
-                )
+                if recovery_id:
+                    from .developer_review_protocol import verified_decision
+
+                    _, values = await verified_decision(
+                        session,
+                        decision_id=recovery_id,
+                        context=context,
+                        node=node,
+                        binding=binding,
+                        services=self,
+                        head_sha=await self.head(binding),
+                        successor_action=action,
+                    )
+                    parent_grant = values[1]
+                else:
+                    parent = await self.protected(node.org_id, detail["active_run_id"])
+                    parent_grant = await asyncio.to_thread(
+                        self.writer.store.live_grant,
+                        invocation_id=detail["active_run_id"],
+                        tenant_id=node.org_id,
+                        attempt=int(parent["current_attempt"]["N"]),
+                        now=datetime.now(UTC),
+                    )
+                if reviewer_recovery_id := detail.get("protected_recovery_decision_id"):
+                    from .protected_review_recovery import verified_decision
+
+                    recovered = await verified_decision(
+                        session,
+                        decision_id=reviewer_recovery_id,
+                        context=context,
+                        node=node,
+                        binding=binding,
+                        services=self,
+                        prior_run_id=detail["active_run_id"],
+                        head_sha=await self.head(binding),
+                    )
+                    if effect.action is not Action.REVIEW:
+                        raise CycleBlockedError("reviewer_model_override_unsupported")
+                    selected = recovered.get("reviewer_model_configuration")
+                    if selected is not None and any(saved["envelope"].get(key) != value for key, value in selected.items()):
+                        raise CycleBlockedError("reviewer_model_selection_changed")
                 return saved["envelope"], self.child_grant(parent_grant, run_id, binding.repo), saved["execution_metadata"]
             raw, parent, inputs, principal, _ = await self.authorize(
-                session, context, node, binding, detail["active_run_id"], effect.action, reserve=True
+                session, context, node, binding, detail["active_run_id"], effect.action, reserve=True, recovery_decision_id=recovery_id
             )
             allow_story_repairs = effect.action is Action.REPAIR
             allow_review_evidence = effect.action is Action.REVIEW
@@ -500,16 +810,17 @@ class ReviewCycleServices:
                 allow_review_evidence = True
             if effect.action is Action.REVIEW:
                 try:
-                    await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REPAIR)
+                    await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REPAIR, recovery_decision_id=recovery_id)
                     allow_story_repairs = True
                 except CycleBlockedError:
                     # Explicit review-only policies retain read-only contents
                     # access. The persona itself cannot grant repair authority.
                     pass
+            recovered_configuration = None
             if detail.get("protected_recovery_decision_id"):
-                from .protected_review_recovery import verified_decision
+                from .protected_review_recovery import verified_decision, verify_reviewer_configuration
 
-                await verified_decision(
+                recovered = await verified_decision(
                     session,
                     decision_id=detail["protected_recovery_decision_id"],
                     context=context,
@@ -519,11 +830,30 @@ class ReviewCycleServices:
                     prior_run_id=detail["active_run_id"],
                     head_sha=detail["head_sha"],
                 )
+                if effect.action is not Action.REVIEW:
+                    raise CycleBlockedError("reviewer_model_override_unsupported")
+                recovered_configuration = await verify_reviewer_configuration(session, recovered, org_id=node.org_id, user_id=principal)
             bootstrap_retry = detail.get("bootstrap_retry_of") == detail["active_run_id"] and is_retryable_bootstrap_failure(raw)
             review_retry = detail.get("review_retry_of") == detail["active_run_id"] and failed_review(raw)
+            retained_recovery = False
+            released_review_retry = False
+            if recovery_id:
+                from .developer_review_protocol import protocol
+                from .released_reviewer_recovery import KIND as RELEASED_REVIEWER_KIND
+                from .retained_work_recovery import KIND as RETAINED_WORK_KIND
+
+                recovery_kind = (await protocol(session, recovery_id)).KIND
+                retained_recovery = recovery_kind == RETAINED_WORK_KIND
+                released_review_retry = (
+                    recovery_kind == RELEASED_REVIEWER_KIND
+                    and detail.get("released_review_retry_of") == raw.get("invocation_id", {}).get("S")
+                    and failed_review(raw)
+                )
             if (
                 not bootstrap_retry
                 and not review_retry
+                and not retained_recovery
+                and not released_review_retry
                 and (raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"})
             ):
                 raise CycleBlockedError("previous_worker_not_completed")
@@ -531,7 +861,7 @@ class ReviewCycleServices:
                 raise CycleBlockedError("head_changed_before_dispatch")
             delegation_parent = parent
             depth = int(raw["chain_depth"]["N"]) + 1
-            if bootstrap_retry or review_retry:
+            if bootstrap_retry or review_retry or released_review_retry:
                 # Retrying an engine-owned stage is a sibling execution, not a
                 # new delegation by the failed worker. Keep its attenuated grant
                 # below, but attach it to the same verified delegation parent.
@@ -548,12 +878,16 @@ class ReviewCycleServices:
                 graph_address=graph_address(node, flow_slug=flow.slug),
                 installation_id=binding.installation_id,
                 issue=int(str(node.issue_ref).lstrip("#")),
-                config=replace(cfg, persona=persona),
+                config=replace(cfg, repo=binding.repo, persona=persona),
                 user_id=principal,
                 cognito_sub=cognito_sub,
             )
             try:
-                envelope.update(await resolve_launch_configuration(session, org_id=node.org_id, user_id=principal, persona=persona))
+                envelope.update(
+                    recovered_configuration
+                    if recovered_configuration is not None
+                    else await resolve_launch_configuration(session, org_id=node.org_id, user_id=principal, persona=persona)
+                )
             except Exception:
                 raise CycleBlockedError("persona_model_selection_unavailable", BlockCode.AUTHORITY_UNVERIFIABLE) from None
             # Start the worker clock when its assignment is prepared, after any
@@ -562,7 +896,9 @@ class ReviewCycleServices:
             envelope["source_ref"]["provider_repository_id"] = binding.provider_repository_id
             envelope["intent"]["trigger"] = "engine_review_cycle"
             envelope["correlation"].update(
-                correlation_id=attempt_run_id(node.id, node.attempts), chain_depth=depth, parent_principal=delegation_parent.principal
+                correlation_id=raw["flow_id"]["S"] if retained_recovery or released_review_retry else attempt_run_id(node.id, node.attempts),
+                chain_depth=depth,
+                parent_principal=delegation_parent.principal,
             )
             envelope["review_cycle_input"] = {
                 key: detail[key] for key in ("action", "repo", "pr_number", "head_sha", "accepted_scope", "remaining_attempts", "remaining_spend_usd")
@@ -619,6 +955,7 @@ class ReviewCycleServices:
                 "authority_reference_id": parent.authority.reference_id,
                 "envelope": envelope,
                 "execution_metadata": metadata,
+                **({"developer_recovery_decision_id": recovery_id} if recovery_id else {}),
             }
             if len(json.dumps(saved).encode()) > 65536:
                 raise CycleBlockedError("continuation_input_too_large")
@@ -674,6 +1011,8 @@ class ReviewCycleServices:
                 run_id=run_id,
                 operation_key=action.operation_key,
                 completed_execution=raw,
+                developer_recovery_decision_id=recovery_id,
+                recovery_services=self,
             )
             await session.commit()
             return envelope, self.child_grant(parent, run_id, binding.repo), metadata
@@ -749,7 +1088,10 @@ async def cycle_services(factory, context):
                 OrchestrationAcceptedPlan.superseded_at.is_(None),
             )
         )
-        if plan is None or plan.version != context.identity.accepted_plan_version:
+        from .plan_lineage import ancestor_plan
+
+        # Amendments that preserved this node keep its cycle alive (#7535).
+        if plan is None or await ancestor_plan(session, plan, context.identity.accepted_plan_version, node_id=context.identity.node_id) is None:
             raise CycleBlockedError("continuation_plan_changed", BlockCode.AUTHORITY_UNVERIFIABLE)
         marker = (plan.plan_document or {}).get("execution_continuation")
         if marker is not None:

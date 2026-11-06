@@ -32,6 +32,16 @@ HEADERS = (
     "Price per 1M input tokens (1h cache write)",
     "Price per 1M input tokens (cache read)",
 )
+LONG_CONTEXT_HEADERS = (
+    "Anthropic models",
+    "Price per 1M long-context input tokens",
+    "Price per 1M long-context output tokens",
+    "Price per 1M long-context input tokens (batch)",
+    "Price per 1M long-context output tokens (batch)",
+    "Price per 1M long-context input tokens (5m cache write)",
+    "Price per 1M long-context input tokens (1h cache write)",
+    "Price per 1M long-context input tokens (cache read)",
+)
 SCOPES = {"Global Cross-region Inference": "global_cris", "Geo and In-region Cross-region Inference": "regional"}
 TOKEN = re.compile(r"\{priceOf!bedrockfoundationmodels/bedrockfoundationmodels!([A-Za-z0-9_-]+)(?:!opt)?\}")
 MONEY = re.compile(r"[0-9]+(?:\.[0-9]+)?")
@@ -139,7 +149,10 @@ def _price_tables(content: bytes, models: dict) -> dict:
             "Price per hour per 1K Input TPM with 3-Month Commitment",
             "Price per hour per 1K Output TPM with 3-Month Commitment",
         )
-        if tuple(table.rows[0]) == reserved_headers:
+        # These explicitly labelled dimensions cannot supply the flat-context
+        # token rates refreshed below. Require their complete reviewed header;
+        # unknown columns or units must still reject the publication.
+        if tuple(table.rows[0]) in (reserved_headers, LONG_CONTEXT_HEADERS):
             continue
         if tuple(table.rows[0]) != HEADERS:
             raise SourceValidationError("unrecognized Claude pricing columns or units")

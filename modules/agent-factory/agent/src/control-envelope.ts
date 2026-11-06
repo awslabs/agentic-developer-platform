@@ -143,6 +143,7 @@ export interface ControlEnvelope {
   flowId?: string;
   authorityReferenceId?: string;
   chainId?: string;
+  queuedGrantRef?: string;
 }
 
 /**
@@ -331,6 +332,12 @@ export function verifyEnvelope(
     return { ok: false, reason: 'malformed' };
   }
 
+  const queuedGrantRef = payload.queued_grant_ref;
+  if (queuedGrantRef !== undefined && (authorityKind !== 'human_session' || payload.action !== 'steer' ||
+      typeof queuedGrantRef !== 'string' || !/^[0-9a-f]{64}$/.test(queuedGrantRef))) {
+    return { ok: false, reason: 'malformed' };
+  }
+
   if (!ALLOWED_ALGORITHMS.has(payload.alg as string)) {
     return { ok: false, reason: 'unsupported_algorithm' };
   }
@@ -389,6 +396,7 @@ export function verifyEnvelope(
   return {
     ok: true,
     envelope: {
+      queuedGrantRef: queuedGrantRef as string | undefined,
       tenantId: payload.tenant_id as string,
       principal: payload.principal as string,
       targetRunId: payload.target_run_id as string,

@@ -1,0 +1,187 @@
+name: Product Profile Regression
+run-name: ${{ format('ADP deployment {0}', inputs.adp_correlation) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      adp_correlation:
+        description: Engine delivery correlation
+        type: string
+        required: true
+      adp_source_revision:
+        description: Pinned reviewed source
+        type: string
+        required: true
+      adp_definition_revision:
+        description: Pinned workflow revision
+        type: string
+        required: true
+      adp_contract_digest:
+        description: Accepted version-2 delivery digest
+        type: string
+        required: true
+      environment:
+        type: choice
+        options: [dev]
+        default: dev
+      suite:
+        type: choice
+        options: [product-profile]
+        default: product-profile
+      max_parallel:
+        type: choice
+        options: ['8']
+        default: '8'
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+  ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1
+
+concurrency:
+  group: cli-live-eval-dev
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  regression:
+    name: Product regression (engine)
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 180
+    environment: adp-gateway-deploy-dev
+    env:
+      ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+      ENVIRONMENT: dev
+      GH_TOKEN: ${{ github.token }}
+      PYTHONPATH: ${{ github.workspace }}/modules/gateway
+      PRODUCT_TARGET_REGION: ${{ vars.ADP_DEPLOY_REGION }}
+      GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+      ADP_CHECKS_ROLE_ARN: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+      ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+      PRODUCT_ENVIRONMENT: ${{ inputs.environment }}
+      PRODUCT_SUITE: ${{ inputs.suite }}
+      PRODUCT_MAX_PARALLEL: ${{ inputs.max_parallel }}
+      PRODUCT_CORRELATION: ${{ inputs.adp_correlation }}
+      PRODUCT_EXPECTED_REVISION: ${{ inputs.adp_source_revision }}
+      PRODUCT_RELEASE_ID: ${{ vars.PRODUCT_PROFILE_RELEASE_ID }}
+      PRODUCT_RELEASE_MANIFEST_SHA256: ${{ vars.PRODUCT_PROFILE_RELEASE_MANIFEST_SHA256 }}
+      PRODUCT_BROWSER_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+      GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      ADP_GATEWAY_BASE_URL: ${{ vars.ADP_FOUNDATION_GATEWAY_URL }}
+      PRODUCT_DELIVERY_ROLE_ARN: ${{ vars.PRODUCT_PROFILE_DELIVERY_ROLE_ARN }}
+      PRODUCT_MUTATION_ROLE_ARN: ${{ vars.PRODUCT_PROFILE_MUTATION_ROLE_ARN }}
+      PRODUCT_ACCEPTED_CONTRACT_JSON: ${{ vars.PRODUCT_PROFILE_DELIVERY_CONTRACT }}
+    steps:
+      - name: Require explicit live browser authorization
+        id: live-browser-policy
+        shell: bash
+        env:
+          LIVE_BROWSER_AUTHORIZED: ${{ vars.ADP_LIVE_BROWSER_AUTOMATION_ENABLED }}
+        run: |
+          if [ "$LIVE_BROWSER_AUTHORIZED" != true ]; then
+            echo "::error::live_browser_not_authorized: browser checks were not run. The target owner must explicitly authorize live browser automation in the selected protected GitHub environment."
+            echo 'BLOCKED: live browser automation is not authorized for this target. No browser acceptance evidence was produced. After target-owner authorization, set ADP_LIVE_BROWSER_AUTOMATION_ENABLED=true in the selected protected GitHub environment and rerun. Keep it false when automation is prohibited.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse source outside reviewed main
+        run: |
+          set -euo pipefail
+          source="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$source" refs/remotes/origin/main
+          echo "ADP_CHECKOUT_REVISION=$source" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install live browser and gateway dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install ./modules/gateway pytest pytest-timeout playwright requests 'PyJWT[crypto]'
+          python -m playwright install chromium --with-deps
+      - name: Verify source and authenticated engine ownership
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/product-profile-regression"
+          python3 -m tests.e2e.product_onboarding.product_completion_authorization
+          python3 -c 'import os; from tests.e2e.product_onboarding.product_completion_regression import guard_engine; guard_engine(os.environ, os.environ["RUNNER_TEMP"] + "/product-profile-regression/engine-authorization.json")'
+      - name: Bind the accepted contract to the authenticated workflow
+        run: python3 -m tests.e2e.product_onboarding.product_completion_context
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION }}
+      - name: Resolve the authorized evidence account
+        env:
+          EXPECTED_ROLE: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$account" = "$(cut -d: -f5 <<< "$EXPECTED_ROLE")"
+          echo "ACCOUNT_ID=$account" >> "$GITHUB_ENV"
+      - name: Retain provider-owned attempt context
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py context product-profile-regression.yml "$RUNNER_TEMP/product-profile-regression/deployment-context.json"
+      - name: Download the authenticated named release manifest
+        env:
+          PRODUCT_RELEASE_ID: ${{ vars.PRODUCT_PROFILE_RELEASE_ID }}
+          PRODUCT_RELEASE_MANIFEST_SHA256: ${{ vars.PRODUCT_PROFILE_RELEASE_MANIFEST_SHA256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/product-profile-regression"
+          chmod 700 "$RUNNER_TEMP/product-profile-regression"
+          python3 -m tests.e2e.product_onboarding.product_completion_manifest \
+            "$RUNNER_TEMP/product-profile-regression/release-manifest.json"
+      - name: Select the verified shared Product release
+        env:
+          PRODUCT_RELEASE_ID: ${{ vars.PRODUCT_PROFILE_RELEASE_ID }}
+          PRODUCT_RELEASE_MANIFEST_SHA256: ${{ vars.PRODUCT_PROFILE_RELEASE_MANIFEST_SHA256 }}
+        run: |
+          set -euo pipefail
+          python3 -m tests.e2e.product_onboarding.product_completion_regression engine \
+            --authorization "$RUNNER_TEMP/product-profile-regression/engine-authorization.json" \
+            --manifest "$RUNNER_TEMP/product-profile-regression/release-manifest.json" \
+            --release-id "$PRODUCT_RELEASE_ID" --manifest-sha256 "$PRODUCT_RELEASE_MANIFEST_SHA256" \
+            --output "$RUNNER_TEMP/product-profile-regression/required-checks.json"
+      - name: Establish trusted browser fixture identity
+        uses: ./.github/actions/trusted-checks
+        with:
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION }}
+          duration_seconds: '10800'
+      - name: Bind live fixtures to the selected Product release
+        run: python3 -m tests.e2e.product_onboarding.product_completion_setup
+      - name: Execute all selected Product cases and verify delivery
+        run: |
+          set -euo pipefail
+          python3 -m tests.e2e.product_onboarding.product_completion_delivery \
+            "$RUNNER_TEMP/product-profile-regression" \
+            "$RUNNER_TEMP/product-profile-regression/workflow-context.json" \
+            "$RUNNER_TEMP/product-profile-regression/delivery-contract.json" product
+      - name: Restore deployment identity for signed evidence publication
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION }}
+      - name: Retain verified version-2 delivery artifact
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py delivery delivery-evidence "$RUNNER_TEMP/product-profile-regression/delivery.json"
+      - name: Retain private attempt diagnostics
+        if: always() && steps.live-browser-policy.outcome == 'success'
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: product-profile-regression-attempt
+          path: ${{ runner.temp }}/product-profile-regression/
+          if-no-files-found: warn
+          retention-days: 14

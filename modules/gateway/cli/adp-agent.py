@@ -49,7 +49,7 @@ def positive(value):
 def parser():
     root = common.Parser(prog="adp agent", description=__doc__)
     sub = root.add_subparsers(dest="action", required=True)
-    for action in ["list", "chain", "detail", "status", "ping", "state", "logs", "wait", *sorted(ACTIONS)]:
+    for action in ["list", "chain", "detail", "status", "ping", "state", "logs", "wait", "recover-exit", "recovery-status", *sorted(ACTIONS)]:
         p = sub.add_parser(action)
         p.add_argument("--json", action="store_true")
         if action == "chain":
@@ -76,6 +76,16 @@ def parser():
             p.add_argument("--expected-generation", type=int, help="Advisory read check; server does not support an atomic generation precondition")
             p.add_argument("--yes", action="store_true")
             p.add_argument("--dry-run", action="store_true")
+        if action in {"recover-exit", "recovery-status"}:
+            p.add_argument("--operation-id", required=True, help="Stable UUID retained for recovery reconciliation")
+        if action == "recover-exit":
+            p.add_argument("--expected-attempt", type=int, required=True)
+            p.add_argument("--expected-credential-epoch", type=int, required=True)
+            p.add_argument("--expected-workload-uid", required=True)
+            p.add_argument("--audit-id", required=True)
+            p.add_argument("--audit-at", required=True, help="UTC Kubernetes audit timestamp; server retrieves and verifies the original event")
+            p.add_argument("--yes", action="store_true")
+            p.add_argument("--dry-run", action="store_true", help="Verify protected identity and provider exit evidence without changing the run")
     trigger = sub.add_parser("trigger", help="Submit a bounded repository coding task through the existing Task API")
     trigger.add_argument("--repo", required=True)
     trigger.add_argument("--issue", required=True, type=int)
@@ -317,9 +327,86 @@ def stream(args, client, path):
     )
 
 
+def validate_recovery_receipt(value):
+    if (
+        value.get("outcome") != "failed"
+        or "registration_generation" not in value
+        or value["registration_generation"] is not None
+        or any(type(value.get(key)) is not int or value[key] < 1 for key in ("attempt", "credential_epoch"))
+        or any(not re.fullmatch(r"[a-f0-9]{64}", str(value.get(key, ""))) for key in ("request_digest", "evidence_digest"))
+        or not isinstance(value.get("audit_event_id"), str)
+        or not value["audit_event_id"]
+    ):
+        invalid("Recovery receipt is incomplete; reconcile the original operation ID.")
+
+
+def recover_exit(args, client):
+    try:
+        if str(uuid.UUID(args.operation_id)) != args.operation_id or args.run.startswith("tsk_"):
+            raise ValueError()
+    except ValueError:
+        raise common.CliError("Recovery requires a valid operation UUID and an Activity invocation.", "invalid_arguments", 2) from None
+    path = "/activity/invocations/" + identifier(args.run) + "/reconcile-exit"
+    if args.action == "recovery-status":
+        value = client.get(path + "/" + args.operation_id)
+        validate_recovery_receipt(value)
+        if value.get("run_id") != args.run or value.get("operation_id") != args.operation_id or value.get("status") != "recovered":
+            invalid("Recovery receipt identity did not match.")
+        return common.envelope("ok", "adp agent recovery-status", value)
+    body = {
+        key: getattr(args, key)
+        for key in ("operation_id", "expected_attempt", "expected_credential_epoch", "expected_workload_uid", "audit_id", "audit_at")
+    }
+    if not args.yes and not args.dry_run:
+        raise common.CliError("Use --dry-run to verify exit evidence, then --yes to record the failure.", "confirmation_required", 2)
+
+    def validate(value, digest=None):
+        validate_recovery_receipt(value)
+        if (
+            value.get("run_id") != args.run
+            or value.get("operation_id") != args.operation_id
+            or value.get("attempt") != args.expected_attempt
+            or value.get("credential_epoch") != args.expected_credential_epoch
+            or value.get("workload_uid") != args.expected_workload_uid
+            or value.get("audit_id") != args.audit_id
+            or value.get("outcome") != "failed"
+            or value.get("registration_generation") is not None
+            or not re.fullmatch(r"[a-f0-9]{64}", str(value.get("request_digest", "")))
+            or (digest is not None and value.get("request_digest") != digest)
+        ):
+            invalid("Recovery receipt identity did not match; reconcile the original operation ID.")
+
+    preview = client.post(path + "/preview", body)
+    validate(preview)
+    if preview.get("status") not in {"verified", "recovered"}:
+        invalid("Recovery preview did not verify an exit.")
+    if args.dry_run or preview["status"] == "recovered":
+        return common.envelope("dry_run" if args.dry_run else "ok", "adp agent recover-exit", preview)
+    try:
+        result = client.post(path, body)
+    except common.CliError as exc:
+        if exc.code != "unknown_mutation_outcome":
+            raise
+        try:
+            result = client.get(path + "/" + args.operation_id)
+        except common.CliError:
+            return common.envelope(
+                "pending",
+                "adp agent recover-exit",
+                {"run_id": args.run, "operation_id": args.operation_id, "status": "unknown"},
+                "Read adp agent recovery-status with the same operation ID; do not start a replacement run.",
+            )
+    validate(result, preview["request_digest"])
+    if result.get("status") != "recovered":
+        invalid("Recovery has no durable terminal receipt.")
+    return common.envelope("ok", "adp agent recover-exit", result)
+
+
 def execute(args, client):
     action = args.action
     command = "adp agent " + action
+    if action in {"recover-exit", "recovery-status"}:
+        return recover_exit(args, client)
     if action == "trigger" or str(getattr(args, "run", "")).startswith("tsk_"):
         return task_execute(args, client)
     prefix = "/admin" if getattr(args, "admin", False) else "/me"

@@ -1,0 +1,133 @@
+{
+  "scope": {
+    "tenant_id": "tenant-one",
+    "product_id": "product-one",
+    "project_id": "project-one",
+    "relationship_revision": "5"
+  },
+  "configuration": {
+    "configuration_id": "config-one",
+    "revision": 1,
+    "hash": "hash-one",
+    "scope": {
+      "tenant_id": "tenant-one",
+      "product_id": "product-one",
+      "project_id": "project-one",
+      "relationship_revision": "5"
+    },
+    "settings": {
+      "service_id": "well_architected"
+    }
+  },
+  "run_input": {
+    "service_id": "well_architected",
+    "capability": "architecture_review",
+    "configuration_revision": 1,
+    "binding_id": "binding-one",
+    "sources": [
+      {
+        "tenant_id": "tenant-one",
+        "project_id": "project-one",
+        "source_connection_id": "connection-one",
+        "record_type": "document",
+        "record_id": "design-one",
+        "record_revision": "5"
+      }
+    ]
+  },
+  "run": {
+    "run_id": "run-one",
+    "scope": {
+      "tenant_id": "tenant-one",
+      "product_id": "product-one",
+      "project_id": "project-one",
+      "relationship_revision": "5"
+    },
+    "revision": 2,
+    "state": "admitted",
+    "provider_state": "not_started"
+  },
+  "result": {
+    "service_id": "well_architected",
+    "result_id": "result-one",
+    "run_id": "run-one",
+    "scope": {
+      "tenant_id": "tenant-one",
+      "product_id": "product-one",
+      "project_id": "project-one",
+      "relationship_revision": "5"
+    },
+    "revision": 3,
+    "coverage": "partial",
+    "coverage_mode": "selected_snapshot",
+    "limitations": [
+      "source_only"
+    ]
+  },
+  "save_key": "shared-save-key-123456",
+  "run_key": "shared-run-key-123456",
+  "setup": {
+    "operation_id": "setup-one",
+    "action": "create",
+    "state": "accepted",
+    "revision": 1,
+    "gaps": [],
+    "binding_id": "binding-one"
+  },
+  "setup_key": "shared-setup-key-123456",
+  "foreign_project_id": "foreign-project",
+  "states": {
+    "run": {
+      "state": "expired",
+      "provider_state": "unknown",
+      "monitoring": {
+        "state": "degraded",
+        "last_successful_poll_at": "2026-10-28T12:00:00Z",
+        "last_poll_error": {
+          "code": "cancel_unsupported"
+        }
+      }
+    },
+    "result": {
+      "review_mode": "source_only",
+      "pillars": [
+        "RESILIENCE"
+      ],
+      "coverage": [
+        {
+          "path": "src/example.ts"
+        }
+      ],
+      "limitations": [
+        "source_only: deployed state was not inspected"
+      ],
+      "recommendations": [
+        {
+          "comparison": {
+            "status": "not_verifiable"
+          }
+        }
+      ]
+    },
+    "comparison": {
+      "baseline_result_id": "result-previous",
+      "candidate_result_id": "result-one",
+      "comparability": "not_comparable",
+      "reasons": [
+        "source_selection_changed"
+      ]
+    },
+    "publication": {
+      "result_id": "result-one",
+      "revision": 3,
+      "consumers": [
+        {
+          "destination": "product-context",
+          "state": "unavailable",
+          "last_error": "consumer_schema_unadmitted",
+          "projection_verified_on_ack": false
+        }
+      ]
+    }
+  }
+}

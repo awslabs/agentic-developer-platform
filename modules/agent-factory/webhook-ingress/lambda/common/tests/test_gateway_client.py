@@ -540,9 +540,7 @@ class TestPostProvenance:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch(
-            "urllib.request.urlopen", return_value=mock_resp
-        ):
+        with patch("urllib.request.urlopen", return_value=mock_resp):
             result = self._call()
 
         assert result == "prov-uuid-123"
@@ -563,9 +561,7 @@ class TestPostProvenance:
             fp=None,
         )
 
-        with patch(
-            "urllib.request.urlopen", side_effect=http_error
-        ):
+        with patch("urllib.request.urlopen", side_effect=http_error):
             result = self._call()
 
         assert result is None
@@ -624,9 +620,7 @@ class TestPostProvenance:
             captured["timeout"] = kwargs.get("timeout")
             return mock_resp
 
-        with patch(
-            "urllib.request.urlopen", side_effect=mock_urlopen
-        ):
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
             self._call()
 
         assert captured["timeout"] == 5
@@ -769,3 +763,81 @@ class TestInstallationGate:
         }
         assert "gate_unavailable" not in gateway_client.TRUSTED_GATE_REASONS
         assert "provenance_unavailable" not in gateway_client.TRUSTED_GATE_REASONS
+
+
+class TestWorkAdmissionOutcome:
+    """#9541: the admission client distinguishes an owned refusal from failure."""
+
+    @staticmethod
+    def _call(monkeypatch, opener_open):
+        import urllib.request
+
+        import botocore.credentials
+        import botocore.session
+
+        from common import gateway_client
+
+        monkeypatch.setenv(
+            "ADP_AGENT_CONTROL_ENDPOINT",
+            "https://control.example.test/internal/v1/agent",
+        )
+        session = MagicMock()
+        session.get_credentials.return_value = botocore.credentials.Credentials(
+            "AKIATEST", "secret"
+        )
+        monkeypatch.setattr(botocore.session, "get_session", lambda: session)
+        opener = MagicMock()
+        opener.open.side_effect = opener_open
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: opener)
+        return gateway_client.admit_issue_work_outcome({"message_id": "run-9"}), opener
+
+    @staticmethod
+    def _http_error(code):
+        import io
+        import urllib.error
+
+        return urllib.error.HTTPError(
+            "https://control.example.test", code, "x", {}, io.BytesIO(b"{}")
+        )
+
+    def test_409_is_reported_as_owned(self, monkeypatch):
+        from common import gateway_client
+
+        def refuse(request, timeout):
+            raise self._http_error(409)
+
+        outcome, opener = self._call(monkeypatch, refuse)
+        assert outcome == gateway_client.ADMISSION_OWNED
+        assert opener.open.call_args.args[0].get_full_url().endswith("/work/admit")
+
+    @pytest.mark.parametrize("code", [403, 404, 500])
+    def test_other_http_errors_are_unavailable(self, monkeypatch, code):
+        from common import gateway_client
+
+        def refuse(request, timeout):
+            raise self._http_error(code)
+
+        outcome, _ = self._call(monkeypatch, refuse)
+        assert outcome == gateway_client.ADMISSION_UNAVAILABLE
+        assert gateway_client.admit_issue_work({"message_id": "run-9"}) is False
+
+    def test_admitted_disposition_is_admitted(self, monkeypatch):
+        from common import gateway_client
+
+        class Response:
+            status = 200
+
+            def __init__(self):
+                self._body = json.dumps({"disposition": "admitted"}).encode()
+
+            def read(self, n=-1):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        outcome, _ = self._call(monkeypatch, lambda request, timeout: Response())
+        assert outcome == gateway_client.ADMISSION_ADMITTED

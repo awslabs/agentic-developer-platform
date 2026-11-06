@@ -559,7 +559,8 @@ class RateRow:
 
         input_rate = parse_rate(row["input_price_per_1k_tokens"], field_name="input_price_per_1k_tokens")
         output_rate = parse_rate(row["output_price_per_1k_tokens"], field_name="output_price_per_1k_tokens")
-        if input_rate <= 0 or output_rate <= 0:
+        input_only = row["model_id"] in {"amazon.titan-embed-text-v1", "amazon.titan-embed-text-v2:0"}
+        if input_rate <= 0 or output_rate < 0 or (output_rate == 0 and not input_only):
             raise ValueError(f"input/output rates must be positive: {row['model_id']} {input_rate}/{output_rate}")
 
         raw_read = row.get("cache_read_price_per_1k_tokens")
@@ -992,6 +993,8 @@ def price_from_rate_row(row: RateRow, usage: NormalizedUsage) -> tuple[Decimal, 
     """
     input_rate = row.input_price_per_1k_tokens
     output_rate = row.output_price_per_1k_tokens
+    if output_rate == 0 and usage.output_tokens != 0:
+        raise ValueError("input-only model cannot report output tokens")
     read_rate = row.cache_read_price_per_1k_tokens
     write_rate = row.cache_write_price_per_1k_tokens
 
@@ -1223,7 +1226,11 @@ def _verify_decision_binding(payload: dict[str, Any], *, input_rate: Decimal, re
     key = payload["variant_key"]
     if not isinstance(key, list) or len(key) != 5 or not all(isinstance(value, str) and value for value in key):
         raise InvalidPricingDecisionError("decision variant_key is malformed")
-    supported_model = (is_openai_model(key[0]) or key[0] == "moonshotai.kimi-k3") if payload["decision_version"] == 1 else is_v2_priced_model(key[0])
+    supported_model = (
+        (is_openai_model(key[0]) or key[0] in {"moonshotai.kimi-k3", "amazon.titan-embed-text-v1", "amazon.titan-embed-text-v2:0"})
+        if payload["decision_version"] == 1
+        else is_v2_priced_model(key[0])
+    )
     if not supported_model or key[1] not in Geography.ALL or key[2] not in ServiceTier.ALL or key[3] not in ContextTier.ALL:
         raise InvalidPricingDecisionError("decision variant_key contains unsupported dimensions")
 
@@ -1316,6 +1323,8 @@ def _verify_decision_binding(payload: dict[str, Any], *, input_rate: Decimal, re
         raise InvalidPricingDecisionError("invalid usage requires an estimate reason")
 
     rates = payload["rates"]
+    if key[0] in {"amazon.titan-embed-text-v1", "amazon.titan-embed-text-v2:0"} and usage["output_tokens"] != 0:
+        raise InvalidPricingDecisionError("input-only model cannot report output tokens")
     try:
         # Reuse row validation for full write policy and published-rate agreement.
         row = RateRow.from_mapping(

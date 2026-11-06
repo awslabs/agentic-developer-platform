@@ -291,6 +291,21 @@ class TestTenantIsAlwaysServerResolved:
 
         assert self.sent_document(urlopen)["org_id"] == TENANT
 
+    def test_product_policy_and_repository_binding_survive_hosted_registration(self, tmp_path):
+        fixture = Path(__file__).resolve().parents[4] / "modules/gateway/tests/orchestration/fixtures/proposal.bounded.json"
+        document = json.loads(fixture.read_text(encoding="utf-8"))
+        document["proposed_execution_policy"]["org_id"] = TENANT
+        write_proposal(tmp_path, document)
+
+        with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))) as urlopen:
+            register_loop_proposal(work_dir=tmp_path, issue=ISSUE)
+
+        sent = self.sent_document(urlopen)
+        assert sent["org_id"] == TENANT
+        assert sent["product_id"] == document["product_id"]
+        assert sent["proposed_execution_policy"] == document["proposed_execution_policy"]
+        assert sent["nodes"] == document["nodes"]
+
     def test_a_forged_org_id_in_the_artifact_is_overwritten(self, tmp_path):
         """The security property: the agent authored this file and could name any tenant."""
         write_proposal(tmp_path, valid_document(org_id="org-victim"))

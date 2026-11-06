@@ -62,16 +62,22 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.shared.config import get_settings
 from src.shared.models.vault import CredentialValidationEvidence, CredentialWorkspaceDelegation, UserCredential
+from src.shared.services.github_pat_migration import github_pat_retired
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
 from .operation_contract import identity_contract
 from .vault_evidence import resolve_exact_credential
+
+if TYPE_CHECKING:
+    from src.internal.vault_metadata_authority import VaultMetadataAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +396,8 @@ async def authorize_delivery(
 
     if _expired(credential, moment):
         raise DeliveryRefusedError(_REVOKED)
+    if await github_pat_retired(session, credential, grace_days=get_settings().github_pat_grace_days, now=moment):
+        raise DeliveryRefusedError("GitHub PAT retired; connect GitHub in Settings > Credentials")
 
     return credential
 
@@ -397,7 +405,7 @@ async def authorize_delivery(
 async def revocation_state(
     session: AsyncSession,
     *,
-    binding: OperationBinding,
+    authority: VaultMetadataAuthority,
     credential_id: str,
     now: datetime | None = None,
 ) -> RevocationAnswer:
@@ -407,6 +415,14 @@ async def revocation_state(
     operator reading it needs to know that a "no" here does not contain an already
     delivered provider key.
     """
+    from src.internal.vault_metadata_authority import VaultMetadataAuthority
+
+    # Service reads need the same verified operation binding as executor reads.
+    if not isinstance(authority, VaultMetadataAuthority) or authority.authority_kind not in {"agent_run", "tenant_service"}:
+        raise DeliveryRefusedError(_REFUSED)
+    binding = authority.operation_binding
+    if not isinstance(binding, OperationBinding) or binding.org_id != authority.tenant_id or binding.workspace_id != authority.workspace_id:
+        raise DeliveryRefusedError(_REFUSED)
     moment = now or datetime.now(UTC)
     credential = await resolve_exact_credential(session, org_id=binding.org_id, credential_id=credential_id)
     if credential is None:

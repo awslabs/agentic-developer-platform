@@ -13,6 +13,7 @@ stage logic it is trying to exercise.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -20,7 +21,17 @@ import shlex
 import time
 from urllib.parse import quote
 
-from . import bundle, cleanup, config
+from tests.e2e.product_onboarding.product_profile_api import PROTECTED_SELECTIONS
+
+from . import (
+    assistant_fault_control,
+    bundle,
+    cleanup,
+    config,
+    product_profile_recovery,
+    product_release,
+    statestore,
+)
 from . import ports as ports_module
 
 
@@ -240,6 +251,406 @@ def _run_worker(ssm, cfg, install):
 
     def run(instance_id, purpose, payload, *, manifest=None):
         bundle.require_purpose(purpose)
+        if purpose == "product_cleanup":
+            run_id = payload.get("evaluation_id")
+            workflow_id = payload.get("workflow_run_id")
+            intent = payload.get("product_recovery_intent")
+            outstanding = (
+                manifest.outstanding() if isinstance(manifest, cleanup.Manifest) else []
+            )
+            fixture = [
+                entry
+                for entry in outstanding
+                if entry.get("kind") == "product_fixture"
+                and entry.get("id") == workflow_id
+                and entry.get("prefix") == run_id
+                and entry.get("account") == str(cfg.get("platform_account"))
+                and entry.get("region") == cfg.get("region")
+            ]
+            if (
+                not isinstance(run_id, str)
+                or not re.fullmatch(r"adp-e2e-[0-9]{8}-[0-9]{6}-[a-f0-9]{6}", run_id)
+                or not isinstance(workflow_id, str)
+                or not re.fullmatch(
+                    r"product-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}", workflow_id
+                )
+                or not isinstance(manifest, cleanup.Manifest)
+                or manifest.prefix != run_id
+                or manifest.on_change is None
+                or len(fixture) != 1
+                or fixture[0].get("detail", {}).get("instance_id") != instance_id
+                or not any(
+                    entry.get("kind") == "ec2_instance"
+                    and entry.get("id") == instance_id
+                    and entry.get("account") == str(cfg.get("platform_account"))
+                    and entry.get("region") == cfg.get("region")
+                    for entry in outstanding
+                )
+                or not isinstance(intent, dict)
+                # The retirement route resolves ownership against the ADP
+                # `users` row, so the row id recorded beside the subject in the
+                # fixture detail is the intent's wire actor. Sending the subject
+                # here made the protected retirement refuse the run's own
+                # fixture after it had already been created.
+                or intent
+                != {
+                    key: fixture[0].get("detail", {}).get(key)
+                    for key in (
+                        "tenant_id",
+                        "source_revision",
+                        "idempotency_key",
+                    )
+                }
+                | {
+                    "run_id": workflow_id,
+                    "actor_id": fixture[0].get("detail", {}).get("actor_row_id"),
+                }
+                or not isinstance(intent.get("actor_id"), str)
+                or not intent["actor_id"]
+                or intent["actor_id"] == fixture[0].get("detail", {}).get("actor_id")
+                # `remote/common.clean_env` pins AWS_ENDPOINT_URL_STS from this
+                # key, so the on-instance worker cannot build its environment
+                # without it and fails with KeyError before any retirement.
+                or not isinstance(cfg.get("sts_endpoint"), str)
+                or not cfg["sts_endpoint"]
+                or payload.get("sts_endpoint") != cfg["sts_endpoint"]
+                or intent.get("source_revision") != cfg.get("expected_revision")
+                or not isinstance(intent.get("idempotency_key"), str)
+                or not re.fullmatch(
+                    r"product-create-[a-f0-9]{64}", intent["idempotency_key"]
+                )
+                or payload.get("product_run_id") != workflow_id
+                or payload.get("instance_id") != instance_id
+                or payload.get("work_dir") != bundle.REMOTE_DIR
+                or payload.get("internal_invoke_url") != cfg.get("internal_invoke_url")
+                or not isinstance(cfg.get("internal_invoke_url"), str)
+                or not re.fullmatch(
+                    rf"https://[a-z0-9]+\.execute-api\.{re.escape(cfg['region'])}\.amazonaws\.com/[A-Za-z0-9_-]+",
+                    cfg["internal_invoke_url"],
+                )
+                or payload.get("region") != cfg.get("region")
+                or str(payload.get("platform_account"))
+                != str(cfg.get("platform_account"))
+            ):
+                raise ports_module.PortError(
+                    "Product cleanup dispatch needs its original durable intent and owned instance"
+                )
+        if purpose == "product_workspace":
+            run_id = payload.get("evaluation_id")
+            workspace_id = payload.get("product_workspace_id")
+            instance_owned = (
+                any(
+                    entry["kind"] == "ec2_instance"
+                    and entry["id"] == instance_id
+                    and entry.get("account") == str(cfg.get("platform_account"))
+                    and entry.get("region") == cfg.get("region")
+                    for entry in manifest.outstanding()
+                )
+                if isinstance(manifest, cleanup.Manifest)
+                else False
+            )
+            if (
+                not isinstance(manifest, cleanup.Manifest)
+                or manifest.on_change is None
+                or not instance_owned
+                or not isinstance(run_id, str)
+                or not re.fullmatch(r"adp-e2e-[0-9]{8}-[0-9]{6}-[a-f0-9]{6}", run_id)
+                or manifest.prefix != run_id
+                or not isinstance(workspace_id, str)
+                or not re.fullmatch(
+                    re.escape(run_id) + r"-product-[a-f0-9]{24}", workspace_id
+                )
+                or payload.get("product_cases") not in PROTECTED_SELECTIONS
+                or (
+                    payload.get("product_cases") != "api_product_lifecycle"
+                    and payload.get("product_cases") != cfg.get("product_cases")
+                )
+                or payload.get("instance_id") != instance_id
+                or payload.get("work_dir") != bundle.REMOTE_DIR
+                or payload.get("session_ref") != bundle.REMOTE_DIR + "/session.json"
+                or payload.get("gateway_url") != cfg.get("gateway_url")
+                or str(payload.get("platform_account"))
+                != str(cfg.get("platform_account"))
+                or payload.get("region") != cfg.get("region")
+            ):
+                raise ports_module.PortError(
+                    "Product workspace dispatch lacks a durable run-owned target and session"
+                )
+            manifest.record(
+                "adp_org",
+                workspace_id,
+                account=str(cfg["platform_account"]),
+                region=cfg["region"],
+            )
+        if purpose == "product_actor":
+            run_id = payload.get("evaluation_id")
+            workspace_id = payload.get("product_workspace_id")
+            if not isinstance(run_id, str) or not isinstance(workspace_id, str):
+                raise ports_module.PortError(
+                    "Product actor dispatch needs string run and workspace identities"
+                )
+            actor_name = f"{run_id}-product-admin@adp-eval.example"
+            secret_name = f"adp/cli-uplift-eval/{run_id}-product-fixtures"
+            pool = cfg.get("cognito_user_pool_id")
+            denial = "api_denial_oracle" in payload.get("product_cases", "").split(",")
+            ordinary_username = f"{run_id}-product-user@adp-eval.example"
+            required = {
+                ("ec2_instance", instance_id),
+                ("adp_org", workspace_id),
+                ("cognito_user", f"{pool}/{actor_name}"),
+                ("secret", secret_name),
+            }
+            if denial:
+                required.update(
+                    {
+                        ("cognito_user", f"{pool}/{ordinary_username}"),
+                        ("adp_user_email", workspace_id + "/" + ordinary_username),
+                    }
+                )
+            recorded = (
+                {
+                    (entry["kind"], entry["id"])
+                    for entry in manifest.outstanding()
+                    if entry.get("account") == str(cfg.get("platform_account"))
+                    and entry.get("region") == cfg.get("region")
+                }
+                if isinstance(manifest, cleanup.Manifest)
+                else set()
+            )
+            if (
+                not re.fullmatch(r"adp-e2e-[0-9]{8}-[0-9]{6}-[a-f0-9]{6}", run_id)
+                or not re.fullmatch(
+                    re.escape(run_id) + r"-product-[a-f0-9]{24}", workspace_id
+                )
+                or not isinstance(manifest, cleanup.Manifest)
+                or manifest.prefix != run_id
+                or manifest.on_change is None
+                or not required.issubset(recorded)
+                or payload.get("product_cases") not in PROTECTED_SELECTIONS
+                or (
+                    denial
+                    and (
+                        payload.get("product_cases") != cfg.get("product_cases")
+                        or payload.get("non_admin_username") != ordinary_username
+                    )
+                )
+                or payload.get("instance_id") != instance_id
+                or payload.get("gateway_url") != cfg.get("gateway_url")
+                or payload.get("region") != cfg.get("region")
+                or str(payload.get("platform_account"))
+                != str(cfg.get("platform_account"))
+                or payload.get("cognito_user_pool_id") != pool
+                or payload.get("credential_secret") != secret_name
+                or payload.get("created_username") != actor_name
+                or payload.get("session_ref") != bundle.REMOTE_DIR + "/session.json"
+                or payload.get("work_dir") != bundle.REMOTE_DIR + "/product-actor"
+                or not isinstance(payload.get("product_team_id"), str)
+                or not payload["product_team_id"]
+                or payload.get("login_required") is not True
+                or payload.get("admin_challenges_required") is not True
+                or payload.get("admin_setup_required") is not False
+                or not isinstance(payload.get("expected_hashes"), dict)
+                or not payload["expected_hashes"].get("install.sh")
+            ):
+                raise ports_module.PortError(
+                    "Product actor dispatch requires a durable owned workspace, isolated credentials and served release"
+                )
+        if purpose in {"product_probe", "product_v01"}:
+            run_id = payload.get("evaluation_id")
+            inventory = payload.get("product_inventory")
+            recorded = (
+                any(
+                    entry["kind"] == "ec2_instance"
+                    and entry["id"] == instance_id
+                    and entry.get("account") == str(cfg.get("platform_account"))
+                    and entry.get("region") == cfg.get("region")
+                    for entry in manifest.outstanding()
+                )
+                if isinstance(manifest, cleanup.Manifest)
+                else False
+            )
+            if (
+                not isinstance(run_id, str)
+                or not re.fullmatch(r"adp-e2e-[0-9]{8}-[0-9]{6}-[a-f0-9]{6}", run_id)
+                or not isinstance(manifest, cleanup.Manifest)
+                or manifest.prefix != run_id
+                or manifest.on_change is None
+                or not recorded
+                or payload.get("instance_id") != instance_id
+                or payload.get("gateway_url") != cfg.get("gateway_url")
+                or str(payload.get("platform_account"))
+                != str(cfg.get("platform_account"))
+                or payload.get("region") != cfg.get("region")
+                or payload.get("work_dir") != bundle.REMOTE_DIR
+                or payload.get("product_cases") not in PROTECTED_SELECTIONS
+                or payload.get("product_cases") != cfg.get("product_cases")
+                or payload.get("expected_revision") != cfg.get("expected_revision")
+                or not isinstance(inventory, dict)
+                or inventory.get("source_revision") != cfg.get("expected_revision")
+                or not isinstance(inventory.get("digest"), str)
+                or not re.fullmatch(r"sha256:[a-f0-9]{64}", inventory["digest"])
+                or not isinstance(inventory.get("pods"), list)
+                or not inventory["pods"]
+                or len(inventory["pods"]) > 100
+                or not all(
+                    isinstance(pod, dict)
+                    and isinstance(pod.get("uid"), str)
+                    and bool(pod["uid"])
+                    and isinstance(pod.get("address"), str)
+                    and bool(pod["address"])
+                    and pod.get("digest") == inventory["digest"]
+                    for pod in inventory["pods"]
+                )
+                or len({pod["uid"] for pod in inventory["pods"]})
+                != len(inventory["pods"])
+                or len({pod["address"] for pod in inventory["pods"]})
+                != len(inventory["pods"])
+            ):
+                raise ports_module.PortError(
+                    "Product process probe dispatch requires a run-owned instance and observed release"
+                )
+        if purpose == "product_v01":
+            run_id = payload["evaluation_id"]
+            workspace_id = payload.get("product_workspace_id")
+            workflow_id = cfg.get("product_run_id")
+            proof = payload.get("product_probe")
+            inventory = payload["product_inventory"]
+            recorded = {
+                (entry["kind"], entry["id"])
+                for entry in manifest.outstanding()
+                if entry.get("account") == str(cfg.get("platform_account"))
+                and entry.get("region") == cfg.get("region")
+            }
+            intent = [
+                entry
+                for entry in manifest.outstanding()
+                if entry.get("kind") == "product_fixture"
+                and entry.get("id") == workflow_id
+                and entry.get("prefix") == run_id
+                and entry.get("account") == str(cfg.get("platform_account"))
+                and entry.get("region") == cfg.get("region")
+            ]
+            pods = proof.get("pods") if isinstance(proof, dict) else None
+            # The producer records BOTH identity namespaces in the fixture
+            # detail: the Cognito SUBJECT the Product API attributed the create
+            # to, and the ADP `users` ROW the sweep has to delete and the
+            # retirement resolves ownership against. The driver payload carries
+            # both, so both are compared against the receipt and proved where
+            # they are provable: non-empty, distinct from each other, and the
+            # row recorded as this workspace's owned `adp_user`. The comparison
+            # below stays exact, so an unexpected extra field still fails the
+            # guard.
+            detail = intent[0].get("detail") if len(intent) == 1 else None
+            owner_row_id = (
+                detail.get("actor_row_id") if isinstance(detail, dict) else None
+            )
+            if (
+                not isinstance(workspace_id, str)
+                or not re.fullmatch(
+                    re.escape(run_id) + r"-product-[a-f0-9]{24}", workspace_id
+                )
+                or not isinstance(workflow_id, str)
+                or not re.fullmatch(
+                    r"product-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}", workflow_id
+                )
+                or payload.get("product_run_id") != workflow_id
+                or payload.get("workflow_run_id") != workflow_id
+                or payload.get("product_cases") != cfg.get("product_cases")
+                or payload.get("hold_for_rollback", False)
+                is not cfg.get("hold_for_rollback", False)
+                or (
+                    cfg.get("hold_for_rollback") is True
+                    and cfg.get("product_cases") != "api_product_lifecycle"
+                )
+                or (
+                    "api_denial_oracle" in payload.get("product_cases", "").split(",")
+                    and (
+                        not isinstance(payload.get("product_denial_actor"), dict)
+                        or payload["product_denial_actor"].get("org_id") != workspace_id
+                        or payload["product_denial_actor"].get("username")
+                        != f"{run_id}-product-user@adp-eval.example"
+                        or not isinstance(
+                            payload["product_denial_actor"].get("user_id"), str
+                        )
+                        or not payload["product_denial_actor"]["user_id"]
+                        or payload["product_denial_actor"]["user_id"]
+                        == payload.get("product_actor_id")
+                        or payload["product_denial_actor"].get("cognito_sub_bound")
+                        is not True
+                        or (
+                            "adp_user_email",
+                            workspace_id
+                            + "/"
+                            + payload["product_denial_actor"]["username"],
+                        )
+                        not in recorded
+                    )
+                )
+                or len(intent) != 1
+                or not isinstance(payload.get("product_intent_key"), str)
+                or not re.fullmatch(
+                    r"product-create-[a-f0-9]{64}", payload["product_intent_key"]
+                )
+                or not isinstance(owner_row_id, str)
+                or not owner_row_id
+                or owner_row_id == payload.get("product_actor_id")
+                or payload.get("product_actor_row_id") != owner_row_id
+                or ("adp_user", workspace_id + "/" + owner_row_id) not in recorded
+                or detail
+                != {
+                    "tenant_id": workspace_id,
+                    "actor_id": payload.get("product_actor_id"),
+                    "actor_row_id": owner_row_id,
+                    "source_revision": cfg.get("expected_revision"),
+                    "idempotency_key": payload["product_intent_key"],
+                    "instance_id": instance_id,
+                    "actor_secret_id": (
+                        f"adp/cli-uplift-eval/{run_id}-product-fixtures"
+                    ),
+                    "actor_cognito_id": (
+                        f"{cfg.get('cognito_user_pool_id')}/{run_id}-product-admin@adp-eval.example"
+                    ),
+                }
+                or ("adp_org", workspace_id) not in recorded
+                or (
+                    "cognito_user",
+                    f"{cfg.get('cognito_user_pool_id')}/{run_id}-product-admin@adp-eval.example",
+                )
+                not in recorded
+                or payload.get("product_actor_session_ref")
+                != bundle.REMOTE_DIR + "/product-actor/session.json"
+                or payload.get("session_ref") != bundle.REMOTE_DIR + "/session.json"
+                or payload["product_actor_session_ref"] == payload["session_ref"]
+                or payload.get("internal_invoke_url") != cfg.get("internal_invoke_url")
+                or not isinstance(cfg.get("internal_invoke_url"), str)
+                or not re.fullmatch(
+                    rf"https://[a-z0-9]+\.execute-api\.{re.escape(cfg['region'])}\.amazonaws\.com/[A-Za-z0-9_-]+",
+                    cfg["internal_invoke_url"],
+                )
+                or not isinstance(proof, dict)
+                or proof.get("success") is not True
+                or proof.get("source_revision") != cfg.get("expected_revision")
+                or not isinstance(pods, list)
+                or len(pods) != len(inventory["pods"])
+                or any(
+                    not isinstance(item, dict)
+                    or item.get("uid") != pod["uid"]
+                    or not isinstance(item.get("schema_sha256"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", item["schema_sha256"])
+                    for item, pod in zip(pods, inventory["pods"])
+                )
+                or len({item["schema_sha256"] for item in pods}) != 1
+                or not isinstance(payload.get("other_tenant_id"), str)
+                or payload["other_tenant_id"] == workspace_id
+                or not any(
+                    kind == "adp_user"
+                    and identifier.startswith(payload["other_tenant_id"] + "/")
+                    for kind, identifier in recorded
+                )
+            ):
+                raise ports_module.PortError(
+                    "Product driver dispatch requires the run-owned actor, release proof and protected cleanup"
+                )
         if purpose in {
             "hosted_coding",
             "hosted_chat",
@@ -306,10 +717,15 @@ def _run_worker(ssm, cfg, install):
                 if plan != recovery_plan(payload):
                     raise ports_module.PortError("Budget recovery plan mismatch")
             manifest.record_diagnostic(purpose, plan)
-        if purpose == "assistant_baseline":
+        if purpose in {
+            "assistant_baseline",
+            "assistant_stream",
+            "assistant_sources",
+            "assistant_isolation",
+        }:
             if manifest is None:
                 raise ports_module.PortError(
-                    "Assistant baseline requires a durable manifest"
+                    "Assistant journey requires a durable manifest"
                 )
             plan = {
                 key: payload.get(key)
@@ -320,6 +736,12 @@ def _run_worker(ssm, cfg, install):
                     "assistant_users",
                 )
             }
+            if purpose == "assistant_sources":
+                plan["provider_activity_sha256"] = hashlib.sha256(
+                    json.dumps(
+                        payload.get("assistant_provider_activity") or {}, sort_keys=True
+                    ).encode()
+                ).hexdigest()
             intent_key = purpose + ":" + str(payload.get("evaluation_id"))
             prior = intent_key in manifest.read().get("diagnostic_intents", {})
             manifest.record_diagnostic(purpose, plan)
@@ -329,28 +751,260 @@ def _run_worker(ssm, cfg, install):
         commands = [
             "set -eu",
             "umask 077",
-            f"cat > {shlex.quote(remote)} <<'EOF_PAYLOAD'\n"
-            f"{json.dumps(payload)}\nEOF_PAYLOAD",
+            f"trap {shlex.quote('rm -f ' + shlex.quote(remote))} EXIT",
+            (
+                f"cat > {shlex.quote(remote)} <<'EOF_PAYLOAD'\n"
+                f"{json.dumps(payload)}\nEOF_PAYLOAD"
+            ),
             f"chown ec2-user:ec2-user {shlex.quote(remote)}",
             "runuser -l ec2-user -c "
             + shlex.quote(
                 f"python3 {bundle.DISPATCHER} {purpose} {shlex.quote(remote)}"
             ),
-            # Removed even on success: the payload names a fixture secret.
-            f"rm -f {shlex.quote(remote)}",
         ]
-        _, document = ssm.json_result(
+        invocation, document = ssm.json_result(
             instance_id,
             commands,
             purpose=purpose,
             timeout=min(int(cfg.get("timeout_seconds", 240)) * 3, 900),
         )
+        if purpose in {
+            "product_workspace",
+            "product_actor",
+            "product_probe",
+            "product_v01",
+            "product_cleanup",
+        } and (
+            not isinstance(invocation, dict) or invocation.get("Status") != "Success"
+        ):
+            # `common.run_script` ALWAYS emits one redacted JSON document, so a
+            # refusing journey has already named the purpose, the stage it
+            # reached and its own error before exiting non-zero. Dropping that
+            # document here left "did not complete successfully" as the only
+            # observable evidence of a remote failure, which makes the next
+            # repair a guess rather than a fix. Only the harness's own fields
+            # are quoted -- never provider output, which can carry a token, and
+            # never the invocation's raw stdout or stderr.
+            reported = document if isinstance(document, dict) else {}
+            detail = ", ".join(
+                f"{field}={reported[field]}"
+                for field in ("purpose", "stage", "error_type", "error")
+                if isinstance(reported.get(field), str) and reported[field]
+            )
+            status = (
+                invocation.get("Status") if isinstance(invocation, dict) else "missing"
+            )
+            raise ports_module.PortError(
+                "Protected Product dispatch did not complete successfully on the"
+                f" instance: {purpose} status={status}"
+                + (f" ({detail})" if detail else " (the instance reported nothing)")
+            )
+        if purpose == "product_actor":
+            session = document.get("session") if isinstance(document, dict) else None
+            login = document.get("login") if isinstance(document, dict) else None
+            onboard = document.get("onboard") if isinstance(document, dict) else None
+            if (
+                not isinstance(document, dict)
+                or document.get("success") is not True
+                or not isinstance(session, dict)
+                or not isinstance(login, dict)
+                or not isinstance(onboard, dict)
+                or session.get("created_username") != actor_name
+                or session.get("session_ref")
+                != bundle.REMOTE_DIR + "/product-actor/session.json"
+                or session.get("org_id") != workspace_id
+                or not isinstance(session.get("user_id"), str)
+                or not session["user_id"]
+                or login.get("user_id") != session["user_id"]
+                # The session publishes TWO identifiers and they are different
+                # namespaces: `user_id` is the Cognito subject the gateway
+                # attributed the login to, `adp_user_id` is the `users` row the
+                # journey registered through the product's own onboarding route.
+                # Both must be present, they must not be the same value, and the
+                # row id must be exactly the one `onboard` reported creating —
+                # otherwise the orchestrator can neither record ownership of that
+                # row nor check the session against its subject.
+                or not isinstance(session.get("adp_user_id"), str)
+                or not session["adp_user_id"]
+                or session["adp_user_id"] == session["user_id"]
+                or onboard.get("user_id") != session["adp_user_id"]
+                or login.get("org_id") != workspace_id
+                or login.get("role") != "platform_admin"
+                or onboard.get("org_id") != workspace_id
+                or onboard.get("team_id") != payload["product_team_id"]
+                or onboard.get("cognito_sub_bound") is not True
+                or (
+                    denial
+                    and (
+                        not isinstance(document.get("denial_actor"), dict)
+                        or document["denial_actor"].get("org_id") != workspace_id
+                        or document["denial_actor"].get("username") != ordinary_username
+                        or not isinstance(document["denial_actor"].get("user_id"), str)
+                        or not document["denial_actor"]["user_id"]
+                        # The denial actor's `user_id` is its own ADP `users`
+                        # row, so it must differ from the owner's row — and it
+                        # must not be the owner's subject either, which would
+                        # mean one of the two producers published the wrong
+                        # namespace.
+                        or document["denial_actor"]["user_id"]
+                        in {session.get("user_id"), session.get("adp_user_id")}
+                        or document["denial_actor"].get("cognito_sub_bound") is not True
+                    )
+                )
+            ):
+                raise ports_module.PortError(
+                    "Product actor login and registration were not verified on the owned instance"
+                )
+        if purpose == "product_probe":
+            observed = document.get("pods") if isinstance(document, dict) else None
+            expected_pods = payload["product_inventory"]["pods"]
+            if (
+                not isinstance(document, dict)
+                or document.get("success") is not True
+                or document.get("source_revision") != cfg["expected_revision"]
+                or (
+                    payload.get("product_cases") != "api_product_lifecycle"
+                    and document.get("product_cases") != payload["product_cases"]
+                )
+                or not isinstance(observed, list)
+                or len(observed) != len(expected_pods)
+                or any(
+                    not isinstance(item, dict)
+                    or not isinstance(pod, dict)
+                    or item.get("uid") != pod.get("uid")
+                    or not isinstance(item.get("schema_sha256"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", item["schema_sha256"])
+                    for item, pod in zip(observed, expected_pods)
+                )
+                or len({item["schema_sha256"] for item in observed}) != 1
+            ):
+                raise ports_module.PortError(
+                    "Product process probe did not prove every selected serving pod"
+                )
+        if purpose == "product_cleanup":
+            detail = document.get("detail") if isinstance(document, dict) else None
+            if (
+                not isinstance(document, dict)
+                or document.get("success") is not True
+                or document.get("stage") != "complete"
+                or not isinstance(detail, dict)
+                or detail.get("fixture_removed") is not True
+                or detail.get("run_id") != payload["workflow_run_id"]
+                or not all(
+                    isinstance(detail.get(key), str) and detail[key]
+                    for key in ("product_id", "project_id")
+                )
+            ):
+                raise ports_module.PortError(
+                    "Protected Product cleanup did not verify retirement"
+                )
+        if purpose == "product_v01":
+            lifecycle = (
+                document.get("results", {}).get(
+                    "api_product_lifecycle", document.get("lifecycle")
+                )
+                if isinstance(document, dict)
+                and isinstance(document.get("results"), dict)
+                else None
+            )
+            denial = (
+                document["results"].get("api_denial_oracle")
+                if isinstance(lifecycle, dict)
+                else None
+            )
+            retired = document.get("cleanup") if isinstance(document, dict) else None
+            if "api_recovery_cleanup" in payload["product_cases"].split(","):
+                recovered = (
+                    document["results"].get("api_recovery_cleanup")
+                    if isinstance(document, dict)
+                    and isinstance(document.get("results"), dict)
+                    else None
+                )
+                if (
+                    not isinstance(recovered, dict)
+                    or recovered.get("cleanup_verified") is not True
+                    or recovered.get("shared_unchanged") is not True
+                    or not isinstance(lifecycle, dict)
+                    or recovered.get("product_id") != lifecycle.get("product_id")
+                    or not isinstance(recovered.get("attempts"), list)
+                    or not any(
+                        isinstance(attempt, dict)
+                        and attempt.get("state") == "response_unknown"
+                        for attempt in recovered["attempts"]
+                    )
+                ):
+                    raise ports_module.PortError(
+                        "Product recovery did not return verified interruption and cleanup"
+                    )
+            if (
+                not isinstance(document, dict)
+                or document.get("success") is not True
+                or document.get("stage") != "complete"
+                or not isinstance(document.get("results"), dict)
+                or set(document["results"]) != set(payload["product_cases"].split(","))
+                or not isinstance(lifecycle, dict)
+                or lifecycle.get("revision") != 2
+                or (
+                    "api_denial_oracle" in payload["product_cases"].split(",")
+                    and (
+                        not isinstance(denial, dict)
+                        or denial.get("product_id") != lifecycle.get("product_id")
+                        or denial.get("revision") != 2
+                        or denial.get("history_count") != 2
+                        or denial.get("revocation")
+                        != {
+                            "user_id": payload["product_denial_actor"]["user_id"],
+                            "membership_revoked": True,
+                        }
+                    )
+                )
+                or not isinstance(retired, dict)
+                or (
+                    payload.get("hold_for_rollback") is True
+                    and (
+                        retired != {"fixture_removed": False}
+                        or not isinstance(document.get("held"), dict)
+                        or document["held"].get("run_id") != payload["product_run_id"]
+                        or document["held"].get("source_revision")
+                        != cfg["expected_revision"]
+                        or any(
+                            document["held"].get(field) != lifecycle.get(field)
+                            for field in ("product_id", "project_id")
+                        )
+                        or any(
+                            not isinstance(document["held"].get(field), str)
+                            or not document["held"][field]
+                            for field in (
+                                "history_ref",
+                                "idempotency_receipt",
+                                "idempotency_key",
+                            )
+                        )
+                    )
+                )
+                or (
+                    payload.get("hold_for_rollback") is not True
+                    and (
+                        retired.get("fixture_removed") is not True
+                        or retired.get("run_id") != payload["product_run_id"]
+                        or any(
+                            not isinstance(lifecycle.get(field), str)
+                            or not lifecycle[field]
+                            or lifecycle[field] != retired.get(field)
+                            for field in ("product_id", "project_id")
+                        )
+                    )
+                )
+            ):
+                raise ports_module.PortError(
+                    "Product driver did not return verified lifecycle and retirement"
+                )
         return document
 
     return run
 
 
-def _admin_fixtures(aws, cfg):
+def _admin_fixtures(aws, cfg, *, product_workspace_id=None):
     """Provision E02's two run-owned identities and the secret carrying them.
 
     E02 asserts a REAL Cognito challenge flow: the CLI must complete
@@ -402,6 +1056,9 @@ def _admin_fixtures(aws, cfg):
     So the identity registers its own account, on the instance, immediately after
     the login that proves it — through the product's own onboarding route rather
     than a database write.
+
+    A verified run-owned Product workspace uses a separate administrator in its
+    own tenant; E02's administrator and negative fixture are not reused.
     """
 
     def build(ctx):
@@ -409,6 +1066,58 @@ def _admin_fixtures(aws, cfg):
         prefix = ctx["evaluation_id"]
         manifest = ctx["manifest"]
         account, region = str(cfg["platform_account"]), cfg["region"]
+        product = product_workspace_id is not None
+        denial = product and "api_denial_oracle" in cfg.get("product_cases", "").split(
+            ","
+        )
+        actor_suffix = "product-" if product else ""
+        challenge = f"{prefix}-{actor_suffix}admin@adp-eval.example"
+        secret_name = f"adp/cli-uplift-eval/{prefix}-{actor_suffix}fixtures"
+        if product:
+            workspace_evidence = ctx.get("product_workspace_evidence") or {}
+            if (
+                not isinstance(prefix, str)
+                or not re.fullmatch(r"adp-e2e-[0-9]{8}-[0-9]{6}-[a-f0-9]{6}", prefix)
+                or not isinstance(product_workspace_id, str)
+                or not re.fullmatch(
+                    re.escape(prefix) + r"-product-[a-f0-9]{24}", product_workspace_id
+                )
+                or not isinstance(manifest, cleanup.Manifest)
+                or manifest.prefix != prefix
+                or manifest.on_change is None
+                or not isinstance(workspace_evidence, dict)
+                or workspace_evidence.get("success") is not True
+                or workspace_evidence.get("stage") != "complete"
+                or workspace_evidence.get("workspace_id") != product_workspace_id
+                or not isinstance(workspace_evidence.get("team_id"), str)
+                or not workspace_evidence["team_id"]
+                or len(
+                    [
+                        entry
+                        for entry in manifest.outstanding()
+                        if entry["kind"] == "adp_org"
+                        and entry["id"] == product_workspace_id
+                        and entry.get("account") == account
+                        and entry.get("region") == region
+                    ]
+                )
+                != 1
+                or any(
+                    (entry["kind"] == "secret" and entry["id"] == secret_name)
+                    or (
+                        entry["kind"] == "cognito_user"
+                        and entry["id"]
+                        in {
+                            f"{pool}/{challenge}",
+                            f"{pool}/{prefix}-product-user@adp-eval.example",
+                        }
+                    )
+                    for entry in manifest.read().get("resources", [])
+                )
+            ):
+                raise ports_module.PortError(
+                    "Product actor has no durable, verified run-owned workspace"
+                )
         # `adp-e2e-*` so the ownership tag, the bundle grant and the recovery
         # sweep all recognise these as this run's.
         #
@@ -419,9 +1128,7 @@ def _admin_fixtures(aws, cfg):
         # is equally reserved by RFC 2606 and equally undeliverable, which is the
         # property that mattered: combined with MessageAction=SUPPRESS below, no
         # mail is generated and none could be delivered if it were.
-        challenge = f"{prefix}-admin@adp-eval.example"
-        non_admin = f"{prefix}-user@adp-eval.example"
-        secret_name = f"adp/cli-uplift-eval/{prefix}-fixtures"
+        non_admin = f"{prefix}-{actor_suffix}user@adp-eval.example"
 
         # Distinct passwords, generated here and never logged. Each satisfies the
         # pool policy (>=12 chars, upper, lower, digit, symbol) verified live.
@@ -429,7 +1136,7 @@ def _admin_fixtures(aws, cfg):
             return "Ev!" + secrets.token_urlsafe(18) + "9Aa"
 
         temporary, rotated = password(), password()
-        non_admin_password = password()
+        non_admin_password = password() if not product or denial else ""
 
         def create(username, *, role):
             attributes = [
@@ -438,7 +1145,9 @@ def _admin_fixtures(aws, cfg):
                 {"Name": "name", "Value": f"ADP eval {prefix}"},
                 {
                     "Name": "custom:org_id",
-                    "Value": cfg.get("fixture_org_id", "") or "adp-platform",
+                    "Value": product_workspace_id
+                    if product
+                    else cfg.get("fixture_org_id", "") or "adp-platform",
                 },
             ]
             if role:
@@ -450,7 +1159,10 @@ def _admin_fixtures(aws, cfg):
                 f"{pool}/{username}",
                 account=account,
                 region=region,
-                detail={"fixture": "e02", "role": role or "none"},
+                detail={
+                    "fixture": "product" if product else "e02",
+                    "role": role or "none",
+                },
             )
             aws.call(
                 "cognito-idp",
@@ -475,31 +1187,32 @@ def _admin_fixtures(aws, cfg):
             GroupName="admins",
         )
 
-        create(non_admin, role="")
-        # Permanent, so the non-admin authenticates outright: its rejection must
-        # come from authorization, not from an unanswered password challenge.
-        aws.call(
-            "cognito-idp",
-            "admin_set_user_password",
-            UserPoolId=pool,
-            Username=non_admin,
-            Password=non_admin_password,
-            Permanent=True,
-        )
+        if not product or denial:
+            create(non_admin, role="")
+            aws.call(
+                "cognito-idp",
+                "admin_set_user_password",
+                UserPoolId=pool,
+                Username=non_admin,
+                Password=non_admin_password,
+                Permanent=True,
+            )
 
         document = {
             "admin_username": challenge,
             "admin_password": temporary,
             "admin_new_password": rotated,
-            "non_admin_username": non_admin,
-            "non_admin_password": non_admin_password,
         }
+        if not product or denial:
+            document.update(
+                non_admin_username=non_admin, non_admin_password=non_admin_password
+            )
         manifest.record(
             "secret",
             secret_name,
             account=account,
             region=region,
-            detail={"fixture": "e02"},
+            detail={"fixture": "product" if product else "e02"},
         )
         arn = (
             aws.call(
@@ -539,11 +1252,13 @@ def _admin_fixtures(aws, cfg):
 
         # Only the NAME and the usernames leave this function. The passwords stay
         # in the secret, which is the whole point of the indirection.
-        return {
+        fixture = {
             "credential_secret": secret_name,
             "created_username": challenge,
-            "non_admin_username": non_admin,
         }
+        if not product or denial:
+            fixture["non_admin_username"] = non_admin
+        return fixture
 
     return build
 
@@ -574,7 +1289,7 @@ def _worker_config(cfg):
     return build
 
 
-def _journey(ssm, cfg, install, journeys=None):
+def _journey(ssm, cfg, install, journeys=None, *, fault_controller=None):
     """Resolve a case's purpose to a callable that runs it on the instance.
 
     Returns None only for a purpose with no shipped script — which the stage
@@ -588,6 +1303,9 @@ def _journey(ssm, cfg, install, journeys=None):
     if journeys is not None:
         return (journeys or {}).get if isinstance(journeys, dict) else journeys
     worker = _run_worker(ssm, cfg, install)
+    fault_controller = (
+        fault_controller or assistant_fault_control.AssistantFaultController()
+    )
     available = set(bundle.purposes())
 
     def resolve(purpose):
@@ -596,6 +1314,25 @@ def _journey(ssm, cfg, install, journeys=None):
 
         def drive(instance_id, ctx):
             payload = _journey_payload(cfg, ctx)
+            if purpose.startswith("product_profile_"):
+                owner = ctx["document"].get("product_actor_session") or {}
+                fixture = ctx.get("product_profile") or {}
+                if (
+                    not owner.get("session_ref")
+                    or fixture.get("tenant_id") != owner.get("org_id")
+                    or fixture.get("login_user_id") != owner.get("user_id")
+                ):
+                    raise ports_module.PortError(
+                        "Product CLI has no verified owner session"
+                    )
+                payload.update(
+                    session_ref=owner["session_ref"],
+                    work_dir=bundle.REMOTE_DIR + "/product-actor",
+                    cli_path=owner.get("cli_path", ""),
+                    test_user_id=owner["user_id"],
+                    org_id=owner["org_id"],
+                    product_profile=fixture,
+                )
             if purpose in {
                 "hosted_coding",
                 "hosted_chat",
@@ -621,13 +1358,220 @@ def _journey(ssm, cfg, install, journeys=None):
                     from .remote.hierarchy_plan import recovery_plan
                 payload["recovery_plan"] = recovery_plan(payload)
                 return worker(instance_id, purpose, payload, manifest=ctx["manifest"])
-            if purpose == "assistant_baseline":
+            if purpose in {
+                "assistant_baseline",
+                "assistant_stream",
+                "assistant_sources",
+                "assistant_isolation",
+            }:
+                return worker(instance_id, purpose, payload, manifest=ctx["manifest"])
+            if purpose == "assistant_sessions":
+                result = worker(instance_id, purpose, payload)
+                result = {**result, "detail": dict(result.get("detail") or {})}
+                result.pop("reservation_limitation", None)
+                result["detail"].pop("reservation_limitation", None)
+                limitation = fault_controller.reservation_limitation(
+                    ctx.get("manifest"), payload["evaluation_id"]
+                )
+                if limitation is not None:
+                    result["reservation_limitation"] = limitation
+                return result
+            if purpose == "assistant_faults":
+                target = payload.get("fault_target")
+                if not isinstance(target, dict):
+                    raise ports_module.PortError(
+                        "E47 requires a separately prepared run-owned session target; "
+                        "E46 ends its sessions before E47"
+                    )
+                users = payload.get("assistant_users") or {}
+                receipt = fault_controller.authorize(
+                    ctx.get("manifest"),
+                    payload["evaluation_id"],
+                    payload["fault"],
+                    target,
+                    users.get(target.get("user_label")),
+                )
+                if receipt is not None:
+                    payload["fault_receipt"] = receipt
                 return worker(instance_id, purpose, payload, manifest=ctx["manifest"])
             return worker(instance_id, purpose, payload)
 
         return drive
 
     return resolve
+
+
+def _retain_product_session(cfg, store, ssm):
+    def retain(ctx):
+        if store is None:
+            raise ports_module.PortError(
+                "Product cancellation needs private durable state"
+            )
+        from tests.e2e.product_onboarding import product_sessions
+
+        product_sessions.retain(cfg, ctx, store, ssm)
+
+    return retain
+
+
+def _product_profile_owner(cfg, worker, aws, ssm, store):
+    def prepare(ctx):
+        run_id = ctx["evaluation_id"]
+        manifest = ctx["manifest"]
+        instance_id = ctx["document"].get("instance_id")
+        bootstrap = ctx["document"].get("session") or {}
+        release = (ctx.get("preflight") or {}).get("product_release_check") or {}
+        foreign_name = f"{run_id}-admin@adp-eval.example"
+        if (
+            not isinstance(run_id, str)
+            or not re.fullmatch(r"adp-e2e-[0-9]{8}-[0-9]{6}-[a-f0-9]{6}", run_id)
+            or store is None
+            or not isinstance(cfg.get("product_run_id"), str)
+            or not re.fullmatch(
+                r"product-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}", cfg["product_run_id"]
+            )
+            or ctx["document"].get("product_run_id") != cfg["product_run_id"]
+            or not isinstance(manifest, cleanup.Manifest)
+            or manifest.prefix != run_id
+            or manifest.on_change is None
+            or not instance_id
+            or not any(
+                entry["kind"] == "ec2_instance"
+                and entry["id"] == instance_id
+                and entry.get("account") == str(cfg.get("platform_account"))
+                and entry.get("region") == cfg.get("region")
+                for entry in manifest.outstanding()
+            )
+            or bootstrap.get("session_ref") != bundle.REMOTE_DIR + "/session.json"
+            or not bootstrap.get("user_id")
+            # The bootstrap actor's ADP `users` row, which is the identifier its
+            # own `adp_user` manifest entry is recorded under and the one the
+            # recovery binding matches ownership on. Its Cognito subject above is
+            # a different namespace and cannot stand in for it.
+            or not bootstrap.get("adp_user_id")
+            or not bootstrap.get("org_id")
+            or bootstrap.get("created_username") != foreign_name
+            or not any(
+                entry["kind"] == "cognito_user"
+                and entry["id"] == f"{cfg['cognito_user_pool_id']}/{foreign_name}"
+                and entry.get("account") == str(cfg["platform_account"])
+                and entry.get("region") == cfg["region"]
+                for entry in manifest.outstanding()
+            )
+            or not ctx.get("expected_hashes", {}).get("adp-product.py")
+            or release.get("source_revision") != cfg.get("expected_revision")
+            or not re.fullmatch(
+                r"[a-f0-9]{40}", str(release.get("workflow_revision", ""))
+            )
+            or type(release.get("run_attempt")) is not int
+            or release["run_attempt"] < 1
+        ):
+            raise ports_module.PortError(
+                "Product CLI requires pinned release, durable workspace and authenticated bootstrap"
+            )
+        workspace_id = (
+            run_id
+            + "-product-"
+            + hashlib.sha256((run_id + ":product-workspace").encode()).hexdigest()[:24]
+        )
+        base = {
+            "evaluation_id": run_id,
+            "instance_id": instance_id,
+            "gateway_url": cfg["gateway_url"],
+            "platform_account": str(cfg["platform_account"]),
+            "region": cfg["region"],
+            # Every shipped remote module builds its child environment with
+            # `common.clean_env`, which reads `config["sts_endpoint"]` to pin the
+            # approved regional endpoint. `_journey_payload` has always carried
+            # both endpoints; the Product dispatch payloads did not, so
+            # `product_actor` died with KeyError: sts_endpoint before it could
+            # log in (run adp-e2e-20261022-210646-18ee57). Passed from the
+            # validated config rather than defaulted on the instance.
+            "sts_endpoint": cfg["sts_endpoint"],
+            "secrets_endpoint": cfg["secrets_endpoint"],
+            "work_dir": bundle.REMOTE_DIR,
+            "session_ref": bootstrap["session_ref"],
+            "product_cases": "api_product_lifecycle",
+            "product_workspace_id": workspace_id,
+        }
+        from tests.e2e.product_onboarding import product_sessions
+
+        product_sessions.retain(cfg, ctx, store, ssm)
+        workspace = worker(instance_id, "product_workspace", base, manifest=manifest)
+        ctx["product_workspace_evidence"] = workspace
+        fixtures = _admin_fixtures(aws, cfg, product_workspace_id=workspace_id)(ctx)
+        manifest.record(
+            "adp_user_email",
+            workspace_id + f"/{run_id}-product-admin@adp-eval.example",
+            account=str(cfg["platform_account"]),
+            region=cfg["region"],
+        )
+        actor = worker(
+            instance_id,
+            "product_actor",
+            {
+                **base,
+                **fixtures,
+                "work_dir": bundle.REMOTE_DIR + "/product-actor",
+                "product_team_id": workspace["team_id"],
+                "cognito_user_pool_id": cfg["cognito_user_pool_id"],
+                "expected_hashes": ctx["expected_hashes"],
+                "login_required": True,
+                "admin_challenges_required": True,
+                "admin_setup_required": False,
+            },
+            manifest=manifest,
+        )
+        owner = actor.get("session") or {}
+        if (
+            actor.get("success") is not True
+            or owner.get("created_username")
+            != f"{run_id}-product-admin@adp-eval.example"
+            or owner.get("session_ref")
+            != bundle.REMOTE_DIR + "/product-actor/session.json"
+            or owner.get("org_id") != workspace_id
+            or not owner.get("user_id")
+            or owner.get("user_id") == bootstrap["user_id"]
+            # The Product owner registers its OWN ADP account inside its own
+            # workspace, so it has a row of its own. Reusing the bootstrap row
+            # would mean the owner journey never onboarded, and every later owned
+            # mutation would in fact be attributed to the foreign actor.
+            or not owner.get("adp_user_id")
+            or owner.get("adp_user_id") == bootstrap["adp_user_id"]
+            or not owner.get("cli_path")
+        ):
+            raise ports_module.PortError(
+                "Product CLI actor did not match its owned workspace"
+            )
+        # Recorded under the ADP `users` ROW id, never the Cognito subject: this
+        # is the identifier `_deleters`' `delete_adp_user` resolves against
+        # `GET /api/admin/identity/organizations/<org>/users` before issuing the
+        # DELETE. A subject recorded here matches no row, so that deleter reads
+        # the absence as "already gone" and the sweep reports a clean run over an
+        # account it never removed — and `product_sessions.binding` could not
+        # prove the session owned its actor either.
+        manifest.record(
+            "adp_user",
+            workspace_id + "/" + owner["adp_user_id"],
+            account=str(cfg["platform_account"]),
+            region=cfg["region"],
+        )
+        ctx["document"]["product_actor_session"] = owner
+        product_sessions.retain(cfg, ctx, store, ssm, owner=True)
+        if bootstrap["org_id"] == workspace_id:
+            raise ports_module.PortError("Product CLI foreign actor is not run-owned")
+        fixture = {
+            "owned_mutations_authorized": True,
+            "tenant_id": workspace_id,
+            "login_user_id": owner["user_id"],
+            "foreign_tenant_id": bootstrap["org_id"],
+            "foreign_user_id": bootstrap["user_id"],
+            "foreign_session_ref": bootstrap["session_ref"],
+        }
+        ctx["product_profile"] = fixture
+        return fixture
+
+    return prepare
 
 
 def _journey_payload(cfg, ctx):
@@ -653,7 +1597,7 @@ def _journey_payload(cfg, ctx):
         "instance_id": ctx["document"].get("instance_id"),
         "evaluation_id": ctx["evaluation_id"],
         "platform_account": str(cfg["platform_account"]),
-        "destination_account": str(cfg["destination_account"]),
+        "destination_account": cfg.get("destination_account"),
         "region": cfg["region"],
         "gateway_url": cfg["gateway_url"],
         "sts_endpoint": cfg["sts_endpoint"],
@@ -685,6 +1629,9 @@ def _journey_payload(cfg, ctx):
         # the fallback only because a pool can be configured to make them equal.
         "test_user_id": session.get("user_id") or session.get("username", ""),
         "org_id": session.get("org_id", ""),
+        "product_profile": cfg.get("product_profile") or {},
+        "product_scopes": cfg.get("product_scopes") or {},
+        "owned_product": ctx.get("owned_product") or {},
         "destination_label": f"{ctx['evaluation_id']}-dest",
         "unprovisioned_label": f"{ctx['evaluation_id']}-unprov",
         "handoff_label": f"{ctx['evaluation_id']}-handoff",
@@ -735,6 +1682,10 @@ def _journey_payload(cfg, ctx):
         "human_task_coding": cfg.get("human_task_coding") or {},
         "human_task_chat": cfg.get("human_task_chat") or {},
         "assistant_users": cfg.get("assistant_users") or {},
+        "dev_box_lifecycle": cfg.get("dev_box_lifecycle") or {},
+        "assistant_latency": cfg.get("assistant_latency") or {},
+        "fault": ctx.get("fault", "none"),
+        "fault_target": ctx.get("assistant_fault_target"),
         "assistant_provider_activity": cfg.get("assistant_provider_activity") or {},
         "websocket_url": cfg.get("websocket_url") or "",
         "vault_lifecycle": cfg.get("vault_lifecycle") or {},
@@ -863,7 +1814,7 @@ def _vault_token(ssm, instance_id, document):
     return (payload or {}).get("access_token") or ""
 
 
-def _deleters(aws, cfg, http=None, ssm=None):
+def _deleters(aws, cfg, http=None, ssm=None, product_store=None):
     """Live deletions, keyed by resource kind, scoped to the resource's account.
 
     Every kind the manifest can hold must appear, because `cleanup.sweep()` treats
@@ -958,6 +1909,8 @@ def _deleters(aws, cfg, http=None, ssm=None):
                 cleanup.OWNER_TAG: match[1],
                 "Name": "cli-uplift-eval-" + attempt,
             }
+            if cfg.get("evaluation_target"):
+                expected["adp:evaluator-target"] = cfg["evaluation_target"]
             request = {
                 "Filters": [
                     {"Name": "tag:" + key, "Values": [value]}
@@ -1161,6 +2114,7 @@ def _deleters(aws, cfg, http=None, ssm=None):
                 f"No live deleter for {kind}; {identifier} must be removed by its owner"
             )
 
+        refuse.available = False
         return refuse
 
     def delete_destination(http, session):
@@ -1355,6 +2309,157 @@ def _deleters(aws, cfg, http=None, ssm=None):
 
         return delete
 
+    def delete_adp_user_email(http, session):
+        def delete(identifier, *, account=None, region=None):
+            org, separator, email = str(identifier).partition("/")
+            owner = session() or {}
+            prefix = owner.get("prefix") or ""
+            token = owner.get("access_token") or ""
+            if (
+                separator != "/"
+                or not re.fullmatch(r"adp-e2e-[0-9]{8}-[0-9]{6}-[a-f0-9]{6}", prefix)
+                or not re.fullmatch(re.escape(prefix) + r"-product-[a-f0-9]{24}", org)
+                or email
+                not in {
+                    f"{prefix}-product-user@adp-eval.example",
+                    f"{prefix}-product-admin@adp-eval.example",
+                }
+                or not token
+                or (
+                    account is not None and str(account) != str(cfg["platform_account"])
+                )
+                or (region is not None and region != cfg["region"])
+            ):
+                raise ports_module.PortError("Product user ownership is unavailable")
+            url = (
+                cfg["gateway_url"].rstrip("/")
+                + "/api/admin/identity/organizations/"
+                + quote(org, safe="")
+                + "/users"
+            )
+            status, listing = http.get(url, token=token, expect=None)
+            if status == 404:
+                return
+            if (
+                status != 200
+                or not isinstance(listing, dict)
+                or not isinstance(listing.get("users"), list)
+            ):
+                raise ports_module.PortError("Product user inventory is unavailable")
+            matched = [
+                row
+                for row in listing["users"]
+                if isinstance(row, dict) and row.get("email") == email
+            ]
+            if len(matched) > 1 or any(
+                not isinstance(row.get("id"), str)
+                or not row["id"]
+                or row.get("org_id") != org
+                for row in matched
+            ):
+                raise ports_module.PortError("Product user identity is ambiguous")
+            if not matched:
+                return
+            user_id = matched[0]["id"]
+            delete_status, _ = http.request(
+                url + "/" + quote(user_id, safe=""),
+                method="DELETE",
+                token=token,
+                expect=None,
+            )
+            if delete_status not in (200, 202, 204, 404):
+                raise ports_module.PortError("Product user deletion was refused")
+            status, after = http.get(url, token=token, expect=None)
+            if (
+                status != 200
+                or not isinstance(after, dict)
+                or not isinstance(after.get("users"), list)
+                or any(
+                    isinstance(row, dict)
+                    and (row.get("id") == user_id or row.get("email") == email)
+                    for row in after["users"]
+                )
+            ):
+                raise ports_module.PortError("Product user deletion was not observed")
+
+        return delete
+
+    def delete_adp_org(http, session):
+        def delete(identifier, *, account=None, region=None):
+            owner = session() or {}
+            prefix = owner.get("prefix") or ""
+            token = owner.get("access_token") or ""
+            if (
+                not re.fullmatch(r"adp-e2e-[0-9]{8}-[0-9]{6}-[a-f0-9]{6}", prefix)
+                or not isinstance(identifier, str)
+                or not re.fullmatch(
+                    re.escape(prefix) + r"-product-[a-f0-9]{24}", identifier
+                )
+                or not token
+                or (
+                    account is not None and str(account) != str(cfg["platform_account"])
+                )
+                or (region is not None and region != cfg["region"])
+            ):
+                raise ports_module.PortError(
+                    "Product workspace ownership or cleanup identity is unavailable"
+                )
+            url = (
+                cfg["gateway_url"].rstrip("/")
+                + "/api/admin/identity/organizations/"
+                + quote(identifier, safe="")
+            )
+            status, workspace = http.get(url, token=token, expect=None)
+            if status == 404:
+                return
+            if (
+                status != 200
+                or not isinstance(workspace, dict)
+                or workspace.get("id") != identifier
+                or workspace.get("name") != f"eval-regression-{prefix}"
+                or not isinstance(workspace.get("settings"), dict)
+            ):
+                raise ports_module.PortError(
+                    "Product workspace cannot be verified as owned by this run"
+                )
+            if workspace["settings"].get("status") == "archived":
+                return
+            identity_status, identity = http.get(
+                cfg["gateway_url"].rstrip("/") + "/auth/cli/admin-session",
+                token=token,
+                expect=None,
+            )
+            if (
+                identity_status != 200
+                or not isinstance(identity, dict)
+                or identity.get("verified") is not True
+                or identity.get("role") != "platform_admin"
+                or identity.get("user_id") != owner.get("user_id")
+                or identity.get("org_id") != owner.get("org_id")
+            ):
+                raise ports_module.PortError(
+                    "Product workspace retirement requires the original verified administrator"
+                )
+            result, _ = http.request(url, method="DELETE", token=token, expect=None)
+            if result != 204:
+                raise ports_module.PortError(
+                    "Product workspace archive was denied or failed"
+                )
+            status, workspace = http.get(url, token=token, expect=None)
+            if (
+                status != 200
+                or not isinstance(workspace, dict)
+                or workspace.get("id") != identifier
+                or workspace.get("name") != f"eval-regression-{prefix}"
+                or not isinstance(workspace.get("settings"), dict)
+                or workspace["settings"].get("status") != "archived"
+            ):
+                raise ports_module.PortError(
+                    "Product workspace archive was not independently observed"
+                )
+
+        return delete
+
     def delete_connection(http, session):
         """R8: authenticated, ownership-checked deletion of an ADP connection.
 
@@ -1449,6 +2554,26 @@ def _deleters(aws, cfg, http=None, ssm=None):
         # the report and the durable state are built from.
         cached = {}
         if ctx is not None:
+            administrator = ctx["document"].get("session") or {}
+            if (
+                product_store is not None
+                and any(
+                    entry["kind"] == "adp_user"
+                    and entry["id"]
+                    == administrator.get("org_id", "")
+                    + "/"
+                    + administrator.get("user_id", "")
+                    and entry.get("prefix") == ctx["evaluation_id"]
+                    for entry in ctx["manifest"].outstanding()
+                )
+                and administrator.get("created_username")
+                == f"{ctx['evaluation_id']}-admin@adp-eval.example"
+            ):
+                from tests.e2e.product_onboarding import product_sessions
+
+                ctx["product_recovery_session"] = product_sessions.restore(
+                    cfg, ctx, product_store
+                )
             document = ctx["document"].get("session") or {}
             if document:
                 # Non-secret fields come straight from the document; only the token
@@ -1456,9 +2581,21 @@ def _deleters(aws, cfg, http=None, ssm=None):
                 # the deleters already refuse to act without one rather than
                 # reporting a clean sweep over a resource they could not touch.
                 cached.update(document)
-                cached["access_token"] = _vault_token(
-                    ssm, ctx["document"].get("instance_id"), document
+                cached["access_token"] = (
+                    _vault_token(ssm, ctx["document"].get("instance_id"), document)
+                    if ctx.get("product_recovery_session") is None
+                    else ""
                 )
+            recovered = ctx.get("product_recovery_session")
+            if recovered is not None:
+                if recovered.get("prefix") != ctx["evaluation_id"] or any(
+                    recovered.get(field) != document.get(field)
+                    for field in ("user_id", "org_id", "created_username")
+                ):
+                    raise ports_module.PortError(
+                        "Product recovery administrator differs from the original session"
+                    )
+                cached.update(recovered)
 
         def session():
             return cached
@@ -1482,6 +2619,13 @@ def _deleters(aws, cfg, http=None, ssm=None):
             # delete for it. See `delete_destination` — the residual case is a
             # product gap and is reported as an outstanding resource, not swallowed.
             "bedrock_destination": delete_destination(http, session),
+            "assistant_session": unsupported("assistant_session"),
+            "assistant_worker": unsupported("assistant_worker"),
+            "product_fixture": product_profile_recovery.build(
+                cfg, aws, http, ctx, product_store
+            )
+            if ctx is not None and product_store is not None
+            else unsupported("product_fixture"),
             # Historical E18 evidence remains a real cleanup obligation. The
             # admin session above is not the ordinary resource owner's session;
             # never guess ownership or treat an unimplemented delete as success.
@@ -1489,6 +2633,8 @@ def _deleters(aws, cfg, http=None, ssm=None):
             # The ADP account the run registered for its own E02 login. Deleted
             # after the two above, which authenticate as it — see `cleanup.ORDER`.
             "adp_user": delete_adp_user(http, session),
+            "adp_user_email": delete_adp_user_email(http, session),
+            "adp_org": delete_adp_org(http, session),
             # A GitHub App is never deleted by automation: it is either a reused
             # fixture (preserved by design) or it needs an owner's action.
             "github_app": unsupported("github_app"),
@@ -1509,6 +2655,9 @@ def wire(cfg, supplied=None, *, journeys=None):
     http = supplied.get("http") or base["http"]
     ssm = supplied.get("ssm") or ports_module.SsmPort(aws)
     install = _install_bundle(ssm, aws, cfg)
+    product_store = (
+        statestore.default_store(cfg, aws) if cfg.get("product_run_id") else None
+    )
 
     resolved = {
         "aws": aws,
@@ -1518,6 +2667,11 @@ def wire(cfg, supplied=None, *, journeys=None):
         # The revision the results bind to, from trusted deployment evidence
         # rather than from a public health field the product does not publish.
         "deployed_revision": _deployed_revision(aws, http, cfg),
+        "product_release_evidence": lambda: product_release.observe(cfg, aws),
+        "prepare_product_profile": _product_profile_owner(
+            cfg, _run_worker(ssm, cfg, install), aws, ssm, product_store
+        ),
+        "retain_product_session": _retain_product_session(cfg, product_store, ssm),
         "wait_online": _wait_online(aws),
         "ssm_reachable": lambda: True,
         "install_bundle": install,
@@ -1530,14 +2684,23 @@ def wire(cfg, supplied=None, *, journeys=None):
         "harness_auth_helper": _read_harness_helper,
         # `ssm` so the API deleters can resolve the session token off the instance
         # before the sweep terminates it. See `_vault_token`.
-        "deleters": _deleters(aws, cfg, http, ssm),
+        "deleters": _deleters(aws, cfg, http, ssm, product_store),
         # R1: journeys are the SAME transport as every other remote step. There is
         # no separate driver layer to leave unpopulated: a case's purpose either
         # has a shipped script (`bundle.purposes()`) or `require_purpose()` names
         # the module that must be written. The old resolver defaulted to
         # `lambda _purpose: None`, so nine cases reported "no driver registered"
         # while the mapping looked wired.
-        "journey": _journey(ssm, cfg, install, journeys),
+        "journey": _journey(
+            ssm,
+            cfg,
+            install,
+            journeys,
+            fault_controller=assistant_fault_control.AssistantFaultController(
+                inspect=supplied.get("assistant_fault_inspect"),
+                mutate=supplied.get("assistant_fault_mutate"),
+            ),
+        ),
     }
     resolved.update(
         {

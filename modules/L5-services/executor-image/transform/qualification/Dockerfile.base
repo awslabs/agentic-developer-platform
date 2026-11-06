@@ -1,0 +1,7 @@
+FROM docker.io/library/node@sha256:9f0dde62d10e7ff7a310ecaebd66225f6b46c17e6cb778449a77b05d3541bea2 AS node
+FROM docker.io/library/python@sha256:034c3e9d991f148d14c32ff8350286b91420baca7757d37819c7a9cc771317a0
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+RUN python -c "import sys; assert sys.version_info[:2] == (3,12)" \
+    && node -e "if (process.versions.node !== '22.23.4') process.exit(1)" \
+    && git --version
+USER 10000:10000

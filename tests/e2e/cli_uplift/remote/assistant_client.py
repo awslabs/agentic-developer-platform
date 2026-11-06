@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import ssl
 import struct
 import time
@@ -14,6 +15,19 @@ import urllib.request
 
 class ClientError(ValueError):
     pass
+
+
+def http_failure(status, data=b""):
+    message = f"Assistant HTTP request returned {status}"
+    try:
+        code = json.loads(data).get("detail", {}).get("error", "")
+        if isinstance(code, str) and re.fullmatch(
+            r"chat_qualification_[a-z_]{1,100}", code
+        ):
+            message += f" ({code})"
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return ClientError(message)
 
 
 class UserSession:
@@ -57,38 +71,71 @@ def ordinary_env(home, environ=None):
     }
 
 
-def http_json(url, session, *, opener=None):
-    if not url.startswith("https://") or urllib.parse.urlsplit(url).username:
+def validate_http(url, method, body):
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username:
         raise ClientError(
             "Assistant HTTP requests require an HTTPS target without embedded credentials"
         )
-    path = urllib.parse.urlsplit(url).path
+    path = parsed.path
     if any(segment in {"admin", "internal", "fault"} for segment in path.split("/")):
         raise ClientError("Ordinary assistant clients cannot request privileged routes")
+    if (
+        method not in {"GET", "POST", "PUT"}
+        or (method == "GET" and body is not None)
+        or (method == "PUT" and body is None)
+    ):
+        raise ClientError("Assistant HTTP method or body is invalid")
+    if body is not None and (
+        not isinstance(body, dict) or len(json.dumps(body)) > 8192
+    ):
+        raise ClientError("Assistant HTTP body exceeds limit or is invalid")
+    if method == "PUT" and (
+        parsed.query
+        or parsed.fragment
+        or re.fullmatch(r"/chat/sessions/[A-Za-z0-9_-]{1,160}/mode", path) is None
+        or set(body) != {"mode"}
+        or not isinstance(body["mode"], str)
+        or body["mode"] not in {"ephemeral", "persistent"}
+    ):
+        raise ClientError("Assistant HTTP writes are limited to owned session modes")
+
+
+def http_json(
+    url, session, *, opener=None, method="GET", body=None, expected_status=200
+):
+    validate_http(url, method, body)
     if opener is None:
         try:
             from . import assistant_process
         except ImportError:
             import assistant_process
         with assistant_process.start(url, session, "http") as client:
-            return client.call("http")
+            if method == "GET" and expected_status == 200:
+                return client.call("http")
+            return client.call(
+                "http", method=method, document=body, expected_status=expected_status
+            )
     request = urllib.request.Request(
         url,
+        data=json.dumps(body).encode() if body is not None else None,
+        method=method,
         headers={
             "Authorization": "Bearer " + session.token(),
             "Accept": "application/json",
+            **({"Content-Type": "application/json"} if body is not None else {}),
         },
     )
     try:
         with opener(request, timeout=15) as response:
-            if response.status != 200:
+            if response.status != expected_status:
                 raise ClientError(f"Assistant HTTP request returned {response.status}")
             data = response.read(1024 * 1024 + 1)
             if len(data) > 1024 * 1024:
                 raise ClientError("Assistant HTTP response exceeds limit")
             return json.loads(data)
     except urllib.error.HTTPError as exc:
-        raise ClientError(f"Assistant HTTP request returned {exc.code}") from None
+        raise http_failure(exc.code, exc.read(8192)) from None
 
 
 def websocket_url(url, session):

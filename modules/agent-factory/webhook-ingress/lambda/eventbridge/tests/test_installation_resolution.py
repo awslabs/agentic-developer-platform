@@ -143,78 +143,28 @@ class TestEventBridgeInstallationResolution:
         mock_resolve.assert_called_once_with("aws-e")
 
 
-class TestAgentTriggerInstallationResolution:
-    """Tests that agent_trigger handler resolves installation_id from DDB."""
+class TestAgentTriggerRetirement:
+    """Legacy dispatch never resolves credentials or publishes work."""
 
     @patch("common.installation_resolver.resolve_installation_for_tenant")
-    def test_resolved_installation_id_passed_to_spawn(self, mock_resolve):
-        """Resolved installation_id is passed to spawn_persona (not 0)."""
-        from github.agent_trigger import handle_agent_trigger
-
-        mock_resolve.return_value = 124731274
-
-        # Build a valid agent_trigger request with chain lookup
-        event = {
-            "body": '{"correlation_id":"corr-1","parent_invocation_id":"inv-1","persona":"developer","target":{"repo":"aws-e/adp","issue":123},"reason":"test"}',
-            "isBase64Encoded": False,
-            "requestContext": {
-                "identity": {"userArn": "arn:aws:sts::123:assumed-role/agent-worker/session"}
-            },
-        }
-
-        with patch("github.agent_trigger._resolve_chain") as mock_chain:
-            mock_chain.return_value = {
-                # Issue #4128: event_id must match the body's
-                # parent_invocation_id and repo must match target.repo — both
-                # are now verified against the chain.
-                "event_id": "inv-1",
-                "repo": "aws-e/adp",
-                "tenant_id": "aws-e",
-                "root_human_id": "user-alice",
-                "is_human_rooted": True,
-                "chain_depth": 1,
-            }
-            with patch("common.spawn_persona.spawn_persona") as mock_spawn:
-                mock_spawn.return_value = MagicMock(
-                    success=True, message_id="msg-456", block_reason=None
-                )
-                result = handle_agent_trigger(event, None)
-
-                call_kwargs = mock_spawn.call_args.kwargs
-                assert call_kwargs["installation_id"] == 124731274
-
-        assert result["statusCode"] == 202
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant")
-    def test_unresolved_installation_returns_422(self, mock_resolve):
-        """When installation_id cannot be resolved, handler returns 422."""
-        from github.agent_trigger import handle_agent_trigger
-
-        mock_resolve.return_value = None  # Resolution failed
-
-        event = {
-            "body": '{"correlation_id":"corr-1","parent_invocation_id":"inv-1","persona":"developer","target":{"repo":"aws-e/adp","issue":123},"reason":"test"}',
-            "isBase64Encoded": False,
-            "requestContext": {
-                "identity": {"userArn": "arn:aws:sts::123:assumed-role/agent-worker/session"}
-            },
-        }
-
-        with patch("github.agent_trigger._resolve_chain") as mock_chain:
-            mock_chain.return_value = {
-                # Issue #4128: event_id must match the body's
-                # parent_invocation_id and repo must match target.repo — both
-                # are now verified against the chain.
-                "event_id": "inv-1",
-                "repo": "aws-e/adp",
-                "tenant_id": "aws-e",
-                "root_human_id": "user-alice",
-                "is_human_rooted": True,
-                "chain_depth": 1,
-            }
-            result = handle_agent_trigger(event, None)
-
-        assert result["statusCode"] == 422
+    def test_retired_before_installation_lookup(self, mock_resolve):
         import json
-        body = json.loads(result["body"])
-        assert body["error"] == "no_installation_for_tenant"
+
+        from github.agent_trigger import handle_agent_trigger
+
+        event = {
+            "body": '{"correlation_id":"corr-1","parent_invocation_id":"inv-1","persona":"developer","target":{"repo":"example/repo","issue":123},"reason":"test"}',
+            "requestContext": {
+                "identity": {"userArn": "arn:aws:sts::123456789012:assumed-role/agent-worker/session"}
+            },
+        }
+        with (
+            patch("github.agent_trigger._resolve_chain") as mock_chain,
+            patch("common.spawn_persona.spawn_persona") as mock_spawn,
+        ):
+            result = handle_agent_trigger(event, None)
+        assert result["statusCode"] == 410
+        assert json.loads(result["body"])["error"] == "legacy_agent_trigger_retired"
+        mock_resolve.assert_not_called()
+        mock_chain.assert_not_called()
+        mock_spawn.assert_not_called()

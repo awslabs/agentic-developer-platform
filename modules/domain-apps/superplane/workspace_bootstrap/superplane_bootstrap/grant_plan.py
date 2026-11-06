@@ -29,6 +29,7 @@ class BootstrapRelease:
     enforce_version: str
     crds: tuple[str, ...]
     system_workloads: tuple[str, ...] = ("coredns",)
+    reader_renewal: bool = False
 
     def __post_init__(self):
         if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", self.namespace):
@@ -213,6 +214,38 @@ def compile_grants(
         target, release.enforce_version
     )
 
+    if controller_mode == "management" and release.reader_renewal:
+        # The installed renewer has its own EKS entry, owned by app Terraform.
+        # Bootstrap delegates only TokenRequest for the observed reader SA. The
+        # reader itself never receives these rights. On unsuccessful bootstrap
+        # these grants are revoked; successful registration retains them for
+        # renewal independently of the completed execution lease.
+        reader_group = "superplane:reader:" + target.workspace_id
+        role_pair(
+            "reader-issuer-cluster",
+            [
+                rule("", ["namespaces"], ["get"], [release.namespace]),
+                # Discover every namespace for effective reader-RBAC checks.
+                rule("", ["namespaces"], ["list"]),
+            ],
+            "registrar",
+            lifetime="workspace",
+            subject_group=reader_group,
+        )
+        role_pair(
+            "reader-issuer-namespace",
+            [
+                rule("", ["serviceaccounts"], ["get"], [release.service_account]),
+                rule(
+                    "", ["serviceaccounts/token"], ["create"], [release.service_account]
+                ),
+            ],
+            "registrar",
+            namespace=release.namespace,
+            lifetime="workspace",
+            subject_group=reader_group,
+        )
+
     entry("supervisor", "workspace")
     read_cluster = [
         rule("", ["namespaces", "nodes"], ["get", "list"]),
@@ -262,6 +295,10 @@ def compile_grants(
         [
             rule("", ["namespaces"], ["get"], [release.namespace]),
             rule("", ["nodes"], ["get", "list"]),
+            # A ClusterRole collection CREATE has no authorization request name,
+            # so named escalate cannot cover it. Hold the controller's actual
+            # cluster rules for Kubernetes' no-escalation fallback instead.
+            rule("superplane.ai", ["nodepools"], ["list", "watch"]),
             rule("apps", ["deployments"], ["get", "list"]),
             rule(
                 "apiextensions.k8s.io",
@@ -304,7 +341,12 @@ def compile_grants(
                 ["create", "get"],
                 ["imds-probe-ipv4", "imds-probe-ipv6"],
             ),
-            rule("", ["pods/log"], ["get"], ["imds-probe-ipv4", "imds-probe-ipv6"]),
+            # Likewise, Role CREATE must be covered by held RBAC rules. These
+            # reads match the controller Role and remain in this namespace.
+            rule("", ["pods/log"], ["get"]),
+            rule("apps", ["replicasets"], ["list"]),
+            rule("batch", ["jobs"], ["get"]),
+            rule("superplane.ai", ["superplanenodes"], ["list", "watch"]),
             # Only recovery of a historical per-workspace controller needs
             # Deployment writes. The canonical manager lives elsewhere.
             *(
@@ -407,6 +449,11 @@ def compile_grants(
                         stem + "-cleanup-cluster",
                         stem + "-supervisor-cluster",
                         controller_cluster_role,
+                        *(
+                            [stem + "-reader-issuer-cluster"]
+                            if release.reader_renewal
+                            else []
+                        ),
                     ],
                 ),
             ],
@@ -430,6 +477,11 @@ def compile_grants(
                         controller_role,
                         stem + "-supervisor-namespace",
                         stem + "-cleanup-namespace",
+                        *(
+                            [stem + "-reader-issuer-namespace"]
+                            if release.reader_renewal
+                            else []
+                        ),
                     ],
                 ),
                 *(

@@ -5,20 +5,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import tempfile
+from pathlib import Path
 
 import check_workspace_plan as guard
 from workspace_backend import initialized_backend, verify_backend
-from workspace_ownership import WorkspaceOwnershipError
 from workspace_identity import state_key
 from workspace_kms import (
     verify_account_prerequisites,
-    verify_supplied_key,
+    verify_destroy_principal,
     verify_provisioning_principal,
+    verify_supplied_key,
 )
+from workspace_ownership import WorkspaceOwnershipError
 
 
 def main(argv=None):
@@ -29,6 +30,11 @@ def main(argv=None):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--terraform-binary", default="terraform")
     parser.add_argument("--destroy", action="store_true")
+    parser.add_argument(
+        "--review-only",
+        action="store_true",
+        help="Produce a proposal, including explicit destructive identities; never authorize apply.",
+    )
     args = parser.parse_args(argv)
     try:
         if any(name.startswith("TF_CLI_ARGS") for name in os.environ):
@@ -118,6 +124,7 @@ def main(argv=None):
                     args.terraform_binary,
                     "init",
                     "-input=false",
+                    "-lockfile=readonly",
                     "-backend-config=" + backend_file.name,
                 ],
                 cwd=module,
@@ -176,13 +183,21 @@ def main(argv=None):
         ]
         if args.destroy:
             flags.append("--expect-destroy")
-        result = guard.main(flags)
+        result = (
+            guard.main(flags, review_only=True)
+            if args.review_only
+            else guard.main(flags)
+        )
         if authorization.exists():
             document = json.loads(authorization.read_text())
             document["backend"] = backend
             document["account_prerequisites"] = account_prerequisites
-            document["supplied_kms"] = verify_supplied_key(plan)
-            document["provisioning_principal"] = verify_provisioning_principal(plan)
+            if args.destroy:
+                document["operation"] = "destroy"
+                document["destroy_principal"] = verify_destroy_principal(plan)
+            else:
+                document["supplied_kms"] = verify_supplied_key(plan)
+                document["provisioning_principal"] = verify_provisioning_principal(plan)
             authorization.write_text(json.dumps(document, indent=2) + "\n")
             (output / "workspace-backend.json").write_text(
                 json.dumps(backend, indent=2) + "\n"

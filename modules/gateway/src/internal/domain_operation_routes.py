@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Literal
 
 import httpx
@@ -79,6 +80,8 @@ class CurrentIdentityRequest(DomainScope):
 
 
 class DispatchRequest(DomainScope):
+    expected_version: int | None = Field(default=None, strict=True, ge=1)
+    expected_fence: int | None = Field(default=None, strict=True, ge=1)
     operation_id: str = Field(min_length=1, max_length=255)
     job_id: str = Field(min_length=1, max_length=255)
     attempt_id: str = Field(min_length=1, max_length=255)
@@ -90,6 +93,22 @@ class VerifyRunRequest(DomainScope):
     workspace_id: str = Field(min_length=1, max_length=255)
     operation_id: str = Field(min_length=1, max_length=255)
     subject: str = Field(min_length=1, max_length=255)
+
+
+class DispatchRecoveryRequest(DomainScope):
+    workspace_id: str = Field(min_length=1, max_length=255)
+    operation_id: str = Field(min_length=1, max_length=255)
+    requester: str = Field(min_length=1, max_length=255)
+    reauthorization_id: str = Field(min_length=1, max_length=64)
+    expected_version: int = Field(strict=True, ge=1)
+
+
+class PartialApplyObservation(DomainScope):
+    workspace_id: str = Field(min_length=1, max_length=255)
+    operation_id: str = Field(min_length=1, max_length=255)
+    requester: str = Field(min_length=1, max_length=255)
+    expected_version: int = Field(strict=True, ge=1)
+    owner_evidence_id: str | None = Field(default=None, pattern=r"^sppa1:[a-f0-9]{64}$")
 
 
 class Empty(BaseModel):
@@ -212,6 +231,19 @@ async def publish(body: DispatchRequest, request: Request):
     return result
 
 
+@router.post("/recover-undispatched")
+async def recover_undispatched(body: DispatchRecoveryRequest, request: Request):
+    from src.internal.domain_dispatch_recovery import recover
+
+    binding = producer(request, body)
+    try:
+        result = await recover(binding, body, bootstrap_store(), authorize_producer=lambda: producer(request, body))
+    except harness("identity").OperationRefused:
+        raise HTTPException(409, "original operation is not eligible for dispatch recovery") from None
+    producer(request, body)
+    return result
+
+
 @router.post("/verify-run")
 async def verify_run(body: VerifyRunRequest, request: Request):
     from src.agentauth.execution import ExecutionStatus
@@ -274,14 +306,36 @@ async def verify_run(body: VerifyRunRequest, request: Request):
 
 @router.post("/task/acquire")
 async def acquire_task(body: Empty, request: Request):
+    import json
+
+    from src.internal.domain_provider_recovery import recovered_delivery
+
     binding = worker_binding(request)
     runtime = runtime_for(binding)
     token = request.headers.get(WORKLOAD_HEADER, "")
     pod = await run_in_threadpool(runtime.workloads.verify, token)
-    envelope = await run_in_threadpool(tasks(runtime, binding).acquire, pod.uid)
-    if await run_in_threadpool(runtime.workloads.verify, token) != pod:
-        raise HTTPException(403, "domain workload changed")
-    return {"body": envelope}
+    delivery = tasks(runtime, binding)
+    deadline = monotonic() + 8
+    for index in range(10):
+        envelope = await run_in_threadpool(delivery.acquire, pod.uid, wait_seconds=10 if index == 0 else 0)
+        if await run_in_threadpool(runtime.workloads.verify, token) != pod:
+            raise HTTPException(403, "domain workload changed")
+        if envelope is not None:
+            if not await recovered_delivery(binding, json.loads(envelope), runtime.store):
+                return {"body": envelope}
+            if await run_in_threadpool(runtime.workloads.verify, token) != pod:
+                raise HTTPException(403, "domain workload changed")
+            await run_in_threadpool(delivery.maintain, pod.uid, acknowledge=True)
+        acknowledgement = await run_in_threadpool(delivery.read, pod.uid)
+        if acknowledgement["state"] != "acknowledged" or monotonic() >= deadline:
+            return {"body": None}
+        # Retain every discard before receiving again. The transaction excludes
+        # any pod execution binding; the first live delivery stays permanent.
+        if await run_in_threadpool(runtime.workloads.verify, token) != pod:
+            raise HTTPException(403, "domain workload changed")
+        if not await run_in_threadpool(delivery.resume_after_obsolete, pod.uid, acknowledgement):
+            return {"body": None}
+    return {"body": None}
 
 
 @router.post("/bootstrap")
@@ -381,7 +435,8 @@ async def acquire_lease(body: OperationRequest, request: Request):
         async with connection.transaction():
             await connection.fetchrow("SELECT operation_id FROM harness_operations WHERE operation_id=$1 FOR UPDATE", body.operation_id)
             row = await connection.fetchrow("SELECT * FROM harness_operation_leases WHERE operation_id=$1", body.operation_id)
-            if row is not None and row["holder"] == caller.principal and row["attempt_id"] == caller.principal:
+            replay = row is not None and row["holder"] == caller.principal and row["attempt_id"] == caller.principal
+            if replay:
                 if row["closed_at"] is not None or min(row["expires_at"], row["runtime_deadline"]) <= datetime.now(UTC):
                     raise HTTPException(403, "expired domain lease requires recovery")
                 fence_token = row["fence_token"]
@@ -401,6 +456,15 @@ async def acquire_lease(body: OperationRequest, request: Request):
                 fence_token,
             )
             row = dict(await connection.fetchrow("SELECT * FROM harness_operation_leases WHERE operation_id=$1", body.operation_id))
+            if not replay and "runtime_config_sha256" in harness("identity").decode_payload(operation["request_payload"]).parameters:
+                from src.internal.domain_provider_session import session_deadline
+
+                # A fresh lifecycle worker must be able to obtain its first STS
+                # session. Refuse inside this transaction so an already too-short
+                # window leaves no lease, consumed attempt or execution intent.
+                # Replaying a live lease needs no new session: its worker may
+                # already hold valid credentials during their final 15 minutes.
+                session_deadline(grant, operation, row)
     await authenticated(request, mode="execution")
     return {**authority_payload(operation, row), "adp_org_id": binding.adp_org_id, "not_after": grant.expires_at.isoformat()}
 
@@ -436,8 +500,10 @@ async def recovery_authority(body: ClaimRequest, request: Request):
 
 
 async def domain_request(binding, action, payload):
-    credential = (await secret(binding.observation_credential_secret_id)).strip()
-    async with httpx.AsyncClient(timeout=25, follow_redirects=False, trust_env=False) as client:
+    from .domain_observation_transport import transport
+
+    credential, context = transport(await secret(binding.observation_credential_secret_id))
+    async with httpx.AsyncClient(timeout=25, follow_redirects=False, trust_env=False, verify=context) as client:
         response = await client.post(
             binding.observation_url.rstrip("/") + "/internal/controller/recovery/" + action, headers={"Authorization": credential}, json=payload
         )
@@ -515,12 +581,121 @@ async def provider_session_route(body: ProviderSessionRequest, request: Request,
         raise HTTPException(403, "paid provider session refused") from None
 
 
+@router.post("/recover-uncredentialed")
+async def recover_uncredentialed(body: DispatchRecoveryRequest, request: Request, db=Depends(get_db)):
+    from src.internal.domain_provider_recovery import recover
+
+    binding = producer(request, body)
+    try:
+        result = await recover(binding, body, bootstrap_store(), db, authorize_producer=lambda: producer(request, body))
+    except (harness("identity").OperationRefused, ValueError, KeyError, TypeError):
+        raise HTTPException(409, "original operation is not eligible for credential recovery") from None
+    producer(request, body)
+    return result
+
+
+@router.post("/recover-unstarted-planning")
+async def recover_unstarted_planning(body: DispatchRecoveryRequest, request: Request, db=Depends(get_db)):
+    from src.internal.domain_provider_recovery import recover
+
+    binding = producer(request, body)
+    try:
+        result = await recover(binding, body, bootstrap_store(), db, authorize_producer=lambda: producer(request, body), unstarted=True)
+    except (harness("identity").OperationRefused, ValueError, KeyError, TypeError):
+        raise HTTPException(409, "original planning start barrier unavailable") from None
+    producer(request, body)
+    return result
+
+
+@router.post("/recover-interrupted-planning")
+async def recover_interrupted_planning(body: DispatchRecoveryRequest, request: Request, db=Depends(get_db)):
+    from src.internal.domain_provider_recovery import recover
+
+    binding = producer(request, body)
+    try:
+        result = await recover(binding, body, bootstrap_store(), db, authorize_producer=lambda: producer(request, body), interrupted=True)
+    except (harness("identity").OperationRefused, ValueError, KeyError, TypeError):
+        raise HTTPException(409, "qualified interrupted planning evidence unavailable") from None
+    producer(request, body)
+    return result
+
+
+@router.post("/recover-unstarted-bootstrap")
+async def recover_unstarted_bootstrap(body: DispatchRecoveryRequest, request: Request, db=Depends(get_db)):
+    from src.internal.domain_provider_recovery import recover
+
+    binding = producer(request, body)
+    try:
+        result = await recover(binding, body, bootstrap_store(), db, authorize_producer=lambda: producer(request, body), bootstrap=True)
+    except (harness("identity").OperationRefused, ValueError, KeyError, TypeError):
+        raise HTTPException(409, "original bootstrap mutation barrier unavailable") from None
+    producer(request, body)
+    return result
+
+
+@router.post("/complete-saved-plan")
+async def complete_saved_plan(body: DispatchRecoveryRequest, request: Request, db=Depends(get_db)):
+    from src.internal.domain_provider_recovery import recover
+
+    binding = producer(request, body)
+    try:
+        result = await recover(binding, body, bootstrap_store(), db, authorize_producer=lambda: producer(request, body), completion=True)
+    except (harness("identity").OperationRefused, ValueError, KeyError, TypeError):
+        raise HTTPException(409, "original saved plan completion evidence unavailable") from None
+    producer(request, body)
+    return result
+
+
+@router.post("/recover-settled-bootstrap")
+async def recover_settled_bootstrap(body: DispatchRecoveryRequest, request: Request, db=Depends(get_db)):
+    from src.internal.domain_provider_recovery import recover
+
+    binding = producer(request, body)
+    try:
+        result = await recover(binding, body, bootstrap_store(), db, authorize_producer=lambda: producer(request, body), bootstrap=True, settled=True)
+    except (harness("identity").OperationRefused, ValueError, KeyError, TypeError):
+        raise HTTPException(409, "settled bootstrap source boundary unavailable") from None
+    producer(request, body)
+    return result
+
+
+@router.post("/partial-apply-observation")
+async def partial_apply_observation(body: PartialApplyObservation, request: Request, db=Depends(get_db)):
+    from src.internal.domain_partial_apply import observe
+
+    binding = producer(request, body)
+    try:
+        result = await observe(db, bootstrap_store(), binding, body)
+    except (harness("identity").OperationRefused, ValueError, KeyError, TypeError):
+        raise HTTPException(409, "original partial apply evidence unavailable") from None
+    producer(request, body)
+    return result
+
+
+@router.post("/repair-partial-apply")
+async def repair_partial_apply(body: DispatchRecoveryRequest, request: Request, db=Depends(get_db)):
+    from src.internal.domain_partial_apply import recover
+
+    binding = producer(request, body)
+    try:
+        result = await recover(binding, body, bootstrap_store(), db, authorize_producer=lambda: producer(request, body))
+    except (harness("identity").OperationRefused, ValueError, KeyError, TypeError):
+        raise HTTPException(409, "partial apply repair authority unavailable") from None
+    producer(request, body)
+    return result
+
+
 @router.post("/provider-preflight")
 async def provider_preflight_route(body: ProviderSessionRequest, request: Request, db=Depends(get_db), sm=Depends(get_secrets_manager)):
     from src.auth.vault_delivery import DeliveryRefusedError
+    from src.internal.domain_failure_diagnostics import record
     from src.internal.domain_provider_session import provider_session
 
     try:
         return await provider_session(request, body, db, sm, preflight_only=True)
-    except (DeliveryRefusedError, ValueError, KeyError, TypeError):
+    except (DeliveryRefusedError, ValueError, KeyError, TypeError) as error:
+        record(error)
         raise HTTPException(403, "paid provider preflight refused") from None
+    except Exception as error:
+        record(error)
+        raise

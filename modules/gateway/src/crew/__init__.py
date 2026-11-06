@@ -1,0 +1,1 @@
+"""Crew target admission contracts."""

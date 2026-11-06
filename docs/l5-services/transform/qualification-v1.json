@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "interface": null,
+  "cli_version": null,
+  "binary_sha256": null,
+  "image_digest": null,
+  "definition_revision": null,
+  "region_qualification": "unqualified",
+  "executor_qualification": "unqualified",
+  "tool_isolation": {
+    "status": "unsupported",
+    "reason": "No qualified file-only provider job with credential-free tests exists for this release",
+    "receipt_sha256": null
+  },
+  "submit": {
+    "status": "unqualified",
+    "reason": "Current invocation, scoped auth, native identity and paid idempotence have not been tested",
+    "receipt_sha256": null
+  },
+  "read": {
+    "status": "unqualified",
+    "reason": "Bounded native readback and patch provenance have not been tested",
+    "receipt_sha256": null
+  },
+  "resume": {
+    "status": "unqualified",
+    "reason": "Documented resume does not prove continuity after acknowledgement loss or restart",
+    "receipt_sha256": null
+  },
+  "cancel": {
+    "status": "unsupported",
+    "reason": "This release has no qualified remote cancel; stopping the CLI is not a confirmed remote stop",
+    "receipt_sha256": null
+  }
+}

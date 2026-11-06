@@ -17,6 +17,7 @@ from sqlalchemy import select
 from .continuation import digest
 from .execution_policy import ExecutionPolicy, policy_hash, stamp_policy
 from .models import OrchestrationDecision
+from .policy_identity import same_human_principal
 from .state import ActorKind
 
 CONTRACT = "shared-retry-increase/v1"
@@ -75,7 +76,7 @@ def apply_retry_limit(policy, limit, decision_id):
     return effective
 
 
-async def effective_shared_retry(session, plan, policy):
+async def effective_shared_retry(session, plan, policy, *, display_lineage=None, as_of=None):
     from .shared_window import accepted_document_hash, policy_owner_matches
 
     marker = (plan.plan_document or {}).get("execution_continuation")
@@ -87,6 +88,7 @@ async def effective_shared_retry(session, plan, policy):
             OrchestrationDecision.org_id == plan.org_id,
             OrchestrationDecision.flow_id == plan.flow_id,
             OrchestrationDecision.kind == KIND,
+            *([OrchestrationDecision.created_at <= as_of] if as_of is not None else []),
         )
         .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
         .limit(1)
@@ -107,7 +109,7 @@ async def effective_shared_retry(session, plan, policy):
     if data["plan_version"] < plan.version:
         from .plan_lineage import receipt_plan
 
-        plan = await receipt_plan(session, plan, data)
+        plan = await display_lineage.receipt_plan(session, plan, data) if display_lineage is not None else await receipt_plan(session, plan, data)
         if plan is None:
             return policy  # General plan changes still require a fresh approval.
     original = ExecutionPolicy.model_validate(plan.plan_document["execution_policy"])
@@ -122,7 +124,7 @@ async def effective_shared_retry(session, plan, policy):
         or data.get("original_policy_hash") != original.policy_hash
         or original.policy_hash != policy_hash(original)
         or policy.policy_hash != policy_hash(policy)
-        or data.get("principal_id") != policy.principal_id
+        or not await same_human_principal(session, org_id=plan.org_id, recorded_id=data.get("principal_id"), current_id=policy.principal_id)
     ):
         raise RetryIncreaseError("retry_receipt_unverifiable")
     if marker is None and not await policy_owner_matches(session, decision.actor_id, policy):

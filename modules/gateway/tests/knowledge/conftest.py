@@ -251,3 +251,9 @@ def _public_source_dns(monkeypatch):
         "_resolve_hostname",
         lambda hostname: [ipaddress.ip_address("93.184.216.34")] if hostname in {"docs.example.com", "example.com"} else [],
     )
+
+
+@pytest.fixture(autouse=True)
+def scoped_imports_enabled(monkeypatch):
+    """These API tests run with the completed reader/worker rollout enabled."""
+    monkeypatch.setenv("SCOPED_KNOWLEDGE_IMPORTS_ENABLED", "true")

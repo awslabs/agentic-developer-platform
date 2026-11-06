@@ -42,6 +42,9 @@ on:
     paths:
       - 'modules/domain-apps/superplane/infra/control-plane/**'
       - 'modules/domain-apps/superplane/infra/installer-access/**'
+      - 'modules/domain-apps/superplane/infra/bootstrap-registrar-cleanup/**'
+      - 'modules/domain-apps/superplane/infra/bootstrap-acquisition-cleanup/**'
+      - 'modules/domain-apps/superplane/infra/closed-cleanup-access/**'
       - 'modules/domain-apps/superplane/infra/shared-operation-authority/**'
       # The workspaces root module (#5532, w6-09). Its tests run in the matrixed `tests`
       # job below; it has no entry in the credentialed `plan` job, which is deliberate —
@@ -51,6 +54,7 @@ on:
       - 'modules/domain-apps/superplane/infra/lifecycle-foundations/**'
       - 'modules/domain-apps/superplane/infra/provider-authority/**'
       - 'modules/domain-apps/superplane/infra/domain-provider/**'
+      - 'modules/domain-apps/superplane/infra/artifact-pull-access/**'
       - 'modules/domain-apps/superplane/environments/dev/superplane.tfvars'
       - 'modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars'
       # U2's lock is a Terraform INPUT here: ecr.tf derives repository names from it and
@@ -116,8 +120,16 @@ jobs:
             dir: modules/domain-apps/superplane/infra/provider-authority
           - name: domain-provider
             dir: modules/domain-apps/superplane/infra/domain-provider
+          - name: artifact-pull-access
+            dir: modules/domain-apps/superplane/infra/artifact-pull-access
           - name: installer-access
             dir: modules/domain-apps/superplane/infra/installer-access
+          - name: bootstrap-registrar-cleanup
+            dir: modules/domain-apps/superplane/infra/bootstrap-registrar-cleanup
+          - name: bootstrap-acquisition-cleanup
+            dir: modules/domain-apps/superplane/infra/bootstrap-acquisition-cleanup
+          - name: closed-cleanup-access
+            dir: modules/domain-apps/superplane/infra/closed-cleanup-access
           - name: shared-operation-authority
             dir: modules/domain-apps/superplane/infra/shared-operation-authority
     # Tests use mocks. Disable normal AWS credential discovery in this job only;

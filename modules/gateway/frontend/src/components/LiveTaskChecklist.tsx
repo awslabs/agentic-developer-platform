@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { implementationSteps, type LiveTask } from '@/utils/liveTasks';
 
-const kinds = { code: 'Implementation', test: 'Validation', infra: 'Setup' };
+const kinds = { code: 'Implementation', test: 'Validation', infra: 'Setup', task: 'Task' };
 const priority = { in_progress: 0, blocked: 1, pending: 2, completed: 3 };
 const statuses = { pending: 'Not started', in_progress: 'In progress', completed: 'Completed', blocked: 'Blocked / deferred' };
 
@@ -26,8 +26,8 @@ export function LiveTaskChecklist({ tasks, selected, counts, live, onSelect }: {
     aria-current={task.status === 'in_progress' && live ? 'step' : undefined}>
     <span className="task-status">{task.status === 'in_progress' && !live ? 'Last reported in progress' : statuses[task.status]}</span>
     <div className="live-markdown task-description"><ReactMarkdown skipHtml components={{ img: () => null }}>{task.description}</ReactMarkdown></div>
-    <p className="live-muted task-reference">{kinds[task.kind]} · <code>{task.id}</code>{!hierarchical && task.group && task.group !== 'general' ? ` · ${task.group}` : ''}</p>
-    {onSelect && <button type="button" className="task-activity-link" aria-label={`View activity mentioning ${task.id}`} aria-pressed={selected === task.id}
+    <p className="live-muted task-reference">{kinds[task.kind]}{task.kind !== 'task' && <> · <code>{task.id}</code></>}{!hierarchical && task.group && task.group !== 'general' ? ` · ${task.group}` : ''}</p>
+    {onSelect && task.kind !== 'task' && <button type="button" className="task-activity-link" aria-label={`View activity mentioning ${task.id}`} aria-pressed={selected === task.id}
       onClick={() => onSelect(task.id)}>View activity ({counts.get(task.id) ?? 0})</button>}
   </li>;
   return <div className="task-board">

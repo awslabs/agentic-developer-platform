@@ -299,7 +299,7 @@ async def resolve_shadow_target(context: TokenContext, *, user_id: str | None = 
         # Imported here rather than at module scope: `src.shared.database` pulls in
         # the engine/session machinery, and the proxy hot path should not carry that
         # import cost when the flag is off.
-        from src.shared.database import get_session_factory
+        from src.shared.database import get_accounting_session_factory as get_session_factory
 
         session_factory = get_session_factory()
         async with session_factory() as session:

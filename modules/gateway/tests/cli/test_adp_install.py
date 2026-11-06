@@ -42,12 +42,22 @@ INSTALLED_FILES = [
     "bg-cognito-auth.sh",
     "bg-gateway-proxy.py",
     "adp_common.py",
+    "adp_native_test.py",
     "adp-admin.py",
     "adp-bedrock.py",
     "adp-aws.py",
     "adp-github.py",
     "adp-github-admin.py",
+    "adp-flow.py",
+    "adp-onboard.py",
+    "adp-insights.py",
+    "adp-service.py",
     "command-manifest.json",
+    "adp-native-credentials.py",
+    "adp_private_credentials.py",
+    "native-host-requirements.txt",
+    "adp-native-credential-host.py",
+    "adp_native_credential_handoff.py",
 ]
 
 
@@ -193,6 +203,29 @@ class TestGatewayUrlIsNeverGuessed:
 
 
 class TestInstall:
+    def test_installed_amendment_help_exposes_every_verb_and_approval_binding(self, run_install, prefix, install_home):
+        result = run_install(["--prefix", str(prefix), "--gateway-url", GATEWAY_URL])
+        assert result.returncode == 0, result.stderr
+        env = {**os.environ, "HOME": str(install_home)}
+
+        for arguments in (["help"], ["flow", "amendment", "--help"], ["flow", "amendment", "accept", "--help"]):
+            help_result = subprocess.run(["bash", str(prefix / "adp"), *arguments], env=env, capture_output=True, text=True, timeout=60)
+            assert help_result.returncode == 0, help_result.stderr
+            if arguments == ["help"]:
+                assert "flow amendment" in help_result.stdout
+            elif arguments[-2] == "accept":
+                for flag in ("--expect-revision", "--expect-base-version", "--expect-base-hash"):
+                    assert flag in help_result.stdout
+            else:
+                for verb in ("propose", "list", "show", "preview", "edit", "reject", "accept"):
+                    assert verb in help_result.stdout
+
+        for arguments in (["list", "flow-example", "--json"], ["list", "--json", "--", "--help"]):
+            command = ["bash", str(prefix / "adp"), "flow", "amendment", *arguments]
+            denied = subprocess.run(command, env=env, capture_output=True, text=True, timeout=60)
+            assert denied.returncode == 2
+            assert json.loads(denied.stdout)["error"]["code"] == "authentication_required"
+
     def test_installs_the_three_files_side_by_side(self, run_install, prefix: Path) -> None:
         """`adp` resolves the core helper and proxy as siblings, so all three
         must land in one directory."""
@@ -215,6 +248,31 @@ class TestInstall:
 
         for name in INSTALLED_FILES:
             assert (prefix / name).read_bytes() == (cli_dir / name).read_bytes()
+
+    def test_installed_native_credential_command_uses_its_sibling_helper(self, run_install, prefix: Path, install_home: Path) -> None:
+        assert run_install(["--prefix", str(prefix), "--gateway-url", GATEWAY_URL]).returncode == 0
+        result = subprocess.run(
+            ["bash", str(prefix / "adp"), "credential", "host-setup", "--help"],
+            env={**os.environ, "HOME": str(install_home)},
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "usage: adp credential host-setup" in result.stdout
+
+    @pytest.mark.parametrize("action", ["host-register", "host-serve"])
+    def test_installed_native_coordinator_dispatch(self, run_install, prefix: Path, install_home: Path, action: str) -> None:
+        assert run_install(["--prefix", str(prefix), "--gateway-url", GATEWAY_URL]).returncode == 0
+        result = subprocess.run(
+            ["bash", str(prefix / "adp"), "credential", action, "--help"],
+            env={**os.environ, "HOME": str(install_home)},
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
+        assert f"usage: adp credential {action}" in result.stdout
 
     def test_succeeds_with_the_aws_cli_poisoned(self, run_install, prefix: Path) -> None:
         """The install path must not touch AWS: gateway users have no AWS
@@ -486,8 +544,12 @@ class _CliDownloadHandler(BaseHTTPRequestHandler):
             else:
                 self._send(403, b"Forbidden\n")
         else:
-            if name == "command-manifest.json":
+            if name in ("adp-skills.tar.gz", "adp-skills.tar.gz.sha256"):
+                self._send(404, b"Not found\n")
+            elif name == "command-manifest.json":
                 self._send(200, b'{"schema_version":"test","commands":[{"command":"adp version"}]}\n')
+            elif name == "native-host-requirements.txt":
+                self._send(200, (Path(__file__).parents[2] / "cli" / name).read_bytes())
             else:
                 self._send(200, f"#!/usr/bin/env bash\necho fake {name}\n".encode())
 
@@ -563,6 +625,9 @@ class TestDownloadPathIsAllOrNothing:
         # A bare gateway URL was normalized to hit /api/cli/... (not /cli/...).
         assert "/api/cli/adp" in _CliDownloadHandler.seen_paths
         assert "/cli/adp" not in _CliDownloadHandler.seen_paths
+        assert "/api/cli/adp-skills.tar.gz.sha256" in _CliDownloadHandler.seen_paths
+        assert "Skills archive not served by this deployment" in result.stderr
+        assert not (prefix.parent / "skills").exists()
 
     def test_installs_manifest_as_data_not_an_executable(self, run_download_install, prefix: Path) -> None:
         with _cli_download_server("scripts") as url:
@@ -593,6 +658,29 @@ class TestDownloadPathIsAllOrNothing:
 
         assert result.returncode != 0
         assert "valid command manifest" in (result.stderr + result.stdout).lower()
+        assert _dir_contents(prefix) == []
+
+    def test_modified_native_requirements_are_rejected_without_partial_install(self, run_download_install, prefix: Path) -> None:
+        class ModifiedRequirementsHandler(_CliDownloadHandler):
+            def do_GET(self) -> None:
+                name = self.path.rsplit("/", 1)[-1]
+                if name == "native-host-requirements.txt":
+                    requirements = (Path(__file__).parents[2] / "cli" / name).read_bytes()
+                    self._send(200, requirements + b"\n--extra-index-url https://untrusted.example.org\n")
+                else:
+                    super().do_GET()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ModifiedRequirementsHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}"
+            result = run_download_install(["--prefix", str(prefix), "--gateway-url", url])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert result.returncode != 0
+        assert "pinned native runtime" in (result.stderr + result.stdout).lower()
         assert _dir_contents(prefix) == []
 
     def test_html_fallback_body_is_rejected_and_nothing_is_installed(self, run_download_install, prefix: Path) -> None:

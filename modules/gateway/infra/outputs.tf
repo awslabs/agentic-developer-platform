@@ -318,3 +318,15 @@ output "orchestration_tick_role_arn" {
   description = "IAM role ARN of the orchestration tick Lambda — the engine-command attribution VERIFIER. Pass to the webhook-ingress state's engine_command_verifier_role_arn to grant it read access to the signing keyring and decrypt on that keyring's CMK (issue #4539). Empty when the tick is not enabled."
   value       = var.enable_orchestration_tick ? module.orchestration_tick[0].tick_role_arn : ""
 }
+
+# Crew dashboard edge (#7205 / #7902): the origin the Crew proxy serves, or ""
+# while crew_dashboard_enabled is false.
+output "crew_dashboard_origin" {
+  description = "HTTPS origin of the Crew dashboard edge (ALB hostname or CloudFront distribution), empty when disabled"
+  value       = var.crew_dashboard_enabled ? local.crew_dashboard_origin : ""
+}
+
+output "crew_checkpoint_bucket" {
+  description = "Crew checkpoint bucket name, empty when crew_checkpoints_enabled is false"
+  value       = var.crew_checkpoints_enabled ? aws_s3_bucket.crew_checkpoints[0].bucket : ""
+}

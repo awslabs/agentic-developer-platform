@@ -1,11 +1,23 @@
-"""Owner-fenced terminal delivery without legacy queue or lock bookkeeping."""
+"""Owner-fenced terminal delivery without legacy queue or lock bookkeeping.
+
+The owner's sessions row is the delivery boundary: the reply is appended to ``messages`` and
+``last_response`` and the thread's ``terminal_delivery`` receipt is recorded as ``persisted`` in
+one conditional write. That is what REST polling, the ``adp`` CLI and a reconnecting browser read,
+and what the gateway's completion step accepts. The WebSocket push that follows is a best-effort
+notification: it flips the receipt to ``sent`` when a live connection took the frame, is skipped
+(receipt left ``persisted``) when the session has no connection, and fails the SQS record for a
+retry only when a connection existed but the push did not succeed (#8047).
+"""
 
 import hashlib
 import json
+import logging
 import re
 import time
 
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger(__name__)
 
 
 def deliver_terminal(response, sessions, router):
@@ -13,8 +25,12 @@ def deliver_terminal(response, sessions, router):
         "terminal_delivery", "strict_delivery", "channel", "delivery_id", "session_id", "session_generation",
         "owner_principal", "thread_id", "task_id", "status", "retryable", "accounting_status", "text",
     }
+    error_class = response.get("error_class")
+    if error_class is not None:
+        fields.add("error_class")
     if (
         set(response) != fields
+        or (error_class is not None and (response.get("status") != "failed" or error_class not in ("executor_not_wired", "executor_down")))
         or response["terminal_delivery"] is not True
         or response["strict_delivery"] is not True
         or response["channel"] != "webchat"
@@ -65,6 +81,7 @@ def deliver_terminal(response, sessions, router):
         message = {
             "role": "assistant", "content": response["text"][:10000], "timestamp": now,
             "task_id": response["task_id"], "delivery_id": response["delivery_id"], "status": response["status"],
+            **({"error_class": error_class} if error_class is not None else {}),
         }
         try:
             sessions.update_item(
@@ -91,8 +108,14 @@ def deliver_terminal(response, sessions, router):
             "strict_delivery", "owner_principal", "session_id", "session_generation", "thread_id", "task_id",
             "delivery_id", "status", "retryable", "accounting_status",
         )},
+        **({"error_class": error_class} if error_class is not None else {}),
         "terminal_delivery": True,
     }
+    if not session.get("connection_id"):
+        # No live WebSocket for this session: the reply is already durable and owner-visible, so
+        # there is nothing to retry. The receipt stays "persisted", which completion accepts.
+        logger.info("terminal delivery persisted without a live connection (task=%s)", response["task_id"])
+        return
     if not router.route(response["text"], metadata, response["task_id"]):
         raise RuntimeError("terminal websocket delivery unavailable")
     sessions.update_item(

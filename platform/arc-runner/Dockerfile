@@ -14,7 +14,7 @@
 
 # Preserve Terraform 1.14.9 behavior while updating its embedded Go dependencies.
 # The reviewed patch fixes the dependency graph; no floating go get runs here.
-FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS terraform-build
+FROM public.ecr.aws/docker/library/golang:1.26.9-trixie@sha256:f06b7122f888680048afb247c4e5f49c0069eb6c4c1ccae0f3f4834527a8d22c AS terraform-build
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 WORKDIR /src
 RUN git init . \
@@ -34,8 +34,8 @@ RUN git apply --check /tmp/terraform-security-dependencies.patch \
     && sha256sum -c /tmp/terraform-modules.sha256
 
 # Signed maintained Kaniko release; rebuild only executor with reviewed dependencies.
-FROM ghcr.io/osscontainertools/kaniko:v1.28.5@sha256:738807f0e31daf07743f89260a95956dcc6ee4f62553f4f6344c990cabab8675 AS kaniko-release
-FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS kaniko-build
+FROM ghcr.io/osscontainertools/kaniko:v1.28.6@sha256:2fa20b0a4b40c7db72b479d57e55c2cf79f2178533b2d3bcbd129d6bd3c087ed AS kaniko-release
+FROM public.ecr.aws/docker/library/golang:1.26.9-trixie@sha256:f06b7122f888680048afb247c4e5f49c0069eb6c4c1ccae0f3f4834527a8d22c AS kaniko-build
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 WORKDIR /src
 RUN git init . \
@@ -55,63 +55,134 @@ RUN git apply --check /tmp/kaniko-security-dependencies.patch \
     && sha256sum -c /tmp/kaniko-modules.sha256
 
 # Rebuild bundled tools with fixed Go dependencies, keeping reviewed source pins.
-FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS high-tools-build
+FROM public.ecr.aws/docker/library/golang:1.26.9-trixie@sha256:f06b7122f888680048afb247c4e5f49c0069eb6c4c1ccae0f3f4834527a8d22c AS high-tools-build
 ENV GOTOOLCHAIN=local GOMAXPROCS=2 CGO_ENABLED=0
 RUN apt-get update && apt-get install -y --no-install-recommends libseccomp-dev && rm -rf /var/lib/apt/lists/*
 COPY security/high-tools/*.patch /patches/
 WORKDIR /src/buildx
-RUN git init . && git remote add origin https://github.com/docker/buildx.git \
+RUN --mount=type=cache,target=/go/pkg/mod,id=adp-runner-go-modules \
+    --mount=type=cache,target=/root/.cache/go-build,id=adp-runner-go-build \
+    git init . && git remote add origin https://github.com/docker/buildx.git \
     && git fetch --depth=1 origin 0b265a9f62db554fa9aba6dd19e1bd5704bc7d8a && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = 0b265a9f62db554fa9aba6dd19e1bd5704bc7d8a \
     && git apply --check /patches/buildx.patch && git apply /patches/buildx.patch \
     && sha256sum go.mod go.sum > /tmp/buildx-modules.sha256 \
-    && go mod download && go mod verify \
+    && (for attempt in 1 2 3; do GODEBUG=http2client=0 go mod download && break; [ "$attempt" -lt 3 ] || exit 1; sleep 5; done) && go mod verify \
     && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
         -ldflags "-s -w -X github.com/docker/buildx/version.Version=v0.37.1" -o /out/buildx ./cmd/buildx \
     && sha256sum -c /tmp/buildx-modules.sha256
 WORKDIR /src/helm
-RUN git init . && git remote add origin https://github.com/helm/helm.git \
+RUN --mount=type=cache,target=/go/pkg/mod,id=adp-runner-go-modules \
+    --mount=type=cache,target=/root/.cache/go-build,id=adp-runner-go-build \
+    git init . && git remote add origin https://github.com/helm/helm.git \
     && git fetch --depth=1 origin 144ca65f8501953fa8b41cd1d37c7223051c85b7 && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = 144ca65f8501953fa8b41cd1d37c7223051c85b7 \
     && git apply --check /patches/helm.patch && git apply /patches/helm.patch \
     && sha256sum go.mod go.sum > /tmp/helm-modules.sha256 \
-    && go mod download && go mod verify \
+    && (for attempt in 1 2 3; do GODEBUG=http2client=0 go mod download && break; [ "$attempt" -lt 3 ] || exit 1; sleep 5; done) && go mod verify \
     && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
         -ldflags "-s -w -X helm.sh/helm/v3/internal/version.version=v3.22.0" -o /out/helm ./cmd/helm \
     && sha256sum -c /tmp/helm-modules.sha256
 WORKDIR /src/acr
-RUN git init . && git remote add origin https://github.com/osscontainertools/docker-credential-acr.git \
+RUN --mount=type=cache,target=/go/pkg/mod,id=adp-runner-go-modules \
+    --mount=type=cache,target=/root/.cache/go-build,id=adp-runner-go-build \
+    git init . && git remote add origin https://github.com/osscontainertools/docker-credential-acr.git \
     && git fetch --depth=1 origin 726f4811d1f2da429555fce4c1868c1a7be96f19 && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = 726f4811d1f2da429555fce4c1868c1a7be96f19 \
     && git apply --check /patches/acr.patch && git apply /patches/acr.patch \
     && sha256sum go.mod go.sum > /tmp/acr-modules.sha256 \
-    && go mod download && go mod verify \
+    && (for attempt in 1 2 3; do GODEBUG=http2client=0 go mod download && break; [ "$attempt" -lt 3 ] || exit 1; sleep 5; done) && go mod verify \
     && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
         -ldflags "-s -w" -o /out/docker-credential-acr-env . \
     && sha256sum -c /tmp/acr-modules.sha256
 WORKDIR /src/runc
-RUN git init . && git remote add origin https://github.com/opencontainers/runc.git \
+RUN --mount=type=cache,target=/go/pkg/mod,id=adp-runner-go-modules \
+    --mount=type=cache,target=/root/.cache/go-build,id=adp-runner-go-build \
+    git init . && git remote add origin https://github.com/opencontainers/runc.git \
     && git fetch --depth=1 origin bb14dabeb7185bb72c8c86735d090dcb20f36587 && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = bb14dabeb7185bb72c8c86735d090dcb20f36587 \
     && git apply --check /patches/runc.patch && git apply /patches/runc.patch \
     && sha256sum go.mod go.sum > /tmp/runc-modules.sha256 \
-    && go mod download && go mod verify \
+    && (for attempt in 1 2 3; do GODEBUG=http2client=0 go mod download && break; [ "$attempt" -lt 3 ] || exit 1; sleep 5; done) && go mod verify \
     && CGO_ENABLED=1 go build -mod=readonly -p 1 -trimpath -buildvcs=false -buildmode=pie -tags "seccomp urfave_cli_no_docs netgo osusergo" \
         -ldflags "-s -w -X main.gitCommit=bb14dabeb7185bb72c8c86735d090dcb20f36587 -linkmode external -extldflags -static-pie" -o /out/runc . \
     && sha256sum -c /tmp/runc-modules.sha256
 
-# Exact CPython3.14.7 adapters with statically linked Expat2.8.5.
+# Keep containerd's release behavior while replacing its embedded HTTP/2 module.
+WORKDIR /src/containerd
+RUN --mount=type=cache,target=/go/pkg/mod,id=adp-runner-go-modules \
+    --mount=type=cache,target=/root/.cache/go-build,id=adp-runner-go-build \
+    git init . && git fetch --depth=1 https://github.com/containerd/containerd.git f2551031d7276a770f65f98c9b52e57e7dad07e8 \
+    && git checkout --detach FETCH_HEAD \
+    && git apply --check /patches/containerd.patch && git apply /patches/containerd.patch \
+    && sha256sum go.mod go.sum > /tmp/containerd-modules.sha256 \
+    && (for attempt in 1 2 3; do GODEBUG=http2client=0 go mod download && break; [ "$attempt" -lt 3 ] || exit 1; sleep 5; done) && go mod verify \
+    && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
+        -ldflags "-s -w -X github.com/containerd/containerd/v2/version.Version=v2.4.1 -X github.com/containerd/containerd/v2/version.Revision=f2551031d7276a770f65f98c9b52e57e7dad07e8" \
+        -o /out/ ./cmd/containerd ./cmd/containerd-shim-runc-v2 ./cmd/ctr ./cmd/containerd-stress \
+    && sha256sum -c /tmp/containerd-modules.sha256
+
+# kubectl keeps the supported Kubernetes minor and its original command behavior.
+WORKDIR /src/kubectl
+RUN --mount=type=cache,target=/go/pkg/mod,id=adp-runner-go-modules \
+    --mount=type=cache,target=/root/.cache/go-build,id=adp-runner-go-build \
+    git init . && git fetch --depth=1 https://github.com/kubernetes/kubernetes.git 329000efd0b26bd78155e51e4df449130f0fca00 \
+    && git checkout --detach FETCH_HEAD \
+    && git apply --check /patches/kubectl.patch && git apply /patches/kubectl.patch \
+    && sha256sum go.mod go.sum > /tmp/kubectl-modules.sha256 \
+    && (for attempt in 1 2 3; do GODEBUG=http2client=0 GOWORK=off go list -mod=readonly -deps ./cmd/kubectl > /dev/null && break; [ "$attempt" -lt 3 ] || exit 1; sleep 5; done) \
+    && GOWORK=off go build -mod=readonly -p 1 -trimpath -buildvcs=false \
+        -ldflags "-s -w -X k8s.io/component-base/version.gitVersion=v1.35.9 -X k8s.io/component-base/version.gitCommit=329000efd0b26bd78155e51e4df449130f0fca00" \
+        -o /out/kubectl ./cmd/kubectl \
+    && sha256sum -c /tmp/kubectl-modules.sha256
+
+# These retained CLI releases require the supported Go 1.27 toolchain.
+FROM public.ecr.aws/docker/library/golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS cli-build
+ENV GOTOOLCHAIN=local GOMAXPROCS=2 CGO_ENABLED=0
+COPY security/cli-tools/gh.patch security/cli-tools/yq.patch /patches/
+WORKDIR /src/gh
+ADD --checksum=sha256:a266fe8575c0e061b987920c1831a15f71bf0036a8729a5ebb93c2fb0164899c https://codeload.github.com/cli/cli/tar.gz/refs/tags/v2.101.0 /tmp/gh.tgz
+RUN tar -xzf /tmp/gh.tgz --strip-components=1 \
+    && git apply --check /patches/gh.patch && git apply /patches/gh.patch \
+    && sha256sum go.mod go.sum > /tmp/gh-modules.sha256 \
+    && go mod download && go mod verify \
+    && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
+        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.101.0' -o /out/gh ./cmd/gh \
+    && sha256sum -c /tmp/gh-modules.sha256
+WORKDIR /src/yq
+ADD --checksum=sha256:132a28a669526f99dba52486ac80de3bdafdf9a1a52a0c6bd6045301aca0cd25 https://codeload.github.com/mikefarah/yq/tar.gz/refs/tags/v4.53.6 /tmp/yq.tgz
+RUN tar -xzf /tmp/yq.tgz --strip-components=1 \
+    && git apply --check /patches/yq.patch && git apply /patches/yq.patch \
+    && sha256sum go.mod go.sum > /tmp/yq-modules.sha256 \
+    && go mod download && go mod verify \
+    && go build -mod=readonly -p 1 -trimpath -buildvcs=false -ldflags '-s -w' -o /out/yq . \
+    && sha256sum -c /tmp/yq-modules.sha256
+
+FROM scratch AS cli-security-artifact
+COPY --from=cli-build /out/ /bin/
+COPY --from=cli-build /src/gh/LICENSE /licenses/gh/LICENSE
+COPY --from=cli-build /src/yq/LICENSE /licenses/yq/LICENSE
+
+FROM scratch AS go-security-artifact
+COPY --from=cli-build /out/ /bin/
+COPY --from=cli-build /src/gh/LICENSE /licenses/gh/LICENSE
+COPY --from=cli-build /src/yq/LICENSE /licenses/yq/LICENSE
+COPY --from=high-tools-build /out/ /bin/
+COPY --from=high-tools-build /src/kubectl/LICENSE /licenses/kubectl/LICENSE
+COPY --from=high-tools-build /src/containerd/LICENSE /licenses/containerd/LICENSE
+
+# Exact CPython3.14.8 adapters with statically linked Expat2.8.5.
 # Build-only artifact, source and normal XML checks are committed in
 # platform/arc-runner/security/high-tools/Dockerfile.python314-expat.
-FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:9e6dd602c215e93c5e3cd489d4dbbd070d69ac7944caee65b0e46965bc49b881 AS python314-expat
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:ed2730994a24bfb93595af2b67b769cec5305e497f6a7bbfffda06443527d79c AS python314-expat
 
 # AWS CLI's official 2.37.4 bundle embeds vulnerable Python 3.14.6.
 # Build the maintained portable-exe source distribution with fixed Python.
 # This executable is ADP-built; the AWS release ZIP signature does not cover it.
-FROM public.ecr.aws/docker/library/python:3.14.7-slim-trixie@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS awscli-security
+FROM public.ecr.aws/docker/library/python:3.14.8-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS awscli-security
 ARG TARGETARCH=amd64
 RUN test "$TARGETARCH" = amd64 && \
-    python -c 'import sys; assert sys.version_info[:3] == (3, 14, 7)' && \
+    python -c 'import sys; assert sys.version_info[:3] == (3, 14, 8)' && \
     apt-get update && apt-get install -y --no-install-recommends build-essential binutils && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /src/awscli
@@ -126,8 +197,11 @@ COPY --from=python314-expat /modules/ /opt/awscli-adp/lib/aws-cli/python3.14/lib
 COPY --from=python314-expat /manifest.json /opt/awscli-adp/python314-expat-manifest.json
 COPY --from=python314-expat /licenses/ /opt/awscli-adp/XML-LICENSES/
 RUN PYTHONPATH=/opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload python -c 'import pyexpat, _elementtree; import xml.etree.ElementTree as E; assert pyexpat.EXPAT_VERSION == "expat_2.8.5"; assert E.fromstring("<root>valid</root>").text == "valid"'
-RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
+RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.8'
 COPY security/high-tools/awscli-source-build.json /opt/awscli-adp/source-build.json
+
+FROM scratch AS awscli-security-artifact
+COPY --from=awscli-security /opt/awscli-adp /opt/awscli-adp
 
 FROM ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
 
@@ -200,7 +274,7 @@ RUN pip3 install --no-cache-dir --break-system-packages boto3==1.43.102 \
 COPY --from=awscli-security /opt/awscli-adp /opt/awscli-adp
 RUN rm -rf /usr/local/aws-cli && ln -sf /opt/awscli-adp/bin/aws /usr/local/bin/aws \
     && ln -sf /opt/awscli-adp/bin/aws_completer /usr/local/bin/aws_completer \
-    && aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
+    && aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.8'
 
 # ── Terraform (matches project version per session-context: 1.14.x) ─────────
 ENV TERRAFORM_VERSION=1.14.9
@@ -211,28 +285,19 @@ RUN terraform version
 
 # ── kubectl (matches cluster: 1.35.x) ───────────────────────────────────────
 ENV KUBECTL_VERSION=1.35.9
-RUN curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
-        -o /usr/local/bin/kubectl \
-    && chmod +x /usr/local/bin/kubectl \
-    && kubectl version --client
+COPY --from=high-tools-build /out/kubectl /usr/local/bin/kubectl
+COPY --from=high-tools-build /src/kubectl/LICENSE /usr/local/share/licenses/kubectl/LICENSE
+RUN kubectl version --client
 
 # ── Helm 3, same 3.22 release with fixed crypto dependency ──────────────────
 COPY --from=high-tools-build /out/helm /usr/local/bin/helm
 COPY --from=high-tools-build /src/helm/LICENSE /usr/local/share/licenses/helm/LICENSE
 RUN helm version
 
-# ── gh CLI (latest) ─────────────────────────────────────────────────────────
-RUN mkdir -p -m 755 /etc/apt/keyrings \
-    && out=$(mktemp) \
-    && wget -nv -O "$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    && cat "$out" | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
-    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
-    && rm -rf /var/lib/apt/lists/* "$out" \
-    && gh --version
+# Retain GitHub CLI behavior with the patched Go runtime and HTTP/2 module.
+COPY --from=cli-build /out/gh /usr/bin/gh
+COPY --from=cli-build /src/gh/LICENSE /usr/local/share/licenses/gh/LICENSE
+RUN gh --version
 
 # ── Docker CLI (ECR login/push; actual builds via CodeBuild or Kaniko) ──────
 RUN install -m 0755 -d /etc/apt/keyrings \
@@ -247,8 +312,8 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && docker --version
 
 # ── Kaniko executor (daemonless container builds; no Docker daemon needed) ──
-# Maintained v1.28.5 helpers plus executor rebuilt with patched dependencies.
-# Keep the release digest and exact source commit aligned.
+# Maintained v1.28.6 credential helpers; executor retains the reviewed v1.28.5 source.
+# Each component has its own immutable source/release pin.
 COPY --from=kaniko-release /kaniko /kaniko
 COPY --from=kaniko-build /out/executor /kaniko/executor
 COPY --from=kaniko-build /src/LICENSE /usr/local/share/licenses/kaniko/LICENSE
@@ -257,12 +322,10 @@ RUN chmod -R 777 /kaniko
 ENV PATH="/kaniko:${PATH}"
 
 # Update the inherited Docker daemon/runtime tools without removing build capabilities.
-ADD --checksum=sha256:d8db66739d2e28d4933786d73e918d9be643a67fbd835db1bf740d650a259e70 https://download.docker.com/linux/static/stable/x86_64/docker-29.8.1.tgz /tmp/docker.tgz
-ADD --checksum=sha256:d65eda6a188aac1006848d8060099be88ba9c4bcddbfd9a23a961194710d0dd4 https://github.com/containerd/containerd/releases/download/v2.4.1/containerd-2.4.1-linux-amd64.tar.gz /tmp/containerd.tgz
+ADD --checksum=sha256:c158ecc55adb3afb01bbd3539ed3b997d20c26dbdc418080506cc1bf5243ff57 https://download.docker.com/linux/static/stable/x86_64/docker-29.9.1.tgz /tmp/docker.tgz
 RUN tar -xzf /tmp/docker.tgz -C /tmp \
-    && install -m 0755 /tmp/docker/dockerd /tmp/docker/docker-proxy /tmp/docker/docker-init /usr/bin/ \
-    && mkdir /tmp/containerd && tar -xzf /tmp/containerd.tgz -C /tmp/containerd \
-    && install -m 0755 /tmp/containerd/bin/* /usr/bin/
+    && install -m 0755 /tmp/docker/docker /tmp/docker/dockerd /tmp/docker/docker-proxy /tmp/docker/docker-init /usr/bin/
+COPY --from=high-tools-build /out/containerd /out/containerd-shim-runc-v2 /out/ctr /out/containerd-stress /usr/bin/
 COPY --from=high-tools-build /out/runc /usr/bin/runc
 COPY --from=high-tools-build /out/buildx /usr/local/lib/docker/cli-plugins/docker-buildx
 COPY --from=high-tools-build /out/docker-credential-acr-env /kaniko/docker-credential-acr-env

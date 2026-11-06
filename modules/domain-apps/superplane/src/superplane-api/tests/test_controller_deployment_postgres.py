@@ -711,11 +711,12 @@ async def test_create_tombstone_replay_requires_original_revision_and_never_recr
 @pytest.fixture
 async def worker_runtime(workload, tmp_path):
     """Real paid task registry/RPC/finalizer; only remote I/O is simulated."""
+    from dataclasses import replace
     from datetime import UTC, datetime, timedelta
     import httpx
     from harness_jobs.execution_rpc import ExecutionGrant
     from harness_jobs.identity import ResolvedPrincipal
-    from harness_jobs.leases import acquire
+    from harness_jobs.leases import acquire, read_lease
     from superplane_executor.authority import VerifiedOperation
     from superplane_executor.handoff import RunHandoff
     from superplane_executor.inventory import Finalizer
@@ -988,9 +989,27 @@ async def worker_runtime(workload, tmp_path):
             plan=plan,
         )
 
-    async def execute(worker):
+    async def execute(worker, *, maintain_assignment=False):
         results = []
         for step in worker.plan.steps:
+            if maintain_assignment:
+                # The production task loop republishes its 30-second assignment
+                # and renews through RPC. Long staged tests need the same native
+                # maintenance between steps; do not extend or mock expiry checks.
+                operation_id = worker.operation.grant.lease.operation_id
+                name = await worker.registry.publish(operation_id)
+                assert worker.registry.tokens[name][0] == worker.token
+                await worker.server.dispatch(
+                    {"token": worker.token, "method": "renew", "arguments": {}}
+                )
+                async with pool.acquire() as connection:
+                    renewed = await read_lease(connection, operation_id=operation_id)
+                assert renewed is not None
+                worker.operation = replace(
+                    worker.operation,
+                    grant=replace(worker.operation.grant, lease=renewed),
+                )
+                verified[operation_id] = worker.operation
             try:
                 result = await worker.server.dispatch(
                     {

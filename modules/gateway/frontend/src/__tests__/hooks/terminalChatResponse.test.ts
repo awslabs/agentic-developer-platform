@@ -31,6 +31,15 @@ describe('protected terminal responses', () => {
     expect(chunks.size).toBe(0);
   });
 
+  it('keeps the evidence the AG-UI answer_evidence event attached to the streamed bubble (#8113)', () => {
+    const evidence = { status: 'ok' as const, coverage: [{ source: 'platform___my_work_items:github.work_items', status: 'available' as const }],
+      sources: [{ label: 'acme/widgets#14', url: 'https://github.com/acme/widgets/issues/14' }], has_more: false };
+    const result = terminalChatResponse(frame, 'session-a', [{ ...streaming, evidence }], new Map())!;
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ id: 'bubble', content: 'Saved reply', status: 'complete', evidence });
+    expect(terminalChatResponse(frame, 'session-a', [streaming], new Map())![0].evidence).toBeUndefined();
+  });
+
   it('never replaces another task’s streaming bubble', () => {
     const newer = { ...streaming, taskId: 'newer-task' };
     const result = terminalChatResponse(frame, 'session-a', [newer], new Map(), 'newer-task')!;

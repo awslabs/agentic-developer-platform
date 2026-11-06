@@ -10,6 +10,12 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+# The package otherwise reconfigures immediately from EXTERNAL_URL, before the
+# ALB/TLS and relative-root settings below exist, and attempts ACME validation
+# against CloudFront. Configure once only after all serving settings are ready.
+install -d -m 0755 /etc/gitlab
+touch /etc/gitlab/skip-auto-reconfigure
+
 # -----------------------------------------------------------------------------
 # System updates and dependencies
 # -----------------------------------------------------------------------------
@@ -40,7 +46,8 @@ rm -f "$GITLAB_REPO_SCRIPT"
 # -----------------------------------------------------------------------------
 # Install GitLab CE
 # -----------------------------------------------------------------------------
-EXTERNAL_URL="${gitlab_external_url}" apt-get install -y gitlab-ce=19.1.*
+EXTERNAL_URL="${gitlab_external_url}" apt-get install -y gitlab-ce='${gitlab_package_version}'
+rm -f /etc/gitlab/skip-auto-reconfigure
 
 # -----------------------------------------------------------------------------
 # Configure GitLab — ALB terminates TLS, GitLab listens on HTTP:80
@@ -50,6 +57,7 @@ cat >> /etc/gitlab/gitlab.rb <<'GITLAB_CONFIG'
 # ALB handles TLS termination; GitLab serves HTTP only
 nginx['listen_port'] = 80
 nginx['listen_https'] = false
+letsencrypt['enable'] = false
 
 # Trust the ALB's X-Forwarded headers
 nginx['proxy_set_headers'] = {
@@ -161,6 +169,24 @@ OIDC_CONFIG
 # Reconfigure GitLab with updated settings (includes OIDC)
 # -----------------------------------------------------------------------------
 gitlab-ctl reconfigure
+
+%{ if portal_sso_enabled ~}
+apt-get install -y python3-boto3
+install -d -m 0700 /opt/adp-gitlab
+cat > /opt/adp-gitlab/configure-portal-sso.py <<'ADP_SSO_SETUP'
+${portal_sso_setup}
+ADP_SSO_SETUP
+cat > /opt/adp-gitlab/adp_jwt_validation.rb <<'ADP_SSO_GUARD'
+${portal_sso_guard}
+ADP_SSO_GUARD
+cat > /opt/adp-gitlab/adp_cli_oauth.rb <<'ADP_CLI_GUARD'
+${cli_oauth_guard}
+ADP_CLI_GUARD
+python3 /opt/adp-gitlab/configure-portal-sso.py \
+  --environment '${environment}' --region '${aws_region}' \
+  --portal-url 'https://${cloudfront_domain}' \
+  --guard-file /opt/adp-gitlab/adp_jwt_validation.rb
+%{ endif ~}
 
 # -----------------------------------------------------------------------------
 # Seed "Back to ADP Dashboard" appearance header (CloudFront mode only)

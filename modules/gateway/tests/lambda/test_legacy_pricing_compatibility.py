@@ -61,7 +61,9 @@ def test_non_openai_db_base_prices_keep_explicit_curated_cache_rates(monkeypatch
     from pricing_policy.storage import V2RateCache
 
     state = V2RateCache().state(monotonic=0, now_iso="2026-09-12T06:00:00+00:00")
-    handler.process_chat_log(MagicMock(), log, state)
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value.fetchone.return_value = (None,)
+    handler.process_chat_log(connection, log, state)
     # U=1000*9/M + O=500*45/M + C=200*.3/M + W=400*3.75/M.
     # Deriving cache rates from overridden input would incorrectly charge .03618.
     assert writes.call_count == 6

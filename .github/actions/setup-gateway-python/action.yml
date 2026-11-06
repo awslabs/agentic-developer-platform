@@ -1,0 +1,57 @@
+name: Prepare Gateway Python
+description: Cache an installed test environment, then bind local packages to the current checkout.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      id: python
+      with:
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: |
+          modules/gateway/pyproject.toml
+          modules/L5-services/pyproject.toml
+          libs/python/adp-common/pyproject.toml
+    - name: Identify environment compatibility
+      id: environment
+      shell: bash
+      run: |
+        # Keep dependencies outside the checkout so repository source scans cannot
+        # mistake third-party package code for application code.
+        # Virtualenv scripts and editable installs contain absolute paths.
+        # Include both interpreter and checkout locations; never restore elsewhere.
+        fingerprint=$(python -c 'import hashlib, os, platform, sys; print(hashlib.sha256(repr((os.getcwd(), sys.executable, os.environ["RUNNER_TEMP"], platform.libc_ver())).encode()).hexdigest())')
+        echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@v5
+      continue-on-error: true
+      id: cache
+      with:
+        path: ${{ runner.temp }}/adp-gateway-venv
+        # Exact matches only. Track local dependency metadata and locks, and
+        # include this action so changes to installation invalidate old entries.
+        key: gateway-venv-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.python.outputs.python-version }}-${{ steps.environment.outputs.fingerprint }}-${{ hashFiles('**/pyproject.toml', '**/*requirements*.txt', '**/*requirements*.lock', '**/uv.lock', '.github/actions/setup-gateway-python/action.yml') }}
+    - name: Install or refresh dependencies
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        ADP_CI_VENV: ${{ runner.temp }}/adp-gateway-venv
+      run: |
+        if [ "$CACHE_HIT" != true ]; then
+          rm -rf -- "$ADP_CI_VENV"
+          python -m venv "$ADP_CI_VENV"
+          "$ADP_CI_VENV/bin/python" -m pip install 'setuptools>=75' wheel hatchling editables
+          "$ADP_CI_VENV/bin/python" -m pip install -e 'modules/gateway[dev]' -e 'modules/L5-services[dev]' -e 'libs/python/adp-common[l5-consumers]'
+        else
+          # Rebuild editable metadata for newly added modules at this revision.
+          # Reuse installed dependencies, never test results or staged source.
+          "$ADP_CI_VENV/bin/python" -m pip install --no-deps --no-build-isolation -e 'modules/gateway[dev]' -e 'modules/L5-services[dev]' -e 'libs/python/adp-common[l5-consumers]'
+        fi
+        echo "$ADP_CI_VENV/bin" >> "$GITHUB_PATH"
+        echo "VIRTUAL_ENV=$ADP_CI_VENV" >> "$GITHUB_ENV"
+    - name: Save prepared environment before tests run
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      continue-on-error: true
+      with:
+        path: ${{ runner.temp }}/adp-gateway-venv
+        key: ${{ steps.cache.outputs.cache-primary-key }}

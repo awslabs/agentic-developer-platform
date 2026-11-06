@@ -17,6 +17,8 @@ RUN python -c "from pathlib import Path; from urllib.request import urlopen; Pat
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+COPY adp-common/ /opt/adp-common/
+RUN pip install --no-cache-dir --no-deps /opt/adp-common
 
 # Copy application code (staged into build dir by bs-agent-context-image.yml pre_build)
 COPY door/ ./door/

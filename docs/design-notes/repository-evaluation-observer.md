@@ -28,9 +28,24 @@ cd modules/gateway
 python -c 'from src.orchestration.repository_evaluation_contract import harness_digest; print(harness_digest())'
 ```
 
-Do not substitute a placeholder digest. Proposal validation and observation
-both compare it against the installed verifier. An accepted specification also
-declares the following evidence:
+Do not substitute a placeholder digest. For read-only `repository-evaluation/v1`
+specifications without a producer, the versioned evidence schema and runner
+adapter define compatibility. A routine gateway update can change the byte
+fingerprint without requiring a plan amendment or a new acceptance. This applies
+to existing accepted specifications too, preserving their serialized form and
+plan hashes. Receipts retain the accepted `harness_sha256` and record the actual
+installed verifier in `collector_harness_sha256`.
+
+Set `runner.harness_policy: "exact"` when an evaluation must use that exact
+implementation. The default is `"contract"` (omitted in serialized contracts).
+Unsupported schemas/adapters and explicit exact-pin mismatches still block;
+breaking verification semantics require a new contract version. Producer
+dispatch, CLI live qualification and multi-repository contracts retain their
+existing implementation checks. Compatibility never waives source, permission,
+check, workflow, artifact, freshness or predicate requirements. Proposal
+validation, bounded evaluation acceptance and observation use the same policy.
+
+An accepted specification also declares the following evidence:
 
 - Every direct story predecessor's graph address and mandatory check names/App
   IDs. The observer resolves that story's current binding and genuine successful
@@ -47,6 +62,23 @@ declares the following evidence:
   included in the evaluated workflow revision. Default `dispatch_only: true`
   requires the committed YAML to declare only `workflow_dispatch`; the actual
   run must always have that event. The observer dispatches no workflow.
+
+A required check may include an explicit GitHub Actions workflow selector:
+
+```json
+{"name":"verify","app_id":15368,"workflow":{"workflow_id":123,"workflow_path":".github/workflows/tools-ci.yml"}}
+```
+
+Use the repository's actual numeric workflow identity and reviewed path. Declare
+every intended workflow separately when jobs share a name. The observer resolves
+each check suite through GitHub's authenticated workflow-runs API, verifies the
+repository and exact source revision, and binds the check to one job in the
+current run attempt. It rechecks that run before recording workflow, suite, run,
+attempt and job identities in the check receipt. A failed namesake cannot be
+replaced by a successful check from another workflow. Legacy name/App selectors
+keep their existing serialized form and refuse multiple matches; adding a
+workflow selector requires explicit evaluation-contract acceptance. This does
+not reinterpret or waive historical failed checks.
 
 For an already-running shared-worker flow, use
 `POST /orchestration/flows/{flow_id}/evaluation/preview`, then the matching
@@ -106,6 +138,29 @@ digest, source snapshot, provider evidence, and mandatory verdict. Settlement
 rechecks current policy, plan, predecessor states, and bindings before passing
 the graph node and releasing successors. Missing or failed evidence keeps the
 evaluation ready with its blocker for the next tick.
+
+The flow graph projects a current `repository-evaluation-refusal/v1` as an
+`evidence_wait` progress entry while retaining the real node state. Its safe
+diagnostic includes the responsible `actor`, `required_input`, `next_action` and
+`observed_at`; raw provider prose remains in the audit ledger. The refusal binds
+the tenant, flow, node, attempt, current accepted plan ID/version/hash,
+specification hash and validated acceptance-overlay ID. A replacement overlay,
+changed scope or passed node removes the old diagnostic immediately. Historical
+unscoped refusals require a fresh observer check before they can be displayed.
+Identical scoped refusals remain deduplicated, so `observed_at` is the first
+recorded occurrence of the retained refusal, not a claim about the latest tick.
+A newer typed repository receipt for the same scope supersedes an older refusal.
+If its mandatory criteria failed, progress names that failure and its evidence
+producer action instead of retaining a resolved connection or timeout error.
+Malformed, wrong-actor or mismatched receipts cannot clear a current refusal.
+
+Migration `107_repository_eval_display` adds a V2 classification function and
+concurrent index, leaving the existing V1 function/index intact for rolling
+readers and rollback. Apply the migration before serving the new graph reader.
+It depends on `105_flow_cost_covering`; any independently prepared migration
+branch must be reconciled at integration. Graph selection adds at most one
+repository refusal and one repository result per selected node and never loads
+its full audit history.
 
 Repository receipts always state `live_attestation: false`. They do not establish
 deployment readiness or the new CLI uplift's complete live acceptance. The older

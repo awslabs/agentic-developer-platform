@@ -128,7 +128,7 @@ async def retirement_facts(
         raise ProvisioningUnavailable(
             "retirement needs complete ownership and a reviewed destroy plan for every managed resource; no deletion was submitted"
         )
-    policy = policy_for(org_id)
+    policy = policy_for(org_id, workspace_id)
     runtime = validate_runtime_config(policy.runtime)
     account = inventory.cluster_arn.split(":")[4]
     region = inventory.cluster_arn.split(":")[3]

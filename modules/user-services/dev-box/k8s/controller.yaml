@@ -1,0 +1,129 @@
+# Dev Box controller runtime (#7998) — how controller/worker.py runs in the
+# platform account. Rendered and applied by scripts/deploy-dev-box.sh after the
+# foundation stack and the verified release manifest exist:
+#
+#   * image: the gateway release image currently served by deploy/bedrockgateway
+#     (the worker imports the gateway package `src.*`; same release, same models),
+#   * code: ConfigMap __CODE_CONFIGMAP__ carries controller/*.py from the deployed
+#     commit, mounted at /opt/dev-box/controller (PYTHONPATH adds /opt/dev-box),
+#   * release: ConfigMap __RELEASE_CONFIGMAP__ carries release.json (the manifest,
+#     digest-checked by worker.validate_release) and outputs.json (terraform
+#     outputs), mounted read-only at /etc/dev-box,
+#   * identity: service account __SERVICE_ACCOUNT__ with IRSA role
+#     __CONTROLLER_RUNTIME_ROLE_ARN__ (infra/self_managed.tf), which may only
+#     assume the module's fenced controller role and connect to the gateway
+#     database; EC2/SSM/DynamoDB calls happen under the assumed controller role,
+#   * configuration: envFrom bedrockgateway-config (database, region, the
+#     BG_DEV_BOX_MAX_DEPLOYMENT_* bounds rendered from SSM) plus the pinned
+#     BG_DEV_BOX_DEPLOYMENT_ID, which must equal the manifest's deployment.
+#
+# One replica, Recreate: operations carry a lease owner, but a single reconciler
+# keeps provider actions serialized. Hardening mirrors the gateway Deployment.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: __SERVICE_ACCOUNT__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: dev-box-controller
+    app.kubernetes.io/part-of: dev-box
+    adp.aws-e.io/component: dev-box
+  annotations:
+    eks.amazonaws.com/role-arn: __CONTROLLER_RUNTIME_ROLE_ARN__
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-box-controller
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: dev-box-controller
+    app.kubernetes.io/part-of: dev-box
+    adp.aws-e.io/component: dev-box
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dev-box-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dev-box-controller
+        app.kubernetes.io/part-of: dev-box
+        adp.aws-e.io/component: dev-box
+      annotations:
+        cloudwatch.aws.amazon.com/auto-annotate-java: "false"
+        instrumentation.opentelemetry.io/inject-java: "false"
+        adp.aws-e.io/release-manifest-sha256: "__RELEASE_SHA256__"
+        adp.aws-e.io/source-revision: "__SOURCE_REVISION__"
+    spec:
+      serviceAccountName: __SERVICE_ACCOUNT__
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: __GATEWAY_IMAGE__
+          workingDir: /app
+          command: ["python", "-m", "controller.worker", "--manifest", "/etc/dev-box/release.json", "--outputs", "/etc/dev-box/outputs.json"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          envFrom:
+            - configMapRef:
+                name: bedrockgateway-config
+            - configMapRef:
+                name: adp-worker-authority-config
+                optional: true
+          env:
+            - name: PYTHONPATH
+              value: /app:/opt/dev-box
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: BG_DEV_BOX_DEPLOYMENT_ID
+              value: "__DEPLOYMENT_ID__"
+          volumeMounts:
+            - name: controller-code
+              mountPath: /opt/dev-box/controller
+              readOnly: true
+            - name: release
+              mountPath: /etc/dev-box
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/appuser
+      volumes:
+        - name: controller-code
+          configMap:
+            name: __CODE_CONFIGMAP__
+        - name: release
+          configMap:
+            name: __RELEASE_CONFIGMAP__
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: home
+          emptyDir:
+            sizeLimit: 64Mi

@@ -7,19 +7,24 @@ metadata:
     app.kubernetes.io/name: bedrockgateway
     app.kubernetes.io/part-of: bedrock-gateway
 spec:
-  # Baseline replica count; scale-out beyond this is owned by the HPA
-  # (k8s/hpa.yaml, min 2). Kept in the manifest (rather than removed, the
-  # usual HPA practice) because the deploy workflow client-side-applies this
-  # file — dropping the field would prune it and default the Deployment to 1
-  # replica for a window on every deploy. The cost of keeping it: a deploy
-  # momentarily resets scale to 2 and the HPA re-raises it within a sync
-  # period (~15s).
+  # First-install baseline; existing capacity is preserved by both maintained
+  # deployment paths. HPA owns subsequent scale decisions. Keep an explicit
+  # field during client-side apply: dropping it can prune the previous value
+  # and default the Deployment to one replica.
   replicas: 2
+  # Roll half the fleet at a time. With maxSurge 1 a 12-pod fleet replaced one
+  # pod per ~55 s (startup + readiness), so every gateway deploy spent ~11 min
+  # in the rollout alone (run 39371211069, 2026-10-20). 50% rolls 12 pods in two
+  # waves. maxUnavailable stays 0: no serving capacity is removed until its
+  # replacement is Ready. The database budget for the extra surge pods is
+  # worked through in docs/performance/gateway-database-pooling.md and pinned
+  # by tests/infra/test_gateway_database_pool_budget.py; the surge pods also
+  # need node headroom (6 x 2Gi requests at the 12-pod HPA ceiling).
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 0
-      maxSurge: 1
+      maxSurge: 50%
   selector:
     matchLabels:
       app: bedrockgateway
@@ -29,6 +34,13 @@ spec:
       annotations:
         cloudwatch.aws.amazon.com/auto-annotate-java: "false"
         instrumentation.opentelemetry.io/inject-java: "false"
+        # Exempt serving pods from voluntary node consolidation (#7780). The
+        # aggressive-packer NodePool consolidates after 30s with a 50% budget and
+        # the PDB allows one pod out at a time, so without this Karpenter evicted
+        # a gateway pod roughly once a minute: readiness gaps, cut model streams
+        # (hung agents, #7742) and rollout timeouts. Rollouts replace pods via the
+        # Deployment controller and are unaffected; only consolidation is blocked.
+        karpenter.sh/do-not-disrupt: "true"
       labels:
         app: bedrockgateway
         app.kubernetes.io/name: bedrockgateway
@@ -67,6 +79,10 @@ spec:
       containers:
         - name: bedrockgateway
           image: REPLACE_WITH_GATEWAY_IMAGE
+          # Make the one-CPU worker count visible to capacity validation. The
+          # two-CPU llm-proxy profile retains its own explicit worker settings.
+          command: [uvicorn]
+          args: [src.app:create_app, --factory, --host, "0.0.0.0", --port, "8080", --workers, "1", --timeout-keep-alive, "910"]
           lifecycle:
             preStop:
               exec:
@@ -88,33 +104,20 @@ spec:
           ports:
             - containerPort: 8080
               protocol: TCP
-          # Memory sized for 4 uvicorn workers + streaming/chat-logging buffers.
-          # The memory REQUEST is 1.5Gi. The HPA's utilization math is computed
-          # against requests, so this value sets the scale-out line: too low and
-          # the idle baseline alone exceeds the 75% target, the autoscaler reads
-          # idle as overload, and the fleet pins at maxReplicas with no burst
-          # headroom. That has now happened twice — first at a 1Gi request
-          # (768Mi line vs ~800Mi baseline), then at 1.25Gi (960Mi line vs a
-          # baseline that has since grown to ~900Mi as new routers landed).
-          # Measured 2026-09-19: a freshly started pod is 890-900Mi, so 1.25Gi
-          # left only ~60Mi of margin. At 1.5Gi the 75% line is ~1152Mi, giving
-          # ~250Mi over baseline, so idle settles toward minReplicas and
-          # scale-out fires on real load.
-          #
-          # When adding anything that raises cold-start footprint, re-measure the
-          # baseline and keep it under ~60% of this request, or the autoscaler
-          # silently degenerates into "always at max" again.
-          #
-          # The 2Gi LIMIT is unchanged — it stays the OOM ceiling. CPU is
-          # untouched: the gateway is async I/O-bound and idles at 1-2% even
-          # under full agent traffic. See k8s/hpa.yaml.
+          # Four-worker serving pods measured 1.3–1.9Gi on 2026-10-22;
+          # the pricing migration/probe exec OOMed at the former 2Gi limit.
+          # Reserve 2Gi and leave headroom up to 3Gi for verification and bursts.
+          # The maintained capacity renderer retains this floor for old-source
+          # deployments. The 75% memory HPA line becomes 1.5Gi; this is not a
+          # measured idle/cooldown qualification. Keep this memory floor while
+          # changing workers. See docs/performance/gateway-capacity-policy.md.
           resources:
             requests:
               cpu: 250m
-              memory: 1.5Gi
+              memory: 2Gi
             limits:
               cpu: 1000m
-              memory: 2Gi
+              memory: 3Gi
           # Issue #5675: the writable surface readOnlyRootFilesystem leaves behind.
           #
           # Scoped deliberately: /app (the code, the pricing snapshots, the
@@ -140,16 +143,24 @@ spec:
               mountPath: /tmp
             - name: home
               mountPath: /home/appuser
-          # Startup delay sized for 4 uvicorn workers each registering all
-          # routes from scratch. New modules (vault, internal, connections)
-          # have added ~5-8s to cold start since the last probe tuning.
-          # If startup gets slower again, prefer a startupProbe over raising
-          # these further — cleaner semantic.
+          # Cold start registers routes and initializes instrumentation before
+          # serving requests. The startupProbe owns that
+          # window — up to 120 s, polled every 5 s — so readiness and liveness
+          # need no initialDelay and a pod is marked Ready on the first /health
+          # that answers instead of at the next 10 s tick after a 30 s delay. If
+          # startup gets slower again, raise failureThreshold here; leave the
+          # readiness and liveness probes alone.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 24
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 60
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
@@ -157,19 +168,203 @@ spec:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 10
+            periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 3
           envFrom:
             - configMapRef:
                 name: bedrockgateway-config
+            - configMapRef:
+                name: adp-atlassian-forge
+                optional: true
             # Applied by webhook Terraform after the gateway's first bootstrap.
             # Later envFrom entries override the legacy rendered defaults.
             - configMapRef:
                 name: adp-worker-authority-config
                 optional: true
+            - configMapRef:
+                name: adp-ingestion-control
+                optional: true
+            - secretRef:
+                name: adp-tools-oauth-mediators
+                optional: true
+            # The fenced connector handoff owns this release configuration.
+            - configMapRef:
+                name: adp-tool-adapter-runtime
+                optional: true
           env:
+            # Optional GitLab module owns activation so gateway updates preserve it.
+            - name: FEATURE_GITLAB_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-gitlab-runtime
+                  key: FEATURE_GITLAB_ENABLED
+                  optional: true
+            # Published through protected Knowledge deployment configuration.
+            # The default configuration leaves the mediator disabled; its private
+            # provenance proof never belongs in the public/default ConfigMap.
+            - name: ADP_TOOLS_KNOWLEDGE_MEDIATOR_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: adp-tools-knowledge-mediator
+                  key: ADP_TOOLS_KNOWLEDGE_MEDIATOR_ENABLED
+                  optional: true
+            - name: ADP_TOOLS_KNOWLEDGE_MEDIATOR_URL
+              valueFrom:
+                secretKeyRef:
+                  name: adp-tools-knowledge-mediator
+                  key: ADP_TOOLS_KNOWLEDGE_MEDIATOR_URL
+                  optional: true
+            - name: ADP_TOOLS_KNOWLEDGE_EDGE_PROVENANCE
+              valueFrom:
+                secretKeyRef:
+                  name: adp-tools-knowledge-mediator
+                  key: ADP_TOOLS_KNOWLEDGE_EDGE_PROVENANCE
+                  optional: true
+            - name: ADP_TOOLS_KNOWLEDGE_GATEWAY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: adp-tools-knowledge-mediator
+                  key: ADP_TOOLS_KNOWLEDGE_GATEWAY_ID
+                  optional: true
+            - name: ADP_TOOLS_KNOWLEDGE_TARGET_ID
+              valueFrom:
+                secretKeyRef:
+                  name: adp-tools-knowledge-mediator
+                  key: ADP_TOOLS_KNOWLEDGE_TARGET_ID
+                  optional: true
+            - name: ADP_TOOLS_KNOWLEDGE_SOURCE_REVISION
+              valueFrom:
+                secretKeyRef:
+                  name: adp-tools-knowledge-mediator
+                  key: ADP_TOOLS_KNOWLEDGE_SOURCE_REVISION
+                  optional: true
+            # Independently enabled, owner-bound service tools. The protected
+            # operator publishes verified bindings; missing keys enable nothing.
+            - name: ADP_TOOLS_GITHUB_MEDIATOR_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_GITHUB_MEDIATOR_ENABLED
+                  optional: true
+            - name: ADP_TOOLS_GITHUB_MEDIATOR_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_GITHUB_MEDIATOR_URL
+                  optional: true
+            - name: ADP_TOOLS_GITHUB_GATEWAY_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_GITHUB_GATEWAY_ID
+                  optional: true
+            - name: ADP_TOOLS_GITHUB_TARGET_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_GITHUB_TARGET_ID
+                  optional: true
+            - name: ADP_TOOLS_GITHUB_SOURCE_REVISION
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_GITHUB_SOURCE_REVISION
+                  optional: true
+            - name: ADP_TOOLS_JIRA_MEDIATOR_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_JIRA_MEDIATOR_ENABLED
+                  optional: true
+            - name: ADP_TOOLS_JIRA_MEDIATOR_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_JIRA_MEDIATOR_URL
+                  optional: true
+            - name: ADP_TOOLS_JIRA_GATEWAY_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_JIRA_GATEWAY_ID
+                  optional: true
+            - name: ADP_TOOLS_JIRA_TARGET_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_JIRA_TARGET_ID
+                  optional: true
+            - name: ADP_TOOLS_JIRA_SOURCE_REVISION
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_JIRA_SOURCE_REVISION
+                  optional: true
+            - name: ADP_TOOLS_SLACK_MEDIATOR_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_SLACK_MEDIATOR_ENABLED
+                  optional: true
+            - name: ADP_TOOLS_SLACK_MEDIATOR_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_SLACK_MEDIATOR_URL
+                  optional: true
+            - name: ADP_TOOLS_SLACK_GATEWAY_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_SLACK_GATEWAY_ID
+                  optional: true
+            - name: ADP_TOOLS_SLACK_TARGET_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_SLACK_TARGET_ID
+                  optional: true
+            - name: ADP_TOOLS_SLACK_SOURCE_REVISION
+              valueFrom:
+                configMapKeyRef:
+                  name: adp-tool-adapter-runtime
+                  key: ADP_TOOLS_SLACK_SOURCE_REVISION
+                  optional: true
+            - name: ADP_TOOLS_SLACK_POST_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: adp-tools-oauth-mediators
+                  key: ADP_TOOLS_SLACK_POST_ENABLED
+                  optional: true
+            - name: ADP_TOOLS_SLACK_POST_FIXTURE
+              valueFrom:
+                secretKeyRef:
+                  name: adp-tools-oauth-mediators
+                  key: ADP_TOOLS_SLACK_POST_FIXTURE
+                  optional: true
+            # Long-lived HTTP workers reuse IAM-authenticated connections. Keep
+            # this out of the shared ConfigMap: the tick Lambda uses NullPool.
+            # One worker x (8 retained + 4 overflow) = 12 connections per pod,
+            # preserving the aggregate pool budget of the former four workers.
+            - name: BG_RDS_POOL_ENABLED
+              value: "true"
+            - name: BG_RDS_POOL_SIZE
+              value: "8"
+            - name: BG_RDS_POOL_MAX_OVERFLOW
+              value: "4"
+            - name: BG_RDS_SPLIT_POOL_ENABLED
+              value: "false"
+            - name: BG_RDS_REQUEST_POOL_SIZE
+              value: "6"
+            - name: BG_RDS_ACCOUNTING_POOL_SIZE
+              value: "4"
+            - name: BG_RDS_CONNECT_TIMEOUT_SECONDS
+              value: "5"
+            - name: BG_RDS_LOCK_TIMEOUT_MS
+              value: "1000"
+            - name: BG_RDS_STATEMENT_TIMEOUT_MS
+              value: "8000"
             # Shared service keys stay in the gateway; protected workers receive
             # only authenticated own-run service results (#5195/#5210).
             - name: ADP_MARKER_SIGNING_KEY
@@ -251,6 +446,19 @@ spec:
                   name: bedrockgateway-secrets
                   key: magic-link-secret
                   optional: true
+            # Shared AgentCore user memory namespace key (#7901, code #7210): the
+            # HMAC key that derives each owner's memory namespace. Terraform writes
+            # it as SSM SecureString /adp/<env>/gateway/agentcore-namespace-key;
+            # both renderers read it with --with-decryption into the
+            # bedrockgateway-secrets Secret. Never the ConfigMap, never an inline
+            # value. Optional so an environment with agentcore_memory_enabled off
+            # still starts (all four memory variables empty => memory disabled).
+            - name: ADP_AGENTCORE_NAMESPACE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedrockgateway-secrets
+                  key: agentcore-namespace-key
+                  optional: true
             # GitHub App private key — used by the connections "Link GitHub"
             # install-callback to fetch installation metadata (GitHubAppClient).
             # Slug + App ID come from the configmap (BG_GITHUB_APP_SLUG /
@@ -262,6 +470,12 @@ spec:
                 secretKeyRef:
                   name: bedrockgateway-secrets
                   key: BG_GITHUB_APP_PRIVATE_KEY
+                  optional: true
+            - name: BG_DIAGNOSTIC_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bedrockgateway-secrets
+                  key: diagnostic-database-url
                   optional: true
             # Issue #144: Tracing configuration
             # X-Ray tracing via CloudWatch Observability addon's OTLP receiver
@@ -281,8 +495,85 @@ spec:
             # Set to "false" to hide a module's nav links + routes in the UI.
             # The active entries below reflect the dev deployment's gated modules;
             # removing an entry re-enables that module (fail-open default).
+            # Chief-of-Staff surfaces (#7197): chat, the assistant UI and the Crew
+            # dashboard are enabled one environment at a time from
+            # /adp/<env>/gateway/feature-chat, feature-assistant-ui,
+            # feature-crew-dashboard, crew-proxy-enabled and crew-dashboard-origin
+            # (the last written by gateway infra when crew_dashboard_enabled). Absent
+            # parameter => "false" / "", so a committed literal never arms an
+            # environment; the API resolves assistant_ui and crew_dashboard strictly.
             - name: FEATURE_CHAT_ENABLED
-              value: "false"
+              value: "__FEATURE_CHAT_ENABLED__"
+            - name: L5_DEPLOYMENT_ENV
+              value: "__L5_DEPLOYMENT_ENV__"
+            - name: L5_WORK_QUEUE_URL
+              value: "__L5_WORK_QUEUE_URL__"
+            - name: L5_FINOPS_ADMISSION_ENABLED
+              value: "__L5_FINOPS_ADMISSION_ENABLED__"
+            - name: L5_CONSUMER_TARGETS
+              value: '__L5_CONSUMER_TARGETS__'
+            - name: BG_PRODUCT_PROFILE_ENABLED
+              value: "__BG_PRODUCT_PROFILE_ENABLED__"
+            - name: BG_INSIGHTS_RESULTS_BUCKET
+              value: "__BG_INSIGHTS_RESULTS_BUCKET__"
+            - name: ADP_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: ADP_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ADP_RUNTIME_PROOF_ROLE_ARNS
+              valueFrom:
+                configMapKeyRef:
+                  name: bedrockgateway-runtime-proof
+                  key: reader-role-arns
+                  optional: true
+            - name: ADP_RUNTIME_PROOF_INVOKE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: bedrockgateway-runtime-proof
+                  key: internal-invoke-url
+                  optional: true
+            - name: ADP_PRODUCT_EVALUATOR_ROLE_ARN
+              valueFrom:
+                configMapKeyRef:
+                  name: bedrockgateway-runtime-proof
+                  key: evaluator-role-arn
+                  optional: true
+            - name: ADP_PRODUCT_RECOVERY_ROLE_ARN
+              valueFrom:
+                configMapKeyRef:
+                  name: bedrockgateway-runtime-proof
+                  key: recovery-role-arn
+                  optional: true
+            - name: ADP_PRODUCT_BROWSER_RETIREMENT_ROLE_ARN
+              valueFrom:
+                configMapKeyRef:
+                  name: bedrockgateway-runtime-proof
+                  key: browser-retirement-role-arn
+                  optional: true
+            - name: BG_PRODUCT_ONBOARDING_ENABLED
+              value: "__BG_PRODUCT_ONBOARDING_ENABLED__"
+            - name: FEATURE_ASSISTANT_UI_ENABLED
+              value: "__FEATURE_ASSISTANT_UI_ENABLED__"
+            - name: FEATURE_CREW_DASHBOARD
+              value: "__FEATURE_CREW_DASHBOARD__"
+            - name: CREW_PROXY_ENABLED
+              value: "__CREW_PROXY_ENABLED__"
+            - name: CREW_DASHBOARD_ORIGIN
+              value: "__CREW_DASHBOARD_ORIGIN__"
+            # Browser-hop WebSocket ping for proxied Crew streams (#7902). ASGI has
+            # no ping event, so uvicorn owns this ping (ws_ping_interval, default
+            # 20 s). Both renderers set it from the same parameter as the
+            # ConfigMap's CREW_PROXY_KEEPALIVE_SECONDS
+            # (/adp/<env>/gateway/crew-proxy-keepalive-seconds) and DELETE this
+            # name/value pair when that value is 0: uvicorn/websockets treat 0 as
+            # a tight ping loop, not as "off", so an unset variable (uvicorn's own
+            # default) is the only safe rendering of "disabled".
+            - name: UVICORN_WS_PING_INTERVAL
+              value: "__UVICORN_WS_PING_INTERVAL__"
             - name: FEATURE_SYSTEM_DASHBOARD_ENABLED
               value: "false"
             - name: FEATURE_LOGS_ENABLED

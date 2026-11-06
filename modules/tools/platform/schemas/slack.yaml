@@ -1,0 +1,47 @@
+openapi: 3.0.3
+info:
+  title: Slack user connection tools
+  version: '1.0'
+servers:
+  - url: https://slack.com/api
+paths:
+  /users.info:
+    get:
+      operationId: get_user
+      description: Read a Slack user visible to the connected user.
+      parameters:
+        - name: user
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Slack user JSON
+          content:
+            application/json:
+              schema:
+                type: object
+  /chat.postMessage:
+    post:
+      operationId: post_message
+      description: Post to a Slack channel only when chat:write has been granted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, text]
+              properties:
+                channel:
+                  type: string
+                text:
+                  type: string
+      responses:
+        '200':
+          description: Slack post result
+          content:
+            application/json:
+              schema:
+                type: object

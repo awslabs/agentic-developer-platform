@@ -753,6 +753,7 @@ def open_guarded_browser(
     transport: PinnedHTTPTransport | None = None,
     read_only: bool = False,
     navigation_check=None,
+    deadline_at=None,
 ) -> GuardedBrowserSession:
     """Create and return the only supported URL-analysis browser interface."""
     try:
@@ -761,6 +762,8 @@ def open_guarded_browser(
         error.browser_start_unattempted = True
         raise
 
+    if deadline_at is not None and deadline_at <= int(time.time()):
+        raise ValueError("Browser authority expired")
     if client_factory is None:
         from bedrock_agentcore.tools.browser_client import BrowserClient
 
@@ -768,7 +771,10 @@ def open_guarded_browser(
     else:
         client = client_factory(region)
 
-    session_id = client.start(session_timeout_seconds=DEFAULT_ANALYSIS_TIMEOUT_SECONDS)
+    remaining = DEFAULT_ANALYSIS_TIMEOUT_SECONDS if deadline_at is None else int(deadline_at - time.time())
+    if remaining <= 0:
+        raise ValueError("Browser authority expired")
+    session_id = client.start(session_timeout_seconds=min(DEFAULT_ANALYSIS_TIMEOUT_SECONDS, remaining))
     browser = None
     context = None
     page = None

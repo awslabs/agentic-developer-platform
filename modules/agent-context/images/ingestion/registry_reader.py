@@ -34,6 +34,8 @@ class RegistryAsset:
     owner_sub: str | None
     project_id: str | None
     installation_id: int | None
+    product_id: str | None = None
+    ingestion_attempt_id: str | None = None
 
 
 def read_registry_assets(
@@ -63,7 +65,8 @@ def read_registry_assets(
         placeholders = ",".join(["%s"] * len(statuses))
         query = f"""
             SELECT id, source_ref, asset_type, tenant_id, owner_sub,
-                   project_id::text, installation_id
+                   project_id::text, installation_id, to_jsonb(knowledge_assets)->>'product_id',
+                   to_jsonb(knowledge_assets)->>'ingestion_attempt_id'
             FROM knowledge_assets
             WHERE asset_type = %s
               AND status IN ({placeholders})
@@ -85,6 +88,8 @@ def read_registry_assets(
                     owner_sub=row[4],
                     project_id=row[5],
                     installation_id=row[6],
+                    product_id=row[7] if len(row) > 7 else None,
+                    ingestion_attempt_id=row[8] if len(row) > 8 else None,
                 )
             )
         log.info(

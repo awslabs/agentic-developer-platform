@@ -29,7 +29,7 @@ from src.agentauth import github_operation_routes as gor
 from src.agentauth import routes
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionRecord, ExecutionStatus
-from src.agentauth.github_operations import OperationAssignment, OperationRefusedError
+from src.agentauth.github_operations import OperationAssignment, OperationRefusedError, RepairScopeMissingError
 from src.agentauth.github_provider import PublishedCommit
 from src.agentauth.grants import AUTHORITY_GATE_DECISION, AuthorityReference
 from src.agentauth.workload import VerifiedPod, WorkloadRefusedError
@@ -190,6 +190,15 @@ class StubProvider:
         self.calls.append(f"pr:{title}")
         return {"number": 7, "url": "https://github.test/pr/7", "created": True}
 
+    async def inspect_work_branch(self):
+        self.calls.append("inspect")
+        return {"status": "needs_merge", "head_revision": HEAD, "base_revision": NEW_COMMIT}
+
+    async def reconcile_work_branch(self, *, reauthorize):
+        await reauthorize()
+        self.calls.append("reconcile")
+        return {"status": "merged", "head_revision": NEW_COMMIT, "branch": self.assignment.branch}
+
     async def publish_review(self, *, pull_number, body, event, reauthorize):
         await reauthorize()
         self.calls.append(f"review:{pull_number}:{event}")
@@ -217,10 +226,18 @@ def stubs(monkeypatch):
         generation_error=None,
         assignment=_assignment(),
         policy=SimpleNamespace(permits=lambda action: False),
+        operations_repair=False,
         minted=[],
     )
 
     monkeypatch.setattr(gor, "GitHubProvider", StubProvider)
+
+    async def repair_readiness(authorized, reauthorize):
+        # Provider branch-rule qualification has its own integration suite.
+        # Keep the real content scope check under test in this route suite.
+        return None
+
+    monkeypatch.setattr("src.agentauth.operations_repair.ensure_repair_readiness", repair_readiness)
 
     class Session:
         async def __aenter__(self):
@@ -246,6 +263,8 @@ def stubs(monkeypatch):
             operation=kwargs["operation"],
             policy=state.policy,
             plan_version=2,
+            operations_repair=state.operations_repair,
+            workflow_allowlist=frozenset(),
         )
 
     async def installation_token(*, org_id, installation_id, repository, permissions):
@@ -308,6 +327,31 @@ def test_the_route_is_not_shadowed_and_publishes_a_commit(harness):
     assert payload["branch"] == BRANCH
     assert payload["idempotency_key"]
     assert StubProvider.instances[0].calls == [f"commit:1:fix the thing:{HEAD}"]
+
+
+def test_reconcile_keeps_credentials_at_gateway_and_reauthorizes(harness, stubs):
+    client, _ = harness()
+    response = client.post(PATH, json={"operation": "reconcile_work_branch"}, headers=headers())
+    assert response.status_code == 200
+    assert response.json()["reconciliation"]["head_revision"] == NEW_COMMIT
+    assert [p.calls for p in StubProvider.instances] == [["inspect"], ["reconcile"]]
+    assert stubs.authorizations >= 3
+    assert stubs.minted[0]["contents"] == "read"
+    assert stubs.minted[1]["contents"] == stubs.minted[1]["workflows"] == "write"
+    assert "provider-token-value" not in response.text
+
+
+def test_current_story_needs_no_write_token(harness, stubs, monkeypatch):
+    async def current(self):
+        return {"status": "up_to_date", "head_revision": HEAD}
+
+    monkeypatch.setattr(StubProvider, "inspect_work_branch", current)
+    client, _ = harness()
+    response = client.post(PATH, json={"operation": "reconcile_work_branch"}, headers=headers())
+    assert response.status_code == 200
+    assert response.json()["reconciliation"]["status"] == "up_to_date"
+    assert len(stubs.minted) == 1 and stubs.minted[0]["contents"] == "read"
+    assert "workflows" not in stubs.minted[0]
 
 
 def test_the_server_refuses_the_complete_wire_body_before_authorization(harness, stubs, monkeypatch):
@@ -460,6 +504,77 @@ def test_a_refusal_is_indistinguishable_from_a_missing_route(harness, stubs):
     assert response.status_code == 404
     assert response.json() == {"detail": "not found"}
     assert StubProvider.instances == []
+
+
+def repair_edit_body():
+    return {"operation": "validate_repair_edit", "changes": [{"path": "src/service.py", "content_base64": "eA=="}]}
+
+
+def test_own_repair_without_accepted_scope_has_actionable_nonretryable_diagnosis(harness, stubs):
+    stubs.operations_repair = True
+    client, _ = harness()
+    response = client.post(PATH, json=repair_edit_body(), headers=headers())
+    assert response.status_code == 403
+    assert response.headers["cache-control"] == "no-store"
+    detail = response.json()["detail"]
+    assert detail["code"] == "repair_scope_not_accepted"
+    assert "repair_paths" in detail["message"] and "repair_scope='repository'" in detail["message"]
+    assert "plan amendment" in detail["next_action"]
+    assert "reapprove any invalidated budget/limit supplements" in detail["next_action"]
+    assert "Retrying unchanged cannot resolve this" in detail["next_action"]
+    assert stubs.authorizations == 2  # Recheck current ownership before disclosure.
+    assert stubs.minted == [] and StubProvider.instances == []
+
+
+@pytest.mark.parametrize("stage", ["generation", "authorization"])
+@pytest.mark.parametrize("error", [OperationRefusedError("foreign or unknown assignment"), RepairScopeMissingError("private reason")])
+def test_no_scope_diagnosis_is_disclosed_before_own_assignment_authorization(harness, stubs, stage, error):
+    stubs.operations_repair = True
+    setattr(stubs, "generation_error" if stage == "generation" else "authorize_error", error)
+    client, _ = harness()
+    response = client.post(PATH, json=repair_edit_body(), headers=headers())
+    assert response.status_code == 404
+    assert response.json() == {"detail": "not found"}
+    assert stubs.minted == [] and StubProvider.instances == []
+
+
+@pytest.mark.parametrize("change", ["revoked", "assignment", "plan", "workload"])
+def test_scope_diagnosis_rechecks_current_authority_and_hides_changed_assignment(harness, stubs, monkeypatch, change):
+    stubs.operations_repair = True
+    original = gor.authorize_operation
+    calls = 0
+
+    async def changing(session, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2 and change == "revoked":
+            raise OperationRefusedError("revoked")
+        if calls == 2 and change == "workload":
+            raise WorkloadRefusedError("workload replaced")
+        result = await original(session, **kwargs)
+        if calls == 2 and change == "assignment":
+            result.assignment = _assignment(invocation_id="run-b")
+        if calls == 2 and change == "plan":
+            result.plan_version += 1
+        return result
+
+    monkeypatch.setattr(gor, "authorize_operation", changing)
+    client, _ = harness()
+    response = client.post(PATH, json=repair_edit_body(), headers=headers())
+    assert response.status_code == 404
+    assert response.json() == {"detail": "not found"}
+    assert calls == 2
+    assert stubs.minted == [] and StubProvider.instances == []
+
+
+def test_unapproved_path_with_existing_scope_remains_generic(harness, stubs):
+    stubs.operations_repair = True
+    stubs.policy.repair_paths = ["src/other.py"]
+    client, _ = harness()
+    response = client.post(PATH, json=repair_edit_body(), headers=headers())
+    assert response.status_code == 404
+    assert response.json() == {"detail": "not found"}
+    assert stubs.minted == [] and StubProvider.instances == []
 
 
 def test_lost_work_ownership_refuses_before_any_provider_call(harness, stubs):
@@ -732,3 +847,48 @@ def test_real_worker_review_payload_is_accepted_by_the_route(harness, monkeypatc
     review = helper.publish_review(pull_number=7, body="review notes", event=event)
     assert review["id"] == 11
     assert StubProvider.instances[0].calls == [f"review:7:{event}"]
+
+
+@pytest.mark.parametrize("covered", [False, True])
+def test_operations_status_journals_pr_identity_after_reauthorization(harness, stubs, monkeypatch, covered):
+    observed = []
+    repair = {"pull_number": 7, "head": HEAD, "base": "b" * 40, "checks_verified": True}
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def commit(self):
+            observed.append("committed")
+
+    monkeypatch.setattr("src.shared.database.get_session_factory", lambda: Session)
+
+    async def authorize_operation(_session, **kwargs):
+        stubs.authorizations += 1
+        return SimpleNamespace(assignment=stubs.assignment, operation=kwargs["operation"], operations_repair=True, plan_version=2)
+
+    async def perform(*_args, **_kwargs):
+        return {"repair": repair}
+
+    async def record(_session, assignment, status):
+        observed.append((assignment, status))
+        return (
+            {"publication_recorded": False, "covered_by_adoption": {"adoption_id": "verified-adoption"}, "next_action": "Continue unfinished work."}
+            if covered
+            else {"publication_recorded": True, "publication_id": "publication"}
+        )
+
+    monkeypatch.setattr(gor, "authorize_operation", authorize_operation)
+    monkeypatch.setattr(gor, "_perform", perform)
+    monkeypatch.setattr("src.orchestration.operations_tasks.record_repair_pr", record)
+    client, _ = harness()
+    client = TestClient(client.app, raise_server_exceptions=True)
+    response = client.post(PATH, json={"operation": "read_repository", "pull_number": 7}, headers=headers())
+    assert response.status_code == 200
+    assert response.json()["repair"]["publication_recorded"] is not covered
+    assert ("covered_by_adoption" in response.json()["repair"]) is covered
+    assert observed == [(stubs.assignment, repair), "committed"]
+    assert stubs.authorizations == 2

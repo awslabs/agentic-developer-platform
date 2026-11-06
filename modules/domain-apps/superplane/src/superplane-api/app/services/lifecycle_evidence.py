@@ -187,7 +187,10 @@ async def cleanup_preparation(
         and paid["reservation_id"]
         and paid["requester"]
         and paid["approved_by"]
-        and paid["requester"] != paid["approved_by"]
+        and (
+            not paid["requires_distinct_approver"]
+            or paid["requester"] != paid["approved_by"]
+        )
         and derive_operation_identity(paid["approval_id"])
         == (row["source_operation_id"], row["source_job_id"], row["source_attempt_id"])
         and original.idempotency_key == plan.request_id

@@ -608,11 +608,17 @@ async def test_verified_actor_survives_a_refused_tenant_binding(monkeypatch):
     from app import domain_guard
     from app import organization_binding
 
-    caller = _caller(TEST_PRINCIPAL, uuid.uuid4())
+    org_id = uuid.uuid4()
+    candidate = SimpleNamespace(
+        subject=TEST_PRINCIPAL,
+        org_id=str(org_id),
+        client_id="test-client",
+        account_type="human",
+    )
     monkeypatch.setattr(
         domain_guard.domain_auth,
-        "require_verified_caller",
-        AsyncMock(return_value=caller),
+        "require_verified_candidate",
+        AsyncMock(return_value=(candidate, {})),
     )
     monkeypatch.setattr(
         organization_binding,
@@ -629,8 +635,11 @@ async def test_verified_actor_survives_a_refused_tenant_binding(monkeypatch):
             "app": SimpleNamespace(state=SimpleNamespace(domain_policy=object())),
         }
     )
+    db = AsyncMock()
+    db.get.return_value = SimpleNamespace(adp_org_id=None)
+    db.scalar.return_value = uuid.uuid4()
     async with aclosing(
-        domain_guard.enforce_domain_authorization(request, credentials=None, db=AsyncMock())
+        domain_guard.enforce_domain_authorization(request, credentials=None, db=db)
     ) as guard:
         with pytest.raises(HTTPException) as denied:
             await guard.__anext__()

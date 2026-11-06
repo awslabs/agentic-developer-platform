@@ -1,0 +1,1093 @@
+{
+  "schema_version": 1,
+  "kind": "delivery_wave_plan",
+  "status": "registered_draft_not_activated",
+  "epic": "https://github.com/aws-e/adp/issues/8682",
+  "human_wave_checkpoints": [],
+  "wave_evaluation": "machine",
+  "development_completion": "reviewed_verified_merge_and_phase_checks",
+  "gateway_frontend_auto_deployments": "continue_without_blocking_code_wave_progression",
+  "planned_coordinated_l5_releases": 1,
+  "repair_releases": "affected_components_only_when_required",
+  "waves": [
+    {
+      "wave": 1,
+      "name": "Shared foundation",
+      "build": [
+        "SA01",
+        "SA02",
+        "SA03",
+        "SA05",
+        "SA06"
+      ],
+      "sequence": [
+        "SA01",
+        "SA02",
+        "SA03",
+        "SA05",
+        "SA06"
+      ],
+      "runtime_barrier": false
+    },
+    {
+      "wave": 2,
+      "name": "Security lifecycle and release preparation",
+      "build": [
+        "SA04",
+        "SA09",
+        "SA10",
+        "SA15"
+      ],
+      "parallel": [
+        "SA04",
+        "SA09",
+        "SA10",
+        "SA15"
+      ],
+      "runtime_barrier": false
+    },
+    {
+      "wave": 3,
+      "name": "Assessments and clients",
+      "build": [
+        "SA07",
+        "SA08",
+        "SA12",
+        "SA13",
+        "SA14",
+        "SA11"
+      ],
+      "parallel": [
+        "SA07",
+        "SA08",
+        "SA12",
+        "SA13",
+        "SA14"
+      ],
+      "joins": [
+        {
+          "story": "SA11",
+          "after": [
+            "SA07",
+            "SA08",
+            "SA10"
+          ]
+        }
+      ],
+      "runtime_barrier": false
+    },
+    {
+      "wave": 4,
+      "name": "Assemble and release once",
+      "build": [
+        "SA16"
+      ],
+      "build_phase": "live_harness_preparation_and_combined_candidate_checks",
+      "operations": [
+        "SA15"
+      ],
+      "operations_phase": "coordinated_release_and_readiness",
+      "order": [
+        "SA16_harness_preparation",
+        "SA15_release_readiness"
+      ],
+      "runtime_barrier": true,
+      "retain_release_owner_through_wave": 5
+    },
+    {
+      "wave": 5,
+      "name": "Live qualification and completion",
+      "build": [],
+      "qualification": [
+        "SA16"
+      ],
+      "release_recovery_owner": "SA15",
+      "runtime_barrier": true,
+      "required_epic_criteria": [
+        "EC-01",
+        "EC-02",
+        "EC-03",
+        "EC-04",
+        "EC-05",
+        "EC-06",
+        "EC-07",
+        "EC-08",
+        "EC-09"
+      ]
+    }
+  ],
+  "stories": {
+    "SA01": {
+      "issue": 8683,
+      "depends_on": [],
+      "file_groups": [
+        {
+          "group": "Architecture and contract specifications",
+          "purpose": "Maintain the shared design and one versioned API/data/MCP contract.",
+          "modify": [
+            "docs/l5-services/architecture.md",
+            "docs/l5-services/backlog.md",
+            "docs/l5-services/verification.md",
+            "docs/l5-services/contracts/v1/README.md",
+            "docs/l5-services/contracts/v1/peer-contracts.md",
+            "docs/l5-services/contracts/v1/catalog.py",
+            "docs/l5-services/contracts/v1/schemas.json",
+            "docs/l5-services/contracts/v1/openapi.json",
+            "docs/l5-services/contracts/v1/mcp-tools.json",
+            "docs/l5-services/contracts/v1/operations.tsv",
+            "docs/l5-services/contracts/v1/examples.json",
+            "docs/l5-services/contracts/v1/scenarios.json",
+            "modules/L5-services/README.md"
+          ]
+        },
+        {
+          "group": "Contract verification",
+          "purpose": "Keep offline specification checks separate from the planned handler/compatibility tests.",
+          "create": [
+            "modules/L5-services/tests/contracts/test_contracts.py"
+          ],
+          "modify": [
+            "docs/l5-services/contracts/v1/validate.py",
+            "docs/l5-services/contracts/v1/test_contracts.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa01",
+      "planned_test_references": [
+        "modules/L5-services/tests/contracts/test_contracts.py::test_security_contracts",
+        "modules/L5-services/tests/contracts/test_contracts.py::test_lifecycle_boundaries",
+        "modules/L5-services/tests/contracts/test_contracts.py::test_compatibility_fixtures"
+      ]
+    },
+    "SA02": {
+      "issue": 8684,
+      "depends_on": [
+        "SA01"
+      ],
+      "file_groups": [
+        {
+          "group": "L5 Product client and package foundation",
+          "purpose": "Introduce the Product API client and minimal installable package; SA15 later adds release packaging.",
+          "create": [
+            "modules/L5-services/src/l5_services/__init__.py",
+            "modules/L5-services/src/l5_services/product_client.py",
+            "modules/L5-services/pyproject.toml"
+          ]
+        },
+        {
+          "group": "Product-owned source snapshots",
+          "purpose": "Implement source pin/read/content/manifest routes and retention with connector-owned credentials.",
+          "create": [
+            "modules/gateway/src/products/source_snapshots.py",
+            "modules/gateway/src/products/source_snapshot_routes.py"
+          ],
+          "modify": [
+            "modules/gateway/src/products/routes.py",
+            "modules/gateway/src/products/source_routes.py",
+            "modules/gateway/src/products/models.py"
+          ]
+        },
+        {
+          "group": "Delegation and broker integration",
+          "purpose": "Verify service identity, scoped delegation and transient credential sessions through existing host authority.",
+          "create": [
+            "modules/gateway/src/internal/l5_credential_routes.py"
+          ],
+          "modify": [
+            "modules/gateway/src/shared/identity/product_scope.py",
+            "modules/gateway/src/internal/auth_deps.py",
+            "modules/gateway/src/internal/service_authorization.py",
+            "modules/gateway/src/internal/assume_role_routes.py",
+            "modules/gateway/src/internal/route_authority_manifest.py",
+            "modules/gateway/src/app.py"
+          ]
+        },
+        {
+          "group": "Product storage migration",
+          "purpose": "Product snapshot storage remains Product-owned; bind the inspected host Alembic head at implementation.",
+          "create": [
+            "modules/gateway/alembic/versions/product_source_snapshots.py"
+          ]
+        },
+        {
+          "group": "Delegation and source tests",
+          "purpose": "Preserve all published delegation selectors and add exact-content/expiry checks.",
+          "create": [
+            "modules/gateway/tests/products/test_l5_delegation.py",
+            "modules/gateway/tests/products/test_l5_source_snapshots.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa02",
+      "planned_test_references": [
+        "modules/gateway/tests/products/test_l5_delegation.py::test_scoped_profile_read",
+        "modules/gateway/tests/products/test_l5_delegation.py::test_foreign_and_revoked_read",
+        "modules/gateway/tests/products/test_l5_delegation.py::test_human_and_revision_compatibility"
+      ]
+    },
+    "SA03": {
+      "issue": 8685,
+      "depends_on": [
+        "SA01",
+        "SA02"
+      ],
+      "file_groups": [
+        {
+          "group": "Configuration API and host mount",
+          "purpose": "Create the configuration API/router and inject host dependencies through one thin gateway shim.",
+          "create": [
+            "modules/L5-services/src/l5_services/api/__init__.py",
+            "modules/L5-services/src/l5_services/api/router.py",
+            "modules/L5-services/src/l5_services/api/configuration.py",
+            "modules/gateway/src/l5_integration.py"
+          ],
+          "modify": [
+            "modules/gateway/src/app.py",
+            "modules/gateway/src/products/configuration.py",
+            "modules/gateway/src/product_onboarding/handoffs.py"
+          ]
+        },
+        {
+          "group": "Configuration state and migrations",
+          "purpose": "Own L5 metadata and the first L5 migration branch; no direct Profile-table reads.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/__init__.py",
+            "modules/L5-services/src/l5_services/models/base.py",
+            "modules/L5-services/src/l5_services/models/configuration.py",
+            "modules/L5-services/src/l5_services/migrations/__init__.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_configurations.py"
+          ]
+        },
+        {
+          "group": "Configuration tests and shared fixtures",
+          "purpose": "Cover inherited settings, revision races, handoff recovery and scope.",
+          "create": [
+            "modules/L5-services/tests/conftest.py",
+            "modules/L5-services/tests/integration/test_configuration.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa03",
+      "planned_test_references": [
+        "modules/L5-services/tests/integration/test_configuration.py::test_profile_population",
+        "modules/L5-services/tests/integration/test_configuration.py::test_refresh_and_revision_race",
+        "modules/L5-services/tests/integration/test_configuration.py::test_scope_replay_outage"
+      ]
+    },
+    "SA04": {
+      "issue": 8686,
+      "depends_on": [
+        "SA01",
+        "SA02",
+        "SA03",
+        "SA06"
+      ],
+      "file_groups": [
+        {
+          "group": "Bindings and provider setup",
+          "purpose": "Implement create/link/check/update/suspend/resume/unlink/owned cleanup using immutable SetupIntent.",
+          "create": [
+            "modules/L5-services/src/l5_services/api/bindings.py",
+            "modules/L5-services/src/l5_services/adapters/security/__init__.py",
+            "modules/L5-services/src/l5_services/adapters/security/binding.py"
+          ]
+        },
+        {
+          "group": "Binding state and migrations",
+          "purpose": "Separate persistent bindings and bounded setup operations.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/binding.py",
+            "modules/L5-services/src/l5_services/models/setup.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_bindings_and_setup.py"
+          ]
+        },
+        {
+          "group": "Shared registration",
+          "purpose": "Register the new API and models through the existing L5 entry points.",
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/api/router.py",
+              "created_by": "SA03"
+            },
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Binding verification",
+          "purpose": "Test uncertain setup, replay, scope and owned-only cleanup.",
+          "create": [
+            "modules/L5-services/tests/integration/test_security_binding.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa04",
+      "planned_test_references": [
+        "modules/L5-services/tests/integration/test_security_binding.py::test_link_and_replay",
+        "modules/L5-services/tests/integration/test_security_binding.py::test_uncertain_setup",
+        "modules/L5-services/tests/integration/test_security_binding.py::test_scope_and_cleanup"
+      ]
+    },
+    "SA05": {
+      "issue": 8687,
+      "depends_on": [
+        "SA01",
+        "SA02",
+        "SA03"
+      ],
+      "file_groups": [
+        {
+          "group": "Run admission and API",
+          "purpose": "Create atomic admission, immutable run receipts and run controls.",
+          "create": [
+            "modules/L5-services/src/l5_services/api/runs.py",
+            "modules/L5-services/src/l5_services/admission.py"
+          ]
+        },
+        {
+          "group": "Run, receipt and work state",
+          "purpose": "Introduce the durable work records consumed by SA06.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/run.py",
+            "modules/L5-services/src/l5_services/models/receipt.py",
+            "modules/L5-services/src/l5_services/models/work.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_runs_and_work.py"
+          ]
+        },
+        {
+          "group": "Shared registration",
+          "purpose": "Add runs and their models to the established entry points.",
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/api/router.py",
+              "created_by": "SA03"
+            },
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Execution API verification",
+          "purpose": "Preserve the existing submit/replay, outbox and cancellation selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_execution_api.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa05",
+      "planned_test_references": [
+        "modules/L5-services/tests/integration/test_execution_api.py::test_submit_replay",
+        "modules/L5-services/tests/integration/test_execution_api.py::test_outbox_recovery",
+        "modules/L5-services/tests/integration/test_execution_api.py::test_admission_scope_and_cancel"
+      ]
+    },
+    "SA06": {
+      "issue": 8688,
+      "depends_on": [
+        "SA01",
+        "SA02",
+        "SA05"
+      ],
+      "file_groups": [
+        {
+          "group": "Bounded workers and dispatch",
+          "purpose": "Implement immediate send, delayed polling and the separate repair sweep.",
+          "create": [
+            "modules/L5-services/src/l5_services/workers/__init__.py",
+            "modules/L5-services/src/l5_services/workers/execution.py",
+            "modules/L5-services/src/l5_services/workers/relay.py",
+            "modules/L5-services/src/l5_services/workers/recovery.py"
+          ]
+        },
+        {
+          "group": "Worker/provider boundary and storage",
+          "purpose": "Implement the common adapter protocol, fenced leases and source-manifest materialization.",
+          "create": [
+            "modules/L5-services/src/l5_services/adapters/__init__.py",
+            "modules/L5-services/src/l5_services/adapters/protocol.py",
+            "modules/L5-services/src/l5_services/work_store.py",
+            "modules/L5-services/src/l5_services/source_manifest.py"
+          ]
+        },
+        {
+          "group": "Execution integration",
+          "purpose": "Wire SA05 admission to the common post-commit publisher; consume its existing work/run models.",
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/admission.py",
+              "created_by": "SA05"
+            }
+          ]
+        },
+        {
+          "group": "Worker and monitoring verification",
+          "purpose": "Cover transport/provider faults, fresh unchanged observations, cancellation, revocation and deadlines.",
+          "create": [
+            "modules/L5-services/tests/integration/test_lambda_execution.py",
+            "modules/L5-services/tests/fixtures/security_provider.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa06",
+      "planned_test_references": [
+        "modules/L5-services/tests/integration/test_lambda_execution.py::test_async_lifecycle",
+        "modules/L5-services/tests/integration/test_lambda_execution.py::test_loss_and_recovery",
+        "modules/L5-services/tests/integration/test_lambda_execution.py::test_revoke_deadline_cancel"
+      ]
+    },
+    "SA07": {
+      "issue": 8689,
+      "depends_on": [
+        "SA01",
+        "SA04",
+        "SA06"
+      ],
+      "file_groups": [
+        {
+          "group": "Threat-model adapter",
+          "purpose": "Consume pinned document bytes and map native jobs/tasks/threats to shared results and monitoring.",
+          "create": [
+            "modules/L5-services/src/l5_services/adapters/security/threat_model.py"
+          ]
+        },
+        {
+          "group": "Threat-model verification",
+          "purpose": "Preserve exact-source, replay and incomplete-evidence selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_threat_model.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa07",
+      "planned_test_references": [
+        "modules/L5-services/tests/integration/test_threat_model.py::test_source_attributed_assessment",
+        "modules/L5-services/tests/integration/test_threat_model.py::test_revision_and_replay",
+        "modules/L5-services/tests/integration/test_threat_model.py::test_invalid_and_partial_evidence"
+      ]
+    },
+    "SA08": {
+      "issue": 8690,
+      "depends_on": [
+        "SA01",
+        "SA04",
+        "SA06"
+      ],
+      "file_groups": [
+        {
+          "group": "Static code-review adapter",
+          "purpose": "Implement exact-commit/PR review and archive validation with static-only provider settings.",
+          "create": [
+            "modules/L5-services/src/l5_services/adapters/security/code_review.py",
+            "modules/L5-services/src/l5_services/source_archive.py"
+          ]
+        },
+        {
+          "group": "Code-review verification",
+          "purpose": "Preserve source-admission, scan-coverage and legacy compatibility selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_code_review.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa08",
+      "planned_test_references": [
+        "modules/L5-services/tests/integration/test_code_review.py::test_exact_source_scan",
+        "modules/L5-services/tests/integration/test_code_review.py::test_source_admission_failures",
+        "modules/L5-services/tests/integration/test_code_review.py::test_static_only_and_legacy_compatibility"
+      ]
+    },
+    "SA09": {
+      "issue": 8691,
+      "depends_on": [
+        "SA01",
+        "SA03",
+        "SA05",
+        "SA06"
+      ],
+      "file_groups": [
+        {
+          "group": "Trigger admission",
+          "purpose": "Normalize source/manual/schedule events and freeze the selected capability, binding and source revisions.",
+          "create": [
+            "modules/L5-services/src/l5_services/events/__init__.py",
+            "modules/L5-services/src/l5_services/events/handler.py",
+            "modules/L5-services/src/l5_services/events/sources.py",
+            "modules/L5-services/src/l5_services/events/schedules.py"
+          ]
+        },
+        {
+          "group": "Event state and migration",
+          "purpose": "Persist semantic deduplication, source order and causal-loop information.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/event.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_events.py"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Existing producer integration",
+          "purpose": "Forward authenticated events through the L5 adapter while preserving current webhook/Task behavior; unavailable feeds stay unavailable.",
+          "modify": [
+            "modules/agent-factory/webhook-ingress/lambda/github/handler.py",
+            "modules/gateway/src/products/source_routes.py"
+          ]
+        },
+        {
+          "group": "Trigger verification",
+          "purpose": "Retain the planned event-ordering, document/profile and scheduled-run selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_triggers.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa09",
+      "planned_test_references": [
+        "modules/L5-services/tests/integration/test_triggers.py::test_pr_event_ordering",
+        "modules/L5-services/tests/integration/test_triggers.py::test_profile_and_document_events",
+        "modules/L5-services/tests/integration/test_triggers.py::test_schedule_revocation_and_causality"
+      ]
+    },
+    "SA10": {
+      "issue": 8692,
+      "depends_on": [
+        "SA01",
+        "SA05",
+        "SA06"
+      ],
+      "file_groups": [
+        {
+          "group": "Results, comparison and triage",
+          "purpose": "Implement the shared result APIs and append-only triage.",
+          "create": [
+            "modules/L5-services/src/l5_services/api/results.py",
+            "modules/L5-services/src/l5_services/findings.py",
+            "modules/L5-services/src/l5_services/triage.py"
+          ]
+        },
+        {
+          "group": "Result storage and migrations",
+          "purpose": "Persist result/finding/triage data and artifact references.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/result.py",
+            "modules/L5-services/src/l5_services/models/finding.py",
+            "modules/L5-services/src/l5_services/models/triage.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_results_and_triage.py"
+          ]
+        },
+        {
+          "group": "Shared registration",
+          "purpose": "Register result APIs and models; serialize this with other wave-2 router/model edits.",
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/api/router.py",
+              "created_by": "SA03"
+            },
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Result verification",
+          "purpose": "Preserve normalization, comparison/triage and visibility selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_results.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa10",
+      "planned_test_references": [
+        "modules/L5-services/tests/integration/test_results.py::test_normalization_and_readback",
+        "modules/L5-services/tests/integration/test_results.py::test_comparison_and_triage",
+        "modules/L5-services/tests/integration/test_results.py::test_result_visibility"
+      ]
+    },
+    "SA11": {
+      "issue": 8693,
+      "depends_on": [
+        "SA01",
+        "SA07",
+        "SA08",
+        "SA10"
+      ],
+      "file_groups": [
+        {
+          "group": "Product Context publication",
+          "purpose": "Produce contributions, retry independently of assessment execution and propagate invalidation.",
+          "create": [
+            "modules/L5-services/src/l5_services/publication/__init__.py",
+            "modules/L5-services/src/l5_services/publication/client.py",
+            "modules/L5-services/src/l5_services/publication/contributions.py",
+            "modules/L5-services/src/l5_services/publication/recovery.py"
+          ]
+        },
+        {
+          "group": "Publication state and migration",
+          "purpose": "Persist contribution receipts and owed publication work.",
+          "create": [
+            "modules/L5-services/src/l5_services/models/publication.py",
+            "modules/L5-services/src/l5_services/migrations/versions/l5_publications.py"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/L5-services/src/l5_services/models/__init__.py",
+              "created_by": "SA03"
+            }
+          ]
+        },
+        {
+          "group": "Publication verification",
+          "purpose": "Preserve contribution identity, recovery and visibility/invalidation selectors.",
+          "create": [
+            "modules/L5-services/tests/integration/test_context_contributions.py"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa11",
+      "planned_test_references": [
+        "modules/L5-services/tests/integration/test_context_contributions.py::test_contribution_identity",
+        "modules/L5-services/tests/integration/test_context_contributions.py::test_publication_recovery",
+        "modules/L5-services/tests/integration/test_context_contributions.py::test_visibility_and_invalidation"
+      ]
+    },
+    "SA12": {
+      "issue": 8694,
+      "depends_on": [
+        "SA01",
+        "SA03",
+        "SA04",
+        "SA05",
+        "SA10"
+      ],
+      "file_groups": [
+        {
+          "group": "Product Services/Security screens",
+          "purpose": "Group the service tab, setup, binding, run, results and monitoring UI under Product pages.",
+          "create": [
+            "modules/gateway/frontend/src/pages/products/services/ProductServices.tsx",
+            "modules/gateway/frontend/src/pages/products/services/SecurityConfiguration.tsx",
+            "modules/gateway/frontend/src/pages/products/services/SecurityBindings.tsx",
+            "modules/gateway/frontend/src/pages/products/services/SecurityRuns.tsx",
+            "modules/gateway/frontend/src/pages/products/services/SecurityResults.tsx"
+          ],
+          "modify": [
+            "modules/gateway/frontend/src/App.tsx",
+            "modules/gateway/frontend/src/pages/products/ProductOverview.tsx"
+          ]
+        },
+        {
+          "group": "Typed API client",
+          "purpose": "Keep HTTP/ETag handling in a shared client consumed by the Product screens.",
+          "create": [
+            "modules/gateway/frontend/src/services/l5Services.ts"
+          ]
+        },
+        {
+          "group": "UI verification",
+          "purpose": "Keep the published browser selector path and add focused component/client coverage.",
+          "create": [
+            "modules/gateway/frontend/tests/e2e/l5-security.spec.ts",
+            "modules/gateway/frontend/src/__tests__/pages/products/services/ProductServices.test.tsx",
+            "modules/gateway/frontend/src/__tests__/services/l5Services.test.ts"
+          ]
+        },
+        {
+          "group": "User documentation",
+          "purpose": "Document the Product Services/Security experience in the canonical L5 documentation folder.",
+          "create": [
+            "docs/l5-services/user-guide.md"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa12",
+      "planned_test_references": [
+        "modules/gateway/frontend/tests/e2e/l5-security.spec.ts::configure_security",
+        "modules/gateway/frontend/tests/e2e/l5-security.spec.ts::run_and_inspect",
+        "modules/gateway/frontend/tests/e2e/l5-security.spec.ts::cross_client_and_revocation"
+      ]
+    },
+    "SA13": {
+      "issue": 8695,
+      "depends_on": [
+        "SA01",
+        "SA03",
+        "SA04",
+        "SA05",
+        "SA10"
+      ],
+      "file_groups": [
+        {
+          "group": "CLI command and installation",
+          "purpose": "Add the shared service command and wire the installed CLI distribution.",
+          "create": [
+            "modules/gateway/cli/adp-service.py"
+          ],
+          "modify": [
+            "modules/gateway/cli/adp",
+            "modules/gateway/cli/command-manifest.json",
+            "modules/gateway/cli/install.sh"
+          ]
+        },
+        {
+          "group": "Download and capability integration",
+          "purpose": "Advertise and serve the same installed command contract.",
+          "modify": [
+            "modules/gateway/src/cli_download/routes.py",
+            "modules/gateway/src/cli_capabilities/routes.py",
+            "modules/gateway/src/cli_capabilities/contract.py"
+          ]
+        },
+        {
+          "group": "CLI verification and documentation",
+          "purpose": "Keep the existing planned installed-CLI selectors and document commands/output.",
+          "create": [
+            "modules/gateway/tests/cli/test_l5_security.py",
+            "docs/l5-services/cli.md"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa13",
+      "planned_test_references": [
+        "modules/gateway/tests/cli/test_l5_security.py::test_cli_configuration_parity",
+        "modules/gateway/tests/cli/test_l5_security.py::test_cli_execution_and_errors",
+        "modules/gateway/tests/cli/test_l5_security.py::test_cross_client_and_compatibility"
+      ]
+    },
+    "SA14": {
+      "issue": 8696,
+      "depends_on": [
+        "SA01",
+        "SA02",
+        "SA03",
+        "SA04",
+        "SA05",
+        "SA10"
+      ],
+      "file_groups": [
+        {
+          "group": "Gateway MCP adapter and registration",
+          "purpose": "Add thin L5 tool dispatch using the shared HTTP contracts and exact ETag envelopes.",
+          "create": [
+            "modules/gateway/src/internal/tools_l5.py"
+          ],
+          "modify": [
+            "modules/gateway/src/internal/tools_discovery.py",
+            "modules/gateway/src/internal/tools_catalogue.py",
+            "modules/gateway/src/agentauth/task_tool_routes.py"
+          ]
+        },
+        {
+          "group": "Existing MCP transport and client",
+          "purpose": "Integrate the existing facade and MCP CLI; do not create a second backend.",
+          "modify": [
+            "modules/tools/facade/tools_facade/server.py",
+            "modules/gateway/cli/adp-mcp.py"
+          ]
+        },
+        {
+          "group": "MCP verification and documentation",
+          "purpose": "Preserve all published discovery/authority/replay selectors and document the tool surface.",
+          "create": [
+            "modules/gateway/tests/internal/test_l5_security_tools.py",
+            "docs/l5-services/mcp.md"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa14",
+      "planned_test_references": [
+        "modules/gateway/tests/internal/test_l5_security_tools.py::test_tool_roundtrip",
+        "modules/gateway/tests/internal/test_l5_security_tools.py::test_tool_authority",
+        "modules/gateway/tests/internal/test_l5_security_tools.py::test_tool_replay_and_availability"
+      ]
+    },
+    "SA15": {
+      "issue": 8698,
+      "depends_on": [
+        "SA01",
+        "SA02",
+        "SA03",
+        "SA05",
+        "SA06"
+      ],
+      "file_groups": [
+        {
+          "group": "Module infrastructure",
+          "purpose": "Keep workers/queues/repair, IAM, alarms and variables in the L5 Terraform child module.",
+          "create": [
+            "modules/L5-services/infra/main.tf",
+            "modules/L5-services/infra/variables.tf",
+            "modules/L5-services/infra/outputs.tf",
+            "modules/L5-services/infra/workers.tf",
+            "modules/L5-services/infra/queues.tf",
+            "modules/L5-services/infra/recovery.tf",
+            "modules/L5-services/infra/iam.tf",
+            "modules/L5-services/infra/alarms.tf"
+          ],
+          "modify": [
+            "modules/gateway/infra/main.tf"
+          ]
+        },
+        {
+          "group": "Package and worker artifacts",
+          "purpose": "Package versioned schemas into the shared wheel, build locked worker artifacts and publish one grouped release.",
+          "create": [
+            "modules/L5-services/scripts/build-package.sh",
+            "modules/L5-services/scripts/build-workers.sh",
+            "modules/L5-services/scripts/publish-workers.sh",
+            "modules/L5-services/requirements-security.lock"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/L5-services/pyproject.toml",
+              "created_by": "SA02"
+            }
+          ]
+        },
+        {
+          "group": "Gateway build and schema integration",
+          "purpose": "Stage the identical wheel, register L5 metadata/version locations and preserve compatibility checks.",
+          "modify": [
+            "modules/gateway/Dockerfile",
+            "modules/gateway/pyproject.toml",
+            "modules/gateway/scripts/stage-contracts.sh",
+            "modules/gateway/alembic/env.py",
+            "modules/gateway/alembic.ini",
+            "modules/gateway/scripts/migrate-before-rollout.py",
+            "modules/gateway/scripts/sync-gateway-engine.py",
+            "modules/gateway/scripts/sync-gateway-writers.py",
+            "modules/gateway/scripts/pricing-rollout.py",
+            "modules/gateway/src/products/runtime_proof_routes.py",
+            "codebuild/bs-gateway-build.yml",
+            "platform/scripts/publish-shared-image.sh"
+          ]
+        },
+        {
+          "group": "CI and deployment workflows",
+          "purpose": "Select exact-case module/contracts, preserve gateway/frontend auto-deployments and make initial worker publication explicitly grouped.",
+          "create": [
+            ".github/workflows/l5-services-release.yml"
+          ],
+          "modify": [
+            ".github/workflows/gateway-ci.yml",
+            ".github/workflows/gateway-deploy.yml",
+            ".github/workflows/gateway-frontend-deploy.yml",
+            ".github/workflows/gateway-infra-plan.yml",
+            ".github/workflows/gateway-infra-apply.yml",
+            ".github/workflows/run-gateway-migrations.yml",
+            ".github/workflows/postgres-schema-check.yml",
+            ".github/workflows/_build-python.yml",
+            "codebuild/security_image_targets.py",
+            "codebuild/security-image-recipes.json"
+          ]
+        },
+        {
+          "group": "Operations registration and runtime proof",
+          "purpose": "Register allowed L5 workflows/component readback under existing authority; target values remain private.",
+          "modify": [
+            "modules/gateway/src/agentauth/actions_routes.py",
+            "modules/gateway/src/orchestration/deployment_runtime_reader.py",
+            "modules/gateway/src/orchestration/deployment_manifest.py",
+            "modules/gateway/src/orchestration/manifests/orchestration-deployments.yaml"
+          ]
+        },
+        {
+          "group": "Published release, launcher and lifecycle integration",
+          "purpose": "Include L5 artifacts and ordered schema/worker rollout, status and safe teardown in existing delivery paths.",
+          "modify": [
+            "deploy.sh",
+            "remove.sh",
+            "status.sh",
+            "platform/scripts/deploy-all.sh",
+            "platform/scripts/undeploy.sh",
+            "platform/scripts/release/build.py",
+            "platform/scripts/release/artifacts.py",
+            "platform/scripts/release/upgrade.py",
+            ".github/workflows/adp-release.yml",
+            ".github/workflows/adp-release-promote.yml",
+            ".github/workflows/adp-release-upgrade.yml",
+            ".github/workflows/adp-release-tests.yml",
+            ".github/workflows/undeploy.yml"
+          ]
+        },
+        {
+          "group": "Deployment verification and operations guide",
+          "purpose": "Preserve installed-package, recovery/rollback and scope/cleanup selectors.",
+          "create": [
+            "modules/L5-services/tests/deployment/test_l5_security_release.py",
+            "docs/l5-services/operations.md"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa15",
+      "planned_test_references": [
+        "modules/L5-services/tests/deployment/test_l5_security_release.py::test_installed_release",
+        "modules/L5-services/tests/deployment/test_l5_security_release.py::test_recovery_and_rollback",
+        "modules/L5-services/tests/deployment/test_l5_security_release.py::test_effective_scope_and_cleanup"
+      ]
+    },
+    "SA16": {
+      "issue": 8699,
+      "depends_on": [
+        "SA04",
+        "SA07",
+        "SA08",
+        "SA09",
+        "SA10",
+        "SA11",
+        "SA12",
+        "SA13",
+        "SA14",
+        "SA15"
+      ],
+      "file_groups": [
+        {
+          "group": "Live harness and independent reader",
+          "purpose": "Keep the accepted tests/e2e entry point; place reusable live drivers, evidence, durable attempts and cleanup in tests/live.",
+          "create": [
+            "modules/L5-services/tests/e2e/test_l5_security_acceptance.py",
+            "modules/L5-services/tests/live/conftest.py",
+            "modules/L5-services/tests/live/fixtures.py",
+            "modules/L5-services/tests/live/clients.py",
+            "modules/L5-services/tests/live/providers.py",
+            "modules/L5-services/tests/live/evidence.py",
+            "modules/L5-services/tests/live/continuation.py",
+            "modules/L5-services/tests/live/cleanup.py"
+          ]
+        },
+        {
+          "group": "Protected live execution and machine completion",
+          "purpose": "Run the harness through a bounded workflow and integrate exact evidence/criterion completion with existing engine paths.",
+          "create": [
+            ".github/workflows/l5-security-live.yml"
+          ],
+          "modify": [
+            "modules/gateway/src/agentauth/actions_routes.py",
+            "modules/gateway/src/orchestration/repository_evaluation_contract.py",
+            "modules/gateway/src/orchestration/workflow_evaluation_contract.py",
+            "modules/gateway/src/orchestration/external_completion.py"
+          ]
+        },
+        {
+          "group": "Qualification report and verification guidance",
+          "purpose": "Keep sanitized summaries in docs; raw runtime/provider evidence remains private.",
+          "create": [
+            "docs/l5-services/qualification.md"
+          ],
+          "modify": [
+            "docs/l5-services/verification.md"
+          ]
+        }
+      ],
+      "file_map": "story-files.md#sa16",
+      "planned_test_references": [
+        "modules/L5-services/tests/e2e/test_l5_security_acceptance.py::test_clients_and_setup",
+        "modules/L5-services/tests/e2e/test_l5_security_acceptance.py::test_real_security_assessments",
+        "modules/L5-services/tests/e2e/test_l5_security_acceptance.py::test_isolation_recovery_cleanup",
+        "modules/L5-services/tests/e2e/test_l5_security_acceptance.py::test_context_reuse"
+      ]
+    }
+  },
+  "phase_rules": {
+    "engine_wave_mapping": "logical_waves_1_2_3_map_individually; logical_waves_4_5_share_one_final_operations_wave_and_machine_evaluation",
+    "final_operations_order": "SA16_harness_verified_merge -> SA15_release_and_SA16_live_procedure_execution -> machine_acceptance; readiness_is_progress_not_node_completion",
+    "dependency_edges": "construction_requires_predecessor_construction_evidence; live_qualification_also_requires_runtime_readiness",
+    "SA15": "construction_wave_2; release_readiness_wave_4; retain_recovery_ownership_until_wave_5_acceptance",
+    "SA16": "harness_and_combined_checks_wave_4_before_release; real_qualification_and_completion_wave_5",
+    "issue_closure": "only_after_all_required_live_and_cleanup_evidence"
+  },
+  "file_plan": {
+    "repository_revision": "99ad7be4224518cee8d3c3df5bee69f205deaeac",
+    "path_base": "repository_root",
+    "status": "planned_implementation_locations_not_created_runtime_files",
+    "create": "New at the inspected revision; one creating story per path.",
+    "modify": "Existing tracked file at the inspected revision.",
+    "modify_after": "Modify a file introduced by the named predecessor; do not create a competing copy.",
+    "migration_rule": "Filenames are planned semantic names; derive actual revision/down_revision/depends_on from the inspected host/L5 graph at implementation; serialize head allocation.",
+    "scope_rule": "Optional, non-exhaustive human-facing information only. Unlisted changes do not require a plan amendment and must not fail nodes. Never derive execution-policy repair_paths from this file map.",
+    "documentation_rule": "All L5 documentation stays under docs/l5-services; only entry-point links belong elsewhere.",
+    "shared_edit_rule": "The creating/first story owns the initial contract; later writers integrate against that contract. One integrator serializes same-wave shared-file edits and migration heads; no duplicate package/router/model trees.",
+    "initial_integrators": {
+      "package": "SA02, then SA15 release packaging",
+      "router_models_and_l5_migration_heads": "SA03; SA15 owns release-time migration registration",
+      "product_source_authority": "SA02",
+      "gateway_app_mount": "SA02/SA03 in dependency order",
+      "operations_admission_and_evidence": "SA15, then SA16 qualification",
+      "shared_docs_and_contracts": "SA01; the later story owns its bounded documentation update"
+    },
+    "shared_files": [
+      {
+        "path": "docs/l5-services/verification.md",
+        "writers": [
+          "SA01",
+          "SA16"
+        ]
+      },
+      {
+        "path": "modules/L5-services/pyproject.toml",
+        "writers": [
+          "SA02",
+          "SA15"
+        ]
+      },
+      {
+        "path": "modules/L5-services/src/l5_services/admission.py",
+        "writers": [
+          "SA05",
+          "SA06"
+        ]
+      },
+      {
+        "path": "modules/L5-services/src/l5_services/api/router.py",
+        "writers": [
+          "SA03",
+          "SA04",
+          "SA05",
+          "SA10"
+        ]
+      },
+      {
+        "path": "modules/L5-services/src/l5_services/models/__init__.py",
+        "writers": [
+          "SA03",
+          "SA04",
+          "SA05",
+          "SA09",
+          "SA10",
+          "SA11"
+        ]
+      },
+      {
+        "path": "modules/gateway/src/agentauth/actions_routes.py",
+        "writers": [
+          "SA15",
+          "SA16"
+        ]
+      },
+      {
+        "path": "modules/gateway/src/app.py",
+        "writers": [
+          "SA02",
+          "SA03"
+        ]
+      },
+      {
+        "path": "modules/gateway/src/products/source_routes.py",
+        "writers": [
+          "SA02",
+          "SA09"
+        ]
+      }
+    ]
+  },
+  "flow_bundle": "flow/README.md"
+}

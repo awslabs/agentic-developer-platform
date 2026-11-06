@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Commit and Pull Request (section 3.6)",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "type": "object",
+  "properties": {
+    "commit_sha": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string"},
+    "session_id": {"type": "string"},
+    "story_id": {"type": "string", "minLength": 1},
+    "authored_by_type": {"type": "string", "enum": ["human", "agent", "mixed"]},
+    "pr_id": {"type": "string", "minLength": 1},
+    "merged_at": {"type": "string", "format": "date-time"},
+    "reverted_by_pr": {"type": "string"},
+    "lines_added": {"type": "integer", "minimum": 0},
+    "lines_removed": {"type": "integer", "minimum": 0},
+    "files": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["story_id"],
+  "anyOf": [{"required": ["commit_sha"]}, {"required": ["pr_id"]}],
+  "unevaluatedProperties": false
+}

@@ -4,9 +4,12 @@ metadata:
   name: chat-supervisor-pods
   namespace: adp-gateway-agents
 rules:
+  # `get` (no list/watch) lets the supervisor read back the one pod it created so it
+  # admits it only once Running; the adp-chat-supervisor-pods admission policy still
+  # constrains create/update/delete to restricted chat pods.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["create", "delete"]
+    verbs: ["get", "create", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list"]
@@ -57,11 +60,11 @@ metadata:
 rules:
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["validatingadmissionpolicies"]
-    resourceNames: ["adp-chat-sandbox-template", "adp-chat-supervisor-pods"]
+    resourceNames: ["adp-chat-sandbox-template", "adp-chat-supervisor-pods", "adp-crew-pod-template", "adp-crew-checkpoint-helper-template", "adp-crew-restore-helper-template"]
     verbs: ["get"]
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["validatingadmissionpolicybindings"]
-    resourceNames: ["adp-chat-sandbox-template", "adp-chat-supervisor-pods"]
+    resourceNames: ["adp-chat-sandbox-template", "adp-chat-supervisor-pods", "adp-crew-pod-template", "adp-crew-checkpoint-helper-template", "adp-crew-restore-helper-template"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

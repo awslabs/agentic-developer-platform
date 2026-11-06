@@ -18,61 +18,62 @@ runs:
     - name: Resolve test configuration from SSM
       shell: bash
       run: |
+        set -euo pipefail
         REGION="${AWS_REGION:-us-east-1}"
         ENV="${DEPLOY_ENV:-dev}"
 
         # GitLab webhook endpoint (API Gateway URL for /gitlab route)
         GITLAB_WEBHOOK_ENDPOINT=$(aws ssm get-parameter \
           --name "/adp/${ENV}/webhook-ingress/gitlab-endpoint" \
-          --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          --query "Parameter.Value" --output text)
 
         # GitLab webhook secret from Secrets Manager
         GITLAB_SECRET_ARN=$(aws ssm get-parameter \
           --name "/adp/${ENV}/webhook-ingress/gitlab-webhook-secret-arn" \
-          --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          --query "Parameter.Value" --output text)
         if [ -n "$GITLAB_SECRET_ARN" ]; then
           GITLAB_WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
             --secret-id "$GITLAB_SECRET_ARN" \
-            --query "SecretString" --output text 2>/dev/null || echo "")
+            --query "SecretString" --output text)
         fi
 
         # GitLab instance details
         GITLAB_URL=$(aws ssm get-parameter \
           --name "/adp/${ENV}/gitlab/url" \
-          --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          --query "Parameter.Value" --output text)
         GITLAB_TOKEN_ARN=$(aws ssm get-parameter \
           --name "/adp/${ENV}/gitlab/api-token-arn" \
-          --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          --query "Parameter.Value" --output text)
         if [ -n "$GITLAB_TOKEN_ARN" ]; then
           GITLAB_TOKEN=$(aws secretsmanager get-secret-value \
             --secret-id "$GITLAB_TOKEN_ARN" \
-            --query "SecretString" --output text 2>/dev/null || echo "")
+            --query "SecretString" --output text)
         fi
         GITLAB_PROJECT_ID=$(aws ssm get-parameter \
           --name "/adp/${ENV}/gitlab/test-project-id" \
-          --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          --query "Parameter.Value" --output text)
         GITLAB_PROJECT_PATH=$(aws ssm get-parameter \
           --name "/adp/${ENV}/gitlab/test-project-path" \
-          --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          --query "Parameter.Value" --output text)
 
         # GitHub webhook endpoint (for regression tests)
         WEBHOOK_ENDPOINT=$(aws ssm get-parameter \
           --name "/adp/${ENV}/webhook-ingress/endpoint" \
-          --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          --query "Parameter.Value" --output text)
         WEBHOOK_SECRET_ARN=$(aws ssm get-parameter \
           --name "/adp/${ENV}/webhook-ingress/webhook-secret-arn" \
-          --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          --query "Parameter.Value" --output text)
         if [ -n "$WEBHOOK_SECRET_ARN" ]; then
           WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
             --secret-id "$WEBHOOK_SECRET_ARN" \
-            --query "SecretString" --output text 2>/dev/null || echo "")
+            --query "SecretString" --output text)
         fi
 
         # Shared SQS queue. The live-fleet check also reads its depth at
         # assertion expiry to report why a wait ran out (#5354).
         WEBHOOK_SQS_QUEUE_URL=$(aws ssm get-parameter \
           --name "/adp/${ENV}/webhook-ingress/sqs-queue-url" \
-          --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          --query "Parameter.Value" --output text)
 
         # Secrets fetched at runtime are not masked automatically. Register
         # them before GITHUB_ENV makes them visible in later step headers.

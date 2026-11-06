@@ -41,6 +41,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+  ADP_REPOSITORY_EVIDENCE_STORE: s3-oidc-v1
+  ACCOUNT_ID: ${{ inputs.expected_account_id }}
+  ADP_WORKFLOW_REVISION: ${{ inputs.adp_definition_revision }}
   ENVIRONMENT: dev
   EXPECTED_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
   EXPECTED_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
@@ -109,12 +113,7 @@ jobs:
           python3 modules/gateway/scripts/repository-scan-receipt.py
 
       - name: Upload authenticated context
-        uses: actions/upload-artifact@v6
-        with:
-          name: adp-deployment-context-security-scan.yml-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
-          if-no-files-found: error
-          retention-days: 14
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py context security-scan.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
 
   # ---------- Dynamic discovery for container scanning ----------
   discover-dockerfiles:
@@ -518,6 +517,9 @@ jobs:
         uses: ./.github/actions/codebuild-run
         with:
           project_name: adp-${{ env.ENVIRONMENT }}-grype-scan
+          # SkyPilot cataloguing alone uses over 5 GiB; leave room for Docker
+          # and the CodeBuild agent instead of sharing a 7 GiB worker.
+          compute_type: BUILD_GENERAL1_LARGE
           region: ${{ env.AWS_REGION }}
           state_bucket: ${{ env.STATE_BUCKET }}
           source_revision: ${{ inputs.adp_source_revision }}
@@ -896,6 +898,7 @@ jobs:
         uses: ./.github/actions/codebuild-run
         with:
           project_name: adp-${{ env.ENVIRONMENT }}-syft-scan
+          compute_type: BUILD_GENERAL1_LARGE
           region: ${{ env.AWS_REGION }}
           state_bucket: ${{ env.STATE_BUCKET }}
           source_revision: ${{ inputs.adp_source_revision }}
@@ -1003,12 +1006,7 @@ jobs:
 
       - name: Upload cleanup evidence
         if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: adp-repository-scan-cleanup-${{ github.run_attempt }}
-          path: cleanup.json
-          if-no-files-found: error
-          retention-days: 14
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py repository-artifact cleanup cleanup.json
 
   # ---------- Summary and typed producer evidence ----------
   summary:
@@ -1146,12 +1144,7 @@ jobs:
           cp -R scanner-evidence/syft/provenance "$RECEIPT_EVIDENCE/syft/"
 
       - name: Upload typed scan receipt
-        uses: actions/upload-artifact@v6
-        with:
-          name: adp-repository-scan-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-repository-scan/
-          if-no-files-found: error
-          retention-days: 14
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py repository-artifact scan "$RUNNER_TEMP/adp-repository-scan"
 
       - name: Publish private detailed summary
         run: |
@@ -1175,12 +1168,7 @@ jobs:
             --correlation "$ADP_CORRELATION"
 
       - name: Upload sanitized reconciliation
-        uses: actions/upload-artifact@v6
-        with:
-          name: security-reconciliation-${{ github.run_attempt }}
-          path: security-reconciliation.json
-          if-no-files-found: error
-          retention-days: 14
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py repository-artifact reconciliation security-reconciliation.json
 
       - name: Security gate (fail on new critical/high)
         run: |

@@ -54,13 +54,17 @@ def configured(raw):
     if not isinstance(value, dict):
         raise Refused('ADDITIONAL_PRIVATE_SUBNETS_BY_AZ must be a JSON object keyed by availability '
                       'zone, e.g. {"us-east-1a": "subnet-0123456789abcdef0"}')
-    for zone, subnet in value.items():
-        if not re.fullmatch(r"[a-z0-9-]+", zone) or not isinstance(subnet, str) \
-                or not re.fullmatch(r"subnet-[0-9a-f]{8,17}", subnet):
+    subnet_ids = []
+    for zone, entries in value.items():
+        subnets = [entries] if isinstance(entries, str) else entries
+        if not re.fullmatch(r"[a-z0-9-]+", zone) or not isinstance(subnets, list) or not subnets \
+                or not all(isinstance(subnet, str) and re.fullmatch(r"subnet-[0-9a-f]{8,17}", subnet)
+                           for subnet in subnets):
             raise Refused('ADDITIONAL_PRIVATE_SUBNETS_BY_AZ entries must look like '
-                          '"us-east-1a": "subnet-0123456789abcdef0"')
-    if len(set(value.values())) != len(value):
-        raise Refused("ADDITIONAL_PRIVATE_SUBNETS_BY_AZ names the same subnet under two availability zones")
+                          '"us-east-1a": "subnet-0123456789abcdef0" or a nonempty list of subnet IDs')
+        subnet_ids.extend(subnets)
+    if len(set(subnet_ids)) != len(subnet_ids):
+        raise Refused("ADDITIONAL_PRIVATE_SUBNETS_BY_AZ repeats a subnet or names the same subnet under two availability zones")
     return value
 
 
@@ -72,7 +76,7 @@ def platform_state(bucket, environment):
         return json.loads(path.read_text())
 
 
-def resolve(args):
+def resolve_with_cluster(args):
     cluster_name = f"adp-{args.environment}-eks-cluster"
     try:
         cluster = aws("eks", "describe-cluster", "--name", cluster_name)["cluster"]
@@ -83,7 +87,7 @@ def resolve(args):
         # path this script exists to close.
         if "ResourceNotFoundException" not in str(exc):
             raise
-        return configured(args.configured)
+        return configured(args.configured), ""
 
     live = cluster["resourcesVpcConfig"].get("subnetIds", [])
     additions = live_additions(platform_state(args.bucket, args.environment), live)
@@ -93,7 +97,11 @@ def resolve(args):
         found = {s["SubnetId"]: s.get("AvailabilityZone") for s in described}
         zones = {s: found.get(s) for s in sorted(additions)}
     return effective_additions(configured(args.configured), as_zone_map(zones),
-                               allow_removal=args.allow_removal)
+                               allow_removal=args.allow_removal), cluster_name
+
+
+def resolve(args):
+    return resolve_with_cluster(args)[0]
 
 
 def main():
@@ -101,11 +109,14 @@ def main():
     parser.add_argument("--environment", default="dev")
     parser.add_argument("--bucket", required=True, help="Terraform state bucket")
     parser.add_argument("--configured", default="", help="Configured map (repository variable / TF_VAR_)")
+    parser.add_argument("--terraform-vars", action="store_true", help="Emit both the capacity map and the verified existing-cluster name")
     parser.add_argument("--allow-removal", action="store_true",
                         help="Authorise narrowing the live subnet set (deliberate removal only)")
     args = parser.parse_args()
     try:
-        print(json.dumps(resolve(args), sort_keys=True))
+        additions, cluster = resolve_with_cluster(args)
+        result = {"additional_private_subnet_ids_by_az": additions, "capacity_existing_cluster": cluster} if args.terraform_vars else additions
+        print(json.dumps(result, sort_keys=True))
     except Refused as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1

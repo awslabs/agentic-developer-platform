@@ -8,15 +8,13 @@ Handles bidirectional conversion between:
 
 import logging
 import time
-import uuid
 from typing import Any
 
 from src.proxy.schemas import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
-    AnthropicResponseContent,
+    AnthropicRole,
     AnthropicTextContent,
-    AnthropicToolUseContent,
     AnthropicUsage,
     BedrockInvokeRequest,
     BedrockInvokeResponse,
@@ -232,11 +230,46 @@ class FormatTranslator:
             Bedrock InvokeModel request body
         """
         try:
-            # Convert messages
+            # Convert messages. A `system`-role message is valid on the Anthropic
+            # Messages API but Bedrock's payload only knows user/assistant turns
+            # and one top-level system prompt, so system messages are folded into
+            # that prompt in order (#7424). Their text is kept verbatim as text
+            # blocks so cache_control markers survive.
             messages: list[BedrockMessage] = []
+            system_blocks: list[dict[str, Any]] = []
+            # System-role messages that arrive once the conversation has started stay IN the
+            # conversation, attached to the adjacent user turn (#8223 cause 51). Folding them into
+            # the system prompt moved Claude Code's trailing `cache_control` breakpoint — the one
+            # that caches the whole history — out of the messages, and put per-turn reminders
+            # (date, token budget) ahead of the history, so every turn re-billed the conversation
+            # uncached. Only system-role messages that precede the first user/assistant turn fold.
+            pending_system: list[dict[str, Any]] = []
+            thinking_enabled = isinstance(request.thinking, dict) and request.thinking.get("type") == "enabled"
             for msg in request.messages:
+                if msg.role is AnthropicRole.SYSTEM:
+                    blocks = self._system_blocks_from_message(msg.content)
+                    if not messages:
+                        system_blocks.extend(blocks)
+                    elif messages[-1].role == "user" and isinstance(messages[-1].content, list):
+                        messages[-1].content.extend(blocks)
+                    else:
+                        pending_system.extend(blocks)
+                    continue
                 content = self._convert_anthropic_content_to_bedrock(msg.content)
+                if pending_system and msg.role is AnthropicRole.USER:
+                    content = [*pending_system, *content]
+                    pending_system = []
+                if not thinking_enabled:
+                    # Thinking blocks are only valid in history while thinking is
+                    # enabled on the request; with it off the provider rejects them.
+                    # Clients toggle thinking between turns, so drop the blocks and
+                    # keep the turn's visible content (#7471).
+                    content = [block for block in content if block.get("type") not in {"thinking", "redacted_thinking"}] or content
                 messages.append(BedrockMessage(role=msg.role.value, content=content))
+            if pending_system:
+                # Trailing system-role message(s) after an assistant turn: a user turn carrying them
+                # keeps conversation order and Bedrock's user/assistant alternation (last turn user).
+                messages.append(BedrockMessage(role="user", content=pending_system))
 
             # Build Bedrock request
             bedrock_request = BedrockInvokeRequest(
@@ -245,7 +278,9 @@ class FormatTranslator:
                 messages=messages,
             )
 
-            if request.system:
+            if system_blocks:
+                bedrock_request.system = self._merge_system(request.system, system_blocks)
+            elif request.system:
                 bedrock_request.system = request.system
 
             if request.temperature is not None:
@@ -259,6 +294,27 @@ class FormatTranslator:
 
             if request.stop_sequences:
                 bedrock_request.stop_sequences = request.stop_sequences
+
+            if request.tools is not None:
+                bedrock_request.tools = [tool.model_dump(exclude_none=True) for tool in request.tools]
+
+            if request.tool_choice is not None:
+                bedrock_request.tool_choice = request.tool_choice
+
+            for field in ("thinking", "output_config", "metadata"):
+                value = getattr(request, field)
+                if value is not None:
+                    setattr(bedrock_request, field, value)
+
+            beta_values = list(request.anthropic_beta or [])
+            for value in anthropic_beta or []:
+                if value not in beta_values:
+                    beta_values.append(value)
+            if beta_values:
+                bedrock_request.anthropic_beta = beta_values
+
+            for field, value in (request.model_extra or {}).items():
+                setattr(bedrock_request, field, value)
 
             return bedrock_request
 
@@ -281,30 +337,16 @@ class FormatTranslator:
             Anthropic messages response
         """
         try:
-            # Convert content blocks
-            content: list[AnthropicResponseContent | AnthropicToolUseContent] = []
-            for block in response.content:
-                if block.get("type") == "text":
-                    content.append(AnthropicResponseContent(type="text", text=block.get("text", "")))
-                elif block.get("type") == "tool_use":
-                    content.append(
-                        AnthropicToolUseContent(
-                            type="tool_use",
-                            id=block.get("id", str(uuid.uuid4())),
-                            name=block.get("name", ""),
-                            input=block.get("input", {}),
-                        )
-                    )
-
             return AnthropicMessagesResponse(
                 id=response.id,
                 type="message",
                 role="assistant",
-                content=content,
+                content=response.content,
                 model=request_model,
                 stop_reason=response.stop_reason,
                 stop_sequence=response.stop_sequence,
                 usage=AnthropicUsage(**response.usage),
+                **(response.model_extra or {}),
             )
 
         except Exception as e:
@@ -398,21 +440,10 @@ class FormatTranslator:
         # Anthropic streaming format is very similar to Bedrock's
         # Just pass through with minor adjustments
         if chunk_type == "message_start":
-            message = chunk.get("message", {})
-            message["model"] = model
-            message["id"] = response_id
-            return {"type": "message_start", "message": message}
+            message = {**chunk.get("message", {}), "model": model, "id": response_id}
+            return {**chunk, "message": message}
 
-        elif chunk_type in ["content_block_start", "content_block_delta", "content_block_stop"]:
-            return chunk
-
-        elif chunk_type == "message_delta":
-            return chunk
-
-        elif chunk_type == "message_stop":
-            return {"type": "message_stop"}
-
-        return None
+        return chunk if chunk_type else None
 
     # =========================================================================
     # Helper Methods
@@ -468,6 +499,26 @@ class FormatTranslator:
                         )
 
         return bedrock_content if bedrock_content else [{"type": "text", "text": ""}]
+
+    @staticmethod
+    def _system_blocks_from_message(content: str | list[Any]) -> list[dict[str, Any]]:
+        """Text blocks for a `system`-role message; non-text blocks are refused."""
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}]
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            data = block.model_dump(exclude_none=True) if hasattr(block, "model_dump") else dict(block)
+            if data.get("type") != "text":
+                raise ValueError("system messages may only contain text blocks")
+            blocks.append(data)
+        return blocks
+
+    @staticmethod
+    def _merge_system(existing: str | list[dict[str, Any]] | None, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Top-level system first, then system-role messages in conversation order."""
+        if isinstance(existing, str):
+            return [{"type": "text", "text": existing}, *blocks]
+        return [*(existing or []), *blocks]
 
     def _convert_anthropic_content_to_bedrock(
         self,

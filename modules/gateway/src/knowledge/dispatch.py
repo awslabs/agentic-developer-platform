@@ -140,6 +140,7 @@ def build_scope_envelope(
     tenant_id: str | None,
     owner_sub: str | None,
     project_id: str | None,
+    product_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the scope dict for the SQS message body.
 
@@ -148,19 +149,26 @@ def build_scope_envelope(
       - tenant_id set (no owner_sub) -> "tenant"
       - neither -> "shared"
     """
-    if owner_sub:
+    if product_id:
+        if not tenant_id or owner_sub or project_id:
+            raise ValueError("Product scope requires a tenant and no personal/project owner")
+        visibility = "product"
+    elif owner_sub:
         visibility = "personal"
     elif tenant_id:
         visibility = "tenant"
     else:
         visibility = "shared"
 
-    return {
+    envelope = {
         "tenant_id": tenant_id,
         "owner_sub": owner_sub,
         "project_id": project_id,
         "visibility": visibility,
     }
+    if product_id:
+        envelope["product_id"] = product_id
+    return envelope
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +186,7 @@ async def dispatch_ingestion(
     db: AsyncSession,
     *,
     installation_id: int | None = None,
+    product_id: str | None = None,
 ) -> bool:
     """Phase 1: inline SQS publish for a registered asset.
 
@@ -209,7 +218,7 @@ async def dispatch_ingestion(
         return False
 
     try:
-        await admit_source(asset_type, source_ref, tenant_id, owner_sub)
+        await admit_source(asset_type, source_ref, tenant_id, owner_sub, product_id=product_id)
     except SourceAdmissionError:
         return False
 
@@ -218,8 +227,8 @@ async def dispatch_ingestion(
         "source": extract_source_identifier(source_ref, asset_type),
         "content_type": asset_type,
         "registry_asset_id": asset_id,
-        "scope": build_scope_envelope(tenant_id, owner_sub, project_id),
-        "steps": type_config["steps"],
+        "scope": build_scope_envelope(tenant_id, owner_sub, project_id, product_id),
+        "steps": ["embed_vectors"] if (product_id or owner_sub) and asset_type == "repo" else type_config["steps"],
         "triggered_by": "self_serve",
         "enqueued_at": datetime.now(UTC).isoformat(),
     }
@@ -246,6 +255,8 @@ async def dispatch_ingestion(
         WHERE id = :id AND status = 'registered'
           AND ingestion_attempt_id IS NULL AND callback_grant_sha256 IS NULL
           AND tenant_id IS NOT DISTINCT FROM :tenant_id AND source_ref = :source_ref
+          AND owner_sub IS NOT DISTINCT FROM CAST(:owner_sub AS text)
+          AND (to_jsonb(knowledge_assets)->>'product_id') IS NOT DISTINCT FROM CAST(:product_id AS text)
         RETURNING id
     """),
         {
@@ -254,12 +265,15 @@ async def dispatch_ingestion(
             "digest": hashlib.sha256(grant.encode()).hexdigest(),
             "tenant_id": tenant_id,
             "source_ref": source_ref,
+            "owner_sub": owner_sub,
+            "product_id": product_id,
         },
     )
     if binding.fetchone() is None:
         return False
     await db.commit()
     message["callback_grant"] = grant
+    message["ingestion_attempt_id"] = attempt_id
 
     # Publish to SQS
     try:

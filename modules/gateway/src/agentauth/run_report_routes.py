@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -11,13 +12,16 @@ from src.agentauth.pr_binding_routes import BindPullRequestRequest
 from src.agentauth.routes import require_agent_transport
 from src.orchestration.review_cycle import CycleBlockedError
 from src.orchestration.run_reports import (
+    CONTRACT_VERSION,
     REPORT_HEADER,
     RunReportError,
     authenticate_run_report,
     record_terminal,
     report_snapshot,
     reviewer_artifact_assignment,
+    validate_spool_document,
 )
+from src.orchestration.story_checkpoints import CheckpointError, TaskBoardWrite, public_snapshot, store_checkpoint
 
 router = APIRouter(prefix="/internal/v1/agent/report", tags=["agent-reports"], dependencies=[Depends(require_agent_transport)])
 
@@ -47,6 +51,74 @@ async def read_report(request: Request):
     async with _sessions()() as session:
         row = await _authenticate(session, request, current=False)
         return report_snapshot(row)
+
+
+@router.post("/task-board")
+async def record_task_board(body: TaskBoardWrite, request: Request):
+    """Observe the existing live board; it is never delivery evidence."""
+    async with _sessions()() as session:
+        row = await _authenticate(session, request)
+        if row.terminal_receipt or not row.worker_receipt:
+            raise HTTPException(409, "task_board_run_not_active")
+        previous = row.task_board_snapshot or {}
+        try:
+            checkpoint = await store_checkpoint(session, row, body)
+        except CheckpointError as error:
+            raise HTTPException(409, str(error)) from None
+        value = dict(previous)
+        version = (body.generation, body.sequence)
+        if not previous or version > (previous["generation"], previous["sequence"]):
+            value.update(public_snapshot(body.model_dump(mode="json")))
+        if checkpoint is not None:
+            value["story_checkpoint"] = checkpoint
+        # Legacy display-only updates never erase acknowledged structured progress.
+        row.task_board_snapshot = value
+        await session.commit()
+        return {
+            "contract_version": 1,
+            "run_id": row.run_id,
+            "attempt": row.attempt,
+            "recorded": True,
+            **({"checkpoint_revision": checkpoint["revision"]} if checkpoint else {}),
+        }
+
+
+def _spool_view(row) -> dict:
+    return {"contract_version": CONTRACT_VERSION, "run_id": row.run_id, "attempt": row.attempt, "spool_document": row.spool_document}
+
+
+@router.get("/spool")
+async def read_spool(request: Request):
+    """Untrusted pending-report marker for a protected worker (#7392)."""
+    async with _sessions()() as session:
+        row = await _authenticate(session, request, current=False)
+        return _spool_view(row)
+
+
+class SpoolWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document: dict
+    create: bool = False
+
+
+@router.post("/spool")
+async def write_spool(body: SpoolWrite, request: Request):
+    """Store the worker's marker verbatim after checking it names this assignment.
+
+    ``create`` mirrors the S3 ``IfNoneMatch`` precondition: a second creator sees
+    409 and must run delivery recovery, exactly as with the bucket spool. The
+    marker never grants anything; ``/started`` still locks ownership.
+    """
+    async with _sessions()() as session:
+        row = await _authenticate(session, request, current=False)
+        if body.create and row.spool_document is not None:
+            raise HTTPException(409, "spool_exists")
+        try:
+            row.spool_document = validate_spool_document(row, body.document)
+        except RunReportError as exc:
+            raise HTTPException(422, exc.code) from None
+        await session.commit()
+        return _spool_view(row)
 
 
 @router.post("/pull-request")
@@ -178,10 +250,77 @@ class TerminalReport(BaseModel):
     failure: FailureDetails | None = None
 
 
+class OperationsReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    report: str = Field(min_length=1, max_length=12000)
+
+
+@router.post("/operations")
+async def attach_operations_report(body: OperationsReport, request: Request):
+    from src.orchestration.accepted_node import accepted_node_contract
+    from src.orchestration.developer_personas import operations_executor_enabled
+    from src.orchestration.models import OrchestrationNode
+    from src.shared.models.base import utcnow
+
+    async with _sessions()() as session:
+        row = await _authenticate(session, request)
+        scope = row.dispatch_metadata.get("orchestration") or {}
+        fences = row.dispatch_metadata.get("handoff_expect") or {}
+        node = await session.get(OrchestrationNode, row.node_id)
+        contract = await accepted_node_contract(session, node) if node is not None else None
+        if (
+            not operations_executor_enabled()
+            or row.persona not in {"operations", "agent-codex-operations"}
+            or scope.get("executor_role") != "operate"
+            or contract is None
+            or contract.node.executor is None
+            or contract.node.executor.role != "operate"
+            or contract.node.executor.persona != row.persona
+            # The accepted node may leave its repository identity unset; the
+            # dispatched repository was then bounded by the accepted policy's
+            # repository ids at admission and by the operations grant (#7349).
+            # When the node names one, the report must come from it.
+            or contract.node.repository_identity not in (None, row.repo)
+            or contract.plan_version != fences.get("accepted_plan_version")
+            or not contract.node.evidence_expectations
+            or any(not item.startswith("runtime_verified:") for item in contract.node.evidence_expectations)
+        ):
+            raise HTTPException(404, "not found")
+        if len(body.report.encode("utf-8")) > 12000:
+            raise HTTPException(422, "operations_report_too_large")
+        digest = hashlib.sha256(body.report.encode("utf-8")).hexdigest()
+        existing = row.operations_report_receipt
+        if existing:
+            if existing.get("sha256") != digest:
+                raise HTTPException(409, "operations_report_immutable")
+            return report_snapshot(row)
+        if row.terminal_receipt:
+            raise HTTPException(409, "terminal_report_immutable")
+        row.operations_report_receipt = {
+            "run_id": row.run_id,
+            "attempt": row.attempt,
+            "node_id": row.node_id,
+            "receipt_id": f"operations-report:{row.run_id}",
+            "sha256": digest,
+            "report": body.report,
+            "recorded": True,
+            "recorded_at": utcnow().isoformat(),
+        }
+        await session.commit()
+        return report_snapshot(row)
+
+
 @router.post("/terminal")
 async def terminal_report(body: TerminalReport, request: Request):
     async with _sessions()() as session:
         row = await _authenticate(session, request)
+        if (
+            body.outcome == "complete"
+            and row.persona in {"operations", "agent-codex-operations"}
+            and (row.dispatch_metadata.get("orchestration") or {}).get("executor_role") == "operate"
+            and not row.operations_report_receipt
+        ):
+            raise HTTPException(409, "operations_report_missing")
         try:
             if body.outcome == "complete" and not row.terminal_receipt:
                 from src.orchestration.review_assignment import require_reviewer_merge

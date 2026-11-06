@@ -4,7 +4,7 @@ import asyncio
 import json
 
 from harness_jobs.execution import CallOutcome, read_call
-from harness_jobs.execution_plan import step_key
+from harness_jobs.provider_retry import effective_step_key
 from harness_jobs.identity import OperationRefused
 from harness_jobs.recovery_grant import RecoveryGrant, lock_recovery_grant
 from harness_jobs.store import OperationStore
@@ -17,7 +17,9 @@ from .artifacts import proposal, read_artifact
 from .runtime import validate_phase
 from .terraform import verify_prepared_artifact
 
-PROPOSAL_PHASES = frozenset({"prepare-infrastructure", "prepare-adoption"})
+PROPOSAL_PHASES = frozenset(
+    {"prepare-infrastructure", "prepare-adoption", "prepare-partial-apply"}
+)
 
 
 async def original_result(operation, context, key):
@@ -39,7 +41,7 @@ async def original_result(operation, context, key):
             record is None
             or (record.job_id, record.plan_digest, record.request_payload)
             != (operation.job_id, operation.plan_digest, operation.request_payload)
-            or key != step_key(record, step)
+            or key != await effective_step_key(connection, record, step)
             or call is None
             or (
                 call.operation_id,
@@ -150,7 +152,12 @@ class ProposalRecovery:
                         ],
                     }.items()
                 )
-                or metadata.get("next_phase") != "apply-infrastructure"
+                or metadata.get("next_phase")
+                != (
+                    "partial-apply-repair"
+                    if step.step_id == "prepare-partial-apply"
+                    else "apply-infrastructure"
+                )
             ):
                 raise OperationRefused("prepared proposal target or next phase changed")
             await asyncio.to_thread(verify_prepared_artifact, row, self.context)

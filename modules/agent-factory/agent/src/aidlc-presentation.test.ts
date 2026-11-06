@@ -1,3 +1,4 @@
+import { withIssueAuthoring } from './issue-authoring';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -47,8 +48,8 @@ describe('AI-DLC presentation delivered to hosted workers', () => {
     const compiled = ts.transpileModule(loader.getText(source), {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    return new Function('fs', 'path', 'CWD', 'AGENT_TYPE', 'loadHumanCommunication', 'loadCodingGuidelines',
-      `${compiled}; return loadRules();`)(fs, path, cwd, agentType, loadHumanCommunication, loadCodingGuidelines);
+    return new Function('fs', 'path', 'CWD', 'AGENT_TYPE', 'loadHumanCommunication', 'loadCodingGuidelines', 'withIssueAuthoring',
+      `${compiled}; return loadRules();`)(fs, path, cwd, agentType, loadHumanCommunication, loadCodingGuidelines, withIssueAuthoring);
   }
 
   it('loads the complete AI-DLC layout from shipped assets without optional workflow files', () => {
@@ -61,6 +62,33 @@ describe('AI-DLC presentation delivered to hosted workers', () => {
     expect(policy).toContain('except required AI-DLC workflow layouts');
     expect(policy).not.toContain('These rules replace conflicting presentation templates');
     expect(loadRules('developer')).not.toContain(persona);
+  });
+
+  it('loads the full canonical guide and both templates without relying on persona links', () => {
+    // Even a repository persona override receives the installed authoring rules.
+    const overrides = path.join(cwd, '.github-agent/personas');
+    fs.mkdirSync(overrides, { recursive: true });
+    fs.writeFileSync(path.join(overrides, 'aidlc.md'), 'CUSTOM AI-DLC PERSONA');
+    const rules = loadRules('aidlc');
+    expect(rules).toContain('CUSTOM AI-DLC PERSONA');
+    for (const file of ['agents/issue-authoring.md', 'templates/epic-issue.md', 'templates/developer-issue.md']) {
+      const content = fs.readFileSync(path.resolve(personas, '..', file), 'utf8');
+      expect(rules.split(content)).toHaveLength(2);
+      expect(loadRules('developer')).not.toContain(content);
+    }
+    expect(rules).toContain('Existing AI-DLC approval gates and amendment restrictions still apply');
+  });
+
+  it('emits canonical epic/story lineage without weakening phase or amendment gates', () => {
+    const epic = section(emitter, '### Step 2:', '### Step 3:');
+    expect(epic).toContain('epic-issue.md');
+    expect(epic).not.toContain('```markdown');
+    expect(emitter).toContain('Every story AC needs a scenario mapping row');
+    expect(emitter).toContain('report partial emission and stop dependent work');
+    expect(emitter).not.toContain('fall back to adding');
+    expect(emitter).toContain('Stories are created INERT');
+    expect(emitter).toContain('Do not create or\nmodify issues');
+    expect(persona).toContain('Amendment mode produces an inert draft only');
   });
 
   it('keeps a usable gate template with review tables, revision metadata and the reply footer last', () => {

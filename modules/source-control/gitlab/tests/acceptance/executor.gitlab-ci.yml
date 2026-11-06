@@ -1,0 +1,100 @@
+# Run only in owned qualification projects at the reviewed source commit.
+# Per-job results and trusted host records determine acceptance, not pipeline green.
+workflow:
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "api" && $ADP_QUALIFICATION_SUITE == "executor" &&
+      $ADP_QUALIFICATION_RUN_ID
+  - when: never
+stages:
+- executor
+.executor:
+  stage: executor
+  image:
+    name: $ADP_QUALIFICATION_JOB_IMAGE
+  tags:
+  - $ADP_QUALIFICATION_RUNNER_TAG
+  timeout: 10m
+  allow_failure: true
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+  - python3 modules/source-control/gitlab/tests/acceptance/executor_probe.py --case
+    "$ADP_EXECUTOR_CASE" --output executor-result.json
+  artifacts:
+    when: always
+    paths:
+    - executor-result.json
+    expire_in: 1 day
+executor-privileged:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: privileged
+executor-root_user:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: root_user
+  image:
+    name: $ADP_QUALIFICATION_JOB_IMAGE
+    docker:
+      user: '0'
+executor-host_network:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: host_network
+executor-host_pid:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: host_pid
+executor-host_ipc:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: host_ipc
+executor-host_path:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: host_path
+executor-host_device:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: host_device
+executor-added_capability:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: added_capability
+executor-docker_socket:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: docker_socket
+executor-manager_credentials:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: manager_credentials
+executor-arbitrary_image:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: arbitrary_image
+  image:
+    name: $ADP_QUALIFICATION_HELPER_IMAGE
+executor-arbitrary_service:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: arbitrary_service
+  services:
+  - name: $ADP_QUALIFICATION_HELPER_IMAGE
+    alias: disallowed-service
+executor-debug_trace:
+  extends: .executor
+  variables:
+    ADP_EXECUTOR_CASE: debug_trace
+    CI_DEBUG_TRACE: 'true'
+network-isolation:
+  extends: .executor
+  script:
+  - test -f "$ADP_QUALIFICATION_TARGETS_FILE"
+  - python3 modules/source-control/gitlab/tests/acceptance/probe.py --fixtures
+    "$ADP_QUALIFICATION_TARGETS_FILE" --ca-file "$CI_SERVER_TLS_CA_FILE" --output network-result.json
+  artifacts:
+    when: always
+    paths:
+    - network-result.json
+    expire_in: 1 day

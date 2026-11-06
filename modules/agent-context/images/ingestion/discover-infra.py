@@ -604,6 +604,8 @@ def main():
         log.info("No accounts to discover")
         return
 
+    outcome_steps = {}
+
     # Step 1: Discover AWS resources for each account
     for acct in accounts:
         account_id = acct["account_id"]
@@ -614,6 +616,7 @@ def main():
         # Upload resource inventory to S3
         content = json.dumps(resources, indent=2)
         uploaded = store.put_content(f"infra/{account_id}/resources.json", content)
+        outcome_steps[f"inventory:{account_id}"] = "verified" if uploaded else "failed"
         if uploaded:
             log.info(
                 "Uploaded %d resources for account %s", resources["total_resources"], account_id
@@ -625,19 +628,23 @@ def main():
     log.info("Parsing IaC from indexed repos...")
     iac_map = parse_iac_from_repos(store)
     for repo, iac_data in iac_map.items():
-        store.put_content(
+        uploaded = store.put_content(
             f"repos/{repo}/.infra-map.json",
             json.dumps(iac_data, indent=2),
         )
+
+        outcome_steps[f"iac_map:{repo}"] = "verified" if uploaded else "failed"
 
     # Step 3: Parse CI/CD workflows from indexed repos
     log.info("Parsing CI/CD workflows from indexed repos...")
     deploy_map = parse_workflows_from_repos(store)
     for repo, deploy_data in deploy_map.items():
-        store.put_content(
+        uploaded = store.put_content(
             f"repos/{repo}/.deploy-map.json",
             json.dumps(deploy_data, indent=2),
         )
+
+        outcome_steps[f"deploy_map:{repo}"] = "verified" if uploaded else "failed"
 
     # Step 4: Parse Terraform from repos into Neptune graph
     # (IAC-1: #1647 — IaC dependency graph)
@@ -657,6 +664,7 @@ def main():
         repo_dir = os.path.join(clone_dir, repo_id)
         try:
             if not _clone_repo(repo_id, repo_dir):
+                outcome_steps[f"iac_graph:{repo_id}"] = "failed"
                 continue
 
             # Check if repo has .tf files before parsing
@@ -677,6 +685,15 @@ def main():
             iac_results.append({"repo": repo_id, "status": "error", "error": str(e)[:300]})
         finally:
             shutil.rmtree(clone_dir, ignore_errors=True)
+
+    for result in iac_results:
+        outcome_steps[f"iac_graph:{result['repo']}"] = (
+            "verified" if result["status"] == "loaded" else "skipped" if result["status"] == "skipped" else "failed"
+        )
+    from ingestion_result import publish, summarize
+
+    outcome = summarize(outcome_steps or {"discovery": "failed"})
+    publish(outcome)
 
     loaded_count = sum(1 for r in iac_results if r.get("status") == "loaded")
     skipped_count = sum(1 for r in iac_results if r.get("status") == "skipped")

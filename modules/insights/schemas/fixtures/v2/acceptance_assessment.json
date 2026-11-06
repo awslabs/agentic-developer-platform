@@ -1,0 +1,42 @@
+{
+  "tenant_id": "tenant-example",
+  "project_id": "project-example",
+  "source_connection_id": "connection-example",
+  "source_system": "fixture",
+  "source_event_id": "assessment-001:revision-1",
+  "event_time": "2026-10-10T10:00:00Z",
+  "ingested_at": "2026-10-10T10:01:00Z",
+  "schema_version": "2.0",
+  "record_type": "acceptance_assessment",
+  "record_id": "assessment-001",
+  "record_revision": "revision-1",
+  "criterion_ref": {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "record_type": "acceptance_criterion",
+    "record_id": "issue-42/AC-001",
+    "record_revision": "revision-1"
+  },
+  "result_refs": [
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "test_result",
+      "record_id": "RUN-001/TEST-001/default/1",
+      "record_revision": "revision-1"
+    }
+  ],
+  "artifact_refs": [],
+  "verdict": "accepted",
+  "assessor_type": "policy",
+  "assessor_id": "evaluator-example",
+  "assessed_at": "2026-10-10T10:00:00Z",
+  "policy_snapshot": {
+    "artifact_id": "artifact-example",
+    "version_id": "version-example",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "rationale": "Illustrative assessment only; fixture is not live acceptance evidence."
+}

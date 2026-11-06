@@ -106,6 +106,50 @@ spec:
   rules:
     - http:
         paths:
+          # Deployment transitions are handled by the gateway, while the
+          # broader tools prefixes below serve the tools facade.
+          - path: /api/tools/adapter-release/transition
+            pathType: Exact
+            backend:
+              service:
+                name: bedrockgateway
+                port:
+                  number: 80
+          - path: /tools/adapter-release/transition
+            pathType: Exact
+            backend:
+              service:
+                name: bedrockgateway
+                port:
+                  number: 80
+          - path: /api/agent/tools
+            pathType: Prefix
+            backend:
+              service:
+                name: tools-facade
+                port:
+                  number: 80
+          - path: /api/tools
+            pathType: Prefix
+            backend:
+              service:
+                name: tools-facade
+                port:
+                  number: 80
+          - path: /agent/tools
+            pathType: Prefix
+            backend:
+              service:
+                name: tools-facade
+                port:
+                  number: 80
+          - path: /tools
+            pathType: Prefix
+            backend:
+              service:
+                name: tools-facade
+                port:
+                  number: 80
           - path: /
             pathType: Prefix
             backend:

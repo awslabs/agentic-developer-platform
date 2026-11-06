@@ -10,10 +10,16 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import and_, case, or_, select
+import rfc8785
+from sqlalchemy import and_, case, or_, select, text
 
 from pricing_policy import RoutingEvidence, build_pricing_decision, load_snapshot, normalize_usage, verify_pricing_decision
+from src.budget.metering_policy_gates import lock_person_binding, lock_policy_mutation
+from src.budget.person_ledger import resolve_person_identity
+from src.orchestration.provider_quotes import request_digest
 from src.shared.models.budget import BudgetPricingCorrection, BudgetSettlementReceipt, BudgetUsage
+from src.shared.models.metering import MeteringScopeAlias, MeteringScopeGate
+from src.shared.models.organization import User
 from src.shared.models.usage import UsageLog
 
 CORRECTION = "gpt6-published-rates-2026-09-28"
@@ -75,10 +81,81 @@ def allocation_from_log(log):
     return day, entities, digest
 
 
+async def _lock_correction_scopes(db, org_id, log):
+    if db.bind.dialect.name != "postgresql":
+        return
+    await db.execute(text("SET LOCAL lock_timeout = '500ms'"))
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": f"metering-gates:tenant:{org_id}"})
+    await lock_policy_mutation(db, tenant_id=org_id)
+    if await db.scalar(text("SELECT to_regclass('metering_scope_gates')")) is None:
+        return
+
+    from src.budget.enforcement_service import _unqualify_root_principal_id
+
+    root = log.get("root_human_id") or (log["user_id"] if log.get("account_type") != "service" else None)
+    root = _unqualify_root_principal_id(root) if root else None
+
+    async def person_binding():
+        if not root:
+            return None, (), set()
+        canonical, user_ids = await resolve_person_identity(db, root) if await db.get(User, root) else (None, [root])
+        aliases = set(
+            (
+                await db.execute(
+                    select(MeteringScopeAlias.scope_key, MeteringScopeAlias.identity_revision).where(
+                        MeteringScopeAlias.alias_kind == "person_user", MeteringScopeAlias.stable_alias.in_(user_ids)
+                    )
+                )
+            ).all()
+        )
+        return canonical, tuple(user_ids), aliases
+
+    if root:
+        try:
+            await lock_person_binding(db, root)
+        except ValueError as exc:
+            raise ValueError("person binding changed during correction") from exc
+    canonical, user_ids, aliases = await person_binding()
+    if any(key != f"v1:person:{request_digest(rfc8785.dumps(['person', anchor]))}" for key, anchor in aliases):
+        raise ValueError("retained person alias has an invalid scope key")
+    for anchor in sorted({anchor for _, anchor in aliases} | ({canonical} if canonical else set())):
+        await lock_policy_mutation(db, person_anchor=anchor)
+    if (canonical, user_ids, aliases) != await person_binding():
+        raise ValueError("person alias changed during correction")
+    person_keys = {key for key, _ in aliases}
+    if canonical:
+        current_key = f"v1:person:{request_digest(rfc8785.dumps(['person', canonical]))}"
+        if await db.scalar(select(MeteringScopeGate.scope_key).where(MeteringScopeGate.scope_key == current_key)):
+            person_keys.add(current_key)
+        elif aliases:
+            raise ValueError("current person gate is unavailable for correction")
+    root_key = f"v1:tenant:{request_digest(rfc8785.dumps([org_id, 'root_user', root]))}" if root else None
+    if (
+        root_key
+        and not person_keys
+        and await db.scalar(
+            select(MeteringScopeGate.scope_key).where(MeteringScopeGate.scope_key == root_key, MeteringScopeGate.activation == "active")
+        )
+    ):
+        raise ValueError("historical person binding cannot be verified")
+    gates = (
+        await db.scalars(
+            select(MeteringScopeGate)
+            .where(or_(MeteringScopeGate.tenant_id == org_id, MeteringScopeGate.scope_key.in_(person_keys)))
+            .order_by(MeteringScopeGate.scope_key)
+            .with_for_update()
+        )
+    ).all()
+    if person_keys - {gate.scope_key for gate in gates}:
+        raise ValueError("retained person gate is unavailable for correction")
+
+
 async def correct_request(db, *, org_id, request_id, log, source_key, actor, apply=False):
     """Caller owns commit/rollback. Trusted S3 allocation must match the debit hash."""
     if not actor or log.get("org_id") != org_id or log.get("request_id") != request_id:
         raise ValueError("correction identity mismatch")
+    if apply:
+        await _lock_correction_scopes(db, org_id, log)
     receipt_query = select(BudgetSettlementReceipt).where(
         BudgetSettlementReceipt.org_id == org_id,
         BudgetSettlementReceipt.request_id == request_id,

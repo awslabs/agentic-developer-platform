@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from botocore.awsrequest import AWSResponse
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
@@ -87,6 +88,38 @@ def test_paid_request_authority_boundary_rejects_recreated_role(protected_role, 
     assert failure.value.status_code == 403
 
 
+@pytest.mark.parametrize(
+    "registry_id",
+    [
+        "00000000-0000-0000-0000-000000008243",
+        "00000000-0000-0000-0000-000008243002",
+    ],
+)
+def test_product_evaluator_requires_current_role_even_if_registry_owner_changes(registry_id):
+    arn = "arn:aws:iam::123456789012:role/adp-cli-uplift-eval-instance"
+    role_id = "AROA11111111111111111"
+    item = {
+        "agent_id": {"S": registry_id},
+        "role_arn": {"S": arn},
+        "iam_role_id": {"S": role_id},
+        "owner": {"S": "different-owner"},
+        "status": {"S": "active"},
+        "scope": {"S": "internal"},
+        "credential_scopes": {"SS": ["internal:product-fixture:retire"]},
+    }
+    service = AgentRegistryService(table_name="registry")
+    service._dynamodb = MagicMock()
+    service._dynamodb.get_item.return_value = {"Item": item}
+    service._dynamodb.query.return_value = {"Items": [item]}
+    service._iam = MagicMock()
+    service._iam.get_role.return_value = {"Role": {"Arn": arn, "RoleId": role_id}}
+    assert service.get_agent_by_role_arn(arn) is not None
+    service._iam.get_role.return_value["Role"]["RoleId"] = "AROA22222222222222222"
+    assert service.get_agent_by_role_arn(arn) is None
+    del item["iam_role_id"]
+    assert service.get_current_agent(item["agent_id"]["S"], arn) is None
+
+
 def test_ordinary_agent_lookup_does_not_acquire_iam_dependency():
     service = AgentRegistryService(table_name="registry")
     service._dynamodb = MagicMock()
@@ -95,3 +128,56 @@ def test_ordinary_agent_lookup_does_not_acquire_iam_dependency():
     service._dynamodb.get_item.return_value = {"Item": {"agent_id": {"S": "customer"}, "role_arn": {"S": arn}, "status": {"S": "active"}}}
     assert service.get_current_agent("customer", arn) is not None
     service._iam.get_role.assert_not_called()
+
+
+@pytest.mark.parametrize("outcome", ["service-failure", "connection-timeout", "access-denied", "recreated", "persistent-failure"])
+def test_real_iam_transport_retries_only_transient_reads(protected_role, monkeypatch, outcome):
+    import boto3
+    from botocore.exceptions import ConnectTimeoutError
+
+    service, arn, item = protected_role
+    session = boto3.Session(aws_access_key_id="test", aws_secret_access_key="test", region_name="us-east-1")
+    calls = []
+    delays = []
+
+    class Body:
+        def __init__(self, body):
+            self.body = body.encode()
+
+        def stream(self, **_kwargs):
+            yield self.body
+
+    def send(request):
+        calls.append(request)
+        if len(calls) == 1 and outcome == "connection-timeout":
+            raise ConnectTimeoutError(endpoint_url=request.url)
+        if outcome == "access-denied" or outcome == "persistent-failure" or (outcome == "service-failure" and len(calls) == 1):
+            denied = outcome == "access-denied"
+            code = "AccessDenied" if denied else "ServiceFailure"
+            return AWSResponse(
+                request.url,
+                403 if denied else 503,
+                {},
+                Body(f"<ErrorResponse><Error><Type>Sender</Type><Code>{code}</Code><Message>unavailable</Message></Error></ErrorResponse>"),
+            )
+        role_id = "AROA22222222222222222" if outcome == "recreated" else item["iam_role_id"]["S"]
+        return AWSResponse(
+            request.url,
+            200,
+            {},
+            Body(f"<GetRoleResponse><GetRoleResult><Role><Arn>{arn}</Arn><RoleId>{role_id}</RoleId></Role></GetRoleResult></GetRoleResponse>"),
+        )
+
+    def client(service_name, **kwargs):
+        assert service_name == "iam"
+        iam = session.client(service_name, **kwargs)
+        monkeypatch.setattr(iam._endpoint.http_session, "send", send)
+        return iam
+
+    service._iam = None
+    monkeypatch.setattr("src.auth.agent_registry.boto3.client", client)
+    monkeypatch.setattr("botocore.endpoint.time.sleep", delays.append)
+    result = service.get_current_agent("registry-id", arn)
+    assert (result is not None) == (outcome in {"service-failure", "connection-timeout"})
+    assert len(calls) == (1 if outcome in {"access-denied", "recreated"} else 2)
+    assert len(delays) == len(calls) - 1

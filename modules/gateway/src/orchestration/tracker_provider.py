@@ -58,15 +58,75 @@ def _validated(repo: str, issue_number: int) -> str:
 
 
 class GitHubTrackerProvider:
-    """Reads and writes one issue body under the tenant's own installation.
+    """Read planning issue bodies and native children under tenant-scoped tokens."""
 
-    Stateless: a token is minted per call rather than cached on the instance. The
-    tick is a short-lived Lambda invocation, so a cached token buys nothing and a
-    cached one outliving its usefulness is a real failure mode the handler already
-    works around (`reset_engine()`).
-    """
+    async def read_sub_issues(
+        self,
+        *,
+        org_id: str,
+        installation_id: int,
+        repo: str,
+        issue_number: int,
+        repository_id: int,
+        readable_repositories: list[str] | None = None,
+    ) -> list[dict]:
+        """Discover children within caller-visible repositories of this installation.
 
-    async def read_issue_body(self, *, org_id: str, installation_id: int, repo: str, issue_number: int) -> str:
+        GitHub hides private children outside the token's repository scope while
+        still reporting them in the parent's total. Never treat that truncated
+        listing as a complete epic or silently plan work in the parent repo.
+        """
+        name = _validated(repo, issue_number)
+        scope = {name}
+        for candidate in readable_repositories or ():
+            child_name = _validated(candidate, issue_number)
+            if candidate.split("/")[0].casefold() != repo.split("/")[0].casefold():
+                raise TrackerProviderError("Native child discovery scope belongs to another owner.")
+            scope.add(child_name)
+        if len(scope) > 500:
+            raise TrackerProviderError("Native child discovery scope exceeds the provider limit.")
+        token = await self._scoped_token(
+            org_id=org_id,
+            installation_id=installation_id,
+            repositories=sorted(scope),
+            write=False,
+        )
+        try:
+            async with httpx.AsyncClient(base_url="https://api.github.com", timeout=10, trust_env=False, follow_redirects=False) as client:
+                await self._verify_repository(client, repo, repository_id, self._headers(token))
+                parent = await client.get(f"/repos/{repo}/issues/{issue_number}", headers=self._headers(token))
+                parent.raise_for_status()
+                expected = parent.json().get("sub_issues_summary", {}).get("total")
+                if type(expected) is not int or expected < 0:
+                    raise TrackerProviderError("Native child count could not be verified.")
+                if expected > 40:
+                    raise TrackerProviderError("Native child listing exceeds the planner limit.")
+                children = []
+                for page in range(1, 3):
+                    response = await client.get(
+                        f"/repos/{repo}/issues/{issue_number}/sub_issues",
+                        headers=self._headers(token),
+                        params={"per_page": 100, "page": page},
+                    )
+                    response.raise_for_status()
+                    batch = response.json()
+                    if not isinstance(batch, list) or len(batch) > 100 or any(not isinstance(child, dict) for child in batch):
+                        raise TrackerProviderError("Native child listing is invalid.")
+                    children.extend(batch)
+                    if len(children) > 40:
+                        raise TrackerProviderError("Native child listing exceeds the planner limit.")
+                    if len(batch) < 100:
+                        ids = [child.get("id") for child in children]
+                        if len(children) != expected or any(type(id_) is not int or id_ < 1 for id_ in ids) or len(set(ids)) != len(ids):
+                            raise TrackerProviderError("Native child listing is incomplete.")
+                        return children
+                raise TrackerProviderError("Native child listing is incomplete.")
+        except TrackerProviderError:
+            raise
+        except Exception:
+            raise TrackerProviderError("Native child listing could not be verified.") from None
+
+    async def read_issue_body(self, *, org_id: str, installation_id: int, repo: str, issue_number: int, repository_id: int | None = None) -> str:
         """The issue's current body text.
 
         Read immediately before the splice, because preserving the user's text
@@ -78,6 +138,8 @@ class GitHubTrackerProvider:
         token = await self._token(org_id=org_id, installation_id=installation_id, repository=name, write=False)
         try:
             async with httpx.AsyncClient(base_url="https://api.github.com", timeout=10, trust_env=False, follow_redirects=False) as client:
+                if repository_id is not None:
+                    await self._verify_repository(client, repo, repository_id, self._headers(token))
                 response = await client.get(
                     f"/repos/{repo}/issues/{issue_number}",
                     headers=self._headers(token),
@@ -96,7 +158,16 @@ class GitHubTrackerProvider:
         # operation has a string.
         return body if isinstance(body, str) else ""
 
-    async def write_issue_body(self, *, org_id: str, installation_id: int, repo: str, issue_number: int, body: str) -> None:
+    async def write_issue_body(
+        self,
+        *,
+        org_id: str,
+        installation_id: int,
+        repo: str,
+        issue_number: int,
+        body: str,
+        repository_id: int | None = None,
+    ) -> None:
         """Replace the issue body with `body`.
 
         The caller has already spliced the region into the body it read, so this is
@@ -116,6 +187,8 @@ class GitHubTrackerProvider:
         token = await self._token(org_id=org_id, installation_id=installation_id, repository=name, write=True)
         try:
             async with httpx.AsyncClient(base_url="https://api.github.com", timeout=10, trust_env=False, follow_redirects=False) as client:
+                if repository_id is not None:
+                    await self._verify_repository(client, repo, repository_id, self._headers(token))
                 response = await client.patch(
                     f"/repos/{repo}/issues/{issue_number}",
                     headers=self._headers(token),
@@ -126,6 +199,16 @@ class GitHubTrackerProvider:
             raise
         except Exception:
             raise TrackerProviderError("The tracker issue could not be updated.") from None
+
+    @staticmethod
+    async def _verify_repository(client: httpx.AsyncClient, repo: str, repository_id: int, headers: dict[str, str]) -> None:
+        if type(repository_id) is not int or repository_id < 1:
+            raise TrackerProviderError("Tracker repository identity is invalid.")
+        response = await client.get(f"/repos/{repo}", headers=headers)
+        response.raise_for_status()
+        actual = response.json()
+        if actual.get("id") != repository_id or str(actual.get("full_name", "")).casefold() != repo.casefold():
+            raise TrackerProviderError("Tracker repository identity changed.")
 
     @staticmethod
     def _headers(token: str) -> dict[str, str]:
@@ -144,6 +227,15 @@ class GitHubTrackerProvider:
         while the write happens only when something actually changed, so the wider
         permission is minted far less often.
         """
+        return await GitHubTrackerProvider._scoped_token(
+            org_id=org_id,
+            installation_id=installation_id,
+            repositories=[repository],
+            write=write,
+        )
+
+    @staticmethod
+    async def _scoped_token(*, org_id: str, installation_id: int, repositories: list[str], write: bool) -> str:
         from src.knowledge.github_app_service import mint_installation_token_with_expiry, resolve_tenant_app_credentials
 
         if not org_id or type(installation_id) is not int or installation_id < 1:
@@ -154,7 +246,7 @@ class GitHubTrackerProvider:
                 app_id,
                 key,
                 installation_id,
-                repositories=[repository],
+                repositories=repositories,
                 permissions={"issues": "write" if write else "read", "metadata": "read"},
             )
         except Exception:

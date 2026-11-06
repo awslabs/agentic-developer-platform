@@ -4,6 +4,7 @@
 locals {
   worker_gateway_config = merge({
     AGENT_AUTHORITY_ENABLED                = tostring(var.agent_authority_enabled)
+    ADP_ENGINE_OPERATIONS_EXECUTOR         = tostring(var.engine_operations_executor_enabled)
     ADP_SHARED_RUN_REPORTING_ENABLED       = tostring(var.shared_run_reporting_enabled)
     ADP_SHARED_WORKER_CONTINUATION_ENABLED = tostring(var.shared_worker_continuation_enabled)
     AGENT_WORKER_ROLE_ARN                  = aws_iam_role.agent_scaledjob.arn
@@ -24,6 +25,7 @@ locals {
     ADP_TASK_DISPATCH_PRODUCER_ROLES       = aws_iam_role.lambda_execution.arn
     ADP_TASK_RECOVERY_PRODUCER_ROLES       = aws_iam_role.lambda_execution.arn
     AGENT_WORKER_IMAGE_DIGESTS             = join(",", sort(tolist(var.agent_authority_worker_image_digests)))
+    AGENT_WORKER_AUDIT_LOG_GROUP           = "/aws/eks/${local.eks_cluster_name}/cluster"
     AGENT_CONTROL_ENVELOPE_KEY_ID          = local.agent_authority_key_id
     AGENT_TASK_SOURCE_ROLE_ARN             = aws_iam_role.agent_scaledjob.arn
     AGENT_TASK_SOURCE_EKS_CLUSTER          = local.eks_cluster_name
@@ -105,9 +107,30 @@ resource "aws_ssm_parameter" "worker_runtime_wiring" {
     dispatch_queue_url                 = aws_sqs_queue.agent_submit.url
     shared_worker_role_arn             = aws_iam_role.agent_scaledjob.arn
     run_report_key_parameter           = aws_ssm_parameter.agent_run_reporting_key.name
+    engine_operations_executor_enabled = var.engine_operations_executor_enabled
     shared_run_reporting_enabled       = var.shared_run_reporting_enabled
     shared_worker_continuation_enabled = var.shared_worker_continuation_enabled
   })
+}
+
+variable "operations_max_turns" {
+  description = "Maximum Claude Code turns for one operations story run (ADP_OPERATIONS_MAX_TURNS on the worker). Bounded 1-999 by operations-story-entry.ts; the run still ends earlier on a verified report or a budget stop."
+  type        = number
+  default     = 150
+  validation {
+    condition     = var.operations_max_turns >= 1 && var.operations_max_turns <= 999 && floor(var.operations_max_turns) == var.operations_max_turns
+    error_message = "operations_max_turns must be an integer between 1 and 999."
+  }
+}
+
+variable "engine_operations_executor_enabled" {
+  description = "Enable operations executors on the gateway, scheduled engine and new workers. Accepted node policy, release pins and deployment gates remain required."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.engine_operations_executor_enabled || (var.agent_authority_enabled && var.shared_run_reporting_enabled)
+    error_message = "Operations execution requires protected authority and authenticated run reporting."
+  }
 }
 
 variable "shared_run_reporting_enabled" {

@@ -22,6 +22,9 @@ transaction — so these tests assert against the session's own view, which is w
 the gate-approval route will see.
 """
 
+import json
+from types import SimpleNamespace
+
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import event
@@ -43,10 +46,14 @@ from src.orchestration.models import (
     OrchestrationFlow,
     OrchestrationNode,
 )
-from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode
+from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode, RepositoryConnection
 from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.state import ActorKind, NodeState
+from src.products.models import Product
 from src.shared.models.base import Base
+from src.shared.models.organization import User
+from tests.orchestration.legacy_plan import persist_legacy_plan
+from tests.orchestration.product_fixture import seed_product, seed_product_membership
 
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
@@ -93,6 +100,9 @@ async def session():
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as s:
+        await seed_product(s, org_id=ORG_A, actor_id="cognito-sub-123")
+        await seed_product(s, org_id=ORG_B, actor_id="other-org-member")
+        await s.commit()
         yield s
     await engine.dispose()
 
@@ -117,6 +127,7 @@ def valid_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
     """A well-formed two-wave proposal: 3 nodes + eval per wave, chained."""
     payload = {
         "flow_slug": FLOW,
+        "product_id": f"product-{org_id}",
         "title": "Demo flow",
         "org_id": org_id,
         "spec_revision": SPEC_REVISION,
@@ -135,6 +146,120 @@ def valid_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
     }
     payload.update(overrides)
     return LoopProposal(**payload)
+
+
+@pytest.mark.asyncio
+async def test_product_and_same_number_in_distinct_repositories_persist(session, approval, monkeypatch):
+    from src.orchestration import repository_binding
+
+    async def verified(_session, *, tenant_id, name, repository_id, issue, operation, installation_id, permitted_names):
+        return repository_binding.VerifiedRepository("github", repository_id, name, installation_id, name, issue, operation)
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", verified)
+    await session.merge(User(id=approval.actor_id, org_id=ORG_A, team_id="team", email="owner@example.test"))
+    await seed_product_membership(session, org_id=ORG_A, user_id=approval.actor_id)
+    session.add(
+        Product(
+            team_id=f"product-team-{ORG_A}",
+            id="product-1",
+            tenant_id=ORG_A,
+            name="Demo",
+            purpose="Demo",
+            intended_users=["team"],
+            owner_user_id=approval.actor_id,
+            starting_point="running_product",
+            created_by=approval.actor_id,
+        )
+    )
+    await session.flush()
+    proposal = valid_proposal(product_id="product-1")
+    proposal.nodes[0].issue_ref = "42"
+    proposal.nodes[0].repository_identity = "demo/repo-a"
+    proposal.nodes[0].provider_repository_id = 1001
+    proposal.nodes[0].repository_connection = RepositoryConnection(provider="github", installation_id=901)
+    proposal.nodes[1].issue_ref = "42"
+    proposal.nodes[1].repository_identity = "demo/repo-b"
+    proposal.nodes[1].provider_repository_id = 1002
+    proposal.nodes[1].repository_connection = RepositoryConnection(provider="github", installation_id=902)
+
+    result = await compile_proposal(session, proposal, approval)
+    flow = await session.get(OrchestrationFlow, result.flow_id)
+    plan = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=result.flow_id)
+    stories = (
+        await session.scalars(sa.select(OrchestrationNode).where(OrchestrationNode.flow_id == result.flow_id, OrchestrationNode.kind == "story"))
+    ).all()
+    assert flow.product_id == plan.plan_document["product_id"] == "product-1"
+    assert {(story.repository_identity, story.provider_repository_id, story.issue_ref) for story in stories} == {
+        ("demo/repo-a", 1001, "42"),
+        ("demo/repo-b", 1002, "42"),
+    }
+    assert {story.repository_connection["installation_id"] for story in stories} == {901, 902}
+    assert {(node["repository_identity"], node["provider_repository_id"]) for node in plan.plan_document["nodes"] if node["kind"] == "story"} == {
+        ("demo/repo-a", 1001),
+        ("demo/repo-b", 1002),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("product_id", [None, "missing", "other-tenant"])
+async def test_repository_bound_acceptance_rejects_invalid_product_without_rows(session, approval, product_id):
+    if product_id == "other-tenant":
+        session.add(
+            Product(
+                id=product_id,
+                tenant_id=ORG_B,
+                name="Other",
+                purpose="Other",
+                intended_users=["team"],
+                owner_user_id=approval.actor_id,
+                starting_point="running_product",
+                created_by=approval.actor_id,
+            )
+        )
+        await session.flush()
+    proposal = valid_proposal(product_id=product_id)
+    proposal.nodes[0].repository_identity = "demo/repo-a"
+    proposal.nodes[0].provider_repository_id = 1001
+    with pytest.raises(ProposalRejectedError):
+        await compile_proposal(session, proposal, approval)
+    assert await count_rows(session, OrchestrationFlow) == 0
+    assert await count_rows(session, OrchestrationAcceptedPlan) == 0
+
+
+@pytest.mark.asyncio
+async def test_literal_legacy_hash_and_retry_preserve_plan_and_decision(session, approval):
+    proposal = valid_proposal(product_id=None)
+    expected_legacy_hash = "445deca4c2b5f2db7954752501c3e5779d5fa2c36b29554fc2e705c2a7f5c587"
+    original_document = proposal.model_dump(mode="json")
+    assert "product_id" not in original_document
+    assert "repository_connection" not in original_document["nodes"][0]
+    assert original_document["nodes"][0]["repository_identity"] is None
+    assert original_document["nodes"][0]["provider_repository_id"] is None
+    assert plan_hash(proposal) == expected_legacy_hash
+
+    accepted = await persist_legacy_plan(session, proposal, approval)
+    repo = OrchestrationRepository(session)
+    plan = await repo.get_accepted_plan(org_id=ORG_A, flow_id=accepted.flow_id)
+    original_bytes = json.dumps(plan.plan_document, sort_keys=True, separators=(",", ":")).encode()
+    story = await session.get(OrchestrationNode, accepted.node_ids[address("story-a")])
+    story.attempts = 2
+    await session.flush()
+
+    retried = await compile_proposal(session, LoopProposal.model_validate(original_document), approval)
+    current = await repo.get_accepted_plan(org_id=ORG_A, flow_id=accepted.flow_id)
+
+    assert retried.already_compiled
+    assert (retried.flow_id, retried.plan_version, retried.decision_id, retried.plan_hash) == (
+        accepted.flow_id,
+        accepted.plan_version,
+        accepted.decision_id,
+        expected_legacy_hash,
+    )
+    assert current.id == plan.id
+    assert current.plan_hash == expected_legacy_hash
+    assert json.dumps(current.plan_document, sort_keys=True, separators=(",", ":")).encode() == original_bytes
+    assert story.attempts == 2
+    assert await count_rows(session, OrchestrationDecision) == 1
 
 
 def invalid_proposal(org_id: str = ORG_A) -> LoopProposal:
@@ -310,8 +435,12 @@ class TestTenantIsolation:
     async def test_two_tenants_may_each_have_a_flow_with_the_same_slug(self, session):
         """Flow lookup is scoped to the tenant, so identical slugs in different
         orgs are different flows — not a collision that merges their graphs."""
-        first = await compile_proposal(session, valid_proposal(org_id=ORG_A), ApprovalContext(org_id=ORG_A, actor_id="a", actor_role="org_admin"))
-        second = await compile_proposal(session, valid_proposal(org_id=ORG_B), ApprovalContext(org_id=ORG_B, actor_id="b", actor_role="org_admin"))
+        first = await compile_proposal(
+            session, valid_proposal(org_id=ORG_A), ApprovalContext(org_id=ORG_A, actor_id="cognito-sub-123", actor_role="org_admin")
+        )
+        second = await compile_proposal(
+            session, valid_proposal(org_id=ORG_B), ApprovalContext(org_id=ORG_B, actor_id="other-org-member", actor_role="org_admin")
+        )
         assert first.flow_id != second.flow_id
 
 
@@ -482,7 +611,7 @@ class TestCompileSuccess:
         """Approving is a human act by default; a service actor is recorded as
         such rather than passing as a human."""
         approval = ApprovalContext(org_id=ORG_A, actor_id="engine", actor_role="service", actor_kind=ActorKind.SERVICE)
-        result = await compile_proposal(session, valid_proposal(), approval)
+        result = await compile_proposal(session, valid_proposal(product_id=None), approval, decision_kind=DecisionKind.PLAN_DRAFTED)
         decisions = await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=result.flow_id)
         assert decisions[0].actor_kind == ActorKind.SERVICE.value
 
@@ -647,7 +776,7 @@ class TestFlowSlugUniqueness:
         from dataclasses import replace
 
         first = await compile_proposal(session, valid_proposal(org_id=ORG_A), approval)
-        second = await compile_proposal(session, valid_proposal(org_id=ORG_B), replace(approval, org_id=ORG_B))
+        second = await compile_proposal(session, valid_proposal(org_id=ORG_B), replace(approval, org_id=ORG_B, actor_id="other-org-member"))
 
         assert first.flow_id != second.flow_id
         assert await count_rows(session, OrchestrationFlow) == 2
@@ -661,7 +790,7 @@ class TestFlowSlugUniqueness:
         """
         from dataclasses import replace
 
-        await compile_proposal(session, valid_proposal(org_id=ORG_B), replace(approval, org_id=ORG_B))
+        await compile_proposal(session, valid_proposal(org_id=ORG_B), replace(approval, org_id=ORG_B, actor_id="other-org-member"))
 
         repo = OrchestrationRepository(session)
         assert await repo.get_flow_by_slug(org_id=ORG_A, slug=FLOW) is None
@@ -796,3 +925,203 @@ class TestFlowSlugUniqueness:
         compiled = await compile_proposal(session, valid_proposal(), approval)
         assert compiled.flow_id == resolved.id
         assert await count_rows(session, OrchestrationFlow) == 2
+
+
+@pytest.mark.asyncio
+async def test_acceptance_persists_each_verified_connection_with_three_installs(session, approval, monkeypatch):
+    from src.admin.installations.resolver import OwnerState
+    from src.orchestration import repository_binding
+    from src.shared.models.vault import ChannelTenantMap
+
+    async def owner(installation_id, *, db):
+        return SimpleNamespace(tenant_id=ORG_A, github_account_id=str(installation_id + 100)), OwnerState.RESOLVED
+
+    observed_names = {}
+
+    async def read(_tenant, installation_id, name, repository_id, issue):
+        expected_installation = {"acme/a": 11, "acme/b": 22}.get(name)
+        if installation_id != expected_installation:
+            return None
+        return (
+            {"id": repository_id, "full_name": observed_names.get(name, name)},
+            {"account": {"id": installation_id + 100}},
+            {"id": issue + 10000, "node_id": f"I_{issue}"},
+        )
+
+    monkeypatch.setattr(repository_binding, "resolve_installation_owner", owner)
+    monkeypatch.setattr(repository_binding, "_provider_read", read)
+    for installation_id in (11, 22, 33):
+        session.add(
+            ChannelTenantMap(
+                provider="github",
+                provider_scope_id=str(installation_id + 100),
+                org_id="org-alpha",
+                installation_id=str(installation_id),
+                install_metadata={"account_id": str(installation_id + 100)},
+            )
+        )
+    await session.flush()
+    proposal = valid_proposal()
+    proposal.nodes[0].repository_identity = "acme/a"
+    proposal.nodes[0].provider_repository_id = 1001
+    proposal.nodes[0].issue_ref = "42"
+    proposal.nodes[1].repository_identity = "acme/b"
+    proposal.nodes[1].provider_repository_id = 1002
+    proposal.nodes[1].issue_ref = "42"
+    result = await compile_proposal(session, proposal, approval)
+    accepted = await session.scalar(sa.select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == result.flow_id))
+    stories = (
+        await session.scalars(
+            sa.select(OrchestrationNode).where(
+                OrchestrationNode.flow_id == result.flow_id,
+                OrchestrationNode.kind == "story",
+            )
+        )
+    ).all()
+    assert {(story.repository_identity, story.provider_repository_id, story.repository_connection["installation_id"]) for story in stories} == {
+        ("acme/a", 1001, 11),
+        ("acme/b", 1002, 22),
+    }
+    assert {item["repository_connection"]["installation_id"] for item in accepted.plan_document["nodes"] if item["kind"] == "story"} == {11, 22}
+
+    from src.orchestration.accepted_node import accepted_node_contract
+    from src.orchestration.work_admission import resolve_accepted_repository
+
+    admissions = [
+        await resolve_accepted_repository(
+            session,
+            node=story,
+            contract=await accepted_node_contract(session, story),
+            repo="unrelated/default",
+        )
+        for story in stories
+    ]
+    assert set(admissions) == {(11, 1001, "acme/a"), (22, 1002, "acme/b")}
+    observed_names["acme/a"] = "acme/renamed"
+    renamed = await resolve_accepted_repository(
+        session,
+        node=stories[0],
+        contract=await accepted_node_contract(session, stories[0]),
+        repo="unrelated/default",
+    )
+    assert renamed == (11, 1001, "acme/renamed")
+    assert accepted.plan_document["nodes"][0]["repository_identity"] == "acme/a"
+    assert stories[0].repository_identity == "acme/a"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision_kind", [DecisionKind.PLAN_DRAFTED, DecisionKind.PLAN_ACCEPTED])
+async def test_planning_connection_revocation_refuses_compile_before_decision(session, approval, monkeypatch, decision_kind):
+    from src.orchestration import repository_binding
+
+    reference = dict(provider="github", repository_id=3003, repository="acme/planning", installation_id=303, issue_number=99)
+    proposal = valid_proposal(origin_ref=reference, tracker_refs=[dict(scope="epic", address=f"{FLOW}/epic-1", issue=reference)])
+
+    async def revoked(_session, **kwargs):
+        raise repository_binding.RepositoryBindingError("connection_revoked")
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", revoked)
+    with pytest.raises(ProposalRejectedError) as caught:
+        await compile_proposal(session, proposal, approval, decision_kind=decision_kind)
+    assert [violation.rule for violation in caught.value.violations] == ["connection_revoked"]
+    assert (await session.scalars(sa.select(OrchestrationDecision))).all() == []
+    assert (await session.scalars(sa.select(OrchestrationAcceptedPlan))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_unconnected_story_refused_before_acceptance_writes_or_grants(session, approval):
+    from src.orchestration.models import OrchestrationWorkClaim
+
+    proposal = valid_proposal()
+    proposal.nodes[0].repository_identity = "acme/a"
+    proposal.nodes[0].provider_repository_id = 1001
+    with pytest.raises(ProposalRejectedError) as caught:
+        await compile_proposal(session, proposal, approval)
+    assert [item.rule for item in caught.value.violations] == ["repository_unavailable"]
+    assert (await session.scalars(sa.select(OrchestrationAcceptedPlan))).all() == []
+    assert (await session.scalars(sa.select(OrchestrationWorkClaim))).all() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ("other_connection", "repository_unavailable"),
+        ("repository_reused", "repository_identity_mismatch"),
+        ("installation_revoked", "connection_revoked"),
+    ],
+)
+async def test_previewed_installation_cannot_fall_back_when_authority_changes(session, approval, monkeypatch, change, expected):
+    from src.admin.installations.resolver import OwnerState
+    from src.orchestration import repository_binding
+    from src.orchestration.planning import PlanningInputs, ResolvedRepository, plan_from_draft
+    from src.shared.models.vault import ChannelTenantMap
+
+    for installation_id in (11, 22):
+        session.add(
+            ChannelTenantMap(
+                provider="github",
+                provider_scope_id=str(installation_id + 100),
+                org_id=ORG_A,
+                installation_id=str(installation_id),
+                install_metadata={"account_id": str(installation_id + 100)},
+            )
+        )
+    await session.flush()
+    authority = {11: 1001, 22: None}
+    revoked = False
+    calls = []
+
+    async def owner(installation_id, *, db):
+        if revoked and installation_id == 11:
+            return None, OwnerState.REVOKED
+        return SimpleNamespace(tenant_id=ORG_A, github_account_id=str(installation_id + 100)), OwnerState.RESOLVED
+
+    async def read(_tenant, installation_id, name, repository_id, issue):
+        calls.append(installation_id)
+        if not authority[installation_id]:
+            return None
+        return (
+            {"id": authority[installation_id], "full_name": name},
+            {"account": {"id": installation_id + 100}},
+            {"id": issue + 10000, "node_id": f"I_{issue}"},
+        )
+
+    monkeypatch.setattr(repository_binding, "resolve_installation_owner", owner)
+    monkeypatch.setattr(repository_binding, "_provider_read", read)
+    preview = await repository_binding.resolve_story_repository(
+        session,
+        tenant_id=ORG_A,
+        name="acme/web",
+        issue=42,
+        operation="preview",
+        installation_id=11,
+    )
+    assert preview.repository_id == 1001
+    proposal = plan_from_draft(
+        PlanningInputs(
+            flow_slug="preview-flow",
+            title="Previewed story",
+            outcomes=("Ship story",),
+            issue_ref="42",
+            intent="Ship story",
+            org_id=ORG_A,
+            repository=ResolvedRepository(preview.full_name, preview.installation_id, True, preview.repository_id),
+            last_activity_epoch=1800000000,
+        )
+    )
+    proposal.proposed_execution_policy = None
+    proposal.product_id = f"product-{ORG_A}"
+    assert proposal.nodes[0].repository_connection.installation_id == 11
+    if change == "other_connection":
+        authority[11], authority[22] = None, 1001
+    elif change == "repository_reused":
+        authority[11] = 2002
+    else:
+        revoked = True
+    calls.clear()
+    with pytest.raises(ProposalRejectedError) as caught:
+        await compile_proposal(session, proposal, approval)
+    assert [item.rule for item in caught.value.violations] == [expected]
+    assert calls == ([] if revoked else [11])
+    assert (await session.scalars(sa.select(OrchestrationAcceptedPlan))).all() == []

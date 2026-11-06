@@ -22,13 +22,27 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from uuid import UUID
+from typing import Literal
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.concurrency import run_in_threadpool
 
+from src.agentauth.routes import get_agent_runtime
+from src.internal.tools_access import tool_access_report
+from src.internal.tools_discovery import refreshed_tool_catalogue
+from src.internal.tools_effective_policy import (
+    GRANTED,
+    MODE_DEFAULT,
+    MODE_EXPLICIT,
+    effective_tools_policy,
+    entitled_tool_names,
+    resolve_tenant_consent_default,
+)
+from src.internal.tools_policy import ToolsPolicyStore
 from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.identity.providers import is_linkable_provider
@@ -38,9 +52,10 @@ from src.shared.identity.verification import (
     delivery_proves_ownership,
     is_proven,
 )
+from src.shared.identity.workspaces import primary_team_for_workspace
 from src.shared.models.audit import AuditLog
 from src.shared.models.organization import User
-from src.shared.models.vault import MagicLinkNonce, UserIdentity
+from src.shared.models.vault import MagicLinkNonce, UserCredential, UserIdentity
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
 from .magic_link import (
@@ -60,6 +75,7 @@ from .vault_service import (
     CredentialNotFoundError,
     CredentialRevisionConflictError,
     DuplicateCredentialError,
+    IdentityManagedCredentialError,
     IdentityNotFoundError,
     InsufficientPrivilegesError,
     InvalidScopeConfigError,
@@ -159,6 +175,312 @@ async def _resolve_user_id_in_context(token_context, db: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # Credential endpoints
 # ---------------------------------------------------------------------------
+
+
+class AgentConsentUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_consent: bool
+
+
+class ToolsConsentUpdate(BaseModel):
+    """Either an explicit opt-in list (``consented_tools``) or the default mode with opt-outs (#8387)."""
+
+    model_config = ConfigDict(extra="forbid")
+    consented_tools: list[str] | None = Field(default=None, max_length=64)
+    consent_mode: Literal["default", "explicit"] | None = None
+    opted_out_tools: list[str] | None = Field(default=None, max_length=64)
+    expected_revision: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def one_shape(self):
+        explicit = self.consented_tools is not None or self.consent_mode == "explicit"
+        default = self.consent_mode == "default" or self.opted_out_tools is not None
+        if explicit == default:
+            raise ValueError("send consented_tools (explicit consent) or consent_mode default with optional opted_out_tools")
+        if explicit and self.consented_tools is None:
+            raise ValueError("explicit consent needs consented_tools")
+        return self
+
+
+def _tools_policy(runtime) -> ToolsPolicyStore:
+    return ToolsPolicyStore(table_name=runtime.store.table, client=runtime.store.client)
+
+
+@router.put("/credentials/{credential_id}/agent-consent", response_model=CredentialResponse)
+async def update_agent_consent(
+    credential_id: str,
+    body: AgentConsentUpdate,
+    token_context=Depends(get_current_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> CredentialResponse:
+    await _resolve_user_id_in_context(token_context, db)
+    if token_context.account_type != "human" or not token_context.org_id:
+        raise HTTPException(403, "human authority required")
+    credential = await db.scalar(
+        select(UserCredential)
+        .where(
+            UserCredential.id == credential_id,
+            UserCredential.org_id == token_context.org_id,
+            UserCredential.user_id == token_context.user_id,
+        )
+        .with_for_update()
+    )
+    if credential is None:
+        raise HTTPException(404, "credential not found")
+    from src.internal.github_oauth import credential_digest, is_github_app_grant
+    from src.shared.models.base import new_uuid
+    from src.shared.models.vault import OAuthConnectionAttempt, OAuthConnectionBinding
+
+    if (
+        credential.service == "github"
+        and credential.provider == "agentcore-identity"
+        and is_github_app_grant(credential.scopes)
+        and credential.agent_consent is False
+        and body.agent_consent is True
+    ):
+        raise HTTPException(409, detail={"error": "github_reconnect_required", "message": "Reconnect GitHub to approve access again."})
+
+    pause_app = (
+        credential.service == "github"
+        and credential.provider == "agentcore-identity"
+        and is_github_app_grant(credential.scopes)
+        and credential.agent_consent is True
+        and body.agent_consent is False
+    )
+    if pause_app:
+        from .connections_routes import github_revocation_pointer
+
+        revocation_pointer = github_revocation_pointer(credential)
+    credential.agent_consent = body.agent_consent
+    if pause_app:
+        binding = await db.get(OAuthConnectionBinding, credential.id)
+        if binding is not None:
+            binding.revision = new_uuid()
+            binding.credential_digest = credential_digest(credential)
+        await db.execute(
+            delete(OAuthConnectionAttempt).where(
+                OAuthConnectionAttempt.org_id == token_context.org_id,
+                OAuthConnectionAttempt.user_id == token_context.user_id,
+                OAuthConnectionAttempt.provider == "github",
+            )
+        )
+        db.add(
+            AuditLog(
+                org_id=token_context.org_id,
+                actor_id=token_context.user_id,
+                event_type="github_consent_paused",
+                details={"connection_id": credential.id},
+            )
+        )
+    await db.commit()
+    if pause_app:
+        from .connections_routes import get_identity_client, revoke_disconnected_github
+
+        try:
+            identity = get_identity_client()
+        except Exception:
+            identity = None
+        await revoke_disconnected_github(db, pointer=revocation_pointer, identity=identity, actor_id=token_context.user_id)
+    await db.refresh(credential)
+    return CredentialResponse.from_model(credential)
+
+
+@router.get("/tools/access")
+async def get_tools_access(
+    request: Request,
+    token_context=Depends(get_current_user_context),
+    db: AsyncSession = Depends(get_db),
+    runtime=Depends(get_agent_runtime),
+) -> dict:
+    await _resolve_user_id_in_context(token_context, db)
+    if token_context.account_type != "human" or not token_context.org_id:
+        raise HTTPException(403, "human authority required")
+    owner = await db.scalar(select(User).where(User.id == token_context.user_id, User.org_id == token_context.org_id))
+    if owner is None or owner.user_kind != "human" or owner.is_shadow or not owner.team_id:
+        raise HTTPException(403, "tool authority refused")
+    policy = await run_in_threadpool(
+        _tools_policy(runtime).get,
+        tenant_id=token_context.org_id,
+        owner_id=owner.id,
+    )
+    from src.admin.tool_routes import tool_catalogue
+
+    catalogue = await refreshed_tool_catalogue(request, tool_catalogue)
+    primary = await primary_team_for_workspace(db, owner, token_context.org_id)
+    effective = await effective_tools_policy(
+        db,
+        policy=policy,
+        tenant_id=token_context.org_id,
+        owner_id=owner.id,
+        team_id=primary.id if primary else owner.team_id,
+        tenant_default=await resolve_tenant_consent_default(db, token_context.org_id),
+    )
+    return await tool_access_report(db, tenant_id=token_context.org_id, owner=owner, policy=effective.as_policy(), catalogue=catalogue)
+
+
+async def _owner_team(db, token_context) -> str | None:
+    """The owner's primary workspace team (the team entitlements are resolved against); None for a non-human."""
+    owner = await db.scalar(select(User).where(User.id == token_context.user_id, User.org_id == token_context.org_id))
+    if owner is None or owner.user_kind != "human" or owner.is_shadow:
+        return None
+    primary = await primary_team_for_workspace(db, owner, token_context.org_id)
+    return primary.id if primary else owner.team_id
+
+
+async def _consent_state(token_context, db, runtime) -> dict:
+    """The owner's effective consent (#8113 implicit first-party tools, #8387 default posture).
+
+    ``allowed_tools`` is what the owner may decide about: the admin per-user list plus every
+    tool the tenant entitles for their team (first-party tools in explicit mode, all tools in
+    default mode). ``consented_tools`` is what agents may use right now.
+    """
+    await _resolve_user_id_in_context(token_context, db)
+    if token_context.account_type != "human" or not token_context.org_id:
+        raise HTTPException(403, "human authority required")
+    policy = await run_in_threadpool(_tools_policy(runtime).get, tenant_id=token_context.org_id, owner_id=token_context.user_id)
+    team_id = await _owner_team(db, token_context)
+    tenant_default = await resolve_tenant_consent_default(db, token_context.org_id)
+    entitled = await entitled_tool_names(db, tenant_id=token_context.org_id, team_id=team_id) if team_id is not None else {}
+    effective = await effective_tools_policy(
+        db,
+        policy=policy,
+        tenant_id=token_context.org_id,
+        owner_id=token_context.user_id,
+        team_id=team_id,
+        tenant_default=tenant_default,
+        entitled=entitled,
+    )
+    if policy is None and not effective.allowed_tools:
+        raise HTTPException(404, "tool policy not found")
+    return {
+        "policy": policy,
+        "effective": effective,
+        "stored_allowed": effective.stored_allowed,
+        "allowed_tools": effective.allowed_tools,
+        "consented_tools": effective.consented_tools,
+        "revision": effective.revision,
+        "consent_mode": effective.consent_mode,
+        "opted_out_tools": effective.opted_out_tools,
+        "tenant_consent_default": tenant_default,
+        "entitled_tools": sorted(name for name in entitled if name in effective.allowed_tools),
+    }
+
+
+CONSENT_FIELDS = ("allowed_tools", "consented_tools", "revision", "consent_mode", "opted_out_tools", "tenant_consent_default", "entitled_tools")
+
+
+@router.get("/tools/consent")
+async def get_tools_consent(
+    token_context=Depends(get_current_user_context),
+    db: AsyncSession = Depends(get_db),
+    runtime=Depends(get_agent_runtime),
+) -> dict:
+    state = await _consent_state(token_context, db, runtime)
+    return {key: state[key] for key in CONSENT_FIELDS}
+
+
+async def _record_tools_consent_audit(db, *, caller, operation_id, event_type, revision, previous, requested, outcome, consent_mode=None):
+    async with async_sessionmaker(db.bind, expire_on_commit=False)() as audit_db:
+        audit_db.add(
+            AuditLog(
+                org_id=caller.org_id,
+                actor_id=caller.user_id,
+                event_type=event_type,
+                details={
+                    "operation_id": operation_id,
+                    "owner_id": caller.user_id,
+                    "revision": revision,
+                    "previous_consent": previous,
+                    "requested_consent": requested,
+                    "outcome": outcome,
+                    **({"consent_mode": consent_mode} if consent_mode else {}),
+                },
+            )
+        )
+        await audit_db.commit()
+
+
+@router.put("/tools/consent")
+async def update_tools_consent(
+    body: ToolsConsentUpdate,
+    token_context=Depends(get_current_user_context),
+    db: AsyncSession = Depends(get_db),
+    runtime=Depends(get_agent_runtime),
+) -> dict:
+    current = await _consent_state(token_context, db, runtime)
+    if body.consented_tools is not None:
+        # Explicit opt-in: the pre-#8387 contract; switching to it from the default mode is the
+        # owner choosing to manage consent themselves.
+        requested_mode, stored_consent, opted_out = MODE_EXPLICIT, body.consented_tools, []
+        if len(stored_consent) != len(set(stored_consent)) or not set(stored_consent).issubset(current["allowed_tools"]):
+            raise HTTPException(400, "consent must name distinct entitled tools")
+    else:
+        if current["tenant_consent_default"] != GRANTED:
+            raise HTTPException(400, "this organization requires explicit consent")
+        requested_mode, stored_consent, opted_out = MODE_DEFAULT, [], list(body.opted_out_tools or [])
+        if len(opted_out) != len(set(opted_out)) or not set(opted_out).issubset(current["allowed_tools"]):
+            raise HTTPException(400, "opt-outs must name distinct entitled tools")
+    if body.expected_revision != current["revision"]:
+        raise HTTPException(409, "tool policy changed; reload and retry")
+    operation_id = str(uuid4())
+    audit = {
+        "db": db,
+        "caller": token_context,
+        "operation_id": operation_id,
+        "previous": current["consented_tools"],
+        "requested": stored_consent if requested_mode == MODE_EXPLICIT else {"consent_mode": MODE_DEFAULT, "opted_out_tools": opted_out},
+        "consent_mode": requested_mode,
+    }
+    try:
+        await _record_tools_consent_audit(**audit, event_type="tools_consent_started", revision=current["revision"], outcome="pending")
+    except Exception:
+        raise HTTPException(503, detail={"error": "tool_consent_audit_unavailable", "operation_id": operation_id}) from None
+    try:
+        if current["policy"] is None:
+            # Consent before any admin wrote this owner's policy: create the empty row the
+            # consent write fences on (#8113).
+            await run_in_threadpool(_tools_policy(runtime).ensure_policy, tenant_id=token_context.org_id, owner_id=token_context.user_id)
+        await run_in_threadpool(
+            _tools_policy(runtime).put_consent,
+            tenant_id=token_context.org_id,
+            owner_id=token_context.user_id,
+            allowed_tools=current["stored_allowed"],
+            consented_tools=stored_consent,
+            previous_consent=current["effective"].stored_consented,
+            expected_revision=current["revision"],
+            consent_mode=requested_mode,
+            opted_out_tools=opted_out,
+        )
+    except Exception as exc:
+        outcome = "denied" if isinstance(exc, HTTPException) and exc.status_code == 409 else "reconciliation_required"
+        try:
+            await _record_tools_consent_audit(
+                **audit,
+                event_type="tools_consent_refused" if outcome == "denied" else "tools_consent_failed",
+                revision=current["revision"],
+                outcome=outcome,
+            )
+        except Exception:
+            raise HTTPException(503, detail={"error": "tool_consent_audit_reconciliation_required", "operation_id": operation_id}) from None
+        raise
+    try:
+        await _record_tools_consent_audit(**audit, event_type="tools_consent_updated", revision=current["revision"] + 1, outcome="success")
+    except Exception:
+        raise HTTPException(503, detail={"error": "tool_consent_audit_reconciliation_required", "operation_id": operation_id}) from None
+    if requested_mode == MODE_EXPLICIT:
+        consented = stored_consent
+    else:
+        consented = [name for name in current["allowed_tools"] if name in current["entitled_tools"] and name not in opted_out]
+    return {
+        "allowed_tools": current["allowed_tools"],
+        "consented_tools": consented,
+        "revision": current["revision"] + 1,
+        "consent_mode": requested_mode,
+        "opted_out_tools": opted_out,
+        "tenant_consent_default": current["tenant_consent_default"],
+        "entitled_tools": current["entitled_tools"],
+        "operation_id": operation_id,
+    }
 
 
 @router.get(
@@ -333,6 +655,8 @@ async def delete_credential_endpoint(
         await delete_credential(credential_id, db, token_context, sm)
     except CredentialNotFoundError:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Credential not found"})
+    except IdentityManagedCredentialError:
+        raise HTTPException(status_code=409, detail={"error": "use_oauth_disconnect"})
     except InsufficientPrivilegesError as exc:
         # Issue #3989: see the PATCH handler — required so the shared-scope gate
         # returns 403 rather than a 500 from the catch-all below.

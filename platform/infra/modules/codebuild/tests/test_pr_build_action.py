@@ -12,7 +12,8 @@ ACTION = yaml.safe_load((ROOT / '.github/actions/codebuild-run/action.yml').read
 
 
 @pytest.mark.parametrize('pr', [False, True])
-def test_start_preserves_release_defaults_and_pins_pr_role(tmp_path, pr):
+@pytest.mark.parametrize('compute', ['', 'BUILD_GENERAL1_LARGE', 'invalid --privileged-mode-override'])
+def test_start_preserves_release_defaults_and_pins_pr_role(tmp_path, pr, compute):
     cli = tmp_path / 'aws'
     cli.write_text('#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\nPath(os.environ["ARGS_FILE"]).write_text(json.dumps(sys.argv[1:]))\nprint("existing-project:build-id")\n')
     cli.chmod(0o755)
@@ -25,13 +26,23 @@ def test_start_preserves_release_defaults_and_pins_pr_role(tmp_path, pr):
         'SOURCE_REVISION':'a'*40, 'ENV_VARS':'', 'CHILD_STATE_URI':'',
         'SERVICE_ROLE_ARN':'arn:aws:iam::123456789012:role/nonpublishing' if pr else '',
         'BUILDSPEC':'path with spaces/ci.yml' if pr else '',
+        'COMPUTE_TYPE':compute,
     }
     script = next(s['run'] for s in ACTION['runs']['steps'] if s.get('id') == 'start')
-    subprocess.run(['bash','-c',script],env=env,check=True,capture_output=True,text=True)
+    result = subprocess.run(['bash','-c',script],env=env,capture_output=True,text=True)
+    if compute.startswith('invalid'):
+        assert result.returncode != 0
+        assert not args.exists(), 'Invalid compute must fail before an AWS call'
+        return
+    assert result.returncode == 0, result.stderr
     command = json.loads(args.read_text())
     assert command[:2] == ['codebuild','start-build']
     assert command[command.index('--source-location-override')+1] == 'state/'+env['SOURCE_KEY']
     assert '--idempotency-token' in command
+    if compute:
+        assert command[command.index('--compute-type-override')+1] == compute
+    else:
+        assert '--compute-type-override' not in command
     if pr:
         assert command[command.index('--service-role-override')+1] == env['SERVICE_ROLE_ARN']
         assert command[command.index('--buildspec-override')+1] == env['BUILDSPEC']

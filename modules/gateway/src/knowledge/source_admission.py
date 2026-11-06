@@ -13,7 +13,7 @@ from src.knowledge.type_registry import validate_source_ref
 log = logging.getLogger(__name__)
 
 
-async def admit_source(asset_type: str, source: str, tenant_id: str | None, owner_sub: str | None) -> None:
+async def admit_source(asset_type: str, source: str, tenant_id: str | None, owner_sub: str | None, *, product_id: str | None = None) -> None:
     if not validate_source_ref(asset_type, source):
         raise SourceAdmissionError("source does not match a registered validator")
     if not tenant_id and not owner_sub and asset_type != "repo":
@@ -21,7 +21,8 @@ async def admit_source(asset_type: str, source: str, tenant_id: str | None, owne
     scope = IngestionScope(
         tenant_id=tenant_id,
         owner_sub=owner_sub,
-        visibility="personal" if owner_sub else "tenant" if tenant_id else "shared",
+        product_id=product_id,
+        visibility="product" if product_id else "personal" if owner_sub else "tenant" if tenant_id else "shared",
     )
     try:
         await asyncio.to_thread(

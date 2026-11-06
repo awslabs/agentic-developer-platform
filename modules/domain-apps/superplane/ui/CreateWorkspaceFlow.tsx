@@ -43,6 +43,7 @@ import { Alert, Button, Input, Select, Spinner } from '@/components/ui';
 
 import { ApprovalPanel } from './ApprovalPanel';
 import { LifecycleProposalPanel } from './LifecycleProposalPanel';
+import { WorkspaceDeploymentProgress } from './ProvisioningProgress';
 import { useFreshnessClock } from './readiness';
 
 import {
@@ -585,6 +586,7 @@ export function CreateWorkspaceFlow({
       {currentReceipt && currentReceipt.submissionStage !== 'draft' && currentReceipt.submissionStage !== 'approval' && <Receipt receipt={currentReceipt} />}
       {currentReceipt && currentReceipt.submissionStage !== 'draft' && currentReceipt.submissionStage !== 'approval' && <Button variant="secondary" onClick={() => void refreshReceipt()}>Refresh operation status</Button>}
       {recoveryProblem && <Alert variant="warning" title="Operation status unavailable">{recoveryProblem.detail}</Alert>}
+      {currentReceipt?.workspaceId && <WorkspaceDeploymentProgress key={`deployment:${scope.orgId}:${currentReceipt.workspaceId}`} workspaceId={currentReceipt.workspaceId} />}
       {ENDPOINTS.listLifecycleProposals.served && currentReceipt?.workspaceId && <LifecycleProposalPanel
         key={`${scope.orgId}:${currentReceipt.workspaceId}`}
         workspaceId={currentReceipt.workspaceId} scope={scope} store={store}

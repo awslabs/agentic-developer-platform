@@ -25,9 +25,9 @@ class TestPersonaCatalogue:
     """AC-01 and AC-02: the persona catalogue reads from the authoritative source."""
 
     def test_catalogue_has_exactly_28_personas(self):
-        """AC-02: all 28 registered keys, including automatic personas."""
+        """AC-02: all 29 registered keys, including automatic personas."""
         catalogue = build_persona_catalogue()
-        assert len(catalogue) == 28, f"Expected 28 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
+        assert len(catalogue) == 29, f"Expected 29 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
 
     def test_catalogue_keys_match_valid_personas(self):
         """AC-01/AC-02: keys are exactly VALID_PERSONAS, no more, no less."""
@@ -78,7 +78,7 @@ class TestPersonaCatalogue:
                 assert persona.not_configurable_reason is None, f"{persona.key} is configurable but has reason: {persona.not_configurable_reason}"
 
     def test_expected_persona_keys_present(self):
-        """All 28 expected persona keys are present."""
+        """All 29 expected persona keys are present."""
         expected = {
             "agent-codex-reviewer",
             "agent-codex-developer",
@@ -86,6 +86,7 @@ class TestPersonaCatalogue:
             "agent-codex-product",
             "agent-codex-pm",
             "agent-codex-intent-refinement",
+            "agent-codex-operations",
             "aidlc",
             "architect",
             "codex",

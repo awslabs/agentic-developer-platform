@@ -134,6 +134,8 @@ class GraphAssignment:
     wave_key: str | None = None
     wave_coordinator: bool = False
     review_expect: dict[str, Any] | None = None
+    repository_id: int | None = None
+    installation_id: int | None = None
 
 
 class DispatchService:
@@ -218,7 +220,10 @@ class DispatchService:
             or not grant.flow_id
             or total_limit <= 0
             or body.target.repo not in grant.repo_scope
-            or body.target.repo != parent["repo"]["S"]
+            or (
+                body.target.repo != parent["repo"]["S"]
+                and not (graph and graph.repository_id and parent.get("coordinator_flow_id") == {"S": grant.flow_id})
+            )
             or (
                 body.target.issue != allowed_issue
                 and not (graph and parent.get("coordinator_flow_id") == {"S": grant.flow_id})
@@ -231,13 +236,16 @@ class DispatchService:
             or not 0 < depth <= grant.max_chain_depth
         ):
             raise BootstrapRefusedError("dispatch is outside delegated work")
+        if graph and (graph.repository_id is None) != (graph.installation_id is None):
+            raise BootstrapRefusedError("incomplete graph repository assignment")
         if prior is None:
             now = self.now()
             invocation = str(uuid.uuid5(uuid.NAMESPACE_URL, f"adp-dispatch:{caller.tenant_id}:{request_key}"))
-            envelope = self._envelope(body, caller, grant, invocation, installation, depth, now)
+            target_installation = graph.installation_id if graph and graph.installation_id else installation
+            envelope = self._envelope(body, caller, grant, invocation, target_installation, depth, now)
             from src.orchestration.work_admission import enabled as work_claims_enabled
 
-            repository_id = int(parent.get("provider_repository_id", {}).get("N", "0"))
+            repository_id = graph.repository_id if graph and graph.repository_id else int(parent.get("provider_repository_id", {}).get("N", "0"))
             if body.persona == "agent-codex-developer" and repository_id <= 0:
                 raise BootstrapRefusedError("Codex dispatch requires immutable repository identity")
             if repository_id > 0:
@@ -289,6 +297,14 @@ class DispatchService:
             or prior.get("orchestration_dispatch_receipt") != {"S": graph.receipt_id}
         ):
             raise PolicyError(409, "dispatch request belongs to a different workflow attempt")
+        if graph and graph.repository_id:
+            source = json.loads(prior["envelope_json"]["S"])["source_ref"]
+            if (
+                source.get("provider_repository_id") != graph.repository_id
+                or source.get("installation_id") != graph.installation_id
+                or source.get("repo") != body.target.repo
+            ):
+                raise PolicyError(409, "dispatch repository binding changed")
         if graph and json.loads(prior["envelope_json"]["S"]).get("review_expect") != graph.review_expect:
             # Retries keep the originally reserved envelope and its bootstrap digest.
             # A changed head or authority needs a fresh admitted review, never an

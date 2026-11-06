@@ -17,7 +17,9 @@ enforced somewhere.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -30,7 +32,10 @@ def _generator():
     """Load the generator by path; `scripts/` is not an importable package."""
     spec = importlib.util.spec_from_file_location("_onboarding_generator", GENERATOR)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Standalone rendering supplies local environment defaults at import time.
+    # Restore them so another test on this pytest worker sees its own settings.
+    with patch.dict(os.environ):
+        spec.loader.exec_module(module)
     return module
 
 

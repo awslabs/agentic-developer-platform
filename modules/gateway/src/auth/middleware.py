@@ -14,7 +14,6 @@ Issue #119: Unified Cognito JWT Auth
 """
 
 import logging
-from datetime import UTC, datetime
 
 import jwt
 from fastapi import Depends, HTTPException, Request
@@ -112,6 +111,8 @@ async def get_current_user_context(
         logger.debug(f"Token validated for user: {token_context.user_id}")
         return token_context
 
+    except HTTPException:
+        raise
     except TokenValidationError as e:
         logger.warning(f"Token validation failed: {e.message}")
         raise HTTPException(
@@ -150,6 +151,9 @@ async def get_optional_user_context(request: Request, db: AsyncSession = Depends
         token_context = await auth_service.validate_token(token, db)
         return token_context
 
+    except HTTPException:
+        # A verified identity denied membership is not an anonymous visitor.
+        raise
     except Exception:
         # Silently ignore authentication errors for optional auth
         return None
@@ -621,6 +625,13 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
 
     token, tenant_lease = split_token(token)
 
+    # #9640: owner sessions (Dev Box host run acting as the owner) take their own trusted
+    # path; see src.auth.owner_session. Request logs get the delegation from this context.
+    from src.auth.owner_session import owner_session_delegation, validate_owner_session
+
+    if tenant_lease is None and owner_session_delegation(token) is not None:
+        return await validate_owner_session(token)
+
     # Get Cognito validator
     validator = get_cognito_validator()
     if validator is None:
@@ -634,7 +645,10 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
         claims = validator.validate_token(token)
 
         # Convert claims to TokenContext
-        context = await apply_context(_cognito_claims_to_context(claims), tenant_lease)
+        from src.admin.platform_authority import apply_platform_admin_authority
+
+        context = await apply_platform_admin_authority(_cognito_claims_to_context(claims))
+        context = await apply_context(context, tenant_lease)
         if tenant_lease is None:
             from src.admin.membership_revocation import require_not_revoked_context
 
@@ -665,40 +679,17 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
 
 
 def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
+    """Use the same verified Cognito identity on proxy and dependency paths.
+
+    Cognito fills a missing username with sub. Service aliases are keyed by
+    client_id, so that fallback must never select the machine's identity.
     """
-    Convert Cognito token claims to TokenContext.
+    from .dependencies import _cognito_claims_to_context as claims_to_context
+    from .dependencies import _stamp_trusted_alias_source
 
-    Issue #119: Supports both human and service account tokens.
-
-    Args:
-        claims: Validated Cognito token claims
-
-    Returns:
-        TokenContext: Token context for authorization decisions
-    """
-    # Determine account type from custom claim
-    account_type = claims.account_type or "human"
-
-    # Determine if user is admin based on role or groups
-    is_admin = (
-        claims.role == "platform_admin" or claims.role == "admin" or "admins" in claims.cognito_groups or "platform-admins" in claims.cognito_groups
-    )
-
-    # For service accounts, use client_id as user_id
-    user_id = claims.sub
-    if account_type == "service" and not claims.username:
-        user_id = claims.client_id or claims.sub
-
-    return TokenContext(
-        user_id=user_id,
-        org_id=claims.org_id or "",
-        team_id=claims.team_id or "",
-        department_id=claims.department_id or "",
-        account_type=account_type,
-        cognito_username=claims.username or "",
-        is_admin=is_admin,
-        expires_at=datetime.fromtimestamp(claims.exp, UTC),
-    )
+    context = _stamp_trusted_alias_source(claims_to_context(claims))
+    context._authenticated_subject_id = claims.sub
+    return context
 
 
 async def get_cognito_user_context(

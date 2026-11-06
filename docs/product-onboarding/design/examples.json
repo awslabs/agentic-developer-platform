@@ -1,0 +1,445 @@
+[
+  {"name":"minimal-create", "schema":"CreateProduct", "valid":true, "operation_id":"createProduct", "direction":"request", "value":{"name":"Example Planner","purpose":"Coordinate small releases","intended_users":["Maintainers"],"starting_point":"idea","project":{"mode":"create"}}},
+  {"name":"minimal-profile", "schema":"Profile", "valid":true, "operation_id":"createProduct", "direction":"response", "status":201, "value":{
+    "schema_version":"1.0","tenant_id":"example-tenant","product_id":"00000000-0000-4000-8000-000000000001","project_id":"00000000-0000-4000-8000-000000000002","revision":1,
+    "product":{"name":"Example Planner","purpose":"Coordinate small releases","intended_users":["Maintainers"],"owner_ref":{"kind":"user","id":"example-owner"},"starting_point":"idea","lifecycle_status":"draft"},
+    "project":{"id":"00000000-0000-4000-8000-000000000002","tenant_id":"example-tenant","name":"Example Planner","owner_user_id":"example-owner","state":"registered"},
+    "configuration":{},"provenance":[{"paths":["/product/name","/product/purpose","/product/intended_users","/product/owner_ref","/product/starting_point","/product/lifecycle_status"],"state":"accepted","method":"manual","source_refs":[{"tenant_id":"example-tenant","project_id":"00000000-0000-4000-8000-000000000002","source_connection_id":"adp.profile","record_type":"product","record_id":"00000000-0000-4000-8000-000000000001","record_revision":"1"}],"authority_mapping_ref":{"tenant_id":"example-tenant","project_id":"00000000-0000-4000-8000-000000000002","source_connection_id":"adp.profile","record_type":"authority_mapping","record_id":"manual-editor","record_revision":"1"},"observed_at":"2026-10-18T12:00:00Z","confirmed_by":{"kind":"user","id":"example-owner"},"confirmed_at":"2026-10-18T12:00:00Z"}],"context_status":"unavailable",
+    "progress":{"rule_version":"profile-1","completed":2,"applicable":2,"percentage":100,"maturity":"saved","checks":[{"id":"information","status":"complete","required":true,"reason":"Required profile information saved"},{"id":"project_scope","status":"complete","required":true,"reason":"Governed Project and owner verified"}],"next_steps":["Choose an accessible repository for code discovery"]}
+  }},
+  {"name":"edit-name", "schema":"ProductPatch", "valid":true, "operation_id":"updateProduct", "direction":"request", "value":{"name":"Example Release Planner"}},
+  {"name":"stale-write", "schema":"Error", "valid":true, "operation_id":"updateProduct", "direction":"response", "status":412, "value":{"detail":{"code":"stale_revision","message":"Profile changed; read the current revision and review your edit.","retryable":false,"current_revision":2},"request_id":"example-request"}},
+  {"name":"repository-selection", "schema":"BindingInput", "valid":true, "operation_id":"createBinding", "direction":"request", "value":{"kind":"repository","provider":"github","connection_ref":{"kind":"github_installation","id":"00000000-0000-4000-8000-000000000010"},"namespace":"example-provider-instance","native_id":"424242"}},
+  {"name":"repository-commit-pin", "schema":"BindingInput", "valid":true, "value":{"kind":"repository","provider":"github","connection_ref":{"kind":"github_installation","id":"00000000-0000-4000-8000-000000000010"},"namespace":"example-provider-instance","native_id":"424242","source_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+  {"name":"repository-mutable-pin", "schema":"BindingInput", "valid":false, "value":{"kind":"repository","provider":"github","connection_ref":{"kind":"github_installation","id":"00000000-0000-4000-8000-000000000010"},"namespace":"example-provider-instance","native_id":"424242","source_revision":"main"}},
+  {"name":"environment-selection", "schema":"BindingInput", "valid":true, "value":{"kind":"environment","provider":"aws","connection_ref":{"kind":"credential","id":"00000000-0000-4000-8000-000000000011"},"namespace":"example-provider-instance","native_id":"example-selected-environment","environment":{"name":"Example test environment","environment_class":"test","production":false}}},
+  {"name":"verified-environment", "schema":"VerifiedEnvironment", "valid":true, "value":{"provider":"aws","account_id":"123456789012","regions":["us-east-1"],"role_ref":"example-verified-role-reference","permission_tier":"read_only","verified_at":"2026-10-18T12:00:00Z","source_revision":"example-verification-1"}},
+  {"name":"start-direct", "schema":"SessionStart", "valid":true, "operation_id":"startOnboarding", "direction":"request", "value":{"mode":"direct"}},
+  {"name":"later-step", "schema":"StepUpdate", "valid":true, "operation_id":"updateStep", "direction":"request", "value":{"action":"later","reason":"Save financial context later"}},
+  {"name":"confirm-proposal", "schema":"StepUpdate", "valid":true, "value":{"action":"confirm","proposal_id":"00000000-0000-4000-8000-000000000012","confirmed_paths":["/configuration/financials/release_target_date"]}},
+  {"name":"financial-allocation", "schema":"Allocation", "valid":true, "value":{
+    "id":"00000000-0000-4000-8000-000000000013","name":"Example release allocation",
+    "target_ref":{"tenant_id":"example-tenant","project_id":"00000000-0000-4000-8000-000000000002","source_connection_id":"00000000-0000-4000-8000-000000000014","record_type":"release","record_id":"example-release","record_revision":"3"},
+    "amount":{"amount":"5000.00","currency":"USD"},"category":"ai","period_start":"2026-10-18","period_end":"2027-01-18","approval_status":"proposed","owner_ref":{"kind":"user","id":"example-owner"}
+  }},
+  {"name":"context-handoff", "schema":"HandoffRequest", "valid":true, "operation_id":"startHandoff", "direction":"request", "value":{"target":"context","action":"read_context"}},
+  {"name":"peer-callback", "schema":"Callback", "valid":true, "operation_id":"applyCallback", "direction":"request", "value":{"sequence":2,"receipt":{"tenant_id":"example-tenant","product_id":"00000000-0000-4000-8000-000000000001","project_id":"00000000-0000-4000-8000-000000000002","profile_revision":7,"provider_operation_id":"example-context-operation","status":"succeeded","result_ref":{"tenant_id":"example-tenant","project_id":"00000000-0000-4000-8000-000000000002","source_connection_id":"00000000-0000-4000-8000-000000000014","record_type":"context_snapshot","record_id":"example-snapshot","record_revision":"1"}}}},
+  {"name":"duplicate-ack", "schema":"Ack", "valid":true, "operation_id":"applyCallback", "direction":"response", "status":200, "value":{"operation_id":"00000000-0000-4000-8000-000000000003","status":"duplicate"}},
+  {"name":"deterministic-guide", "schema":"GuidanceRequest", "valid":true, "operation_id":"guideOnboarding", "direction":"request", "value":{"message":"What can I do next?","mode":"deterministic"}},
+  {"name":"tenant-injection", "schema":"CreateProduct", "valid":false, "value":{"tenant_id":"foreign-example-tenant","name":"Example","purpose":"Example","intended_users":["Maintainers"],"starting_point":"idea","project":{"mode":"create"}}},
+  {"name":"empty-users", "schema":"CreateProduct", "valid":false, "value":{"name":"Example","purpose":"Example","intended_users":[],"starting_point":"idea","project":{"mode":"create"}}},
+  {"name":"missing-project", "schema":"CreateProduct", "valid":false, "value":{"name":"Example","purpose":"Example","intended_users":["Maintainers"],"starting_point":"idea"}},
+  {"name":"floating-money", "schema":"Money", "valid":false, "value":{"amount":5000.00,"currency":"USD"}},
+  {"name":"negative-money", "schema":"Money", "valid":false, "value":{"amount":"-1.00","currency":"USD"}},
+  {"name":"invalid-date", "schema":"Financials", "valid":false, "value":{"release_target_date":"2026-02-30"}},
+  {"name":"secret-in-binding", "schema":"BindingInput", "valid":false, "value":{"kind":"repository","provider":"github","connection_ref":{"kind":"github_installation","id":"example-reference"},"namespace":"example-provider-instance","native_id":"424242","token":"not-a-secret-test-string"}},
+  {"name":"missing-confirmation-proposal", "schema":"StepUpdate", "valid":false, "value":{"action":"confirm"}},
+  {"name":"arbitrary-step-state", "schema":"StepState", "valid":false, "value":{"status":"approved_to_execute","evidence_refs":[]}},
+  {"name":"client-progress-injection", "schema":"ProjectPatch", "valid":false, "value":{"configuration":{},"percentage":100}},
+  {"name":"unbounded-callback-field", "schema":"Callback", "valid":false, "value":{"sequence":1,"shell_command":"not-an-executable-command"}},
+{
+  "name": "shared-team-create",
+  "schema": "CreateProduct",
+  "valid": true,
+  "value": {
+    "name": "Example Planner",
+    "purpose": "Coordinate small releases",
+    "intended_users": [
+      "Maintainers"
+    ],
+    "starting_point": "idea",
+    "project": {
+      "mode": "create"
+    },
+    "team_id": "example-team"
+  },
+  "operation_id": "createProduct",
+  "direction": "request"
+},
+{
+  "name": "shared-team-profile",
+  "schema": "Profile",
+  "valid": true,
+  "value": {
+    "schema_version": "1.0",
+    "tenant_id": "example-tenant",
+    "product_id": "00000000-0000-4000-8000-000000000001",
+    "project_id": "00000000-0000-4000-8000-000000000002",
+    "revision": 1,
+    "product": {
+      "name": "Example Planner",
+      "purpose": "Coordinate small releases",
+      "intended_users": [
+        "Maintainers"
+      ],
+      "owner_ref": {
+        "kind": "user",
+        "id": "example-owner"
+      },
+      "starting_point": "idea",
+      "lifecycle_status": "draft",
+      "team_id": "example-team"
+    },
+    "project": {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "tenant_id": "example-tenant",
+      "name": "Example Planner",
+      "owner_user_id": "example-owner",
+      "state": "registered"
+    },
+    "configuration": {},
+    "provenance": [
+      {
+        "paths": [
+          "/product/name",
+          "/product/purpose",
+          "/product/intended_users",
+          "/product/owner_ref",
+          "/product/starting_point",
+          "/product/lifecycle_status"
+        ],
+        "state": "accepted",
+        "method": "manual",
+        "source_refs": [
+          {
+            "tenant_id": "example-tenant",
+            "project_id": "00000000-0000-4000-8000-000000000002",
+            "source_connection_id": "adp.profile",
+            "record_type": "product",
+            "record_id": "00000000-0000-4000-8000-000000000001",
+            "record_revision": "1"
+          }
+        ],
+        "authority_mapping_ref": {
+          "tenant_id": "example-tenant",
+          "project_id": "00000000-0000-4000-8000-000000000002",
+          "source_connection_id": "adp.profile",
+          "record_type": "authority_mapping",
+          "record_id": "manual-editor",
+          "record_revision": "1"
+        },
+        "observed_at": "2026-10-18T12:00:00Z",
+        "confirmed_by": {
+          "kind": "user",
+          "id": "example-owner"
+        },
+        "confirmed_at": "2026-10-18T12:00:00Z"
+      }
+    ],
+    "context_status": "unavailable",
+    "progress": {
+      "rule_version": "profile-1",
+      "completed": 2,
+      "applicable": 2,
+      "percentage": 100,
+      "maturity": "saved",
+      "checks": [
+        {
+          "id": "information",
+          "status": "complete",
+          "required": true,
+          "reason": "Required profile information saved"
+        },
+        {
+          "id": "project_scope",
+          "status": "complete",
+          "required": true,
+          "reason": "Governed Project and owner verified"
+        }
+      ],
+      "next_steps": [
+        "Choose an accessible repository for code discovery"
+      ]
+    }
+  },
+  "operation_id": "getProfile",
+  "direction": "response",
+  "status": 200
+},
+{
+  "name": "map-product-team",
+  "schema": "ProductPatch",
+  "valid": true,
+  "value": {
+    "team_id": "example-team"
+  },
+  "operation_id": "updateProduct",
+  "direction": "request"
+},
+{
+  "name": "reject-project-privacy",
+  "schema": "ProjectPatch",
+  "valid": false,
+  "value": {
+    "visibility": "only_me"
+  },
+  "operation_id": "updateProject",
+  "direction": "request"
+},
+{
+  "name": "reject-project-team-override",
+  "schema": "ProjectPatch",
+  "valid": false,
+  "value": {
+    "team_id": "other-team"
+  },
+  "operation_id": "updateProject",
+  "direction": "request"
+},
+{
+  "name": "reject-private-create",
+  "schema": "CreateProduct",
+  "valid": false,
+  "value": {
+    "name": "Example Planner",
+    "purpose": "Coordinate small releases",
+    "intended_users": [
+      "Maintainers"
+    ],
+    "starting_point": "idea",
+    "project": {
+      "mode": "create",
+      "visibility": "only_me"
+    }
+  },
+  "operation_id": "createProduct",
+  "direction": "request"
+},
+{
+  "name": "reject-basic-team-override",
+  "schema": "Basic",
+  "valid": false,
+  "value": {
+    "team_id": "other-team"
+  }
+},
+{
+  "name": "create-domain",
+  "schema": "CreateProduct",
+  "valid": true,
+  "value": {
+    "name": "Example Planner",
+    "purpose": "Coordinate small releases",
+    "intended_users": [
+      "Maintainers"
+    ],
+    "starting_point": "idea",
+    "project": {
+      "mode": "create"
+    },
+    "domain": "Developer tooling"
+  }
+},
+{
+  "name": "reject-name-only-create",
+  "schema": "CreateProduct",
+  "valid": false,
+  "value": {
+    "name": "Example",
+    "starting_point": "idea",
+    "project": {
+      "mode": "create"
+    }
+  }
+},
+{
+  "name": "reject-confirm-without-paths",
+  "schema": "StepUpdate",
+  "valid": false,
+  "value": {
+    "action": "confirm",
+    "proposal_id": "example-proposal"
+  }
+},
+{
+  "name": "reject-confirm-with-injected-values",
+  "schema": "StepUpdate",
+  "valid": false,
+  "value": {
+    "action": "confirm",
+    "proposal_id": "example-proposal",
+    "confirmed_paths": [
+      "/configuration/financials/release_target_date"
+    ],
+    "configuration": {
+      "financials": {
+        "release_target_date": "2028-01-01"
+      }
+    }
+  }
+},
+{
+  "name": "reject-na-without-reason",
+  "schema": "StepUpdate",
+  "valid": false,
+  "value": {
+    "action": "not_applicable"
+  }
+},
+{
+  "name": "pending-financial-proposal",
+  "schema": "Proposal",
+  "valid": true,
+  "value": {
+    "id": "example-proposal",
+    "base_revision": 1,
+    "configuration": {
+      "financials": {
+        "release_target_date": "2027-01-18"
+      }
+    },
+    "provenance": [
+      {
+        "paths": [
+          "/configuration/financials/release_target_date"
+        ],
+        "state": "inferred",
+        "method": "extracted",
+        "source_refs": [
+          {
+            "tenant_id": "example-tenant",
+            "project_id": "00000000-0000-4000-8000-000000000002",
+            "source_connection_id": "example-finance",
+            "record_type": "business_case",
+            "record_id": "example-business-case",
+            "record_revision": "3"
+          }
+        ],
+        "authority_mapping_ref": {
+          "tenant_id": "example-tenant",
+          "project_id": "00000000-0000-4000-8000-000000000002",
+          "source_connection_id": "adp.profile",
+          "record_type": "authority_mapping",
+          "record_id": "source-reader",
+          "record_revision": "1"
+        },
+        "observed_at": "2026-10-18T12:00:00Z"
+      }
+    ],
+    "remaining_paths": [
+      "/configuration/financials/release_target_date"
+    ],
+    "expires_at": "2027-01-16T12:00:00Z"
+  }
+},
+{
+  "name": "resume-pending-proposal",
+  "schema": "Session",
+  "valid": true,
+  "value": {
+    "id": "example-session",
+    "tenant_id": "example-tenant",
+    "product_id": "00000000-0000-4000-8000-000000000001",
+    "project_id": "00000000-0000-4000-8000-000000000002",
+    "revision": 1,
+    "state": "open",
+    "steps": {},
+    "progress": {
+      "rule_version": "profile-1",
+      "completed": 2,
+      "applicable": 2,
+      "percentage": 100,
+      "maturity": "saved",
+      "checks": [
+        {
+          "id": "information",
+          "status": "complete",
+          "required": true,
+          "reason": "Required profile information saved"
+        },
+        {
+          "id": "project_scope",
+          "status": "complete",
+          "required": true,
+          "reason": "Governed Project and owner verified"
+        }
+      ],
+      "next_steps": [
+        "Choose an accessible repository for code discovery"
+      ]
+    },
+    "resume_path": "/products/00000000-0000-4000-8000-000000000001/projects/00000000-0000-4000-8000-000000000002/onboarding/example-session",
+    "proposals": [
+      {
+        "id": "example-proposal",
+        "base_revision": 1,
+        "configuration": {
+          "financials": {
+            "release_target_date": "2027-01-18"
+          }
+        },
+        "provenance": [
+          {
+            "paths": [
+              "/configuration/financials/release_target_date"
+            ],
+            "state": "inferred",
+            "method": "extracted",
+            "source_refs": [
+              {
+                "tenant_id": "example-tenant",
+                "project_id": "00000000-0000-4000-8000-000000000002",
+                "source_connection_id": "example-finance",
+                "record_type": "business_case",
+                "record_id": "example-business-case",
+                "record_revision": "3"
+              }
+            ],
+            "authority_mapping_ref": {
+              "tenant_id": "example-tenant",
+              "project_id": "00000000-0000-4000-8000-000000000002",
+              "source_connection_id": "adp.profile",
+              "record_type": "authority_mapping",
+              "record_id": "source-reader",
+              "record_revision": "1"
+            },
+            "observed_at": "2026-10-18T12:00:00Z"
+          }
+        ],
+        "remaining_paths": [
+          "/configuration/financials/release_target_date"
+        ],
+        "expires_at": "2027-01-16T12:00:00Z"
+      }
+    ]
+  }
+},
+{
+  "name": "product-list-summary",
+  "schema": "ProductPage",
+  "valid": true,
+  "value": {
+    "items": [
+      {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "name": "Example Planner",
+        "revision": 1,
+        "project_ids": [
+          "00000000-0000-4000-8000-000000000002"
+        ],
+        "lifecycle_status": "draft",
+        "team": {
+          "id": "example-team",
+          "name": "Example team"
+        }
+      }
+    ],
+    "next_cursor": null
+  }
+},
+{
+  "name": "reject-product-wide-completeness",
+  "schema": "ProductSummary",
+  "valid": false,
+  "value": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "name": "Example Planner",
+    "revision": 1,
+    "project_ids": [
+      "00000000-0000-4000-8000-000000000002"
+    ],
+    "lifecycle_status": "draft",
+    "percentage": 100
+  }
+}
+]

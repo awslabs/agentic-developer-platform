@@ -1,0 +1,25 @@
+{
+  "scenario": "SCN-02",
+  "fixture_kind": "scripted_provider_not_live",
+  "clock": "2026-10-27T00:00:00Z",
+  "jitter_seconds": 0,
+  "cases": [
+    {"id": "lost_start_delayed_unique", "rounds": [
+      {"pages": [{"ids": []}], "expected": "outcome_unknown"},
+      {"pages": [{"ids": [], "nextToken": "page-2"}, {"ids": ["generation-example"]}], "expected": "accepted"}
+    ], "expected_list_calls": 3, "expected_get_calls": 1},
+    {"id": "lost_start_zero_matches", "rounds": [
+      {"pages": [{"ids": []}], "expected": "outcome_unknown"}
+    ], "expected_list_calls": 1, "expected_get_calls": 0},
+    {"id": "lost_start_multiple_matches", "rounds": [
+      {"pages": [{"ids": ["generation-example", "generation-other"]}], "expected": "outcome_unknown"}
+    ], "expected_list_calls": 1, "expected_get_calls": 0},
+    {"id": "lost_start_incomplete_pagination", "rounds": [
+      {"pages": [{"ids": ["generation-example"], "nextToken": "page-2"}], "max_pages": 1,
+       "expected": "outcome_unknown"}
+    ], "expected_list_calls": 1, "expected_get_calls": 0},
+    {"id": "lost_start_mismatched_scope", "rounds": [
+      {"pages": [{"ids": ["generation-example"]}], "detail": "mismatched_scope", "expected": "outcome_unknown"}
+    ], "expected_list_calls": 1, "expected_get_calls": 1}
+  ]
+}

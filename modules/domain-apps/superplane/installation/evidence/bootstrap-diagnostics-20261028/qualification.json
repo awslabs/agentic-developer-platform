@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "cluster": "adp-dev-eks-cluster",
+  "namespace": "superplane",
+  "pod_name": "superplane-paid-worker-ph9zp-pmt7b",
+  "pod_uid": "3bf915a4-63d1-4e63-8b0d-435243a83391",
+  "image": "608380991969.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-paid-worker@sha256:9fd2a13be7c5e147fe00cf5433fcd792ab751d27cd5ce86206c1d9bc326212bb",
+  "creation_event_id": "39990200511192096908870790634244953325789662823883210777",
+  "container_sha256": "4f613e2298df60e608b06b1f5b34ccf708bf43378f8682b87cfc06acb36c5feb",
+  "pod_volumes_sha256": "d987c9026783fd7935be9c45ce165c54ee0e321b765b3b96ccb09f2e9b304943",
+  "execs": [
+    {
+      "audit_id": "0fc831d0-c94c-4922-affc-37e4093ee490",
+      "query_hash": "d1654890de65ff6f032f26b63720cebba8e8900edd85076a4b94109190a43cd4",
+      "local_source": "process-state-query-before-state-projection.py",
+      "request_uri_sha256": "03255a935c463923f657a49e9de058b2ba5205381efc7bd90d2ddf509b0e3b9d",
+      "user_arn": "arn:aws:sts::608380991969:assumed-role/adp-dev-box-prsaws-admin/botocore-session-1793221555",
+      "principal_id": [
+        "AROAY3JSVHHQT37FGGK7E"
+      ],
+      "canonical_arn": [
+        "arn:aws:iam::608380991969:role/adp-dev-box-prsaws-admin"
+      ],
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "time": "2026-10-28T21:29:16.748507Z",
+      "stages": [
+        {
+          "stage": "ResponseStarted",
+          "event_id": "39990208246450877216401264552237649959050076569684869127",
+          "stage_timestamp": "2026-10-28T21:29:16.760193Z",
+          "response_code": 101
+        },
+        {
+          "stage": "ResponseComplete",
+          "event_id": "39990208263221037605696293154672510100081644422182141971",
+          "stage_timestamp": "2026-10-28T21:29:17.522709Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "8594abdd-b9a9-4915-a209-754bd90b7a49",
+      "query_hash": "d1654890de65ff6f032f26b63720cebba8e8900edd85076a4b94109190a43cd4",
+      "local_source": "process-state-query-before-state-projection.py",
+      "request_uri_sha256": "03255a935c463923f657a49e9de058b2ba5205381efc7bd90d2ddf509b0e3b9d",
+      "user_arn": "arn:aws:sts::608380991969:assumed-role/adp-dev-box-prsaws-admin/botocore-session-1793221555",
+      "principal_id": [
+        "AROAY3JSVHHQT37FGGK7E"
+      ],
+      "canonical_arn": [
+        "arn:aws:iam::608380991969:role/adp-dev-box-prsaws-admin"
+      ],
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "time": "2026-10-28T21:30:10.252452Z",
+      "stages": [
+        {
+          "stage": "ResponseStarted",
+          "event_id": "39990209436530144735987968561771480909786003042656583735",
+          "stage_timestamp": "2026-10-28T21:30:10.263928Z",
+          "response_code": 101
+        },
+        {
+          "stage": "ResponseComplete",
+          "event_id": "39990209458853190679717122326448734900707012910142980163",
+          "stage_timestamp": "2026-10-28T21:30:11.026305Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "3212d7bf-85a8-4698-9099-4f35fb996b3b",
+      "query_hash": "3eb364714d148d393689aa6d70c62cd2091d6e2e2ceb91ee057be8c17332c6a1",
+      "local_source": "process-state-query.py",
+      "request_uri_sha256": "44c26c08e0adc0d33dfb28e84adac19e4e7ed3ec77b8db1d5d60f88dbeb461c2",
+      "user_arn": "arn:aws:sts::608380991969:assumed-role/adp-dev-box-prsaws-admin/botocore-session-1793221555",
+      "principal_id": [
+        "AROAY3JSVHHQT37FGGK7E"
+      ],
+      "canonical_arn": [
+        "arn:aws:iam::608380991969:role/adp-dev-box-prsaws-admin"
+      ],
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "time": "2026-10-28T21:35:04.382980Z",
+      "stages": [
+        {
+          "stage": "ResponseStarted",
+          "event_id": "39990216002873064717337299829931015105907535380885405705",
+          "stage_timestamp": "2026-10-28T21:35:04.394429Z",
+          "response_code": 101
+        },
+        {
+          "stage": "ResponseComplete",
+          "event_id": "39990216019643225106632328432365875246939103233382678548",
+          "stage_timestamp": "2026-10-28T21:35:05.274358Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "19e5db2e-1a18-4e47-a7e6-f9b5e2cd0b39",
+      "query_hash": "3eb364714d148d393689aa6d70c62cd2091d6e2e2ceb91ee057be8c17332c6a1",
+      "local_source": "process-state-query.py",
+      "request_uri_sha256": "44c26c08e0adc0d33dfb28e84adac19e4e7ed3ec77b8db1d5d60f88dbeb461c2",
+      "user_arn": "arn:aws:sts::608380991969:assumed-role/adp-dev-box-prsaws-admin/botocore-session-1793221555",
+      "principal_id": [
+        "AROAY3JSVHHQT37FGGK7E"
+      ],
+      "canonical_arn": [
+        "arn:aws:iam::608380991969:role/adp-dev-box-prsaws-admin"
+      ],
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "time": "2026-10-28T21:39:02.928421Z",
+      "stages": [
+        {
+          "stage": "ResponseStarted",
+          "event_id": "39990221320218148364582020735130251538025537168559374399",
+          "stage_timestamp": "2026-10-28T21:39:02.939072Z",
+          "response_code": 101
+        },
+        {
+          "stage": "ResponseComplete",
+          "event_id": "39990221342563495053509705129025275625595464064995753988",
+          "stage_timestamp": "2026-10-28T21:39:03.928674Z",
+          "response_code": 101
+        }
+      ]
+    }
+  ],
+  "sources": {
+    "d1654890de65ff6f032f26b63720cebba8e8900edd85076a4b94109190a43cd4": "process-state-query-before-state-projection.txt",
+    "3eb364714d148d393689aa6d70c62cd2091d6e2e2ceb91ee057be8c17332c6a1": "process-state-query.txt"
+  },
+  "environment_configmap": {
+    "name": "superplane-paid-worker-config",
+    "namespace": "superplane",
+    "uid": "1fd8afe4-0681-46d8-9c60-d220adc0ef2a",
+    "resource_version": "8150644",
+    "data_sha256": "df4fe8ee16ada65f2ddaac912f7e065fda5e005d57befca5587d6495722b026d"
+  }
+}

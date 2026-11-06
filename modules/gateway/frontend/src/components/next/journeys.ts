@@ -144,6 +144,7 @@ export interface JourneyPermissions {
   canViewOrganizations: boolean;
   canViewBudgets: boolean;
   canViewRateLimits: boolean;
+  canManageTools: boolean;
   canViewLogs: boolean;
   canViewPool: boolean;
   canViewMetrics: boolean;
@@ -161,6 +162,7 @@ const NO_PERMISSIONS: JourneyPermissions = {
   canViewOrganizations: false,
   canViewBudgets: false,
   canViewRateLimits: false,
+  canManageTools: false,
   canViewLogs: false,
   canViewPool: false,
   canViewMetrics: false,
@@ -202,31 +204,16 @@ function buildUseAdp(features: FeatureFlags, perms: JourneyPermissions): Journey
     },
   ];
 
-  // Chats are one capability across two current-UI pages; the design groups both
-  // under Agent activity.
-  if (features.chat) {
-    // Two entries, because chats really are two current-UI pages: /chat holds a
-    // conversation, /my-chats lists past ones. Both mirror `Navigation.tsx`'s gate
-    // exactly — `features.chat` and NO role or permission predicate (#5123). Gating
-    // either more tightly than the current sidebar would silently take chat away
-    // from someone who has it today.
+  if (features.product_profile) {
     work.push({
-      id: 'chats-new',
-      to: '/chat',
-      label: 'Agent chat',
-      description: 'Start a conversation with an agent.',
-      currentUi: true,
-    });
-    work.push({
-      id: 'chats',
-      to: '/my-chats',
-      // Not "and starting a new chat": this page lists past conversations and
-      // contains no navigation to /chat. Starting one is the entry above.
-      label: 'My chats',
-      description: 'Your past conversations.',
+      id: 'products',
+      to: '/products',
+      label: 'Products',
+      description: 'Find, create and edit your products.',
       currentUi: true,
     });
   }
+
   if (features.orchestration_engine) {
     work.push({
       id: 'flows',
@@ -236,30 +223,26 @@ function buildUseAdp(features: FeatureFlags, perms: JourneyPermissions): Journey
       currentUi: true,
     });
   }
-  // Issue #5037. Mirrors the sidebar's condition exactly — `features.superplane` and no
-  // role or permission predicate — because the journey model's coverage guard (#5123)
-  // compares this model against Navigation.tsx. A different condition here would show the
-  // destination in one surface and hide it in the other.
-  if (features.superplane) {
-    work.push({
-      id: 'superplane',
-      to: '/superplane',
-      label: 'Superplane',
-      description: 'The Superplane domain app.',
-      currentUi: true,
-    });
-  }
 
   const setup: JourneyEntry[] = [
     {
       id: 'cli-setup',
       to: '/setup',
-      label: 'CLI setup',
+      label: 'Apps & CLI setup',
       description: 'Set up Codex or Claude Code against ADP.',
       currentUi: true,
     },
   ];
 
+  if (features.crew_dashboard) {
+    setup.push({
+      id: 'dev-box',
+      to: '/settings/dev-box',
+      label: 'Dev Box',
+      description: 'Provision your EC2 Crew box, open its dashboard or connect over SSH.',
+      currentUi: true,
+    });
+  }
   if (features.connections) {
     setup.push({
       id: 'connections',
@@ -300,25 +283,14 @@ function buildUseAdp(features: FeatureFlags, perms: JourneyPermissions): Journey
       currentUi: true,
     });
   }
-  if (features.gitlab) {
-    setup.push({
-      id: 'gitlab',
-      to: '/gitlab/',
-      label: 'GitLab',
-      description: 'Open the connected GitLab instance.',
-      currentUi: true,
-      // Server-owned path, not a react-router route — see `external` (#5123).
-      external: true,
-    });
-  }
 
   const insight: JourneyEntry[] = [];
   if (features.knowledge) {
     insight.push({
       id: 'knowledge',
       to: '/knowledge',
-      label: 'Knowledge',
-      description: 'Your knowledge sources and their content.',
+      label: 'Context',
+      description: 'Your personal context sources and their content.',
       currentUi: true,
     });
   }
@@ -336,12 +308,12 @@ function buildUseAdp(features: FeatureFlags, perms: JourneyPermissions): Journey
   return {
     id: 'use',
     label: 'Use ADP',
-    description: 'Your work: agents, connections, knowledge and your own spend.',
+    description: 'Your work: agents, connections, context and your own spend.',
     home: JOURNEY_HOME.use,
     sections: nonEmpty([
       { title: 'Your work', entries: work },
       { title: 'Setup & connections', entries: setup },
-      { title: 'Knowledge & spend', entries: insight },
+      { title: 'Context & spend', entries: insight },
     ]),
   };
 }
@@ -434,6 +406,10 @@ function buildAdministration(
       currentUi: true,
     });
   }
+  if (perms.canManageTools) {
+    limits.push({ id: 'tool-entitlements', to: '/admin/tools', label: 'Tool access', description: 'Tenant and team tool grants and cost ceilings.', currentUi: true });
+  }
+
   // Routing configuration stays platform-admin-only on its own Model access page.
   if (perms.isPlatformAdmin && perms.canViewBudgets) {
     limits.push({
@@ -497,16 +473,6 @@ function buildAdministration(
       label: 'Logs',
       description: 'The logs you are authorized to read.',
       currentUi: true,
-    });
-  }
-  if (features.indexing && perms.isPlatformAdmin) {
-    system.push({
-      id: 'indexing',
-      to: '/admin/indexing',
-      label: 'Indexing status',
-      description: 'Repository indexing status.',
-      currentUi: true,
-      scope: 'platform',
     });
   }
 

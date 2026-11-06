@@ -14,6 +14,12 @@ from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAut
 from src.chat_logging.scrubber import RegexScrubber
 from src.orchestration.chat_data_migration import _owner_fields, _owns_context_row
 
+IDLE_SECONDS = 300
+# Turn executors a persistent session may select (#8115). `sandbox-loop` is the minimal
+# look-up loop, `claude-code` the Claude Agent SDK in the sandbox (#7208), `kirocrew` the
+# user-scoped Crew pod (#7201). Ephemeral sessions always run `sandbox-loop`.
+CHAT_EXECUTORS = ("sandbox-loop", "claude-code", "kirocrew")
+
 
 class AcceptedTurn(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -64,6 +70,8 @@ class ChatSessionMailbox:
         if health == "active" and (isinstance(lease_expiry, bool) or not isinstance(lease_expiry, int | Decimal) or lease_expiry <= now):
             health = "recovering"
         state = {"mode": self._mode(header), "sequence": self._sequence(header), "health": health}
+        if state["mode"] == "persistent" and health == "active":
+            state["idle_timeout_seconds"] = IDLE_SECONDS
         started = header.get("sessionCleanupStartedAt") if header else None
         if health == "ending" and isinstance(started, int | Decimal) and not isinstance(started, bool):
             state["cleanup_elapsed_seconds"] = max(0, now - int(started))
@@ -71,6 +79,8 @@ class ChatSessionMailbox:
                 state["health"] = "cleanup_delayed"
         if header and header.get("sessionPendingMode") in ("ephemeral", "persistent"):
             state["pending_mode"] = header["sessionPendingMode"]
+        if header and header.get("sessionExecutor") in CHAT_EXECUTORS:
+            state["executor"] = header["sessionExecutor"]
         return state
 
     def next_turn(
@@ -407,6 +417,65 @@ class ChatSessionMailbox:
         except BotoCoreError:
             raise ChatAuthorizationUnavailableError("chat session mode unavailable") from None
         return mode
+
+    def select_executor(self, *, session_id: Identifier, owner: tuple[str, str, str], executor: str | None, now: int):
+        """Store the persistent-session executor on the header, or clear it (#8115).
+
+        Called after ``select_mode`` by the mode route: ``None`` clears the choice (ephemeral),
+        a value records which executor the next persistent pod runs. The intake copies it on
+        to the turn envelope, so the supervisor's assignment names it ahead of the deployment
+        default. A persistent session whose pod is alive keeps its executor until it ends: the
+        pod's ``ADP_EXECUTOR`` is fixed at creation, so a silent header change would only
+        make the badge lie about the running pod.
+        """
+        if executor is not None and executor not in CHAT_EXECUTORS:
+            raise ChatAuthorizationRefusedError("chat executor unsupported")
+        header = self._header(session_id, owner, now)
+        if header is None:
+            raise ChatAuthorizationRefusedError("chat session unavailable")
+        current = header.get("sessionExecutor")
+        if current is not None and current not in CHAT_EXECUTORS:
+            raise ChatAuthorizationUnavailableError("chat executor unavailable")
+        if current == executor:
+            return executor
+        lease = header.get("chatLease")
+        lease_expiry = lease.get("expires_at") if isinstance(lease, dict) else None
+        live = isinstance(lease, dict) and bool(lease.get("run_id")) and (lease_expiry is None or lease_expiry > now)
+        if executor is not None and self._mode(header) == "persistent" and live and header.get("sessionState") != "ended":
+            raise ChatAuthorizationRefusedError("chat session must end before executor change")
+        names = {"#status": "status", "#ttl": "ttl", "#executor": "sessionExecutor", "#mode": "sessionMode"}
+        values = {":tenant": owner[0], ":team": owner[1], ":user": owner[2], ":active": "active", ":ttl": header["ttl"], ":now": now}
+        condition = "tenantId = :tenant AND teamId = :team AND ownerUserId = :user AND #status = :active AND #ttl = :ttl AND #ttl > :now"
+        if current is None:
+            condition += " AND attribute_not_exists(#executor)"
+        else:
+            condition += " AND #executor = :current"
+            values[":current"] = current
+        if "sessionMode" in header:
+            condition += " AND #mode = :mode"
+            values[":mode"] = header["sessionMode"]
+        else:
+            condition += " AND attribute_not_exists(#mode)"
+        if executor is None:
+            update = "REMOVE #executor"
+        else:
+            update = "SET #executor = :executor"
+            values[":executor"] = executor
+        try:
+            self.table.update_item(
+                Key={"PK": f"session#{session_id}", "SK": "header"},
+                UpdateExpression=update,
+                ConditionExpression=condition,
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                raise ChatAuthorizationRefusedError("chat session changed") from None
+            raise ChatAuthorizationUnavailableError("chat executor unavailable") from None
+        except BotoCoreError:
+            raise ChatAuthorizationUnavailableError("chat executor unavailable") from None
+        return executor
 
     def accept(self, *, session_id: Identifier, owner: tuple[str, str, str], turn: AcceptedTurn, now: int, expected_mode=None):
         key = {"PK": f"session#{session_id}", "SK": f"mailbox-id#{turn.turn_id}"}

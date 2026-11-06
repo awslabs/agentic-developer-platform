@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { OPERATIONS, HostBridge, frame } from '../src/protocol.mjs';
@@ -46,6 +47,22 @@ test('unknown model outcome aborts proxy and never fabricates usage',async()=>{
 test('report does not accept invented provenance or discard unsupported uncertainty',()=>{
   const value=report();value.findings=[{statement:'x'.repeat(2000),evidence_refs:['fake']}];value.evidence_refs=[{ref:'fake',source:'artifact',artifact_id:'fake'}];
   const actual=groundedReport(value,new Map());assert.equal(actual.findings.length,0);assert.equal(actual.evidence_refs.length,0);assert.equal(actual.uncertainties.slice(1).join(''),'Unsupported finding: '+'x'.repeat(2000));
+});
+test('report defaults omitted lists while rejecting malformed and oversized inputs', () => {
+  const input = { summary: 'Evidence insufficient', findings: [] };
+  const actual = groundedReport(input, new Map());
+  assert.deepEqual(actual.uncertainties, []);
+  assert.deepEqual(actual.recommendations, []);
+  for (const field of ['uncertainties', 'recommendations']) {
+    assert.throws(() => groundedReport({ ...input, [field]: null }, new Map()), z.ZodError);
+    assert.throws(() => groundedReport({ ...input, [field]: Array(1000).fill(null) }, new Map()), error => {
+      assert.ok(error instanceof z.ZodError);
+      assert.deepEqual(error.issues.map(issue => ({ code: issue.code, path: issue.path })), [
+        { code: 'too_big', path: [field] },
+      ]);
+      return true;
+    });
+  }
 });
 test('driver has exact MCP-only SDK policy and closes session/proxy',async()=>{
   const bridge=new HostBridge(start(),()=>{});let closed=0;let options;

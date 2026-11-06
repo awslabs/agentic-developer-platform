@@ -13,6 +13,7 @@ _undeploy_phase() {
     --environment "${ENVIRONMENT:?ENVIRONMENT is required}" \
     --region "${AWS_REGION:?AWS_REGION is required}" --phase "$phase"
 }
+phase_tools() { _undeploy_phase tools; }
 phase_superplane() { _undeploy_phase superplane; }
 phase_agent_context() { _undeploy_phase agent_context; }
 phase_agent_factory() { _undeploy_phase agent_factory; }

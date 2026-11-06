@@ -27,6 +27,8 @@ pass for the wrong reason).
 """
 
 import inspect
+from dataclasses import replace
+from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
@@ -41,6 +43,7 @@ from src.orchestration.amend import (
     FlowNotFoundError,
     amend_plan,
 )
+from src.orchestration.amendment_impact import assess_amendment
 from src.orchestration.compile import (
     ApprovalContext,
     ProposalRejectedError,
@@ -51,12 +54,20 @@ from src.orchestration.models import (
     DecisionKind,
     OrchestrationAcceptedPlan,
     OrchestrationDecision,
+    OrchestrationExecution,
     OrchestrationNode,
+    OrchestrationPullRequestBinding,
+    OrchestrationWorkClaim,
 )
-from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode
+from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode, RepositoryConnection
 from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.state import ActorKind, NodeState
+from src.products.models import Product
 from src.shared.models.base import Base
+from src.shared.models.organization import User
+from src.shared.models.usage import UsageLog
+from tests.orchestration.legacy_plan import persist_legacy_plan
+from tests.orchestration.product_fixture import seed_product, seed_product_membership
 
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
@@ -140,6 +151,163 @@ def valid_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
     }
     payload.update(overrides)
     return LoopProposal(**payload)
+
+
+async def compile_product_flow(session, approval, amender):
+    from unittest.mock import AsyncMock, patch
+
+    from src.orchestration.repository_binding import VerifiedRepository
+
+    async def verified(_session, *, name, repository_id, issue, operation, **_kwargs):
+        return VerifiedRepository("github", repository_id, name, 1, name, issue, operation)
+
+    owner = amender.actor_id
+    session.add(User(id=owner, org_id=ORG_A, team_id="team", email="owner@example.test"))
+    for product_id in ("product-a", "product-b"):
+        await seed_product_membership(session, org_id=ORG_A, user_id=owner)
+        session.add(
+            Product(
+                team_id=f"product-team-{ORG_A}",
+                id=product_id,
+                tenant_id=ORG_A,
+                name=product_id,
+                purpose="Test",
+                intended_users=["team"],
+                owner_user_id=owner,
+                starting_point="running_product",
+                created_by=owner,
+            )
+        )
+    await session.flush()
+    proposal = valid_proposal(product_id="product-a")
+    proposal.nodes[0].repository_identity = "example/repo-a"
+    proposal.nodes[0].provider_repository_id = 1001
+    with patch("src.orchestration.repository_binding.resolve_story_repository", new_callable=AsyncMock, side_effect=verified):
+        compiled = await compile_proposal(session, proposal, replace(approval, actor_id=owner))
+    proposal.nodes[0].repository_connection = RepositoryConnection(provider="github", installation_id=1)
+    return compiled, proposal
+
+
+class TestProductAndRepositoryAmendments:
+    @pytest.mark.asyncio
+    async def test_untouched_product_and_repository_changes_update_the_accepted_projections(self, session, approval, amender):
+        compiled, proposal = await compile_product_flow(session, approval, amender)
+        revised = proposal.model_copy(deep=True)
+        revised.product_id = "product-b"
+        revised.nodes[0].repository_identity = "example/repo-b"
+        revised.nodes[0].provider_repository_id = 1002
+        impact = await assess_amendment(session, org_id=ORG_A, flow_id=compiled.flow_id, proposal=revised, actor_id=amender.actor_id)
+        assert (impact.product_before, impact.product_after) == ("product-a", "product-b")
+        assert not impact.is_noop
+        assert not impact.blocking
+
+        amended = await amend_plan(session, compiled.flow_id, revised, amender)
+
+        flow = await OrchestrationRepository(session).get_flow(org_id=ORG_A, flow_id=compiled.flow_id)
+        node = (await nodes_by_address(session))[address("story-a")]
+        plan = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=compiled.flow_id)
+        assert (amended.plan_version, flow.product_id, plan.plan_document["product_id"]) == (2, "product-b", "product-b")
+        assert (node.repository_identity, node.provider_repository_id) == ("example/repo-b", 1002)
+        assert plan.plan_document["nodes"][0]["provider_repository_id"] == 1002
+
+    @pytest.mark.asyncio
+    async def test_product_name_edit_does_not_change_binding_or_retry(self, session, approval, amender):
+        compiled, proposal = await compile_product_flow(session, approval, amender)
+        product = await session.get(Product, (ORG_A, "product-a"))
+        product.name = "New display name"
+        await session.flush()
+        replay = await amend_plan(session, compiled.flow_id, proposal, amender)
+        assert replay.already_amended
+        assert replay.plan_hash == compiled.plan_hash
+        revised = proposal.model_copy(deep=True)
+        revised.title = "Updated flow title"
+        amendment = await amend_plan(session, compiled.flow_id, revised, amender)
+        assert amendment.plan_version == 2
+        assert (await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=compiled.flow_id)).plan_document[
+            "product_id"
+        ] == "product-a"
+        assert (await OrchestrationRepository(session).get_flow(org_id=ORG_A, flow_id=compiled.flow_id)).product_id == "product-a"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reservation", ["claim", "queued_execution", "pr_binding"])
+    async def test_reserved_or_bound_work_refuses_product_and_repository_retarget(self, session, approval, amender, reservation):
+        compiled, proposal = await compile_product_flow(session, approval, amender)
+        node = (await nodes_by_address(session))[address("story-a")]
+        if reservation == "claim":
+            session.add(
+                OrchestrationWorkClaim(
+                    org_id=ORG_A,
+                    provider_repository_id=1001,
+                    issue_number=4196,
+                    owner_kind="engine_flow",
+                    owner_ref=compiled.flow_id,
+                )
+            )
+        elif reservation == "queued_execution":
+            session.add(
+                OrchestrationExecution(
+                    org_id=ORG_A,
+                    flow_id=compiled.flow_id,
+                    node_id=node.id,
+                    phase="queued",
+                    status="queued",
+                    claim_id="claim-reserved",
+                    claim_generation=1,
+                )
+            )
+        else:
+            session.add(
+                OrchestrationPullRequestBinding(
+                    org_id=ORG_A,
+                    flow_id=compiled.flow_id,
+                    node_id=node.id,
+                    attempt=1,
+                    provider_repository_id=1001,
+                    provider_pr_node_id="PR_1",
+                    repo="example/repo-a",
+                    pr_number=1,
+                    installation_id=1,
+                    head_sha="a" * 40,
+                    registered_by=amender.actor_id,
+                    registered_by_kind="human",
+                )
+            )
+        await session.flush()
+        before = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=compiled.flow_id)
+        for revision_kind in ("product", "repository", "connection"):
+            revised = proposal.model_copy(deep=True)
+            if revision_kind == "product":
+                revised.product_id = "product-b"
+            elif revision_kind == "repository":
+                revised.nodes[0].repository_identity = "example/repo-b"
+                revised.nodes[0].provider_repository_id = 1002
+            else:
+                revised.nodes[0].repository_connection = RepositoryConnection(provider="github", installation_id=901)
+            impact = await assess_amendment(session, org_id=ORG_A, flow_id=compiled.flow_id, proposal=revised, actor_id=amender.actor_id)
+            expected = "product_retarget_started" if revision_kind == "product" else "amendment_definition_change"
+            assert expected in {violation.rule for violation in impact.blocking}
+            with pytest.raises(ProposalRejectedError):
+                await amend_plan(session, compiled.flow_id, revised, amender)
+            current = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=compiled.flow_id)
+            assert (current.id, current.version, current.plan_hash) == (before.id, 1, before.plan_hash)
+            assert (await session.get(OrchestrationNode, node.id)).provider_repository_id == 1001
+            assert (await OrchestrationRepository(session).get_flow(org_id=ORG_A, flow_id=compiled.flow_id)).product_id == "product-a"
+
+    @pytest.mark.asyncio
+    async def test_projection_mismatch_blocks_preview_and_acceptance(self, session, approval, amender):
+        compiled, proposal = await compile_product_flow(session, approval, amender)
+        node = (await nodes_by_address(session))[address("story-a")]
+        node.provider_repository_id = 9999
+        await session.flush()
+        revised = proposal.model_copy(deep=True)
+        revised.title = "A real amendment"
+
+        impact = await assess_amendment(session, org_id=ORG_A, flow_id=compiled.flow_id, proposal=revised, actor_id=amender.actor_id)
+        assert "accepted_identity_projection_mismatch" in {violation.rule for violation in impact.blocking}
+        with pytest.raises(ProposalRejectedError, match="projection mismatch"):
+            await amend_plan(session, compiled.flow_id, revised, amender)
+        current = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=compiled.flow_id)
+        assert current.plan_hash == compiled.plan_hash
 
 
 def amended_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
@@ -226,7 +394,7 @@ async def nodes_by_address(session: AsyncSession, flow_slug: str = FLOW) -> dict
 
 async def compile_original(session: AsyncSession, approval: ApprovalContext):
     """Establish version 1, the plan every amendment test supersedes."""
-    return await compile_proposal(session, valid_proposal(), approval)
+    return await persist_legacy_plan(session, valid_proposal(), approval)
 
 
 class TestAC28HappyPath:
@@ -362,6 +530,27 @@ class TestNodeStateOutcomes:
         assert after[address("story-a")].attempts == 3, "run history must survive the amendment"
 
     @pytest.mark.asyncio
+    async def test_file_plan_update_preserves_completed_work(self, session, approval, amender):
+        original = await compile_original(session, approval)
+        nodes = await nodes_by_address(session)
+        story_id = nodes[address("story-a")].id
+        nodes[address("story-a")].state = NodeState.PASSED.value
+        nodes[address("story-a")].attempts = 3
+        await session.flush()
+
+        payload = amended_proposal().model_dump(mode="json")
+        next(node for node in payload["nodes"] if node["address"] == address("story-a"))["file_groups"] = [
+            {"group": "Configuration", "create": ["src/config.py"]}
+        ]
+        await amend_plan(session, original.flow_id, LoopProposal.model_validate(payload), amender)
+
+        after = (await nodes_by_address(session))[address("story-a")]
+        assert (after.id, after.state, after.attempts) == (story_id, NodeState.PASSED.value, 3)
+        current = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=original.flow_id)
+        story = next(node for node in current.plan_document["nodes"] if node["address"] == address("story-a"))
+        assert story["file_groups"][0]["create"] == ["src/config.py"]
+
+    @pytest.mark.asyncio
     async def test_passed_node_dropped_by_a_human_amendment_is_superseded(self, session, approval, amender):
         """`passed -> superseded` is legal for a HUMAN actor (explicit re-plan)."""
         original = await compile_original(session, approval)
@@ -375,7 +564,8 @@ class TestNodeStateOutcomes:
         assert after[address("story-b")].state == NodeState.SUPERSEDED.value
 
     @pytest.mark.asyncio
-    async def test_service_actor_cannot_supersede_passed_work(self, session, approval):
+    @pytest.mark.parametrize("state", [NodeState.PASSED, NodeState.FAILED])
+    async def test_service_actor_cannot_supersede_terminal_work(self, session, approval, state):
         """The vocabulary marks `passed -> superseded` human-only, and amendment
         must honour it: the engine cannot discard accepted work by re-planning.
 
@@ -384,7 +574,7 @@ class TestNodeStateOutcomes:
         """
         original = await compile_original(session, approval)
         nodes = await nodes_by_address(session)
-        nodes[address("story-b")].state = NodeState.PASSED.value
+        nodes[address("story-b")].state = state.value
         await session.flush()
 
         service_amender = AmendmentContext(
@@ -404,7 +594,59 @@ class TestNodeStateOutcomes:
         in_force = await repo.get_accepted_plan(org_id=ORG_A, flow_id=original.flow_id)
         assert in_force is not None and in_force.version == 1
         after = await nodes_by_address(session)
-        assert after[address("story-b")].state == NodeState.PASSED.value
+        assert after[address("story-b")].state == state.value
+
+    @pytest.mark.asyncio
+    async def test_human_can_replace_failed_scope_without_resetting_attempts_or_history(self, session, approval, amender):
+        original = await compile_original(session, approval)
+        retired = (await nodes_by_address(session))[address("story-b")]
+        retired.state = NodeState.FAILED.value
+        retired.attempts = 3
+        failure = OrchestrationDecision(
+            org_id=ORG_A,
+            flow_id=original.flow_id,
+            node_id=retired.id,
+            kind=DecisionKind.NODE_STALLED.value,
+            actor_id="engine",
+            actor_role="service",
+            actor_kind=ActorKind.SERVICE.value,
+            from_state="running",
+            to_state="failed",
+            reason="Required peer capability unavailable; three attempts exhausted.",
+        )
+        usage = UsageLog(
+            org_id=ORG_A,
+            department_id="dept",
+            team_id="team",
+            user_id="operator",
+            model="test-model",
+            input_tokens=100,
+            output_tokens=20,
+            cost_usd=Decimal("1.234567"),
+            latency_ms=10,
+            status_code=200,
+            agent_run_id="failed-worker",
+            graph_address=address("story-b"),
+        )
+        session.add_all([failure, usage])
+        await session.flush()
+        prior_id, failure_id, usage_id = retired.id, failure.id, usage.id
+
+        result = await amend_plan(session, original.flow_id, amended_proposal(), amender)
+
+        after = await nodes_by_address(session)
+        assert result.nodes_superseded == 1
+        assert after[address("story-b")].id == prior_id
+        assert after[address("story-b")].state == NodeState.SUPERSEDED.value
+        assert after[address("story-b")].attempts == 3
+        assert after[address("story-c")].id != prior_id
+        assert after[address("story-c")].state == NodeState.PENDING.value
+        assert after[address("story-c")].attempts == 0
+        await session.refresh(failure)
+        await session.refresh(usage)
+        assert failure.id == failure_id and failure.to_state == "failed" and failure.node_id == prior_id
+        assert usage.id == usage_id and usage.cost_usd == Decimal("1.234567")
+        assert usage.graph_address == address("story-b") and usage.agent_run_id == "failed-worker"
 
 
 class TestDecisionRecord:
@@ -508,6 +750,7 @@ class TestAC17OrgScopedPermissionRegistration:
                 # — it is the only promotion-adjacent permission AdminRole.MEMBER
                 # holds, so an unscoped holder is the realistic case rather than the
                 # theoretical one.
+                Permission.TOOLS_MANAGE,
                 Permission.PLAN_DRAFT,
             }
         )
@@ -532,22 +775,15 @@ class TestAC17OrgScopedPermissionRegistration:
         assert Permission.PLAN_APPROVE not in ROLE_PERMISSIONS[AdminRole.DEPT_ADMIN]
         assert Permission.PLAN_APPROVE not in ROLE_PERMISSIONS[AdminRole.MEMBER]
 
-    def test_frontend_permission_table_mirrors_the_backend_for_plan_approve(self):
-        """The frontend `ROLE_PERMISSIONS` is hand-mirrored and has drifted before.
-
-        A missing entry hides operator UI from someone the API would allow; a
-        spurious one shows UI the API will 403. Checked as source text because the
-        table is TypeScript.
-        """
+    def test_frontend_does_not_infer_workflow_authority_from_role_claims(self):
+        """Live membership discovery supplies workflow rights for every role."""
         from pathlib import Path
 
         auth_ts = (Path(__file__).resolve().parents[2] / "frontend/src/services/auth.ts").read_text()
         types_ts = (Path(__file__).resolve().parents[2] / "frontend/src/types/index.ts").read_text()
 
         assert "PLAN_APPROVE = 'plan:approve'" in types_ts, "frontend Permission enum is missing PLAN_APPROVE"
-        assert auth_ts.count("Permission.PLAN_APPROVE") == 2, (
-            "frontend ROLE_PERMISSIONS must grant PLAN_APPROVE to exactly platform_admin and org_admin, mirroring src/admin/config.py"
-        )
+        assert "Permission.PLAN_APPROVE" not in auth_ts
 
 
 class TestAC29ValidationParity:
@@ -931,7 +1167,9 @@ class TestEdgesAndFirstAmendment:
         repo = OrchestrationRepository(session)
         flow = await repo.create_flow(org_id=ORG_A, slug=FLOW, title="Demo flow")
 
-        result = await amend_plan(session, flow.id, amended_proposal(), amender)
+        await seed_product(session, org_id=ORG_A, actor_id=amender.actor_id)
+        proposal = amended_proposal().model_copy(update={"product_id": f"product-{ORG_A}"})
+        result = await amend_plan(session, flow.id, proposal, amender)
 
         assert result.plan_version == 1
         assert result.superseded_version is None

@@ -18,7 +18,9 @@
               "artifacts.publish",
               "agents.delegate",
               "aws.assume",
-              "aws.mutate"
+              "aws.mutate",
+              "actions.read",
+              "actions.write"
             ],
             "type": "string"
           },
@@ -40,7 +42,9 @@
               "artifacts.publish",
               "agents.delegate",
               "aws.assume",
-              "aws.mutate"
+              "aws.mutate",
+              "actions.read",
+              "actions.write"
             ],
             "type": "string"
           },
@@ -62,7 +66,9 @@
               "artifacts.publish",
               "agents.delegate",
               "aws.assume",
-              "aws.mutate"
+              "aws.mutate",
+              "actions.read",
+              "actions.write"
             ],
             "type": "string"
           },
@@ -84,7 +90,9 @@
               "artifacts.publish",
               "agents.delegate",
               "aws.assume",
-              "aws.mutate"
+              "aws.mutate",
+              "actions.read",
+              "actions.write"
             ],
             "type": "string"
           },
@@ -106,7 +114,9 @@
               "artifacts.publish",
               "agents.delegate",
               "aws.assume",
-              "aws.mutate"
+              "aws.mutate",
+              "actions.read",
+              "actions.write"
             ],
             "type": "string"
           },
@@ -246,7 +256,9 @@
             "artifacts.publish",
             "agents.delegate",
             "aws.assume",
-            "aws.mutate"
+            "aws.mutate",
+            "actions.read",
+            "actions.write"
           ],
           "title": "Capability",
           "type": "string"

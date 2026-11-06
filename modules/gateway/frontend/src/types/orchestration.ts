@@ -23,6 +23,127 @@
 
 import type { CostFigure } from '@/utils/cost';
 
+export interface AmendmentViolation {
+  rule: string;
+  message: string;
+  where?: string | null;
+}
+
+/** Effective dispatch limits on either side of a proposed amendment, including carried receipts. */
+export interface AmendmentEffectiveLimits {
+  max_spend_usd: string;
+  max_attempts_per_node: number;
+  max_concurrent_actions: number;
+  max_wall_clock_seconds: number;
+  expires_at: string;
+}
+
+/** New work accepting will bind to an issue; `creates_issue` means a NEW issue is opened. */
+export interface AmendmentIssuePublication {
+  address: string;
+  proposal_identity: string;
+  repository: string;
+  action: 'create' | 'pending' | 'reuse' | 'update' | string;
+  creates_issue: boolean;
+  issue_number?: number | null;
+  url?: string | null;
+}
+
+export interface AmendmentReceiptDisposition {
+  kind: 'budget' | 'retry' | 'window' | 'concurrency';
+  decision_id: string;
+  before: unknown;
+  after: unknown;
+  reason: string;
+}
+
+export interface AmendmentImpact {
+  flow_id: string;
+  base_plan_version?: number | null;
+  base_plan_hash?: string | null;
+  product_before?: string | null;
+  product_after?: string | null;
+  nodes: Array<{
+    address: string;
+    change: string;
+    kind: string;
+    title: string;
+    state?: string | null;
+    attempts: number;
+    issue_ref?: string | null;
+    proposal_identity?: string | null;
+    repository_identity?: string | null;
+    provider_repository_id?: number | null;
+    execution_owner?: string | null;
+    execution_adapter?: string | null;
+    criteria?: string[];
+    required_inputs?: Array<{ name: string; source: string; description?: string | null }>;
+    evidence_expectations?: string[];
+    before?: Record<string, unknown> | null;
+    after?: Record<string, unknown> | null;
+  }>;
+  edges: Array<{ from_address: string; to_address: string; change: string }>;
+  before_nodes?: Array<Record<string, unknown>>;
+  after_nodes?: Array<Record<string, unknown>>;
+  before_edges?: Array<{ from_address: string; to_address: string }>;
+  after_edges?: Array<{ from_address: string; to_address: string }>;
+  wave_changes: Array<{ wave: string; added_addresses: string[]; removed_addresses: string[]; is_new: boolean; is_emptied: boolean }>;
+  execution_order: Array<{ stage?: number | null; waves: string[] }>;
+  downstream: Array<{ address: string; state: string; added_prerequisites: string[]; removed_prerequisites: string[]; newly_blocked: boolean }>;
+  gates_added: string[];
+  gates_removed: string[];
+  policy_before?: PolicySummary | null;
+  policy_after?: PolicySummary | null;
+  policy_changed: boolean;
+  effective_limits_before?: AmendmentEffectiveLimits | null;
+  effective_limits_after?: AmendmentEffectiveLimits | null;
+  receipts_preserved?: AmendmentReceiptDisposition[];
+  receipts_dropped?: AmendmentReceiptDisposition[];
+  issue_publications?: AmendmentIssuePublication[];
+  blocking: AmendmentViolation[];
+  acceptable: boolean;
+  is_noop: boolean;
+}
+
+export interface AmendmentDraft {
+  draft_id: string;
+  flow_id: string;
+  state: string;
+  proposal_hash: string;
+  base_plan_version?: number | null;
+  base_plan_hash?: string | null;
+  base_is_current: boolean;
+  requested_by?: string | null;
+  request_text?: string | null;
+  revision_of_draft_id?: string | null;
+  proposal_document?: Record<string, unknown> | null;
+  decision_actor?: string | null;
+  decision_id?: string | null;
+  decision_reason?: string | null;
+  accepted_plan_version?: number | null;
+  approved_diff?: Record<string, unknown> | null;
+}
+
+export interface AmendmentProposalResult {
+  draft_id: string;
+  flow_id: string;
+  proposal_hash: string;
+  base_plan_version?: number | null;
+  impact: AmendmentImpact;
+}
+
+export interface AmendmentAcceptance {
+  draft_id: string;
+  flow_id: string;
+  plan_version: number;
+  decision_id: string;
+  already_accepted: boolean;
+  receipts_preserved?: AmendmentReceiptDisposition[];
+  receipts_dropped?: AmendmentReceiptDisposition[];
+  effective_limits_before?: AmendmentEffectiveLimits | null;
+  effective_limits_after?: AmendmentEffectiveLimits | null;
+}
+
 /**
  * The engine's nine states, verbatim from `state.py`.
  *
@@ -64,9 +185,15 @@ export interface AggregateCostFigure extends CostFigure {
 /** A persisted worker observation; successful exit is not review approval. */
 export interface StoryActivity {
   invocation_id: string;
-  persona: 'developer' | 'agent-codex-developer' | 'reviewer' | 'agent-codex-reviewer';
+  persona: 'developer' | 'agent-codex-developer' | 'reviewer' | 'agent-codex-reviewer' | 'operations' | 'agent-codex-operations';
   status: string;
   liveness: 'live' | 'unverifiable' | 'exited';
+  runtime_budget_wait?: {
+    blocker: string;
+    detail: string;
+    next_action: string;
+    observed_at: string;
+  } | null;
 }
 
 export interface StoryRun extends StoryActivity {
@@ -81,7 +208,35 @@ export interface StoryExecution {
   history_complete: boolean;
 }
 
+export interface ValidationCheck {
+  code: string;
+  status: 'passed' | 'failed' | 'waiting';
+  label: string;
+  detail: string;
+  technical_detail?: string | null;
+  next_action?: string | null;
+  observed_at?: string | null;
+}
+
+export interface StoryAcceptance {
+  status: 'in_progress' | 'complete' | 'history_unavailable';
+  checks: Array<{
+    id: string;
+    label: string;
+    status: 'passed' | 'pending' | 'running' | 'waiting' | 'recovering' | 'blocked' | 'paused';
+    detail: string;
+    observed_at?: string | null;
+    evidence_id?: string | null;
+  }>;
+  detail: string;
+  next_action?: string | null;
+  next_check_at?: string | null;
+}
+
 export interface DeliveryProgress {
+  acceptance?: StoryAcceptance | null;
+  validations?: ValidationCheck[];
+  required_input?: string | null;
   stage: string;
   actor: string;
   detail: string;
@@ -91,10 +246,43 @@ export interface DeliveryProgress {
   scheduled_action?: string | null;
   next_check_at?: string | null;
   observed_at?: string | null;
+  /** engine | not_started | paused | blocked | reconciliation_only | not_initialized | not_configured | not_applicable */
   automation: string;
   head_sha?: string | null;
   checks_state?: string | null;
   review_state?: string | null;
+}
+
+export interface PlanningIssueReference {
+  provider: 'github';
+  repository_id: number;
+  repository: string;
+  installation_id: number;
+  issue_number: number;
+}
+
+export interface PlanningEpicReference {
+  scope: 'epic';
+  address: string;
+  issue: PlanningIssueReference;
+}
+
+export interface NodeFileGroup {
+  group: string;
+  purpose?: string | null;
+  create: string[];
+  modify: string[];
+  modify_after: Array<{ path: string; created_by: string }>;
+}
+
+export interface StoryRunInsight {
+  run_id: string;
+  attempt: number;
+  persona: string;
+  outcome: 'complete' | 'failed' | null;
+  board_access: 'available' | 'not_recorded' | 'restricted';
+  task_board: { generation: number; sequence: number; observed_at: string; text: string } | null;
+  failure: { code: string; detail: string; responsible: string; next_action: string; exit_code: number | null; report_available: boolean; report_text?: string | null; reported_blocker?: string | null; suggested_fix?: string | null } | null;
 }
 
 export interface GraphNode {
@@ -112,6 +300,9 @@ export interface GraphNode {
   node_ref: string;
   kind: NodeKind;
   title: string;
+  /** Planned repository changes; not observed edits or execution permission. */
+  file_groups?: NodeFileGroup[];
+  executor?: { role: 'develop' | 'operate'; persona: string } | null;
   state: NodeEngineState;
   /** Current server projection shared by list, wave and graph counts. */
   display_state?: keyof FlowDisplayCounts | null;
@@ -123,6 +314,13 @@ export interface GraphNode {
    */
   stalled: boolean;
   issue_ref: string | null;
+  repository_identity?: string | null;
+  provider_repository_id?: number | null;
+  repository_connection?: { provider: 'github'; installation_id: number } | null;
+  repository_status?: 'verified' | 'unbound' | 'denied' | 'stale' | null;
+  issue_publication_status?: 'issue_pending' | 'issue_created' | 'issue_created_link_pending' | 'linked' | 'unconfirmed' | null;
+  readiness_hold?: string | null;
+  planning_epic?: PlanningIssueReference | null;
   attempts: number;
   run_id?: string | null;
   /** Current developer/reviewer in this attempt's chain; not a merge verdict. */
@@ -140,12 +338,19 @@ export interface GraphNode {
   } | null;
   binding_hold?: string | null;
   delivery_progress?: DeliveryProgress | null;
+  run_insight?: StoryRunInsight | null;
   configuration_problem?: string | null;
   last_gate_decision?: {
     action: 'approved' | 'changes_requested';
     reason: string | null;
     created_at: string;
   } | null;
+  /**
+   * When the node last changed state. For an `awaiting_gate` node this is when the
+   * engine presented the gate, which is what lets a second gate in a chain read as
+   * a *new* decision rather than the one just answered.
+   */
+  updated_at?: string | null;
   cost: CostFigure;
 }
 
@@ -271,6 +476,8 @@ export interface PolicySummary {
    * release, whose payload omits the key, type-checks unchanged.
    */
   coordination?: CoordinationSummary | null;
+  repair_scope?: 'repository' | 'paths' | null;
+  repair_path_count?: number;
   expires_at: string;
   limits: PolicyLimits;
 }
@@ -289,6 +496,9 @@ export interface WaveMetadata {
 }
 
 export interface FlowGraph {
+  recovery_enabled?: boolean;
+  activity_included?: boolean;
+  archived_at?: string | null;
   execution_window?: ExecutionWindow | null;
   wave_metadata?: WaveMetadata[];
   epic_metadata?: EpicMetadata[];
@@ -297,6 +507,11 @@ export interface FlowGraph {
   slug: string;
   title: string;
   intent_ref: string | null;
+  product_id?: string | null;
+  project_id?: string | null;
+  product_name?: string | null;
+  product_status?: 'accessible' | 'unavailable' | null;
+  planning_epics?: PlanningEpicReference[];
   state: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -314,6 +529,21 @@ export interface FlowGraph {
    * whose payload omits the key entirely, type-checks unchanged.
    */
   execution_policy?: PolicySummary | null;
+}
+
+export interface FlowActivityItem {
+  node_id: string;
+  attempt: number;
+  run_id: string | null;
+  availability: 'available' | 'unavailable' | 'not_started';
+  execution_history: StoryExecution | null;
+  run_insight?: StoryRunInsight | null;
+}
+
+export interface FlowActivity {
+  flow_id: string;
+  observed_at: string;
+  items: FlowActivityItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +605,7 @@ export interface ResumeResult {
  * send it.
  */
 export type FlowStatus =
+  | 'archived'
   | 'attention_needed'
   | 'awaiting_you'
   | 'running'
@@ -469,6 +700,9 @@ export interface DesignHistory {
 
 /** One flow as the list page reads it: identity plus everything derived. */
 export interface FlowSummary {
+  product_id?: string | null;
+  project_id?: string | null;
+  archived_at?: string | null;
   execution_paused?: boolean;
   id: string;
   slug: string;
@@ -525,12 +759,15 @@ export interface FlowSummary {
  * A page of flows, the filtered total, and the unfiltered status chips.
  *
  * `total` counts rows matching the **filters across all pages** — not
- * `flows.length`. `status_counts` is unfiltered and tenant-wide, which is why it
+ * `flows.length`. `status_counts` covers the selected Product or tenant, which is why it
  * is a separate number: with a filter on, the summary reads "Showing 3 of 5"
  * while the chips still total 5, because the chips describe the population the
  * operator is choosing among.
  */
 export interface FlowList {
+  project_id?: string | null;
+  /** Confirms the server applied Product scope, including to totals and chips. */
+  product_id?: string | null;
   flows: FlowSummary[];
   total: number;
   limit: number;
@@ -541,6 +778,9 @@ export interface FlowList {
 
 /** Query parameters for the flows list. Mirrors the route's signature. */
 export interface FlowListParams {
+  project_id?: string;
+  /** All Projects belonging to this Product; omitted for the organisation list. */
+  product_id?: string;
   limit?: number;
   offset?: number;
   /** Substring, case-insensitive, over title / slug / intent_ref. */
@@ -548,6 +788,7 @@ export interface FlowListParams {
   status?: FlowStatus;
   /** `gate > 0 OR stalled_count > 0` — not an alias of `status`. */
   needs_me?: boolean;
+  include_archived?: boolean;
   /** No `cost`: it lives in another table and cannot be sorted with the page. */
   sort?: 'created' | 'updated' | 'stalled';
 }
@@ -611,6 +852,7 @@ export type BlockCode =
   | 'human_gate_required'
   | 'human_input_required'
   | 'attempts_exhausted'
+  | 'review_bootstrap_failing'
   | 'dependency_unmet'
   | 'credential_unavailable'
   | 'authority_unverifiable'
@@ -812,4 +1054,29 @@ export interface ExecutionWindow {
   reason?: string;
   renewal_unavailable?: string;
   renewal_request?: WindowRenewalRequest;
+}
+
+
+export interface TimelineTransition {
+  id: string;
+  from_state: string | null;
+  to_state: string;
+  at: string;
+}
+export interface StoryTiming {
+  node_id: string;
+  state: string;
+  attempts: number;
+  started_at: string | null;
+  finished_at: string | null;
+  transitions: TimelineTransition[];
+  transitions_truncated: boolean;
+}
+export interface FlowTimeline {
+  flow_id: string;
+  server_time: string;
+  nodes: StoryTiming[];
+  total: number;
+  limit: number;
+  offset: number;
 }

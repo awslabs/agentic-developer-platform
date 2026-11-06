@@ -1,0 +1,154 @@
+name: Deploy Engineering Insights
+run-name: ADP deployment ${{ inputs.adp_correlation || github.sha }}
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/insights/**'
+      - '!modules/insights/poc/devlake/**'
+      - '!modules/insights/tests/devlake_poc/**'
+      - '.github/workflows/insights-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      adp_correlation:
+        description: Engine delivery correlation
+        required: false
+        default: ''
+        type: string
+      adp_source_revision:
+        description: Engine-approved immutable source revision
+        required: false
+        default: ''
+        type: string
+      adp_definition_revision:
+        description: Approved workflow definition revision
+        required: false
+        default: ''
+        type: string
+      environment:
+        description: Target deployment environment
+        required: true
+        default: dev
+        type: choice
+        options: [dev, prod]
+      stage:
+        description: Module stage to execute
+        required: true
+        default: infra
+        type: choice
+        options: [infra, emitter, distiller, verify]
+      mode:
+        description: Plan only, or apply after reviewing permissions
+        required: true
+        default: apply
+        type: choice
+        options: [plan, apply]
+      image:
+        description: Immutable service image for emitter or distiller stage
+        required: false
+        default: ''
+        type: string
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: insights-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+jobs:
+  insights:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name != 'push' || (inputs.environment == '' && inputs.stage == ''))
+    runs-on: arc-runner-deploy
+    environment: adp-insights-deploy-${{ inputs.environment || 'dev' }}
+    timeout-minutes: 45
+    env:
+      AWS_REGION: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      ADP_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      ADP_STAGE: ${{ inputs.stage || 'infra' }}
+      ADP_MODE: ${{ inputs.mode || 'apply' }}
+      ADP_IMAGE: ${{ inputs.image || '' }}
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision || github.sha }}
+      ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+      TF_VAR_deployment_role_boundaries: ${{ vars.ADP_INSIGHTS_ROLE_BOUNDARIES || '{}' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify reviewed source and workflow definition
+        env:
+          EXPECTED_DEFINITION: ${{ inputs.adp_definition_revision || '' }}
+          REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_SOURCE_REVISION" =~ ^[a-f0-9]{40}$ && "$(git rev-parse HEAD)" == "$ADP_SOURCE_REVISION" ]]
+          [[ -z "$EXPECTED_DEFINITION" || "$EXPECTED_DEFINITION" == "$ADP_WORKFLOW_REVISION" ]]
+          git merge-base --is-ancestor "$ADP_SOURCE_REVISION" "origin/$REPOSITORY_DEFAULT_BRANCH"
+          git fetch --no-tags origin "$ADP_WORKFLOW_REVISION"
+          git show "$ADP_WORKFLOW_REVISION:.github/workflows/insights-deploy.yml" | cmp - .github/workflows/insights-deploy.yml
+          [[ "$ADP_ENVIRONMENT" == dev || "$ADP_ENVIRONMENT" == prod ]]
+          [[ "$ADP_STAGE" == infra || "$ADP_STAGE" == emitter || "$ADP_STAGE" == distiller || "$ADP_STAGE" == verify ]]
+          [[ "$ADP_MODE" == plan || "$ADP_MODE" == apply ]]
+          [[ "$ADP_STAGE" != verify || "$ADP_MODE" == apply ]]
+          [[ "$ADP_STAGE" == emitter || "$ADP_STAGE" == distiller || -z "$ADP_IMAGE" ]]
+          if [[ "$ADP_STAGE" == emitter || "$ADP_STAGE" == distiller ]]; then
+            [[ "$ADP_IMAGE" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/adp-${ADP_ENVIRONMENT}-insights-${ADP_STAGE}@sha256:[a-f0-9]{64}$ ]]
+          fi
+          if [[ "${{ github.event_name }}" == push ]]; then [[ "$ADP_ENVIRONMENT" == dev && "$ADP_STAGE" == infra ]]; fi
+      - name: Establish protected deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_INSIGHTS_DEPLOY_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+      - name: Confirm target account from configuration
+        run: |
+          set -euo pipefail
+          ADP_ACCOUNT_ID=$(aws ssm get-parameter --name "/adp/${ADP_ENVIRONMENT}/platform/account-id" --region "$AWS_REGION" --query Parameter.Value --output text)
+          [[ "$ADP_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$(aws sts get-caller-identity --query Account --output text)" == "$ADP_ACCOUNT_ID" ]]
+          if [[ "$ADP_STAGE" == emitter || "$ADP_STAGE" == distiller ]]; then
+            expected_repo="${ADP_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-${ADP_ENVIRONMENT}-insights-${ADP_STAGE}"
+            [[ "$ADP_IMAGE" == "$expected_repo"@sha256:* ]]
+            expected_digest="${ADP_IMAGE##*@}"
+            observed_digest=$(aws ecr describe-images --repository-name "adp-${ADP_ENVIRONMENT}-insights-${ADP_STAGE}" --image-ids "imageDigest=$expected_digest" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)
+            [[ "$observed_digest" == "$expected_digest" ]]
+          fi
+          echo "ADP_ACCOUNT_ID=$ADP_ACCOUNT_ID" >> "$GITHUB_ENV"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          terraform_wrapper: false
+      - name: Run owning module stage
+        run: |
+          set -euo pipefail
+          # deploy.sh reads both protected Insights receiver parameters whenever
+          # an emitter image is installed or preserved; missing reads block plan.
+          args=("--${ADP_STAGE}" --env "$ADP_ENVIRONMENT" --region "$AWS_REGION")
+          if [[ "$ADP_MODE" == plan ]]; then args+=(--plan); fi
+          if [[ -n "$ADP_IMAGE" ]]; then args+=(--image "$ADP_IMAGE"); fi
+          bash modules/insights/deploy.sh "${args[@]}"
+      - name: Record verified release evidence
+        if: env.ADP_MODE == 'apply'
+        env:
+          ADP_INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          ADP_INPUT_STAGE: ${{ inputs.stage || 'infra' }}
+          ADP_INPUT_MODE: ${{ inputs.mode || 'apply' }}
+          ADP_INPUT_IMAGE: ${{ inputs.image || '' }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation || '' }}
+        run: python3 modules/insights/scripts/release_evidence.py
+      - name: Publish engine context
+        if: env.ADP_MODE == 'apply'
+        uses: actions/upload-artifact@v4
+        with:
+          name: adp-deployment-context-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish Insights release
+        if: env.ADP_MODE == 'apply'
+        uses: actions/upload-artifact@v4
+        with:
+          name: adp-release-insights-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-release-insights/release.json
+          if-no-files-found: error
+          retention-days: 7

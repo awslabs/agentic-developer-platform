@@ -11,6 +11,7 @@ import * as http from 'node:http';
 import { resilientQuery } from '../utils/resilientQuery';
 import { CLAUDE_SDK_VERSION } from '../harnesses/claude-control';
 import { startCaptureProxy } from './capture-proxy';
+import { printCanonicalProbeBody, probeBodyPrintEnabled } from './body-debug';
 import { REQUEST_SHAPE_NORMALIZATION } from './canonical-json';
 import {
   PROBE_PROMPT,
@@ -18,6 +19,14 @@ import {
   probeSdkEnvironment,
   probeSdkOptions,
 } from './request-shape';
+
+/**
+ * The runner passes the gateway's per-attempt budget (an operator setting, e.g.
+ * 0.50 USD) into the SDK, which reflects it into its context reminder. The two
+ * generation passes use different budgets so a manifest is only produced when the
+ * budget normalization provably removes that reminder (#7993).
+ */
+const GENERATION_BUDGETS_USD = [0.01, 0.5] as const;
 
 const DEFAULT_MODELS = [
   'us.anthropic.claude-opus-5',
@@ -55,7 +64,7 @@ async function fakeUpstream(): Promise<{ origin: string; close(): Promise<void> 
   };
 }
 
-async function captureFor(modelId: string): Promise<{ digest: string; body: unknown }> {
+async function captureFor(modelId: string, maxBudgetUsd: number): Promise<{ digest: string; body: unknown }> {
   const fake = await fakeUpstream();
   const controller = new AbortController();
   let emittedBody: unknown;
@@ -79,7 +88,7 @@ async function captureFor(modelId: string): Promise<{ digest: string; body: unkn
       for await (const _message of resilientQuery({
         queryParams: {
           prompt: PROBE_PROMPT,
-          options: probeSdkOptions({ modelId, maxBudgetUsd: 0.01, abortController: controller, env }),
+          options: probeSdkOptions({ modelId, maxBudgetUsd, abortController: controller, env }),
         },
         maxRetries: 0,
         idleTimeoutMs: 15_000,
@@ -121,16 +130,17 @@ async function main(): Promise<void> {
   const models = process.argv.slice(2);
   const selected = models.length > 0 ? models : DEFAULT_MODELS;
   const digests: Record<string, string> = {};
+  const printBodies = probeBodyPrintEnabled();
   for (const model of selected) {
-    // Generate twice. A manifest derived from a volatile body would create an
-    // unsafe runtime that either rejects every call or blesses the wrong body.
-    const first = await captureFor(model);
-    const second = await captureFor(model);
+    // Generate twice with different budgets. A manifest derived from a volatile
+    // or budget-dependent body would create an unsafe runtime that either
+    // rejects every call or blesses the wrong body.
+    const first = await captureFor(model, GENERATION_BUDGETS_USD[0]);
+    const second = await captureFor(model, GENERATION_BUDGETS_USD[1]);
+    if (printBodies) printCanonicalProbeBody(`manifest-body:${model}`, first.body);
     if (first.digest !== second.digest) {
-      throw new Error(`non-deterministic SDK request for ${model}: ${differingPaths(first.body, second.body).join(', ')}`);
-    }
-    if (process.env.ADP_PROBE_PRINT_BODY === '1') {
-      console.error(`[manifest-body:${model}] ${JSON.stringify(first.body)}`);
+      if (printBodies) printCanonicalProbeBody(`manifest-body:${model}:budget-${GENERATION_BUDGETS_USD[1]}`, second.body);
+      throw new Error(`non-deterministic or budget-dependent SDK request for ${model}: ${differingPaths(first.body, second.body).join(', ')}`);
     }
     digests[model] = first.digest;
   }

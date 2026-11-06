@@ -1,0 +1,99 @@
+name: Dev Box module CI
+on:
+  pull_request:
+    paths:
+      - 'modules/user-services/dev-box/**'
+      - '.github/workflows/dev-box-ci.yml'
+      - '.github/workflows/dev-box-deploy.yml'
+      - '.github/workflows/dev-box-controller-deploy.yml'
+      - '.github/workflows/dev-box-crew-image.yml'
+      - 'modules/agent-factory/agent/Dockerfile.sandbox'
+      - 'modules/agent-factory/agent/host/**'
+      - 'modules/agent-factory/agent/tests/test_github_token_helper.py'
+      - 'modules/agent-factory/agent/scripts/crew_checkpoint.py'
+      - 'modules/agent-factory/agent/tests/test_crew_checkpoint.py'
+      - 'platform/scripts/codebuild-run.sh'
+      - 'modules/gateway/src/orchestration/deployment_workflows.py'
+      - 'modules/gateway/src/orchestration/manifests/orchestration-deployments.yaml'
+      - 'modules/gateway/src/cloud_desktop/**'
+      - 'modules/gateway/tests/cloud_desktop/**'
+      - 'modules/gateway/tests/features/test_dev_box_flag_parity.py'
+      - 'environments/*/modules/dev-box*.tfvars'
+      - 'modules/gateway/tests/migrations/test_08?_dev_box*'
+      - 'tests/e2e/cli_uplift/**'
+      - 'tests/unit/test_cli_assistant_harness.py'
+      - 'tests/unit/test_cli_dev_box_scenarios.py'
+  push:
+    branches: [main]
+    paths:
+      - 'modules/user-services/dev-box/**'
+      - '.github/workflows/dev-box-ci.yml'
+      - '.github/workflows/dev-box-deploy.yml'
+      - '.github/workflows/dev-box-controller-deploy.yml'
+      - '.github/workflows/dev-box-crew-image.yml'
+      - 'modules/agent-factory/agent/Dockerfile.sandbox'
+      - 'modules/agent-factory/agent/host/**'
+      - 'modules/agent-factory/agent/tests/test_github_token_helper.py'
+      - 'modules/agent-factory/agent/scripts/crew_checkpoint.py'
+      - 'modules/agent-factory/agent/tests/test_crew_checkpoint.py'
+      - 'platform/scripts/codebuild-run.sh'
+      - 'modules/gateway/src/cloud_desktop/**'
+      - 'modules/gateway/tests/cloud_desktop/**'
+      - 'modules/gateway/tests/features/test_dev_box_flag_parity.py'
+      - 'environments/*/modules/dev-box*.tfvars'
+      - 'modules/gateway/tests/migrations/test_08?_dev_box*'
+      - 'tests/e2e/cli_uplift/**'
+      - 'tests/unit/test_cli_assistant_harness.py'
+      - 'tests/unit/test_cli_dev_box_scenarios.py'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  module:
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test release and image fixtures
+        run: |
+          python -m pip install pytest ruff==0.9.6 PyYAML
+          ruff check modules/user-services/dev-box/image modules/user-services/dev-box/release.py modules/user-services/dev-box/runtime.py modules/user-services/dev-box/tests/test_image_template.py modules/user-services/dev-box/tests/test_prepare_shell.py modules/user-services/dev-box/tests/test_install_crew.py modules/user-services/dev-box/tests/test_checkpoint_crew_host.py modules/user-services/dev-box/tests/test_refresh_controller_script.py modules/user-services/dev-box/tests/test_release.py modules/user-services/dev-box/tests/test_release_workflow.py modules/user-services/dev-box/tests/test_runtime.py modules/user-services/dev-box/tests/test_crew_bootstrap.py modules/user-services/dev-box/tests/test_guest_python_compat.py
+          python -m pytest -q modules/agent-factory/agent/tests/test_crew_checkpoint.py modules/user-services/dev-box/tests/test_image_template.py modules/user-services/dev-box/tests/test_prepare_shell.py modules/user-services/dev-box/tests/test_release.py modules/user-services/dev-box/tests/test_release_workflow.py modules/user-services/dev-box/tests/test_runtime.py modules/user-services/dev-box/tests/test_crew_bootstrap.py modules/user-services/dev-box/tests/test_guest_python_compat.py modules/user-services/dev-box/tests/test_refresh_controller_script.py modules/user-services/dev-box/tests/test_install_crew.py modules/user-services/dev-box/tests/test_checkpoint_crew_host.py modules/agent-factory/agent/tests/test_github_token_helper.py
+          ruff check modules/user-services/dev-box/engine_evidence.py modules/user-services/dev-box/tests/test_engine_evidence.py
+          python -m pytest -q modules/user-services/dev-box/tests/test_engine_evidence.py
+          bash -n modules/user-services/dev-box/deploy.sh
+          # Self-managed stage (#7998): entrypoint, AMI wrapper, release helper, verifier.
+          ruff check modules/user-services/dev-box/scripts modules/user-services/dev-box/tests/test_self_managed_release.py modules/user-services/dev-box/tests/test_verify_dev_box.py
+          python -m pytest -q modules/user-services/dev-box/tests/test_self_managed_release.py modules/user-services/dev-box/tests/test_verify_dev_box.py
+          bash -n modules/user-services/dev-box/scripts/deploy-dev-box.sh modules/user-services/dev-box/scripts/build-dev-box-image.sh
+          python -c "import yaml, pathlib; list(yaml.safe_load_all(pathlib.Path('modules/user-services/dev-box/k8s/controller.yaml').read_text())); yaml.safe_load(pathlib.Path('modules/user-services/dev-box/image/buildspec.yml').read_text())"
+          # Crew bundle producer + Crew AMI release pipeline (#8054): offline bundle/pin tests, workflow parity, buildspec.
+          ruff check modules/user-services/dev-box/tests/test_crew_bundle.py modules/user-services/dev-box/tests/test_release_crew_image.py modules/user-services/dev-box/tests/test_crew_image_workflow.py platform/scripts/tests/test_codebuild_run_buildspec_override.py
+          python -m pytest -q modules/user-services/dev-box/tests/test_crew_bundle.py modules/user-services/dev-box/tests/test_release_crew_image.py modules/user-services/dev-box/tests/test_crew_image_workflow.py platform/scripts/tests/test_codebuild_run_buildspec_override.py
+          bash -n modules/user-services/dev-box/scripts/build-crew-bundle.sh modules/user-services/dev-box/image/prepare_shell.sh modules/gateway/cli/adp modules/gateway/scripts/build-skills-archive.sh modules/user-services/dev-box/scripts/release-crew-image.sh platform/scripts/codebuild-run.sh
+          python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('modules/user-services/dev-box/image/bundle-buildspec.yml').read_text()); yaml.safe_load(pathlib.Path('.github/workflows/dev-box-crew-image.yml').read_text())"
+      - name: Exercise lifecycle controller, mounted API and assistant scenario harness
+        run: |
+          python -m pip install -e 'modules/gateway[dev]' -e 'modules/L5-services[dev]'
+          ruff check modules/user-services/dev-box/controller modules/user-services/dev-box/tests/test_controller_launch.py modules/user-services/dev-box/tests/test_controller_generation_pins.py modules/user-services/dev-box/tests/test_controller_crew_bootstrap.py modules/user-services/dev-box/tests/test_controller_checkpoint.py modules/user-services/dev-box/tests/test_controller_resume.py modules/user-services/dev-box/tests/test_controller_dashboard_origin.py modules/user-services/dev-box/tests/test_controller_host_refusal.py modules/user-services/dev-box/tests/test_controller_run_activation.py tests/e2e/cli_uplift/remote/dev_box_lifecycle.py tests/unit/test_cli_dev_box_scenarios.py
+          env -u AWS_PROFILE -u AWS_CONFIG_FILE -u AWS_DEFAULT_PROFILE -u AWS_SHARED_CREDENTIALS_FILE AWS_EC2_METADATA_DISABLED=true AWS_ACCESS_KEY_ID=offline-test AWS_SECRET_ACCESS_KEY=offline-test PYTHONPATH=modules/gateway:modules/user-services/dev-box:. python -m pytest -q modules/user-services/dev-box/tests/test_controller_launch.py modules/user-services/dev-box/tests/test_controller_crew_bootstrap.py modules/user-services/dev-box/tests/test_cost.py modules/user-services/dev-box/tests/test_dev_box_fixture.py modules/gateway/tests/cloud_desktop modules/gateway/tests/migrations/test_088_dev_box_contract.py modules/gateway/tests/migrations/test_089_merge_dev_box_crew.py modules/gateway/tests/migrations/test_090_dev_box_release_choice.py modules/gateway/tests/migrations/test_090_crew_usage_root.py modules/gateway/tests/migrations/test_091_merge_dev_box_crew_usage.py modules/gateway/tests/migrations/test_092_dev_box_assistant_activity.py modules/gateway/tests/migrations/test_093_dev_box_cost_policy.py
+          python -m pytest -q tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_dev_box_scenarios.py
+          # Controller state-machine suites (#8376 resume, #8379 pre-stop checkpoint) run in their own
+          # process: a module-level pytest-asyncio fixture named `database` collected ahead of
+          # tests/cloud_desktop shadows that suite's own `database` fixture (every host-enrollment
+          # fixture then answers 403). Same env, separate interpreter; new suites should also avoid the name.
+          env -u AWS_PROFILE -u AWS_CONFIG_FILE -u AWS_DEFAULT_PROFILE -u AWS_SHARED_CREDENTIALS_FILE AWS_EC2_METADATA_DISABLED=true AWS_ACCESS_KEY_ID=offline-test AWS_SECRET_ACCESS_KEY=offline-test PYTHONPATH=modules/gateway:modules/user-services/dev-box:. python -m pytest -q modules/user-services/dev-box/tests/test_controller_checkpoint.py modules/user-services/dev-box/tests/test_controller_resume.py modules/user-services/dev-box/tests/test_controller_generation_pins.py modules/user-services/dev-box/tests/test_controller_dashboard_origin.py modules/user-services/dev-box/tests/test_controller_run_activation.py
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+      - name: Validate private infrastructure with mock provider
+        run: |
+          terraform fmt -check -recursive modules/user-services/dev-box/infra
+          terraform -chdir=modules/user-services/dev-box/infra init -backend=false -input=false
+          terraform -chdir=modules/user-services/dev-box/infra validate
+          terraform -chdir=modules/user-services/dev-box/infra test
+          terraform -chdir=modules/user-services/dev-box/infra/platform init -backend=false -input=false
+          terraform -chdir=modules/user-services/dev-box/infra/platform validate
+          terraform -chdir=modules/user-services/dev-box/infra/platform test

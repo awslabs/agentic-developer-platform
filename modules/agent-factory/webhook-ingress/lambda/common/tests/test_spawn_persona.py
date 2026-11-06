@@ -461,6 +461,32 @@ class TestSQSFailure:
         assert result.block_reason == "sqs_publish_failed"
 
 
+class TestWorkOwnedByActiveRun:
+    """#9541: an owned refusal is a guard block with a notice, not a 500."""
+
+    @patch("common.spawn_persona._emit_metric")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.work_owned_notice.post_work_owned_notice", return_value=True)
+    @patch("common.sqs_publisher.publish_envelope")
+    def test_owned_refusal_posts_notice_and_reports_guard_block(
+        self, mock_sqs, mock_notice, mock_capture, mock_write, mock_metric
+    ):
+        from common.sqs_publisher import WorkOwnedByActiveRunError
+
+        mock_sqs.side_effect = WorkOwnedByActiveRunError("run-1")
+        result = spawn_persona(**_spawn_kwargs())
+        assert result.success is False
+        assert result.block_reason == "work_owned_by_active_run"
+        assert mock_notice.call_count == 1
+        kwargs = mock_notice.call_args.kwargs
+        assert kwargs["repo_full_name"] == _spawn_kwargs()["repo"]
+        assert kwargs["installation_id"] == _spawn_kwargs()["installation_id"]
+        payload = _spawn_kwargs()["payload"]
+        assert kwargs["issue_number"] == payload.get("issue", {}).get("number")
+        assert kwargs["repository_id"] == payload.get("repository", {}).get("id")
+
+
 # --- Human Sender Bypasses Bot Guards ---
 
 

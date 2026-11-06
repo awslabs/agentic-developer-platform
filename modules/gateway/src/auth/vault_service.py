@@ -62,6 +62,10 @@ class InsufficientPrivilegesError(Exception):
     """Caller lacks admin role required for this operation (→ 403)."""
 
 
+class IdentityManagedCredentialError(Exception):
+    """OAuth connections must be disconnected using their Identity-aware endpoint."""
+
+
 class InvalidScopeConfigError(Exception):
     """Request is missing required scope-specific fields (→ 422)."""
 
@@ -142,7 +146,11 @@ async def list_credentials(
     if not conditions:
         return []
 
-    stmt = select(UserCredential).where(or_(*conditions), ~func.lower(UserCredential.id).like("spda1:%"))
+    # Shared Jira is managed in Connections and selected through Product scope;
+    # its Identity references are not materializable generic vault credentials.
+    stmt = select(UserCredential).where(
+        or_(*conditions), ~func.lower(UserCredential.id).like("spda1:%"), UserCredential.service != "atlassian-mcp-system"
+    )
     result = await db.execute(stmt)
     return list(result.scalars().all())
 
@@ -469,6 +477,8 @@ async def delete_credential(
 ) -> None:
     """Delete the DB row AND the Secrets Manager secret synchronously."""
     cred = await _get_owned_credential(cred_id, db, caller, lock=True)
+    if cred.provider == "agentcore-identity":
+        raise IdentityManagedCredentialError()
     secret_arn = cred.secret_arn
 
     # Ask Secrets Manager to delete first. If it refuses or is unavailable, the

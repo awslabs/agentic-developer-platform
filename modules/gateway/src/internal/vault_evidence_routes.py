@@ -16,11 +16,9 @@ The two planes these routes sit on
 The evidence and revocation-state routes return vault-held FACTS (ownership,
 delegation, stored version id, expiry, an independently verified attestation
 binding). They carry no secret material, so they authenticate as ordinary
-service-to-service internal calls: ``verify_internal_or_irsa``, with ``org_id``
-asserted by the caller. That is the documented contract of this whole plane —
-``auth_deps.INTERNAL_PLANE_SCOPES`` exists precisely because "every /internal/*
-route trusts its caller to assert org/tenant identity", and the scope allowlist is
-what makes that trust non-self-assignable.
+service-to-service internal calls: ``verify_internal_or_irsa`` authenticates the
+workload; ``authorize_vault_metadata`` binds tenant and principal authority.
+Internal-plane scope alone grants no metadata access.
 
 The delivery route returns SECRET MATERIAL, and for it that plane is not enough.
 
@@ -112,12 +110,13 @@ from src.auth.vault_delivery import (
     revocation_state,
 )
 from src.auth.vault_evidence import read_credential_evidence
-from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.auth_deps import VerifiedInternalIdentity, verify_internal_or_irsa
 
 # Imported rather than re-implemented. These are private to `credential_routes` by
 # name, but they are the vault's established audit and last-used discipline, and a
 # second copy here would be a second thing to keep in step with the audit schema.
 from src.internal.credential_routes import _touch_last_used, _write_audit, get_secrets_manager
+from src.internal.vault_metadata_authority import authorize_vault_metadata
 from src.shared.database import get_db
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
@@ -142,13 +141,17 @@ class EvidenceBody(BaseModel):
     ``report_digest`` is the caller's CLAIMED provider-validation attestation. It is
     untrusted request context: the service recomputes the digest from the Gateway's
     own validation rows and refuses unless the two agree. It is accepted here only
-    so that it can be checked — never so that it can be echoed.
+    so that it can be checked — never so that it can be echoed. Optional operation
+    selectors require a verified run or stored service delegation before use.
     """
 
     org_id: str = Field(min_length=1, max_length=255)
     workspace_id: str = Field(min_length=1, max_length=255)
     credential_id: str = Field(min_length=1, max_length=64)
     principal: str = Field(min_length=1, max_length=255)
+    operation_id: str | None = Field(default=None, min_length=1, max_length=255)
+    job_id: str | None = Field(default=None, min_length=1, max_length=255)
+    attempt_id: str | None = Field(default=None, min_length=1, max_length=255)
     service: str | None = Field(default=None, max_length=255)
     label: str | None = Field(default=None, max_length=255)
     # Length and charset pinned so a malformed claim is refused by the parser rather
@@ -171,6 +174,8 @@ class EvidenceResponse(BaseModel):
     label: str
     owner_principal: str
     owner_scope: str
+    authenticated_subject: str | None = None
+    authenticated_owner_principal: str | None = None
     delegated_to_workspaces: list[str]
     current_version_id: str | None
     expires_at: datetime | None
@@ -205,7 +210,8 @@ class RevocationBody(BaseModel):
     """Request asking whether a credential still admits work for a workspace.
 
     A narrower body than :class:`DeliveryBody` on purpose: this route returns no
-    material, so it needs the workspace binding but not an executor identity.
+    material, so it needs a verified run or explicitly delegated service and a
+    stored operation/workspace binding, but no caller-supplied recipient identity.
     Reusing the delivery body would have required callers to invent a recipient for
     a question that has no recipient.
     """
@@ -300,11 +306,10 @@ async def _verified_executor(request: Request) -> tuple[str, str]:
     from src.agentauth.routes import get_agent_runtime
     from src.internal.domain_operation_runtime import maybe_domain_executor
 
-    domain_executor = await maybe_domain_executor(request)
-    if domain_executor is not None:
-        return domain_executor
-
     try:
+        domain_executor = await maybe_domain_executor(request)
+        if domain_executor is not None:
+            return domain_executor
         runtime = get_agent_runtime()
         pod, caller, record, grant = await run_in_threadpool(
             runtime.authenticate,
@@ -340,19 +345,52 @@ async def _verified_executor(request: Request) -> tuple[str, str]:
 )
 async def credential_evidence(
     body: EvidenceBody,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
 ) -> EvidenceResponse:
+    try:
+        service = getattr(request.state, "internal_identity", None)
+        if not isinstance(service, VerifiedInternalIdentity) or service.kind != "service":
+            raise HTTPException(403, "verified workload identity required")
+        principal = body.principal
+        if request.headers.get(CREDENTIAL_HEADER):
+            principal, run_tenant = await _verified_executor(request)
+            domain_binding = getattr(request.state, "domain_operation_binding", None)
+            request.state.internal_identity = VerifiedInternalIdentity(
+                "domain_executor" if domain_binding else "agent_run",
+                service.service_id,
+                domain_binding.adp_org_id if domain_binding else run_tenant,
+                "run_credential",
+            )
+        # The selector can identify an operation, but only its stored lease grants access.
+        selector = (
+            (body.operation_id, body.job_id, body.attempt_id, body.credential_id, principal, body.service, body.label)
+            if body.operation_id or body.job_id or body.attempt_id or principal != body.principal
+            else None
+        )
+        authority = await authorize_vault_metadata(
+            request,
+            db,
+            action="evidence",
+            requested_tenant_id=body.org_id,
+            requested_workspace_id=body.workspace_id,
+            requested_principal=body.principal,
+            operation_selector=selector,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            raise HTTPException(403, detail={"error": "denied", "message": _DENIED}) from None
+        raise HTTPException(503, "credential evidence authority unavailable") from None
+    # Ordinary vault queries use the verified ADP tenant, never a requested domain UUID.
     evidence = await read_credential_evidence(
         db,
         sm,
-        org_id=body.org_id,
-        workspace_id=body.workspace_id,
+        authority=authority,
         credential_id=body.credential_id,
         service=body.service,
         label=body.label,
-        principal=body.principal,
         report_digest=body.report_digest,
     )
     if evidence is None:
@@ -361,13 +399,17 @@ async def credential_evidence(
         raise HTTPException(status_code=403, detail={"error": "denied", "message": _DENIED})
 
     return EvidenceResponse(
-        org_id=evidence.org_id,
+        org_id=authority.domain_org_id or evidence.org_id,
         workspace_id=evidence.workspace_id,
         credential_id=evidence.credential_id,
         service=evidence.service,
         label=evidence.label,
         owner_principal=evidence.owner_principal,
         owner_scope=evidence.owner_scope,
+        # This subject-to-user mapping comes from current platform membership,
+        # never from the request's assertion of credential ownership.
+        authenticated_subject=authority.acting_principal if authority.authority_kind == "domain_producer" else None,
+        authenticated_owner_principal=authority.owner_principal if authority.authority_kind == "domain_producer" else None,
         # Sorted for a stable response body; the service's frozenset has no order.
         delegated_to_workspaces=sorted(evidence.delegated_to_workspaces),
         current_version_id=evidence.current_version_id,
@@ -389,26 +431,52 @@ async def credential_evidence(
 )
 async def credential_revocation_state(
     body: RevocationBody,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> RevocationResponse:
     try:
-        binding = OperationBinding(
-            operation_id=body.operation_id,
-            attempt_id=body.attempt_id,
-            job_id=body.job_id,
-            org_id=body.org_id,
-            workspace_id=body.workspace_id,
+        service = getattr(request.state, "internal_identity", None)
+        if not isinstance(service, VerifiedInternalIdentity) or service.kind != "service":
+            raise HTTPException(403, "verified workload identity required")
+        context = getattr(request.state, "token_context", None)
+        scopes = getattr(context, "credential_scopes", ()) or ()
+        if body.org_id != service.tenant_id and "internal:cross-tenant" in scopes:
+            principal = f"service:{service.service_id}"
+        else:
+            principal, run_tenant = await _verified_executor(request)
+            domain_binding = getattr(request.state, "domain_operation_binding", None)
+            request.state.internal_identity = VerifiedInternalIdentity(
+                "domain_executor" if domain_binding else "agent_run",
+                service.service_id,
+                domain_binding.adp_org_id if domain_binding else run_tenant,
+                "run_credential",
+            )
+        authority = await authorize_vault_metadata(
+            request,
+            db,
+            action="revocation",
+            requested_tenant_id=body.org_id,
+            requested_workspace_id=body.workspace_id,
+            operation_selector=(body.operation_id, body.job_id, body.attempt_id, body.credential_id, principal),
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            raise HTTPException(403, detail={"error": "denied", "message": _DELIVERY_DENIED}) from None
+        raise HTTPException(503, "credential revocation authority unavailable") from None
+    binding = authority.operation_binding
+    if not isinstance(binding, OperationBinding):
+        raise HTTPException(status_code=403, detail={"error": "denied", "message": _DELIVERY_DENIED}) from None
+
+    try:
+        answer = await revocation_state(
+            db,
+            authority=authority,
+            credential_id=body.credential_id,
+            now=datetime.now(UTC),
         )
     except DeliveryRefusedError:
         raise HTTPException(status_code=403, detail={"error": "denied", "message": _DELIVERY_DENIED}) from None
-
-    answer = await revocation_state(
-        db,
-        binding=binding,
-        credential_id=body.credential_id,
-        now=datetime.now(UTC),
-    )
     return RevocationResponse(admits_work=answer.admits_work, limitation=answer.limitation)
 
 

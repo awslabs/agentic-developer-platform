@@ -32,6 +32,7 @@ __all__ = [
     "DISPLAY_STATE_ORDER",
     "DISPLAY_TO_ENGINE",
     "ENGINE_TO_DISPLAY",
+    "NODE_STATE_OVERRIDES_EXECUTION",
     "DisplayState",
     "FlowStatus",
     "derive_flow_status",
@@ -51,7 +52,7 @@ class DisplayState(StrEnum):
 class FlowStatus(StrEnum):
     """The one-word answer to "what is happening with this flow".
 
-    Six members, not five: a flow with no nodes is not "queued" — nothing is
+    An unarchived flow with no nodes is not "queued" — nothing is
     waiting on anything, the plan simply compiled to an empty graph. Rendering it
     as queued would have an operator waiting for work that will never start.
     """
@@ -62,6 +63,7 @@ class FlowStatus(StrEnum):
     QUEUED = "queued"  # Work exists, none of it has started
     COMPLETE = "complete"  # Every node is done
     EMPTY = "empty"  # No nodes at all
+    ARCHIVED = "archived"  # Explicitly hidden work, regardless of prior node state
 
 
 # The projection, verbatim from `frontend/src/utils/nodeState.ts`. Every one of
@@ -84,16 +86,24 @@ ENGINE_TO_DISPLAY: dict[NodeState, DisplayState | None] = {
     NodeState.SUPERSEDED: None,
 }
 
+# These node states own the displayed result even when an older execution is
+# blocked. Their execution lineage cannot change the SQL display bucket. The
+# delivery-progress card also uses this verdict except when a passed story
+# still owes deployment/evaluation; plan_lineage retains that live history.
+# Keep this narrower than "all non-running states": READY can show an ownership
+# hold and a RUNNING node can be waiting for capacity or reviewer input.
+NODE_STATE_OVERRIDES_EXECUTION = ("passed", "superseded", "failed", "halted", "rejected_at_gate", "awaiting_gate")
 
-# Render order, intent→done. Matches `DISPLAY_STATE_ORDER` in `nodeState.ts`; the
-# parity test asserts that too, so the rollup segments on the list page appear in
-# the same order as on the graph page.
+
+# Render completed work first so progress grows from left to right. Matches
+# `DISPLAY_STATE_ORDER` in `nodeState.ts`; the parity test keeps the list and
+# graph rollup segments in the same order.
 DISPLAY_STATE_ORDER: tuple[DisplayState, ...] = (
-    DisplayState.QUEUED,
+    DisplayState.COMPLETE,
     DisplayState.IN_PROGRESS,
     DisplayState.GATE,
     DisplayState.STALLED,
-    DisplayState.COMPLETE,
+    DisplayState.QUEUED,
 )
 
 

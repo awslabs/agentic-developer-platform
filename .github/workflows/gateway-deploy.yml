@@ -5,13 +5,24 @@ run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_
 on:
   push:
     paths:
+      - 'contracts/**'
       - 'modules/gateway/src/**'
+      - 'modules/L5-services/src/**'
+      - 'modules/L5-services/pyproject.toml'
+      - 'modules/L5-services/requirements-security.lock'
       - 'modules/gateway/deployment_evidence/**'
       - 'modules/gateway/cli/**'
+      - 'modules/agent-factory/skills/**'
+      - 'modules/gateway/scripts/build-skills-archive.sh'
       - 'modules/gateway/Dockerfile'
       # The operation decoder is staged into the Gateway image from its source.
       - 'modules/harness/jobs/harness_jobs/identity.py'
+      - 'modules/insights/projection.py'
+      - 'modules/insights/results.py'
       - 'modules/gateway/scripts/stage-contracts.sh'
+      - 'modules/gateway/scripts/stage-l5-wheel.sh'
+      - 'modules/gateway/scripts/stage-common-wheel.sh'
+      - 'libs/python/adp-common/**'
       - 'modules/gateway/k8s/**'
       - 'modules/gateway/alembic/versions/**'
       - 'modules/gateway/lambda/budget-usage-tracker/**'
@@ -21,7 +32,11 @@ on:
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/scripts/migrate-before-rollout.py'
       - 'modules/gateway/scripts/sync-gateway-engine.py'
+      - 'modules/gateway/scripts/sync-gateway-writers.py'
+      - 'modules/gateway/scripts/apply-gateway-deployment.py'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
+      - 'modules/gateway/scripts/deploy-budget-lambda-code.py'
+      - 'modules/gateway/scripts/batch-ssm.py'
       - 'modules/gateway/lambda/shared/root_principal.py'
       # Issue #4969: shared pricing policy, vendored into both budget Lambda zips
       # AND baked into the gateway image. A change here must redeploy all three or
@@ -32,13 +47,18 @@ on:
       - '.github/workflows/pricing-finalize.yml'
       - 'codebuild/bs-gateway-build.yml'
       - 'modules/gateway/pyproject.toml'
-      # Documentation-only changes do not start this workflow.
+      - 'modules/L5-services/scripts/build-package.sh'
+      - 'modules/L5-services/scripts/stage-gateway.sh'
+      - 'platform/scripts/publish-shared-image.sh'
+      # Prose-only changes do not start this workflow; L5 schema JSON does.
       - '!docs/**'
       - '!**/docs/**'
       - '!**/README*'
       - '!**/CHANGELOG*'
       - '!**/CONTRIBUTING*'
       - '!**/*.rst'
+      - 'docs/l5-services/contracts/v1/*.json'
+      - 'docs/l5-services/contracts/v1/*.tsv'
     branches:
       - main
   workflow_dispatch:
@@ -48,6 +68,19 @@ on:
         required: false
         type: string
         default: ''
+      release_group:
+        description: 'Accepted shared foundation release only; ordinary deployments use none.'
+        required: false
+        type: choice
+        options:
+          - none
+          - atlassian-foundation
+        default: 'none'
+      product_rollback:
+        description: 'Restore an exact protected compatible Product artifact; retain the expanded schema.'
+        required: false
+        type: boolean
+        default: false
       manual_source_revision:
         description: 'Manual deployment of an exact reviewed main ancestor; cannot accompany engine delivery inputs.'
         required: false
@@ -63,8 +96,26 @@ on:
         required: false
         type: string
         default: ''
+      proof_phase:
+        description: 'Reviewed generated-only Identity proof after Gateway backend release; requires a matching accepted operations plan.'
+        required: false
+        type: choice
+        options:
+          - none
+          - stage.identity-proof
+        default: 'none'
+      product_cases:
+        description: 'Reviewed Product API/CLI and compatible recovery inventory; only accepted operations plan dispatch may select it.'
+        required: false
+        type: choice
+        options:
+          - none
+          - api_product_lifecycle,api_denial_oracle,api_recovery_cleanup
+        default: 'none'
       adp_approved_revision:
-        description: 'Assistant rollout approval for this run only: full 40-hex commit whose protected assistant files this candidate must match (see docs/architecture/assistant-deploy-boundary.md).'
+        # The operations broker may dispatch the reviewed dev defaults with this
+        # optional input blank. Non-dev approval remains enforced below.
+        description: 'Assistant rollout approval for non-dev targets only (dev needs none): full 40-hex commit whose protected assistant files this candidate must match (see docs/architecture/assistant-deploy-boundary.md).'
         required: false
         type: string
         default: ''
@@ -94,9 +145,12 @@ concurrency:
   # platform input vs an explicit account ID) must not produce different locks.
   group: gateway-release-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
+  # Keep pending worker/infra releases when a newer gateway release arrives.
+  queue: max
 
 env:
   ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+  ADP_IDENTITY_PROOF_EVIDENCE_STORE: s3-oidc-v1
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
   NAMESPACE: adp-gateway
@@ -107,7 +161,7 @@ jobs:
   # gateway-frontend-deploy.yml publisher; workflow_dispatch still runs both.
   changes:
     name: Detect changes
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -128,7 +182,7 @@ jobs:
             test -z "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION"
           fi
           if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
-            [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
+            [[ "$ADP_CORRELATION" =~ ^([0-9a-f]{64}|orch:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]] || exit 1
             [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
             [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]] || exit 1
             test "$ACTUAL_DEFINITION" = "$ADP_DEFINITION"
@@ -155,13 +209,13 @@ jobs:
           FRONTEND=false
           MIGRATIONS=false
           BUDGET_LAMBDAS=false
-          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/deployment_evidence/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/(migrate-before-rollout|sync-gateway-engine)\.py|modules/gateway/scripts/stage-contracts\.sh$|modules/harness/jobs/harness_jobs/identity\.py$)'; then
+          if echo "$CHANGED" | grep -qE '^(libs/python/adp-common/|contracts/|modules/L5-services/(src/|pyproject\.toml$|requirements-security\.lock$|scripts/(build-package|stage-gateway)\.sh$)|docs/l5-services/contracts/v1/[^/]+\.(json|tsv)$|modules/gateway/src/|modules/gateway/deployment_evidence/|modules/gateway/cli/|modules/agent-factory/skills/|modules/gateway/scripts/build-skills-archive\.sh$|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/(migrate-before-rollout|sync-gateway-engine|sync-gateway-writers|apply-gateway-deployment|batch-ssm)\.py|modules/gateway/scripts/stage-(contracts|l5-wheel|common-wheel)\.sh$|platform/scripts/publish-shared-image\.sh$|modules/insights/(projection|results)\.py$|modules/harness/jobs/harness_jobs/identity\.py$)'; then
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then
             FRONTEND=true
           fi
-          if echo "$CHANGED" | grep -qE '^modules/gateway/alembic/versions/'; then
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/alembic/versions/|modules/L5-services/src/l5_services/migrations/versions/)'; then
             MIGRATIONS=true
             echo "::warning::New Alembic migration detected in this push"
             # Migration files are baked into the release image. Build it before
@@ -176,7 +230,7 @@ jobs:
           # the gateway image. Updating only some of them leaves the pre-request
           # estimator and the settlement authority on different rates, which is the
           # exact class of drift this package was introduced to eliminate.
-          if echo "$CHANGED" | grep -qE '^(modules/gateway/pricing_policy/|modules/gateway/scripts/(pricing-rollout|build-budget-lambda-archives)\.py|\.github/workflows/(gateway-deploy|run-gateway-migrations|pricing-finalize)\.yml|codebuild/bs-gateway-build\.yml|modules/gateway/pyproject\.toml)'; then
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/pricing_policy/|modules/gateway/scripts/(pricing-rollout|build-budget-lambda-archives|deploy-budget-lambda-code)\.py|\.github/workflows/(gateway-deploy|run-gateway-migrations|pricing-finalize)\.yml|codebuild/bs-gateway-build\.yml|modules/gateway/pyproject\.toml)'; then
             BUDGET_LAMBDAS=true
             BACKEND=true
           fi
@@ -189,8 +243,12 @@ jobs:
     outputs:
       release_digest: ${{ steps.release.outputs.digest }}
     name: Build and Deploy Backend
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
+    env:
+      # Durable explicit bindings for operator-owned auxiliary application writers.
+      # See sync-gateway-writers.py for the exact deployment/UID/container schema.
+      ADP_GATEWAY_WRITER_INVENTORY: ${{ vars.ADP_GATEWAY_WRITER_INVENTORY || '[]' }}
     needs: changes
     if: github.ref == 'refs/heads/main' && (needs.changes.outputs.backend == 'true')
     # AWS authority comes from the protected deployment environment.
@@ -228,14 +286,41 @@ jobs:
           git show "$ADP_WORKFLOW_REVISION:scripts/check-assistant-deploy-boundary.sh" > "$RUNNER_TEMP/adp-gateway-control/assistant-guard.sh"
           git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/gateway-deployment-receipt.py" > "$RUNNER_TEMP/adp-gateway-control/receipt.py"
           git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/deployment-release-evidence.py" > "$RUNNER_TEMP/adp-gateway-control/release-evidence.py"
+          git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/sync-gateway-writers.py" > "$RUNNER_TEMP/adp-gateway-control/writers.py"
+          git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/batch-ssm.py" > "$RUNNER_TEMP/adp-gateway-control/batch-ssm.py"
+          git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/deploy-budget-lambda-code.py" > "$RUNNER_TEMP/adp-gateway-control/deploy-budget-lambda-code.py"
+          git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/apply-gateway-deployment.py" > "$RUNNER_TEMP/adp-gateway-control/apply-deployment.py"
+          git show "$ADP_WORKFLOW_REVISION:platform/scripts/render-gateway-capacity.py" > "$RUNNER_TEMP/adp-gateway-control/render-capacity.py"
+          git show "$ADP_WORKFLOW_REVISION:platform/scripts/gateway-capacity-lock.py" > "$RUNNER_TEMP/adp-gateway-control/capacity-lock.py"
+          git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/product-profile-recovery.py" > "$RUNNER_TEMP/adp-gateway-control/product-recovery.py"
+          git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/guard-foundation-release.py" > "$RUNNER_TEMP/adp-gateway-control/guard-foundation-release.py"
+          git show "$ADP_WORKFLOW_REVISION:modules/tools/adapters/guard_release.py" > "$RUNNER_TEMP/adp-gateway-control/guard_release.py"
+
+      - name: Validate accepted foundation job and shared lease
+        if: inputs.release_group == 'atlassian-foundation'
+        env:
+          ADP_RELEASE_GROUP: ${{ inputs.release_group }}
+          ADP_ENVIRONMENT: ${{ inputs.environment }}
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
+          ADP_PRODUCT_CASES: ${{ inputs.product_cases }}
+          ADP_PROOF_PHASE: ${{ inputs.proof_phase }}
+          ADP_PRODUCT_ROLLBACK: ${{ inputs.product_rollback }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION_REVISION: ${{ github.workflow_sha }}
+          ADP_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          ADP_FOUNDATION_CONNECTION_ROLE_ARN: ${{ vars.ADP_FOUNDATION_CONNECTION_ROLE_ARN }}
+          ADP_FOUNDATION_GATEWAY_URL: ${{ vars.ADP_FOUNDATION_GATEWAY_URL }}
+        run: python3 "$RUNNER_TEMP/adp-gateway-control/guard-foundation-release.py"
 
       - name: Resolve last successfully deployed revision
         id: deployed
-        # An explicit target approval is still validated by the unchanged guard;
-        # only the no-approval path needs a known previously deployed baseline.
+        # Dev does not require assistant approval or a deployment baseline.
+        # Non-dev approvals are validated by the guard; otherwise resolve evidence.
         if: >-
-          ${{ !(github.event_name == 'workflow_dispatch' && inputs.adp_approved_revision != '') &&
-          !(vars.ADP_ASSISTANT_APPROVED_TARGET == format('adp-gateway-deploy-{0}', inputs.environment || 'dev') && vars.ADP_ASSISTANT_APPROVED_REVISION != '') }}
+          ${{ inputs.product_rollback || ((inputs.environment || 'dev') != 'dev' &&
+          !(github.event_name == 'workflow_dispatch' && inputs.adp_approved_revision != '') &&
+          !(vars.ADP_ASSISTANT_APPROVED_TARGET == format('adp-gateway-deploy-{0}', inputs.environment || 'dev') && vars.ADP_ASSISTANT_APPROVED_REVISION != '')) }}
         env:
           GH_TOKEN: ${{ github.token }}
           ADP_RECEIPT_TARGET: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
@@ -296,6 +381,9 @@ jobs:
           INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label || '' }}
           INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
           INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          INPUT_PRODUCT_CASES: ${{ inputs.product_cases || 'none' }}
+          INPUT_RELEASE_GROUP: ${{ inputs.release_group || 'none' }}
+          INPUT_PROOF_PHASE: ${{ inputs.proof_phase || 'none' }}
         run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-workflow-context.py"
       - name: Publish deployment workflow context to S3
         env:
@@ -303,7 +391,7 @@ jobs:
         run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context gateway-deploy.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
 
       - name: Deploy budget tracker and pricing code
-        if: needs.changes.outputs.budget_lambdas == 'true'
+        if: needs.changes.outputs.budget_lambdas == 'true' && !inputs.product_rollback
         # These functions are provisioned by Terraform, but their source changes
         # must ship with the gateway. Update code only, before enabling new event
         # producers in the backend. Keep both archives in sync with budget-lambda/main.tf.
@@ -314,18 +402,8 @@ jobs:
           python3 modules/gateway/scripts/build-budget-lambda-archives.py --output /tmp
           for name in pricing-refresh budget-usage-tracker; do
             function="arn:aws:lambda:${AWS_REGION}:${ACCOUNT_ID}:function:bedrockgw-${ENVIRONMENT}-${name}"
-            if ! aws lambda get-function-configuration --function-name "$function" \
-                --query FunctionName --output text >/dev/null 2>/tmp/budget-function-error; then
-              if grep -q 'ResourceNotFoundException' /tmp/budget-function-error; then
-                echo "::notice::${name} is not provisioned in this environment; skipping code update."
-                continue
-              fi
-              cat /tmp/budget-function-error >&2
-              exit 1
-            fi
-            aws lambda update-function-code --function-name "$function" \
-              --zip-file "fileb:///tmp/${name}.zip" --query '{FunctionName:FunctionName,CodeSha256:CodeSha256}'
-            aws lambda wait function-updated --function-name "$function"
+            python3 "$RUNNER_TEMP/adp-gateway-control/deploy-budget-lambda-code.py" \
+              --function "$function" --archive "/tmp/${name}.zip"
           done
 
       - name: Compute build vars
@@ -375,6 +453,14 @@ jobs:
               --content-type application/x-yaml
           done
 
+      - name: Acquire gateway capacity ownership
+        id: capacity_lock
+        run: |
+          python3 "$RUNNER_TEMP/adp-gateway-control/capacity-lock.py" acquire \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+            --cluster "$EKS_CLUSTER" --namespace "$NAMESPACE" \
+            --owner-file "$RUNNER_TEMP/adp-gateway-control/capacity-owner.json"
+
       # =====================================================================
       # Issue #1008: First-deploy support — ensure namespace, configmap,
       # secret, serviceaccount, and supporting manifests exist before the
@@ -399,7 +485,13 @@ jobs:
           fi
 
           # --- Helper: read SSM param with fallback ---
-          get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+          # Snapshot exactly this step's configuration with <=10 names per API call.
+          # Missing parameters keep their existing defaults; read failures stop rendering.
+          SSM_SNAPSHOT=$(mktemp)
+          python3 "$RUNNER_TEMP/adp-gateway-control/batch-ssm.py" "$0" "$ENVIRONMENT" "$SSM_SNAPSHOT"
+          source "$SSM_SNAPSHOT"
+          rm -f "$SSM_SNAPSHOT"
+          get_ssm() { printf '%s\n' "${ADP_SSM_VALUES[plain:$1]-${2:-}}"; }
 
           # --- Gather values from SSM (published by gateway-infra-apply) ---
           DB_HOST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/rds-host")
@@ -502,11 +594,15 @@ jobs:
           BUDGET_FAIL_MODE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/budget-fail-mode" "closed")
           if [ -z "$BUDGET_FAIL_MODE" ] || [ "$BUDGET_FAIL_MODE" = "None" ]; then BUDGET_FAIL_MODE="closed"; fi
 
-          # #4076: Credential->host egress binding. Default "false" (shadow mode) —
-          # violations are WARN-logged but allowed, so operators can confirm the
-          # service->host map covers live traffic before anyone gets a 403. Flip to
-          # "true" per env via SSM once the WARN logs are clean.
-          VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-enforce-credential-host-binding" "false")
+          # #8848/#4076: Enforce credential destinations by default. Only an
+          # explicit "false" opts into temporary shadow mode; reject typos.
+          VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-enforce-credential-host-binding" "true")
+          case "$VAULT_ENFORCE_CREDENTIAL_HOST_BINDING" in
+            ""|None) VAULT_ENFORCE_CREDENTIAL_HOST_BINDING="true" ;;
+            true) ;;
+            false) echo "WARNING: Credential destination binding explicitly disabled (shadow mode)" >&2 ;;
+            *) echo "ERROR: vault-enforce-credential-host-binding must be true or false" >&2; exit 1 ;;
+          esac
 
           # #5653 (A01): whether the pod may believe X-Caller-Identity, which it
           # treats as proof of identity (resolved against the agent registry to a
@@ -541,6 +637,65 @@ jobs:
           MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG_SED//&/\\&}
           MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG_SED//|/\\|}
 
+          SCOPED_KNOWLEDGE_IMPORTS_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/scoped-knowledge-imports-enabled" "false")
+          [[ "$SCOPED_KNOWLEDGE_IMPORTS_ENABLED" == "true" ]] || SCOPED_KNOWLEDGE_IMPORTS_ENABLED="false"
+          # Model invocability probing (#7967): gateway-infra SSM parameters
+          # (model-probe.tf, values from the environment's gateway tfvars); same parameters,
+          # defaults and validation in gateway-deploy.yml and deploy-all.sh. Absent or
+          # malformed values render the fail-closed defaults (off, 0 slots, 0 budget, whole
+          # catalogue, 24 h). Delegated chat enforces model policy and refuses every turn
+          # without this evidence, so an environment running --chat delegated must arm it.
+          MODEL_PROBE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-enabled" "false")
+          [ "$MODEL_PROBE_ENABLED" = "true" ] || MODEL_PROBE_ENABLED="false"
+          MODEL_PROBE_MAX_SLOTS_PER_CYCLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-max-slots-per-cycle" "0")
+          [[ "$MODEL_PROBE_MAX_SLOTS_PER_CYCLE" =~ ^[0-9]+$ ]] || MODEL_PROBE_MAX_SLOTS_PER_CYCLE="0"
+          MODEL_PROBE_BUDGET_USD_PER_CYCLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-budget-usd-per-cycle" "0")
+          [[ "$MODEL_PROBE_BUDGET_USD_PER_CYCLE" =~ ^[0-9]+(\.[0-9]{1,6})?$ ]] || MODEL_PROBE_BUDGET_USD_PER_CYCLE="0"
+          MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT=$(get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-max-budget-usd-per-attempt" "0")
+          [[ "$MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT" =~ ^[0-9]+(\.[0-9]{1,6})?$ ]] || MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT="0"
+          MODEL_PROBE_MODEL_ALLOWLIST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-model-allowlist" "[]")
+          # Must be a JSON array of strings; anything else means the whole catalogue ([]).
+          MODEL_PROBE_MODEL_ALLOWLIST=$(printf '%s' "$MODEL_PROBE_MODEL_ALLOWLIST" | python3 -c 'import json, sys
+          try:
+              v = json.loads(sys.stdin.read())
+              assert isinstance(v, list) and all(isinstance(x, str) for x in v)
+          except Exception:
+              v = []
+          print(json.dumps(v, separators=(",", ":")))')
+          MODEL_PROBE_MODEL_ALLOWLIST_SED=${MODEL_PROBE_MODEL_ALLOWLIST//\\/\\\\}
+          MODEL_PROBE_MODEL_ALLOWLIST_SED=${MODEL_PROBE_MODEL_ALLOWLIST_SED//&/\\&}
+          MODEL_PROBE_MODEL_ALLOWLIST_SED=${MODEL_PROBE_MODEL_ALLOWLIST_SED//|/\\|}
+          MODEL_PROBE_EVIDENCE_TTL_HOURS=$(get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-evidence-ttl-hours" "24")
+          [[ "$MODEL_PROBE_EVIDENCE_TTL_HOURS" =~ ^[0-9]+$ ]] || MODEL_PROBE_EVIDENCE_TTL_HOURS="24"
+          # Dev Box (#7998, optional module): /adp/${ENVIRONMENT}/dev-box/* exists only
+          # where modules/user-services/dev-box/scripts/deploy-dev-box.sh ran. Absent =>
+          # "" / "0": admission disabled, bounds fail closed, no desktop option in the UI.
+          BG_DEV_BOX_DEPLOYMENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/dev-box/deployment-id" "")
+          [ "$BG_DEV_BOX_DEPLOYMENT_ID" != "None" ] && [ "$BG_DEV_BOX_DEPLOYMENT_ID" != " " ] || BG_DEV_BOX_DEPLOYMENT_ID=""
+          BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES=$(get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-live-boxes" "0")
+          [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES" =~ ^[0-9]+$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES="0"
+          BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES=$(get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-running-boxes" "0")
+          [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES" =~ ^[0-9]+$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES="0"
+          BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB=$(get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-storage-gb" "0")
+          [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB" =~ ^[0-9]+$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB="0"
+          BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS=$(get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-running-hours" "0")
+          [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS" =~ ^[0-9]+$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS="0"
+          BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD=$(get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-budget-usd" "0")
+          [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD" =~ ^[0-9]+(\.[0-9]{1,6})?$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD="0"
+          # SSH grant role (#8049): published by the Dev Box foundation when gateway_principal_arn
+          # is set. Absent, " " sentinel or malformed => "" and POST /cloud-desktops/{id}/ssh-access
+          # keeps failing closed with 503 "Dev Box SSH access is not configured".
+          BG_DEV_BOX_SSH_GRANT_ROLE_ARN=$(get_ssm "/adp/${ENVIRONMENT}/dev-box/ssh-grant-role-arn" "")
+          [ "$BG_DEV_BOX_SSH_GRANT_ROLE_ARN" != "None" ] && [ "$BG_DEV_BOX_SSH_GRANT_ROLE_ARN" != " " ] || BG_DEV_BOX_SSH_GRANT_ROLE_ARN=""
+          [[ "$BG_DEV_BOX_SSH_GRANT_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$ ]] || BG_DEV_BOX_SSH_GRANT_ROLE_ARN=""
+          BG_DEV_BOX_CREW_BOOTSTRAP=$(get_ssm "/adp/${ENVIRONMENT}/dev-box/crew-bootstrap" "image")
+          [[ "$BG_DEV_BOX_CREW_BOOTSTRAP" =~ ^(image|user-data)$ ]] || BG_DEV_BOX_CREW_BOOTSTRAP="image"
+          # Model policy posture for chat (#7997): off | advisory | enforced, from gateway infra
+          # chief-of-staff-flags.tf (chat_model_policy_posture in the environment's gateway
+          # tfvars). Absent or unrecognised renders the default, advisory; same in deploy-all.sh.
+          CHAT_MODEL_POLICY_POSTURE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-model-policy-posture" "advisory")
+          case "$CHAT_MODEL_POLICY_POSTURE" in off|advisory|enforced) ;; *) CHAT_MODEL_POLICY_POSTURE="advisory" ;; esac
+
           # Issue #3960: CIDRs the gateway may dial an in-pod control listener in.
           # This is the SSRF allowlist for the one outbound path that deliberately
           # targets PRIVATE addresses, so it cannot be defaulted to something
@@ -554,17 +709,56 @@ jobs:
           # changed, which is exactly the kind of change nobody reviews.
           AGENT_CONTROL_CLUSTER_POD_CIDRS=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agent-control-cluster-pod-cidrs" "")
           # The authority configuration parameters are encrypted at rest.
-          get_authority_ssm() { aws ssm get-parameter --with-decryption --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+          get_authority_ssm() { printf '%s\n' "${ADP_SSM_VALUES[decrypted:$1]-${2:-}}"; }
           AGENT_AUTHORITY_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-enabled" "false")
           ADP_WORK_CLAIMS_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claims-enabled" "false")
+          ADP_PRODUCT_STORY_DISPATCH_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/product-story-dispatch-enabled" "false")
           ADP_WORK_CLAIM_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claim-producer-roles" "")
-          AGENT_AUTHORITY_TABLE=$(get_authority_ssm "/adp/${ENVIRONMENT}/webhook-ingress/agent-authority-table" "")
+          AGENT_AUTHORITY_TABLE=$(get_authority_ssm "/adp/${ENVIRONMENT}/webhook-ingress/agent-authority-table" "adp-${ENVIRONMENT}-agent-authority")
           WEBHOOK_EVENTS_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/webhook-events-table" "adp-${ENVIRONMENT}-webhook-events")
+          ADP_TOOLS_GATEWAY_ROLE_ARN=$(get_ssm "/adp/${ENVIRONMENT}/tools/target-role-arn" "")
+          ADP_TOOLS_FACADE_ROLE_ARN=$(get_ssm "/adp/${ENVIRONMENT}/tools/caller-role-arn" "")
+          ADP_TOOLS_ASSERTION_KEY_ARN=$(get_ssm "/adp/${ENVIRONMENT}/tools/assertion-signing-key-arn" "")
+          ATLASSIAN_CONFIG_REF=$(get_ssm "/adp/${ENVIRONMENT}/gateway/atlassian-mcp-config-ref" "")
+          ATLASSIAN_CONTRACT_REVISION=$(get_ssm "/adp/${ENVIRONMENT}/gateway/atlassian-mcp-contract-revision" "")
+          ATLASSIAN_METADATA_SHA256=$(get_ssm "/adp/${ENVIRONMENT}/gateway/atlassian-mcp-metadata-sha256" "")
+          if [[ "$ATLASSIAN_CONFIG_REF" != "None" && -n "$ATLASSIAN_CONFIG_REF" ]] &&
+             [[ ! "$ATLASSIAN_CONFIG_REF" =~ ^arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:adp/${ENVIRONMENT}/connections/atlassian-mcp/config-[A-Za-z0-9]{6}$ ]]; then
+            echo "::error::Invalid Atlassian MCP config reference"; exit 1
+          fi
+          if [[ "$ATLASSIAN_CONTRACT_REVISION" != "None" && -n "$ATLASSIAN_CONTRACT_REVISION" ]] &&
+             [[ ! "$ATLASSIAN_CONTRACT_REVISION" =~ ^[A-Za-z0-9_.-]{1,128}$ ]]; then
+            echo "::error::Invalid Atlassian MCP contract revision"; exit 1
+          fi
+          if [[ "$ATLASSIAN_METADATA_SHA256" != "None" && -n "$ATLASSIAN_METADATA_SHA256" ]] &&
+             [[ ! "$ATLASSIAN_METADATA_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Invalid Atlassian MCP metadata digest"; exit 1
+          fi
+          for name in ATLASSIAN_CONFIG_REF ATLASSIAN_CONTRACT_REVISION ATLASSIAN_METADATA_SHA256; do
+            [ "${!name}" != "None" ] || printf -v "$name" '%s' ""
+          done
+          if [[ -n "$ATLASSIAN_CONTRACT_REVISION" || -n "$ATLASSIAN_METADATA_SHA256" ]] &&
+             [[ -z "$ATLASSIAN_CONFIG_REF" || -z "$ATLASSIAN_CONTRACT_REVISION" || -z "$ATLASSIAN_METADATA_SHA256" ]]; then
+            echo "::error::Incomplete Atlassian MCP provider plan binding"; exit 1
+          fi
+          NATIVE_CREDENTIALS_VALUES=$(python3 "modules/gateway/scripts/native-credential-config.py" "$ENVIRONMENT" "$AWS_REGION" "$ACCOUNT_ID")
+          read -r ADP_NATIVE_CREDENTIALS_ENABLED ADP_NATIVE_CREDENTIALS_ISSUER ADP_NATIVE_CREDENTIALS_APPROVAL_ORIGIN ADP_NATIVE_CREDENTIALS_KEY_ID ADP_NATIVE_CREDENTIALS_KEY_ARN <<< "$NATIVE_CREDENTIALS_VALUES"
           ADP_TASK_API_ADMISSION_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-admission-enabled" "false")
           ADP_TASK_API_READ_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-read-enabled" "false")
           ADP_TASK_API_WORKER_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-worker-enabled" "false")
           ADP_TASK_API_RECOVERY_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-recovery-enabled" "false")
           TASK_ARTIFACT_BUCKET_NAME=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-artifact-bucket-name" "")
+          # Delegated chat memory/artifact stores (#8028): agent-factory publishes the table
+          # names (chat-agent-infra.tf); the bucket is the task-api artifact bucket read above.
+          # Validated as names, with the deterministic defaults so a fresh environment is
+          # configured before the parameters exist; an invalid bucket renders empty (503
+          # chat_artifacts_unconfigured, which the sandbox degrades on rather than fails).
+          MEMORY_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-memory-table" "adp-${ENVIRONMENT}-agent-memory")
+          ARTIFACTS_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-artifacts-table" "adp-${ENVIRONMENT}-chat-artifacts")
+          ARTIFACTS_BUCKET="${TASK_ARTIFACT_BUCKET_NAME}"
+          [[ "$MEMORY_TABLE" =~ ^[A-Za-z0-9_.-]{3,255}$ ]] && [ "$MEMORY_TABLE" != "None" ] || MEMORY_TABLE="adp-${ENVIRONMENT}-agent-memory"
+          [[ "$ARTIFACTS_TABLE" =~ ^[A-Za-z0-9_.-]{3,255}$ ]] && [ "$ARTIFACTS_TABLE" != "None" ] || ARTIFACTS_TABLE="adp-${ENVIRONMENT}-chat-artifacts"
+          [[ "$ARTIFACTS_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || ARTIFACTS_BUCKET=""
           ADP_TASK_API_QUEUE_URL=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-queue-url" "")
           ADP_TASK_ADMISSION_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-admission-producer-roles" "")
           ADP_TASK_DISPATCH_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-dispatch-producer-roles" "")
@@ -573,7 +767,6 @@ jobs:
           ADP_TASK_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-worker-image-digests" "disabled")
           ADP_TASK_WORKER_SERVICE_ACCOUNT=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-worker-service-account" "agent-scaledjob-sa")
           AGENT_DISPATCH_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
-          BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
           AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
           ADP_MODEL_ROOT_BINDINGS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/model-root-bindings" "[]")
           ADP_MODEL_ROOT_BINDINGS_SED=$(printf '%s' "$ADP_MODEL_ROOT_BINDINGS_RAW" | python3 platform/scripts/render-model-root-config.py bindings)
@@ -581,6 +774,14 @@ jobs:
           ADP_ARC_MODEL_BINDINGS_SED=$(printf '%s' "$ADP_ARC_MODEL_BINDINGS_RAW" | python3 platform/scripts/render-model-root-config.py bindings)
           ADP_CHAT_WORKER_IMAGE_DIGESTS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/chat-authority-worker-images" "")
           ADP_CHAT_WORKER_IMAGE_DIGESTS_SED=$(printf '%s' "$ADP_CHAT_WORKER_IMAGE_DIGESTS_RAW" | python3 platform/scripts/render-model-root-config.py images)
+          # Delegated chat workload identities, published by `deploy-all.sh --chat delegated`
+          # (#7899); the Terraform seeds are empty digests and the legacy adp-agent account.
+          ADP_CHAT_SANDBOX_IMAGE_DIGESTS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/chat-sandbox-image-digests" "")
+          ADP_CHAT_SANDBOX_IMAGE_DIGESTS_SED=$(printf '%s' "$ADP_CHAT_SANDBOX_IMAGE_DIGESTS_RAW" | python3 platform/scripts/render-model-root-config.py images)
+          ADP_CHAT_CREW_IMAGE_DIGESTS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/chat-crew-image-digests" "")
+          ADP_CHAT_CREW_IMAGE_DIGESTS_SED=$(printf '%s' "$ADP_CHAT_CREW_IMAGE_DIGESTS_RAW" | python3 platform/scripts/render-model-root-config.py images)
+          ADP_CHAT_WORKER_SERVICE_ACCOUNT=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-worker-service-account" "adp-agent")
+          [[ "$ADP_CHAT_WORKER_SERVICE_ACCOUNT" =~ ^(adp-agent|adp-chat-supervisor)$ ]] || ADP_CHAT_WORKER_SERVICE_ACCOUNT="adp-agent"
           AGENT_AUTHORITY_KEY_ID=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-key-id" "disabled")
           AGENT_TASK_SOURCE_ROLE_ARN=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-role-arn" "")
           AGENT_TASK_SOURCE_EKS_CLUSTER=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-eks-cluster" "")
@@ -601,9 +802,75 @@ jobs:
           ADP_CHAT_INPUT_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/chat-input-queue-url" "")
           BG_INTAKE_CONTEXT_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/context-table" "adp-${ENVIRONMENT}-chat-context")
           BG_INTAKE_INGEST_FUNCTION=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/ingest-function" "adp-${ENVIRONMENT}-agent-gateway-ingest")
+          # Delegated chat sandbox transport: the CA ConfigMap name is published by
+          # platform/scripts/apply-chat-tls.sh; empty leaves both values empty.
+          ADP_CHAT_DATA_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-data-enabled" "false")
+          PRODUCT_SOURCE_SNAPSHOT_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/product-source-snapshot-bucket" "")
+          [[ "$PRODUCT_SOURCE_SNAPSHOT_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || PRODUCT_SOURCE_SNAPSHOT_BUCKET=""
+          [ "$ADP_CHAT_DATA_ENABLED" = true ] || ADP_CHAT_DATA_ENABLED=false
+          ADP_CHAT_SANDBOX_CA_CONFIGMAP=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-sandbox-ca-configmap" "")
+          [ "$ADP_CHAT_SANDBOX_CA_CONFIGMAP" != "None" ] || ADP_CHAT_SANDBOX_CA_CONFIGMAP=""
+          ADP_CHAT_DATA_URL=""
+          [ -z "$ADP_CHAT_SANDBOX_CA_CONFIGMAP" ] || ADP_CHAT_DATA_URL="https://chat-sandbox-gateway.adp-gateway.svc:8443"
+          PLATFORM_OPERATOR_ROLE_ARNS=$(python3 modules/gateway/scripts/platform-operator-roles.py "$ENVIRONMENT" "$AWS_REGION" "$EFFECTIVE_ACCOUNT")
+          # Crew proxy tuning and checkpoints (#7902): gateway-infra SSM parameters
+          # (chief-of-staff-flags.tf, crew-checkpoints.tf); same parameters and defaults as
+          # deploy-all.sh Step 4. Malformed numbers fall back to the code's defaults; the
+          # bucket parameter exists only while crew_checkpoints_enabled is on (absent => "").
+          CREW_PROXY_KEEPALIVE_SECONDS=$(get_ssm "/adp/${ENVIRONMENT}/gateway/crew-proxy-keepalive-seconds" "25")
+          [[ "$CREW_PROXY_KEEPALIVE_SECONDS" =~ ^[0-9]+$ ]] || CREW_PROXY_KEEPALIVE_SECONDS="25"
+          CREW_PROXY_MAX_CONN_PER_USER=$(get_ssm "/adp/${ENVIRONMENT}/gateway/crew-proxy-max-conn-per-user" "64")
+          [[ "$CREW_PROXY_MAX_CONN_PER_USER" =~ ^[0-9]+$ ]] || CREW_PROXY_MAX_CONN_PER_USER="64"
+          ADP_CREW_CHECKPOINTS_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/crew-checkpoints-enabled" "false")
+          [ "$ADP_CREW_CHECKPOINTS_ENABLED" = "true" ] || ADP_CREW_CHECKPOINTS_ENABLED="false"
+          ADP_GITHUB_USER_ACCESS_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/github-user-access-enabled" "false")
+          [ "$ADP_GITHUB_USER_ACCESS_ENABLED" = "true" ] || ADP_GITHUB_USER_ACCESS_ENABLED="false"
+          # The Dev Box controller reads the Crew dashboard switch and edge origin from this
+          # ConfigMap (it has no Deployment env of its own); same parameters as the Deployment
+          # render below (#8223 cause 20).
+          FEATURE_CREW_DASHBOARD=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-crew-dashboard" "false")
+          [ -n "$FEATURE_CREW_DASHBOARD" ] && [ "$FEATURE_CREW_DASHBOARD" != "None" ] || FEATURE_CREW_DASHBOARD="false"
+          CREW_DASHBOARD_ORIGIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/crew-dashboard-origin" "")
+          if [ "$CREW_DASHBOARD_ORIGIN" = "None" ]; then CREW_DASHBOARD_ORIGIN=""; fi
+          # #8387: tools consent posture; anything but granted|explicit falls back to granted (the code fails closed on invalid values).
+          ADP_TOOLS_CONSENT_DEFAULT=$(get_ssm "/adp/${ENVIRONMENT}/gateway/tools-consent-default" "granted")
+          [[ "$ADP_TOOLS_CONSENT_DEFAULT" =~ ^(granted|explicit)$ ]] || ADP_TOOLS_CONSENT_DEFAULT="granted"
+          ADP_CREW_CHECKPOINT_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/crew-checkpoint-bucket" "")
+          [ "$ADP_CREW_CHECKPOINT_BUCKET" != "None" ] || ADP_CREW_CHECKPOINT_BUCKET=""
+          ADP_CREW_CHECKPOINT_RETENTION_SECONDS=$(get_ssm "/adp/${ENVIRONMENT}/gateway/crew-checkpoint-retention-seconds" "2592000")
+          [[ "$ADP_CREW_CHECKPOINT_RETENTION_SECONDS" =~ ^[0-9]+$ ]] || ADP_CREW_CHECKPOINT_RETENTION_SECONDS="2592000"
+          # Shared AgentCore user memory (#7901): agentcore-memory.tf writes all four
+          # parameters while agentcore_memory_enabled is on. agentcore_recall() treats
+          # all four empty as "memory disabled" and a partial set as an outage ("memory
+          # target unconfigured"), so a partial set is refused here, before any rollout.
+          # The namespace key is a SecureString: decrypted here, landed only in the
+          # bedrockgateway-secrets Secret below, never printed and never in the ConfigMap.
+          ADP_AGENTCORE_MEMORY_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agentcore-memory-id" "")
+          ADP_AGENTCORE_MEMORY_STRATEGY_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agentcore-memory-strategy-id" "")
+          ADP_AGENTCORE_MEMORY_REGION=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agentcore-memory-region" "")
+          ADP_AGENTCORE_NAMESPACE_KEY=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/agentcore-namespace-key" \
+            --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
+          memory_values_set=0
+          for name in ADP_AGENTCORE_MEMORY_ID ADP_AGENTCORE_MEMORY_STRATEGY_ID ADP_AGENTCORE_MEMORY_REGION ADP_AGENTCORE_NAMESPACE_KEY; do
+            [ "${!name}" != "None" ] || printf -v "$name" '%s' ""
+            [ -z "${!name}" ] || memory_values_set=$((memory_values_set + 1))
+          done
+          if [ "$memory_values_set" -ne 0 ] && [ "$memory_values_set" -ne 4 ]; then
+            echo "::error::AgentCore memory is partially configured (${memory_values_set}/4 of /adp/${ENVIRONMENT}/gateway/agentcore-{memory-id,memory-strategy-id,memory-region,namespace-key} set); apply gateway infra with agentcore_memory_enabled fully on or off"
+            exit 1
+          fi
+          if [ -n "$ADP_AGENTCORE_MEMORY_REGION" ] && [ "$ADP_AGENTCORE_MEMORY_REGION" != "$AWS_REGION" ]; then
+            echo "::error::AgentCore memory region ${ADP_AGENTCORE_MEMORY_REGION} differs from the gateway region ${AWS_REGION}; the gateway refuses recall across regions"
+            exit 1
+          fi
+          echo "Crew proxy for ${ENVIRONMENT}: keepalive=${CREW_PROXY_KEEPALIVE_SECONDS}s max_conn_per_user=${CREW_PROXY_MAX_CONN_PER_USER} checkpoints=${ADP_CREW_CHECKPOINTS_ENABLED} bucket_set=$([ -n "$ADP_CREW_CHECKPOINT_BUCKET" ] && echo yes || echo no) agentcore_memory=$([ "$memory_values_set" -eq 4 ] && echo on || echo off)"
 
           sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
               -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
+              -e "s|__ATLASSIAN_CONFIG_REF__|${ATLASSIAN_CONFIG_REF}|g" \
+              -e "s|__ATLASSIAN_CONTRACT_REVISION__|${ATLASSIAN_CONTRACT_REVISION}|g" \
+              -e "s|__ATLASSIAN_METADATA_SHA256__|${ATLASSIAN_METADATA_SHA256}|g" \
               -e "s|__DB_HOST__|${DB_HOST}|g" \
               -e "s|__DB_USER__|${DB_USER}|g" \
               -e "s|__DB_NAME__|${DB_NAME}|g" \
@@ -631,24 +898,54 @@ jobs:
               -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
               -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
               -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
+              -e "s|__SCOPED_KNOWLEDGE_IMPORTS_ENABLED__|${SCOPED_KNOWLEDGE_IMPORTS_ENABLED}|g" \
               -e "s|__AGENT_RUN_LOGS_BUCKET__|adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}|g" \
               -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
               -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
               -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
               -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
+              -e "s|__PLATFORM_OPERATOR_ROLE_ARNS__|${PLATFORM_OPERATOR_ROLE_ARNS}|g" \
               -e "s|__PERSONA_MODEL_MAPPING_ENABLED__|${PERSONA_MODEL_MAPPING_ENABLED}|g" \
               -e "s|__MODEL_ALLOWED_MODELS_CONFIG__|${MODEL_ALLOWED_MODELS_CONFIG_SED}|g" \
+              -e "s|__MODEL_PROBE_ENABLED__|${MODEL_PROBE_ENABLED}|g" \
+              -e "s|__MODEL_PROBE_MAX_SLOTS_PER_CYCLE__|${MODEL_PROBE_MAX_SLOTS_PER_CYCLE}|g" \
+              -e "s|__MODEL_PROBE_BUDGET_USD_PER_CYCLE__|${MODEL_PROBE_BUDGET_USD_PER_CYCLE}|g" \
+              -e "s|__MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT__|${MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT}|g" \
+              -e "s|__MODEL_PROBE_MODEL_ALLOWLIST__|${MODEL_PROBE_MODEL_ALLOWLIST_SED}|g" \
+              -e "s|__MODEL_PROBE_EVIDENCE_TTL_HOURS__|${MODEL_PROBE_EVIDENCE_TTL_HOURS}|g" \
+              -e "s|__BG_DEV_BOX_DEPLOYMENT_ID__|${BG_DEV_BOX_DEPLOYMENT_ID}|g" \
+              -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES__|${BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES}|g" \
+              -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES__|${BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES}|g" \
+              -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB__|${BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB}|g" \
+              -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS__|${BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS}|g" \
+              -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD__|${BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD}|g" \
+              -e "s|__BG_DEV_BOX_SSH_GRANT_ROLE_ARN__|${BG_DEV_BOX_SSH_GRANT_ROLE_ARN}|g" \
+              -e "s|__BG_DEV_BOX_CREW_BOOTSTRAP__|${BG_DEV_BOX_CREW_BOOTSTRAP}|g" \
+              -e "s|__CHAT_MODEL_POLICY_POSTURE__|${CHAT_MODEL_POLICY_POSTURE}|g" \
               -e "s|__AGENT_CONTROL_CLUSTER_POD_CIDRS__|${AGENT_CONTROL_CLUSTER_POD_CIDRS}|g" \
               -e "s|__AGENT_AUTHORITY_ENABLED__|${AGENT_AUTHORITY_ENABLED}|g" \
               -e "s|__ADP_WORK_CLAIMS_ENABLED__|${ADP_WORK_CLAIMS_ENABLED}|g" \
+              -e "s|__ADP_PRODUCT_STORY_DISPATCH_ENABLED__|${ADP_PRODUCT_STORY_DISPATCH_ENABLED}|g" \
               -e "s|__ADP_WORK_CLAIM_PRODUCER_ROLES__|${ADP_WORK_CLAIM_PRODUCER_ROLES}|g" \
               -e "s|__AGENT_AUTHORITY_TABLE__|${AGENT_AUTHORITY_TABLE}|g" \
               -e "s|__WEBHOOK_EVENTS_TABLE__|${WEBHOOK_EVENTS_TABLE}|g" \
+              -e "s|__ADP_TOOLS_GATEWAY_ROLE_ARN__|${ADP_TOOLS_GATEWAY_ROLE_ARN}|g" \
+              -e "s|__ADP_TOOLS_FACADE_ROLE_ARN__|${ADP_TOOLS_FACADE_ROLE_ARN}|g" \
+              -e "s|__ADP_TOOLS_ASSERTION_KEY_ARN__|${ADP_TOOLS_ASSERTION_KEY_ARN}|g" \
+              -e "s|__ADP_NATIVE_CREDENTIALS_ENABLED__|${ADP_NATIVE_CREDENTIALS_ENABLED}|g" \
+              -e "s|__ADP_NATIVE_CREDENTIALS_ISSUER__|${ADP_NATIVE_CREDENTIALS_ISSUER}|g" \
+              -e "s|__ADP_NATIVE_CREDENTIALS_APPROVAL_ORIGIN__|${ADP_NATIVE_CREDENTIALS_APPROVAL_ORIGIN}|g" \
+              -e "s|__ADP_NATIVE_CREDENTIALS_KEY_ID__|${ADP_NATIVE_CREDENTIALS_KEY_ID}|g" \
+              -e "s|__ADP_NATIVE_CREDENTIALS_KEY_ARN__|${ADP_NATIVE_CREDENTIALS_KEY_ARN}|g" \
               -e "s|__ADP_TASK_API_ADMISSION_ENABLED__|${ADP_TASK_API_ADMISSION_ENABLED}|g" \
               -e "s|__ADP_TASK_API_READ_ENABLED__|${ADP_TASK_API_READ_ENABLED}|g" \
               -e "s|__ADP_TASK_API_WORKER_ENABLED__|${ADP_TASK_API_WORKER_ENABLED}|g" \
               -e "s|__ADP_TASK_API_RECOVERY_ENABLED__|${ADP_TASK_API_RECOVERY_ENABLED}|g" \
               -e "s|__TASK_ARTIFACT_BUCKET_NAME__|${TASK_ARTIFACT_BUCKET_NAME}|g" \
+              -e "s|__MEMORY_TABLE__|${MEMORY_TABLE}|g" \
+              -e "s|__ARTIFACTS_TABLE__|${ARTIFACTS_TABLE}|g" \
+              -e "s|__ARTIFACTS_BUCKET__|${ARTIFACTS_BUCKET}|g" \
+              -e "s|__PRODUCT_SOURCE_SNAPSHOT_BUCKET__|${PRODUCT_SOURCE_SNAPSHOT_BUCKET}|g" \
               -e "s|__ADP_TASK_API_QUEUE_URL__|${ADP_TASK_API_QUEUE_URL}|g" \
               -e "s|__ADP_TASK_ADMISSION_PRODUCER_ROLES__|${ADP_TASK_ADMISSION_PRODUCER_ROLES}|g" \
               -e "s|__ADP_TASK_DISPATCH_PRODUCER_ROLES__|${ADP_TASK_DISPATCH_PRODUCER_ROLES}|g" \
@@ -657,11 +954,13 @@ jobs:
               -e "s|__ADP_TASK_WORKER_IMAGE_DIGESTS__|${ADP_TASK_WORKER_IMAGE_DIGESTS}|g" \
               -e "s|__ADP_TASK_WORKER_SERVICE_ACCOUNT__|${ADP_TASK_WORKER_SERVICE_ACCOUNT}|g" \
               -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
-              -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
               -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
               -e "s|__ADP_MODEL_ROOT_BINDINGS__|${ADP_MODEL_ROOT_BINDINGS_SED}|g" \
               -e "s|__ADP_ARC_MODEL_BINDINGS__|${ADP_ARC_MODEL_BINDINGS_SED}|g" \
               -e "s|__ADP_CHAT_WORKER_IMAGE_DIGESTS__|${ADP_CHAT_WORKER_IMAGE_DIGESTS_SED}|g" \
+              -e "s|__ADP_CHAT_SANDBOX_IMAGE_DIGESTS__|${ADP_CHAT_SANDBOX_IMAGE_DIGESTS_SED}|g" \
+              -e "s|__ADP_CHAT_CREW_IMAGE_DIGESTS__|${ADP_CHAT_CREW_IMAGE_DIGESTS_SED}|g" \
+              -e "s|__ADP_CHAT_WORKER_SERVICE_ACCOUNT__|${ADP_CHAT_WORKER_SERVICE_ACCOUNT}|g" \
               -e "s|__AGENT_AUTHORITY_KEY_ID__|${AGENT_AUTHORITY_KEY_ID}|g" \
               -e "s|__AGENT_TASK_SOURCE_ROLE_ARN__|${AGENT_TASK_SOURCE_ROLE_ARN}|g" \
               -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \
@@ -671,7 +970,23 @@ jobs:
               -e "s|__ADP_CHAT_INPUT_QUEUE_URL__|${ADP_CHAT_INPUT_QUEUE_URL}|g" \
               -e "s|__BG_INTAKE_CONTEXT_TABLE__|${BG_INTAKE_CONTEXT_TABLE}|g" \
               -e "s|__BG_INTAKE_INGEST_FUNCTION__|${BG_INTAKE_INGEST_FUNCTION}|g" \
-              modules/gateway/k8s/configmap.yaml | kubectl apply -f -
+              -e "s|__ADP_CHAT_DATA_URL__|${ADP_CHAT_DATA_URL}|g" \
+              -e "s|__ADP_CHAT_SANDBOX_CA_CONFIGMAP__|${ADP_CHAT_SANDBOX_CA_CONFIGMAP}|g" \
+              -e "s|__ADP_CHAT_DATA_ENABLED__|${ADP_CHAT_DATA_ENABLED}|g" \
+              -e "s|__CREW_PROXY_KEEPALIVE_SECONDS__|${CREW_PROXY_KEEPALIVE_SECONDS}|g" \
+              -e "s|__CREW_PROXY_MAX_CONN_PER_USER__|${CREW_PROXY_MAX_CONN_PER_USER}|g" \
+              -e "s|__FEATURE_CREW_DASHBOARD__|${FEATURE_CREW_DASHBOARD}|g" \
+              -e "s|__CREW_DASHBOARD_ORIGIN__|${CREW_DASHBOARD_ORIGIN}|g" \
+              -e "s|__ADP_CREW_CHECKPOINTS_ENABLED__|${ADP_CREW_CHECKPOINTS_ENABLED}|g" \
+              -e "s|__ADP_GITHUB_USER_ACCESS_ENABLED__|${ADP_GITHUB_USER_ACCESS_ENABLED}|g" \
+              -e "s|__ADP_CREW_CHECKPOINT_BUCKET__|${ADP_CREW_CHECKPOINT_BUCKET}|g" \
+              -e "s|__ADP_CREW_CHECKPOINT_RETENTION_SECONDS__|${ADP_CREW_CHECKPOINT_RETENTION_SECONDS}|g" \
+              -e "s|__ADP_TOOLS_CONSENT_DEFAULT__|${ADP_TOOLS_CONSENT_DEFAULT}|g" \
+              -e "s|__ADP_AGENTCORE_MEMORY_ID__|${ADP_AGENTCORE_MEMORY_ID}|g" \
+              -e "s|__ADP_AGENTCORE_MEMORY_STRATEGY_ID__|${ADP_AGENTCORE_MEMORY_STRATEGY_ID}|g" \
+              -e "s|__ADP_AGENTCORE_MEMORY_REGION__|${ADP_AGENTCORE_MEMORY_REGION}|g" \
+              modules/gateway/k8s/configmap.yaml |
+            python3 modules/gateway/scripts/tool-adapter-config.py "$ENVIRONMENT" "$AWS_REGION" "$ACCOUNT_ID" | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---
           # Stable signing material is provisioned by the operator. A release
@@ -717,6 +1032,7 @@ jobs:
             --from-literal=internal-api-key="$INTERNAL_API_KEY" \
             --from-literal=apigw-provenance-secret="$APIGW_PROVENANCE_SECRET" \
             --from-literal=magic-link-secret="$MAGIC_LINK_SECRET" \
+            --from-literal=agentcore-namespace-key="$ADP_AGENTCORE_NAMESPACE_KEY" \
             -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
           # --- Render and apply ServiceAccount (Section 3) ---
@@ -726,7 +1042,7 @@ jobs:
           # --- Apply remaining K8s manifests (service, ingress, pdb, etc.) ---
           for f in modules/gateway/k8s/*.yaml; do
             case "$(basename "$f")" in
-              configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
+              configmap.yaml|serviceaccount.yaml|deployment.yaml|atlassian-mcp-recovery.yaml|targetgroupbinding.yaml|hpa.yaml|pdb.yaml) continue ;;
             esac
             # Namespace and IngressClass are platform-owned cluster resources,
             # even when -n is supplied. Detect by rendered Kind so a rename
@@ -744,17 +1060,28 @@ jobs:
         id: release
         env:
           ADP_INPUT_3965067AD6: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          ADP_PROFILE_ROLLBACK: ${{ inputs.product_rollback || 'false' }}
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
+          ADP_APPROVED_ROLLBACK_SOURCE: ${{ vars.ADP_PRODUCT_COMPATIBLE_ROLLBACK_SOURCE }}
+          ADP_DEPLOYED_BASELINE_SOURCE: ${{ steps.deployed.outputs.baseline }}
         run: |
           set -euo pipefail
           RENDERED_DEPLOYMENT=$(mktemp)
-          trap 'rm -f "$RENDERED_DEPLOYMENT"' EXIT
+          CAPACITY_BUNDLE=$(mktemp -d)
+          trap 'rm -f "$RENDERED_DEPLOYMENT"; rm -rf "$CAPACITY_BUNDLE"' EXIT
           EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           RELEASE_IMAGE=$(python3 platform/scripts/resolve-ecr-image.py \
             "${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}")
           echo "digest=${RELEASE_IMAGE##*@}" >> "$GITHUB_OUTPUT"
 
-          get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+          # Snapshot exactly this step's configuration with <=10 names per API call.
+          # Missing parameters keep their existing defaults; read failures stop rendering.
+          SSM_SNAPSHOT=$(mktemp)
+          python3 "$RUNNER_TEMP/adp-gateway-control/batch-ssm.py" "$0" "$ENVIRONMENT" "$SSM_SNAPSHOT"
+          source "$SSM_SNAPSHOT"
+          rm -f "$SSM_SNAPSHOT"
+          get_ssm() { printf '%s\n' "${ADP_SSM_VALUES[plain:$1]-${2:-}}"; }
 
           # Deployment defaults enable orchestration. SSM provides explicit
           # per-environment overrides for orchestration and optional menu entries.
@@ -800,6 +1127,23 @@ jobs:
           fi
           echo "new UI shell for ${ENVIRONMENT}: ${FEATURE_NEW_UI_ENABLED}"
 
+          BG_INSIGHTS_RESULTS_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/insights-results-bucket" "")
+          if [[ -n "$BG_INSIGHTS_RESULTS_BUCKET" && ! "$BG_INSIGHTS_RESULTS_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+            echo "::error::Invalid Insights results bucket setting"; exit 1
+          fi
+          L5_WORK_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/gateway/l5-work-queue-url" "")
+          [[ "$L5_WORK_QUEUE_URL" =~ ^https://sqs\.[a-z0-9-]+\.amazonaws\.com/[0-9]{12}/adp-${ENVIRONMENT}-l5-work$ ]] || L5_WORK_QUEUE_URL=""
+          L5_CONSUMER_TARGETS=$(get_ssm "/adp/${ENVIRONMENT}/gateway/l5-consumer-targets" "{}")
+          L5_CONSUMER_TARGETS=$(printf '%s' "$L5_CONSUMER_TARGETS" | python3 "modules/gateway/src/l5_consumer_config.py")
+          L5_FINOPS_ADMISSION_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/l5-finops-admission-enabled" "false")
+          [[ "$L5_FINOPS_ADMISSION_ENABLED" == "true" ]] || L5_FINOPS_ADMISSION_ENABLED="false"
+          BG_PRODUCT_PROFILE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/product-profile-enabled" "false")
+          BG_PRODUCT_ONBOARDING_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/product-onboarding-enabled" "false")
+          [[ "$BG_PRODUCT_PROFILE_ENABLED" == "true" ]] || BG_PRODUCT_PROFILE_ENABLED="false"
+          [[ "$BG_PRODUCT_ONBOARDING_ENABLED" == "true" ]] || BG_PRODUCT_ONBOARDING_ENABLED="false"
+          echo "profile_enabled=$BG_PRODUCT_PROFILE_ENABLED" >> "$GITHUB_OUTPUT"
+          echo "onboarding_enabled=$BG_PRODUCT_ONBOARDING_ENABLED" >> "$GITHUB_OUTPUT"
+
           # Basic saved mappings ship enabled. An explicit environment UI
           # override remains authoritative; protected worker activation is separate.
           PERSONA_MODEL_MAPPING_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/persona-model-mapping-enabled" "true")
@@ -809,35 +1153,147 @@ jobs:
           fi
           echo "Agent Models for ${ENVIRONMENT}: ${FEATURE_AGENT_MODELS_ENABLED}"
 
+          # Chief-of-Staff surfaces (#7197), one environment at a time. Absent or
+          # malformed => off; `_is_enabled_strict` accepts only the literal "true".
+          # crew-dashboard-origin is written by gateway infra when the Crew edge is
+          # enabled (docs/chief-of-staff/crew-dashboard-edge.md); empty keeps the
+          # Crew proxy closed.
+          FEATURE_CHAT_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-chat" "false")
+          FEATURE_ASSISTANT_UI_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-assistant-ui" "false")
+          FEATURE_CREW_DASHBOARD=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-crew-dashboard" "false")
+          CREW_PROXY_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/crew-proxy-enabled" "false")
+          CREW_DASHBOARD_ORIGIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/crew-dashboard-origin" "")
+          for name in FEATURE_CHAT_ENABLED FEATURE_ASSISTANT_UI_ENABLED FEATURE_CREW_DASHBOARD CREW_PROXY_ENABLED; do
+            if [ -z "${!name}" ] || [ "${!name}" = "None" ]; then printf -v "$name" '%s' "false"; fi
+          done
+          if [ "$CREW_DASHBOARD_ORIGIN" = "None" ]; then CREW_DASHBOARD_ORIGIN=""; fi
+          echo "Chief-of-Staff surfaces for ${ENVIRONMENT}: chat=${FEATURE_CHAT_ENABLED} assistant_ui=${FEATURE_ASSISTANT_UI_ENABLED} crew=${FEATURE_CREW_DASHBOARD}/${CREW_PROXY_ENABLED} origin_set=$([ -n "$CREW_DASHBOARD_ORIGIN" ] && echo yes || echo no)"
+          # Browser-hop WebSocket ping (#7902): the same parameter as the ConfigMap's
+          # CREW_PROXY_KEEPALIVE_SECONDS. 0 deletes the UVICORN_WS_PING_INTERVAL name/value
+          # pair from the manifest (uvicorn treats 0 as a tight loop, not "off").
+          UVICORN_WS_PING_INTERVAL=$(get_ssm "/adp/${ENVIRONMENT}/gateway/crew-proxy-keepalive-seconds" "25")
+          [[ "$UVICORN_WS_PING_INTERVAL" =~ ^[0-9]+$ ]] || UVICORN_WS_PING_INTERVAL="25"
+          if [[ "$UVICORN_WS_PING_INTERVAL" =~ ^0+$ ]]; then
+            UVICORN_WS_PING_INTERVAL_SED='/^ *- name: UVICORN_WS_PING_INTERVAL$/{N;d;}'
+          else
+            UVICORN_WS_PING_INTERVAL_SED="s|__UVICORN_WS_PING_INTERVAL__|${UVICORN_WS_PING_INTERVAL}|g"
+          fi
+
           # Render then apply, so changes to probes, env, resource limits, volume
           # mounts, etc. actually propagate.
-          sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+          sed -e "$UVICORN_WS_PING_INTERVAL_SED" \
+              -e "s|REPLACE_WITH_GATEWAY_IMAGE|${RELEASE_IMAGE}|g" \
+              -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
               -e "s|__FEATURE_KNOWLEDGE_ENABLED__|${FEATURE_KNOWLEDGE_ENABLED}|g" \
               -e "s|__FEATURE_INDEXING_ENABLED__|${FEATURE_INDEXING_ENABLED}|g" \
               -e "s|__FEATURE_TENANT_ORG_LINKS_ENABLED__|${FEATURE_TENANT_ORG_LINKS_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_EXPLANATIONS_ENABLED__|${FEATURE_AGENT_EXPLANATIONS_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
               -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
+              -e "s|__L5_DEPLOYMENT_ENV__|${ENVIRONMENT}|g" \
+              -e "s|__L5_WORK_QUEUE_URL__|${L5_WORK_QUEUE_URL}|g" \
+              -e "s|__L5_FINOPS_ADMISSION_ENABLED__|${L5_FINOPS_ADMISSION_ENABLED}|g" \
+              -e "s|__L5_CONSUMER_TARGETS__|${L5_CONSUMER_TARGETS}|g" \
+              -e "s|__BG_PRODUCT_PROFILE_ENABLED__|${BG_PRODUCT_PROFILE_ENABLED}|g" \
+              -e "s|__BG_INSIGHTS_RESULTS_BUCKET__|${BG_INSIGHTS_RESULTS_BUCKET}|g" \
+              -e "s|__BG_PRODUCT_ONBOARDING_ENABLED__|${BG_PRODUCT_ONBOARDING_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_MODELS_ENABLED__|${FEATURE_AGENT_MODELS_ENABLED}|g" \
+              -e "s|__FEATURE_CHAT_ENABLED__|${FEATURE_CHAT_ENABLED}|g" \
+              -e "s|__FEATURE_ASSISTANT_UI_ENABLED__|${FEATURE_ASSISTANT_UI_ENABLED}|g" \
+              -e "s|__FEATURE_CREW_DASHBOARD__|${FEATURE_CREW_DASHBOARD}|g" \
+              -e "s|__CREW_PROXY_ENABLED__|${CREW_PROXY_ENABLED}|g" \
+              -e "s|__CREW_DASHBOARD_ORIGIN__|${CREW_DASHBOARD_ORIGIN}|g" \
               modules/gateway/k8s/deployment.yaml > "$RENDERED_DEPLOYMENT"
+          python3 "$RUNNER_TEMP/adp-gateway-control/render-capacity.py" \
+            --manifest "$RENDERED_DEPLOYMENT" --root modules/gateway/k8s \
+            --environment "$ENVIRONMENT" --output-dir "$CAPACITY_BUNDLE"
+          cp "$CAPACITY_BUNDLE/deployment.json" "$RENDERED_DEPLOYMENT"
+          python3 "$RUNNER_TEMP/adp-gateway-control/capacity-lock.py" verify \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+            --cluster "$EKS_CLUSTER" --namespace "$NAMESPACE" \
+            --owner-file "$RUNNER_TEMP/adp-gateway-control/capacity-owner.json"
 
           # Nullable schema expansion must finish before the new ORM can serve.
           # A bounded lock/index failure leaves the previous release serving.
-          python3 modules/gateway/scripts/migrate-before-rollout.py \
-            --manifest "$RENDERED_DEPLOYMENT" \
-            --image "$RELEASE_IMAGE" \
+          if [ "$ADP_PROFILE_ROLLBACK" = "true" ]; then
+            test -n "$ADP_MANUAL_SOURCE" && test "$ADP_MANUAL_SOURCE" = "$ADP_INPUT_3965067AD6"
+            test "$ENVIRONMENT" = "dev"
+            test -n "$ADP_DEPLOYED_BASELINE_SOURCE"
+            test "$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/product-profile-enabled" --query Parameter.Value --output text)" = "false"
+            test "$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/product-onboarding-enabled" --query Parameter.Value --output text)" = "false"
+            BASELINE_IMAGE=$(python3 platform/scripts/resolve-ecr-image.py \
+              "${REGISTRY}/adp-gateway:${ADP_DEPLOYED_BASELINE_SOURCE}")
+            python3 "$RUNNER_TEMP/adp-gateway-control/product-recovery.py" \
+              --namespace "$NAMESPACE" --baseline-image "$BASELINE_IMAGE" \
+              --baseline-source "$ADP_DEPLOYED_BASELINE_SOURCE" \
+              --rollback-source "$ADP_INPUT_3965067AD6" \
+              --approved-source "$ADP_APPROVED_ROLLBACK_SOURCE" \
+              --candidate-manifest "$RENDERED_DEPLOYMENT" \
+              --receipt "$RUNNER_TEMP/product-recovery.json"
+          else
+            python3 modules/gateway/scripts/migrate-before-rollout.py \
+              --manifest "$RENDERED_DEPLOYMENT" \
+              --image "$RELEASE_IMAGE" \
+              --namespace "$NAMESPACE"
+          fi
+          # Observe capacity after migration and refuse concurrent scale changes.
+          # The maintained helper retains apply pruning and the same pinned image.
+          python3 "$RUNNER_TEMP/adp-gateway-control/capacity-lock.py" verify \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+            --cluster "$EKS_CLUSTER" --namespace "$NAMESPACE" \
+            --owner-file "$RUNNER_TEMP/adp-gateway-control/capacity-owner.json"
+          python3 "$RUNNER_TEMP/adp-gateway-control/render-capacity.py" \
+            --environment "$ENVIRONMENT" --verify-bundle "$CAPACITY_BUNDLE"
+          python3 "$RUNNER_TEMP/adp-gateway-control/apply-deployment.py" \
+            --manifest "$RENDERED_DEPLOYMENT" --image "$RELEASE_IMAGE" \
             --namespace "${{ env.NAMESPACE }}"
-          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${RELEASE_IMAGE}|g" \
-            "$RENDERED_DEPLOYMENT" | kubectl apply -f - -n ${{ env.NAMESPACE }}
-
-          # Keep the workload pinned to the same immutable image used by migrations.
-          kubectl set image deployment/bedrockgateway \
-            "bedrockgateway=${RELEASE_IMAGE}" \
-            -n ${{ env.NAMESPACE }}
+          sed -e "s|REPLACE_WITH_GATEWAY_IMAGE|${RELEASE_IMAGE}|g" \
+              modules/gateway/k8s/atlassian-mcp-recovery.yaml | kubectl apply -n "$NAMESPACE" -f -
+          python3 "$RUNNER_TEMP/adp-gateway-control/capacity-lock.py" verify \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+            --cluster "$EKS_CLUSTER" --namespace "$NAMESPACE" \
+            --owner-file "$RUNNER_TEMP/adp-gateway-control/capacity-owner.json"
+          python3 "$RUNNER_TEMP/adp-gateway-control/render-capacity.py" \
+            --environment "$ENVIRONMENT" --verify-bundle "$CAPACITY_BUNDLE"
+          kubectl apply -f "$CAPACITY_BUNDLE/pdb.json" -n "$NAMESPACE"
+          python3 "$RUNNER_TEMP/adp-gateway-control/capacity-lock.py" verify \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+            --cluster "$EKS_CLUSTER" --namespace "$NAMESPACE" \
+            --owner-file "$RUNNER_TEMP/adp-gateway-control/capacity-owner.json"
+          python3 "$RUNNER_TEMP/adp-gateway-control/render-capacity.py" \
+            --environment "$ENVIRONMENT" --verify-bundle "$CAPACITY_BUNDLE"
+          kubectl apply -f "$CAPACITY_BUNDLE/hpa.json" -n "$NAMESPACE"
 
           # HPA may add replicas during rollout, and each replacement needs its
-          # readiness probe before the previous pod can drain.
-          kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=600s
+          # readiness probe before the previous pod can drain. The Deployment
+          # rolls with maxSurge 50%, so this wait is two waves of pod startup,
+          # not one pod at a time. Terminating pods are not counted in the
+          # Deployment status, so the 960 s drain grace does not extend it.
+          kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=1200s
+          python3 "$RUNNER_TEMP/adp-gateway-control/capacity-lock.py" verify \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+            --cluster "$EKS_CLUSTER" --namespace "$NAMESPACE" \
+            --owner-file "$RUNNER_TEMP/adp-gateway-control/capacity-owner.json"
+          python3 "$RUNNER_TEMP/adp-gateway-control/render-capacity.py" \
+            --environment "$ENVIRONMENT" --verify-applied "$CAPACITY_BUNDLE"
+      - name: Release gateway capacity ownership
+        if: ${{ always() && steps.capacity_lock.outcome == 'success' }}
+        run: |
+          python3 "$RUNNER_TEMP/adp-gateway-control/capacity-lock.py" release \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+            --cluster "$EKS_CLUSTER" --namespace "$NAMESPACE" \
+            --owner-file "$RUNNER_TEMP/adp-gateway-control/capacity-owner.json"
+
+      - name: Converge registered auxiliary gateway writers
+        env:
+          WRITER_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway@${{ steps.release.outputs.digest }}
+          WRITER_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+        run: |
+          python3 "$RUNNER_TEMP/adp-gateway-control/writers.py" \
+            --image "$WRITER_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
+            --cluster "$EKS_CLUSTER" --namespace "$NAMESPACE" \
+            --gateway-root modules/gateway --source-revision "$WRITER_SOURCE" \
+            --report "$RUNNER_TEMP/gateway-writers-rollout.json"
       - name: Update the scheduled orchestration engine
         env:
           ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
@@ -1005,8 +1461,22 @@ jobs:
             --verify-only --image "$ENGINE_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
             --environment "$ENVIRONMENT" --namespace "$NAMESPACE"
 
+      - name: Verify every active gateway writer before release evidence
+        env:
+          WRITER_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway@${{ steps.release.outputs.digest }}
+          WRITER_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+        run: |
+          python3 "$RUNNER_TEMP/adp-gateway-control/writers.py" --verify-only \
+            --image "$WRITER_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
+            --cluster "$EKS_CLUSTER" --namespace "$NAMESPACE" \
+            --gateway-root modules/gateway --source-revision "$WRITER_SOURCE" \
+            --report "$RUNNER_TEMP/gateway-writers-verified.json"
+
       - name: Record gateway-backend build evidence
         env:
+          ADP_PRODUCT_PROFILE_ENABLED: ${{ steps.release.outputs.profile_enabled }}
+          ADP_PRODUCT_ONBOARDING_ENABLED: ${{ steps.release.outputs.onboarding_enabled }}
+          ADP_PROFILE_ROLLBACK: ${{ inputs.product_rollback || 'false' }}
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           ADP_RELEASE_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
@@ -1032,7 +1502,7 @@ jobs:
 
   deploy-frontend:
     name: Build and Deploy Frontend
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     environment: adp-frontend-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, deploy-backend]
     # Backend job is optional — run the frontend even when backend is skipped.
@@ -1042,6 +1512,8 @@ jobs:
       github.ref == 'refs/heads/main' && (
       always() &&
       github.event_name == 'workflow_dispatch' &&
+      !inputs.product_rollback &&
+      (inputs.release_group == '' || inputs.release_group == 'none') &&
       needs.changes.outputs.frontend == 'true' &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
       )
@@ -1066,6 +1538,27 @@ jobs:
           test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Load maintained frontend deployment guard
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "$ADP_WORKFLOW_REVISION"
+          git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"
+          git show "$ADP_WORKFLOW_REVISION:scripts/check-assistant-deploy-boundary.sh" > "$RUNNER_TEMP/adp-frontend-assistant-guard.sh"
+
+      - name: Guard assistant frontend deployment
+        env:
+          ADP_ASSISTANT_DEPLOY_COMPONENT: frontend
+          ADP_ASSISTANT_DEPLOY_TARGET: adp-frontend-deploy-${{ inputs.environment || 'dev' }}
+          ADP_ASSISTANT_DEPLOY_CANDIDATE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          ADP_ASSISTANT_APPROVED_TARGET: ${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}
+          ADP_ASSISTANT_APPROVED_REVISION: ${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}
+          ADP_ASSISTANT_DISPATCH_APPROVED_REVISION: ${{ inputs.adp_approved_revision }}
+          ADP_DEPLOYED_BASELINE: ''
+        run: bash "$RUNNER_TEMP/adp-frontend-assistant-guard.sh"
 
       - name: Establish trusted deployment identity
         uses: ./.github/actions/trusted-deployment
@@ -1108,6 +1601,8 @@ jobs:
           INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label || '' }}
           INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
           INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          INPUT_PRODUCT_CASES: ${{ inputs.product_cases || 'none' }}
+          INPUT_PROOF_PHASE: ${{ inputs.proof_phase || 'none' }}
         run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-workflow-context.py"
       - name: Publish deployment workflow context to S3
         if: needs.deploy-backend.result == 'skipped'
@@ -1227,7 +1722,7 @@ jobs:
     name: Verify and activate daily pricing
     needs: [deploy-backend, run-migrations]
     if: github.ref == 'refs/heads/main' && (needs.deploy-backend.result == 'success' && needs.run-migrations.result == 'success')
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       contents: read
@@ -1290,25 +1785,274 @@ jobs:
       contents: read
       id-token: write
     name: Post-deploy Smoke Test
-    needs: [deploy-backend, deploy-frontend, run-migrations, finalize-pricing]
+    needs: [deploy-backend, deploy-frontend]
     # Issue #3031: Real-token smoke against the deployed gateway.
-    # Runs after backend + frontend + migrations are done. Skipped dependencies
-    # are fine (e.g. frontend-only push still triggers smoke if backend succeeded
-    # in a prior run).
+    # Runs as soon as backend + frontend are done. Skipped dependencies are fine
+    # (e.g. frontend-only push still triggers smoke if backend succeeded in a
+    # prior run). It used to also wait on run-migrations and finalize-pricing,
+    # which serialised ~2.5 min of pricing work in front of a smoke that only
+    # exercises /status and /connections; the pricing chain now runs alongside
+    # it (and alongside the Dev Box controller refresh) instead of in front.
     if: |
       always() &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped') &&
-      (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped') &&
-      (needs.run-migrations.result == 'success' || needs.run-migrations.result == 'skipped') &&
-      (needs.finalize-pricing.result == 'success' || needs.finalize-pricing.result == 'skipped')
+      (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped')
     uses: ./.github/workflows/gateway-smoke.yml
-    # Graceful skip: when the smoke token hasn't been captured yet, the workflow
-    # exits cleanly (token step exits 0 → subsequent steps skip → job succeeds).
-    # Once the token is live and validated, smoke failures WILL fail this run
-    # (which is intentional — regressions should block deploys).
+    # Ordinary releases may skip a missing smoke token; selected Product
+    # acceptance requires the real-token smoke, so an absent token fails this
+    # dependency and prevents Product cases from starting.
     with:
+      require_token: ${{ inputs.product_cases != '' && inputs.product_cases != 'none' }}
+      product_profile: ${{ inputs.product_cases != '' && inputs.product_cases != 'none' }}
       environment: ${{ inputs.environment || 'dev' }}
       account_id: ${{ inputs.account_id || '' }}
       customer_account_id: ${{ inputs.customer_account_id || '' }}
       customer_aws_label: ${{ inputs.customer_aws_label || '' }}
       customer_user_id: ${{ inputs.customer_user_id || '' }}
+
+  identity-proof:
+    if: >-
+      github.ref == 'refs/heads/main' && inputs.proof_phase == 'stage.identity-proof' &&
+      inputs.environment == 'dev' && inputs.product_cases == 'none' &&
+      needs.deploy-backend.result == 'success'
+    needs: [deploy-backend]
+    runs-on: arc-runner-deploy
+    environment: adp-gateway-deploy-dev
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+      GATEWAY_REVISION: ${{ inputs.adp_source_revision }}
+      PROOF_PHASE: ${{ inputs.proof_phase }}
+      EXPECTED_ROLE: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      WORKFLOW_REVISION: ${{ github.workflow_sha }}
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_definition_revision || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.adp_definition_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Require bound proof source and workflow definition
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ && "$DEFINITION_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ADP_CORRELATION" =~ ^([0-9a-f]{64}|orch:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ && -z "$MANUAL_SOURCE" ]]
+          [[ "$SOURCE_REVISION" == "$GATEWAY_REVISION" ]]
+          [[ "$GITHUB_SHA" == "$DEFINITION_REVISION" && "$WORKFLOW_REVISION" == "$DEFINITION_REVISION" && "$(git rev-parse HEAD)" == "$DEFINITION_REVISION" ]]
+          git merge-base --is-ancestor "$SOURCE_REVISION" HEAD
+          git diff --quiet "$SOURCE_REVISION" HEAD -- tests/e2e/tools/atlassian_* tests/e2e/tools/test_atlassian_* docs/tools/atlassian-mcp/ .github/workflows/gateway-deploy.yml
+          [[ "$EXPECTED_ROLE" =~ ^arn:aws:iam::([0-9]{12}):role/adp-[a-z0-9-]+-trusted-deployment$ ]]
+          echo "EXPECTED_ACCOUNT=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+      - name: Preserve runner identity for private readback
+        run: |
+          set -euo pipefail
+          test -n "$AWS_ROLE_ARN"
+          test -f "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          printf 'CI_EVIDENCE_RUNNER_ROLE_ARN=%s\nCI_EVIDENCE_RUNNER_TOKEN_FILE=%s\n' "$AWS_ROLE_ARN" "$AWS_WEB_IDENTITY_TOKEN_FILE" >> "$GITHUB_ENV"
+      - name: Establish trusted identity for signed proof publication
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install generated-fixture test dependencies
+        run: bash tests/e2e/tools/atlassian_identity_ci.sh install
+      - name: Exercise the three controlled procedures and safety regressions
+        run: bash tests/e2e/tools/atlassian_identity_ci.sh run
+      - name: Retain controlled proof report privately
+        id: publish-proof
+        if: always()
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: atlassian-identity-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/atlassian-identity-proof/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Independently read back the bound controlled report
+        if: always()
+        env:
+          CI_EVIDENCE_MANIFEST_URI: ${{ steps.publish-proof.outputs.manifest-uri }}
+          CI_EVIDENCE_MANIFEST_VERSION: ${{ steps.publish-proof.outputs.manifest-version }}
+        run: python -m tests.e2e.tools.atlassian_phase readback
+      - name: Stage bounded proof summary after private readback
+        env:
+          CI_EVIDENCE_MANIFEST_URI: ${{ steps.publish-proof.outputs.manifest-uri }}
+          CI_EVIDENCE_MANIFEST_VERSION: ${{ steps.publish-proof.outputs.manifest-version }}
+        run: python -m tests.e2e.tools.atlassian_evaluator
+      - name: Publish bounded proof summary for native evaluation
+        env:
+          ACCOUNT_ID: ${{ env.EXPECTED_ACCOUNT }}
+          EXPECTED_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python modules/gateway/scripts/publish-deployment-evidence.py repository-artifact identity-proof "$RUNNER_TEMP/atlassian-stage-summary.json"
+
+  product-acceptance-guard:
+    if: always() && inputs.product_cases != '' && inputs.product_cases != 'none'
+    needs: [deploy-backend, deploy-frontend, run-migrations, finalize-pricing, smoke-test]
+    runs-on: arc-runner-deploy
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require matched protected Gateway release before Product cases
+        env:
+          PRODUCT_CASES: ${{ inputs.product_cases }}
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          REQUIRED_JOBS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          test "$PRODUCT_CASES" = 'api_product_lifecycle,api_denial_oracle,api_recovery_cleanup'
+          test "$DEPLOY_ENVIRONMENT" = dev
+          test -z "$ADP_MANUAL_SOURCE"
+          test -n "$ADP_CORRELATION"
+          [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          python3 - <<'PY'
+          import json
+          import os
+
+          results = json.loads(os.environ['REQUIRED_JOBS'])
+          required = {'deploy-backend', 'deploy-frontend', 'run-migrations', 'finalize-pricing', 'smoke-test'}
+          if set(results) != required or any(results[name]['result'] != 'success' for name in required):
+              raise SystemExit('Product acceptance requires a successful matched Gateway deployment and smoke')
+          PY
+
+  product-cli-evidence:
+    needs: product-acceptance-guard
+    if: inputs.product_cases != '' && inputs.product_cases != 'none'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/eval-cli-uplift.yml
+    secrets: inherit
+    with:
+      target_environment: dev
+      environment: dev
+      expected_revision: ${{ inputs.adp_source_revision }}
+      # This checkpoint supplies V03's installed CLI evidence. D01's release
+      # and rollback scenarios remain separate acceptance requirements.
+      suites: case:PR03-C01,case:PR03-C02,case:PR03-C03
+      product_run_id: ${{ format('product-{0}-{1}', github.run_id, github.run_attempt) }}
+
+  product-acceptance:
+    needs: [product-acceptance-guard, product-cli-evidence]
+    if: inputs.product_cases != '' && inputs.product_cases != 'none'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/gateway-live-tests.yml
+    secrets: inherit
+    with:
+      target_environment: dev
+      product_cases: ${{ inputs.product_cases }}
+      expected_revision: ${{ inputs.adp_source_revision }}
+
+  product-recovery:
+    needs: [product-acceptance-guard, product-cli-evidence, product-acceptance]
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      (inputs.environment || 'dev') == 'dev' &&
+      inputs.product_cases == 'api_product_lifecycle,api_denial_oracle,api_recovery_cleanup' &&
+      needs.product-acceptance-guard.result == 'success' &&
+      needs.product-cli-evidence.result == 'success' &&
+      needs.product-acceptance.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/gateway-product-recovery.yml
+    secrets: inherit
+    with:
+      expected_revision: ${{ inputs.adp_source_revision }}
+
+  refresh-dev-box-controller:
+    permissions:
+      contents: read
+      id-token: write
+    name: Refresh Dev Box controller to the released gateway image
+    # The optional dev-box-controller runs the gateway image and imports gateway code
+    # from it, so it must follow every gateway release (dev 2026-10-18: it ran a
+    # six-hour-old image and code after the gateway had rolled twice). This job is
+    # deliberately OFF the gateway's critical path: it runs after deploy-backend in
+    # parallel with frontend/migrations/smoke, nothing depends on it, it is bounded
+    # to a short rollout wait, and continue-on-error keeps it from ever failing or
+    # delaying a gateway deploy. It is a no-op where Dev Box is not deployed. Code
+    # drift is handled by dev-box-controller-deploy.yml; both call the same script,
+    # and both take controller code from main so a deploy never rolls it back (#8223
+    # cause 54).
+    needs: [changes, deploy-backend]
+    if: github.ref == 'refs/heads/main' && needs.deploy-backend.result == 'success'
+    runs-on: arc-runner-deploy
+    environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
+    continue-on-error: true
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Refresh the controller to the digest this run released
+        # Controller CODE comes from origin/main, not from this run's checkout: a deploy
+        # started from an older commit (a queued push, a workflow_dispatch ref) must not
+        # replace a controller fix merged since (#8223 cause 54, dev 2026-10-22 07:03: a
+        # 06:20 workflow_dispatch run undid controller code merged at 06:55). The IMAGE is
+        # this run's release, which is the gateway deploy's legitimate job. The script
+        # itself also refuses to roll code back (see refresh-controller.sh), so a stale
+        # origin/main fetch cannot regress the controller either.
+        env:
+          RELEASE_DIGEST: ${{ needs.deploy-backend.outputs.release_digest }}
+        run: |
+          set -euo pipefail
+          [ -n "$RELEASE_DIGEST" ] || { echo "no release digest from deploy-backend; nothing to refresh"; exit 0; }
+          git fetch --no-tags origin main
+          MAIN_REVISION=$(git rev-parse origin/main)
+          CONTROLLER_CHECKOUT="${RUNNER_TEMP}/dev-box-controller-main"
+          git worktree add --detach "$CONTROLLER_CHECKOUT" "$MAIN_REVISION"
+          echo "controller code from origin/main @ $MAIN_REVISION (this run: $(git rev-parse HEAD))"
+          export KUBECONFIG="${RUNNER_TEMP}/dev-box-controller-kubeconfig"
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG"
+          bash "$CONTROLLER_CHECKOUT/modules/user-services/dev-box/scripts/refresh-controller.sh" \
+            --namespace adp-gateway \
+            --image "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway@${RELEASE_DIGEST}" \
+            --source-revision "$MAIN_REVISION" --timeout 240s

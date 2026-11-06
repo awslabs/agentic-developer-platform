@@ -4,6 +4,9 @@ import { getAccessToken, clearTokens } from './auth';
 
 const API_BASE_URL = deploymentSetting('VITE_API_URL') || '/api';
 
+/** Safe, user-facing failures from retained-artifact verification. */
+export class ArtifactVerificationError extends Error {}
+
 export class ApiClient {
   private baseUrl: string;
   private getToken: () => string | null;
@@ -18,7 +21,7 @@ export class ApiClient {
     this.getToken = getter;
   }
 
-  private async handleResponse<T>(response: Response): Promise<T> {
+  private async handleResponse<T>(response: Response, preserveSessionOnUnauthorized = false): Promise<T> {
     if (!response.ok) {
       let errorData: ApiError;
       try {
@@ -30,7 +33,7 @@ export class ApiClient {
         };
       }
 
-      if (response.status === 401) {
+      if (response.status === 401 && !preserveSessionOnUnauthorized) {
         // Clear tokens and redirect to login
         clearTokens();
         window.location.href = '/login';
@@ -65,7 +68,7 @@ export class ApiClient {
     }
   }
 
-  async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+  private async send(endpoint: string, options: RequestOptions = {}): Promise<Response> {
     const { method = 'GET', headers = {}, body, signal } = options;
 
     const token = this.getToken();
@@ -90,12 +93,53 @@ export class ApiClient {
     }
 
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability
-    const response = await fetch(`${this.baseUrl}${endpoint}`, config);
-    return this.handleResponse<T>(response);
+    return fetch(`${this.baseUrl}${endpoint}`, config);
   }
 
-  async get<T>(endpoint: string, signal?: AbortSignal): Promise<T> {
-    return this.request<T>(endpoint, { method: 'GET', signal });
+  async requestVerifiedText(endpoint: string, sha256: string): Promise<string> {
+    const response = await this.send(endpoint);
+    if (!response.ok) return this.handleResponse<string>(response);
+    if (!['text/x-diff', 'text/plain'].includes(response.headers.get('Content-Type')?.split(';')[0] ?? '')
+      || response.headers.get('X-Adp-Content-Sha256') !== sha256) throw new Error('Artifact metadata does not match the retained patch.');
+    const contents = await response.arrayBuffer();
+    if (contents.byteLength > 1024 * 1024) throw new Error('Patch exceeds the in-browser inspection limit.');
+    const digest = await crypto.subtle.digest('SHA-256', contents);
+    const observed = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    if (observed !== sha256) throw new Error('Artifact digest does not match the retained patch.');
+    return new TextDecoder('utf-8', { fatal: true }).decode(contents);
+  }
+
+  async requestVerifiedJson(endpoint: string, reference: { sha256: string; bytes: number }, signal?: AbortSignal): Promise<unknown> {
+    if (!/^[a-f0-9]{64}$/.test(reference.sha256) || !Number.isSafeInteger(reference.bytes)
+      || reference.bytes < 1 || reference.bytes > 8 * 1024 * 1024) throw new ArtifactVerificationError('Report artifact identity is invalid.');
+    const response = await this.send(endpoint, { signal });
+    if (!response.ok) return this.handleResponse<unknown>(response);
+    if (response.headers.get('Content-Type')?.split(';')[0] !== 'application/json'
+      || response.headers.get('X-Adp-Content-Sha256') !== reference.sha256) throw new ArtifactVerificationError('Report artifact metadata changed.');
+    const contents = await response.arrayBuffer();
+    if (contents.byteLength !== reference.bytes) throw new ArtifactVerificationError('Report artifact length changed.');
+    const digest = await crypto.subtle.digest('SHA-256', contents);
+    const observed = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    if (observed !== reference.sha256) throw new ArtifactVerificationError('Report artifact digest changed.');
+    signal?.throwIfAborted();
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(contents));
+  }
+
+  async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+    const response = await this.send(endpoint, options);
+    return this.handleResponse<T>(response, options.preserveSessionOnUnauthorized);
+  }
+
+  async requestWithEtag<T>(endpoint: string, options: RequestOptions = {}): Promise<{ value: T; etag: string }> {
+    const response = await this.send(endpoint, options);
+    const value = await this.handleResponse<T>(response, options.preserveSessionOnUnauthorized);
+    const etag = response.headers.get('ETag');
+    if (!etag) throw new Error('The service did not return a revision token. Refresh before editing.');
+    return { value, etag };
+  }
+
+  async get<T>(endpoint: string, signal?: AbortSignal, preserveSessionOnUnauthorized = false): Promise<T> {
+    return this.request<T>(endpoint, { method: 'GET', signal, preserveSessionOnUnauthorized });
   }
 
   async post<T>(endpoint: string, body?: unknown, signal?: AbortSignal): Promise<T> {

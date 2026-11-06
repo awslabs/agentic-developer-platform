@@ -281,6 +281,7 @@ async def _resolve_setup_initiator(*, subject: str, org_id: str, username: str, 
     uses the selected organization, which can be represented by a foreign-home User
     plus a tenant membership. The selected tenant is therefore stored separately.
     """
+    from sqlalchemy import select
     from sqlalchemy.exc import MultipleResultsFound
 
     from src.shared.identity.workspaces import login_user, workspace_user
@@ -304,8 +305,12 @@ async def _resolve_setup_initiator(*, subject: str, org_id: str, username: str, 
             raise SetupAuthorityError("The subject does not own the selected organization identity")
         if user.is_shadow or user.user_kind != "human":
             raise SetupAuthorityError("A signed-in human identity is required")
-        if platform and (user.role or "") not in _PLATFORM_ADMIN_ROLES:
-            raise SetupAuthorityError("Setup link initiator is not a platform administrator")
+        if platform:
+            from src.shared.models.platform_admin import PlatformAdminGrant
+
+            grant_enabled = await db.scalar(select(PlatformAdminGrant.enabled).where(PlatformAdminGrant.cognito_sub == subject))
+            if (user.role or "") not in _PLATFORM_ADMIN_ROLES or grant_enabled is False:
+                raise SetupAuthorityError("Setup link initiator is not a platform administrator")
         return user
     except (MultipleResultsFound, ValueError) as exc:
         raise SetupAuthorityError("The signed-in identity is ambiguous; resolve the account binding before setup") from exc
@@ -866,13 +871,9 @@ async def _assert_platform_setup_authority(
     if current.id != initiator.id:
         raise SetupAuthorityError("The setup link's initiating identity no longer matches")
 
-    # Platform-admin authority, server-side. `users.role` is the authority for
-    # platform admin: `bootstrap_admin.py` and the admin user-update path are its
-    # only writers, and `auth_service` derives the `is_admin` claim from exactly
-    # these values (auth_service.py:301-306). So this is the same authority the
-    # start endpoint enforced via the claim, re-read from the database at
-    # completion time — which is what makes a revoked admin's in-flight link stop
-    # working.
+    # Re-read the initiating role as well as the global revocation decision
+    # checked by _resolve_setup_initiator. A demotion from a linked workspace
+    # must fence this capability even if this local display role remains stale.
     #
     # Deliberately NOT falling back to `tenant_memberships.role`: that column only
     # ever carries "member" or "org_admin", and an org admin is a TENANT-level
@@ -2301,6 +2302,7 @@ async def list_connections(
             repositories = md.get("repositories") or []
 
         repo_count = len(repositories) if repositories else int(md.get("repository_count") or 0)
+        repository_details = await _fetch_live_repo_ids(install_id, github_client, repositories) if repositories_live_by_install[install_id] else []
 
         configure_url = f"https://github.com/settings/installations/{install_id}"
 
@@ -2329,6 +2331,7 @@ async def list_connections(
                 repository_selection=repo_selection,
                 repository_count=repo_count,
                 repositories=repositories,
+                repository_details=repository_details,
                 installed_at=mapping.created_at,
                 configure_url=configure_url,
                 manage_url=manage_url,
@@ -2454,6 +2457,35 @@ async def list_connections(
         connections=connections,
         platform_verification=platform_verification,
     )
+
+
+async def _fetch_live_repo_ids(
+    installation_id: int,
+    github_client: GitHubAppClient | None,
+    names: list[str],
+) -> list[dict[str, str | int]]:
+    """Return IDs only for repository names already verified on this installation."""
+    if github_client is None or not names or not asyncio.iscoroutinefunction(getattr(github_client, "list_installation_repositories_page", None)):
+        return []
+    allowed = {name.casefold() for name in names}
+    identities = []
+    try:
+        for page in range(1, 101):
+            rows = (await github_client.list_installation_repositories_page(installation_id, page, 100)).get("repositories", [])
+            if not isinstance(rows, list):
+                return []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                full_name, repository_id = row.get("full_name"), row.get("id")
+                if isinstance(full_name, str) and full_name.casefold() in allowed and type(repository_id) is int and repository_id > 0:
+                    identities.append({"full_name": full_name, "repository_id": repository_id})
+            if len(rows) < 100:
+                break
+    except Exception as exc:
+        logger.info("Repository IDs unavailable for installation %d: %s", installation_id, exc)
+        return []
+    return identities
 
 
 async def _fetch_live_repos(

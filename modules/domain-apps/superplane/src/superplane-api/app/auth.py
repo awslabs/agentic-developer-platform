@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import jwt
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt.exceptions import PyJWTError
 from sqlalchemy import select
@@ -58,6 +58,7 @@ from superplane_auth.policy import (
     DomainTokenPolicy,
     OperationAuthorization,
     Permission,
+    TokenCandidate,
     TokenPolicyError,
     TokenRejectedError,
     WorkspaceAuthorizationModel,
@@ -346,44 +347,26 @@ def _forbidden(detail: str) -> HTTPException:
 _WORKSPACE_NOT_AUTHORIZED = "not authorized for this workspace"
 
 
-async def require_verified_caller(
+async def require_verified_candidate(
     request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(domain_bearer),
-) -> VerifiedCaller:
-    """Admit a caller under the strict token policy.
-
-    Header stripping happens FIRST, before a principal exists, so no later step
-    can read a client-supplied identity even by mistake. The stripped mapping is
-    stashed on ``request.state`` for downstream consumers; the raw headers are
-    left untouched, which is why consumers must take the sanitized copy rather
-    than reading ``request.headers`` again.
-    """
+    credentials: HTTPAuthorizationCredentials | None,
+) -> tuple[TokenCandidate, dict[str, str]]:
     safe_headers = strip_identity_headers(request.headers)
     request.state.safe_headers = safe_headers
-
     policy = getattr(request.app.state, "domain_policy", None)
     if policy is None:
-        # Enforcement is off. Reaching here means a route required the strict
-        # path while the service was configured without one — refuse rather than
-        # fall through to the weaker validator.
         raise _forbidden("domain authorization is not configured on this deployment")
-
     if credentials is None or not credentials.credentials:
         raise _unauthorized("a bearer access token is required")
-
     try:
         claims = verify_access_token(credentials.credentials)
-        # The policy applies token_use, issuer, client allowlist, subject, org
-        # claim and account type — in that order, and for the reasons its module
-        # docstring gives. Naming the trusted validation path is required, and
-        # is honest here only because the verification above meets that path's
-        # standard (JWKS signature + expiry + pinned algorithm).
-        principal = policy.admit(claims, validation_path=TRUSTED_VALIDATION_PATH)
+        candidate = policy.admit_candidate(
+            claims, validation_path=TRUSTED_VALIDATION_PATH
+        )
     except TokenRejectedError as exc:
         logger.warning("domain token rejected: %s", exc)
         raise _unauthorized(str(exc)) from exc
-
-    return VerifiedCaller(principal=principal, safe_headers=safe_headers)
+    return candidate, safe_headers
 
 
 # ---------------------------------------------------------------------------
@@ -703,6 +686,6 @@ __all__ = [
     "build_domain_policy",
     "jwks_cache",
     "load_workspace_authorization",
-    "require_verified_caller",
+    "require_verified_candidate",
     "verify_access_token",
 ]

@@ -63,7 +63,7 @@ async def resolve_managed_control(operation, inventory, context):
         )
         if not paid_operation_id:
             raise OperationRefused("managed cleanup has no original paid apply")
-        config = load_policy(context, lease.org_id)["runtime"]
+        config = load_policy(context, lease.org_id, lease.workspace_id)["runtime"]
         plan = compile_managed_access_review(
             inventory,
             config,

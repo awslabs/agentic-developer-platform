@@ -134,7 +134,10 @@ def test_dockerfile_bakes_the_package_into_the_image():
 def _deploy_build_program():
     root = GATEWAY.parents[1]
     spec = yaml.safe_load((root / "codebuild/bs-gateway-build.yml").read_text())
-    assert spec["phases"]["build"]["commands"] == ["bash platform/scripts/publish-shared-image.sh adp-gateway"]
+    assert spec["phases"]["build"]["commands"] == [
+        "python3 -m pip install uv==0.13.5",
+        "bash platform/scripts/publish-shared-image.sh adp-gateway",
+    ]
     # CodeBuild runs post_build after failure too. The helper must be the only writer.
     assert not spec["phases"].get("post_build", {}).get("commands")
     return (root / "platform/scripts/publish-shared-image.sh").read_text()
@@ -359,3 +362,23 @@ def test_both_lambda_archives_receive_identical_package_content(tmp_path):
 def _ensure_build_dirs(tmp_path):
     for sub in ("a", "b"):
         (tmp_path / sub).mkdir(exist_ok=True)
+
+
+def test_archive_is_identical_across_checkout_timestamps_and_modes(tmp_path):
+    import os
+    import shutil
+
+    spec = importlib.util.spec_from_file_location("stable_archive_builder", GATEWAY / "scripts/build-budget-lambda-archives.py")
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    module = tmp_path / "module"
+    for directory in ("lambda", "pricing_policy"):
+        shutil.copytree(GATEWAY / directory, module / directory)
+    builder.build(module, tmp_path / "before")
+    for path in module.rglob("*"):
+        if path.is_file():
+            os.utime(path, (1700000000, 1700000000))
+            path.chmod(0o600)
+    builder.build(module, tmp_path / "after")
+    for name in LAMBDA_NAMES:
+        assert (tmp_path / "before" / f"{name}.zip").read_bytes() == (tmp_path / "after" / f"{name}.zip").read_bytes()

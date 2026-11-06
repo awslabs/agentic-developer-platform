@@ -192,7 +192,10 @@ resource "aws_lambda_function" "tick" {
   }
 
   environment {
-    variables = merge(local.redis_environment, {
+    variables = merge(local.redis_environment, var.agent_run_logs_bucket_name != "" ? {
+      AGENT_RUN_LOGS_BUCKET = var.agent_run_logs_bucket_name
+      } : {}, {
+      ENVIRONMENT = var.environment
       # BG_ prefix: src/shared/config.py Settings uses env_prefix = "BG_".
       BG_RDS_IAM_AUTH   = "true"
       BG_RDS_HOST       = var.db_host
@@ -211,17 +214,18 @@ resource "aws_lambda_function" "tick" {
 
       # Issue #4313 — engine dispatch. The tick resolves genesis in-process and
       # produces the agent envelope onto this queue itself; there is no transport
-      # and no other producer added. All four are read by `dispatch_pass.py` and
-      # nothing else. Empty queue URL or repo means nothing is dispatched and the
+      # and no other producer added. Queue and dispatch limits are read by
+      # `dispatch_pass.py`. Empty queue URL means nothing is dispatched and the
       # tick reports `dispatch_enabled=false` — visible, not silent.
-      BG_ORCH_DISPATCH_QUEUE_URL             = var.agent_submit_queue_url
-      BG_ORCH_DISPATCH_REPO                  = var.dispatch_repo
-      BG_ORCH_DISPATCH_PERSONA               = var.dispatch_persona
-      BG_ORCH_DISPATCH_MAX_PER_TICK          = tostring(var.dispatch_max_per_tick)
-      AGENT_AUTHORITY_ENABLED                = tostring(var.agent_authority_enabled)
+      BG_ORCH_DISPATCH_QUEUE_URL    = var.agent_submit_queue_url
+      BG_ORCH_DISPATCH_PERSONA      = var.dispatch_persona
+      BG_ORCH_DISPATCH_MAX_PER_TICK = tostring(var.dispatch_max_per_tick)
+      AGENT_AUTHORITY_ENABLED       = tostring(var.agent_authority_enabled)
       # Governed dispatch requires a work claim. Keep both controls tied to the
       # same rollout input, as on the gateway and webhook producer.
       ADP_WORK_CLAIMS_ENABLED                = tostring(var.agent_authority_enabled)
+      ADP_PRODUCT_STORY_DISPATCH_ENABLED     = tostring(var.product_story_dispatch_enabled)
+      ADP_ENGINE_OPERATIONS_EXECUTOR         = tostring(var.engine_operations_executor_enabled)
       ADP_SHARED_RUN_REPORTING_ENABLED       = tostring(var.shared_run_reporting_enabled)
       ADP_SHARED_WORKER_CONTINUATION_ENABLED = tostring(var.shared_worker_continuation_enabled)
       AGENT_WORKER_ROLE_ARN                  = var.shared_worker_role_arn

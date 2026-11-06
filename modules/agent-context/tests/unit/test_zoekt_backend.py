@@ -21,6 +21,7 @@ import respx
 from door.acl import CallerPrincipal, SearchHit, filter_results
 from door.search_backend import (
     ZoektSearchBackend,
+    ZoektUnavailable,
     _build_repo_filter,
     _decode_line,
     _parse_zoekt_response,
@@ -39,7 +40,8 @@ async def test_missing_backend_key_never_sends_a_request(monkeypatch):
         route = router.post("http://zoekt:6070/api/search").mock(
             return_value=httpx.Response(200, json={})
         )
-        assert await ZoektSearchBackend("http://zoekt:6070").search("private") == []
+        with pytest.raises(ZoektUnavailable):
+            await ZoektSearchBackend("http://zoekt:6070").search("private")
         assert not route.called
 
 
@@ -47,7 +49,7 @@ async def test_missing_backend_key_never_sends_a_request(monkeypatch):
 async def test_backend_credential_is_sent_only_in_authorization_header():
     with respx.mock as router:
         route = router.post("http://zoekt:6070/api/search").mock(
-            return_value=httpx.Response(200, json={})
+            return_value=httpx.Response(200, json={"Result": {"FileMatches": []}})
         )
         await ZoektSearchBackend("http://zoekt:6070").search("needle")
         request = route.calls[0].request
@@ -267,49 +269,52 @@ class TestBuildRepoFilter:
 
 
 class TestErrorHandling:
-    """Z4: Backend returns empty list on errors (fail-safe)."""
+    """Z4: Backend errors never masquerade as successful empty searches."""
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_timeout_returns_empty(self):
-        """Z4a: Timeout returns empty list, not exception."""
+    async def test_timeout_reports_unavailable(self):
         respx.post("http://zoekt:6070/api/search").mock(side_effect=httpx.ReadTimeout("timed out"))
 
         backend = ZoektSearchBackend("http://zoekt:6070", timeout=0.1)
-        results = await backend.search("query")
-        assert results == []
+        with pytest.raises(ZoektUnavailable):
+            await backend.search("query")
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_http_500_returns_empty(self):
-        """Z4b: HTTP 500 returns empty list."""
+    async def test_http_500_reports_unavailable(self):
         respx.post("http://zoekt:6070/api/search").mock(return_value=httpx.Response(500))
 
         backend = ZoektSearchBackend("http://zoekt:6070")
-        results = await backend.search("query")
-        assert results == []
+        with pytest.raises(ZoektUnavailable):
+            await backend.search("query")
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_http_503_returns_empty(self):
-        """Z4c: HTTP 503 (service unavailable) returns empty list."""
+    async def test_http_503_reports_unavailable(self):
         respx.post("http://zoekt:6070/api/search").mock(return_value=httpx.Response(503))
 
         backend = ZoektSearchBackend("http://zoekt:6070")
-        results = await backend.search("query")
-        assert results == []
+        with pytest.raises(ZoektUnavailable):
+            await backend.search("query")
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_malformed_json_returns_empty(self):
-        """Z4d: Malformed JSON response returns empty list."""
+    async def test_malformed_json_reports_unavailable(self):
         respx.post("http://zoekt:6070/api/search").mock(
             return_value=httpx.Response(200, text="not json")
         )
 
         backend = ZoektSearchBackend("http://zoekt:6070")
-        results = await backend.search("query")
-        assert results == []
+        with pytest.raises(ZoektUnavailable):
+            await backend.search("query")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_missing_result_reports_unavailable(self):
+        respx.post("http://zoekt:6070/api/search").mock(return_value=httpx.Response(200, json={}))
+        with pytest.raises(ZoektUnavailable):
+            await ZoektSearchBackend("http://zoekt:6070").search("query")
 
     @pytest.mark.asyncio
     @respx.mock

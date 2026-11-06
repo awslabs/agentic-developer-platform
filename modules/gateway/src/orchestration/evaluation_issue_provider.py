@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import httpx
+
 from src.knowledge.github_app_service import mint_installation_token_with_expiry, resolve_tenant_app_credentials
 
 from .deployment_workflow_provider import WorkflowProvider
@@ -61,21 +63,78 @@ def issue_content(*, operation_key, evaluation_id, cycle, failed_criteria, actua
 
 
 class EvaluationIssueProvider(WorkflowProvider):
-    async def credentials(self, binding, *, write=False):
-        if (
-            not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", binding.repo)
-            or any(part in {".", ".."} for part in binding.repo.split("/"))
-            or type(binding.provider_repository_id) is not int
-            or binding.provider_repository_id <= 0
+    async def read_native_parent(self, binding, parent_binding, issue):
+        token, _ = await self.credentials(binding, related_binding=parent_binding)
+        await self.repository(binding, token)
+        await self.repository(parent_binding, token)
+        try:
+            response = await self.request(binding, "GET", f"/repos/{binding.repo}/issues/{issue.number}/parent", token=token)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise CycleBlockedError("evaluation_correction_parent_unavailable") from None
+            response = None
+        except httpx.HTTPError:
+            raise CycleBlockedError("evaluation_correction_parent_unavailable") from None
+
+        if response is not None:
+            parent = response.json()
+            if not isinstance(parent, dict) or type(parent.get("id")) is not int or not isinstance(parent.get("repository_url"), str):
+                raise CycleBlockedError("evaluation_correction_parent_unverifiable")
+            if (
+                parent["id"] != parent_binding.issue_id
+                or parent["repository_url"].casefold() != f"https://api.github.com/repos/{parent_binding.repo}".casefold()
+            ):
+                raise CycleBlockedError("evaluation_correction_parent_conflict")
+        return response is not None
+
+    async def confirm_native_parent(self, binding, parent_binding, issue, content, *, reauthorize):
+        if await self.read_native_parent(binding, parent_binding, issue):
+            return
+        token, app_id = await self.credentials(binding, related_binding=parent_binding)
+        await self.repository(binding, token)
+        await self.repository(parent_binding, token)
+        try:
+            child = (await self.request(binding, "GET", f"/repos/{binding.repo}/issues/{issue.number}", token=token)).json()
+            await self.validate(binding, child, content, app_id, token=token)
+            if child.get("node_id") != issue.node_id or type(child.get("id")) is not int or child["id"] <= 0:
+                raise CycleBlockedError("evaluation_correction_issue_identity_missing")
+            token, _ = await self.credentials(parent_binding, write=True, related_binding=binding)
+            await self.repository(binding, token)
+            await self.repository(parent_binding, token)
+            await reauthorize()
+            await self.request(
+                parent_binding,
+                "POST",
+                f"/repos/{parent_binding.repo}/issues/{parent_binding.issue_number}/sub_issues",
+                token=token,
+                json={"sub_issue_id": child["id"]},
+            )
+        except httpx.HTTPError:
+            raise CycleBlockedError("evaluation_correction_link_unconfirmed") from None
+        if not await self.read_native_parent(binding, parent_binding, issue):
+            raise CycleBlockedError("evaluation_correction_link_unconfirmed")
+
+    async def credentials(self, binding, *, write=False, related_binding=None):
+        targets = (binding,) if related_binding is None else (binding, related_binding)
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", target.repo)
+            or any(part in {".", ".."} for part in target.repo.split("/"))
+            or type(target.provider_repository_id) is not int
+            or target.provider_repository_id <= 0
+            for target in targets
         ):
             raise CycleBlockedError("evaluation_correction_repository_invalid")
+        if related_binding is not None and (
+            related_binding.org_id != binding.org_id or related_binding.repo.split("/")[0].casefold() != binding.repo.split("/")[0].casefold()
+        ):
+            raise CycleBlockedError("evaluation_correction_repository_scope_mismatch")
         try:
             app_id, key = await resolve_tenant_app_credentials(binding.org_id)
             token, expires = await mint_installation_token_with_expiry(
                 app_id,
                 key,
                 binding.installation_id,
-                repositories=[binding.repo.split("/", 1)[1]],
+                repositories=sorted({target.repo.split("/", 1)[1] for target in targets}),
                 permissions={"issues": "write" if write else "read", "metadata": "read"},
             )
             deadline = datetime.fromisoformat(expires.replace("Z", "+00:00"))
@@ -90,7 +149,46 @@ class EvaluationIssueProvider(WorkflowProvider):
         if data.get("id") != binding.provider_repository_id or data.get("full_name") != binding.repo:
             raise CycleBlockedError("evaluation_correction_repository_changed")
 
-    def validate(self, binding, data, content, app_id):
+    async def app_owns_issue(self, binding, data, app_id, *, token):
+        """GitHub may omit the app receipt for installation-token issue writes.
+
+        In that case verify the provider's bot author against both the registered
+        app ID and its numeric user ID. A marker or a bot-looking name alone is
+        never ownership, and an explicit conflicting receipt cannot fall back.
+        """
+        if not isinstance(data, dict):
+            return False
+        receipt = data.get("performed_via_github_app")
+        if receipt is not None:
+            return isinstance(receipt, dict) and type(receipt.get("id")) is int and receipt["id"] == app_id
+        author = data.get("user")
+        if not isinstance(author, dict) or author.get("type") != "Bot" or type(author.get("id")) is not int or author["id"] <= 0:
+            return False
+        login = author.get("login")
+        match = re.fullmatch(r"([A-Za-z0-9-]{1,100})\[bot\]", login) if isinstance(login, str) else None
+        if match is None:
+            return False
+        slug = match[1]
+        app = (await self.request(binding, "GET", f"/apps/{slug}", token=token)).json()
+        if (
+            not isinstance(app, dict)
+            or type(app.get("id")) is not int
+            or app["id"] != app_id
+            or not isinstance(app.get("slug"), str)
+            or app["slug"].casefold() != slug.casefold()
+        ):
+            return False
+        bot = (await self.request(binding, "GET", f"/users/{login}", token=token)).json()
+        return (
+            isinstance(bot, dict)
+            and bot.get("type") == "Bot"
+            and type(bot.get("id")) is int
+            and bot["id"] == author["id"]
+            and isinstance(bot.get("login"), str)
+            and bot["login"].casefold() == login.casefold()
+        )
+
+    async def validate(self, binding, data, content, app_id, *, token):
         number = data.get("number")
         if (
             type(number) is not int
@@ -98,7 +196,7 @@ class EvaluationIssueProvider(WorkflowProvider):
             or not isinstance(data.get("node_id"), str)
             or not data["node_id"]
             or data.get("pull_request") is not None
-            or (data.get("performed_via_github_app") or {}).get("id") != app_id
+            or not await self.app_owns_issue(binding, data, app_id, token=token)
             or data.get("title") != content["title"]
             or data.get("body") != content["body"]
             or data.get("state") not in {"open", "closed"}
@@ -114,7 +212,7 @@ class EvaluationIssueProvider(WorkflowProvider):
             if type(issue_number) is not int or issue_number <= 0:
                 raise CycleBlockedError("evaluation_correction_issue_number_invalid")
             data = (await self.request(binding, "GET", f"/repos/{binding.repo}/issues/{issue_number}", token=token)).json()
-            return self.validate(binding, data, content, app_id)
+            return await self.validate(binding, data, content, app_id, token=token)
         if since.tzinfo is None:
             raise CycleBlockedError("evaluation_correction_start_time_invalid")
         marker = f"<!-- adp-evaluation-correction:v1:{content['correlation']} -->"
@@ -133,7 +231,7 @@ class EvaluationIssueProvider(WorkflowProvider):
                 raise CycleBlockedError("evaluation_correction_issue_listing_invalid")
             for row in rows:
                 if marker in (row.get("body") or ""):
-                    found.append(self.validate(binding, row, content, app_id))
+                    found.append(await self.validate(binding, row, content, app_id, token=token))
             if len(found) > 1:
                 raise CycleBlockedError("evaluation_correction_issue_ambiguous")
             if len(rows) < 100:
@@ -149,4 +247,4 @@ class EvaluationIssueProvider(WorkflowProvider):
         response = await self.request(
             binding, "POST", f"/repos/{binding.repo}/issues", token=token, json={"title": content["title"], "body": content["body"]}
         )
-        return self.validate(binding, response.json(), content, app_id)
+        return await self.validate(binding, response.json(), content, app_id, token=token)

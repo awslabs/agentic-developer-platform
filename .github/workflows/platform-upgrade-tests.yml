@@ -7,6 +7,8 @@ on:
       - 'platform/scripts/deploy-all.sh'
       - 'platform/scripts/deploy-prerequisites.sh'
       - 'platform/infra/modules/eks/**'
+      - 'platform/infra/modules/networking/**'
+      - 'platform/infra/private-capacity/**'
       - 'platform/infra/modules/ecr/**'
       - 'platform/infra/main.tf'
       - 'platform/infra/variables.tf'
@@ -14,15 +16,33 @@ on:
       - 'modules/gateway/infra/modules/rds-bootstrap/**'
       - 'platform/scripts/tests/test_rds_bootstrap.py'
       - 'modules/gateway/infra/variables.tf'
+      - 'modules/gateway/infra/modules/cognito/**'
+      - 'modules/gateway/infra/tests/test_users.tftest.hcl'
+      - 'modules/gateway/scripts/bootstrap-admin.*'
+      - 'platform/scripts/tests/test_bootstrap_admin_cli.py'
       - 'platform/scripts/prepare-release-config.py'
       - 'config/release-defaults/**'
       - 'platform/infra/release-configuration.tf'
       - 'modules/gateway/infra/release-configuration.tf'
       - 'modules/agent-factory/webhook-ingress/infra/release-configuration.tf'
       - 'modules/gateway/scripts/sync-gateway-engine.py'
+      - 'modules/gateway/scripts/sync-gateway-writers.py'
+      - 'modules/gateway/scripts/apply-gateway-deployment.py'
+      - 'platform/scripts/render-gateway-capacity.py'
+      - 'platform/scripts/tests/test_gateway_capacity_render.py'
+      - 'modules/gateway/k8s/**'
+      - 'platform/scripts/tests/test_gateway_deployment_apply.py'
+      - 'platform/scripts/tests/test_gateway_deployment_apply_wire.py'
+      - 'platform/scripts/tests/test_gateway_writer_release.py'
+      - 'platform/scripts/tests/test_gateway_deploy_efficiency.py'
+      - 'modules/gateway/scripts/batch-ssm.py'
+      - 'modules/gateway/scripts/deploy-budget-lambda-code.py'
       - 'platform/scripts/tests/test_gateway_engine_release.py'
       - '.github/workflows/gateway-deploy.yml'
       - 'deploy.sh'
+      - 'platform/scripts/integration-clean-install.py'
+      - 'platform/scripts/tests/test_integration_clean_install.py'
+      - '.github/workflows/adp-integration-clean-install.yml'
       - 'platform/scripts/enable-bedrock-models.sh'
       - 'platform/scripts/bedrock-model-access.py'
       - 'platform/scripts/tests/test_bedrock_model_access.py'
@@ -43,6 +63,11 @@ on:
       - 'platform/scripts/deploy-checkpoints.*'
       - 'platform/scripts/tfvars-account-check.py'
       - 'platform/scripts/tests/test_deployment_recovery.py'
+      - 'platform/scripts/tests/test_gateway_deployment_render.py'
+      - 'platform/scripts/tests/test_self_managed_parity.py'
+      - 'platform/scripts/tests/test-configmap-render-parity.sh'
+      - 'platform/infra/runtime-verifier-access.tf'
+      - 'modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh'
       - 'platform/scripts/prepare-backends.py'
       - 'platform/scripts/tests/test_upgrade*.py'
       - 'platform/scripts/tests/test_update_safety.py'
@@ -77,6 +102,8 @@ on:
       - 'platform/scripts/deploy-all.sh'
       - 'platform/scripts/deploy-prerequisites.sh'
       - 'platform/infra/modules/eks/**'
+      - 'platform/infra/modules/networking/**'
+      - 'platform/infra/private-capacity/**'
       - 'platform/infra/modules/ecr/**'
       - 'platform/infra/main.tf'
       - 'platform/infra/variables.tf'
@@ -84,15 +111,33 @@ on:
       - 'modules/gateway/infra/modules/rds-bootstrap/**'
       - 'platform/scripts/tests/test_rds_bootstrap.py'
       - 'modules/gateway/infra/variables.tf'
+      - 'modules/gateway/infra/modules/cognito/**'
+      - 'modules/gateway/infra/tests/test_users.tftest.hcl'
+      - 'modules/gateway/scripts/bootstrap-admin.*'
+      - 'platform/scripts/tests/test_bootstrap_admin_cli.py'
       - 'platform/scripts/prepare-release-config.py'
       - 'config/release-defaults/**'
       - 'platform/infra/release-configuration.tf'
       - 'modules/gateway/infra/release-configuration.tf'
       - 'modules/agent-factory/webhook-ingress/infra/release-configuration.tf'
       - 'modules/gateway/scripts/sync-gateway-engine.py'
+      - 'modules/gateway/scripts/sync-gateway-writers.py'
+      - 'modules/gateway/scripts/apply-gateway-deployment.py'
+      - 'platform/scripts/render-gateway-capacity.py'
+      - 'platform/scripts/tests/test_gateway_capacity_render.py'
+      - 'modules/gateway/k8s/**'
+      - 'platform/scripts/tests/test_gateway_deployment_apply.py'
+      - 'platform/scripts/tests/test_gateway_deployment_apply_wire.py'
+      - 'platform/scripts/tests/test_gateway_writer_release.py'
+      - 'platform/scripts/tests/test_gateway_deploy_efficiency.py'
+      - 'modules/gateway/scripts/batch-ssm.py'
+      - 'modules/gateway/scripts/deploy-budget-lambda-code.py'
       - 'platform/scripts/tests/test_gateway_engine_release.py'
       - '.github/workflows/gateway-deploy.yml'
       - 'deploy.sh'
+      - 'platform/scripts/integration-clean-install.py'
+      - 'platform/scripts/tests/test_integration_clean_install.py'
+      - '.github/workflows/adp-integration-clean-install.yml'
       - 'platform/scripts/enable-bedrock-models.sh'
       - 'platform/scripts/bedrock-model-access.py'
       - 'platform/scripts/tests/test_bedrock_model_access.py'
@@ -113,6 +158,11 @@ on:
       - 'platform/scripts/deploy-checkpoints.*'
       - 'platform/scripts/tfvars-account-check.py'
       - 'platform/scripts/tests/test_deployment_recovery.py'
+      - 'platform/scripts/tests/test_gateway_deployment_render.py'
+      - 'platform/scripts/tests/test_self_managed_parity.py'
+      - 'platform/scripts/tests/test-configmap-render-parity.sh'
+      - 'platform/infra/runtime-verifier-access.tf'
+      - 'modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh'
       - 'platform/scripts/prepare-backends.py'
       - 'platform/scripts/tests/test_upgrade*.py'
       - 'platform/scripts/tests/test_update_safety.py'
@@ -165,6 +215,12 @@ permissions:
 # claim and not an assertion that the runner has no identity. A job that needs to
 # assert the ABSENCE of an ambient identity cannot use this pool — see the runner note
 # in orchestration-harness-ci.yml, and do not weaken such an assertion to move it.
+# A newer commit replaces CI evidence for its PR or branch. These jobs run
+# deployment contracts against fixtures; they do not deploy to an environment.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   factory-lambda-build:
     runs-on: arc-runner-org
@@ -220,20 +276,41 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - run: pip install PyYAML pytest
+      - run: pip install PyYAML pytest boto3
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.35.8'
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.14.6'
           terraform_wrapper: false
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py' -v
-      - run: python -m pytest platform/scripts/tests/test_upgrade_worker_migration.py -q
+      - run: python -m unittest discover -s platform/scripts/tests -p test_integration_clean_install.py -v
+      - run: python -m pytest platform/scripts/tests/test_upgrade_worker_migration.py platform/scripts/tests/test_reuse_release_images.py -q
       - run: python -m unittest discover -s platform/scripts/tests -p test_rds_bootstrap.py -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_bootstrap_admin_cli.py -v
+      - run: terraform init -backend=false -input=false
+        working-directory: modules/gateway/infra/modules/cognito
+      - run: terraform test -no-color -filter=tests/test_users.tftest.hcl
+        working-directory: modules/gateway/infra/modules/cognito
+      - run: terraform init -backend=false -input=false
+        working-directory: modules/gateway/infra
+      - run: terraform test -no-color -filter=tests/test_users.tftest.hcl
+        working-directory: modules/gateway/infra
       - run: python -m unittest discover -s platform/scripts/tests -p test_update_safety.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_deployment_recovery.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_gateway_engine_release.py -v
+      - run: python -m pytest platform/scripts/tests/test_gateway_writer_release.py platform/scripts/tests/test_gateway_deploy_efficiency.py -q
+      - run: python -m pytest platform/scripts/tests/test_gateway_deployment_apply.py platform/scripts/tests/test_gateway_deployment_apply_wire.py -q
+      - run: python -m pytest platform/scripts/tests/test_gateway_capacity_render.py -q
+        env:
+          KUBECONFIG: /dev/null
+      - run: python -m unittest discover -s platform/scripts/tests -p test_gateway_deployment_render.py -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_self_managed_parity.py -v
+      - run: bash platform/scripts/tests/test-configmap-render-parity.sh
       - run: terraform init -backend=false -input=false
         working-directory: platform/infra/modules/eks
-      - run: terraform test -no-color -filter=tests/legacy_bootstrap_admin.tftest.hcl -filter=tests/endpoint_access.tftest.hcl
+      - run: terraform test -no-color -filter=tests/legacy_bootstrap_admin.tftest.hcl -filter=tests/endpoint_access.tftest.hcl -filter=tests/additional_capacity_subnets.tftest.hcl
         working-directory: platform/infra/modules/eks
       - run: terraform init -backend=false -input=false
         working-directory: platform/infra/modules/ecr
@@ -244,6 +321,14 @@ jobs:
       # explicitly, like the rest of this job: a glob silently stops covering a file
       # that is renamed, which is the same silent coverage loss this step closes.
       - run: python -m pytest platform/scripts/tests/test_capacity_subnets.py platform/scripts/tests/test_capacity_subnet_runbook.py -q
+      - run: terraform init -backend=false -input=false
+        working-directory: platform/infra/modules/networking
+      - run: terraform test -no-color -filter=tests/private_capacity_defaults.tftest.hcl
+        working-directory: platform/infra/modules/networking
+      - run: terraform init -backend=false -input=false
+        working-directory: platform/infra/private-capacity
+      - run: terraform test -no-color -filter=tests/private_capacity.tftest.hcl
+        working-directory: platform/infra/private-capacity
       - run: python -m pytest --confcutdir=modules/gateway/tests/pricing_policy modules/gateway/tests/pricing_policy/test_rollout.py -q
 
   factory-before-github:

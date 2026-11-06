@@ -230,6 +230,7 @@ class GatewayApiAdapter(ChannelAdapter):
                 "ingress": GATEWAY_API_SOURCE,
                 "intake_repository": str(payload.get("repository", "") or ""),
                 "intake_issue": str(payload.get("issue", "") or ""),
+                "intake_product_id": str(payload.get("product_id", "") or ""),
             },
             **message_kwargs,
         )

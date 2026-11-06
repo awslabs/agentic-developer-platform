@@ -3,16 +3,18 @@
 import logging
 import uuid
 
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_session
 from app.middleware.auth import get_current_org
 from app.models.organization import Organization
 from app.schemas.org import (
     VALID_CLOUDS,
-    VALID_SSO_PROVIDERS,
     VALID_SSO_TYPES,
     OrgResponse,
     OrgUpdateRequest,
@@ -20,6 +22,14 @@ from app.schemas.org import (
     SSOConfigRequest,
     SSOConfigResponse,
     SSODisableRequest,
+)
+from app.services.sso import (
+    SSOOriginNotApproved,
+    SSOOriginPolicyUnavailable,
+    SSOOwnershipConflict,
+    SSOService,
+    SSOServiceError,
+    require_approved_sso_origin,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,9 +42,10 @@ router = APIRouter(prefix="/orgs", tags=["organizations"])
 # ---------------------------------------------------------------------------
 
 
-async def _get_org(org_id: uuid.UUID, db: AsyncSession) -> Organization:
+async def _get_org(org_id: uuid.UUID, db: AsyncSession, *, for_update: bool = False) -> Organization:
     """Fetch the organization or raise 404."""
-    result = await db.execute(select(Organization).where(Organization.id == org_id))
+    query = select(Organization).where(Organization.id == org_id)
+    result = await db.execute(query.with_for_update() if for_update else query)
     org = result.scalar_one_or_none()
     if org is None:
         raise HTTPException(
@@ -42,6 +53,33 @@ async def _get_org(org_id: uuid.UUID, db: AsyncSession) -> Organization:
             detail="Organization not found",
         )
     return org
+
+
+def _sso_conflict() -> HTTPException:
+    return HTTPException(status_code=409, detail="SSO provider configuration conflict")
+
+
+async def _lock_shared_sso_client(db: AsyncSession) -> None:
+    if not settings.cognito_user_pool_id or not settings.cognito_app_client_id:
+        raise HTTPException(status_code=503, detail="SSO app client unavailable")
+    if getattr(getattr(db, "bind", None), "dialect", None) is None or db.bind.dialect.name != "postgresql":
+        raise HTTPException(status_code=503, detail="SSO client lock unavailable")
+    try:
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+            {"scope": f"sso_client/{settings.cognito_user_pool_id}/{settings.cognito_app_client_id}"},
+        )
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="SSO client lock unavailable") from None
+
+
+def _bound_sso_provider(org: Organization) -> str:
+    if (
+        not org.sso_provider or not org.sso_cognito_provider_name
+        or org.sso_provider_type not in VALID_SSO_TYPES
+    ):
+        raise _sso_conflict()
+    return org.sso_cognito_provider_name
 
 
 # ---------------------------------------------------------------------------
@@ -139,20 +177,17 @@ async def get_sso_config(
     db: AsyncSession = Depends(get_session),
 ) -> SSOConfigResponse:
     """Get the current SSO configuration for the organization."""
-    org = await _get_org(org_id, db)
-
-    # Try to fetch live Cognito IdP status (non-blocking)
+    org = await _get_org(org_id, db, for_update=True)
     cognito_identifier = None
-    if org.sso_enabled and org.sso_provider:
+    if org.sso_enabled or org.sso_provider or org.sso_provider_type or org.sso_cognito_provider_name:
+        provider_name = _bound_sso_provider(org)
         try:
-            from app.services.sso import SSOService
-
-            sso_svc = SSOService()
-            provider_info = sso_svc.get_provider(org_id)
-            if provider_info:
-                cognito_identifier = provider_info.get("ProviderName")
-        except Exception:
-            logger.warning("Could not fetch Cognito IdP status for org %s", org_id)
+            SSOService().get_provider(org_id, provider_name, org.sso_provider_type)
+        except SSOOwnershipConflict:
+            raise _sso_conflict() from None
+        except (SSOServiceError, BotoCoreError, ClientError):
+            raise HTTPException(status_code=502, detail="SSO provider unavailable") from None
+        cognito_identifier = provider_name
 
     return SSOConfigResponse(
         sso_provider=org.sso_provider,
@@ -180,43 +215,73 @@ async def configure_sso(
     Registers a SAML or OIDC identity provider in Cognito user pool.
     Team members will then be able to login via corporate IdP.
     """
-    # Validate provider
-    if body.sso_provider not in VALID_SSO_PROVIDERS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid SSO provider '{body.sso_provider}'. "
-            f"Valid options: {', '.join(sorted(VALID_SSO_PROVIDERS))}",
-        )
-
-    if body.sso_provider_type not in VALID_SSO_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid SSO type '{body.sso_provider_type}'. "
-            f"Valid options: {', '.join(sorted(VALID_SSO_TYPES))}",
-        )
-
-    org = await _get_org(org_id, db)
+    org = await _get_org(org_id, db, for_update=True)
+    if org.sso_enabled or org.sso_provider or org.sso_provider_type or org.sso_cognito_provider_name:
+        provider_name = _bound_sso_provider(org)
+        if org.sso_provider_type != body.sso_provider_type:
+            raise _sso_conflict()
+    elif org.sso_provider_type:
+        raise _sso_conflict()
+    else:
+        provider_name = None
     display_name = body.provider_name or body.sso_provider
 
-    # Register identity provider with Cognito
-    cognito_identifier = None
     try:
-        from app.services.sso import SSOService
-
+        require_approved_sso_origin(org_id, body.metadata_url)
+        await _lock_shared_sso_client(db)
         sso_svc = SSOService()
-
+        if provider_name is None:
+            provider_name = sso_svc.preflight_new_provider(org_id)
+        elif org.sso_enabled:
+            sso_svc.get_provider(org_id, provider_name, org.sso_provider_type)
+            sso_svc.remove_provider_from_client(provider_name)
+        org.sso_provider = body.sso_provider
+        org.sso_provider_type = body.sso_provider_type
+        org.sso_provider_name = display_name
+        org.sso_cognito_provider_name = provider_name
+        org.sso_metadata_url = body.metadata_url
+        org.sso_enabled = False
+        await db.commit()
+        org = await _get_org(org_id, db, for_update=True)
+        await _lock_shared_sso_client(db)
+        if (
+            _bound_sso_provider(org) != provider_name
+            or org.sso_provider_type != body.sso_provider_type
+            or org.sso_provider != body.sso_provider
+            or org.sso_metadata_url != body.metadata_url
+            or org.sso_provider_name != display_name
+            or org.sso_enabled
+        ):
+            raise _sso_conflict()
+        sso_svc = SSOService()
         if body.sso_provider_type == "SAML":
             cognito_identifier = sso_svc.create_or_update_saml_provider(
                 org_id=org_id,
                 metadata_url=body.metadata_url,
                 display_name=display_name,
+                bound_provider_name=provider_name,
+                enabled=body.enable,
             )
         else:
             cognito_identifier = sso_svc.create_or_update_oidc_provider(
                 org_id=org_id,
                 issuer_url=body.metadata_url,
                 display_name=display_name,
+                bound_provider_name=provider_name,
+                enabled=body.enable,
             )
+    except SSOOwnershipConflict:
+        raise _sso_conflict() from None
+    except HTTPException:
+        raise
+    except SSOOriginNotApproved:
+        raise HTTPException(
+            status_code=422, detail="SSO provider origin not approved"
+        ) from None
+    except SSOOriginPolicyUnavailable:
+        raise HTTPException(
+            status_code=503, detail="SSO origin policy unavailable"
+        ) from None
     except Exception as e:
         logger.error("SSO configuration failed for org %s: %s", org_id, e)
         raise HTTPException(
@@ -224,11 +289,6 @@ async def configure_sso(
             detail="Failed to configure identity provider with Cognito. Check server logs for details.",
         )
 
-    # Persist SSO config to database
-    org.sso_provider = body.sso_provider
-    org.sso_provider_type = body.sso_provider_type
-    org.sso_provider_name = display_name
-    org.sso_metadata_url = body.metadata_url
     org.sso_enabled = body.enable
 
     await db.commit()
@@ -273,24 +333,25 @@ async def disable_sso(
             detail="Set confirm=true to disable SSO",
         )
 
-    org = await _get_org(org_id, db)
-
-    # Remove from Cognito
-    if org.sso_provider:
+    org = await _get_org(org_id, db, for_update=True)
+    if org.sso_enabled or org.sso_provider or org.sso_provider_type or org.sso_cognito_provider_name:
+        provider_name = _bound_sso_provider(org)
+        await _lock_shared_sso_client(db)
         try:
-            from app.services.sso import SSOService
-
             sso_svc = SSOService()
-            sso_svc.delete_provider(org_id)
-        except Exception as e:
-            logger.error("Failed to remove Cognito IdP for org %s: %s", org_id, e)
-            # Continue to clear DB even if Cognito cleanup fails
-            # (admin can re-run or clean up manually)
+            sso_svc.get_provider(org_id, provider_name, org.sso_provider_type, missing_ok=True)
+            sso_svc.remove_provider_from_client(provider_name)
+            sso_svc.delete_provider(org_id, provider_name, org.sso_provider_type)
+        except SSOOwnershipConflict:
+            raise _sso_conflict() from None
+        except (SSOServiceError, BotoCoreError, ClientError):
+            raise HTTPException(status_code=502, detail="SSO provider unavailable") from None
 
     # Clear SSO config in database
     org.sso_provider = None
     org.sso_provider_type = None
     org.sso_provider_name = None
+    org.sso_cognito_provider_name = None
     org.sso_metadata_url = None
     org.sso_enabled = False
 

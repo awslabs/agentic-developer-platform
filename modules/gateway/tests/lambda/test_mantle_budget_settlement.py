@@ -107,7 +107,9 @@ async def test_responses_settle_person_and_tenant_budgets(metering, monkeypatch,
     from pricing_policy.storage import V2RateCache
 
     rate_source = V2RateCache().state(monotonic=0.0, now_iso="2026-09-12T00:00:00+00:00")
-    tracker.process_chat_log(MagicMock(), event, rate_source, chat_log_s3_key="metered.json")
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value.fetchone.return_value = (None,)
+    tracker.process_chat_log(connection, event, rate_source, chat_log_s3_key="metered.json")
 
     expected_entities = {("org", "tenant"), ("team", "team"), ("user", "worker" if hosted else "cognito-sub")}
     if hosted:
@@ -128,21 +130,34 @@ async def test_absent_usage_does_not_fabricate_settled_zero(metering, stream):
     writer, usage_service, _ = metering
     svc, _, client = await invoke(stream, usage=False)
     async with client:
-        result = await svc.create_response(b"{}", context(), stream=stream, model="openai.gpt-5.5", request_id="no-usage")
         if stream:
-            _ = [chunk async for chunk in result]
+            result = await svc.create_response(b"{}", context(), stream=True, model="openai.gpt-5.5", request_id="no-usage")
+            payload = b"".join([chunk async for chunk in result])
+            assert b"response.completed" not in payload
+            assert b"usage_settlement_unconfirmed" in payload
+        else:
+            with pytest.raises(mantle_service.MantleUpstreamError) as failure:
+                await svc.create_response(b"{}", context(), stream=False, model="openai.gpt-5.5", request_id="no-usage")
+            assert failure.value.status_code == 502
+            assert json.loads(failure.value.content)["error"] == "usage_settlement_unconfirmed"
+            assert json.loads(failure.value.content)["retryable"] is False
     await flush_chat_logs()
     writer.write_log.assert_not_awaited()
     usage_service.log_request.assert_awaited_once()
+    assert mantle_service.reconcile_budget_reservation.await_args.kwargs["retain_failed_bound"] is True
 
 
-async def test_usage_db_failure_still_emits_settlement_event(metering):
+async def test_usage_db_failure_withholds_success_but_emits_settlement_event(metering):
     writer, usage_service, _ = metering
     usage_service.log_request.side_effect = RuntimeError("database temporarily unavailable")
-    svc, wire, client = await invoke(False)
+    svc, _, client = await invoke(False)
     async with client:
-        result = await svc.create_response(b"{}", context(), stream=False, model="openai.gpt-5.5", request_id="db-down")
-    assert result.content == wire
+        with pytest.raises(mantle_service.MantleUpstreamError) as failure:
+            await svc.create_response(b"{}", context(), stream=False, model="openai.gpt-5.5", request_id="db-down")
+    assert failure.value.status_code == 502
+    assert json.loads(failure.value.content)["error"] == "usage_settlement_unconfirmed"
+    assert json.loads(failure.value.content)["retryable"] is False
+    assert mantle_service.reconcile_budget_reservation.await_args.kwargs["retain_failed_bound"] is True
     await flush_chat_logs()
     writer.write_log.assert_awaited_once()
 

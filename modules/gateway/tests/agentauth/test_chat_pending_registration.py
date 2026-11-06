@@ -45,7 +45,7 @@ def normalized(request):
 def retry(monkeypatch, runtime, transport, ingest):
     def register(request):
         envelope = normalized(request)
-        provision_root(runtime[1].store, envelope, source="chat", human_id="human", now=datetime.now(UTC))
+        provision_root(runtime[1].store, envelope, source="chat", human_id="human", team_id="team", now=datetime.now(UTC))
         return canonical_json(envelope).decode()
 
     def invoke(**kwargs):
@@ -170,5 +170,5 @@ def test_stale_root_requires_exact_live_retention(runtime, transport, buffer, re
         thread["messages"] = []
     transport.sessions.put_item(Item=row)
     with pytest.raises(BootstrapRefusedError, match="stale root"):
-        provision_root(runtime[1].store, envelope, source="chat", human_id="human", now=datetime.now(UTC))
+        provision_root(runtime[1].store, envelope, source="chat", human_id="human", team_id="team", now=datetime.now(UTC))
     assert runtime[1].store._read("INVOCATION#run-next", "DISPATCH") is None

@@ -59,6 +59,11 @@ class WorkerProvider:
             or current[0]["plan_document"].get("spec_revision") != DEFINITION_HASH
         ):
             raise Unsupported("worker fixture plan changed")
+        if session.config.scenarios == ("legacy-attribution",) and (
+            graph.get("product_id") is not None
+            or current[0]["plan_document"].get("product_id") is not None
+        ):
+            raise Unsupported("legacy worker unexpectedly has Product attribution")
         if "plan_hash" in resource and (
             current[0]["plan_hash"],
             current[0]["version"],
@@ -70,11 +75,50 @@ class WorkerProvider:
             r["invocation_id"] == resource["invocation_id"] for r in history["runs"]
         ):
             raise Unsupported("worker's authenticated lineage is unavailable")
+        expected_repository = session.config.repository
+        if session.config.product_epic and resource.get("purpose") != "worker-stop":
+            index = {"first": 1, "second": 2}.get(node.get("node_ref"))
+            if index is None:
+                raise Unsupported("worker has no qualified story target")
+            target = session.config.product_epic.stories[index - 1]
+            if (
+                node.get("repository_identity") != target.repository
+                or node.get("provider_repository_id") != target.repository_id
+                or (node.get("repository_connection") or {}).get("installation_id")
+                != target.installation_id
+            ):
+                raise Unsupported(
+                    "worker story target differs from accepted repository"
+                )
+            expected_repository = target.repository
+            accepted_plan = current[0]["plan_document"]
+            accepted_node = next(
+                (
+                    item
+                    for item in accepted_plan.get("nodes", [])
+                    if item.get("address", "").endswith("/" + node["node_ref"])
+                ),
+                None,
+            )
+            if (
+                graph.get("product_id") != session.config.product_epic.product_id
+                or accepted_plan.get("product_id")
+                != session.config.product_epic.product_id
+                or accepted_node is None
+                or accepted_node.get("issue_ref") != node.get("issue_ref")
+                or accepted_node.get("repository_identity") != target.repository
+                or accepted_node.get("provider_repository_id") != target.repository_id
+                or (accepted_node.get("repository_connection") or {}).get(
+                    "installation_id"
+                )
+                != target.installation_id
+            ):
+                raise Unsupported("worker is not bound to the accepted Product story")
         invocation = session.client.get(
             "/me/agent-invocations/" + resource["invocation_id"]
         )
         if (
-            invocation["repo"] != session.config.repository
+            invocation["repo"] != expected_repository
             or str(invocation["issue_number"]) != str(node["issue_ref"])
             or invocation["correlation_id"] != node["run_id"]
         ):

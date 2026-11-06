@@ -15,6 +15,7 @@ class UsageLog(Base, TenantMixin):
     department_id: Mapped[str] = mapped_column(String(255), nullable=False)
     team_id: Mapped[str] = mapped_column(String(255), nullable=False)
     user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    root_human_id: Mapped[str | None] = mapped_column(String(255))
     account_type: Mapped[str] = mapped_column(String(20), nullable=False, default="human")  # human/service
     model: Mapped[str] = mapped_column(String(255), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -26,6 +27,11 @@ class UsageLog(Base, TenantMixin):
     bedrock_account_id: Mapped[str | None] = mapped_column(String(12))
     # Issue #1616: Per-run cost traceability
     agent_run_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    # Captured from trusted execution scope before provider dispatch. Historical
+    # rows remain NULL; changing a registry relationship cannot relabel charges.
+    product_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    project_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    flow_id: Mapped[str | None] = mapped_column(String(36), index=True)
     chat_log_s3_key: Mapped[str | None] = mapped_column(String(1024))
     # Issue #4180: prompt-cache token accounting. Nullable on purpose —
     # NULL means "provider did not report this counter", 0 means "provider
@@ -83,8 +89,45 @@ class UsageLog(Base, TenantMixin):
     pricing_pointer_revision: Mapped[int | None] = mapped_column(BigInteger)
     pricing_snapshot_version: Mapped[str | None] = mapped_column(String(255))
     pricing_policy_version: Mapped[int | None] = mapped_column(Integer)
+    # #9024: conversation identity. NULL means "not captured" (rows before the capture, or a request
+    # whose harness sends no id). ``owner_user_id`` is the human behind a Dev Box host call.
+    harness: Mapped[str | None] = mapped_column(String(32))
+    conversation_id: Mapped[str | None] = mapped_column(String(128))
+    origin: Mapped[str | None] = mapped_column(String(16))
+    conversation_title: Mapped[str | None] = mapped_column(String(160))
+    owner_user_id: Mapped[str | None] = mapped_column(String(255))
 
     __table_args__ = (
+        Index(
+            "ix_usage_conversation",
+            "org_id",
+            "conversation_id",
+            "timestamp",
+            postgresql_where=text("conversation_id IS NOT NULL"),
+            sqlite_where=text("conversation_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_usage_owner_time",
+            "owner_user_id",
+            "timestamp",
+            postgresql_where=text("owner_user_id IS NOT NULL"),
+            sqlite_where=text("owner_user_id IS NOT NULL"),
+        ),
+        # #9026 list: the labelled rows of one person, newest first (8k of 350k on dev).
+        Index(
+            "ix_usage_conversation_user",
+            "user_id",
+            "timestamp",
+            postgresql_where=text("harness IS NOT NULL"),
+            sqlite_where=text("harness IS NOT NULL"),
+        ),
+        Index(
+            "ix_usage_conversation_owner",
+            "owner_user_id",
+            "timestamp",
+            postgresql_where=text("harness IS NOT NULL AND owner_user_id IS NOT NULL"),
+            sqlite_where=text("harness IS NOT NULL AND owner_user_id IS NOT NULL"),
+        ),
         Index(
             "ix_usage_org_request",
             "org_id",

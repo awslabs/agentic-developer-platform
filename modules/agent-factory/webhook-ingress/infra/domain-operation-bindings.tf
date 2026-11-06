@@ -40,6 +40,7 @@ module "superplane_operation_authority" {
   environment                        = var.environment
   aws_region                         = var.aws_region
   gateway_namespace                  = var.gateway_namespace
+  agent_authority_table_arn          = aws_dynamodb_table.agent_authority.arn
   agent_authority_provisioned        = local.agent_authority_provisioned
   gateway_authority_managed_policies = var.gateway_authority_managed_policies
 }

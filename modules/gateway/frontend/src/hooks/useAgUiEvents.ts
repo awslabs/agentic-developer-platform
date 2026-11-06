@@ -19,6 +19,8 @@ import { apiClient } from '@/services/api';
 import { readChatReplay } from '@/services/chatReplay';
 import type {
   AgentChatState,
+  AnswerEvidence,
+  ChatTurnPhase,
   ChatMessage,
   ConnectionStatus,
   Conversation,
@@ -63,6 +65,40 @@ function backoffMs(attempt: number): number {
   return Math.min(INITIAL_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS);
 }
 
+function parseAnswerEvidence(value: unknown): AnswerEvidence | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const data = value as Record<string, unknown>;
+  const statuses = ['ok', 'empty', 'denied', 'unavailable', 'partial'];
+  if (!statuses.includes(data.status as string)) return null;
+  const date = (field: unknown) => typeof field === 'string' && field.length <= 64 &&
+    /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(field) && Number.isFinite(Date.parse(field)) ? field : undefined;
+  const coverage = Array.isArray(data.coverage) && data.coverage.length <= 32
+    ? data.coverage.filter((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return false;
+      const item = entry as Record<string, unknown>;
+      return typeof item.source === 'string' && item.source.length <= 100 &&
+        ['available', 'empty', 'denied', 'unavailable', 'partial'].includes(item.status as string) &&
+        (item.reason === undefined || (typeof item.reason === 'string' && item.reason.length <= 160));
+    }) as NonNullable<AnswerEvidence['coverage']> : [];
+  const sources = Array.isArray(data.sources) && data.sources.length <= 32
+    ? data.sources.filter((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return false;
+      const item = entry as Record<string, unknown>;
+      return typeof item.label === 'string' && item.label.length <= 100 &&
+        typeof item.url === 'string' && item.url.length <= 2048;
+    }) as NonNullable<AnswerEvidence['sources']> : [];
+  return {
+    status: data.status as AnswerEvidence['status'],
+    from: date(data.from),
+    to: date(data.to),
+    timezone: typeof data.timezone === 'string' && data.timezone.length <= 64 ? data.timezone : undefined,
+    observed_at: date(data.observed_at),
+    coverage,
+    sources,
+    has_more: data.has_more === true,
+  };
+}
+
 /** ES2023 findLastIndex polyfill. */
 function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
   for (let i = arr.length - 1; i >= 0; i--) {
@@ -88,6 +124,7 @@ export interface UseAgUiEventsOptions {
 }
 
 export interface UseAgUiEventsReturn extends AgentChatState {
+  turnPhase: ChatTurnPhase | null;
   /**
    * True when the server refused this conversation's identifier (#5615).
    *
@@ -104,13 +141,14 @@ export interface UseAgUiEventsReturn extends AgentChatState {
    */
   sessionExpired: boolean;
   replayWarning: string | null;
+  retryConnection: () => void;
   /**
    * Send a user message. `persona` (#4208) pins the agent persona for the turn,
    * bypassing the server-side classifier — used by the intent-intake flow. The
    * ingest Lambda validates it against an allowlist and rejects anything else,
    * so an unrecognised value fails the send rather than silently downgrading.
    */
-  sendMessage: (text: string, attachments?: string[], persona?: string) => void;
+  sendMessage: (text: string, attachments?: string[], persona?: string) => boolean;
   cancelTurn: () => Promise<void>;
   canCancel: boolean;
   cancelState: 'idle' | 'pending' | 'requested' | 'failed';
@@ -130,6 +168,7 @@ export function useAgUiEvents({
 }: UseAgUiEventsOptions): UseAgUiEventsReturn {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [isAwaitingReply, setIsAwaitingReply] = useState(false);
+  const [turnPhase, setTurnPhase] = useState<ChatTurnPhase | null>(null);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [sessionExpired, setSessionExpired] = useState(false);
   const [replayWarning, setReplayWarning] = useState<string | null>(null);
@@ -192,6 +231,7 @@ export function useAgUiEvents({
     setSessionExpired(false);
     const lastMessage = conversation?.messages[conversation.messages.length - 1];
     setIsAwaitingReply(lastMessage?.role === 'user' || lastMessage?.status === 'streaming');
+    setTurnPhase(null);
     replayCursorRef.current = cursorParts(conversation?.replayCursor) ? conversation!.replayCursor! : null;
     replayBufferRef.current = [];
     replayRunningRef.current = false;
@@ -248,22 +288,36 @@ export function useAgUiEvents({
     [onMessagesChange],
   );
 
+  const reportTurnPhase = useCallback((phase: ChatTurnPhase, taskId?: string) => {
+    if (taskId && messagesRef.current.some(message => message.taskId === taskId && message.terminalDeliveryId)) return;
+    setTurnPhase(current => {
+      if (current && ['completed', 'failed', 'cancelled', 'interrupted'].includes(current) &&
+          !['completed', 'failed', 'cancelled', 'interrupted'].includes(phase)) return current;
+      if (phase === 'acknowledged' && current && current !== 'sending') return current;
+      if (current && ['running', 'streaming'].includes(current) && ['queued', 'starting'].includes(phase)) return current;
+      return phase;
+    });
+  }, []);
+
   // ------------------------------------------------------------------
   // AG-UI event handlers
   // ------------------------------------------------------------------
 
   const handleRunStarted = useCallback((event: AgUiEvent & { event_type: typeof AgUiEventType.RUN_STARTED }) => {
+    if (messagesRef.current.some(message => message.taskId === event.runId && message.terminalDeliveryId)) return;
     trackActiveTask(event.runId);
+    reportTurnPhase('running', event.runId);
     setIsAwaitingReply(true);
     // Reset tool calls for new run
     toolCallsRef.current.clear();
     endedBeforeStartRef.current.clear();
     setActiveToolCalls([]);
-  }, [trackActiveTask]);
+  }, [trackActiveTask, reportTurnPhase]);
 
   const handleRunFinished = useCallback(
     (event: AgUiEvent & { event_type: typeof AgUiEventType.RUN_FINISHED }) => {
       setIsAwaitingReply(false);
+      reportTurnPhase('completed', event.runId);
       toolCallsRef.current.clear();
       endedBeforeStartRef.current.clear();
       setActiveToolCalls([]);
@@ -300,12 +354,13 @@ export function useAgUiEvents({
         return updated;
       });
     },
-    [updateMessages],
+    [updateMessages, reportTurnPhase],
   );
 
   const handleRunError = useCallback(
     (event: AgUiEvent & { event_type: typeof AgUiEventType.RUN_ERROR }) => {
       setIsAwaitingReply(false);
+      reportTurnPhase('failed');
       toolCallsRef.current.clear();
       endedBeforeStartRef.current.clear();
       setActiveToolCalls([]);
@@ -337,7 +392,7 @@ export function useAgUiEvents({
         ];
       });
     },
-    [updateMessages],
+    [updateMessages, reportTurnPhase],
   );
 
   const handleTextMessageStart = useCallback(
@@ -369,6 +424,7 @@ export function useAgUiEvents({
 
   const handleTextMessageContent = useCallback(
     (event: AgUiEvent & { event_type: typeof AgUiEventType.TEXT_MESSAGE_CONTENT }) => {
+      if (event.delta) reportTurnPhase('streaming', activeTaskRef.current ?? undefined);
       updateMessages((msgs) => {
         // Find the message by AG-UI messageId, or fall back to last streaming bubble
         let idx = findLastIndex(msgs, (m) => m.agUiMessageId === event.messageId);
@@ -398,7 +454,7 @@ export function useAgUiEvents({
         return updated;
       });
     },
-    [updateMessages],
+    [updateMessages, reportTurnPhase],
   );
 
   const handleTextMessageEnd = useCallback(
@@ -423,6 +479,7 @@ export function useAgUiEvents({
       // If END already arrived for this id (out-of-order delivery), start
       // in 'complete' state so the UI never shows a stuck "running" chip.
       const alreadyEnded = endedBeforeStartRef.current.delete(event.toolCallId);
+      if (!alreadyEnded) reportTurnPhase('running', activeTaskRef.current ?? undefined);
       const toolCall: ToolCallInfo = {
         toolCallId: event.toolCallId,
         toolCallName: event.toolCallName,
@@ -449,7 +506,7 @@ export function useAgUiEvents({
         return updated;
       });
     },
-    [updateMessages],
+    [updateMessages, reportTurnPhase],
   );
 
   const handleToolCallArgs = useCallback(
@@ -512,33 +569,22 @@ export function useAgUiEvents({
             event.delta,
           ) as SessionMeta,
       );
-
-      // If it's a heartbeat, keep the typing indicator alive
-      const isHeartbeat = event.delta.some(op => op.path === '/heartbeat');
-      if (isHeartbeat) {
-        updateMessages((msgs) => {
-          const idx = findLastIndex(msgs, (m) => m.role === 'assistant' && m.status === 'streaming');
-          if (idx === -1) {
-            // Create a streaming bubble so the indicator shows
-            return [
-              ...msgs,
-              {
-                id: generateId(),
-                role: 'assistant' as const,
-                content: '',
-                status: 'streaming' as const,
-                timestamp: Date.now(),
-              },
-            ];
-          }
-          const updated = [...msgs];
-          updated[idx] = { ...updated[idx], timestamp: Date.now() };
-          return updated;
-        });
-      }
     },
-    [updateMessages],
+    [],
   );
+
+  const handleAnswerEvidence = useCallback((value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    const payload = value as Record<string, unknown>;
+    if (typeof payload.messageId !== 'string' || !payload.messageId) return;
+    const evidence = parseAnswerEvidence(payload.evidence);
+    if (!evidence) return;
+    const index = messagesRef.current.findIndex(message =>
+      message.role === 'assistant' && message.agUiMessageId === payload.messageId);
+    if (index === -1) return;
+    updateMessages(messages => messages.map((message, position) =>
+      position === index ? { ...message, evidence } : message));
+  }, [updateMessages]);
 
   // ------------------------------------------------------------------
   // AG-UI event dispatcher
@@ -590,7 +636,10 @@ export function useAgUiEvents({
         case AgUiEventType.STATE_DELTA:
           handleStateDelta(event);
           break;
-        // STATE_SNAPSHOT, STEP_*, CUSTOM — handled but no-op for now
+        case AgUiEventType.CUSTOM:
+          if (event.name === 'answer_evidence') handleAnswerEvidence(event.value);
+          break;
+        // STATE_SNAPSHOT, STEP_* — handled but no-op for now
         default:
           break;
       }
@@ -605,6 +654,7 @@ export function useAgUiEvents({
       handleToolCallStart,
       handleToolCallArgs,
       handleToolCallEnd,
+      handleAnswerEvidence,
       handleStateDelta,
     ],
   );
@@ -616,6 +666,7 @@ export function useAgUiEvents({
   const handleLegacyNotification = useCallback(
     (frame: WsFrame) => {
       trackActiveTask(frame.task_id);
+      reportTurnPhase('acknowledged', frame.task_id);
       updateMessages((msgs) => [
         ...msgs,
         {
@@ -627,36 +678,16 @@ export function useAgUiEvents({
         },
       ]);
     },
-    [updateMessages, trackActiveTask],
+    [updateMessages, trackActiveTask, reportTurnPhase],
   );
 
   const handleLegacyProgress = useCallback(
     (frame: WsProgressFrame) => {
-      // Legacy-format progress: both heartbeat and tool_use kinds just keep
-      // the typing indicator alive. Tool name/input aren't on the legacy
-      // wire (see response/routers/websocket.py). For rich tool rendering,
-      // the worker emits AG-UI TOOL_CALL_* events — handled elsewhere.
-      updateMessages((msgs) => {
-        const idx = findLastIndex(msgs, (m) => m.role === 'assistant' && m.status === 'streaming');
-        if (idx === -1) {
-          return [
-            ...msgs,
-            {
-              id: generateId(),
-              role: 'assistant' as const,
-              content: '',
-              status: 'streaming' as const,
-              timestamp: Date.now(),
-              taskId: frame.task_id,
-            },
-          ];
-        }
-        const updated = [...msgs];
-        updated[idx] = { ...updated[idx], timestamp: Date.now() };
-        return updated;
-      });
+      if (frame.status === 'queued' || frame.status === 'starting' || frame.status === 'running') {
+        reportTurnPhase(frame.status, frame.task_id);
+      }
     },
-    [updateMessages],
+    [reportTurnPhase],
   );
 
   const handleLegacyResponse = useCallback(
@@ -664,6 +695,7 @@ export function useAgUiEvents({
       if (frame.terminal_delivery !== undefined) {
         const messages = terminalChatResponse(frame, sessionIdRef.current, messagesRef.current, chunkBufferRef.current, activeTaskRef.current);
         if (messages) {
+          reportTurnPhase(frame.status as ChatTurnPhase, frame.task_id);
           updateMessages(() => messages);
           if (!messages.some(message => message.role === 'assistant' && message.status === 'streaming') &&
               (!activeTaskRef.current || activeTaskRef.current === frame.task_id)) {
@@ -704,6 +736,7 @@ export function useAgUiEvents({
       // the acknowledgement. Do NOT clear isAwaitingReply — the typing
       // indicator should stay on until the final reply lands.
       if (frame.status === 'notification') {
+        reportTurnPhase('acknowledged', frame.task_id);
         trackActiveTask(frame.task_id);
         if (content) {
           updateMessages((msgs) => [
@@ -722,6 +755,7 @@ export function useAgUiEvents({
       }
 
       if (frame.status === 'failed') {
+        reportTurnPhase('failed', frame.task_id);
         setIsAwaitingReply(false);
         updateMessages((msgs) => {
           const idx = findLastIndex(msgs, (m) => m.role === 'assistant' && m.status === 'streaming');
@@ -765,6 +799,7 @@ export function useAgUiEvents({
         if (received < frame.chunk_total) {
           // Partial — show what we have so far
           const partial = chunks.filter(Boolean).join('');
+          if (partial) reportTurnPhase('streaming', frame.task_id);
           updateMessages((msgs) => {
             const idx = findLastIndex(msgs, (m) => m.role === 'assistant' && m.status === 'streaming');
             if (idx === -1) {
@@ -792,6 +827,7 @@ export function useAgUiEvents({
         buf.delete(key);
 
         if (frame.status === 'completed') {
+          reportTurnPhase('completed', frame.task_id);
           setIsAwaitingReply(false);
           updateMessages((msgs) => {
             const idx = findLastIndex(msgs, (m) => m.role === 'assistant' && m.status === 'streaming');
@@ -818,6 +854,7 @@ export function useAgUiEvents({
 
       // Non-chunked completed response
       if (frame.status === 'completed') {
+        reportTurnPhase('completed', frame.task_id);
         setIsAwaitingReply(false);
         updateMessages((msgs) => {
           const idx = findLastIndex(msgs, (m) => m.role === 'assistant' && m.status === 'streaming');
@@ -845,7 +882,7 @@ export function useAgUiEvents({
         });
       }
     },
-    [updateMessages, trackActiveTask],
+    [updateMessages, trackActiveTask, reportTurnPhase],
   );
 
   // ------------------------------------------------------------------
@@ -1154,6 +1191,16 @@ export function useAgUiEvents({
     }, delay);
   }, [connect]);
 
+  const retryConnection = useCallback(() => {
+    if (connectionStatus !== 'disconnected' || !sessionIdRef.current) return;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectAttemptRef.current = 0;
+    void connect();
+  }, [connect, connectionStatus]);
+
   const disconnect = useCallback(() => {
     intentionalCloseRef.current = true;
     replayEpochRef.current += 1;
@@ -1202,12 +1249,12 @@ export function useAgUiEvents({
 
   const sendMessage = useCallback(
     (text: string, attachments?: string[], persona?: string) => {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-      if (!sessionIdRef.current) return;
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return false;
+      if (!sessionIdRef.current) return false;
       // #5615: the server has already refused this identifier. Re-sending it
       // would be refused identically and would restart the spinner, so the send
       // is dropped until the page moves to a new conversation.
-      if (sessionExpired) return;
+      if (sessionExpired) return false;
 
       const userMsg: ChatMessage = {
         id: generateId(),
@@ -1217,12 +1264,6 @@ export function useAgUiEvents({
         timestamp: Date.now(),
       };
 
-      updateMessages((msgs) => [...msgs, userMsg]);
-      setIsAwaitingReply(true);
-      activeTaskRef.current = null;
-      cancelRequestRef.current = null;
-      setActiveTaskId(null);
-      setCancelState('idle');
 
       // The ingest Lambda's webchat adapter reads `text`, not `message`
       // (gateway/lambdas/ingest/channels/webchat.py:125). Wrong field → silent drop.
@@ -1243,16 +1284,30 @@ export function useAgUiEvents({
       if (persona) {
         payload.persona = persona;
       }
-      wsRef.current.send(JSON.stringify(payload));
+      try {
+        wsRef.current.send(JSON.stringify(payload));
+      } catch {
+        return false;
+      }
+      updateMessages((msgs) => [...msgs, userMsg]);
+      setIsAwaitingReply(true);
+      activeTaskRef.current = null;
+      setTurnPhase('sending');
+      cancelRequestRef.current = null;
+      setActiveTaskId(null);
+      setCancelState('idle');
+      return true;
     },
     [updateMessages, sessionExpired],
   );
 
   return {
     connectionStatus,
+    turnPhase,
     isAwaitingReply,
     reconnectAttempt,
     sessionExpired,
+    retryConnection,
     replayWarning,
     sessionMeta,
     sendMessage,

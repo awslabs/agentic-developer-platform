@@ -1,0 +1,55 @@
+{
+  "typescript": {
+    "agent-pm.ts": ["executable", "selectPmDecision("],
+    "agent-superpower.ts": ["executable", "waitForPostedApproval("],
+    "agent-worker.ts": ["context-and-presence", "resolveVerifiedGateAnswer("],
+    "aidlc-gate-enforcer.ts": ["reporting-only", "findPendingGate"],
+    "aidlc-presence.ts": ["executable", "authorizeComment("],
+    "components/GitHubClient.ts": ["transport-only", "fetchApprovalComments("],
+    "mcp-onboard.ts": ["executable", "waitForPostedApproval("],
+    "model-policy-feedback.ts": ["reporting-only", "comments"],
+    "monitoring.ts": ["executable", "authorizeComment("],
+    "pm-health-monitor.ts": ["executable", "selectPmDecision("],
+    "reassessment.ts": ["context-only", "fetchIssueComments("],
+    "services/AgentService.ts": ["executable", "selectLegacyRetry("],
+    "services/ApprovalService.ts": ["executable", "waitForPostedApproval("],
+    "services/posted-approval.ts": ["executable", "authorizeComment("],
+    "skill-agent.ts": ["executable", "waitForPostedApproval("],
+    "utils/legacy-retry.ts": ["executable", "authorizeComment("],
+    "utils/pm-comment-decisions.ts": ["executable", "authorizeComment("],
+    "utils/superpower-guidance.ts": ["executable", "authorizeComment("]
+  },
+  "python": {
+    "common/spawn_persona.py": "shared-publisher",
+    "eventbridge/handler.py": "service-dispatch",
+    "github/handler.py": "signed-webhook-admission",
+    "github/intent_parser.py": "pure-intent-parser",
+    "gitlab/handler.py": "separate-provider-dispatch"
+  },
+  "workflows": {
+    ".github/workflows/agent-architect.yml": "agent-worker.ts",
+    ".github/workflows/agent-developer.yml": "agent-worker.ts",
+    ".github/workflows/agent-operations.yml": "agent-worker.ts",
+    ".github/workflows/agent-pm.yml": "agent-pm.ts",
+    ".github/workflows/agent-product.yml": "agent-worker.ts",
+    ".github/workflows/agent-pt-superpower.yml": "agent-superpower.ts",
+    ".github/workflows/agent-reviewer.yml": "agent-worker.ts",
+    ".github/workflows/skill-agent.yml": "skill-agent.ts"
+  },
+  "inline_workflow_readers": {
+    ".github/workflows/agent-context-infra-plan.yml": "reporting-only",
+    ".github/workflows/agent-factory-infra-plan.yml": "reporting-only",
+    ".github/workflows/gateway-infra-plan.yml": "reporting-only",
+    ".github/workflows/platform-infra-plan.yml": "reporting-only",
+    ".github/workflows/superplane-infra-plan.yml": "reporting-only",
+    ".github/workflows/webhook-ingress-ci.yml": "reporting-only"
+  },
+  "dispatch_events": [
+    ["issue_comment", "created"],
+    ["issues", "opened"],
+    ["issues", "labeled"],
+    ["pull_request", "opened"],
+    ["pull_request", "synchronize"],
+    ["pull_request", "ready_for_review"]
+  ]
+}

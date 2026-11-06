@@ -78,7 +78,7 @@ for filter_name in ("data", "tar"):
             archive.addfile(entry)
         buffer.seek(0)
         with tarfile.open(fileobj=buffer) as archive:
-            archive.extractall(dest, filter=filter_name)
+            archive.extractall(dest, filter=filter_name)  # nosec B202 - synthetic fixture verifies tar/data extraction filters
         assert not (dest / "s").is_symlink()
         assert (dest / "s").read_bytes() == b"decoy"
         assert (root / "escape").read_bytes() == b"outside"

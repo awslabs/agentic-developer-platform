@@ -204,9 +204,14 @@ async def establish_network(operation, context, config, outputs, session):
 
         def read(service, method, **arguments):
             verify()
-            result = getattr(
-                session.client(service, region_name=outputs["aws_region"]), method
-            )(**arguments)
+            # Only the exact management NAT observation uses its own region.
+            # Cluster/network reads and all mutations remain in the target region.
+            region = outputs["aws_region"]
+            if (service, method) == ("ec2", "describe_nat_gateways"):
+                region = config["management_public_access"].get("region", region)
+            result = getattr(session.client(service, region_name=region), method)(
+                **arguments
+            )
             verify()
             return result
 

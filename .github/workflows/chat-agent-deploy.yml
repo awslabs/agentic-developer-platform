@@ -1,5 +1,7 @@
 name: Chat Agent Deploy
 
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || '' }}
+
 # Builds and deploys the TypeScript complex-task-chat agent image + updates
 # the chat-agent-worker KEDA ScaledJob in dev.
 #
@@ -19,6 +21,7 @@ on:
       - 'modules/agent-factory/rules/personas/**'
       - 'codebuild/bs-chat-agent.yml'
       - 'platform/scripts/zip-source.sh'
+      - 'platform/scripts/verify-chat-release-controls.py'
       - '.github/workflows/chat-agent-deploy.yml'
       # Documentation-only changes do not start this workflow.
       - '!docs/**'
@@ -39,12 +42,51 @@ on:
         description: 'Validate the legacy gateway update server-side without applying'
         type: boolean
         default: true
+      crew_controls_only:
+        description: 'Apply reviewed Crew admission and role-free workload controls without reviving the retired worker.'
+        type: boolean
+        default: false
       skip_deploy:
         description: 'Only build the image; skip the ScaledJob update.'
         type: boolean
         default: false
       adp_approved_revision:
-        description: 'Assistant rollout approval for this run only: full 40-hex commit whose protected assistant files this candidate must match (see docs/architecture/assistant-deploy-boundary.md).'
+        description: 'Legacy assistant approval input; no approval is required for this dev-only deployment.'
+        required: false
+        type: string
+        default: ''
+      manual_source_revision:
+        description: 'Reviewed source commit for manual deployment.'
+        required: false
+        type: string
+        default: ''
+      customer_account_id:
+        description: 'Engine connection account; subject to the shared deployment configuration policy.'
+        required: false
+        type: string
+        default: ''
+      customer_user_id:
+        description: 'Engine connection owner; subject to the shared deployment configuration policy.'
+        required: false
+        type: string
+        default: ''
+      customer_aws_label:
+        description: 'Engine connection label; subject to the shared deployment configuration policy.'
+        required: false
+        type: string
+        default: ''
+      adp_correlation:
+        description: 'Engine-owned deployment correlation.'
+        required: false
+        type: string
+        default: ''
+      adp_source_revision:
+        description: 'Engine-approved immutable source commit.'
+        required: false
+        type: string
+        default: ''
+      adp_definition_revision:
+        description: 'Expected workflow definition revision.'
         required: false
         type: string
         default: ''
@@ -54,9 +96,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
   ADP_CHAT_EXISTING_NAMESPACE_ONLY: 'true'
+  ADP_CHAT_VERIFY_EXISTING_CONTROLS: 'true'
   ADP_CHAT_MODEL_ACCESS_MODE: verify
-  ADP_CHAT_MODEL_POLICY_ENABLED: ${{ vars.ADP_CHAT_MODEL_POLICY_ENABLED || 'false' }}
+  ADP_CHAT_MODEL_POLICY_ENABLED: ${{ vars.ADP_CHAT_MODEL_POLICY_ENABLED || 'true' }}
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
   NAMESPACE: adp-gateway-agents
@@ -68,45 +112,67 @@ jobs:
   build-and-deploy:
     name: Build TS Image and Update Chat ScaledJob
     if: github.ref == 'refs/heads/main' && inputs.legacy_security_update != true
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     environment: adp-chat-deploy-dev
-    # AWS authority comes from the protected deployment environment.
+    # Engine dispatches use the selected user connection; ordinary CD uses the protected environment.
     permissions:
       id-token: write
       contents: read
-      actions: read  # Resolve the last successfully deployed revision for the assistant guard
+      actions: read
 
+    env:
+      ADP_DEPLOYMENT_GATEWAY_URL: ${{ vars.ADP_DEPLOYMENT_GATEWAY_URL }}
     steps:
+      - name: Guard engine delivery revisions
+        env:
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
+          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
+          CUSTOMER_SELECTION: ${{ inputs.customer_account_id }}${{ inputs.customer_user_id }}${{ inputs.customer_aws_label }}
+        run: |
+          set -euo pipefail
+          if [ -n "${ADP_MANUAL_SOURCE:-}" ]; then
+            [[ "$ADP_MANUAL_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test -z "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION"
+          fi
+          if [ -n "${CUSTOMER_SELECTION:-}" ]; then
+            test -n "$ADP_CORRELATION"
+          fi
+          if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
+            [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
+            [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test "$ACTUAL_DEFINITION" = "$ADP_DEFINITION"
+          fi
+      - name: Check out trusted credential client
+        if: ${{ inputs.adp_correlation != '' }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .adp-trusted-deployment
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify engine source and assume the selected user connection
+        if: ${{ inputs.adp_correlation != '' }}
+        run: python3 .adp-trusted-deployment/modules/agent-factory/agent-worker-image/adp_cred/deployment.py configure
+
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           fetch-depth: 0
 
       - name: Verify source belongs to reviewed main history
         shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Resolve last successfully deployed revision
-        id: deployed
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # A run is only a deployment when the job carrying the guard succeeded
-          # AND its ScaledJob rollout step ran (skip_deploy=true skips that step
-          # while the job itself still succeeds).
-          baseline=""
-          while read -r run_id head_sha; do
-            deployed=$(gh api "repos/${{ github.repository }}/actions/runs/${run_id}/jobs?per_page=100" \
-              --jq '[.jobs[] | select(.name == "Build TS Image and Update Chat ScaledJob" and .conclusion == "success"
-                     and any(.steps[]; .name == "Update chat ScaledJob manifest" and .conclusion == "success"))] | length')
-            if [ "$deployed" -gt 0 ]; then baseline="$head_sha"; break; fi
-          done < <(gh api "repos/${{ github.repository }}/actions/workflows/chat-agent-deploy.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=10" \
-            --jq '.workflow_runs[] | "\(.id) \(.head_sha)"')
-          echo "baseline=${baseline}" >> "$GITHUB_OUTPUT"
 
       - name: Guard assistant auto-deployment
         env:
@@ -115,10 +181,11 @@ jobs:
           ADP_ASSISTANT_APPROVED_TARGET: ${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}
           ADP_ASSISTANT_APPROVED_REVISION: ${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}
           ADP_ASSISTANT_DISPATCH_APPROVED_REVISION: ${{ inputs.adp_approved_revision }}
-          ADP_DEPLOYED_BASELINE: ${{ steps.deployed.outputs.baseline }}
+          ADP_ASSISTANT_DEPLOY_CANDIDATE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: bash scripts/check-assistant-deploy-boundary.sh
 
       - name: Establish trusted deployment identity
+        if: ${{ inputs.adp_correlation == '' }}
         uses: ./.github/actions/trusted-deployment
         with:
           role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
@@ -126,6 +193,48 @@ jobs:
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
+        with:
+          environment: dev
+          # The connected client verified these before source checkout. The
+          # legacy customer bootstrap loader remains disabled.
+          account_id: ${{ env.ADP_ACCOUNT_ID }}
+          region: ${{ env.ADP_REGION }}
+
+      - name: Record engine deployment context
+        if: ${{ inputs.legacy_security_update != true }}
+        env:
+          ADP_RELEASE_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation || '' }}
+          INPUT_LEGACY_SECURITY_UPDATE: 'False'
+          INPUT_LEGACY_DRY_RUN: ${{ github.event_name == 'push' && 'True' || (inputs.legacy_dry_run && 'True' || 'False') }}
+          INPUT_CREW_CONTROLS_ONLY: ${{ inputs.crew_controls_only && 'True' || 'False' }}
+          INPUT_SKIP_DEPLOY: ${{ inputs.skip_deploy && 'True' || 'False' }}
+          INPUT_APPROVED_REVISION: ${{ inputs.adp_approved_revision || '' }}
+          INPUT_MANUAL_SOURCE_REVISION: ${{ inputs.manual_source_revision || '' }}
+          INPUT_CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id || '' }}
+          INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
+          INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label || '' }}
+        run: python3 modules/agent-factory/agent/k8s/chat-release.py context
+
+      # Push runs skip the credential-client checkout, and source checkout can
+      # clean that directory on engine runs. Restore the workflow-revision
+      # publisher after source checkout for all three S3 evidence publications.
+      - name: Check out trusted evidence publisher
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .adp-trusted-deployment
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Publish engine deployment context
+        if: ${{ inputs.legacy_security_update != true }}
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        # Deployment evidence is published to the signed S3 store, never to GitHub
+        # artifacts (#7624). The publisher runs from the workflow-revision checkout.
+        run: python3 .adp-trusted-deployment/modules/gateway/scripts/publish-deployment-evidence.py context chat-agent-deploy.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
 
       # ── 0. Ensure required CLI tools are on the ARC runner ──────────────
       # The ARC runner image pinned at 2.333.1 ships a bare Ubuntu — no zip,
@@ -158,29 +267,55 @@ jobs:
           project_name: ${{ env.CODEBUILD_PROJECT }}
           region: ${{ env.AWS_REGION }}
           state_bucket: ${{ env.STATE_BUCKET }}
+          source_revision: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           environment_variables: >-
             "name=AWS_REGION,value=${{ env.AWS_REGION }}"
             "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}"
             "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}"
             "name=REGISTRY,value=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-            "name=IMAGE_TAG,value=${{ github.sha }}"
+            "name=IMAGE_TAG,value=${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
 
       - name: Export build outputs
         id: build_info
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          echo "image_tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${ADP_SELECTED_SOURCE}" >> "$GITHUB_OUTPUT"
+          SANDBOX_DIGEST=$(aws ecr describe-images --repository-name "${ECR_REPO}" \
+            --image-ids "imageTag=sandbox-${ADP_SELECTED_SOURCE}" \
+            --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)
+          [[ "$SANDBOX_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
+          SUPERVISOR_IMAGE=$(python3 platform/scripts/resolve-ecr-image.py "${REGISTRY}/${ECR_REPO}:${ADP_SELECTED_SOURCE}")
+          SANDBOX_IMAGE=$(python3 platform/scripts/resolve-ecr-image.py "${REGISTRY}/${ECR_REPO}@${SANDBOX_DIGEST}")
+          [[ "$SUPERVISOR_IMAGE" != "$SANDBOX_IMAGE" ]] || exit 1
+          echo "supervisor_image=${SUPERVISOR_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "sandbox_image=${SANDBOX_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
 
       # ── 3. Update the chat ScaledJob to use the new image tag ───────────
-      - name: Update chat ScaledJob manifest
-        if: ${{ inputs.skip_deploy != true }}
+      # deploy-chat-scaledjob.sh resolves the SSM-backed Crew values itself
+      # (/adp/<env>/gateway/crew-dashboard-origin, crew-s3-interface-ip) when the
+      # variable is unset or empty (#8058); a repository variable only overrides.
+      - name: Apply reviewed Crew controls only
+        if: ${{ inputs.skip_deploy != true && inputs.crew_controls_only == true }}
         env:
+          ADP_CREW_S3_INTERFACE_IP: ${{ vars.ADP_CREW_S3_INTERFACE_IP }}
+        run: |
+          aws eks update-kubeconfig --name "${EKS_CLUSTER}" --region "${AWS_REGION}"
+          ADP_CHAT_CREW_CONTROLS_ONLY=true bash modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh
+          kubectl apply -f modules/agent-factory/agent/k8s/chat-supervisor-pod-policy.yaml
+          kubectl apply -f modules/agent-factory/agent/k8s/chat-supervisor-rbac.yaml
+
+      - name: Update chat ScaledJob manifest
+        if: ${{ inputs.skip_deploy != true && inputs.crew_controls_only != true }}
+        env:
+          GATEWAY_HTTPS_ORIGIN: ${{ vars.GATEWAY_HTTPS_ORIGIN }}
           IMAGE_TAG: ${{ steps.build_info.outputs.image_tag }}
           REGISTRY: ${{ steps.build_info.outputs.registry }}
         run: |
-          AGENT_IMAGE="${REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG}"
-          export AGENT_IMAGE
+          export SUPERVISOR_IMAGE="${{ steps.build_info.outputs.supervisor_image }}"
+          export SANDBOX_IMAGE="${{ steps.build_info.outputs.sandbox_image }}"
 
           aws eks update-kubeconfig \
             --name "${{ env.EKS_CLUSTER }}" \
@@ -190,10 +325,52 @@ jobs:
           export NAMESPACE="${{ env.NAMESPACE }}"
 
           # deploy-chat-scaledjob.sh reads Terraform outputs from
-          # modules/agent-factory/infra/ and does the sed+kubectl apply.
+          # modules/agent-factory/infra/, resolves ADP_CREW_DASHBOARD_ORIGIN from SSM
+          # (#8058), pins both digests into the chat-agent-image-prepull DaemonSet and
+          # waits for every node before it applies the ScaledJob (#8059). After the
+          # apply it publishes the supervisor/sandbox digests to SSM
+          # (/adp/<env>/gateway/chat-{authority-worker-images,sandbox-image-digests,crew-image-digests})
+          # and converges bedrockgateway-config in adp-gateway with a gateway restart
+          # (#8086) — the identity holds ssm:PutParameter on those three parameters and
+          # the adp:chat-release-publish RBAC group (platform/automation-infra).
           bash modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh
 
-          echo "Chat ScaledJob now uses image: ${AGENT_IMAGE}"
+          echo "Chat supervisor and sandbox images are pinned to separate digests and published to the gateway."
+
+      # Independent of what the script resolved or published: the LIVE ScaledJob env
+      # must equal SSM and the build outputs, the DaemonSet must carry the same digests,
+      # and the digests the gateway verifies workloads against (SSM chat-*-digests and
+      # the live bedrockgateway-config) must equal the ScaledJob's. Any drift fails the
+      # run (#8058 AC-03, #8059 AC-03, #8086 AC-03).
+      - name: Assert live chat rollout matches SSM and the build
+        if: ${{ inputs.skip_deploy != true && inputs.crew_controls_only != true }}
+        env:
+          SUPERVISOR_IMAGE: ${{ steps.build_info.outputs.supervisor_image }}
+          SANDBOX_IMAGE: ${{ steps.build_info.outputs.sandbox_image }}
+        run: bash modules/agent-factory/agent/k8s/verify-chat-rollout.sh
+
+      - name: Record verified release manifests
+        if: ${{ inputs.skip_deploy != true }}
+        env:
+          ADP_RELEASE_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
+          SUPERVISOR_IMAGE: ${{ steps.build_info.outputs.supervisor_image }}
+          SANDBOX_IMAGE: ${{ steps.build_info.outputs.sandbox_image }}
+        run: |
+          python3 modules/agent-factory/agent/k8s/chat-release.py release agent-worker
+          python3 modules/agent-factory/agent/k8s/chat-release.py release chat-worker
+
+      - name: Publish engine chat-worker release
+        if: ${{ inputs.skip_deploy != true }}
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 .adp-trusted-deployment/modules/gateway/scripts/publish-deployment-evidence.py release chat-worker "$RUNNER_TEMP/adp-release-chat-worker/release.json"
+
+      - name: Publish engine agent-worker release
+        if: ${{ inputs.skip_deploy != true }}
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 .adp-trusted-deployment/modules/gateway/scripts/publish-deployment-evidence.py release agent-worker "$RUNNER_TEMP/adp-release-agent-worker/release.json"
 
       - name: Summary
         env:
@@ -211,13 +388,26 @@ jobs:
   legacy-security-update:
     name: Update existing legacy gateway security image
     if: github.ref == 'refs/heads/main' && inputs.legacy_security_update == true
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     environment: adp-chat-deploy-dev
     timeout-minutes: 10
     permissions:
       id-token: write
       contents: read
     steps:
+      - name: Guard engine delivery revisions
+        env:
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
+        run: |
+          set -euo pipefail
+          test -z "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION"
+          if [ -n "${ADP_MANUAL_SOURCE:-}" ]; then
+            [[ "$ADP_MANUAL_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test "$ADP_MANUAL_SOURCE" = "$GITHUB_SHA"
+          fi
       - uses: actions/checkout@v7
       - name: Verify source belongs to reviewed main history
         run: |
@@ -229,6 +419,13 @@ jobs:
         with:
           role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
           region: us-east-1
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          environment: dev
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
       - name: Validate and promote reviewed legacy gateway image
         env:
           DRY_RUN: ${{ inputs.legacy_dry_run }}

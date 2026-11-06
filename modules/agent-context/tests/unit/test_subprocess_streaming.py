@@ -35,9 +35,9 @@ def _load_sqs_worker():
     return mod
 
 
-# Load the module once — _run_subprocess is what we test
+# Load the module once — _stream_subprocess is what we test
 _sqs_worker = _load_sqs_worker()
-_run_subprocess = _sqs_worker._run_subprocess
+_stream_subprocess = _sqs_worker._stream_subprocess
 
 
 # ---------------------------------------------------------------------------
@@ -82,12 +82,12 @@ def capture_logs():
 
 
 class TestSubprocessStreaming:
-    """Tests for _run_subprocess streaming behavior."""
+    """Tests for _stream_subprocess streaming behavior."""
 
     def test_streaming_output_appears_in_logs(self, capture_logs):
         """Child process stdout lines appear in parent's structured log output."""
         cmd = [sys.executable, "-c", "print('line-one'); print('line-two')"]
-        _run_subprocess(cmd, timeout=30)
+        _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         assert "line-one" in output
@@ -96,7 +96,7 @@ class TestSubprocessStreaming:
     def test_streaming_includes_subprocess_start_event(self, capture_logs):
         """A subprocess.start bookend event is emitted."""
         cmd = [sys.executable, "-c", "pass"]
-        _run_subprocess(cmd, timeout=30)
+        _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         assert "subprocess.start" in output
@@ -104,7 +104,7 @@ class TestSubprocessStreaming:
     def test_streaming_includes_subprocess_complete_event(self, capture_logs):
         """A subprocess.complete bookend event is emitted on success."""
         cmd = [sys.executable, "-c", "pass"]
-        _run_subprocess(cmd, timeout=30)
+        _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         assert "subprocess.complete" in output
@@ -115,7 +115,7 @@ class TestSubprocessStreaming:
         cmd = [sys.executable, "-c", "import sys; print('error-detail'); sys.exit(1)"]
 
         with pytest.raises(RuntimeError, match="Exit code 1"):
-            _run_subprocess(cmd, timeout=30)
+            _stream_subprocess(cmd, timeout=30)
 
     def test_nonzero_exit_includes_tail_in_error(self, capture_logs):
         """RuntimeError message includes the last lines of output."""
@@ -126,7 +126,7 @@ class TestSubprocessStreaming:
         ]
 
         with pytest.raises(RuntimeError) as exc_info:
-            _run_subprocess(cmd, timeout=30)
+            _stream_subprocess(cmd, timeout=30)
 
         assert "42" in str(exc_info.value)
         assert "the actual error" in str(exc_info.value)
@@ -136,7 +136,7 @@ class TestSubprocessStreaming:
         cmd = [sys.executable, "-c", "import sys; sys.exit(1)"]
 
         with pytest.raises(RuntimeError):
-            _run_subprocess(cmd, timeout=30)
+            _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         assert "subprocess.failed" in output
@@ -145,7 +145,7 @@ class TestSubprocessStreaming:
     def test_empty_output_handled_gracefully(self, capture_logs):
         """A subprocess that produces no output completes without error."""
         cmd = [sys.executable, "-c", "pass"]
-        _run_subprocess(cmd, timeout=30)
+        _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         assert "subprocess.complete" in output
@@ -157,7 +157,7 @@ class TestSubprocessStreaming:
             "-c",
             "import sys; sys.stderr.write('stderr-line\\n')",
         ]
-        _run_subprocess(cmd, timeout=30)
+        _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         assert "stderr-line" in output
@@ -176,14 +176,14 @@ class TestSubprocessTimeout:
         cmd = [sys.executable, "-c", "import time; time.sleep(60)"]
 
         with pytest.raises(subprocess.TimeoutExpired):
-            _run_subprocess(cmd, timeout=1)
+            _stream_subprocess(cmd, timeout=1)
 
     def test_timeout_emits_error_event(self, capture_logs):
         """subprocess.timeout event is logged when timeout occurs."""
         cmd = [sys.executable, "-c", "import time; time.sleep(60)"]
 
         with pytest.raises(subprocess.TimeoutExpired):
-            _run_subprocess(cmd, timeout=1)
+            _stream_subprocess(cmd, timeout=1)
 
         output = capture_logs.getvalue()
         assert "subprocess.timeout" in output
@@ -204,7 +204,7 @@ class TestEnvPropagation:
             "-c",
             "import os; v = os.environ.get('KNOWLEDGE_LAYER_TELEMETRY_ENABLED', ''); print(f'GOT_TELEM={v}')",
         ]
-        _run_subprocess(cmd, timeout=30)
+        _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         # The child prints the env var value — verify it's non-empty
@@ -217,7 +217,7 @@ class TestEnvPropagation:
             "-c",
             "import os; v = os.environ.get('LOG_FORMAT', ''); print(f'GOT_FMT={v}')",
         ]
-        _run_subprocess(cmd, timeout=30)
+        _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         # LOG_FORMAT defaults to 'json'
@@ -235,7 +235,7 @@ class TestDurationTracking:
     def test_complete_event_includes_duration(self, capture_logs):
         """subprocess.complete includes a duration measurement."""
         cmd = [sys.executable, "-c", "pass"]
-        _run_subprocess(cmd, timeout=30)
+        _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         assert "duration=" in output
@@ -245,7 +245,7 @@ class TestDurationTracking:
         cmd = [sys.executable, "-c", "import sys; sys.exit(1)"]
 
         with pytest.raises(RuntimeError):
-            _run_subprocess(cmd, timeout=30)
+            _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         assert "duration=" in output
@@ -268,7 +268,7 @@ class TestLargeOutput:
         cmd = [sys.executable, "-c", script]
 
         with pytest.raises(RuntimeError) as exc_info:
-            _run_subprocess(cmd, timeout=30)
+            _stream_subprocess(cmd, timeout=30)
 
         # The error should contain some of the last lines (tail)
         error_msg = str(exc_info.value)
@@ -280,7 +280,7 @@ class TestLargeOutput:
         cmd = [sys.executable, "-c", script]
 
         # Should complete without memory issues
-        _run_subprocess(cmd, timeout=30)
+        _stream_subprocess(cmd, timeout=30)
 
         output = capture_logs.getvalue()
         assert "subprocess.complete" in output

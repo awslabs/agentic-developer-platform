@@ -47,7 +47,15 @@ SERVEABLE = [
     (INSTALL_SCRIPT, "text/x-shellscript"),
     (HELPER_SCRIPT, "text/x-shellscript"),
     (PROXY_SCRIPT, "text/x-python"),
+    ("adp_mcp_config.py", "text/x-python"),
+    ("adp_skills.py", "text/x-python"),
+    ("adp-flow.py", "text/x-python"),
+    ("adp_native_test.py", "text/x-python"),
     (COMMAND_MANIFEST, "application/json"),
+    ("adp-product.py", "text/x-python"),
+    ("adp-onboard.py", "text/x-python"),
+    ("adp-insights.py", "text/x-python"),
+    ("adp-service.py", "text/x-python"),
 ]
 ARTIFACT_NAMES = [name for name, _ in SERVEABLE]
 SCRIPT_NAMES = [name for name in ARTIFACT_NAMES if name != COMMAND_MANIFEST]
@@ -86,6 +94,22 @@ class TestCliScriptDownload:
 
         assert resp.content == (CLI_DIR / script_name).read_bytes()
 
+    @pytest.mark.parametrize(
+        ("name", "media_type"),
+        [
+            ("adp-native-credentials.py", "text/x-python"),
+            ("adp_private_credentials.py", "text/x-python"),
+            ("native-host-requirements.txt", "text/plain"),
+            ("adp-native-credential-host.py", "text/x-python"),
+            ("adp_native_credential_handoff.py", "text/x-python"),
+        ],
+    )
+    def test_native_host_downloads_match_reviewed_artifacts(self, name, media_type):
+        response = client.get(f"/cli/{name}")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(media_type)
+        assert response.content == (CLI_DIR / name).read_bytes()
+
     def test_allowlist_contains_exactly_the_expected_cli_files(self):
         """Legacy bg-auth.sh (deprecated) and bg-auth.ps1 (no source file) stay
         out. Pinned as a set so adding a file to cli/ never makes it publicly
@@ -95,7 +119,18 @@ class TestCliScriptDownload:
             INSTALL_SCRIPT,
             HELPER_SCRIPT,
             PROXY_SCRIPT,
+            "adp-mcp.py",
+            "adp_mcp_config.py",
+            "adp_skills.py",
+            "adp-skills.tar.gz",
+            "adp-skills.tar.gz.sha256",
+            "adp_native_test.py",
             "adp_common.py",
+            "adp-native-credentials.py",
+            "adp_private_credentials.py",
+            "native-host-requirements.txt",
+            "adp-native-credential-host.py",
+            "adp_native_credential_handoff.py",
             # Issue #5413: `adp` resolves the selected deployment through this at
             # entry, so an install without it has no working verbs. Names, URLs
             # and paths only — no secret to expose on an unauthenticated route.
@@ -112,6 +147,10 @@ class TestCliScriptDownload:
             # point of the story, so publishing it exposes nothing.
             "adp-superplane.py",
             "adp-models.py",
+            # Issue #8000: `adp devbox ssh` / `ssh-config`. Carries no secret — it
+            # exchanges the existing `adp login` session for a short-lived,
+            # single-instance grant at call time.
+            "adp-devbox.py",
             "adp-model-policy.py",
             # Issue #5331: `adp flow`. Same property — it reads the session
             # `adp login` already wrote and adds no credential store of its own,
@@ -134,9 +173,15 @@ class TestCliScriptDownload:
             "adp-access.py",
             "adp-machine.py",
             "adp-gitlab.py",
+            "adp_gitlab_auth.py",
             "adp-usage.py",
             "adp-agent.py",
             "adp-knowledge.py",
+            "adp_context_storage.py",
+            "adp-product.py",
+            "adp-onboard.py",
+            "adp-insights.py",
+            "adp-service.py",
             "adp-budget.py",
             "adp-ratelimit.py",
             "adp-platform.py",
@@ -169,7 +214,18 @@ class TestCliScriptDownload:
         between the two lists is a broken install, not a broken button."""
         installer = (CLI_DIR / INSTALL_SCRIPT).read_text()
 
-        for name in (ADP_SCRIPT, HELPER_SCRIPT, PROXY_SCRIPT):
+        for name in (
+            ADP_SCRIPT,
+            "adp_mcp_config.py",
+            HELPER_SCRIPT,
+            PROXY_SCRIPT,
+            "adp-onboard.py",
+            "adp-native-credentials.py",
+            "adp_private_credentials.py",
+            "native-host-requirements.txt",
+            "adp-native-credential-host.py",
+            "adp_native_credential_handoff.py",
+        ):
             assert name in installer, f"install.sh no longer installs {name}"
             assert client.get(f"/cli/{name}").status_code == 200
 

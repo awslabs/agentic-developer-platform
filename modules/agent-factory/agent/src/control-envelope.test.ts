@@ -350,6 +350,34 @@ describe('parseVerificationKeys', () => {
   });
 });
 
+describe('human queued-grant admission', () => {
+  const pair = generateKeyPairSync('ed25519');
+  const localKeys = new Map([['queue', pair.publicKey]]);
+  const request = Buffer.from('{"command_id":"queued","instruction":"retain original intent"}');
+  function proof(changes: Record<string, unknown> = {}) {
+    const payload = { v: ENVELOPE_VERSION, iss: ENVELOPE_ISSUER, aud: ENVELOPE_AUDIENCE, alg: 'ed25519',
+      kid: 'queue', tenant_id: 'tenant', principal: 'human', authority_kind: 'human_session',
+      target_run_id: 'run', target_generation: 1, action: 'steer', command_id: 'queued',
+      body_digest: bodyDigest(request), queued_grant_ref: 'a'.repeat(64), iat: fixture.now, nbf: fixture.now,
+      exp: new Date(nowMs + 30_000).toISOString().replace(/\.\d{3}Z$/, 'Z'), ...changes };
+    const bytes = Buffer.from(JSON.stringify(payload));
+    const signature = cryptoSign(null, Buffer.concat([Buffer.from(`${ENVELOPE_VERSION}.`), bytes]), pair.privateKey);
+    return `${ENVELOPE_VERSION}.${bytes.toString('base64url')}.${signature.toString('base64url')}`;
+  }
+  function check(token: string, at = nowMs) {
+    return verifyEnvelope(token, localKeys, { runId: 'run', generation: 1, action: 'steer', commandId: 'queued', body: request, nowMs: at });
+  }
+  it('retains only a signature-verified queue reference while the admission proof is current', () => {
+    const result = check(proof());
+    expect(result).toMatchObject({ ok: true, envelope: { queuedGrantRef: 'a'.repeat(64), principal: 'human' } });
+    expect(check(proof(), nowMs + 14 * 60_000)).toEqual({ ok: false, reason: 'expired' });
+  });
+  it.each([{ queued_grant_ref: 123 }, { queued_grant_ref: 'unbounded' }, { action: 'pause' },
+    { authority_kind: 'delegated_grant', grant_id: 'grant', revocation_epoch: 1 }])('refuses invalid queue authority %j', (changes) => {
+    expect(check(proof(changes))).toEqual({ ok: false, reason: 'malformed' });
+  });
+});
+
 describe('the worker cannot mint what it verifies', () => {
   it('exports exactly three functions, none of which signs', () => {
     // The security property in one assertion: this module is verification-only.

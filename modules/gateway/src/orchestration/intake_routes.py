@@ -64,6 +64,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -84,13 +85,17 @@ from src.orchestration.intake_session import (
 from src.orchestration.planning import (
     PlanningError,
     PlanningInputs,
+    ResolvedChild,
+    ResolvedRepository,
     plan_from_draft,
     resolve_issue_ref,
     resolve_repository,
     slugify,
 )
-from src.orchestration.proposal import EpicDisplay, LoopProposal, WaveDisplay
+from src.orchestration.proposal import EpicDisplay, LoopProposal, PlanningIssueReference, WaveDisplay
+from src.products.models import Product
 from src.shared.database import get_db
+from src.shared.identity.product_scope import product_member, product_visibility_scope
 from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger("bedrockgateway.orchestration.intake")
@@ -161,6 +166,8 @@ class IntakeSessionResponse(BaseModel):
     last_response_task_id: str = ""
     repository: str = ""
     requested_issue: str = ""
+    product_id: str = ""
+    project_id: str | None = None
 
 
 class StartSessionRequest(BaseModel):
@@ -173,6 +180,8 @@ class StartSessionRequest(BaseModel):
     message: str = ""
     repository: str | None = None
     issue: str | None = None
+    product_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: str | None = Field(default=None, min_length=1, max_length=255)
     retry_token: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"\S")
 
 
@@ -228,7 +237,31 @@ def _to_response(session: IntakeSession) -> IntakeSessionResponse:
         last_response_task_id=session.last_response_task_id,
         repository=session.repository,
         requested_issue=session.requested_issue,
+        product_id=session.product_id,
     )
+
+
+async def _check_product(db: AsyncSession, current_user: TokenContext, product_id: str) -> None:
+    member = await product_member(
+        db,
+        user_id=current_user.user_id,
+        org_id=current_user.org_id,
+        account_type=current_user.account_type or "human",
+        is_platform_admin=current_user.is_admin,
+    )
+    product = (
+        await db.scalar(
+            select(Product).where(
+                product_visibility_scope(member, current_user.org_id, is_platform_admin=current_user.is_admin),
+                Product.id == product_id,
+                Product.archived_at.is_(None),
+            )
+        )
+        if member is not None
+        else None
+    )
+    if product is None:
+        raise PlanningError("product_unavailable", "The selected Product is unavailable to this caller. Select an accessible Product.")
 
 
 def _turn_in_progress(message: str) -> HTTPException:
@@ -291,6 +324,8 @@ async def start_intake_session(
         issue = resolve_issue_ref(body.issue)
         if issue and repository is None:
             raise PlanningError("repository_required", "Choose --repo OWNER/NAME before using an issue number.")
+        if body.product_id:
+            await _check_product(db, current_user, body.product_id)
     except PlanningError as exc:
         raise _planning_refusal(exc) from exc
     session_id = new_session_id()
@@ -298,6 +333,19 @@ async def start_intake_session(
         import uuid
 
         session_id = "sess-" + uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([current_user.org_id, current_user.user_id, body.retry_token])).hex
+    if body.project_id and not body.product_id:
+        raise HTTPException(422, detail={"error": "product_required", "message": "Select a Product for this Project."})
+    if body.product_id:
+        from src.products.routes import current_owner
+        from src.products.work_scope import ProjectScopeError, bind_run, resolve_project
+
+        try:
+            member = await current_owner(db, current_user)
+            project_scope = await resolve_project(db, tenant_id=current_user.org_id, product_id=body.product_id, project_id=body.project_id)
+            await bind_run(db, scope=project_scope, run_id=session_id, owner_user_id=member.id)
+            await db.commit()
+        except ProjectScopeError as exc:
+            raise HTTPException(409, detail={"error": "project_unavailable", "message": str(exc)}) from exc
     message = body.message
     if repository and issue:
         from src.orchestration.tracker_provider import GitHubTrackerProvider, TrackerProviderError
@@ -330,6 +378,7 @@ async def start_intake_session(
             department_id=current_user.department_id or "",
             repository=repository.full_name if repository else "",
             issue=issue or "",
+            product_id=body.product_id or "",
         )
     except IntakeBusyError as exc:
         # Reachable even on a start, because the caller may be resuming an id the
@@ -361,6 +410,7 @@ async def send_intake_turn(
     access: Annotated[AccessControl, Depends(get_access_control)],
     reader: Annotated[IntakeSessionReader, Depends(_session_reader)],
     dispatcher: Annotated[IntakeDispatcher, Depends(_dispatcher)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TurnAcceptedResponse:
     """Say something in an existing conversation.
 
@@ -381,6 +431,9 @@ async def send_intake_turn(
         raise _unavailable(exc) from exc
     except SessionNotFoundError as exc:
         raise _not_found() from exc
+
+    if session.product_id:
+        await _check_product(db, current_user, session.product_id)
 
     if session.is_working:
         # A fast refusal on state we have already read. The ingest Lambda checks this
@@ -427,6 +480,7 @@ async def latest_intake_session(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     reader: Annotated[IntakeSessionReader, Depends(_session_reader)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> IntakeSessionResponse:
     """The caller's most recently updated conversation.
 
@@ -451,7 +505,13 @@ async def latest_intake_session(
         raise _unavailable(exc) from exc
     if session is None:
         raise _not_found()
-    return _to_response(session)
+    response = _to_response(session)
+    if session.product_id:
+        from src.products.models import ProjectRun
+
+        scope = await db.get(ProjectRun, (current_user.org_id, session.session_id))
+        response.project_id = scope.project_id if scope else None
+    return response
 
 
 @router.get("/intake/sessions/{session_id}", response_model=IntakeSessionResponse)
@@ -460,6 +520,7 @@ async def get_intake_session(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     reader: Annotated[IntakeSessionReader, Depends(_session_reader)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> IntakeSessionResponse:
     """Read a conversation's state back — the readback `--resume` is built on.
 
@@ -481,7 +542,13 @@ async def get_intake_session(
         raise _unavailable(exc) from exc
     except SessionNotFoundError as exc:
         raise _not_found() from exc
-    return _to_response(session)
+    response = _to_response(session)
+    if session.product_id:
+        from src.products.models import ProjectRun
+
+        scope = await db.get(ProjectRun, (current_user.org_id, session.session_id))
+        response.project_id = scope.project_id if scope else None
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +583,10 @@ class PlanFromSessionRequest(BaseModel):
     # the dispatch target, so accepting this string unchecked would let a caller name
     # its own blast radius and only find out at dispatch, after a human approved it.
     repository: str | None = None
+    product_id: str | None = Field(default=None, min_length=1, max_length=36)
+    project_id: str | None = Field(default=None, min_length=1, max_length=255)
+    epic: bool = False
+    installation_id: int | None = Field(default=None, gt=0)
     # An existing issue to bind the work to. Validated with the same parse dispatch
     # uses, so a reference this route accepts cannot later be a `malformed_issue_ref`
     # on a plan already written.
@@ -550,6 +621,8 @@ class PlanFromSessionResponse(BaseModel):
     # failure: a plan with no repository binding cannot dispatch, and that is reported
     # rather than papered over with a guessed default.
     repository: str = ""
+    planning_epic: PlanningIssueReference | None = None
+    story_repositories: list[str] = Field(default_factory=list)
     # False when the repository matched a stored snapshot rather than a live GitHub
     # read. Weaker evidence, and an operator is entitled to know which they got.
     repository_verified_live: bool = False
@@ -649,7 +722,7 @@ async def _available_repositories(current_user: TokenContext, db: AsyncSession) 
         return []
 
     return [
-        (item.installation_id, list(item.repositories or ()), bool(item.repositories_live))
+        (item.installation_id, list(item.repositories or ()), bool(item.verification and item.verification.repositories_live))
         for item in (connections.connections or [])
         if item.tenant_id == current_user.org_id
     ]
@@ -721,16 +794,112 @@ async def plan_from_session(
     title = (intent.splitlines()[0].strip() if intent else "") or f"Plan from intake session {session_id}"
 
     try:
+        if request.product_id and request.product_id != session.product_id:
+            raise PlanningError("product_changed", "Product selection is fixed when the session opens. Start a new session to change --product.")
+        from src.products.models import ProjectRun
+
+        product_id = session.product_id or None
+        if product_id:
+            await _check_product(db, current_user, product_id)
+        session_scope = await db.get(ProjectRun, (current_user.org_id, session_id)) if session.product_id else None
+        if request.project_id and (session_scope is None or request.project_id != session_scope.project_id):
+            raise PlanningError("project_changed", "Project selection is fixed when the session opens. Start a new session to change it.")
         if session.repository and request.repository and session.repository.casefold() != request.repository.strip().casefold():
             raise PlanningError("repository_changed", "This session belongs to another repository. Resume it without changing --repo.")
         if session.requested_issue and request.issue and resolve_issue_ref(request.issue) != session.requested_issue:
             raise PlanningError("issue_changed", "This session belongs to another issue. Resume it without changing --issue.")
-        repository = resolve_repository(session.repository or request.repository, await _available_repositories(current_user, db))
+        if request.installation_id is not None and not (session.repository or request.repository):
+            raise PlanningError("repository_invalid", "A repository name is required with a connection selector.")
+        available_repositories = await _available_repositories(current_user, db)
+        repository = resolve_repository(
+            session.repository or request.repository,
+            available_repositories,
+            installation_id=request.installation_id,
+        )
         # The conversation's own issue wins over the request's. The session's
         # `issue_ref` is what the planning agent actually opened, so preferring a
         # client-supplied number would let a retry with a different argument re-bind a
         # plan to an issue the conversation never touched.
         issue_ref = resolve_issue_ref(session.requested_issue or session.issue_ref or request.issue)
+        planning_issue = None
+        children = ()
+        if repository is not None and issue_ref is not None:
+            from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+            try:
+                verified = await resolve_story_repository(
+                    db,
+                    tenant_id=current_user.org_id,
+                    name=repository.full_name,
+                    issue=int(issue_ref),
+                    operation="preview",
+                    installation_id=repository.installation_id,
+                )
+            except RepositoryBindingError as exc:
+                raise PlanningError(exc.code, "The selected repository connection could not be verified for this issue.") from exc
+            repository = ResolvedRepository(
+                full_name=verified.full_name,
+                installation_id=verified.installation_id,
+                verified_live=True,
+                repository_id=verified.repository_id,
+            )
+            if product_id:
+                from src.orchestration.tracker_provider import GitHubTrackerProvider, TrackerProviderError
+
+                try:
+                    native_children = await GitHubTrackerProvider().read_sub_issues(
+                        org_id=current_user.org_id,
+                        installation_id=repository.installation_id,
+                        repo=repository.full_name,
+                        issue_number=int(issue_ref),
+                        repository_id=verified.repository_id,
+                        readable_repositories=sorted(
+                            {
+                                name
+                                for installation, names, _live in available_repositories
+                                if installation == repository.installation_id
+                                for name in names
+                            }
+                        ),
+                    )
+                except TrackerProviderError as exc:
+                    raise PlanningError(
+                        "epic_children_unavailable", "Native children could not be listed completely. Check epic access and retry."
+                    ) from exc
+                if native_children or request.epic:
+                    from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+                    resolved_children = []
+                    for child in native_children:
+                        url = child.get("repository_url", "")
+                        child_repo = url.removeprefix("https://api.github.com/repos/") if isinstance(url, str) else ""
+                        child_number = child.get("number")
+                        if (
+                            not isinstance(url, str)
+                            or not url.startswith("https://api.github.com/repos/")
+                            or type(child_number) is not int
+                            or child_number < 1
+                        ):
+                            raise PlanningError("epic_child_invalid", "Native child identity is incomplete. Verify the epic before planning.")
+                        try:
+                            bound = await resolve_story_repository(
+                                db, tenant_id=current_user.org_id, name=child_repo, issue=child_number, operation="preview"
+                            )
+                        except RepositoryBindingError as exc:
+                            raise PlanningError(exc.code, "A native child repository or issue could not be verified for this caller.") from exc
+                        if bound.issue_id != child.get("id"):
+                            raise PlanningError("epic_child_mismatch", "A native child issue changed identity during verification.")
+                        resolved_children.append(
+                            ResolvedChild(ResolvedRepository(bound.full_name, bound.installation_id, True, bound.repository_id), child_number)
+                        )
+                    children = tuple(resolved_children)
+                    planning_issue = PlanningIssueReference(
+                        provider="github",
+                        repository_id=verified.repository_id,
+                        repository=repository.full_name,
+                        installation_id=verified.installation_id,
+                        issue_number=int(issue_ref),
+                    )
         epic_display = None
         if session.draft.get("epicDisplay") is not None:
             try:
@@ -765,6 +934,10 @@ async def plan_from_session(
                 # checks this against server-resolved context, and sourcing it from
                 # the caller's identity means the two cannot disagree.
                 org_id=current_user.org_id,
+                product_id=product_id,
+                project_id=session_scope.project_id if session_scope else None,
+                planning_issue=planning_issue,
+                children=children,
             )
         )
     except PlanningError as exc:
@@ -785,23 +958,17 @@ async def plan_from_session(
         bool(issue_ref),
     )
 
-    from src.orchestration.dispatch_pass import DispatchPassConfig
-
-    config = DispatchPassConfig.from_env()
+    # Planning runs on the HTTP gateway; dispatch runs on a separate engine.
+    # A document's verified story bindings do not depend on the gateway having
+    # the engine's queue configuration or a legacy fixed repository setting.
+    # Execution readiness and authority remain enforced at acceptance/dispatch.
     prerequisites = []
     if not repository:
         prerequisites.append("Select a connected repository with --repo OWNER/NAME.")
-    elif config.repo != repository.full_name:
-        prerequisites.append(
-            f"The engine dispatch target is {config.repo or 'not configured'}, not {repository.full_name}. "
-            "An operator must configure the matching target."
-        )
     if not issue_ref:
         prerequisites.append(
             "Bind an existing implementation issue with --issue NUMBER. Automatic issue materialization is not provided by this intake planner."
         )
-    if not config.queue_url:
-        prerequisites.append("The engine dispatch queue is not configured.")
 
     return PlanFromSessionResponse(
         session_id=session_id,
@@ -809,6 +976,10 @@ async def plan_from_session(
         proposal=proposal,
         derived_from_outcomes=list(outcomes),
         repository=repository.full_name if repository else "",
+        planning_epic=planning_issue,
+        story_repositories=(
+            list(dict.fromkeys(child.repository.full_name for child in children)) if children else ([repository.full_name] if repository else [])
+        ),
         repository_verified_live=bool(repository and repository.verified_live),
         issue_ref=issue_ref or "",
         execution_is_unbounded=proposal.proposed_execution_policy is None,

@@ -38,6 +38,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 import common
 from common import require
@@ -381,7 +382,28 @@ def _onboard(config, evidence, token):
     # (`<org>-team-default`) is not what every org actually has — dev's
     # `adp-platform` does not. Verified live: the constructed name answers 404
     # "Team does not exist in the requested organization".
-    base = "/api/admin/identity/organizations/" + org
+    base = "/api/admin/identity/organizations/" + quote(org, safe="")
+    if config.get("product_cases"):
+        from tests.e2e.product_onboarding.product_profile_api import (
+            PROTECTED_SELECTIONS,
+        )
+
+        require(
+            (evidence.get("login") or {}).get("username") == username
+            and (evidence.get("login") or {}).get("role") == "platform_admin"
+            and config.get("product_workspace_id") == org
+            and config.get("product_cases") in PROTECTED_SELECTIONS,
+            "Product actor is not assigned to its selected evaluation workspace",
+        )
+        _status, workspace = common.api(config, base, token, expect=(200,))
+        require(
+            isinstance(workspace, dict)
+            and workspace.get("id") == org
+            and workspace.get("name") == f"eval-regression-{config['evaluation_id']}"
+            and isinstance(workspace.get("settings"), dict)
+            and workspace["settings"].get("status") != "archived",
+            "Product actor workspace is missing, foreign or retired",
+        )
     _status, listing = common.api(config, base + "/users", token, expect=(200,))
     team = next(
         (
@@ -391,10 +413,54 @@ def _onboard(config, evidence, token):
         ),
         "",
     )
+    # The team collection does NOT live under the identity base, and it does not
+    # carry the `/api` prefix either. `base` is
+    # `/api/admin/identity/organizations/<org>`: that is the prefix declared by
+    # the identity router (`modules/gateway/src/admin/identity/router.py`), and it
+    # serves the workspace read and the `users` collection used above and below.
+    # The team collection belongs to the admin router
+    # (`modules/gateway/src/admin/routes.py`), whose `APIRouter` prefix is
+    # `/admin` and which `modules/gateway/src/app.py` includes with
+    # `app.include_router(module.router)` — no further prefix — so the mounted
+    # path is `/admin/organizations/<org>/teams`.
+    #
+    # Both wrong spellings were observed live rather than reasoned about: the
+    # identity-prefixed form answered HTTP 404 (run 39733378117) and the
+    # `/api/admin/organizations/...` form answered HTTP 404 as well (run
+    # 39767400131). `tests/e2e/cli_uplift/test_product_team.py` now derives this
+    # path from the gateway's own router sources, so a mock that agrees with a
+    # guess can no longer keep a wrong prefix alive.
+    teams_base = "/admin/organizations/" + quote(org, safe="")
+    _status, team_listing = common.api(
+        config, teams_base + "/teams?page=1&page_size=100", token, expect=(200,)
+    )
     require(
-        team,
-        f"Organization {org} has no user carrying a team, so no existing team could "
-        "be resolved to register this run's identity into",
+        isinstance(team_listing, dict)
+        and isinstance(team_listing.get("items"), list)
+        and team_listing.get("page") == 1
+        and team_listing.get("page_size") == 100
+        and type(team_listing.get("total")) is int
+        and team_listing["total"] == len(team_listing["items"])
+        and team_listing.get("has_more") is False,
+        "The organization's complete team inventory is unavailable",
+    )
+    teams = [
+        row.get("id")
+        for row in team_listing["items"]
+        if isinstance(row, dict)
+        and row.get("org_id") == org
+        and isinstance(row.get("id"), str)
+        and row["id"]
+    ]
+    require(
+        len(teams) == len(team_listing["items"]) and len(teams) == len(set(teams)),
+        "The organization's team inventory is incomplete or inconsistent",
+    )
+    if not team and len(teams) == 1:
+        team = teams[0]
+    require(
+        team in teams,
+        "No unambiguous, verified organization team could be resolved for this identity",
     )
 
     status, created = common.api(
@@ -431,6 +497,122 @@ def _onboard(config, evidence, token):
         "org_id": org,
         "team_id": team,
         "user_id": identifier,
+        "cognito_sub_bound": True,
+    }
+    if "api_denial_oracle" in config.get("product_cases", "").split(","):
+        _register_denial_actor(config, evidence, token, org, team)
+
+
+def _register_denial_actor(config, evidence, token, org, team):
+    run_id = config["evaluation_id"]
+    username = f"{run_id}-product-user@adp-eval.example"
+    require(
+        config.get("product_workspace_id") == org
+        and config.get("credential_secret")
+        == f"adp/cli-uplift-eval/{run_id}-product-fixtures"
+        and evidence["onboard"]["org_id"] == org
+        and evidence["onboard"]["team_id"] == team,
+        "Product denial actor is not bound to the run-owned workspace",
+    )
+    environment = common.clean_env(config)
+    require(
+        common.fixture_secret(config, environment, "non_admin_username") == username,
+        "Product denial actor does not match the private run fixture",
+    )
+    password = common.fixture_secret(config, environment, "non_admin_password")
+    status, login = common.api(
+        config,
+        "/auth/cli/password",
+        token,
+        method="POST",
+        body={"username": username, "password": password},
+        expect=(200,),
+    )
+    require(
+        status == 200
+        and isinstance(login, dict)
+        and isinstance(login.get("access_token"), str)
+        and login["access_token"]
+        and login["access_token"] != token
+        and isinstance(login.get("id_token"), str)
+        and login["id_token"],
+        "Product ordinary actor authentication failed",
+    )
+    try:
+        claims = json.loads(
+            base64.urlsafe_b64decode(login["id_token"].split(".")[1] + "===")
+        )
+        subject = claims["sub"]
+    except (IndexError, KeyError, TypeError, ValueError, UnicodeError, binascii.Error):
+        raise common.RemoteError(
+            "Product ordinary actor has no Cognito subject"
+        ) from None
+    require(
+        isinstance(subject, str) and subject and len(subject) <= 255,
+        "Product ordinary actor has no bounded Cognito subject",
+    )
+    base = "/api/admin/identity/organizations/" + quote(org, safe="") + "/users"
+    _status, prior = common.api(config, base, token, expect=(200,))
+    require(
+        isinstance(prior, dict)
+        and isinstance(prior.get("users"), list)
+        and not any(
+            isinstance(row, dict) and row.get("email") == username
+            for row in prior["users"]
+        ),
+        "Product ordinary actor already has a pending registration",
+    )
+    status, created = common.api(
+        config,
+        base,
+        token,
+        method="POST",
+        body={
+            "email": username,
+            "name": "ADP Product evaluation " + run_id,
+            "role": "member",
+            "team_id": team,
+            "send_invite": False,
+            "cognito_identity": {"username": username, "expected_sub": subject},
+        },
+        expect=(201,),
+    )
+    require(
+        status == 201
+        and isinstance(created, dict)
+        and isinstance(created.get("id"), str)
+        and created["id"]
+        and created.get("cognito_sub") == subject
+        and created.get("email") == username
+        and created.get("org_id") == org
+        and created.get("team_id") == team
+        and created.get("role") == "member",
+        "Product ordinary actor registration did not verify its Cognito identity",
+    )
+    _status, after = common.api(config, base, token, expect=(200,))
+    require(
+        isinstance(after, dict)
+        and isinstance(after.get("users"), list)
+        and len(
+            [
+                row
+                for row in after["users"]
+                if isinstance(row, dict)
+                and row.get("id") == created["id"]
+                and row.get("email") == username
+                and row.get("cognito_sub") == subject
+                and row.get("org_id") == org
+                and row.get("team_id") == team
+                and row.get("role") == "member"
+            ]
+        )
+        == 1,
+        "Product ordinary actor is absent from a fresh canonical read",
+    )
+    evidence["denial_actor"] = {
+        "org_id": org,
+        "user_id": created["id"],
+        "username": username,
         "cognito_sub_bound": True,
     }
 
@@ -472,6 +654,55 @@ def _session_document(config, evidence, prefix, home, work_dir):
     )
 
     login = evidence.get("login") or {}
+    onboard = evidence.get("onboard") or {}
+    # TWO identifiers, and they are not interchangeable.
+    #
+    # `user_id` is the authenticated Cognito SUBJECT: the identity
+    # `GET /auth/cli/admin-session` attributes this session to, and the only one a
+    # later stage may check an authenticated session against.
+    #
+    # `adp_user_id` is the primary key of the `users` ROW that `_onboard`
+    # registered through the product's own onboarding route. That is the
+    # identifier every org-scoped identity route takes
+    # (`DELETE /api/admin/identity/organizations/<org>/users/<id>`), so it is the
+    # one resource ownership and cleanup must be recorded under.
+    #
+    # Live they are different values: run 39773345088 published a session whose
+    # `user_id` was the subject while the cleanup manifest recorded
+    # `<org>/<row id>`, so Product evaluation adp-e2e-20261022-122136-174d4b
+    # failed before its journeys with "Product recovery session has no original
+    # actor ownership". Publishing only one of them forced every consumer to
+    # guess which namespace it had. Both are published, and the mapping between
+    # them is asserted here, which is the only place both are still in hand.
+    adp_user_id = onboard.get("user_id", "")
+    # Creating a Cognito identity is NOT the same event as registering an ADP
+    # `users` row: `created_username` records the former, `_onboard` performs the
+    # latter and is the only producer of `onboard` evidence and of the
+    # `adp_user` cleanup resource. So the mapping is asserted exactly when a row
+    # was registered, and the row id published here is required to be the one
+    # already recorded for cleanup. A session that carries a subject without a
+    # row makes no ownership claim at all; `product_sessions.binding()` refuses
+    # it rather than guessing, which is what the live failure needed.
+    registered = [
+        entry
+        for entry in (evidence.get("resources") or [])
+        if isinstance(entry, (list, tuple))
+        and len(entry) == 2
+        and entry[0] == "adp_user"
+    ]
+    if onboard or registered:
+        require(
+            onboard.get("cognito_sub_bound") is True
+            and onboard.get("org_id") == login.get("org_id")
+            and isinstance(adp_user_id, str)
+            and bool(adp_user_id)
+            and any(
+                entry[1] == onboard.get("org_id", "") + "/" + adp_user_id
+                for entry in registered
+            ),
+            "The ADP account this run registered is not mapped to the login that "
+            "created it; its resources could not be attributed to an owner",
+        )
     # The tokens stay on the instance. Only a non-secret reference is exported,
     # because `common.emit()` redacts every credential-shaped value on its way out
     # — which previously turned this session into the literal string "<redacted>"
@@ -488,7 +719,13 @@ def _session_document(config, evidence, prefix, home, work_dir):
             "refresh_token": tokens.get("refresh_token", ""),
             "expires_at": tokens.get("expires_at", 0),
             "username": login.get("username", ""),
+            # The authenticated Cognito subject: for session attribution only.
             "user_id": login.get("user_id", ""),
+            # The ADP `users` row: for resource ownership and cleanup. Empty
+            # whenever this run registered no row of its own (a shared fixture
+            # identity, or a Cognito login published before onboarding), because
+            # an account this run does not own must not be claimed or deleted.
+            "adp_user_id": adp_user_id,
             "org_id": login.get("org_id", ""),
             # Only set when the run CREATED the identity, because that is what
             # makes it this run's to delete. A fixture identity must survive

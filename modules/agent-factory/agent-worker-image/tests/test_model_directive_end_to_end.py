@@ -110,7 +110,11 @@ def _signed_delivery(comment_body: str) -> dict:
                 "title": "Story: persona model mapping",
                 "html_url": f"https://github.com/{REPO}/issues/{ISSUE_NUMBER}",
             },
-            "comment": {"body": comment_body},
+            "comment": {
+                "body": comment_body,
+                "user": SENDER,
+                "author_association": "COLLABORATOR",
+            },
             "repository": {"id": 55501, "full_name": REPO, "owner": {"login": "acme-corp"}},
             "installation": {"id": INSTALLATION_ID},
             "sender": SENDER,
@@ -136,13 +140,14 @@ def _webhook_envelope(requested: str | None) -> dict:
     Drives one signed delivery through `github.handler` and captures what
     `spawn_persona` hands to the SQS publisher. The handler, the intent parser,
     the resolvers, the guards and the envelope builder are all the shipping code;
-    only storage, identity and the queue are doubled.
+    only storage, identity, actor-permission evidence and the queue are doubled.
 
     The `/model` line is on its own line because that is the only form the
     directive regex accepts (`^/model \\s+(\\S+)$`, MULTILINE) -- a detail worth
     exercising here rather than assuming, since a test that passed the alias
     straight to the builder never had to produce a parseable comment at all.
     """
+    from common.github_actor_authority import ActorDecision
     from common.identity_resolver import ResolvedIdentity
 
     comment = "@agent-developer please implement this"
@@ -155,6 +160,7 @@ def _webhook_envelope(requested: str | None) -> dict:
         user_id="cognito-sub-jane-123",
         user_provisioning_mode="strict",
         user_kind="human",
+        verification_method="oauth",
     )
     rate_decision = MagicMock()
     rate_decision.allowed = True
@@ -184,6 +190,10 @@ def _webhook_envelope(requested: str | None) -> dict:
         patch("handler._get_events_log") as events_log,
         patch("handler._get_rate_limiter") as rate_limiter,
         patch("handler._get_identity_resolver") as identity_resolver,
+        patch(
+            "common.github_actor_authority.check_actor",
+            return_value=ActorDecision(True, "allowed", SENDER["login"], "write", "COLLABORATOR"),
+        ) as actor_authority,
         patch("handler._get_metrics") as metrics,
         patch("handler._get_correlation_store", return_value=correlation_store),
         patch("handler._resolve_chain_record", return_value=None),
@@ -199,7 +209,10 @@ def _webhook_envelope(requested: str | None) -> dict:
         events_log.return_value.log_event = MagicMock()
         rate_limiter.return_value.check_and_increment.return_value = rate_decision
         identity_resolver.return_value.resolve.return_value = (resolved, "ok")
-        identity_resolver.return_value.last_tenant_item = None
+        identity_resolver.return_value.last_tenant_item = {
+            "org_id": resolved.org_id,
+            "min_author_association": "COLLABORATOR",
+        }
         metrics.return_value.record_rejected = MagicMock()
         metrics.return_value.flush = MagicMock()
 
@@ -209,6 +222,17 @@ def _webhook_envelope(requested: str | None) -> dict:
     # 200 `no_op` here would mean the mention or the directive never parsed, and
     # every downstream assertion would be vacuous.
     assert response["statusCode"] == 202, response
+    actor_authority.assert_called_once_with(
+        installation_id=INSTALLATION_ID,
+        repository_id=55501,
+        repository_full_name=REPO,
+        sender_id=SENDER["id"],
+        floor="COLLABORATOR",
+        require_write=True,
+        signed_association="COLLABORATOR",
+        association_actor_id=SENDER["id"],
+        timeout=10,
+    )
     assert "envelope" in published, "the handler accepted the delivery but published nothing"
     return published["envelope"]
 
@@ -257,6 +281,7 @@ def contained_worker(monkeypatch):
     than allowed to reach AWS; the authority and token-broker paths stay off so
     this test covers model plumbing only.
     """
+    monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", MagicMock(return_value={"status": "up_to_date"}))
     for leaked in ("ADP_MODEL_REQUESTED", "ADP_MODEL_RESOLVED"):
         monkeypatch.delenv(leaked, raising=False)
     monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())

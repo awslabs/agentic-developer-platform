@@ -11,6 +11,7 @@
  * remains for standalone use from the activity table.
  */
 
+import { useActivityScope } from '@/contexts/ActivityScopeContext';
 import { RunRecordSummary, RunClosureReport } from '@/components/RunRecordSummary';
 import { parseRunRecord } from '@/utils/runRecord';
 import { Children, isValidElement, type ReactNode } from 'react';
@@ -81,20 +82,23 @@ export function TranscriptContent({
   isAdmin = false,
   tenantId,
 }: TranscriptContentProps) {
+  const activityScope = useActivityScope();
   const {
     data: markdown,
     isLoading,
     error,
   } = useQuery({
-    queryKey: ['transcript', invocationId, isAdmin, tenantId],
+    queryKey: ['transcript', activityScope, invocationId, isAdmin, tenantId],
     queryFn: () => {
       if (!invocationId) return Promise.resolve('');
       return isAdmin
         ? getAdminTranscript(invocationId, tenantId)
-        : getMyTranscript(invocationId);
+        : getMyTranscript(invocationId, activityScope);
     },
     enabled: !!invocationId,
-    staleTime: 5 * 60 * 1000, // Cache for 5 min (transcripts are immutable)
+    staleTime: activityScope ? 0 : 5 * 60 * 1000,
+    gcTime: activityScope ? 0 : 5 * 60 * 1000,
+    refetchInterval: activityScope ? 30_000 : false, // Cache for 5 min (transcripts are immutable)
     retry: false,
   });
 
@@ -103,7 +107,7 @@ export function TranscriptContent({
   return (
     <div>
       <div className="run-identity mb-4 text-xs"><span>Invocation ID: <code>{invocationId}</code></span>
-        {markdown && <button type="button" className="text-blue-600" onClick={() => {
+        {!error && markdown && <button type="button" className="text-blue-600" onClick={() => {
           const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
           const link = document.createElement('a'); link.href = url; link.download = `run-${invocationId}.md`; link.click();
           setTimeout(() => URL.revokeObjectURL(url), 1000);

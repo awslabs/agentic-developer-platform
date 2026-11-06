@@ -20,6 +20,8 @@ import type {
   PlatformVerification,
 } from '@/services/connections';
 
+vi.mock('@/hooks/useFeatures', () => ({ useRevalidatingFeaturesQuery: () => ({ data: { assistant_ui: false } }) }));
+
 const healthyVerification: ConnectionVerification = {
   record_present: true,
   tenant_secret_seeded: true,
@@ -58,6 +60,7 @@ describe('InstallationCard verification (Issue #4016)', () => {
 
     expect(screen.getByText(/Installed/)).toBeInTheDocument();
     expect(screen.queryByText(/Needs attention/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Ask about deployment' })).not.toBeInTheDocument();
     // A healthy install must not sprout a checklist.
     expect(screen.queryByText(/Agent credentials/)).not.toBeInTheDocument();
   });

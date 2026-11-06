@@ -5,6 +5,7 @@ import json
 import os
 import re
 import stat
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -127,12 +128,84 @@ class GatewayAuthority:
         url = self.endpoint + path
         data = json.dumps(payload, separators=(",", ":")).encode()
         headers = await asyncio.to_thread(self._headers, url, data, bootstrap=bootstrap)
+        options = {}
+        if path in {
+            "/internal/v1/controller-execution/authority",
+            "/internal/v1/controller-execution/provider-session",
+            "/internal/v1/controller-execution/provider-preflight",
+            "/internal/v1/controller-execution/recovery/lifecycle",
+        }:
+            # These routes revalidate authority several times. Lifecycle
+            # recovery additionally allows a 20-second AWS inventory census.
+            # Wait for these bounded responses below API Gateway's 29-second
+            # limit. Neither issuance nor lifecycle recovery is retried here;
+            # read-only preflight retains one total deadline across retries.
+            options["timeout"] = httpx.Timeout(10, read=25)
+        elif path == "/internal/v1/controller-execution/task/acquire":
+            # SQS may long-poll for ten seconds before returning an empty queue.
+            options["timeout"] = httpx.Timeout(10, read=15)
         try:
-            response = await self.client.post(url, content=data, headers=headers)
+            read_only = path in {
+                "/internal/v1/controller-execution/authority",
+                "/internal/v1/controller-execution/provider-preflight",
+            }
+            # Re-read authority after a transient transport failure. Never replay
+            # credential issuance, lease changes, or provider effects.
+            async with asyncio.timeout(25 if read_only else None):
+                for attempt in range(2 if read_only else 1):
+                    try:
+                        response = await self.client.post(
+                            url, content=data, headers=headers, **options
+                        )
+                        if (
+                            not read_only
+                            or attempt
+                            or response.status_code not in {502, 503, 504}
+                            or len(response.content) > 262144
+                        ):
+                            break
+                        # A proxy failure does not revoke read-only authority.
+                        # Re-read once within the same deadline, with fresh
+                        # identity and a small delay for a rolling backend.
+                        await asyncio.sleep(0.25)
+                        headers = await asyncio.to_thread(
+                            self._headers, url, data, bootstrap=bootstrap
+                        )
+                    except httpx.TransportError:
+                        if not read_only or attempt:
+                            raise
+                        headers = await asyncio.to_thread(
+                            self._headers, url, data, bootstrap=bootstrap
+                        )
             if response.status_code != 200 or len(response.content) > 262144:
+                print(
+                    json.dumps(
+                        {
+                            "event": "paid_authority_response_refused",
+                            "path": path,
+                            "status_code": response.status_code,
+                            "oversized": len(response.content) > 262144,
+                        }
+                    ),
+                    file=sys.stderr,
+                )
                 raise ValueError("authority refused")
             return response.json()
-        except (httpx.HTTPError, ValueError, TypeError):
+        except (httpx.HTTPError, TimeoutError) as error:
+            print(
+                json.dumps(
+                    {
+                        "event": "paid_authority_transport_failed",
+                        "exception_type": type(error).__name__,
+                        "path": path,
+                    }
+                ),
+                file=sys.stderr,
+            )
+            raise OperationRefused(
+                "execution authority unavailable or refused"
+            ) from None
+        except (ValueError, TypeError):
             raise OperationRefused(
                 "execution authority unavailable or refused"
             ) from None

@@ -72,7 +72,11 @@ async def confirmed_plan_progress(connection, operation_id):
     calls = await connection.fetch(
         "SELECT * FROM harness_provider_call_intent WHERE operation_id=$1", operation_id
     )
-    planned_keys = {step_key(record, step) for step in steps}
+    from .provider_retry import active_call_rows, effective_step_key, receipt_for
+
+    calls = await active_call_rows(connection, operation_id, calls)
+    keys = [await effective_step_key(connection, record, step) for step in steps]
+    planned_keys = set(keys)
     # Trusted post-plan provider observations are diagnostic reads, not extra
     # mutating plan steps. Planned reads still need their exact descriptor and
     # successful observation. Unknown/mutating extra calls remain a refusal.
@@ -83,9 +87,13 @@ async def confirmed_plan_progress(connection, operation_id):
         or call_effect(call["operation_kind"], provider=call["provider"])
         is not CallEffect.OBSERVES
     ]
+    if not calls and await receipt_for(connection, operation_id) is not None:
+        # The single original refusal has an immutable credential-owner proof
+        # and a fresh decision. Its authorized replacement has not started yet.
+        return PlanProgress.PREFIX
     if not calls or len(calls) > len(steps):
         return PlanProgress.UNKNOWN
-    expected = {step_key(record, step): step for step in steps[: len(calls)]}
+    expected = dict(zip(keys[: len(calls)], steps[: len(calls)]))
     for call in calls:
         step = expected.get(call["idempotency_key"])
         if (

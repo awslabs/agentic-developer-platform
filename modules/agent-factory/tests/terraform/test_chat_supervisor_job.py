@@ -98,6 +98,62 @@ def test_renderer_binds_supervisor_identity_and_keeps_job_suspended():
     assert env["ADP_CHAT_SANDBOX_CA_CONFIGMAP"] == "chat-sandbox-gateway-ca-" + "c" * 16
 
 
+def test_renderer_accepts_the_api_gateway_stage_url_in_the_supervisor_region():
+    stage = "https://abc123def4.execute-api.us-east-1.amazonaws.com/dev"
+    result = render_job({"GATEWAY_HTTPS_ORIGIN": stage})
+    assert result.returncode == 0, result.stderr
+    env = {item["name"]: item["value"] for item in yaml.safe_load(result.stdout)["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["ADP_CHAT_DATA_URL"] == stage
+
+
+def test_supervisor_job_declares_an_explicit_sandbox_start_deadline():
+    """The launcher's ADP_CHAT_SANDBOX_START_DEADLINE_MS is rendered rather than left to its
+    60 s default, so the value is visible on the live ScaledJob and parity-tested (#8059)."""
+    env = {entry["name"]: entry["value"] for entry in JOB["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["ADP_CHAT_SANDBOX_START_DEADLINE_MS"] == "REPLACE_WITH_SANDBOX_START_DEADLINE_MS"
+
+
+def test_renderer_pins_the_sandbox_start_deadline_with_a_bounded_default():
+    def deadline(result):
+        assert result.returncode == 0, result.stderr
+        env = {item["name"]: item["value"] for item in yaml.safe_load(result.stdout)["spec"]["template"]["spec"]["containers"][0]["env"]}
+        return env["ADP_CHAT_SANDBOX_START_DEADLINE_MS"]
+
+    assert deadline(render_job()) == "120000"
+    assert deadline(render_job({"ADP_CHAT_SANDBOX_START_DEADLINE_MS": ""})) == "120000"
+    assert deadline(render_job({"ADP_CHAT_SANDBOX_START_DEADLINE_MS": "90000"})) == "90000"
+    assert deadline(render_job({"ADP_CHAT_SANDBOX_START_DEADLINE_MS": "300000"})) == "300000"
+    # Same bounds as sandbox-launcher.ts::sandboxStartDeadlineMs (5 s..300 s).
+    for invalid in ("4999", "300001", "60s", "0", "1e5", "-1"):
+        result = render_job({"ADP_CHAT_SANDBOX_START_DEADLINE_MS": invalid})
+        assert result.returncode == 1, invalid
+        assert result.stdout == "" and "rendering refused" in result.stderr, invalid
+
+
+def test_supervisor_job_declares_the_persistent_executor_default():
+    """The deployment default for the persistent-session executor is rendered from SSM rather than
+    left unset (dev ran every persistent session on sandbox-loop because nothing set it, #8115)."""
+    env = {entry["name"]: entry["value"] for entry in JOB["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["ADP_CHAT_PERSISTENT_EXECUTOR"] == "REPLACE_WITH_PERSISTENT_EXECUTOR"
+
+
+def test_renderer_pins_the_persistent_executor_default_to_a_known_executor():
+    def executor(result):
+        assert result.returncode == 0, result.stderr
+        env = {item["name"]: item["value"] for item in yaml.safe_load(result.stdout)["spec"]["template"]["spec"]["containers"][0]["env"]}
+        return env["ADP_CHAT_PERSISTENT_EXECUTOR"]
+
+    assert executor(render_job()) == "sandbox-loop"
+    assert executor(render_job({"ADP_CHAT_PERSISTENT_EXECUTOR": ""})) == "sandbox-loop"
+    for value in ("sandbox-loop", "claude-code", "kirocrew"):
+        assert executor(render_job({"ADP_CHAT_PERSISTENT_EXECUTOR": value})) == value
+    # Same set as sandbox-supervisor-admission.ts CHAT_EXECUTORS / sandbox-entrypoint.ts ADP_EXECUTOR.
+    for invalid in ("claude", "Claude-Code", "codex", "sandbox-loop "):
+        result = render_job({"ADP_CHAT_PERSISTENT_EXECUTOR": invalid})
+        assert result.returncode == 1, invalid
+        assert result.stdout == "" and "rendering refused" in result.stderr, invalid
+
+
 def test_renderer_refuses_mismatched_role_queue_image_or_gateway():
     invalid_assignments = (
         {"SUPERVISOR_ROLE_ARN": "arn:aws:iam::000000000000:role/adp-test-chat-worker-role"},
@@ -106,6 +162,15 @@ def test_renderer_refuses_mismatched_role_queue_image_or_gateway():
         {"SANDBOX_IMAGE_DIGEST": "registry.example.test/sandbox:latest"},
         {"GATEWAY_HTTPS_ORIGIN": "https://gateway.example.test/internal"},
         {"GATEWAY_HTTPS_ORIGIN": "http://gateway.example.test"},
+        {"GATEWAY_HTTPS_ORIGIN": ""},
+        {"GATEWAY_HTTPS_ORIGIN": "https://chat-sandbox-gateway.adp-gateway.svc:8443"},
+        {"GATEWAY_HTTPS_ORIGIN": "https://chat-sandbox-gateway.adp-gateway.svc.cluster.local:8443"},
+        {"GATEWAY_HTTPS_ORIGIN": "https://chat-sandbox-gateway:8443"},
+        {"GATEWAY_HTTPS_ORIGIN": "https://abc123def4.execute-api.us-east-1.amazonaws.com/dev/agent"},
+        {"GATEWAY_HTTPS_ORIGIN": "https://abc123def4.execute-api.us-east-1.amazonaws.com/dev/"},
+        {"GATEWAY_HTTPS_ORIGIN": "https://abc123def4.execute-api.eu-west-1.amazonaws.com/dev"},
+        {"GATEWAY_HTTPS_ORIGIN": "https://abc123def4.execute-api.us-east-1.amazonaws.com:8443/dev"},
+        {"GATEWAY_HTTPS_ORIGIN": "https://gateway.example.test/dev"},
         {"SANDBOX_CA_CONFIGMAP": ""},
         {"SANDBOX_CA_CONFIGMAP": "platform-secrets"},
         {"SUPERVISOR_IMAGE": f"registry.example.test/sandbox@sha256:{'b' * 64}"},

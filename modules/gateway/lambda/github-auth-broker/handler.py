@@ -76,6 +76,8 @@ logger.setLevel(getattr(logging, log_level, logging.INFO))
 # Environment configuration
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET_ARN = os.environ.get("GITHUB_CLIENT_SECRET_ARN", "")
+STATE_SIGNING_SECRET_ARN = os.environ.get("STATE_SIGNING_SECRET_ARN", "")
+STATE_LEGACY_ACCEPT_UNTIL = int(os.environ.get("STATE_LEGACY_ACCEPT_UNTIL", "0"))
 COGNITO_USER_POOL_ID = os.environ.get("COGNITO_USER_POOL_ID", "")
 COGNITO_CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID", "")
 CALLBACK_URL = os.environ.get("CALLBACK_URL", "")
@@ -107,6 +109,7 @@ _github_oauth_creds: dict[str, str] | None = None
 _github_oauth_creds_ts: float = 0  # epoch timestamp of last fetch
 _OAUTH_CREDS_TTL = 300  # re-read from Secrets Manager every 5 minutes
 _github_org_token: str | None = None
+_state_signing_key: tuple[str, float] | None = None
 
 
 def _get_github_oauth_creds() -> dict[str, str]:
@@ -186,55 +189,58 @@ def _get_github_org_token() -> str:
         return ""
 
 
+def _get_state_signing_key() -> str:
+    """Independent, rotation-capable state secret; never fall back to OAuth creds."""
+    global _state_signing_key
+    if not STATE_SIGNING_SECRET_ARN or STATE_SIGNING_SECRET_ARN == GITHUB_CLIENT_SECRET_ARN:
+        raise ValueError("A dedicated STATE_SIGNING_SECRET_ARN is required")
+    if _state_signing_key and time.time() - _state_signing_key[1] < _OAUTH_CREDS_TTL:
+        return _state_signing_key[0]
+    response = boto3.client("secretsmanager").get_secret_value(SecretId=STATE_SIGNING_SECRET_ARN)
+    key = response["SecretString"]
+    if key.startswith("{"):
+        key = json.loads(key).get("key", "")
+    if not isinstance(key, str) or len(key) < 32 or key == _PLACEHOLDER:
+        raise ValueError("State signing secret must contain at least 32 random characters")
+    _state_signing_key = (key, time.time())
+    return key
+
+
 def _generate_state(app_state: str = "") -> str:
-    """Generate a signed state parameter with timestamp for CSRF protection.
-
-    Issue #4133: ``app_state`` is a nonce the SPA generated and stored in its own
-    sessionStorage before starting login. Folding it into the *signed* payload
-    lets the broker echo it back to the SPA at the end of the flow without a
-    server-side session, and lets the SPA prove the callback belongs to the login
-    attempt it started. It is signed rather than merely passed through so an
-    attacker cannot swap in a nonce of their own choosing mid-flight.
-
-    The serialised form is ``nonce.timestamp[.app_state].signature``. ``app_state``
-    is validated by the caller to exclude "." so the field split stays unambiguous.
-    """
     nonce = secrets.token_urlsafe(24)
     timestamp = str(int(time.time()))
-    payload = f"{nonce}.{timestamp}.{app_state}" if app_state else f"{nonce}.{timestamp}"
-    secret = _get_github_client_secret()
-    signature = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
+    payload = f"v2.{nonce}.{timestamp}.{app_state}"
+    signature = hmac.new(_get_state_signing_key().encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}.{signature}"
 
 
 def _verify_state(state: str) -> bool:
-    """Verify the state parameter's signature and freshness."""
     try:
+        if len(state) > 512:
+            return False
         parts = state.split(".")
-        # 3 parts = no app_state (legacy / SPA that predates #4133), 4 = with it.
-        if len(parts) not in (3, 4):
-            return False
-
-        *payload_parts, signature = parts
-        payload = ".".join(payload_parts)
-        timestamp_str = payload_parts[1]
-
-        # Verify signature
-        secret = _get_github_client_secret()
-        expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
-        if not hmac.compare_digest(signature, expected):
-            logger.warning("State signature mismatch")
-            return False
-
-        # Verify freshness
-        timestamp = int(timestamp_str)
+        current = parts[0] == "v2"
+        if current:
+            if len(parts) != 5:
+                return False
+            timestamp = int(parts[2])
+            secret = _get_state_signing_key()
+        else:
+            # Absolute cutoff: cold starts and subsequent deployments must not
+            # silently renew compatibility with the old, truncated signatures.
+            if time.time() >= STATE_LEGACY_ACCEPT_UNTIL or len(parts) not in (3, 4):
+                return False
+            timestamp = int(parts[1])
+            secret = _get_github_client_secret()
         if abs(time.time() - timestamp) > STATE_TTL_SECONDS:
-            logger.warning("State expired")
             return False
-
-        return True
-    except (ValueError, TypeError) as e:
-        logger.warning("State verification error: %s", e)
+        payload, signature = state.rsplit(".", 1)
+        expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not current:
+            expected = expected[:16]
+        return hmac.compare_digest(signature, expected)
+    except (ValueError, TypeError, KeyError):
+        logger.warning("State verification failed")
         return False
 
 
@@ -246,6 +252,8 @@ def _extract_app_state(state: str) -> str:
     ``_verify_state`` has already accepted — the value is trusted downstream.
     """
     parts = state.split(".")
+    if len(parts) == 5 and parts[0] == "v2":
+        return parts[3]
     return parts[2] if len(parts) == 4 else ""
 
 
@@ -336,7 +344,11 @@ def _handle_start(event: dict) -> dict:
         logger.warning("Ignoring malformed app_state on /start")
         app_state = ""
 
-    state = _generate_state(app_state)
+    try:
+        state = _generate_state(app_state)
+    except Exception:
+        logger.error("State signing unavailable; check the dedicated signing secret")
+        return _response(503, {"error": "login_temporarily_unavailable"})
 
     params = urllib.parse.urlencode(
         {

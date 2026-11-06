@@ -31,10 +31,17 @@ def terminal_flow(client, flow_id, qualification_id):
             raise Unsupported("flow can still dispatch work; cleanup refused")
         for run in history["runs"]:
             invocation = client.get("/me/agent-invocations/" + run["invocation_id"])
-            if (
-                invocation["repo"] != client.config.repository
-                or invocation["liveness"] != "exited"
-            ):
+            repository = client.config.repository
+            if client.config.product_epic is not None and node["kind"] == "story":
+                index = {"first": 1, "second": 2}.get(node.get("node_ref"))
+                if index is None:
+                    raise Unsupported("terminal flow has an unknown Product story")
+                repository = client.config.story_repository(index)
+                if node.get("repository_identity") != repository:
+                    raise Unsupported(
+                        "terminal story repository differs from reviewed config"
+                    )
+            if invocation["repo"] != repository or invocation["liveness"] != "exited":
                 raise Unsupported("worker termination is not proven")
             runs.append(
                 invocation["invocation_id"]
@@ -44,12 +51,19 @@ def terminal_flow(client, flow_id, qualification_id):
     return graph, runs
 
 
-def delete_branch(client, branch, expected_sha):
+def delete_branch(client, branch, expected_sha, *, repository=None):
     if not re.fullmatch(
         r"qualification/q-[a-z0-9-]{8,50}/story-[12]", branch
     ) or not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
         raise Unsupported("invalid owned branch or expected SHA")
-    path = f"/repos/{client.config.repository}/git/ref/heads/{branch}"
+    repository = repository or client.config.repository
+    if client.config.product_epic is not None:
+        index = int(branch.rsplit("-", 1)[-1])
+        if repository != client.config.story_repository(index):
+            raise Unsupported("branch repository differs from reviewed story target")
+    elif repository != client.config.repository:
+        raise Unsupported("branch repository differs from reviewed legacy target")
+    path = f"/repos/{repository}/git/ref/heads/{branch}"
     status, result = client.request("GET", path, github=True)
     if status == 404:
         return
@@ -96,7 +110,7 @@ def delete_branch(client, branch, expected_sha):
                     "push",
                     "--porcelain",
                     f"--force-with-lease=refs/heads/{branch}:{expected_sha}",
-                    "https://github.com/" + client.config.repository + ".git",
+                    "https://github.com/" + repository + ".git",
                     ":refs/heads/" + branch,
                 ],
                 env=env,

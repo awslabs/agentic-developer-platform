@@ -77,6 +77,7 @@ costs a corrupted deployment.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import re
 from dataclasses import dataclass, field
@@ -201,13 +202,16 @@ class TargetBlockCode(StrEnum):
 
 @dataclass(frozen=True)
 class WorkflowRef:
-    """An approved pipeline, pinned by path **and** immutable definition revision.
+    """A pipeline path, pinned to an immutable definition when approved.
 
-    Both halves are required and they do different jobs. `path` says where the
+    Both halves are required to enable an entry. `path` says where the
     definition lives; `definition_revision` says *which version of it* was
     approved. Only the second is immutable, and it is the one that makes the
     approval meaningful — see the module docstring on why a path alone approves a
     filename rather than a pipeline.
+
+    An unresolved entry may leave the revision unset until that workflow exists;
+    such an entry cannot dispatch.
 
     `allowed_inputs` maps an input name to the exact set of values permitted for
     it. An empty value set is meaningful and is **not** "any value": it means the
@@ -220,7 +224,7 @@ class WorkflowRef:
     """
 
     path: str
-    definition_revision: str
+    definition_revision: str | None
     allowed_inputs: dict[str, frozenset[str]] = field(default_factory=dict)
     correlation_input: str | None = None
 
@@ -234,7 +238,7 @@ class WorkflowRef:
                 "invalid_workflow_path",
                 f"A workflow path must be a repository-relative .github/workflows/*.yml file; got {self.path!r}.",
             )
-        if not _FULL_SHA.match(str(self.definition_revision or "")):
+        if self.definition_revision is not None and not _FULL_SHA.match(str(self.definition_revision)):
             # Refused rather than normalized. An abbreviation cannot be expanded
             # here without reading the repository, and this module makes no such
             # call — so accepting one would store an approval whose subject this
@@ -508,10 +512,21 @@ class ManifestEntry:
     rollback_adapter: str | None = None
     unresolved_reason: str | None = None
     docs_only: bool = False
+    release_group: str | None = None
+    mutation_role_arn: str | None = None
 
     def __post_init__(self) -> None:
+        if self.release_group is not None and (
+            not isinstance(self.release_group, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", self.release_group) or self.docs_only
+        ):
+            raise ManifestError("invalid_release_group", "A runtime release group must be a reviewed, nonempty slug.")
         if not str(self.entry_id or "").strip():
             raise ManifestError("invalid_manifest_entry", "A manifest entry must have an entry_id.")
+        if self.mutation_role_arn is not None and not re.fullmatch(
+            r"arn:aws:iam::[0-9]{12}:role/adp-[a-z0-9-]+-trusted-deployment", self.mutation_role_arn
+        ):
+            raise ManifestError("invalid_mutation_role", "The shared release needs a reviewed trusted deployment role.")
+
         if self.artifact_revision is not None and not _ARTIFACT_SHA.match(str(self.artifact_revision)):
             # Refuses "latest", "main", a tag, or an abbreviation. Every one of
             # those is resolved at *use* time by something other than the
@@ -542,7 +557,11 @@ class ManifestEntry:
                 # build SHA from them would force a reviewer to invent one — the
                 # exact failure this check exists to prevent.
                 required.append("artifact_revision")
+            if self.release_group is not None:
+                required.append("mutation_role_arn")
             missing = [name for name in required if not getattr(self, name)]
+            if self.workflow is not None and self.workflow.definition_revision is None:
+                missing.append("workflow.definition_revision")
             if missing:
                 raise ManifestError(
                     "incomplete_manifest_entry",
@@ -573,12 +592,53 @@ class ManifestEntry:
         return any(wanted == selector.strip().casefold() for selector in self.component_selectors)
 
 
+IGNORE_RULE = "ignore"
+
+
+@dataclass(frozen=True)
+class PathRule:
+    """One reviewed mapping from a changed repository path to a component.
+
+    The engine must never guess which pipeline a merged change needs. Before
+    #7457 the mapping was an if-chain in Python, so every new module, workflow
+    file or script needed an engine release before its deployment phase could
+    even be evaluated. As manifest data it is reviewed in the same pull request
+    that adds the pipeline, under the same review as any other approval.
+
+    `pattern` is a shell-style glob matched against the whole repository path
+    (`*` crosses `/`, so `modules/tools/platform/*` covers the subtree). Rules are
+    evaluated in order and the first match wins, which is what lets a narrower
+    rule (`modules/gateway/frontend/*`) precede a broader one (`modules/gateway/*`).
+    `component` names the component selector an entry must cover, or
+    `IGNORE_RULE` for paths that never need a deployment (documentation, CI-only
+    definitions, the engine's own task records). A path no rule matches still
+    blocks with `deployment_component_unmapped`: unknown stays unknown.
+    """
+
+    pattern: str
+    component: str
+
+    def __post_init__(self) -> None:
+        if not str(self.pattern or "").strip() or any(ch.isspace() for ch in self.pattern):
+            raise ManifestError("invalid_path_rule", "A path rule needs a non-empty glob pattern without whitespace.")
+        if not str(self.component or "").strip():
+            raise ManifestError("invalid_path_rule", f"Path rule {self.pattern!r} must name a component or {IGNORE_RULE!r}.")
+
+    def matches(self, path: str) -> bool:
+        return fnmatch.fnmatchcase(path, self.pattern)
+
+    @property
+    def ignored(self) -> bool:
+        return self.component == IGNORE_RULE
+
+
 @dataclass(frozen=True)
 class DeploymentManifest:
-    """The reviewed set of deployment entries, keyed by entry id."""
+    """The reviewed set of deployment entries, keyed by entry id, and the path rules that select them."""
 
     schema_version: int
     entries: tuple[ManifestEntry, ...]
+    path_rules: tuple[PathRule, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema_version != MANIFEST_SCHEMA_VERSION:
@@ -599,6 +659,10 @@ class DeploymentManifest:
     def entry(self, entry_id: str) -> ManifestEntry | None:
         wanted = str(entry_id or "").strip().casefold()
         return next((e for e in self.entries if e.entry_id.strip().casefold() == wanted), None)
+
+    def path_rule(self, path: str) -> PathRule | None:
+        """The first reviewed rule covering `path`, or None when the path is unmapped."""
+        return next((rule for rule in self.path_rules if rule.matches(path)), None)
 
 
 @dataclass(frozen=True)
@@ -872,7 +936,7 @@ def parse_manifest(document: dict) -> DeploymentManifest:
     if not isinstance(document, dict):
         raise ManifestError("invalid_manifest", "A manifest document must be a mapping.")
 
-    unknown = set(document) - {"schema_version", "entries"}
+    unknown = set(document) - {"schema_version", "entries", "path_rules"}
     if unknown:
         raise ManifestError("unknown_manifest_key", f"Manifest declares unsupported top-level key(s): {sorted(unknown)}.")
 
@@ -885,7 +949,22 @@ def parse_manifest(document: dict) -> DeploymentManifest:
         raise ManifestError("invalid_manifest", "A manifest must declare an entries list.")
 
     entries = tuple(_parse_entry(raw) for raw in raw_entries)
-    return DeploymentManifest(schema_version=raw_version, entries=entries)
+    raw_rules = document.get("path_rules", [])
+    if not isinstance(raw_rules, list):
+        raise ManifestError("invalid_manifest", "path_rules must be a list of {pattern, component} mappings.")
+    return DeploymentManifest(schema_version=raw_version, entries=entries, path_rules=tuple(_parse_path_rule(raw) for raw in raw_rules))
+
+
+def _parse_path_rule(raw: object) -> PathRule:
+    if not isinstance(raw, dict):
+        raise ManifestError("invalid_path_rule", "Each path rule must be a mapping.")
+    unknown = set(raw) - {"pattern", "component"}
+    if unknown:
+        raise ManifestError("unknown_manifest_key", f"Path rule declares unsupported key(s): {sorted(unknown)}.")
+    pattern, component = raw.get("pattern"), raw.get("component")
+    if not isinstance(pattern, str) or not isinstance(component, str):
+        raise ManifestError("invalid_path_rule", "A path rule needs string pattern and component values.")
+    return PathRule(pattern=pattern, component=component)
 
 
 _ENTRY_KEYS = frozenset(
@@ -902,6 +981,8 @@ _ENTRY_KEYS = frozenset(
         "rollback_adapter",
         "unresolved_reason",
         "docs_only",
+        "release_group",
+        "mutation_role_arn",
     }
 )
 
@@ -947,6 +1028,8 @@ def _parse_entry(raw: object) -> ManifestEntry:
         rollback_adapter=raw.get("rollback_adapter") or None,
         unresolved_reason=raw.get("unresolved_reason") or None,
         docs_only=docs_only,
+        release_group=raw.get("release_group"),
+        mutation_role_arn=raw.get("mutation_role_arn"),
     )
 
 
@@ -978,7 +1061,7 @@ def _parse_workflow(raw: object) -> WorkflowRef | None:
 
     return WorkflowRef(
         path=str(raw.get("path") or ""),
-        definition_revision=str(raw.get("definition_revision") or ""),
+        definition_revision=raw.get("definition_revision", ""),
         allowed_inputs=allowed,
         correlation_input=raw.get("correlation_input"),
     )

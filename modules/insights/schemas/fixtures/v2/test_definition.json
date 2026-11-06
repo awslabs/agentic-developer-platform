@@ -1,0 +1,19 @@
+{
+  "tenant_id": "tenant-example",
+  "project_id": "project-example",
+  "source_connection_id": "connection-example",
+  "source_system": "fixture",
+  "source_event_id": "TEST-001:revision-1",
+  "event_time": "2026-10-10T10:00:00Z",
+  "ingested_at": "2026-10-10T10:01:00Z",
+  "schema_version": "2.0",
+  "record_type": "test_definition",
+  "record_id": "TEST-001",
+  "record_revision": "revision-1",
+  "name": "Administrator invites member",
+  "source_path": "tests/invitations.py",
+  "selector": "test_invite",
+  "framework": "pytest",
+  "layer": "e2e",
+  "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

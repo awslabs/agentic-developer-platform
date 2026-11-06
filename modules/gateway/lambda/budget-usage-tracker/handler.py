@@ -364,6 +364,190 @@ def bridge_cost_to_usage_logs(
         return False
 
 
+def legacy_metering_gate_state(
+    conn, org_id: str, user_id: str, root_user_id: str, account_type: str | None, request_id: str | None
+) -> tuple[bool, bool]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('metering_scope_gates')")
+        found = cur.fetchone()
+        if not found or found[0] is None:
+            return False, False
+        cur.execute("SET LOCAL lock_timeout = '500ms'")
+        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"metering-gates:tenant:{org_id}",))
+        if not root_user_id and account_type != "service":
+            cur.execute(
+                "SELECT id FROM users WHERE org_id = %s AND (id = %s OR cognito_sub = %s) LIMIT 1",
+                (org_id, user_id, user_id),
+            )
+            identity = cur.fetchone()
+            if identity is None:
+                cur.execute("SELECT 1 FROM metering_scope_gates WHERE scope_kind = 'person' AND activation = 'active' LIMIT 1")
+                if cur.fetchone() is not None:
+                    raise ValueError("direct human identity cannot be resolved against active person gates")
+            else:
+                root_user_id = identity[0]
+        cur.execute(
+            """SELECT scope_key, activation FROM metering_scope_gates
+               WHERE tenant_id = %s OR scope_key IN
+                   (SELECT scope_key FROM metering_scope_aliases
+                    WHERE alias_kind = 'person_user' AND stable_alias = %s)
+               ORDER BY scope_key FOR UPDATE""",
+            (org_id, root_user_id),
+        )
+        active = any(row[1] == "active" for row in cur.fetchall())
+        if not request_id:
+            return active, False
+        cur.execute(
+            "SELECT owner_id, state FROM metering_attempts WHERE tenant_id = %s AND request_id = %s",
+            (org_id, request_id),
+        )
+        attempt = cur.fetchone()
+        if attempt is not None and (attempt[0] != user_id or attempt[1] not in {"dispatch_armed", "unknown", "quarantined", "settled"}):
+            raise ValueError("transcript conflicts with metered attempt identity or dispatch")
+        return active, attempt is not None
+
+
+def mark_legacy_cohort_settled(conn, org_id: str, request_id: str, user_id: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('metering_legacy_admissions')")
+        if cur.fetchone()[0] is None:
+            return
+        cur.execute(
+            "SELECT owner_id, state FROM metering_legacy_admissions WHERE tenant_id=%s AND request_id=%s FOR UPDATE",
+            (org_id, request_id),
+        )
+        found = cur.fetchone()
+        if found is not None:
+            if found[0] != user_id:
+                raise ValueError("legacy cohort settlement owner mismatch")
+            if found[1] == "not_dispatched":
+                raise ValueError("legacy cohort has contradictory financial evidence")
+            cur.execute(
+                "UPDATE metering_legacy_admissions SET state='settled' WHERE tenant_id=%s AND request_id=%s",
+                (org_id, request_id),
+            )
+
+
+def recover_gateway_usage(conn, chat_log, settlement, chat_log_s3_key):
+    """Recover diagnostic usage and exact reservation scopes under the receipt lock.
+
+    Only current, gateway-authored events with a validated original pricing decision can
+    attest scope links. Old transcripts retain their existing behavior.
+    """
+    recovery = chat_log.get("usage_recovery")
+    if recovery is None:
+        return
+    decision = settlement.decision
+    if (
+        not isinstance(recovery, dict)
+        or recovery.get("version") != 1
+        or not settlement.reused
+        or not decision
+        or decision["usage"].get("valid") is not True
+    ):
+        raise ValueError("invalid gateway usage recovery evidence")
+    org_id, request_id, user_id = chat_log["org_id"], chat_log["request_id"], chat_log["user_id"]
+    scopes = recovery.get("reservation_scope_keys")
+    if (
+        not isinstance(scopes, list)
+        or len(scopes) > 64
+        or any(not isinstance(key, str) or len(key) > 1024 or not key.startswith(f"budget:resv:{{{org_id}}}:") for key in scopes)
+    ):
+        raise ValueError("invalid reservation scope evidence")
+    run_id = recovery.get("agent_run_id")
+    graph_address = recovery.get("graph_address")
+    status = recovery.get("status_code")
+    if (
+        (run_id is not None and (not isinstance(run_id, str) or not run_id or len(run_id) > 255))
+        or (graph_address is not None and (not isinstance(graph_address, str) or len(graph_address) > 512))
+        or type(status) is not int
+        or not 100 <= status <= 599
+    ):
+        raise ValueError("invalid gateway usage attribution")
+    usage = decision["usage"]
+    project_scope = project_scope_from_log(chat_log) or {}
+    with conn.cursor() as cur:
+        # The caller has inserted or locked this receipt. Gateway replays acquire
+        # the same lock, so this INSERT cannot race another diagnostic row.
+        cur.execute(
+            "SELECT reservation_scope_keys FROM budget_settlement_receipts WHERE org_id=%s AND request_id=%s AND user_id=%s FOR UPDATE",
+            (org_id, request_id, user_id),
+        )
+        prior = cur.fetchone()
+        if prior is None:
+            raise ValueError("usage recovery requires a committed settlement identity")
+        scopes = sorted(set(scopes) | set(prior[0] or []))
+        cur.execute(
+            """UPDATE budget_settlement_receipts SET reservation_scope_keys = %s::json
+            WHERE org_id = %s AND request_id = %s AND user_id = %s""",
+            (json.dumps(scopes), org_id, request_id, user_id),
+        )
+        cur.execute(
+            """INSERT INTO usage_logs
+            (id, timestamp, org_id, department_id, team_id, user_id, account_type,
+             model, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+             cost_usd, latency_ms, status_code, request_id, agent_run_id, graph_address,
+             chat_log_s3_key, pricing_decision, pricing_confidence, pricing_estimate_reasons,
+             pricing_source_kind, pricing_generation_id, pricing_pointer_revision,
+             pricing_snapshot_version, pricing_policy_version, product_id, project_id, flow_id)
+            SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                   %s, %s, %s, %s, %s, %s::json, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            WHERE NOT EXISTS (SELECT 1 FROM usage_logs WHERE org_id=%s AND request_id=%s AND user_id=%s)""",
+            (
+                str(uuid.uuid4()),
+                chat_log["timestamp"],
+                org_id,
+                chat_log.get("department_id") or "",
+                chat_log.get("team_id") or "",
+                user_id,
+                chat_log["account_type"],
+                chat_log["model"],
+                usage["uncached_input_tokens"],
+                usage["output_tokens"],
+                usage["cache_read_input_tokens"] if usage["raw"]["cache_read_input_tokens"] is not None else None,
+                usage["cache_creation_input_tokens"] if usage["raw"]["cache_creation_input_tokens"] is not None else None,
+                settlement.cost,
+                int(chat_log["latency_ms"]),
+                status,
+                request_id,
+                run_id,
+                graph_address,
+                chat_log_s3_key,
+                json.dumps(decision),
+                decision["confidence"],
+                json.dumps(decision["estimate_reasons"]),
+                decision["source_kind"],
+                decision.get("generation_id"),
+                decision.get("pointer_revision"),
+                decision["snapshot_version"],
+                decision["policy_version"],
+                project_scope.get("product_id"),
+                project_scope.get("project_id"),
+                project_scope.get("flow_id"),
+                org_id,
+                request_id,
+                user_id,
+            ),
+        )
+
+
+def project_scope_from_log(chat_log):
+    value = (chat_log.get("usage_recovery") or {}).get("project_attribution")
+    if value is None:
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("tenant_id") != chat_log.get("org_id")
+        or any(
+            not isinstance(value.get(field), str) or not 0 < len(value[field]) <= limit for field, limit in (("product_id", 36), ("project_id", 255))
+        )
+        or (value.get("flow_id") is not None and (not isinstance(value["flow_id"], str) or len(value["flow_id"]) > 36))
+        or value.get("run_id") != (chat_log.get("usage_recovery") or {}).get("agent_run_id")
+    ):
+        raise ValueError("invalid Project attribution recovery evidence")
+    return value
+
+
 def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_key: str | None = None):
     """
     Process a single chat log and record usage.
@@ -412,6 +596,12 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
 
     # Issue #4300: the human who initiated this agent chain, if any.
     root_human_id = parsed.get("root_human_id")
+    person_root = root_human_id if root_human_id and not root_human_id.startswith("service:") else ""
+    active, metered = legacy_metering_gate_state(conn, org_id, user_id, person_root, account_type, request_id)
+    if metered:
+        return
+    if active:
+        raise ValueError("active metering gate requires a prepared usage receipt")
 
     # Resolve cross-region model ID
     resolved_model_id = resolve_model_id(model_id)
@@ -520,6 +710,9 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
         entities.append((_ROOT_USER_ENTITY_TYPE, root_human_id))
         logger.info(f"Including root-human entity: {root_human_id}")
 
+    project_scope = project_scope_from_log(chat_log)
+    if project_scope is not None:
+        entities.append(("project", project_scope["project_id"]))
     entities = sorted(set(entities))
     day = timestamp.astimezone(UTC).date()
     allocation_key = hashlib.sha256(json.dumps([day.isoformat(), entities], separators=(",", ":")).encode()).hexdigest()
@@ -538,21 +731,26 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
         if cur.fetchone() is None:
             cur.execute(
                 """SELECT user_id, cost_usd, total_tokens, allocation_key FROM budget_settlement_receipts
-                WHERE org_id = %s AND request_id = %s""",
+                WHERE org_id = %s AND request_id = %s FOR UPDATE""",
                 (org_id, request_id),
             )
             existing = cur.fetchone()
             if existing != (user_id, cost, total_tokens, allocation_key):
                 raise ValueError("Conflicting settlement replay")
+            recover_gateway_usage(conn, chat_log, settlement, chat_log_s3_key)
             if cost > 0 or chat_log_s3_key:
                 bridge_cost_to_usage_logs(conn, request_id, cost, chat_log_s3_key=chat_log_s3_key, org_id=org_id, user_id=user_id, atomic=True)
+            if not settlement.estimated:
+                mark_legacy_cohort_settled(conn, org_id, request_id, user_id)
             return
 
+    recover_gateway_usage(conn, chat_log, settlement, chat_log_s3_key)
     if cost > 0 or chat_log_s3_key:
         bridge_cost_to_usage_logs(conn, request_id, cost, chat_log_s3_key=chat_log_s3_key, org_id=org_id, user_id=user_id, atomic=True)
 
     for entity_type, entity_id in entities:
-        for period_type, period_start in periods.items():
+        entity_periods = {**periods, "run": datetime(1970, 1, 1, tzinfo=UTC)} if entity_type == "project" else periods
+        for period_type, period_start in entity_periods.items():
             upsert_budget_usage(
                 conn,
                 org_id,
@@ -564,6 +762,8 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
                 total_tokens,
             )
 
+    if not settlement.estimated:
+        mark_legacy_cohort_settled(conn, org_id, request_id, user_id)
     logger.info(f"Recorded usage for {len(entities)} entities x {len(periods)} periods")
 
 

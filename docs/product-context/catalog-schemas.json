@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://adp.example.com/contracts/catalog-schemas.json",
+  "title": "Proposed catalog wire shapes; not implemented endpoints",
+  "$defs": {
+    "id": { "$ref": "context-model-v1.schema.json#/$defs/id" },
+    "instant": { "$ref": "context-model-v1.schema.json#/$defs/instant" },
+    "ref": { "$ref": "context-model-v1.schema.json#/$defs/record_ref" },
+    "portfolio": {
+      "type": "object",
+      "required": ["tenant_id", "id", "revision", "source_connection_id", "recorded_at", "data"],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/id" },
+        "id": { "$ref": "#/$defs/id" },
+        "revision": { "$ref": "#/$defs/id" },
+        "source_connection_id": { "$ref": "#/$defs/id" },
+        "recorded_at": { "$ref": "#/$defs/instant" },
+        "data": { "$ref": "context-model-v1.schema.json#/$defs/portfolio_data" }
+      },
+      "additionalProperties": false
+    },
+    "initiative": {
+      "type": "object",
+      "required": ["tenant_id", "id", "revision", "source_connection_id", "recorded_at", "data"],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/id" },
+        "id": { "$ref": "#/$defs/id" },
+        "revision": { "$ref": "#/$defs/id" },
+        "source_connection_id": { "$ref": "#/$defs/id" },
+        "recorded_at": { "$ref": "#/$defs/instant" },
+        "data": { "$ref": "context-model-v1.schema.json#/$defs/initiative_data" }
+      },
+      "additionalProperties": false
+    },
+    "contribution": {
+      "type": "object",
+      "required": ["tenant_id", "project_id", "id", "revision", "source_connection_id", "recorded_at", "data"],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/id" },
+        "project_id": { "$ref": "#/$defs/id" },
+        "id": { "$ref": "#/$defs/id" },
+        "revision": { "$ref": "#/$defs/id" },
+        "source_connection_id": { "$ref": "#/$defs/id" },
+        "recorded_at": { "$ref": "#/$defs/instant" },
+        "data": { "$ref": "context-model-v1.schema.json#/$defs/contribution_data" }
+      },
+      "additionalProperties": false
+    },
+    "membership_version": {
+      "type": "object",
+      "required": ["tenant_id", "relationship_id", "relationship_revision", "portfolio_ref", "product_ref", "valid_from", "recorded_at", "mapping_version", "source_connection_id", "source_refs"],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/id" },
+        "relationship_id": { "$ref": "#/$defs/id" },
+        "relationship_revision": { "$ref": "#/$defs/id" },
+        "supersedes_revision": { "$ref": "#/$defs/id" },
+        "portfolio_ref": { "allOf": [{ "$ref": "#/$defs/ref" }, { "properties": { "record_type": { "const": "portfolio" } } }] },
+        "product_ref": { "allOf": [{ "$ref": "#/$defs/ref" }, { "properties": { "record_type": { "const": "product" } } }] },
+        "valid_from": { "$ref": "#/$defs/instant" },
+        "valid_to": { "$ref": "#/$defs/instant" },
+        "recorded_at": { "$ref": "#/$defs/instant" },
+        "mapping_version": { "$ref": "#/$defs/id" },
+        "source_connection_id": { "$ref": "#/$defs/id" },
+        "source_refs": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/ref" } }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "enum": ["invalid_request", "invalid_cursor", "not_found", "permission_denied", "conflict", "stale_revision", "precondition_required", "revision_expired"] },
+        "message": { "type": "string", "minLength": 1, "maxLength": 500 }
+      },
+      "additionalProperties": false
+    },
+    "create_portfolio": { "$ref": "context-model-v1.schema.json#/$defs/portfolio_data" },
+    "create_initiative": { "$ref": "context-model-v1.schema.json#/$defs/initiative_data" },
+    "create_contribution": { "$ref": "context-model-v1.schema.json#/$defs/contribution_data" },
+    "create_membership": {
+      "type": "object",
+      "required": ["portfolio_ref", "product_ref", "valid_from", "source_refs"],
+      "properties": {
+        "portfolio_ref": { "allOf": [{ "$ref": "#/$defs/ref" }, { "properties": { "record_type": { "const": "portfolio" } } }] },
+        "product_ref": { "allOf": [{ "$ref": "#/$defs/ref" }, { "properties": { "record_type": { "const": "product" } } }] },
+        "valid_from": { "$ref": "#/$defs/instant" },
+        "valid_to": { "$ref": "#/$defs/instant" },
+        "source_refs": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/ref" } }
+      },
+      "additionalProperties": false
+    },
+    "close_membership": {
+      "type": "object",
+      "required": ["valid_to"],
+      "properties": { "valid_to": { "$ref": "#/$defs/instant" } },
+      "additionalProperties": false
+    },
+    "receipt": {
+      "type": "object",
+      "required": ["id", "revision", "change_id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "revision": { "$ref": "#/$defs/id" },
+        "change_id": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "portfolio_page": {
+      "type": "object", "required": ["items"],
+      "properties": {
+        "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/portfolio" } },
+        "next_cursor": { "type": "string", "minLength": 1, "maxLength": 2048 }
+      }, "additionalProperties": false
+    },
+    "initiative_page": {
+      "type": "object", "required": ["items"],
+      "properties": {
+        "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/initiative" } },
+        "next_cursor": { "type": "string", "minLength": 1, "maxLength": 2048 }
+      }, "additionalProperties": false
+    },
+    "contribution_page": {
+      "type": "object", "required": ["items"],
+      "properties": {
+        "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/contribution" } },
+        "next_cursor": { "type": "string", "minLength": 1, "maxLength": 2048 }
+      }, "additionalProperties": false
+    },
+    "membership_page": {
+      "type": "object", "required": ["items"],
+      "properties": {
+        "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/membership_version" } },
+        "next_cursor": { "type": "string", "minLength": 1, "maxLength": 2048 }
+      }, "additionalProperties": false
+    }
+  }
+}

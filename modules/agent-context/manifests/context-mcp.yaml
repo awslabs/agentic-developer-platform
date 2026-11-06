@@ -32,10 +32,9 @@ spec:
       app.kubernetes.io/name: context-mcp
   template:
     metadata:
-      annotations:
-        adp.dev/door-verification-keys: "${DOOR_VERIFICATION_KEYS_SHA256}"
       # These services do not run a JVM; omit the unused Java agent and JARs.
       annotations:
+        adp.dev/door-verification-keys: "${DOOR_VERIFICATION_KEYS_SHA256}"
         cloudwatch.aws.amazon.com/auto-annotate-java: "false"
         instrumentation.opentelemetry.io/inject-java: "false"
       labels:

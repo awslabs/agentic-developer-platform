@@ -1,0 +1,114 @@
+name: Recover owned Product browser fixtures
+
+# Compensation only: retain the original run's identity and publish its cleanup
+# receipt. Live acceptance remains in the separately correlated delivery run.
+on:
+  workflow_dispatch:
+    inputs:
+      original_run_id:
+        description: Original durable Product browser run to recover
+        required: true
+      source_revision:
+        description: Original fixture source commit
+        required: true
+      frontend_run_id:
+        description: Original signed frontend release run
+        required: true
+      frontend_attempt:
+        description: Original signed frontend release attempt
+        required: true
+      frontend_workflow_revision:
+        description: Original signed frontend workflow commit
+        required: true
+      scope_fixture:
+        description: Original fixture includes two scopes and the ordinary editor
+        type: boolean
+        default: false
+      suite_id:
+        description: Original browser suite namespace; legacy retains unnamespaced runs
+        type: choice
+        options: [legacy, issue-8250, issue-8252, issue-8258, issue-8268]
+        default: legacy
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cli-live-eval-dev
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  recover:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    environment: adp-browser-checks-dev
+    timeout-minutes: 20
+    env:
+      AWS_REGION: us-east-1
+      ENVIRONMENT: dev
+      PYTHONPATH: ${{ github.workspace }}/modules/gateway:${{ github.workspace }}
+      ADP_CHECKS_ROLE_ARN: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+      GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+      PRODUCT_RECOVERY_RUN_ID: ${{ inputs.original_run_id }}
+      PRODUCT_EXPECTED_REVISION: ${{ inputs.source_revision }}
+      PRODUCT_RELEASE_RUN_ID: ${{ inputs.frontend_run_id }}
+      PRODUCT_RELEASE_ATTEMPT: ${{ inputs.frontend_attempt }}
+      PRODUCT_RELEASE_WORKFLOW_REVISION: ${{ inputs.frontend_workflow_revision }}
+      PRODUCT_B03_MODE: ${{ inputs.scope_fixture && 'true' || 'false' }}
+      PRODUCT_SUITE_ID: ${{ inputs.suite_id != 'legacy' && inputs.suite_id || '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate original recovery identity
+        run: |
+          set -euo pipefail
+          [[ "$PRODUCT_RECOVERY_RUN_ID" =~ ^product-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}$ ]]
+          [[ "$PRODUCT_EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$PRODUCT_RELEASE_WORKFLOW_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$PRODUCT_RELEASE_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "$PRODUCT_RELEASE_ATTEMPT" =~ ^[1-9][0-9]{0,5}$ ]]
+          [[ -z "$PRODUCT_SUITE_ID" || "$PRODUCT_SUITE_ID" =~ ^issue-(8250|8252|8258|8268)$ ]]
+          git merge-base --is-ancestor "$PRODUCT_EXPECTED_REVISION" HEAD
+          git merge-base --is-ancestor "$PRODUCT_RELEASE_WORKFLOW_REVISION" HEAD
+      - uses: ./.github/actions/trusted-checks
+        with:
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: us-east-1
+      - name: Resolve dashboard URL
+        run: bash .github/scripts/resolve-dashboard-url.sh
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install recovery dependencies
+        run: pip install ./modules/gateway pytest playwright requests 'PyJWT[crypto]'
+      - name: Reconcile original ownership and retain cleanup receipt
+        run: |
+          set -euo pipefail
+          umask 077
+          python -m tests.e2e.new_ui.product_fixture_provider
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          run_id = os.environ['PRODUCT_RECOVERY_RUN_ID']
+          path = Path('test-results') / ('product-recovery-' + run_id + '.json')
+          receipt = json.loads(path.read_text())
+          if (receipt.get('run_id') != run_id or not isinstance(receipt.get('cases'), dict)
+                  or 'suite_id' not in receipt
+                  or receipt['suite_id'] != (os.environ['PRODUCT_SUITE_ID'] or None)):
+              raise SystemExit('Recovery receipt does not match the original run')
+          print('Original Product fixture recovery completed; private receipt retained.')
+          PY
+      - name: Publish private recovery evidence
+        if: always()
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: product-browser-recovery
+          path: test-results/
+          retention-days: 14

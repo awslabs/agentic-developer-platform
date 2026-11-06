@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import time
+from types import SimpleNamespace
 from decimal import Decimal
 
 import boto3
@@ -243,14 +244,33 @@ def lambda_handler(event, context):
             authority.close()
 
 
+def reauthorize_gateway(envelope):
+    from agentcore_tools.mcp_adapter import verified_stateful
+
+    operation = envelope["operation"]
+    event = {**envelope["arguments"], "adp_assertion": envelope["assertion"]}
+    context = SimpleNamespace(client_context=SimpleNamespace(
+        custom={"bedrockAgentCoreToolName": "browser___" + operation}))
+    claims, arguments, target, verified_operation = verified_stateful(event, context)
+    if target != "browser" or verified_operation != operation or arguments != envelope["arguments"]:
+        raise HTTPException(403, "Browser authority changed")
+    return claims
+
+
 class BrowserConsumer:
-    def __init__(self, table, request=None):
+    def __init__(self, table, request=None, gateway_consumer=None):
         self.table = table
         self.request = request
         self.tools = {}
+        self.gateway_consumer = gateway_consumer
 
     def consume(self, message):
         envelope = json.loads(message)
+        if envelope.get("kind") == "gateway":
+            if self.gateway_consumer is None:
+                raise HTTPException(503, "Browser Gateway consumer unavailable")
+            self.gateway_consumer.consume(message)
+            return
         body = CyberBody.model_validate(envelope["body"])
         row = read(self.table, body.operation_id)
         if not row:
@@ -550,8 +570,18 @@ class BrowserConsumer:
 def serve():
     table = boto3.resource("dynamodb").Table(os.environ["BROWSER_OPERATIONS_TABLE"])
     queue = boto3.client("sqs")
-    consumer = BrowserConsumer(table)
+    gateway_consumer = None
+    if os.environ.get("ADP_GATEWAY_BROWSER_READY") == "true":
+        from agentcore_tools.gateway_browser import GatewayBrowser, GatewayBrowserConsumer, GatewayBrowserProvider
+        browser = GatewayBrowser(table=table)
+        provider = GatewayBrowserProvider(browser)
+        gateway_consumer = GatewayBrowserConsumer(browser, reauthorize_gateway, provider)
+        from agentcore_tools.gateway_browser import GatewayBrowserReconciler
+        reconciler = GatewayBrowserReconciler(browser, provider.request)
+    consumer = BrowserConsumer(table, gateway_consumer=gateway_consumer)
     while True:
+        if gateway_consumer is not None:
+            reconciler.run_once()
         batch = queue.receive_message(
             QueueUrl=os.environ["BROWSER_QUEUE_URL"],
             WaitTimeSeconds=20,

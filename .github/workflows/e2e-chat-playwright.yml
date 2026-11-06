@@ -3,6 +3,11 @@ name: E2E Chat Playwright Regression Suite
 on:
   workflow_call:
     inputs:
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
       modules:
         type: string
         required: false
@@ -40,23 +45,37 @@ env:
   E2E_CLOUDFRONT_URL: ''
 
 concurrency:
-  group: cli-live-eval-dev
+  group: cli-live-eval-${{ inputs.target_environment || 'dev' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   e2e-chat:
     name: Playwright Chat E2E
-    environment: adp-browser-checks-dev
+    environment: adp-browser-checks-${{ inputs.target_environment || 'dev' }}
     runs-on: arc-runner-org
     timeout-minutes: 30
     env:
       PYTHONPATH: ${{ github.workspace }}/.github/scripts:${{ github.workspace }}
       REGRESSION_MODULES: ${{ inputs.modules }}
       REGRESSION_KIND: ${{ inputs.modules != '' && 'E2E' || 'all' }}
+      E2E_SCREENSHOT_DIR: ${{ github.workspace }}/test-results/screenshots
       REGRESSION_INVENTORY: ${{ github.workspace }}/test-results/chat-inventory.json
 
     if: github.ref == 'refs/heads/main'
     steps:
+      - name: Require explicit live browser authorization
+        id: live-browser-policy
+        shell: bash
+        env:
+          LIVE_BROWSER_AUTHORIZED: ${{ vars.ADP_LIVE_BROWSER_AUTOMATION_ENABLED }}
+        run: |
+          if [ "$LIVE_BROWSER_AUTHORIZED" != true ]; then
+            echo "::error::live_browser_not_authorized: browser checks were not run. The target owner must explicitly authorize live browser automation in the selected protected GitHub environment."
+            echo 'BLOCKED: live browser automation is not authorized for this target. No browser acceptance evidence was produced. After target-owner authorization, set ADP_LIVE_BROWSER_AUTOMATION_ENABLED=true in the selected protected GitHub environment and rerun. Keep it false when automation is prohibited.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -121,7 +140,7 @@ jobs:
           ENVIRONMENT: dev
 
       - name: Require enabled conversation coverage for regression
-        if: ${{ always() && inputs.require_interactions }}
+        if: ${{ always() && steps.live-browser-policy.outcome == 'success' && inputs.require_interactions }}
         env:
           CHAT_MODE: ${{ env.E2E_CHAT_EXPECTED_FLAG }}
         run: |
@@ -131,7 +150,7 @@ jobs:
           fi
 
       - name: Verify complete scenario evidence
-        if: always()
+        if: always() && steps.live-browser-policy.outcome == 'success'
         run: >-
           python .github/scripts/regression_report.py junit
           --suite chat --junit test-results/chat.xml
@@ -139,19 +158,18 @@ jobs:
           --output test-results/chat-result.json
 
       - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v7
+        if: always() && steps.live-browser-policy.outcome == 'success'
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: e2e-chat-results
-          path: |
-            test-results/
-            /tmp/e2e-chat-*.png
+          path: test-results/
           retention-days: 14
 
       - name: Upload failure screenshots
-        if: failure()
-        uses: actions/upload-artifact@v7
+        if: failure() && steps.live-browser-policy.outcome == 'success'
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: e2e-chat-screenshots
-          path: /tmp/e2e-chat-*.png
+          path: test-results/screenshots/
+          if-no-files-found: ignore
           retention-days: 14

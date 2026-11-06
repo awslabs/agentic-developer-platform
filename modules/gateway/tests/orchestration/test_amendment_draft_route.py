@@ -37,6 +37,7 @@ from sqlalchemy.pool import StaticPool
 from src.admin.access_control import AccessControl
 from src.admin.config import AdminRole, Permission
 from src.orchestration.models import (
+    OrchestrationAmendmentIssueBinding,
     OrchestrationDecision,
     OrchestrationEdge,
     OrchestrationNode,
@@ -221,6 +222,35 @@ class TestAuthorization:
         stored = (await session.execute(sa.select(OrchestrationPendingAmendment))).scalar_one()
         assert stored.id == body["draft_id"]
         assert stored.state == PendingAmendmentState.PENDING.value
+
+    async def test_agent_authored_new_work_stays_unbound_and_publishes_nothing(self, session, app_with_router, monkeypatch):
+        """An agent cannot cause an issue to exist. Publication happens at human accept."""
+        flow_id = await accepted_flow(session)
+        request = await open_request(session, flow_id)
+        proposal = amended_proposal(extra_gate=False)
+        work = next(node for node in proposal.nodes if node.address.endswith("/story-b"))
+        work.issue_ref = None
+        work.proposal_identity = "agent:story-b"
+        work.repository_identity = "aws-e/adp"
+
+        async def forbidden(*_args, **_kwargs):
+            raise AssertionError("the agent path reached issue publication")
+
+        monkeypatch.setattr("src.orchestration.amendment_issue_publisher.publish_unbound_work", forbidden)
+        for method in ("find_issue", "create_issue", "update_issue"):
+            monkeypatch.setattr(f"src.orchestration.amendment_issue_publisher.AmendmentIssuePublisher.{method}", forbidden)
+        response = client_for(app_with_router, permitted=True).post(
+            route_for(flow_id),
+            params={"request_id": request.id},
+            headers={"X-Agent-RunId": AUTHOR_RUN},
+            json=proposal.model_dump(mode="json"),
+        )
+
+        assert response.status_code == 201, response.text
+        stored = (await session.execute(sa.select(OrchestrationPendingAmendment))).scalar_one()
+        unbound = next(node for node in stored.proposal_document["nodes"] if node["address"].endswith("/story-b"))
+        assert (unbound["issue_ref"], unbound["provider_repository_id"]) == (None, None)
+        assert await count_rows(session, OrchestrationAmendmentIssueBinding) == 0
 
     async def test_the_route_gates_on_plan_draft_not_plan_approve(self, session, app_with_router):
         """The permission an agent principal can actually hold.

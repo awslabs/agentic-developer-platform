@@ -9,6 +9,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError
 from src.agentauth.chat_history_write import ChatHistoryConflictError
+from src.agentauth.chat_session_mailbox import CHAT_EXECUTORS
 from src.agentauth.model_policy import canonical_json
 from src.orchestration import intake_wiring
 
@@ -67,10 +68,16 @@ def retained_registration_matches(envelope, human_id, created, now):
         }
         normalized.pop("parent_principal", None)
         normalized.pop("session_mode", None)
+        normalized.pop("executor", None)
         if "session_mode" in envelope:
             if envelope["session_mode"] not in ("ephemeral", "persistent"):
                 return False
             normalized["session_mode"] = envelope["session_mode"]
+        if "executor" in envelope:
+            # Only a persistent root carries the session executor (#8115).
+            if envelope.get("session_mode") != "persistent" or envelope["executor"] not in CHAT_EXECUTORS:
+                return False
+            normalized["executor"] = envelope["executor"]
         return (
             canonical_json(normalized) == canonical_json(envelope)
             and row.get("owner_principal") == envelope["owner_principal"]

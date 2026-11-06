@@ -1,0 +1,241 @@
+name: Deploy tools façade
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || '' }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/tools/facade/**'
+      - 'modules/tools/adp_tools/**'
+      - 'modules/tools/pyproject.toml'
+      - 'modules/tools/deploy.sh'
+      - 'modules/tools/orchestrate.sh'
+      - 'modules/tools/scripts/facade_receipt.py'
+      - '.github/workflows/tools-facade-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      adp_correlation:
+        description: Engine delivery correlation
+        required: false
+        default: ''
+        type: string
+      adp_source_revision:
+        description: Engine-approved immutable source commit
+        required: false
+        default: ''
+        type: string
+      adp_definition_revision:
+        description: Approved workflow definition revision
+        required: false
+        default: ''
+        type: string
+      environment:
+        description: Protected deployment environment
+        required: true
+        default: dev
+        type: choice
+        options: [dev, prod]
+      rollback_to_digest:
+        description: Existing façade ECR digest to restore; dispatch only
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tools-facade-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+
+jobs:
+  test:
+    runs-on: arc-runner-deploy
+    timeout-minutes: 20
+    steps:
+      - name: Validate rollback request before protected deployment
+        env:
+          ROLLBACK_DIGEST: ${{ inputs.rollback_to_digest || '' }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$ROLLBACK_DIGEST" ]]; then
+            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+            [[ "$ROLLBACK_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          fi
+      - uses: actions/checkout@v4
+        if: inputs.rollback_to_digest == ''
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        if: inputs.rollback_to_digest == ''
+        with:
+          python-version: '3.12'
+      - name: Require the façade package and shared deploy script
+        if: inputs.rollback_to_digest == ''
+        run: |
+          test -f modules/tools/facade/pyproject.toml
+          test -f modules/tools/facade/Dockerfile
+          test -f modules/tools/deploy.sh
+      - name: Install and test façade
+        if: inputs.rollback_to_digest == ''
+        run: |
+          python -m pip install -e modules/tools -e 'modules/tools/facade[dev]'
+          ruff check modules/tools/facade
+          python -m pytest -q modules/tools/facade/tests
+          python -m pytest -q tests/unit/test_tools_facade_deploy.py
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-deploy
+    environment: adp-tools-deploy-${{ inputs.environment || 'dev' }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.ADP_TOOLS_AWS_REGION || 'us-east-1' }}
+      ADP_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision || github.sha }}
+      ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+      ADP_TOOLS_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      ADP_TOOLS_AWS_REGION: ${{ vars.ADP_TOOLS_AWS_REGION || 'us-east-1' }}
+      ADP_TOOLS_ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+      ADP_TOOLS_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      ADP_DEFINITION_REVISION: ${{ github.workflow_sha }}
+      ADP_CORRELATION: ${{ inputs.adp_correlation || '' }}
+      ADP_TOOLS_EKS_CLUSTER_NAME: ${{ vars.ADP_TOOLS_EKS_CLUSTER_NAME }}
+      ADP_TOOLS_NAMESPACE: ${{ vars.ADP_TOOLS_NAMESPACE }}
+      ADP_TOOLS_STATE_BUCKET: ${{ vars.ADP_TOOLS_STATE_BUCKET }}
+      ADP_TOOLS_FACADE_ROLLBACK_DIGEST: ${{ inputs.rollback_to_digest || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Verify immutable reviewed source and engine inputs
+        env:
+          EXPECTED_DEFINITION: ${{ inputs.adp_definition_revision || '' }}
+          ADP_INPUT_SOURCE: ${{ inputs.adp_source_revision || '' }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_SOURCE_REVISION" =~ ^[a-f0-9]{40}$ && "$(git rev-parse HEAD)" == "$ADP_SOURCE_REVISION" ]]
+          if [[ -n "$ADP_CORRELATION$EXPECTED_DEFINITION$ADP_INPUT_SOURCE" ]]; then
+            [[ "$ADP_CORRELATION" =~ ^([0-9a-f]{64}|orch:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]]
+            [[ "$ADP_INPUT_SOURCE" =~ ^[a-f0-9]{40}$ ]]
+            [[ "$EXPECTED_DEFINITION" =~ ^[a-f0-9]{40}$ ]]
+            # The engine pins the reviewed definition revision while main keeps
+            # moving: accept a pin that is an ancestor of main whose copy of this
+            # workflow is byte-identical to the running one (#7710), not only the
+            # exact workflow_sha.
+            git cat-file -e "${EXPECTED_DEFINITION}^{commit}"
+            git merge-base --is-ancestor "$EXPECTED_DEFINITION" origin/main
+            git show "$EXPECTED_DEFINITION:.github/workflows/tools-facade-deploy.yml" | cmp -s - .github/workflows/tools-facade-deploy.yml
+          fi
+          git merge-base --is-ancestor "$ADP_SOURCE_REVISION" origin/main
+          git cat-file -e "${ADP_WORKFLOW_REVISION}^{commit}"
+          git show "$ADP_WORKFLOW_REVISION:.github/workflows/tools-facade-deploy.yml" | cmp - .github/workflows/tools-facade-deploy.yml
+          [[ "$ADP_ENVIRONMENT" == dev || "$ADP_ENVIRONMENT" == prod ]]
+          [[ "$GITHUB_EVENT_NAME" != push || ( "$ADP_ENVIRONMENT" == dev && -z "$ADP_TOOLS_FACADE_ROLLBACK_DIGEST" ) ]]
+          if [[ -n "$ADP_TOOLS_FACADE_ROLLBACK_DIGEST" ]]; then
+            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+            [[ "$ADP_TOOLS_FACADE_ROLLBACK_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          fi
+          test -f modules/tools/deploy.sh
+          [[ "$ADP_TOOLS_EKS_CLUSTER_NAME" =~ ^[a-z0-9-]+$ && -n "$ADP_TOOLS_EKS_CLUSTER_NAME" ]]
+          [[ "$ADP_TOOLS_NAMESPACE" == adp-gateway ]]
+      - name: Establish protected deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+      - name: Check repository and selected AWS identity
+        env:
+          EXPECTED_ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          EXPECTED_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$account_id" == "$EXPECTED_ACCOUNT_ID" ]]
+          [[ "$EXPECTED_DEPLOY_ROLE_ARN" =~ ^arn:aws:iam::${EXPECTED_ACCOUNT_ID}:role/adp-[a-z0-9-]+-trusted-deployment$ ]]
+          assumed_role=$(aws sts get-caller-identity --query Arn --output text)
+          [[ "$assumed_role" == "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/${EXPECTED_DEPLOY_ROLE_ARN##*/}/deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]]
+          repository_uri=$(aws ecr describe-repositories --repository-names adp-tools-facade --region "$AWS_REGION" --query 'repositories[0].repositoryUri' --output text)
+          [[ "$repository_uri" == "${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-tools-facade" ]]
+          if [[ -n "$ADP_TOOLS_FACADE_ROLLBACK_DIGEST" ]]; then
+            found=$(aws ecr describe-images --repository-name adp-tools-facade --image-ids "imageDigest=$ADP_TOOLS_FACADE_ROLLBACK_DIGEST" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)
+            [[ "$found" == "$ADP_TOOLS_FACADE_ROLLBACK_DIGEST" ]]
+            tags=$(aws ecr describe-images --repository-name adp-tools-facade --image-ids "imageDigest=$found" --region "$AWS_REGION" --query 'imageDetails[0].imageTags' --output json)
+            jq -e 'any(.[]; test("^[a-f0-9]{40}$"))' <<< "$tags" >/dev/null
+            printf 'ADP_TOOLS_FACADE_ROLLBACK_IMAGE=%s@%s\n' "$repository_uri" "$found" >> "$GITHUB_ENV"
+          fi
+      - name: Refuse a no-op rollback
+        if: inputs.rollback_to_digest != ''
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "$ADP_TOOLS_EKS_CLUSTER_NAME" --region "$AWS_REGION" --kubeconfig "$RUNNER_TEMP/tools-facade-kubeconfig" >/dev/null
+          export KUBECONFIG="$RUNNER_TEMP/tools-facade-kubeconfig"
+          current_image=$(kubectl get deployment tools-facade -n "$ADP_TOOLS_NAMESPACE" -o json | jq -r '[.spec.template.spec.containers[] | select(.name == "tools-facade") | .image] | if length == 1 then .[0] else empty end')
+          [[ "$current_image" =~ @sha256:[a-f0-9]{64}$ ]]
+          [[ "$current_image" != "$ADP_TOOLS_FACADE_ROLLBACK_IMAGE" ]]
+      - name: Build, publish and roll façade using the shared module stage
+        run: bash modules/tools/deploy.sh --facade
+      - name: Confirm rolled image and existing ECR digest
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "$ADP_TOOLS_EKS_CLUSTER_NAME" --region "$AWS_REGION" --kubeconfig "$RUNNER_TEMP/tools-facade-kubeconfig" >/dev/null
+          export KUBECONFIG="$RUNNER_TEMP/tools-facade-kubeconfig"
+          if [[ -n "$ADP_TOOLS_FACADE_ROLLBACK_DIGEST" ]]; then
+            kubectl rollout status deployment/tools-facade -n "$ADP_TOOLS_NAMESPACE" --timeout=110s
+          else
+            kubectl rollout status deployment/tools-facade -n "$ADP_TOOLS_NAMESPACE" --timeout=180s
+          fi
+          deployed_image=$(kubectl get deployment tools-facade -n "$ADP_TOOLS_NAMESPACE" -o json | jq -r '[.spec.template.spec.containers[] | select(.name == "tools-facade") | .image] | if length == 1 then .[0] else empty end')
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$deployed_image" =~ ^${account_id}\.dkr\.ecr\.${AWS_REGION}\.amazonaws\.com/adp-tools-facade@sha256:[a-f0-9]{64}$ ]]
+          digest=${deployed_image##*@}
+          observed_digest=$(aws ecr describe-images --repository-name adp-tools-facade --image-ids "imageDigest=$digest" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)
+          image_tags=$(aws ecr describe-images --repository-name adp-tools-facade --image-ids "imageDigest=$digest" --region "$AWS_REGION" --query 'imageDetails[0].imageTags' --output json)
+          if [[ -n "$ADP_TOOLS_FACADE_ROLLBACK_DIGEST" ]]; then
+            [[ "$deployed_image" == "$ADP_TOOLS_FACADE_ROLLBACK_IMAGE" ]]
+          else
+            jq -e --arg source "$ADP_SOURCE_REVISION" 'index($source) != null' <<< "$image_tags" >/dev/null
+          fi
+          DEPLOYED_IMAGE="$deployed_image" OBSERVED_ECR_DIGEST="$observed_digest" ADP_ACCOUNT_ID="$account_id" python3 modules/tools/scripts/facade_receipt.py
+      - name: Load deployment evidence publisher from workflow revision
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${ADP_WORKFLOW_REVISION}^{commit}"
+          git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"
+          for file in scripts/publish-deployment-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_WORKFLOW_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+      - name: Publish deployment context
+        env:
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context tools-facade-deploy.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
+      - name: Publish tools façade release
+        env:
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" release tools-facade "$RUNNER_TEMP/adp-release-tools-facade/release.json"

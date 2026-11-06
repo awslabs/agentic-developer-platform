@@ -17,13 +17,16 @@ import subprocess
 import sys
 import time
 import tempfile
+from types import SimpleNamespace
 import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 ENGINE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-ORDER = ('superplane', 'agent_context', 'agent_factory', 'webhook_ingress', 'gateway', 'platform')
+ORDER = ('superplane', 'insights', 'tools', 'agent_context', 'agent_factory', 'webhook_ingress', 'gateway', 'platform')
 MODULES = {
+    'insights': ('modules/insights/platform', 'modules/insights'),
+    'tools': ('modules/tools/platform/infra', 'tools/platform'),
     'superplane': ('modules/domain-apps/superplane/infra/control-plane', 'modules/superplane'),
     'agent_context': ('modules/agent-context/terraform', 'modules/agent-context'),
     'agent_factory': ('modules/agent-factory/infra', 'modules/agent-factory'),
@@ -36,7 +39,7 @@ DEPENDENTS = {
     'agent_context': ('superplane',),
     'agent_factory': ('superplane',),
     'webhook_ingress': ('superplane', 'agent_factory'),
-    'gateway': ('superplane', 'agent_context', 'agent_factory', 'webhook_ingress'),
+    'gateway': ('superplane', 'tools', 'agent_context', 'agent_factory', 'webhook_ingress'),
     'platform': ORDER[:-1],
 }
 
@@ -199,22 +202,49 @@ class Run:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.directory.chmod(0o700)
         self.states = {}
+        self.superplane_auxiliary_states = {}
         self.prepared = {}
+        self.lambda_cleaned = set()
         self.sequence = time.time_ns()
 
     def active(self, state):
         return {a for a, _, _ in instances(state)} - protected(state, self.retain_vpc)
 
+    def state_backend(self, phase):
+        if phase == 'tools':
+            return (os.environ.get('ADP_TOOLS_STATE_BUCKET') or self.bucket,
+                    f'tools/platform/{self.environment}.tfstate')
+        return self.bucket, f'{self.environment}/{MODULES[phase][1]}/terraform.tfstate'
+
     def load_states(self):
-        for phase, (_, key) in MODULES.items():
+        for phase in MODULES:
+            bucket, key = self.state_backend(phase)
             target = self.directory / f'{phase}-discovered.tfstate'
-            result = aws('s3api', 'get-object', '--bucket', self.bucket,
-                         '--key', f'{self.environment}/{key}/terraform.tfstate',
+            result = aws('s3api', 'get-object', '--bucket', bucket,
+                         '--key', key,
                          '--expected-bucket-owner', self.account, str(target),
                          absent=('NoSuchKey',))
             self.states[phase] = json.loads(target.read_text()) if result is not None else {}
             if target.exists():
                 target.chmod(0o600)
+        inventory = self.superplane_inventory()
+        try:
+            self.superplane_auxiliary_states = inventory.discover(
+                call=aws, account=self.account, bucket=self.bucket, environment=self.environment,
+                directory=self.directory / 'superplane-auxiliary')
+        except (ValueError, KeyError, TypeError) as error:
+            raise TeardownError(str(error)) from error
+        write_json(self.directory / 'superplane-auxiliary-inventory.json', self.superplane_auxiliary_states)
+
+    @staticmethod
+    def superplane_inventory():
+        # The app owns discovery of its independently managed infrastructure;
+        # this shared hook only enforces ordering before deleting dependencies.
+        path = ROOT / 'modules/domain-apps/superplane/scripts/teardown_inventory.py'
+        spec = importlib.util.spec_from_file_location('superplane_teardown_inventory', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def bind_checkpoint(self):
         path = self.directory / 'identity.json'
@@ -243,6 +273,14 @@ class Run:
                     raise TeardownError('Backend still contains tracked resources in ' + item['Key'])
 
     def check_selection(self, phases):
+        blockers = self.superplane_inventory().blockers(self.superplane_auxiliary_states, phases)
+        if blockers:
+            raise TeardownError(
+                'Separately managed Superplane resources still require the selected core phases. '
+                'Remove them through their app-owned lifecycle scripts before core teardown; '
+                'do not discard state. Private inventory: '
+                + str(self.directory / 'superplane-auxiliary-inventory.json') + '. State keys: '
+                + ', '.join(blockers))
         for phase in phases:
             for dependent in DEPENDENTS.get(phase, ()):
                 if dependent not in phases and self.active(self.states[dependent]):
@@ -283,12 +321,44 @@ class Run:
             unknown = []
             for group in groups['SecurityGroups']:
                 tags = {t['Key']: t['Value'] for t in group.get('Tags', [])}
-                controller = tags.get('elbv2.k8s.aws/cluster') == cluster
-                if group['GroupId'] not in owned and group['GroupName'] != 'default' and not controller:
+                controller = self.controller_group(tags, cluster)
+                cloudfront = (group['GroupName'] == 'CloudFront-VPCOrigins-Service-SG'
+                              and tags.get('aws.cloudfront.vpcorigin') == 'enabled'
+                              and self.owns_vpc_origins(attrs['id']))
+                if group['GroupId'] not in owned and group['GroupName'] != 'default' and not controller and not cloudfront:
                     unknown.append(group['GroupId'])
             if unknown and not self.retain_vpc:
                 raise TeardownError('VPC has security groups outside ADP state: ' + ', '.join(unknown)
                                     + '. Resolve ownership or use --retain-vpc; no groups were deleted.')
+
+    @staticmethod
+    def controller_group(tags, cluster):
+        return (tags.get('elbv2.k8s.aws/cluster') == cluster
+                or tags.get('eks:eks-cluster-name') == cluster
+                and any(tags.get(prefix + '/resource') in ('ManagedLBSecurityGroup', 'ManagedBackendSecurityGroup')
+                        for prefix in ('ingress.eks.amazonaws.com', 'service.eks.amazonaws.com')))
+
+    def owns_vpc_origins(self, vpc):
+        # CloudFront shares one service SG across VPC origins. Its service tag
+        # alone is not ownership: every live origin in this VPC must be tracked.
+        owned = {a['id']: {e['arn'] for e in a.get('vpc_origin_endpoint_config', [])}
+                 for state in self.states.values() for _, kind, a in instances(state)
+                 if kind == 'aws_cloudfront_vpc_origin'}
+        if not owned:
+            return False
+        found = False
+        origins = aws('cloudfront', 'list-vpc-origins').get('VpcOriginList', {}).get('Items', [])
+        for origin in origins:
+            endpoint = origin['OriginEndpointArn']
+            if not endpoint.startswith(f'arn:aws:elasticloadbalancing:{self.region}:{self.account}:loadbalancer/'):
+                # Non-ALB origins cannot establish ownership for this teardown.
+                return False
+            response = aws('elbv2', 'describe-load-balancers', '--load-balancer-arns', endpoint)
+            if any(lb['VpcId'] == vpc for lb in response['LoadBalancers']):
+                if endpoint not in owned.get(origin['Id'], set()):
+                    return False
+                found = True
+        return found
 
     def check_account_logging(self):
         for _, kind, attrs in instances(self.states['platform']):
@@ -310,6 +380,16 @@ class Run:
     def tf(self, phase, *args, capture=True):
         return command(['terraform', *args], cwd=self.root / MODULES[phase][0], capture=capture)
 
+    def provider_authority(self, operation, value):
+        # App-owned resources remain in webhook state; the app owns their cleanup.
+        spec = importlib.util.spec_from_file_location(
+            'superplane_teardown_authority', self.root /
+            'modules/domain-apps/superplane/scripts/teardown_provider_authority.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        shared = SimpleNamespace(aws=aws, instances=instances, write_json=write_json)
+        return getattr(module, operation)(self, value, shared)
+
     def inputs(self, phase, state):
         directory = self.root / MODULES[phase][0]
         saved = state.get('outputs', {}).get('release_configuration', {}).get('value')
@@ -320,6 +400,17 @@ class Run:
             saved = tools.factory_settings(state)
             saved.update(gateway_deployed=bool(list(instances(self.states['gateway']))),
                          seed_agent_registry=False)
+        if phase == 'tools':
+            supplied = os.environ.get('ADP_TOOLS_TFVARS_JSON')
+            if not supplied:
+                raise TeardownError('tools: supply the original private ADP_TOOLS_TFVARS_JSON for a reviewed destroy plan')
+            values = json.loads(supplied)
+            if not isinstance(values, dict) or values.get('aws_account_id') != self.account or not values.get('tools_facade_role_arn'):
+                raise TeardownError('tools: Terraform inputs do not match the confirmed account or façade role')
+            path = self.directory / 'tools.tfvars.json'
+            write_json(path, values)
+            return ['-var-file=' + str(path), '-var=environment=' + self.environment,
+                    '-var=aws_region=' + self.region]
         if saved is not None:
             if not isinstance(saved, dict):
                 raise TeardownError('Invalid recorded release configuration')
@@ -339,6 +430,24 @@ class Run:
             args = ['-var-file=' + str(path)]
         # Target binding is always last. Never inherit another environment from checked-in examples.
         args += ['-var=environment=' + self.environment, '-var=aws_region=' + self.region]
+        if phase == 'superplane':
+            args += ['-var=account_id=' + self.account]
+        if phase == 'gateway':
+            # Image selection is deliberately excluded from release_configuration.
+            # Destroy still evaluates the ECR data source, so retain its exact
+            # recorded image instead of looking for an unrelated default tag.
+            images = [item['attributes'].get('image_uri', '')
+                      for resource in state.get('resources', [])
+                      if resource.get('mode') == 'data' and not resource.get('module')
+                      and resource.get('type') == 'aws_ecr_image'
+                      and resource.get('name') == 'orchestration_tick'
+                      for item in resource.get('instances', [])]
+            if images:
+                prefix = f'{self.account}.dkr.ecr.{self.region}.amazonaws.com/adp-gateway@'
+                if len(images) != 1 or not images[0].startswith(prefix) or not re.fullmatch(
+                        r'sha256:[0-9a-f]{64}', images[0][len(prefix):]):
+                    raise TeardownError('Invalid recorded gateway image for the confirmed target')
+                args += ['-var=orchestration_tick_image_digest=' + images[0][len(prefix):]]
         if phase == 'webhook_ingress':
             image_file = self.directory / 'webhook-image.json'
             image = (json.loads(image_file.read_text()) if image_file.exists() else
@@ -385,18 +494,61 @@ class Run:
                 artifact.write_bytes(content)
         return args
 
+    def tools_facade(self, delete=False):
+        if not (self.directory / 'kubeconfig').exists():
+            return False
+        raw = self.kube('get', 'deployment', 'tools-facade', '-n', 'adp-gateway',
+                        '--ignore-not-found', '-o', 'json')
+        deployment = json.loads(raw) if raw.strip() else {}
+        if not deployment.get('metadata', {}).get('uid'):
+            if delete and (self.directory / 'tools-facade.json').exists():
+                raise TeardownError('Tools façade changed since the preflight snapshot')
+            return False
+        image = [container.get('image') for container in deployment['spec']['template']['spec']['containers']
+                 if container.get('name') == 'tools-facade']
+        expected = rf'{self.account}\.dkr\.ecr\.{self.region}\.amazonaws\.com/adp-tools-facade@sha256:[0-9a-f]{{64}}'
+        if (deployment['metadata'].get('namespace') != 'adp-gateway' or len(image) != 1
+                or not isinstance(image[0], str) or not re.fullmatch(expected, image[0])):
+            raise TeardownError('Tools façade identity or pinned image differs from expected ownership')
+        identity = {'uid': deployment['metadata']['uid'], 'image': image[0]}
+        snapshot = self.directory / 'tools-facade.json'
+        if delete:
+            if not snapshot.exists() or json.loads(snapshot.read_text()) != identity:
+                raise TeardownError('Tools façade changed since the preflight snapshot')
+            self.kube('delete', 'deployment', 'tools-facade', '-n', 'adp-gateway',
+                      '--wait=true', '--timeout=300s')
+        else:
+            write_json(snapshot, identity)
+            print('tools: tools-facade Deployment selected before gateway targets', flush=True)
+        return True
+
     def prepare(self, phase):
         state = self.states[phase]
         if not self.active(state):
+            if phase == 'tools' and self.tools_facade():
+                raise TeardownError('Tools façade exists but tools Terraform state is absent')
             print(f'{phase}: no resources selected for deletion')
             return False
+        if phase == 'tools' and not (self.directory / 'kubeconfig').exists():
+            raise TeardownError('Tools teardown requires a state-verified EKS kube context')
         directory = self.root / MODULES[phase][0]
         backend = self.directory / f'{phase}-backend.json'
-        write_json(backend, {'bucket': self.bucket, 'key': f'{self.environment}/{MODULES[phase][1]}/terraform.tfstate',
-                             'region': self.region, 'encrypt': True, 'dynamodb_table': 'adp-terraform-locks'})
+        bucket, key = self.state_backend(phase)
+        config = {'bucket': bucket, 'key': key, 'region': self.region, 'encrypt': True}
+        if phase != 'tools':
+            config['dynamodb_table'] = 'adp-terraform-locks'
+        write_json(backend, config)
         override = directory / 'adp_teardown_target_override.tf.json'
-        data = {'provider': {'aws': {'region': self.region, 'allowed_account_ids': [self.account]}}}
-        if override.exists() and json.loads(override.read_text()) != data:
+        target_override = {'provider': {'aws': {'region': self.region, 'allowed_account_ids': [self.account]}}}
+        data = dict(target_override)
+        if phase == 'webhook_ingress':
+            data.update(self.provider_authority('prepare', state))
+        if phase == 'tools':
+            data['resource'] = {'aws_kms_key': {
+                'gateway': {'lifecycle': {'prevent_destroy': False}},
+                'assertion': {'lifecycle': {'prevent_destroy': False}},
+            }}
+        if override.exists() and json.loads(override.read_text()) not in (data, target_override):
             raise TeardownError(f'Different teardown target override already exists at {override}')
         write_json(override, data)
         self.tf(phase, 'init', '-input=false', '-reconfigure', '-backend-config=' + str(backend))
@@ -405,6 +557,8 @@ class Run:
         self.states[phase] = actual
         self.prepared[phase] = self.inputs(phase, actual)
         self.plan(phase, 'preflight')
+        if phase == 'tools':
+            self.tools_facade()
         self.runtime_logs(phase)
         self.runtime_secrets(phase)
         self.runtime_parameters(phase)
@@ -447,7 +601,10 @@ class Run:
 
     def apply(self, phase, plan):
         if plan:
-            self.record_deletions(phase, deletions(json.loads(plan.with_suffix('.json').read_text())))
+            rows = deletions(json.loads(plan.with_suffix('.json').read_text()))
+            self.record_deletions(phase, rows)
+            if phase == 'webhook_ingress':
+                self.provider_authority('before_apply', rows)
             self.tf(phase, 'apply', '-input=false', '-lock-timeout=60s', str(plan), capture=False)
 
     def verify(self, phase):
@@ -455,6 +612,7 @@ class Run:
         manifest = json.loads(path.read_text()) if path.exists() else {}
         checks = {
             'aws_lambda_function': ('lambda', 'get-function-configuration', '--function-name', 'arn', ('ResourceNotFoundException',)),
+            'aws_bedrockagentcore_gateway': ('bedrock-agentcore-control', 'get-gateway', '--gateway-identifier', 'id', ('ResourceNotFoundException',)),
             'aws_eks_cluster': ('eks', 'describe-cluster', '--name', 'id', ('ResourceNotFoundException',)),
             'aws_ecr_repository': ('ecr', 'describe-repositories', '--repository-names', 'name', ('RepositoryNotFoundException',)),
             'aws_db_instance': ('rds', 'describe-db-instances', '--db-instance-identifier', 'arn', ('DBInstanceNotFound',)),
@@ -531,16 +689,32 @@ class Run:
             role_names = {r.rsplit('/', 1)[-1] for r in roles if r}
             for resource in rows:
                 before = resource['change']['before'] or {}
+                # Target expansion may include stale dependent functions without
+                # refreshing them. After ENI cleanup, let Terraform reconcile
+                # only exact functions whose absence is rechecked in AWS.
+                if resource['type'] == 'aws_lambda_function':
+                    known = {a.get('arn') for _, k, a in instances(self.states[phase]) if k == 'aws_lambda_function'}
+                    if (phase not in self.lambda_cleaned or not before.get('arn') or before['arn'] not in known
+                            or aws('lambda', 'get-function-configuration', '--function-name', before['arn'],
+                                   absent=('ResourceNotFoundException',)) is not None):
+                        raise TeardownError(f'{label} unexpectedly includes execution/access dependencies')
+                # A managed node group may depend on module-owned Kubernetes
+                # objects (the gVisor group depends on the EKS module). It can
+                # be removed with those objects after consumer teardown; keep
+                # the control plane, addons and operator access until later.
                 if (resource['type'].startswith('aws_eks_')
-                        or resource['type'] == 'aws_iam_role' and before.get('arn') in roles
-                        or resource['type'] in ('aws_iam_role_policy', 'aws_iam_role_policy_attachment')
-                        and before.get('role') in role_names):
+                        and not (phase == 'platform' and resource['type'] == 'aws_eks_node_group')
+                        or phase not in self.lambda_cleaned and (
+                            resource['type'] == 'aws_iam_role' and before.get('arn') in roles
+                            or resource['type'] in ('aws_iam_role_policy', 'aws_iam_role_policy_attachment')
+                            and before.get('role') in role_names)):
                     raise TeardownError(f'{label} unexpectedly includes execution/access dependencies')
             self.apply(phase, plan)
 
     def ingress(self, phase, namespace):
         checkpoint = self.directory / f'{phase}-ingress.json'
-        listing = json.loads(self.kube('get', 'ingress', '-n', namespace, '-o', 'json', '--ignore-not-found'))
+        raw = self.kube('get', 'ingress', '-n', namespace, '-o', 'json', '--ignore-not-found')
+        listing = json.loads(raw) if raw.strip() else {}
         ingresses = listing.get('items', [])
         tracked = json.loads(checkpoint.read_text()) if checkpoint.exists() else []
         hosts = {item['hostname'] for ingress in ingresses
@@ -568,7 +742,7 @@ class Run:
                     if target is None:
                         continue
                     tags = {t['Key']: t['Value'] for t in target['SecurityGroups'][0].get('Tags', [])}
-                    if tags.get('elbv2.k8s.aws/cluster') != cluster:
+                    if not self.controller_group(tags, cluster):
                         continue
                     for permission in live['SecurityGroups'][0].get('IpPermissionsEgress', []):
                         if (str(permission['IpProtocol']) == str(rule['protocol'])
@@ -662,6 +836,7 @@ class Run:
                 raise TeardownError('Lambda ENIs remain; execution roles and permissions retained for retry')
             print(f'{phase}: waiting for AWS to release {len(interfaces)} Lambda ENIs; keeping IAM permissions', flush=True)
             time.sleep(15)
+        self.lambda_cleaned.add(phase)
 
     def runtime_logs(self, phase, delete=False):
         path = self.directory / f'{phase}-runtime-log-groups.json'
@@ -731,15 +906,21 @@ class Run:
                     absent=('ResourceNotFoundException',))
 
     def runtime_parameters(self, phase, delete=False):
-        if phase != 'gateway':
+        if phase not in ('gateway', 'tools'):
             return
-        path = self.directory / 'gateway-runtime-parameters.json'
+        path = self.directory / f'{phase}-runtime-parameters.json'
         recorded = json.loads(path.read_text()) if path.exists() else {}
-        suffixes = ('frontend-bucket', 'cloudfront-id', 'cloudfront-domain', 'internal-alb-arn',
-                    'internal-alb-dns', 'internal-alb-security-group-ids')
+        # Both ALB caches are consumed on a fresh install as well as upgrades.
+        # Leaving the internal-plane cache behind points the new VPC at deleted SGs.
+        suffixes = (('frontend-bucket', 'cloudfront-id', 'cloudfront-domain', 'internal-alb-arn',
+                     'internal-alb-dns', 'internal-alb-security-group-ids',
+                     'internal-plane-alb-arn', 'internal-plane-alb-dns',
+                     'internal-plane-alb-security-group-ids') if phase == 'gateway' else
+                    ('gateway-id', 'gateway-arn', 'gateway-url', 'kms-key-arn',
+                     'caller-role-arn', 'targets', 'release', 'facade-url', 'agentcore-arn'))
         if not delete:
             for suffix in suffixes:
-                name = f'/adp/{self.environment}/gateway/{suffix}'
+                name = f'/adp/{self.environment}/{phase}/{suffix}'
                 response = aws('ssm', 'get-parameter', '--name', name, absent=('ParameterNotFound',))
                 if response is not None:
                     parameter = response['Parameter']
@@ -818,6 +999,8 @@ class Run:
                 return
         self.runtime_logs(phase)
         # Phase preflight has succeeded before any namespace/data mutation.
+        if phase == 'tools':
+            self.tools_facade(delete=True)
         if phase == 'superplane':
             names = [a['value'] for _, k, a in instances(self.states[phase]) if k == 'aws_ssm_parameter'
                      and a.get('name', '').endswith(('/superplane/namespace', '/superplane/skypilot-namespace'))]
@@ -827,9 +1010,15 @@ class Run:
         if phase == 'agent_context':
             self.ingress(phase, 'agent-context')
         if phase == 'gateway':
+            # Edge targets can expand to Lambda roles; settle function/ENI
+            # cleanup before permitting those dependent deletions.
+            self.lambda_cleanup(phase)
+            # A VPC origin keeps CloudFront ENIs attached to the ingress ALB.
+            # Remove the Terraform-owned edge before asking EKS to delete it.
+            self.stage(phase, 'cloudfront', lambda k: k in ('aws_cloudfront_distribution', 'aws_cloudfront_vpc_origin'))
             self.ingress(phase, 'adp-gateway')
-        # Lambdas stop writing first, without removing their ENI cleanup roles.
-        self.lambda_cleanup(phase)
+        if phase != 'gateway':
+            self.lambda_cleanup(phase)
         self.stop_keda(phase)
         # K8s objects must be gone while access entries, KEDA and EKS still exist.
         # Keep Helm until the CR stage completes (webhook owns KEDA).
@@ -855,7 +1044,7 @@ class Run:
         for resource in rows:
             before = resource['change']['before']
             if resource['type'] == 'aws_s3_bucket':
-                if before['id'] == self.bucket:
+                if before['id'] in (self.bucket, self.state_backend(phase)[0]):
                     raise TeardownError('Refusing to empty Terraform backend during a module phase')
                 empty_bucket(before['id'], self.account)
             if resource['type'] == 'aws_ecr_repository':
@@ -883,6 +1072,8 @@ def parser():
     result.add_argument('--skip', action='append', default=[], choices=ORDER)
     result.add_argument('--from', dest='from_phase', choices=ORDER)
     result.add_argument('--phase', choices=ORDER, help=argparse.SUPPRESS)
+    result.add_argument('--insights-only', action='store_true', help='Destroy only Insights after typed account confirmation')
+    result.add_argument('--tools-only', action='store_true', help='Destroy only tools after typed account confirmation')
     result.add_argument('--yes', action='store_true', help='Skip general prompt; typed account confirmation remains required')
     result.add_argument('--check-backend-empty', action='store_true', help=argparse.SUPPRESS)
     result.add_argument('--bootstrap', action='store_true', help='Delete backend after all module states are empty (separate confirmation)')
@@ -895,6 +1086,12 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     os.umask(0o077)
+    if args.insights_only and args.tools_only:
+        raise TeardownError('Choose only one module-only teardown')
+    if args.insights_only and (args.phase or args.from_phase or args.skip or args.bootstrap):
+        raise TeardownError('--insights-only cannot combine with another phase selection or backend deletion')
+    if args.tools_only and (args.phase or args.from_phase or args.skip or args.bootstrap):
+        raise TeardownError('--tools-only cannot combine with another phase selection or backend deletion')
     if not re.fullmatch(r'[a-zA-Z0-9_-]+', args.environment):
         raise TeardownError('Invalid environment')
     # Inherited Terraform flags could bypass refresh, add targets or change a plan.
@@ -910,10 +1107,14 @@ def main(argv=None):
               (not args.from_phase or ORDER.index(p) >= ORDER.index(args.from_phase))]
     if args.phase:
         phases = [args.phase]
+    if args.insights_only:
+        phases = ['insights']
+    if args.tools_only:
+        phases = ['tools']
     print(f"Target: {account}, {args.region}, {args.environment}; caller: {identity['Arn']}", flush=True)
     if args.purge_deleted_secrets:
         print('Selected secrets will be permanently purged without recovery; retained credentials are excluded.', flush=True)
-    if not args.dry_run and not args.phase and not args.check_backend_empty:
+    if not args.dry_run and (not args.phase or args.phase == 'tools') and not args.check_backend_empty:
         print('Delete ADP runtime and data; keep backend, GitHub credentials and encryption keys.', flush=True)
         if input('Type the full AWS account ID to confirm: ').strip() != account:
             raise TeardownError('Account confirmation did not match')

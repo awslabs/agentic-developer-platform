@@ -349,6 +349,7 @@ async def mint_installation_token_with_expiry(
     installation_id: int,
     *,
     repositories: list[str] | None = None,
+    repository_ids: list[int] | None = None,
     permissions: dict[str, str] | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> tuple[str, str]:
@@ -392,6 +393,8 @@ async def mint_installation_token_with_expiry(
     body: dict[str, Any] = {}
     if repositories:
         body["repositories"] = repositories
+    if repository_ids:
+        body["repository_ids"] = repository_ids
     if permissions:
         body["permissions"] = permissions
 

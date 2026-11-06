@@ -158,7 +158,26 @@ upgrade instead of printing a success message. Missing prerequisite states or
 resources created outside Terraform require recovery before installation;
 the upgrade does not force-create or replace those resources.
 
+For an existing deployment, `--update --release <tag> --reuse-images-from <profile>`
+can reuse that release's already-built images from another operator-accessible AWS
+account in the same region. The source profile needs ECR read access; the selected
+target profile needs ECR write access, and `skopeo` must be installed. The launcher
+checks all source-SHA tags and destination conflicts before copying, copies by
+immutable digest with digest preservation, and verifies each destination digest.
+It creates no repositories or IAM grants, does not rebuild or overwrite conflicting
+images, and records a private image receipt alongside the release receipt. This
+option trusts the operator-selected source account's source-SHA image tags; use an
+account where this exact release was built and verified. It reuses container
+images only; the selected release's normal scripts still publish other artifacts.
+
 Scope/skip flags restrict the selected work.
+The top-level launcher accepts `--update --agent-factory-only`, including with
+`--release`, for the existing factory maintenance scope (including platform and
+webhook prerequisites, excluding gateway deployment). This can
+complete an installed factory's inline-to-managed intake-policy migration before
+a gateway upgrade needs more IAM inline-policy space. It is a partial upgrade;
+follow it with the full upgrade (or resume its retained checkout) to complete the
+release. It cannot be combined with `--skip-agents` or a fresh installation.
 It retains existing platform-managed EKS admin principals and public access
 CIDRs, adds the operator's CIDR if needed, and waits for the EKS access update
 before using kubectl. Private-only endpoints stay private and require existing
@@ -762,8 +781,14 @@ agent-submit DLQ for stuck messages during the smoke.
 | Migration failure | The DB may be mid-upgrade. Do NOT re-run blindly — inspect `alembic current` vs `alembic heads`, fix, then re-run. |
 | STS/credential expiry mid-run | Re-assume and re-run from the top. Completed phases no-op through. |
 
-**Rollback = deploy the previous code.** Because images are SHA-tagged and
+**Rollback to a verified compatible image = deploy that code.** Because images are SHA-tagged and
 migrations are additive by convention:
+
+For story-bound repository work, **only** use a previously tested image that
+meets the [compatible-reader floor](../runbooks/story-bound-repository-rollback.md).
+An older global-only image must never run gateway/tick writers on newly bound
+plans: quiesce writers, preserve expanded data and follow the linked recovery
+procedure instead. The example below does not authorize an incompatible reader.
 
 ```bash
 git checkout <previous-sha-or-tag>

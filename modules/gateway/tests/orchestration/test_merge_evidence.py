@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 # Reuse R1's real PostgreSQL ledger fixture and its serialized producer document.
 from decimal import Decimal
+from itertools import permutations
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -24,8 +25,15 @@ from src.orchestration.merge_evidence import (
     MergeEligibility,
     bounded_merge_summary,
     evaluate_observation,
+    evaluate_required_checks,
 )
-from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationNode, OrchestrationPullRequestBinding, OrchestrationWorkClaim
+from src.orchestration.models import (
+    OrchestrationAcceptedPlan,
+    OrchestrationFlow,
+    OrchestrationNode,
+    OrchestrationPullRequestBinding,
+    OrchestrationWorkClaim,
+)
 from src.orchestration.results import GitHubEvidenceSource
 from src.orchestration.review_evidence import require_verified_state, validate_review_result
 from tests.orchestration.test_review_evidence import _all_refs
@@ -77,12 +85,22 @@ def provider_data():
     return {
         "pr": pr,
         "rules": required_rules(),
-        "protection": None,
+        "protection": httpx.Response(404, json={"message": "Branch not protected"}),
         "branch": {"protected": False, "commit": {"sha": BASE}},
         "repository": {"id": 42, "full_name": REPO, "allow_merge_commit": True, "allow_squash_merge": True, "allow_rebase_merge": True},
         "checks": {
             "total_count": 1,
-            "check_runs": [{"id": 55, "name": "test", "head_sha": HEAD, "status": "completed", "conclusion": "success", "app": {"id": 9}}],
+            "check_runs": [
+                {
+                    "id": 55,
+                    "name": "test",
+                    "head_sha": HEAD,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": 9},
+                    "check_suite": {"id": 42},
+                }
+            ],
         },
         "statuses": [],
         "reviews": [{"id": 7, "state": "APPROVED", "commit_id": HEAD, "user": {"id": 2}, "submitted_at": NOW.isoformat()}],
@@ -190,6 +208,132 @@ async def test_read_only_rest_projection_uses_explicit_graphql_merge_settings():
     assert evaluate_observation(observed).eligible
     assert observed.requirements.allowed_merge_methods == ("squash",)
     assert len(calls) == 11
+
+
+async def test_repository_source_preserves_raw_provenance_with_stable_settings_digest():
+    data = provider_data()
+    data["repository"].update(temp_clone_token="synthetic-one", pushed_at="2026-10-01T00:00:00Z")
+    before, _ = await observe(data)
+    data["repository"].update(temp_clone_token="synthetic-two", pushed_at="2026-10-02T00:00:00Z")
+    after, _ = await observe(data)
+    old = next(source for source in before.sources if source.kind == "repository_settings")
+    new = next(source for source in after.sources if source.kind == "repository_settings")
+    assert old.payload_sha256 != new.payload_sha256
+    assert old.semantic_sha256 and old.semantic_sha256 == new.semantic_sha256
+    assert before.requirements == after.requirements
+    assert all(source.semantic_sha256 for source in after.sources)
+
+
+@pytest.mark.parametrize("side", ["head", "base"])
+async def test_embedded_repository_token_rotation_preserves_pr_semantics_and_raw_audit(side):
+    data = provider_data()
+    data["pr"][side].setdefault("repo", {}).update(temp_clone_token="synthetic-one")
+    before, _ = await observe(data)
+    data["pr"][side]["repo"]["temp_clone_token"] = "synthetic-two"
+    after, _ = await observe(data)
+    for kind in ("pull_request", "pull_request_recheck"):
+        old = next(source for source in before.sources if source.kind == kind)
+        new = next(source for source in after.sources if source.kind == kind)
+        assert old.payload_sha256 != new.payload_sha256
+        assert old.semantic_sha256 and old.semantic_sha256 == new.semantic_sha256
+
+
+@pytest.mark.parametrize("side", ["head", "base"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("pushed_at", "2026-10-02T00:00:00Z"),
+        ("updated_at", "2026-10-02T00:00:00Z"),
+        ("size", 100),
+        ("open_issues", 4),
+        ("open_issues_count", 4),
+        ("stargazers_count", 4),
+        ("watchers", 4),
+        ("watchers_count", 4),
+        ("forks", 4),
+        ("forks_count", 4),
+        ("network_count", 4),
+        ("subscribers_count", 4),
+    ],
+)
+async def test_unrelated_embedded_repository_activity_preserves_pr_semantics(side, field, value):
+    data = provider_data()
+    data["pr"][side].setdefault("repo", {})
+    before, _ = await observe(data)
+    data["pr"][side]["repo"][field] = value
+    after, _ = await observe(data)
+    for kind in ("pull_request", "pull_request_recheck"):
+        old = next(source for source in before.sources if source.kind == kind)
+        new = next(source for source in after.sources if source.kind == kind)
+        assert old.payload_sha256 != new.payload_sha256
+        assert old.semantic_sha256 == new.semantic_sha256
+
+
+@pytest.mark.parametrize("side", ["head", "base"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("private", True),
+        ("visibility", "private"),
+        ("archived", True),
+        ("disabled", True),
+        ("default_branch", "release"),
+        ("permissions", {"push": False}),
+        ("allow_merge_commit", False),
+        ("allow_squash_merge", False),
+        ("allow_rebase_merge", False),
+        ("security_and_analysis", {"secret_scanning": {"status": "disabled"}}),
+        ("future_security_rule", {"enabled": True}),
+        ("owner", {"id": 200}),
+    ],
+)
+async def test_embedded_repository_authority_and_unknown_fields_still_change_pr_digest(side, field, value):
+    data = provider_data()
+    data["pr"][side].setdefault("repo", {})
+    before, _ = await observe(data)
+    data["pr"][side]["repo"][field] = value
+    after, _ = await observe(data)
+    for kind in ("pull_request", "pull_request_recheck"):
+        old = next(source for source in before.sources if source.kind == kind)
+        new = next(source for source in after.sources if source.kind == kind)
+        assert old.semantic_sha256 and old.semantic_sha256 != new.semantic_sha256
+
+
+async def test_pr_json_object_order_is_not_authority_but_array_order_and_same_named_fields_are():
+    from src.orchestration.merge_evidence import _pull_request_semantic_digest
+
+    data = provider_data()
+    payload = data["pr"]
+    before = deepcopy(payload)
+    baseline = _pull_request_semantic_digest(payload)
+    reordered = dict(reversed(list(payload.items())))
+    reordered["base"] = dict(reversed(list(payload["base"].items())))
+    assert _pull_request_semantic_digest(reordered) == baseline
+    for key in ("updated_at", "temp_clone_token", "future_security_field"):
+        # Only the exact head.repo/base.repo leaves are excluded, never matching
+        # names elsewhere in the provider response.
+        assert _pull_request_semantic_digest({**payload, key: "new"}) != baseline
+    assert _pull_request_semantic_digest({**payload, "reviewers": [1, 2]}) != _pull_request_semantic_digest({**payload, "reviewers": [2, 1]})
+    assert payload == before
+
+
+@pytest.mark.parametrize(
+    "rest,graphql",
+    [("allow_merge_commit", "mergeCommitAllowed"), ("allow_squash_merge", "squashMergeAllowed"), ("allow_rebase_merge", "rebaseMergeAllowed")],
+)
+@pytest.mark.parametrize("change", ["value", "presence"])
+async def test_repository_semantic_digest_binds_every_consumed_merge_setting_and_presence(rest, graphql, change):
+    data = provider_data()
+    before, _ = await observe(data)
+    if change == "value":
+        data["repository"][rest] = False
+        data["graphql"]["data"]["repository"][graphql] = False
+    else:
+        data["repository"].pop(rest)
+    after, _ = await observe(data)
+    old = next(source for source in before.sources if source.kind == "repository_settings")
+    new = next(source for source in after.sources if source.kind == "repository_settings")
+    assert old.semantic_sha256 and new.semantic_sha256 and old.semantic_sha256 != new.semantic_sha256
 
 
 @pytest.mark.parametrize("defect", ["missing", "null", "string", "contradiction", "rest_null"])
@@ -640,6 +784,28 @@ async def test_public_adapter_reloads_r1_claim_policy_and_mints_only_scoped_read
     assert len(merge_subject.calls) == 11
 
 
+@pytest.mark.parametrize("foreign", ["repository_name", "repository_id", "pr_node_id", "pr_number"])
+async def test_equal_number_foreign_review_cannot_make_story_merge_ready(sessions, merge_subject, foreign):
+    result = merge_subject.evidence.result
+    if foreign == "repository_name":
+        result = result.model_copy(update={"repository": result.repository.model_copy(update={"repo": "fictional/story-b"})})
+    elif foreign == "repository_id":
+        result = result.model_copy(update={"repository": result.repository.model_copy(update={"provider_repository_id": 987})})
+    elif foreign == "pr_node_id":
+        result = result.model_copy(update={"subject": result.subject.model_copy(update={"provider_pr_node_id": "PR_foreign"})})
+    else:
+        result = result.model_copy(update={"subject": result.subject.model_copy(update={"pr_number": 13})})
+    foreign_review = replace(merge_subject.evidence, result=result)
+    eligibility = await invoke_subject(sessions, merge_subject, review=foreign_review)
+    assert eligibility.reasons == (EligibilityReason.SCOPE_CHANGED,)
+    merge_subject.mint.assert_not_called()
+    async with sessions() as session:
+        binding = (await session.scalars(select(OrchestrationPullRequestBinding))).one()
+        node = (await session.scalars(select(OrchestrationNode))).one()
+        assert binding.id == merge_subject.row.id and binding.head_sha == merge_subject.row.head_sha
+        assert node.state == "running"
+
+
 async def test_public_adapter_accepts_verified_reviewer_run_without_formal_github_approval(sessions, merge_subject):
     data = merge_subject.data
     data["reviews"] = []
@@ -647,6 +813,76 @@ async def test_public_adapter_accepts_verified_reviewer_run_without_formal_githu
     data["graphql"]["data"]["repository"]["pullRequest"]["reviewDecision"] = None
     result = await invoke_subject(sessions, merge_subject)
     assert result.eligible, result
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_product_story_repair_requires_fresh_review_on_accepted_repository(sessions, merge_subject, monkeypatch, legacy):
+    row = merge_subject.row
+    connection = SimpleNamespace(installation_id=INSTALLATION, model_dump=lambda **kwargs: {"installation_id": INSTALLATION})
+    contract = SimpleNamespace(
+        node=SimpleNamespace(
+            repository_identity=row.repo,
+            provider_repository_id=row.provider_repository_id,
+            repository_connection=connection,
+        ),
+        repository_ids={row.repo},
+    )
+    monkeypatch.setattr("src.orchestration.accepted_node.accepted_node_contract", AsyncMock(return_value=contract))
+    verifier = AsyncMock(return_value=SimpleNamespace(full_name=row.repo, repository_id=row.provider_repository_id, installation_id=INSTALLATION))
+    monkeypatch.setattr("src.orchestration.repository_binding.resolve_story_repository", verifier)
+    monkeypatch.setattr(
+        "src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=INSTALLATION if legacy else INSTALLATION + 1)
+    )
+    repaired_head = "c" * 40
+    async with sessions() as session:
+        flow = (await session.scalars(select(OrchestrationFlow))).one()
+        flow.product_id = None if legacy else "fictional-product"
+        node = (await session.scalars(select(OrchestrationNode))).one()
+        node.repository_identity = row.repo
+        node.provider_repository_id = row.provider_repository_id
+        node.repository_connection = None if legacy else connection.model_dump()
+        node.issue_ref = "5290"
+        row = (await session.scalars(select(OrchestrationPullRequestBinding))).one()
+        row.head_sha = repaired_head
+        row.accepted_scope = json.dumps({"node": {"kind": node.kind, "issue_ref": node.issue_ref, "title": node.title}})
+        await session.commit()
+    stale = await invoke_subject(sessions, merge_subject)
+    assert stale.reasons == (EligibilityReason.HEAD_CHANGED,)
+    merge_subject.mint.assert_not_called()
+
+    doc = deepcopy(APPROVE)
+    doc["scope"].update(
+        flow_id=merge_subject.story["flow_id"], node_id=merge_subject.story["node_id"], execution_id=merge_subject.story["execution_id"]
+    )
+    doc["lineage"]["author_run_id"] = merge_subject.story["author_run"]
+    doc["subject"]["reviewed_head_sha"] = repaired_head
+    doc["publication"]["published_head_sha"] = repaired_head
+    async with sessions() as session:
+        row = (await session.scalars(select(OrchestrationPullRequestBinding))).one()
+        fresh = validate_review_result(
+            doc,
+            identity=merge_subject.story["identity"],
+            binding=row,
+            flow_id=merge_subject.story["flow_id"],
+            author_run_id=merge_subject.story["author_run"],
+            reviewer_run_id=doc["lineage"]["reviewer_run_id"],
+            execution_id=merge_subject.story["execution_id"],
+            actual_head_sha=repaired_head,
+            trusted_artifact_refs=_all_refs(doc),
+        )
+        require_verified_state(fresh)
+    merge_subject.data["pr"]["head"]["sha"] = repaired_head
+    merge_subject.data["checks"]["check_runs"][0]["head_sha"] = repaired_head
+    merge_subject.data["reviews"][0]["commit_id"] = repaired_head
+    merge_subject.data["graphql"]["data"]["repository"]["pullRequest"]["headRefOid"] = repaired_head
+    result = await invoke_subject(sessions, merge_subject, review=fresh)
+    assert result.eligible, result
+    if legacy:
+        verifier.assert_not_awaited()
+    else:
+        assert verifier.await_args.kwargs["repository_id"] == row.provider_repository_id
+        assert verifier.await_args.kwargs["installation_id"] == INSTALLATION
+    assert merge_subject.mint.await_args.args[2] == INSTALLATION
 
 
 @pytest.mark.parametrize("change", ["revoked", "missing_context", "stale_context", "human_gate", "unknown_spend", "unknown_scope", "wrong_tenant"])
@@ -788,6 +1024,81 @@ async def test_repeated_check_run_in_partial_pages_is_not_complete_evidence():
         await observe(data)
 
 
+def collision_checks(head=HEAD):
+    """Captured #8173 failure: three workflows publish the same Actions job name."""
+    checks = json.loads((FIXTURES / "head-3b02-check-name-collision.json").read_text())["response"]
+    for check in checks["check_runs"]:
+        check["head_sha"] = head
+    return checks
+
+
+@pytest.mark.parametrize("order", list(permutations(range(3))))
+@pytest.mark.parametrize("requirement", ["all_reported", "context", "app_bound"])
+async def test_same_named_workflows_cannot_erase_failed_ci(order, requirement):
+    data = provider_data()
+    data["checks"] = collision_checks()
+    data["checks"]["check_runs"] = [data["checks"]["check_runs"][index] for index in order]
+    if requirement == "all_reported":
+        data["rules"] = []
+    else:
+        context = {"context": "verify", "integration_id": 15368 if requirement == "app_bound" else None}
+        data["rules"][0]["parameters"]["required_status_checks"] = [context]
+    observed, _ = await observe(data)
+    reasons, selected = evaluate_required_checks(observed)
+    assert reasons == (EligibilityReason.REQUIRED_CHECK_FAILED,)
+    assert len(selected) == 3
+    assert {check.check_suite_id for check in selected} == {106003565981, 106003565956, 106003565924}
+    failed = [check for check in selected if check.state == "failure"]
+    assert len(failed) == 1 and failed[0].provider_id == 117644278210
+    assert not evaluate_observation(observed).eligible
+
+
+@pytest.mark.parametrize("state", ["failure", "pending"])
+@pytest.mark.parametrize("same_suite", [False, True])
+async def test_higher_id_success_does_not_supersede_another_named_job(state, same_suite):
+    data = provider_data()
+    first = data["checks"]["check_runs"][0]
+    first.update(conclusion="failure" if state == "failure" else None, status="completed" if state == "failure" else "in_progress")
+    other = deepcopy(first)
+    other.update(id=99, conclusion="success", status="completed")
+    if not same_suite:
+        other["check_suite"]["id"] = 43
+    data["checks"] = {"total_count": 2, "check_runs": [other, first]}
+    observed, _ = await observe(data)
+    reasons, selected = evaluate_required_checks(observed)
+    assert len(selected) == 2
+    assert reasons == (EligibilityReason.REQUIRED_CHECK_FAILED if state == "failure" else EligibilityReason.REQUIRED_CHECK_PENDING,)
+    assert not evaluate_observation(observed).eligible
+
+
+@pytest.mark.parametrize("suite", [None, {}, {"id": None}, {"id": True}, {"id": 0}, {"id": "42"}])
+async def test_missing_or_malformed_check_suite_fails_closed(suite):
+    data = provider_data()
+    data["checks"]["check_runs"][0]["check_suite"] = suite
+    with pytest.raises(EvidenceUnavailableError):
+        await observe(data)
+
+
+async def test_provider_latest_result_can_replace_attempt_without_local_id_ordering():
+    data = provider_data()
+    data["checks"]["check_runs"][0].update(id=99, conclusion="failure")
+    failed, _ = await observe(data)
+    assert not evaluate_observation(failed).eligible
+    # A fresh provider latest response supplies the replacement; no cached or
+    # same-named record is used to infer that it superseded another job.
+    data["checks"]["check_runs"][0].update(id=55, conclusion="success")
+    filters = []
+
+    def request(request):
+        if request.url.path.endswith("/check-runs"):
+            filters.append(request.url.params.get("filter"))
+
+    repaired, _ = await observe(data, request)
+    assert evaluate_observation(repaired).eligible
+    assert filters == ["latest"]
+    assert [check.provider_id for check in repaired.checks] == [55]
+
+
 @pytest.mark.parametrize("part", ["rule", "parameter", "legacy"])
 async def test_new_repository_policy_fields_do_not_silently_pass(part):
     data = provider_data()
@@ -803,7 +1114,7 @@ async def test_new_repository_policy_fields_do_not_silently_pass(part):
 
 
 def test_captured_check_runs_and_provider_reviews_parse_as_the_actual_provider_shape():
-    checks = json.loads((FIXTURES / "head-5542-check-runs.json").read_text())["response"]["check_runs"]
+    checks = json.loads((FIXTURES / "head-3b02-check-name-collision.json").read_text())["response"]["check_runs"]
     reviews = json.loads((FIXTURES / "pr-5545-reviews.json").read_text())["response"]
     assert checks and reviews
     parsed_checks = GitHubMergeObserver._checks(checks, [], checks[0]["head_sha"])

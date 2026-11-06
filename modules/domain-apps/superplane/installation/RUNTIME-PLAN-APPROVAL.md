@@ -25,37 +25,48 @@ identifier such as `demo-runtime-20261006`, never an approval assertion. Plannin
 reads the selected account and uses the isolated Terraform backend; it applies
 nothing. The output directory must be private. The result prints the canonical
 inspected plan digest, saved binary plan digest, private receipt/manifest paths,
-and the required repository manifest path.
+the public review document path and its required repository path.
 
-The output `runtime-plan-manifest.json` contains only target references and
+The private output `runtime-plan-manifest.json` contains target references and
 digests: installation/request/proposal/Terraform-source identity, selected
 connection and RoleId, exact named resources, semantic plan digest, and exact
 saved `installation.tfplan` SHA-256. Secret values and raw Terraform state/plan
-files must not be published. Preserve the original private plan and receipt.
+files must not be published. Deployment identifiers in this manifest must also
+remain private. Preserve the original private plan and receipt in the selected
+access-controlled artifact store, such as S3.
 
-Create a plan-review PR in **aws-e/adp**, based on `main`, committing this exact
-JSON document at the printed `docs/runtime-plan-reviews/<review_id>.json` path.
-Keep the PR open and ready for review. The reviewer must inspect the saved-plan
-rendering, resource/policy bounds, target and source, and issue an actual GitHub
-`APPROVED` review on that exact PR head. A code review of the installer alone,
-a comment, label, local dict, matching hash, or supplied reviewer name is not
-plan approval.
+The separate `runtime-plan-review.json` contains only its schema version, scope
+and a SHA-256 commitment to the complete private manifest. The digest uses UTF-8
+JSON with sorted keys and compact separators. Every target, resource, source,
+operator and saved-plan binding remains covered without publishing those values.
+Create a plan-review PR in **aws-e/adp**, based on `main`, committing this public
+review document at `docs/runtime-plan-reviews/<review_id>.json`. Choose a review
+ID without private deployment identifiers. Never commit the private manifest.
+An authorized maintainer must inspect the saved-plan rendering, resource/policy
+bounds, target and source, then either approve the exact PR head with a GitHub
+`APPROVED` review or merge the plan PR into `main`. The maintainer may also be
+the PR author. GitHub does not allow authors to submit approval reviews on their
+own PRs, so use the normal merge flow for a same-author approval. A code review
+or merge of the installer alone, a comment, label, local dict, matching hash,
+or supplied reviewer name is not plan approval.
 
 The maintained trust authority is repository ID `1186991269` (`aws-e/adp`), not
 a repository or approver selected by environment configuration. The adapter
 reads GitHub's authenticated repository, PR, commit-addressed contents, reviews
-and collaborator-permission APIs. The approver must differ from the PR author
-and currently have the repository's `maintain` or `admin` role. The latest
-review from that principal must be `APPROVED` for the current head; a trusted
-reviewer's changes request refuses. It rechecks the PR head, selected review,
-permission and local plan bytes before returning approval.
+and collaborator-permission APIs. The reviewer or merger must currently have
+the repository's `maintain` or `admin` role. For an open PR, the latest review
+from that principal must be `APPROVED` for the current head. For a merged PR,
+GitHub must report an actual merge into `main`, and the review document at both
+the PR head and merge commit must match the saved private manifest exactly. Closing a PR
+without merging does not approve it. A trusted reviewer's outstanding changes
+request refuses either path. The adapter rechecks the PR head, review or merge
+record, current permission and local plan bytes before returning approval.
 
 GitHub App bots do not inherit maintainer authority merely because they can
-post a review. No bot allowlist or App authority is invented here. A plan PR
-authored by a hosted developer bot can receive a genuine approval from a
-different repository maintainer. A plan PR authored by the same maintainer
-cannot be self-approved. The authenticated GitHub credential must be able to
-read collaborator permissions; unavailable authority refuses.
+post a review or merge a PR. No bot allowlist or App authority is invented here.
+Both approval paths use the same current maintainer/admin permission check.
+The authenticated GitHub credential must be able to read collaborator
+permissions; unavailable authority refuses.
 
 After that real approval, apply the same private saved plan:
 
@@ -69,11 +80,20 @@ After that real approval, apply the same private saved plan:
   --plan-review 'https://github.com/aws-e/adp/pull/<plan-review-number>'
 ```
 
+For an existing unexecuted plan with a full-manifest review PR, run preparation
+with `--resume` and without `--execute` to generate `runtime-plan-review.json`
+from the same preserved binary. Replace the PR file with this public commitment
+and obtain approval of the new head or merge it. Old full-manifest PR documents
+are no longer accepted as public review documents; local approval evidence is
+never reused as authorization.
+
 The CLI authenticates approval before resumed Terraform work. The preparation
 hook authenticates it again before apply, then refreshes selected AWS identity.
 `runtime-plan-review-evidence.json` is a private audit record, never a substitute
 for live approval. Changed plan bytes, proposal/source/target, reviewer authority,
-PR head or review state require renewed review. Missing evidence refuses.
+PR head, merge record or review state require renewed approval. Evidence records
+whether approval came from a review or merge, including the merge commit when
+applicable. Missing evidence refuses.
 A lost apply response uses preparation's existing same-receipt reconciliation;
 it never authorizes an unconditional repeat apply.
 

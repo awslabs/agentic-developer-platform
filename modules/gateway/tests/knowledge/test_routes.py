@@ -27,6 +27,35 @@ from tests.knowledge.conftest import (
     FakeTokenContext,
 )
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("prefix", ["/agent-context/assets", "/api/agent-context/assets"])
+async def test_asset_list_available_to_native_and_legacy_clients(make_client, prefix):
+    db = FakeAsyncSession()
+    db.execute_results = [FakeResult(scalar_val=0), FakeResult(rows=[])]
+    async with make_client(db) as client:
+        response = await client.get(prefix)
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("prefix", ["/agent-context/assets", "/api/agent-context/assets"])
+async def test_native_and_legacy_registration_enforce_scope(make_client, fake_user, prefix):
+    db = FakeAsyncSession()
+    async with make_client(db, fake_user) as client:
+        response = await client.post(
+            prefix,
+            json={
+                "asset_type": "repo",
+                "source_ref": "https://github.com/acme/my-service",
+                "scope": "tenant",
+            },
+        )
+    assert response.status_code == 403
+    assert not db.committed
+
+
 # ---------------------------------------------------------------------------
 # POST /api/agent-context/assets — register
 # ---------------------------------------------------------------------------
@@ -281,7 +310,7 @@ class TestDeleteAsset:
         async with make_client(db, other_user) as client:
             resp = await client.delete(f"/api/agent-context/assets/{asset_row.id}")
 
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -293,9 +322,10 @@ class TestReindexAsset:
     """Tests for POST /api/agent-context/assets/{id}/reindex."""
 
     @pytest.mark.anyio
-    async def test_reindex_by_owner(self, make_client, fake_user):
+    @pytest.mark.parametrize("status", ["failed", "partial", "complete"])
+    async def test_reindex_by_owner(self, make_client, fake_user, status):
         """Owner can reindex their asset."""
-        asset_row = FakeRow(status="failed", registered_by="user-alice")
+        asset_row = FakeRow(status=status, registered_by="user-alice")
         updated_row = FakeRow(status="registered", registered_by="user-alice")
         db = FakeAsyncSession()
         db.execute_results = [
@@ -493,8 +523,8 @@ class TestGetAssetStatus:
         assert resp.status_code == 404
 
     @pytest.mark.anyio
-    async def test_status_admin_can_see_others_asset(self, make_client, admin_user):
-        """Admin can view status of any asset in their tenant."""
+    async def test_status_admin_cannot_see_others_personal_asset(self, make_client, admin_user):
+        """Personal imports remain private even from tenant administrators."""
         asset_id = uuid.uuid4()
         asset_row = FakeRow(
             id=asset_id,
@@ -508,8 +538,7 @@ class TestGetAssetStatus:
         async with make_client(db, admin_user) as client:
             resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
 
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "complete"
+        assert resp.status_code == 404
 
     @pytest.mark.anyio
     async def test_status_handles_none_status_cleanly(self, make_client, fake_user):

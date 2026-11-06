@@ -6,7 +6,7 @@ Defines request/response models for OpenAI, Anthropic, and Bedrock API formats.
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ============================================================================
 # Common Enums and Types
@@ -23,10 +23,17 @@ class OpenAIRole(str, Enum):
 
 
 class AnthropicRole(str, Enum):
-    """Anthropic message role types."""
+    """Anthropic message role types.
+
+    The Messages API schema lists ``system`` as a message role and current Claude
+    clients (Claude Desktop's local agent, claude-cli 2.1.x) send it inside
+    ``messages``. Bedrock's Anthropic payload has no such role, so the translator
+    folds those messages into the top-level ``system`` prompt (#7424).
+    """
 
     USER = "user"
     ASSISTANT = "assistant"
+    SYSTEM = "system"
 
 
 class FinishReason(str, Enum):
@@ -225,13 +232,44 @@ class AnthropicToolResultContent(AnthropicCacheControlMixin):
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
     content: str | list[dict[str, Any]]
+    is_error: bool | None = None
 
 
-AnthropicContent = AnthropicTextContent | AnthropicImageContent | AnthropicToolUseContent | AnthropicToolResultContent
+class AnthropicThinkingContent(BaseModel):
+    """Anthropic extended-thinking block an assistant turn carries back into history.
+
+    Clients that enable extended thinking (Claude Desktop, Claude Code) replay the
+    model's prior `thinking` blocks, signature included, on every following turn.
+    Refusing them with a 422 made every multi-turn thinking conversation fail at
+    its second request (#7471). The block is passed through to Bedrock verbatim
+    when thinking is enabled on the request; the signature is what lets the
+    provider verify it, so it is never rewritten here.
+    """
+
+    type: Literal["thinking"] = "thinking"
+    thinking: str
+    signature: str | None = None
+
+
+class AnthropicRedactedThinkingContent(BaseModel):
+    """Anthropic redacted-thinking block: opaque, replayed verbatim."""
+
+    type: Literal["redacted_thinking"] = "redacted_thinking"
+    data: str
+
+
+AnthropicContent = (
+    AnthropicTextContent
+    | AnthropicImageContent
+    | AnthropicToolUseContent
+    | AnthropicToolResultContent
+    | AnthropicThinkingContent
+    | AnthropicRedactedThinkingContent
+)
 
 
 # Type alias for Anthropic content types
-AnthropicContentType = AnthropicTextContent | AnthropicImageContent | AnthropicToolUseContent | AnthropicToolResultContent
+AnthropicContentType = AnthropicContent
 
 
 class AnthropicMessage(BaseModel):
@@ -241,27 +279,20 @@ class AnthropicMessage(BaseModel):
     content: str | list[AnthropicContentType]
 
 
-class AnthropicToolInput(BaseModel):
-    """Anthropic tool input schema."""
-
-    type: Literal["object"] = "object"
-    properties: dict[str, Any] | None = None
-    required: list[str] | None = None
-
-
 class AnthropicTool(BaseModel):
     """Anthropic tool definition."""
 
     name: str
     description: str | None = None
-    input_schema: AnthropicToolInput
-    # Issue #4180: tool definitions are one of the highest-value breakpoint
-    # positions (a large, stable tool list is exactly what you want cached), so
-    # the marker must survive validation here too. Note that `tools` is not yet
-    # forwarded to Bedrock at all (#790 / EPIC #745, deliberately out of scope
-    # for this PR) — preserving it here is what makes the marker already correct
-    # on the day #790 wires the field through.
+    input_schema: dict[str, Any]
     cache_control: AnthropicCacheControl | None = None
+
+    @field_validator("input_schema")
+    @classmethod
+    def validate_input_schema(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if value.get("type") != "object":
+            raise ValueError("tool input_schema must have type: object")
+        return value
 
 
 class AnthropicMessagesRequest(BaseModel):
@@ -279,6 +310,11 @@ class AnthropicMessagesRequest(BaseModel):
     tools: list[AnthropicTool] | None = None
     tool_choice: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+    thinking: dict[str, Any] | None = None
+    output_config: dict[str, Any] | None = None
+    anthropic_beta: list[str] | None = None
+
+    model_config = {"extra": "allow"}
 
 
 class AnthropicResponseContent(BaseModel):
@@ -313,11 +349,13 @@ class AnthropicMessagesResponse(BaseModel):
     id: str
     type: Literal["message"] = "message"
     role: Literal["assistant"] = "assistant"
-    content: list[AnthropicResponseContent | AnthropicToolUseContent]
+    content: list[dict[str, Any]]
     model: str
     stop_reason: str | None = None
     stop_sequence: str | None = None
     usage: AnthropicUsage
+
+    model_config = {"extra": "allow"}
 
 
 # ============================================================================
@@ -409,6 +447,8 @@ class BedrockInvokeResponse(BaseModel):
     stop_reason: str | None = None
     stop_sequence: str | None = None
     usage: dict[str, Any]
+
+    model_config = {"extra": "allow"}
 
 
 class BedrockStreamChunk(BaseModel):
@@ -504,12 +544,12 @@ class ModelNotAllowedErrorResponse(BaseModel):
 # ============================================================================
 
 
-class CountTokensRequest(BaseModel):
+class CountTokensRequest(AnthropicMessagesRequest):
     """Request for token counting endpoint."""
 
-    model: str
-    messages: list[AnthropicMessage]
-    system: str | list[dict[str, Any]] | None = None
+    max_tokens: int = Field(default=1024, ge=1)
+
+    model_config = {"extra": "forbid"}
 
 
 class CountTokensResponse(BaseModel):

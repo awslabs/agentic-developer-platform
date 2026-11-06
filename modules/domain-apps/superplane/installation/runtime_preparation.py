@@ -608,13 +608,13 @@ def inspect_plan(plan, proposal, *, existing=False):
         set(changes) >= MANAGED_ADDRESSES,
         "Saved Terraform plan omits an owned runtime resource",
     )
+    configurations = {
+        entry.get("address"): entry
+        for entry in plan.get("configuration", {})
+        .get("root_module", {})
+        .get("resources", [])
+    }
     if not existing:
-        configurations = {
-            entry.get("address"): entry
-            for entry in plan.get("configuration", {})
-            .get("root_module", {})
-            .get("resources", [])
-        }
         for role_name in ("worker", "observer"):
             address = "aws_iam_role_policy." + role_name
             references = (
@@ -690,6 +690,38 @@ def inspect_plan(plan, proposal, *, existing=False):
             isinstance(after, dict) and isinstance(unknown, dict),
             "Saved Terraform plan has unknown resource authority",
         )
+        # AWS 6.65 marks Optional+Computed attributes unknown on CREATE,
+        # including explicitly empty authority. Accept only the exact saved
+        # configuration evidence below, never arbitrary unresolved policies.
+        computed_empty = set()
+        expressions = configurations.get(address, {}).get("expressions", {})
+        if not existing and change.get("before") is None:
+            if address.startswith("aws_iam_role."):
+                if (
+                    expressions.get("managed_policy_arns") == {"constant_value": []}
+                    and after.get("managed_policy_arns") in (None, [])
+                    and unknown.get("managed_policy_arns") is True
+                ):
+                    computed_empty.add("managed_policy_arns")
+                # These two roles' inline policies have separate, strictly
+                # checked aws_iam_role_policy owners. No inline block may be
+                # configured on the role itself; a fresh CreateRole cannot
+                # inherit policies from an existing role (creation refuses it).
+                if (
+                    address in configurations
+                    and "inline_policy" not in expressions
+                    and after.get("inline_policy") in (None, [])
+                    and unknown.get("inline_policy") is True
+                ):
+                    computed_empty.add("inline_policy")
+            elif address == "aws_sqs_queue.operations":
+                for key in ("policy", "redrive_policy", "redrive_allow_policy"):
+                    if (
+                        expressions.get(key) == {"constant_value": ""}
+                        and after.get(key) in (None, "")
+                        and unknown.get(key) is True
+                    ):
+                        computed_empty.add(key)
         require(
             not any(
                 unknown.get(key)
@@ -700,10 +732,14 @@ def inspect_plan(plan, proposal, *, existing=False):
                     "assume_role_policy",
                     "permissions_boundary",
                     "managed_policy_arns",
+                    "inline_policy",
+                    "redrive_policy",
+                    "redrive_allow_policy",
                     "tags",
                     "fifo_queue",
                     "sqs_managed_sse_enabled",
                 )
+                if key not in computed_empty
             ),
             "Saved Terraform plan has unknown role or queue authority",
         )
@@ -730,8 +766,7 @@ def inspect_plan(plan, proposal, *, existing=False):
                 and after.get("message_retention_seconds") == 345600
                 and not after.get("policy")
                 and not after.get("redrive_policy")
-                and not unknown.get("policy")
-                and not unknown.get("redrive_policy"),
+                and not after.get("redrive_allow_policy"),
                 "Saved Terraform plan changed queue protection or bounds",
             )
         if address.startswith("aws_iam_role."):
@@ -831,11 +866,9 @@ def inspect_state(state, proposal, inspector):
             "--queue-url",
             expected_url,
             "--attribute-names",
-            "QueueArn",
-            "FifoQueue",
-            "SqsManagedSseEnabled",
-            "Policy",
-            "RedrivePolicy",
+            # Standard queues reject an explicit FifoQueue attribute request.
+            # All returns only applicable attributes; absence means standard.
+            "All",
         )
     )["Attributes"]
     tags = inspector.json(
@@ -1125,7 +1158,7 @@ def prepare(
         if receipt:
             require(
                 binary_plan_digest(saved_plan) == receipt["binary_plan_sha256"],
-                "Saved binary runtime plan changed; obtain a fresh independent review",
+                "Saved binary runtime plan changed; obtain a fresh authenticated approval",
             )
         prefix = ["terraform", f"-chdir={terraform_dir}"]
 
@@ -1183,7 +1216,7 @@ def prepare(
         if receipt:
             require(
                 receipt.get("plan_sha256") == plan_hash,
-                "Saved runtime plan changed; obtain a fresh independent review",
+                "Saved runtime plan changed; obtain a fresh authenticated approval",
             )
         else:
             receipt = {
@@ -1204,11 +1237,11 @@ def prepare(
             return receipt
         require(
             approved_plan_digest == plan_hash,
-            "Exact saved runtime plan digest has not been independently approved",
+            "Exact saved runtime plan digest has not been approved",
         )
         require(
             approval_check is not None,
-            "A separate authenticated plan approver is required before runtime apply",
+            "An authenticated plan approver is required before runtime apply",
         )
         try:
             approval = approval_check.verify_plan(
@@ -1217,7 +1250,7 @@ def prepare(
                 review_id=operator["review_id"],
             )
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
-            raise Refusal("Separate authenticated plan approver unavailable") from None
+            raise Refusal("Authenticated plan approver unavailable") from None
         require(
             isinstance(approval, dict)
             and set(approval)
@@ -1229,7 +1262,7 @@ def prepare(
             and isinstance(approval["approver"], str)
             and approval["approver"]
             and approval["approver"] != request["operator_role_arn"],
-            "Separate authenticated plan approver refused this exact runtime plan",
+            "Authenticated plan approver refused this exact runtime plan",
         )
         require(
             review(request, inspector) == reviewed,

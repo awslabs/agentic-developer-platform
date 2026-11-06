@@ -1,4 +1,4 @@
-"""Separate runtime-plan preparation and independently approved saved-plan apply."""
+"""Separate runtime-plan preparation and authenticated saved-plan apply."""
 
 import argparse
 import json
@@ -14,6 +14,7 @@ from .runtime_approval import (
     manifest,
     manifest_path,
     private_bytes,
+    review_document,
 )
 
 
@@ -37,6 +38,14 @@ class RuntimeInspector:
                 service,
                 operation,
                 *args,
+                # AWS CLI otherwise emits no bytes when SQS omits QueueUrls
+                # for an empty inventory. Preserve an explicit JSON response;
+                # all other malformed/empty service responses still refuse.
+                *(
+                    ["--query", "{QueueUrls: QueueUrls || `[]`}"]
+                    if (service, operation) == ("sqs", "list-queues")
+                    else []
+                ),
                 "--output",
                 "json",
             ],
@@ -62,7 +71,7 @@ def parser():
     result.add_argument("--execute", action="store_true")
     result.add_argument("--approved-plan-sha256")
     result.add_argument(
-        "--plan-review", help="Independently approved aws-e/adp plan PR URL"
+        "--plan-review", help="Maintainer-approved or merged aws-e/adp plan PR URL"
     )
     result.add_argument(
         "--github-vault-label",
@@ -128,7 +137,7 @@ def run(args, *, commands=None, approval_api=None):
             require(
                 decode_json(private_bytes(directory / "runtime-plan-manifest.json"))
                 == expected,
-                "Saved runtime review manifest differs; obtain fresh independent review",
+                "Saved runtime review manifest differs; obtain fresh authenticated approval",
             )
             if args.execute:
                 require(
@@ -159,12 +168,14 @@ def run(args, *, commands=None, approval_api=None):
         proposed = manifest(environment, operator, directory)
         if not args.resume:
             atomic(directory / "runtime-plan-manifest.json", proposed)
+        atomic(directory / "runtime-plan-review.json", review_document(proposed))
         return {
             "status": receipt["status"],
             "receipt": str(receipt_path),
             "plan_sha256": receipt["plan_sha256"],
             "binary_plan_sha256": proposed["binary_plan_sha256"],
             "manifest": str(directory / "runtime-plan-manifest.json"),
+            "review_document": str(directory / "runtime-plan-review.json"),
             "review_manifest_path": manifest_path(operator["review_id"]),
             "worker_ready": False,
             "apply_supported": "binary_plan_sha256" in receipt,

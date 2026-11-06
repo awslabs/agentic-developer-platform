@@ -36,10 +36,15 @@ metadata:
   name: adp-worker-release
   namespace: adp-gateway
 rules:
+  # Discover all application processes, including unregistered writers, before
+  # changing trust. Named list permissions cannot perform this namespace scan.
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [get, list]
   - apiGroups: [apps]
     resources: [deployments]
-    resourceNames: [bedrockgateway]
-    verbs: [get, patch, watch, list]
+    resourceNames: [bedrockgateway, chat-sandbox-gateway]
+    verbs: [patch]
   - apiGroups: ['']
     resources: [configmaps]
     resourceNames: [adp-worker-authority-config]

@@ -37,7 +37,8 @@ exit "\${DOCKER_FIXTURE_RUN_STATUS:-0}"
 
   it('includes real probe clients and the probe executable in the production image source', () => {
     const dockerfile = readFileSync(join(root, 'Dockerfile.sandbox'), 'utf8');
-    expect(dockerfile).toContain('apk add --no-cache bash curl aws-cli');
+    expect(dockerfile).toContain('bash curl ca-certificates libstdc++6');
+    expect(dockerfile).toContain('awscli==1.46.1');
     expect(dockerfile).toContain('COPY --chown=agent:agent agent/scripts/chat-sandbox-probe.sh ./chat-sandbox-probe');
     expect(dockerfile).toContain('chmod +x ./chat-sandbox-entrypoint ./chat-sandbox-probe');
     const ignores = readFileSync(join(root, 'Dockerfile.sandbox.dockerignore'), 'utf8').split('\n');
@@ -51,6 +52,31 @@ exit "\${DOCKER_FIXTURE_RUN_STATUS:-0}"
       expect(readFileSync(smoke, 'utf8')).toContain(`"${client}"`);
     }
     expect(lock.packages['node_modules/@aws-sdk/client-sts'].version).toBe(manifest.dependencies['@aws-sdk/client-sts']);
+  });
+
+  it('includes locked Crew clients in the guarded sandbox image build without deploying', () => {
+    const repository = join(root, '..', '..', '..');
+    const workflow = readFileSync(join(repository, '.github', 'workflows', 'chat-agent-deploy.yml'), 'utf8');
+    const buildspec = readFileSync(join(repository, 'codebuild', 'bs-chat-agent.yml'), 'utf8');
+    const publisher = readFileSync(join(root, 'scripts', 'publish-chat-sandbox-image.sh'), 'utf8');
+    const dockerfile = readFileSync(join(root, 'Dockerfile.sandbox'), 'utf8');
+    const ignores = readFileSync(join(root, 'Dockerfile.sandbox.dockerignore'), 'utf8').split('\n');
+    const lock = JSON.parse(readFileSync(join(root, 'kirocrew-clients', 'package-lock.json'), 'utf8'));
+
+    expect(workflow).toContain('uses: ./.github/actions/codebuild-run');
+    expect(workflow).toContain('imageTag=sandbox-${ADP_SELECTED_SOURCE}');
+    expect(workflow).toContain('if: ${{ inputs.skip_deploy != true && inputs.crew_controls_only != true }}');
+    expect(buildspec).toContain('bash modules/agent-factory/agent/scripts/publish-chat-sandbox-image.sh');
+    expect(publisher).toContain('docker build --pull --no-cache --build-context adp-cli=modules/gateway/cli -f modules/agent-factory/agent/Dockerfile.sandbox -t "$IMAGE" modules/agent-factory');
+    expect(publisher).toContain('bash modules/agent-factory/agent/scripts/chat-sandbox-probe-image.test.sh "$IMAGE_ID"');
+    expect(dockerfile).toContain('COPY agent/kirocrew-clients/package*.json ./');
+    expect(dockerfile).toContain('RUN npm ci --omit=dev --no-audit --no-fund');
+    expect(ignores).toEqual(expect.arrayContaining([
+      '!agent/kirocrew-clients/', '!agent/kirocrew-clients/package*.json',
+      'agent/kirocrew-clients/node_modules/',
+    ]));
+    expect(lock.packages['node_modules/@agentclientprotocol/claude-agent-acp'].integrity).toMatch(/^sha512-/);
+    expect(lock.packages['node_modules/@anthropic-ai/claude-code'].integrity).toMatch(/^sha512-/);
   });
 
   it('parses both shell commands and includes direct Bedrock CLI and SDK probes', () => {

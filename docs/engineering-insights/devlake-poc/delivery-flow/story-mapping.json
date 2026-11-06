@@ -1,0 +1,187 @@
+[
+  {
+    "alias": "S01",
+    "issue": 8888,
+    "design": "docs/engineering-insights/devlake-poc/stories/s01.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s01",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s01"
+  },
+  {
+    "alias": "S02",
+    "issue": 8889,
+    "design": "docs/engineering-insights/devlake-poc/stories/s02.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s02",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8888,
+      8901,
+      8919
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s02"
+  },
+  {
+    "alias": "S03",
+    "issue": 8890,
+    "design": "docs/engineering-insights/devlake-poc/stories/s03.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s03",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8888,
+      8889,
+      8903
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s03"
+  },
+  {
+    "alias": "S04",
+    "issue": 8891,
+    "design": "docs/engineering-insights/devlake-poc/stories/s04.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s04",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8374,
+      8375,
+      8888,
+      8890
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s04"
+  },
+  {
+    "alias": "S05",
+    "issue": 8892,
+    "design": "docs/engineering-insights/devlake-poc/stories/s05.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s05",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8891
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s05"
+  },
+  {
+    "alias": "S06",
+    "issue": 8893,
+    "design": "docs/engineering-insights/devlake-poc/stories/s06.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s06",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8374,
+      8375,
+      8891,
+      8920
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s06"
+  },
+  {
+    "alias": "S07",
+    "issue": 8894,
+    "design": "docs/engineering-insights/devlake-poc/stories/s07.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s07",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8889,
+      8890,
+      8892,
+      8893
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s07"
+  },
+  {
+    "alias": "S08",
+    "issue": 8895,
+    "design": "docs/engineering-insights/devlake-poc/stories/s08.md",
+    "build_node": "devlake-poc-8887/epic-8887/w03-closure/s08",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence",
+    "native_blocked_by": [
+      8894
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w03-closure/s08"
+  },
+  {
+    "alias": "S09",
+    "issue": 8901,
+    "design": "docs/engineering-insights/devlake-poc/stories/s09.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s09",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8888
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s09"
+  },
+  {
+    "alias": "S10",
+    "issue": 8902,
+    "design": "docs/engineering-insights/devlake-poc/stories/s10.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s10",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8888,
+      8889,
+      8901
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s10"
+  },
+  {
+    "alias": "S11",
+    "issue": 8903,
+    "design": "docs/engineering-insights/devlake-poc/stories/s11.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s11",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8902
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s11"
+  },
+  {
+    "alias": "S12",
+    "issue": 8919,
+    "design": "docs/engineering-insights/devlake-poc/stories/s12.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s12",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8888
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s12"
+  },
+  {
+    "alias": "S13",
+    "issue": 8920,
+    "design": "docs/engineering-insights/devlake-poc/stories/s13.md",
+    "build_node": "devlake-poc-8887/epic-8887/w01-build/s13",
+    "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+    "native_blocked_by": [
+      8374,
+      8375,
+      8891,
+      8919
+    ],
+    "build_handoff": "verified predecessor code/interfaces; never predecessor live closure",
+    "acceptance_handoff": "Original AC/SCN and native functional order retained in the combined campaign; issue stays open until full acceptance.",
+    "file_groups_source": "proposal.authored.json#devlake-poc-8887/epic-8887/w01-build/s13"
+  }
+]

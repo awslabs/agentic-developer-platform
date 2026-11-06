@@ -3,6 +3,7 @@
 import json
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 import time
 from datetime import UTC, datetime
 
@@ -120,3 +121,117 @@ class Client:
                 > datetime.now(UTC)
             ),
         )
+
+    def verify_product_epic(self):
+        """Read the Product and all three provider targets before publication."""
+        fixture = self.config.product_epic
+        if fixture is None:
+            return
+        actor = self.get("/auth/me")
+        if (actor.get("org_id"), actor.get("user_id")) != (
+            self.config.org_ref,
+            self.config.identity_ref,
+        ):
+            raise Unsupported(
+                "Product owner identity or tenant differs from approved fixture"
+            )
+        cursor = None
+        for _ in range(10):
+            path = "/v1/products?limit=100"
+            if cursor is not None:
+                path += "&cursor=" + quote(cursor, safe="")
+            try:
+                page = self.get(path)
+            except Unsupported:
+                raise Unsupported(
+                    "Product is missing or inaccessible to the selected owner"
+                ) from None
+            if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+                raise Unsupported("Product access could not be verified")
+            product = next(
+                (row for row in page["items"] if row.get("id") == fixture.product_id),
+                None,
+            )
+            if product is not None:
+                if product.get("lifecycle_status") == "retired":
+                    raise Unsupported(
+                        "Product is retired; an accessible active Product is required"
+                    )
+                break
+            cursor = page.get("next_cursor")
+            if not cursor:
+                raise Unsupported(
+                    "Product is missing or inaccessible to the selected owner"
+                )
+        else:
+            raise Unsupported(
+                "Product access exceeds the bounded listing; narrow the owner scope"
+            )
+
+        connections = self.get("/admin/connections")
+        if (connections.get("platform_verification") or {}).get(
+            "app_permissions_match"
+        ) is not True:
+            raise Unsupported(
+                "GitHub App issues-write permission cannot be verified for native linking"
+            )
+        targets = (fixture.epic, *fixture.stories)
+        for target in targets:
+            matches = [
+                entry
+                for entry in connections.get("connections", [])
+                if entry.get("installation_id") == target.installation_id
+                and (
+                    (
+                        entry.get("tenant_id") == self.config.org_ref
+                        and entry.get("is_active_tenant") is True
+                    )
+                    or (
+                        entry.get("tenant_id") is None
+                        and entry.get("is_active_tenant") is None
+                    )
+                )
+                and entry.get("revocation_pending") is False
+            ]
+            if (
+                len(matches) != 1
+                or (matches[0].get("verification") or {}).get("repositories_live")
+                is not True
+                or target.repository not in matches[0].get("repositories", [])
+            ):
+                raise Unsupported(
+                    f"repository connection {target.connection_ref!r} cannot verify live access to {target.repository}"
+                )
+            repository = self.get("/repos/" + target.repository, github=True)
+            if (
+                repository.get("id") != target.repository_id
+                or repository.get("full_name") != target.repository
+            ):
+                raise Unsupported(
+                    f"repository target identity differs from reviewed config: {target.repository}"
+                )
+            if (
+                repository.get("has_issues") is not True
+                or repository.get("permissions", {}).get("push") is not True
+            ):
+                raise Unsupported(
+                    f"issues-write access for native linking cannot be verified: {target.repository}"
+                )
+        epic = fixture.epic
+        try:
+            issue = self.get(
+                f"/repos/{epic.repository}/issues/{fixture.epic_issue_number}",
+                github=True,
+            )
+        except Unsupported:
+            raise Unsupported(
+                "planning epic issue is missing or inaccessible"
+            ) from None
+        if (
+            issue.get("number") != fixture.epic_issue_number
+            or type(issue.get("id")) is not int
+            or "pull_request" in issue
+        ):
+            raise Unsupported(
+                "planning epic issue is missing, inaccessible or not an issue"
+            )

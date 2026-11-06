@@ -59,7 +59,7 @@ def delayed_registration(protected, envelope, monkeypatch):
 
     with monkeypatch.context() as delayed:
         delayed.setattr(protected, "_authority_check", original_check)
-        provision_root(protected, envelope, source="chat", human_id="human", now=created)
+        provision_root(protected, envelope, source="chat", human_id="human", team_id="team", now=created)
 
 
 def assert_no_execution_authority(runtime, envelope):
@@ -263,12 +263,12 @@ async def test_terminal_registration_fences_a_delayed_live_registration(client, 
     before = deepcopy(expiry.execution(runtime))
     for clock in (datetime.now(UTC), datetime.fromisoformat(expired["arrived_at"])):
         with pytest.raises(BootstrapRefusedError):
-            provision_root(runtime[1].store, expired, source="chat", human_id="human", now=clock)
+            provision_root(runtime[1].store, expired, source="chat", human_id="human", team_id="team", now=clock)
     with pytest.raises(BootstrapRefusedError, match="dispatch conflict"):
         delayed_registration(runtime[1].store, expired, monkeypatch)
     renewed = {**expired, "arrived_at": datetime.now(UTC).isoformat()}
     with pytest.raises(BootstrapRefusedError, match="dispatch conflict"):
-        provision_root(runtime[1].store, renewed, source="chat", human_id="human", now=datetime.now(UTC))
+        provision_root(runtime[1].store, renewed, source="chat", human_id="human", team_id="team", now=datetime.now(UTC))
     assert expiry.execution(runtime) == before
     assert_no_execution_authority(runtime, expired)
 
@@ -282,7 +282,7 @@ async def test_partial_root_authority_is_not_renewed_or_used(client, runtime, ex
 
     monkeypatch.setattr(protected.client, "transact_write_items", failure)
     with pytest.raises(BootstrapRefusedError):
-        provision_root(protected, expired, source="chat", human_id="human", now=datetime.fromisoformat(expired["arrived_at"]))
+        provision_root(protected, expired, source="chat", human_id="human", team_id="team", now=datetime.fromisoformat(expired["arrived_at"]))
     key = f"AUTHORITY#chat-event:{envelope_digest(expired)}"
     authority = protected._read("TENANT#tenant", key)
     assert authority is not None and expiry.execution(runtime) is None

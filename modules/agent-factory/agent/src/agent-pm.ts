@@ -1,4 +1,8 @@
-import { hasRepositoryWritePermission } from './utils/comment-authority';
+import { withPmIssueAuthoring } from './pm-issue-authoring';
+import { runCommand } from './lib/command';
+import { CommentAuthorityCache } from './utils/comment-authority';
+import { fetchApprovalComments } from './services/posted-approval';
+import { hasPmReassessmentEvidence, resolvePmTriggerComment, selectPmDecision } from './utils/pm-comment-decisions';
 /**
  * @agent-pm - AIDLC Workflow Orchestrator
  *
@@ -17,6 +21,7 @@ import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 import * as path from 'path';
 
 // Memory module - persistent context across agent runs
@@ -124,6 +129,29 @@ const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
 const USER_RESPONSE_TIMEOUT_MS = 15 * 60 * 1000;
 // How often to check for file changes (in ms) - 30 seconds
 const POLL_INTERVAL_MS = 30 * 1000;
+const PM_SESSION_START = Date.now();
+const pmAuthorityCache = new CommentAuthorityCache();
+const PM_RUN_ID = process.env.ADP_MESSAGE_ID || randomUUID();
+
+function pmAuthorityContext() {
+  const target = (process.env.TARGET_REPO || `${REPO_OWNER}/${REPO_NAME}`).split('/');
+  return {
+    owner: REPO_OWNER, repo: REPO_NAME, runId: PM_RUN_ID, cache: pmAuthorityCache,
+    effectRepo: { owner: target.length === 2 ? target[0] : '', repo: target.length === 2 ? target[1] : '' },
+    tokenProvider: async () => {
+      await refreshGitHubToken();
+      return process.env.GH_TOKEN || process.env.GITHUB_TOKEN || GH_APP_TOKEN || GITHUB_TOKEN;
+    },
+  };
+}
+
+function pmTriggerCommentId(): string | undefined {
+  if (!process.env.GITHUB_EVENT_PATH) return undefined;
+  try {
+    return resolvePmTriggerComment(JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')),
+      REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER));
+  } catch { return undefined; }
+}
 
 // Reassessment configuration - set to false to disable reassessment module
 const REASSESSMENT_ENABLED = process.env.REASSESSMENT_ENABLED !== 'false';
@@ -330,7 +358,7 @@ Rules:
     let response = '';
     for await (const event of resilientQuery({
       queryParams: {
-        prompt,
+        prompt: withPmIssueAuthoring(prompt),
         options: {
           model: MODEL,
           cwd: CWD,
@@ -695,9 +723,7 @@ async function getFreshToken(useAppToken: boolean): Promise<string> {
   return getLocalToken(useAppToken);
 }
 
-async function execCommand(command: string, useAppToken: boolean = true): Promise<string> {
-  const { execSync } = await import('child_process');
-
+async function execCommand(command: string | readonly string[], useAppToken: boolean = true): Promise<string> {
   // Check for repeated errors before even trying
   const errorCheck = await checkForRepeatedErrors(5);
   if (errorCheck?.shouldFail) {
@@ -708,7 +734,7 @@ async function execCommand(command: string, useAppToken: boolean = true): Promis
   const token = await getFreshToken(useAppToken);
 
   try {
-    const result = execSync(command, {
+    const result = runCommand(command, {
       cwd: CWD,
       encoding: 'utf-8',
       env: { ...process.env, GH_TOKEN: token, GITHUB_TOKEN: token },
@@ -732,11 +758,10 @@ async function execCommand(command: string, useAppToken: boolean = true): Promis
     if (repeatedErrorCheck?.shouldFail) {
       // Post the diagnosis to the issue before failing
       try {
-        const { execSync: execSyncDirect } = await import('child_process');
         const diagnosisFile = `/tmp/error-diagnosis-${Date.now()}.md`;
         const fsModule = await import('fs');
         fsModule.writeFileSync(diagnosisFile, repeatedErrorCheck.diagnosis);
-        execSyncDirect(`gh issue comment ${ISSUE_NUMBER} --body-file "${diagnosisFile}"`, {
+        runCommand(['gh', 'issue', 'comment', String(ISSUE_NUMBER), '--body-file', diagnosisFile], {
           cwd: CWD,
           encoding: 'utf-8',
           env: { ...process.env, GH_TOKEN: GH_APP_TOKEN || GITHUB_TOKEN },
@@ -754,7 +779,7 @@ async function execCommand(command: string, useAppToken: boolean = true): Promis
       log('WARN', 'Got 401, forcing token refresh and retry...');
       try {
         const freshToken = await forceRefresh();
-        const result = execSync(command, {
+        const result = runCommand(command, {
           cwd: CWD,
           encoding: 'utf-8',
           env: { ...process.env, GH_TOKEN: freshToken, GITHUB_TOKEN: freshToken },
@@ -772,13 +797,13 @@ async function execCommand(command: string, useAppToken: boolean = true): Promis
       }
     }
 
-    log('ERROR', `Command failed: ${command.substring(0, 100)}`, { error: errorMessage });
+    log('ERROR', `Command failed: ${typeof command === 'string' ? command.substring(0, 100) : command[0]}`, { error: errorMessage });
     throw error;
   }
 }
 
-async function gh(args: string, useAppToken: boolean = true): Promise<string> {
-  return execCommand(`gh ${args}`, useAppToken);
+async function gh(args: readonly string[], useAppToken: boolean = true): Promise<string> {
+  return execCommand(['gh', ...args], useAppToken);
 }
 
 interface Issue {
@@ -789,7 +814,7 @@ interface Issue {
 }
 
 async function getIssue(): Promise<Issue> {
-  const json = await gh(`issue view ${ISSUE_NUMBER} --json number,title,body,labels`);
+  const json = await gh(['issue', 'view', String(ISSUE_NUMBER), '--json', 'number,title,body,labels']);
   const data = JSON.parse(json);
   return {
     number: data.number,
@@ -805,7 +830,7 @@ async function postComment(body: string): Promise<void> {
     const tmpFile = `/tmp/comment-${Date.now()}.md`;
     fs.writeFileSync(tmpFile, body);
     try {
-      await gh(`issue comment ${ISSUE_NUMBER} --body-file "${tmpFile}"`);
+      await gh(['issue', 'comment', String(ISSUE_NUMBER), '--body-file', tmpFile]);
     } finally {
       try { fs.unlinkSync(tmpFile); } catch {}
     }
@@ -946,7 +971,7 @@ async function checkoutAIDLCBranchIfExists(): Promise<{ found: boolean; branch: 
 
     // Find matching branch
     const branches = remoteBranches.split('\n').map(b => b.trim());
-    const aidlcBranch = branches.find(b => b.includes(branchPattern));
+    const aidlcBranch = branches.find(b => b.startsWith(`origin/${branchPattern}`));
 
     if (aidlcBranch) {
       // Extract branch name (remove 'origin/' prefix)
@@ -963,10 +988,10 @@ async function checkoutAIDLCBranchIfExists(): Promise<{ found: boolean; branch: 
       // Checkout the AIDLC branch
       try {
         // First try to checkout existing local branch
-        await execCommand(`git checkout ${branchName}`);
+        await execCommand(['git', 'checkout', branchName, '--']);
       } catch {
         // If local branch doesn't exist, create from remote
-        await execCommand(`git checkout -b ${branchName} origin/${branchName}`);
+        await execCommand(['git', 'checkout', '-b', branchName, `origin/${branchName}`, '--']);
       }
 
       log('INFO', `Checked out AIDLC branch: ${branchName}`);
@@ -1000,8 +1025,8 @@ async function getLatestCommit(): Promise<{ sha: string; message: string } | nul
     const branch = await getCurrentBranch();
 
     // Get latest commit info
-    const sha = await execCommand(`git rev-parse origin/${branch}`);
-    const message = await execCommand(`git log -1 --format=%s origin/${branch}`);
+    const sha = await execCommand(['git', 'rev-parse', '--verify', `refs/remotes/origin/${branch}`]);
+    const message = await execCommand(['git', 'log', '-1', '--format=%s', `refs/remotes/origin/${branch}`, '--']);
 
     return { sha, message };
   } catch (err) {
@@ -1013,7 +1038,7 @@ async function getLatestCommit(): Promise<{ sha: string; message: string } | nul
 async function pullLatestChanges(): Promise<boolean> {
   try {
     const branch = await getCurrentBranch();
-    const result = await execCommand(`git pull --rebase origin ${branch}`);
+    const result = await execCommand(['git', 'pull', '--rebase', 'origin', branch]);
     log('INFO', `Pulled latest changes: ${result.substring(0, 100)}`);
     return true;
   } catch (err) {
@@ -1142,7 +1167,7 @@ async function runQuery(prompt: string, maxTurns: number = 100): Promise<string>
   try {
     for await (const message of resilientQuery({
       queryParams: {
-        prompt,
+        prompt: withPmIssueAuthoring(prompt),
         options: {
           model: MODEL,
           cwd: CWD,
@@ -1422,7 +1447,9 @@ bd dolt push
 
 **After bootstrap, update GitHub Projects** to match Beads state (Projects is for human review, not source of truth).
 
-When creating NEW project structure, use Beads to create the epic and tasks with proper dependencies.
+When creating NEW project structure, author GitHub epics/stories with the supplied
+templates and native parent links. If this workflow uses Beads, keep it as a linked
+local dependency mirror; it must not replace the GitHub acceptance contract.
 
 ### ⛔ MANDATORY: Creating Child Issues (Sub-Issue Linkage)
 
@@ -1431,11 +1458,14 @@ This is a correctness constraint, not a best practice. Without the GraphQL mutat
 
 **Do NOT rely on "Parent: #N" text in the issue body.** That text is cosmetic only. The ONLY way to create a real parent-child link is the \`addSubIssue\` GraphQL mutation below.
 
+Prepare /tmp/child-issue.md from the supplied developer template for each story.
+Fill its lineage, acceptance and scenario tables before filing; do not submit template prompts.
+
 #### For EACH child issue, execute ALL THREE steps:
 
 \`\`\`bash
 # STEP 1 — Create the child issue
-CHILD_URL=$(gh issue create --repo ${REPO_OWNER}/${REPO_NAME} --title "US-1: Task Title" --body "Description here" --label "type: story")
+CHILD_URL=$(gh issue create --repo ${REPO_OWNER}/${REPO_NAME} --title "US-1: Task Title" --body-file /tmp/child-issue.md --label "type: story")
 CHILD_NUM=$(echo "$CHILD_URL" | grep -oE '[0-9]+$')
 
 # STEP 2 — Link it as a native sub-issue of the parent (REQUIRED — without this the child is orphaned)
@@ -1604,7 +1634,7 @@ async function checkForReassessment(
       // Try to find project from issue labels or body
       try {
         const projectSearch = await execCommand(
-          `gh project list --owner ${REPO_OWNER} --format json --limit 20`
+          ['gh', 'project', 'list', '--owner', REPO_OWNER, '--format', 'json', '--limit', '20']
         );
         const projects = JSON.parse(projectSearch || '{"projects":[]}');
         // Look for a project that might be related to this issue
@@ -1651,7 +1681,7 @@ async function checkForReassessment(
     let artifacts: AIDLCArtifacts | null = null;
     try {
       const childIssuesJson = await execCommand(
-        `gh issue list --repo ${REPO_OWNER}/${REPO_NAME} --search "Parent: #${ISSUE_NUMBER} in:body" --json number,title,labels --limit 50`
+        ['gh', 'issue', 'list', '--repo', `${REPO_OWNER}/${REPO_NAME}`, '--search', `Parent: #${ISSUE_NUMBER} in:body`, '--json', 'number,title,labels', '--limit', '50']
       );
       const childIssues = JSON.parse(childIssuesJson || '[]');
 
@@ -1684,7 +1714,7 @@ async function checkForReassessment(
       const prsMerged: { number: number; title: string }[] = [];
       try {
         const prsJson = await execCommand(
-          `gh pr list --repo ${REPO_OWNER}/${REPO_NAME} --search "${ISSUE_NUMBER}" --json number,title,state --limit 20`
+          ['gh', 'pr', 'list', '--repo', `${REPO_OWNER}/${REPO_NAME}`, '--search', String(ISSUE_NUMBER), '--json', 'number,title,state', '--limit', '20']
         );
         const prs = JSON.parse(prsJson || '[]');
         for (const pr of prs) {
@@ -1723,7 +1753,7 @@ async function checkForReassessment(
       aidlcStateInfo
     );
 
-    if (context.hasExistingProgress) {
+    if (context.hasExistingProgress && hasPmReassessmentEvidence(existingState !== null, context.childIssues.length)) {
       log('INFO', `Reassessment context: ${context.childIssues.length} child issues, ${context.analysis.failedTasks.length} failed, ${context.analysis.pendingTasks.length} pending`);
       return { needsReassessment: true, context };
     }
@@ -1741,31 +1771,7 @@ async function checkForReassessment(
 async function pollForReassessmentChoice(): Promise<{ choice: UserReassessmentChoice | null; comment: string | null }> {
   const startTime = Date.now();
   const maxPolls = Math.ceil(USER_RESPONSE_TIMEOUT_MS / POLL_INTERVAL_MS);
-
-  log('INFO', `Waiting for user's reassessment choice (max ${maxPolls} polls)`);
-  console.log('\n' + '='.repeat(60));
-  console.log('Waiting for user choice...');
-  console.log('Commands: /approve, /action N, /retry #N, /skip, /custom');
-  console.log('='.repeat(60) + '\n');
-
-  // Track by timestamp instead of count (fetchIssueComments returns last 50, so count won't work)
-  let lastSeenTimestamp = new Date().toISOString();
-  try {
-    const initialComments = await fetchIssueComments(ISSUE_NUMBER, execCommand);
-    if (initialComments.length > 0) {
-      // Get the timestamp of the most recent comment
-      lastSeenTimestamp = initialComments[initialComments.length - 1].createdAt || lastSeenTimestamp;
-    }
-    log('INFO', `Initial lastSeenTimestamp: ${lastSeenTimestamp}`);
-  } catch {
-    log('WARN', 'Could not get initial comments');
-  }
-
   for (let poll = 1; poll <= maxPolls; poll++) {
-    const elapsedMinutes = Math.round((Date.now() - startTime) / 60000);
-    const remainingMinutes = Math.round((USER_RESPONSE_TIMEOUT_MS - (Date.now() - startTime)) / 60000);
-
-    // Check for repeated errors before continuing
     const errorCheck = await checkForRepeatedErrors(5);
     if (errorCheck?.shouldFail) {
       log('ERROR', 'Failing fast due to repeated errors during reassessment polling');
@@ -1776,64 +1782,20 @@ async function pollForReassessmentChoice(): Promise<{ choice: UserReassessmentCh
       }
       return { choice: null, comment: null };
     }
-
-    console.log(`Waiting for choice... ${elapsedMinutes}m elapsed, ${remainingMinutes}m remaining`);
-
     try {
-      const comments = await fetchIssueComments(ISSUE_NUMBER, execCommand);
-
-      // Find comments newer than lastSeenTimestamp
-      const newComments = comments.filter(c => c.createdAt > lastSeenTimestamp);
-
-      if (newComments.length > 0) {
-        log('INFO', `Found ${newComments.length} new comment(s) since ${lastSeenTimestamp}`);
-
-        for (const comment of newComments) {
-          // Skip bot comments
-          if (comment.author.includes('[bot]') || comment.author === 'github-actions') {
-            continue;
-          }
-
-          log('INFO', `Checking comment from ${comment.author}: ${comment.body.substring(0, 50)}...`);
-
-          // Try to parse as a reassessment command
-          const choice = parseReassessmentResponse(comment.body);
-
-          if (choice.action !== 'unknown' && await hasRepositoryWritePermission(
-            REPO_OWNER, REPO_NAME, comment.author, process.env.GITHUB_TOKEN || GITHUB_TOKEN,
-          )) {
-            log('INFO', `User choice detected: ${choice.action}`);
-            console.log(`User choice: ${choice.action}`);
-            return { choice, comment: comment.body };
-          }
-        }
-
-        // Update timestamp to latest comment
-        const latestComment = newComments[newComments.length - 1];
-        lastSeenTimestamp = latestComment.createdAt || lastSeenTimestamp;
-      }
-    } catch (err) {
-      const errorMessage = (err as Error).message;
-      log('WARN', `Poll error: ${errorMessage}`);
-      trackError(errorMessage);
-
-      // Give immediate feedback if this looks serious
-      const category = categorizeError(errorMessage);
-      if (category !== 'unknown') {
-        const pattern = errorPatterns.get(category);
-        if (pattern && pattern.count >= 2) {
-          console.log(`   ⚠️ Warning: "${category}" error occurred ${pattern.count} times`);
-        }
-      }
+      const authority = pmAuthorityContext();
+      const comments = await fetchApprovalComments(REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER), await authority.tokenProvider());
+      const selected = await selectPmDecision(comments, authority, startTime, body => {
+        const choice = parseReassessmentResponse(body);
+        return choice.action === 'unknown' ? null : choice;
+      });
+      if (selected) return { choice: selected.decision, comment: selected.comment.body };
+    } catch {
+      log('WARN', 'Reassessment choice could not be verified');
+      trackError('PM comment authority unavailable');
     }
-
-    // Wait before next poll
-    if (poll < maxPolls) {
-      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
-    }
+    if (poll < maxPolls) await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
   }
-
-  // Timeout
   return { choice: null, comment: null };
 }
 
@@ -1912,7 +1874,7 @@ I've been triggered on issue #${ISSUE_NUMBER} which has existing progress. I nee
 
 ## CURRENT STATE
 
-**Issue**: #${ISSUE_NUMBER} - ${issue.title}
+**Issue**: #${ISSUE_NUMBER} - ${wrapUntrusted(issue.title)}
 **Phase**: ${analysis.phase}
 
 ### Task Summary
@@ -1923,25 +1885,25 @@ I've been triggered on issue #${ISSUE_NUMBER} which has existing progress. I nee
 - Pending: ${analysis.pendingTasks.length}
 
 ### Completed Tasks
-${formatTasks(analysis.completedTasks, projectBoardItems)}
+${wrapUntrusted(formatTasks(analysis.completedTasks, projectBoardItems))}
 
 ### In Progress Tasks
-${formatTasks(analysis.inProgressTasks, projectBoardItems)}
+${wrapUntrusted(formatTasks(analysis.inProgressTasks, projectBoardItems))}
 
 ### Failed Tasks
-${formatTasks(analysis.failedTasks, projectBoardItems)}
+${wrapUntrusted(formatTasks(analysis.failedTasks, projectBoardItems))}
 
 ### Blocked Tasks
-${formatTasks(analysis.blockedTasks, projectBoardItems)}
+${wrapUntrusted(formatTasks(analysis.blockedTasks, projectBoardItems))}
 
 ### Pending Tasks (ready to start)
-${formatTasks(analysis.pendingTasks, projectBoardItems)}
+${wrapUntrusted(formatTasks(analysis.pendingTasks, projectBoardItems))}
 
 ### All Project Board Items
-${boardItemsList}
+${wrapUntrusted(boardItemsList)}
 
 ### Child Issues
-${childIssuesList}
+${wrapUntrusted(childIssuesList)}
 
 ${analysis.staleBlockers.length > 0 ? `
 ### ⚠️ Stale Blockers Detected
@@ -2160,7 +2122,7 @@ async function shouldEnterMonitoringMode(existingState: AIDLCState | null): Prom
   // Check if there are tasks assigned to other agents
   try {
     const projectItems = await execCommand(
-      `gh project item-list ${existingState.projectNumber} --owner ${REPO_OWNER} --format json --limit 100`
+      ['gh', 'project', 'item-list', String(existingState.projectNumber), '--owner', REPO_OWNER, '--format', 'json', '--limit', '100']
     );
     const items = JSON.parse(projectItems || '{"items":[]}');
 
@@ -2196,7 +2158,7 @@ async function runMonitoringMode(
   if (existingState.projectNumber) {
     try {
       const projectJson = await execCommand(
-        `gh api graphql -f query='query($org: String!, $num: Int!) { organization(login: $org) { projectV2(number: $num) { id } } }' -f org="${REPO_OWNER}" -F num=${existingState.projectNumber} --jq '.data.organization.projectV2.id'`
+        ['gh', 'api', 'graphql', '-f', 'query=query($org: String!, $num: Int!) { organization(login: $org) { projectV2(number: $num) { id } } }', '-f', `org=${REPO_OWNER}`, '-F', `num=${existingState.projectNumber}`, '--jq', '.data.organization.projectV2.id']
       );
       projectId = projectJson.trim();
     } catch (e) {
@@ -2274,7 +2236,7 @@ I'm now actively monitoring all triggered agents for issue #${issue.number}.
         // Re-add the agent label to trigger workflow
         try {
           await execCommand(
-            `gh issue edit ${issueNum} --add-label "agent-${agent.agentType}"`
+            ['gh', 'issue', 'edit', String(issueNum), '--add-label', `agent-${agent.agentType}`]
           );
           await postComment(`Retrying @agent-${agent.agentType} on issue #${issueNum}...`);
         } catch (error) {
@@ -2504,7 +2466,7 @@ Be decisive - bias toward simpler depths when the task is clear.`;
     let response = '';
     for await (const event of resilientQuery({
       queryParams: {
-        prompt,
+        prompt: withPmIssueAuthoring(prompt),
         options: {
           model: MODEL,
           cwd: CWD,
@@ -2649,7 +2611,7 @@ This task is straightforward enough to skip full AIDLC planning.
 Triggering @agent-${agent} directly...`);
 
   // Add the agent label to trigger the workflow
-  await gh(`issue edit ${issue.number} --add-label "agent-${agent}"`);
+  await gh(['issue', 'edit', String(issue.number), '--add-label', `agent-${agent}`]);
 
   log('INFO', `Routed to @agent-${agent}`);
 }
@@ -2723,10 +2685,15 @@ async function main(): Promise<void> {
     const isResume = existingState !== null && existingState.waitingForUser;
 
     // Check if user explicitly requested monitoring mode via comment
-    const recentComments = await fetchIssueComments(ISSUE_NUMBER, execCommand);
-    const hasMonitorCommand = recentComments.some(
-      (c) => !c.author.includes('[bot]') && c.body.toLowerCase().includes('/monitor')
-    );
+    let hasMonitorCommand = false;
+    try {
+      const authority = pmAuthorityContext();
+      const comments = await fetchApprovalComments(REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER), await authority.tokenProvider());
+      hasMonitorCommand = !!(await selectPmDecision(comments, authority, PM_SESSION_START,
+        body => body.trim().toLowerCase() === '/monitor' ? true : null, pmTriggerCommentId()));
+    } catch {
+      log('WARN', 'Monitoring request could not be verified');
+    }
 
     // Check if we should go directly to monitoring mode
     if (hasMonitorCommand && existingState?.projectNumber) {

@@ -1,4 +1,4 @@
-"""Assistant changes cannot deploy from an unreviewed main push or an unapproved dispatch."""
+"""Dev deploys reviewed main; non-dev retains assistant revision approval."""
 
 import os
 import re
@@ -11,9 +11,9 @@ import yaml
 GUARD = Path(__file__).resolve().parents[4] / "scripts/check-assistant-deploy-boundary.sh"
 REPO = GUARD.parents[1]
 WORKFLOWS = REPO / ".github/workflows"
-INVENTORY = REPO / "docs/architecture/assistant-deploy-boundary.md"
+INVENTORY = REPO / "docs/chief-of-staff/architecture.md"
 
-# Source roots of the components audited by docs/architecture/assistant-deploy-boundary.md.
+# Source roots of the components audited by docs/chief-of-staff/architecture.md.
 COMPONENT_ROOTS = {
     "gateway": ["modules/gateway/src"],
     "chat-worker": ["modules/agent-factory/agent"],
@@ -30,6 +30,11 @@ GUARDED_WORKFLOWS = [
     ("gateway-deploy.yml", "deploy-backend", "gateway", "adp-gateway-deploy-${{ inputs.environment || 'dev' }}"),
     ("chat-agent-deploy.yml", "build-and-deploy", "chat-worker", "adp-chat-deploy-dev"),
     ("agent-worker-image.yml", "deploy", "agent-worker", "adp-worker-deploy-${{ inputs.environment || 'dev' }}"),
+]
+
+FRONTEND_PUBLISHERS = [
+    ("gateway-frontend-deploy.yml", "publish", "${{ inputs.adp_source_revision || github.sha }}"),
+    ("gateway-deploy.yml", "deploy-frontend", "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"),
 ]
 
 
@@ -93,6 +98,14 @@ def repository(tmp_path, monkeypatch):
         ("gateway", "modules/gateway/src/chat_data/routes.py", False),
         ("gateway", "modules/gateway/src/main.py", False),
         ("gateway", "modules/gateway/src/app.py", False),
+        ("frontend", "modules/gateway/frontend/src/pages/AgentChat.tsx", False),
+        ("frontend", "modules/gateway/frontend/src/pages/AssistantActivityChat.tsx", False),
+        ("frontend", "modules/gateway/frontend/src/App.tsx", False),
+        ("frontend", "modules/gateway/frontend/src/hooks/useAgUiEvents.ts", False),
+        ("frontend", "modules/gateway/frontend/src/services/features.ts", False),
+        ("frontend", "modules/gateway/frontend/package-lock.json", False),
+        ("frontend", "modules/gateway/frontend/vite.config.ts", False),
+        ("frontend", "modules/gateway/src/tasks/unrelated.py", True),
         ("chat-worker", "modules/agent-factory/agent/src/complex-task-chat/context/store/port.ts", False),
         ("chat-worker", "modules/agent-factory/agent/k8s/chat-scaledjob.yaml", False),
         ("chat-worker", "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh", False),
@@ -363,6 +376,36 @@ def test_push_without_approval_needs_a_known_ancestor_deployed_baseline(reposito
     assert guard(repository, None, ADP_DEPLOYED_BASELINE=deployed).returncode == 0
 
 
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_frontend_publication_requires_approval_covering_held_changes(repository, event):
+    approved = git(repository, "rev-parse", "HEAD")
+    assert guard(repository, None, event=event, component="frontend").returncode == 1
+    assert guard(repository, approved, event=event, component="frontend").returncode == 0
+    held = commit(repository, "modules/gateway/frontend/src/pages/AgentChat.tsx")
+    assert guard(repository, approved, event=event, component="frontend").returncode == 1
+    commit(repository, "unrelated.txt")
+    assert guard(repository, approved, event=event, component="frontend").returncode == 1
+    assert guard(repository, None, event=event, component="frontend").returncode == 1
+    assert guard(repository, held, event=event, component="frontend").returncode == 0
+    wrong_target = guard(repository, held, event=event, component="frontend", ADP_ASSISTANT_APPROVED_TARGET="another-target")
+    assert wrong_target.returncode == 1
+    dispatch = guard(repository, None, event=event, component="frontend", ADP_ASSISTANT_DISPATCH_APPROVED_REVISION=held)
+    assert dispatch.returncode == (0 if event == "workflow_dispatch" else 1)
+    assert guard(repository, approved, event=event, component="frontend", ADP_DEPLOYED_BASELINE=held).returncode == 1
+
+
+@pytest.mark.parametrize("change", ["delete", "rename"])
+def test_frontend_approval_detects_removed_protected_files(repository, change):
+    source = "modules/gateway/frontend/src/pages/AgentChat.tsx"
+    approved = commit(repository, source)
+    if change == "delete":
+        git(repository, "rm", source)
+    else:
+        git(repository, "mv", source, "unrelated.tsx")
+    git(repository, "commit", "-qm", change)
+    assert guard(repository, approved, component="frontend").returncode == 1
+
+
 def test_approval_for_another_target_does_not_apply_but_does_not_block_unrelated_pushes(repository):
     deployed = git(repository, "rev-parse", "HEAD")
     commit(repository, "modules/gateway/src/tasks/hotfix.py")
@@ -395,16 +438,21 @@ def test_workflows_bind_guard_to_protected_target_before_credentials(workflow, j
     assert job_config["environment"] == target
     assert job_config["permissions"]["actions"] in ("read", "write")
     steps = job_config["steps"]
-    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@") and not step.get("with", {}).get("path"))
     assert checkout["with"]["fetch-depth"] == 0
-    baseline_step = next(step for step in steps if step.get("id") == "deployed")
+    baseline_step = next((step for step in steps if step.get("id") == "deployed"), None)
     if workflow == "gateway-deploy.yml":
+        assert "(inputs.environment || 'dev') != 'dev' &&" in baseline_step["if"]
         assert baseline_step["run"] == 'python3 "$RUNNER_TEMP/adp-gateway-control/receipt.py" resolve'
         assert baseline_step["env"]["ADP_RECEIPT_TARGET"] == target
         assert baseline_step["env"]["GH_TOKEN"] == "${{ github.token }}"
         guard_step = next(step for step in steps if step.get("name") == "Guard assistant auto-deployment")
         assert guard_step["run"] == 'bash "$RUNNER_TEMP/adp-gateway-control/assistant-guard.sh"'
+    elif workflow == "chat-agent-deploy.yml":
+        assert baseline_step is None  # This workflow only deploys to dev.
+        guard_step = next(step for step in steps if step.get("run") == "bash scripts/check-assistant-deploy-boundary.sh")
     else:
+        assert baseline_step["if"] == "${{ (inputs.environment || 'dev') != 'dev' }}"
         assert baseline_step["env"] == {"GH_TOKEN": "${{ github.token }}"}
         assert f"actions/workflows/{workflow}/runs?" in baseline_step["run"]
         assert "status=success" in baseline_step["run"] and "per_page=10" in baseline_step["run"]
@@ -412,11 +460,6 @@ def test_workflows_bind_guard_to_protected_target_before_credentials(workflow, j
         # Job-level selection: the GitHub jobs API matches on the job's display name.
         assert "/actions/runs/${run_id}/jobs" in baseline_step["run"]
         assert f'.name == "{job_config["name"]}" and .conclusion == "success"' in baseline_step["run"]
-        if workflow == "chat-agent-deploy.yml":
-            # skip_deploy=true leaves the job successful but skips the rollout step.
-            rollout = next(step for step in steps if step.get("name") == "Update chat ScaledJob manifest")
-            assert rollout["if"] == "${{ inputs.skip_deploy != true }}"
-            assert '.name == "Update chat ScaledJob manifest" and .conclusion == "success"' in baseline_step["run"]
         assert '.workflow_runs[] | "\\(.id) \\(.head_sha)"' in baseline_step["run"]
         guard_step = next(step for step in steps if step.get("run") == "bash scripts/check-assistant-deploy-boundary.sh")
     expected = {
@@ -427,13 +470,19 @@ def test_workflows_bind_guard_to_protected_target_before_credentials(workflow, j
         "ADP_ASSISTANT_DISPATCH_APPROVED_REVISION": "${{ inputs.adp_approved_revision }}",
         "ADP_DEPLOYED_BASELINE": "${{ steps.deployed.outputs.baseline }}",
     }
-    if workflow == "gateway-deploy.yml":
+    if workflow in ("gateway-deploy.yml", "chat-agent-deploy.yml"):
         # The engine may dispatch an explicit source revision; the guard must judge that checkout.
         expected["ADP_ASSISTANT_DEPLOY_CANDIDATE"] = "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
         assert checkout["with"]["ref"] == "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
+    if workflow == "chat-agent-deploy.yml":
+        expected.pop("ADP_DEPLOYED_BASELINE")
+        rollout = next(step for step in steps if step.get("name") == "Update chat ScaledJob manifest")
+        assert rollout["if"] == "${{ inputs.skip_deploy != true && inputs.crew_controls_only != true }}"
     assert guard_step["env"] == expected
     credentials = next(step for step in steps if step.get("uses") == "./.github/actions/trusted-deployment")
-    assert steps.index(checkout) < steps.index(baseline_step) < steps.index(guard_step) < steps.index(credentials)
+    assert steps.index(checkout) < steps.index(guard_step) < steps.index(credentials)
+    if baseline_step is not None:
+        assert steps.index(checkout) < steps.index(baseline_step) < steps.index(guard_step)
     for step in steps[: steps.index(guard_step)]:
         run = step.get("run", "")
         assert "aws " not in run and "kubectl" not in run and "KUBECONFIG" not in run
@@ -443,10 +492,85 @@ def test_workflows_bind_guard_to_protected_target_before_credentials(workflow, j
     assert dispatch_input["required"] is False
 
 
+def test_chat_crew_controls_respect_build_only_and_protected_deployment():
+    config, triggers = load_workflow("chat-agent-deploy.yml")
+    controls_input = triggers["workflow_dispatch"]["inputs"]["crew_controls_only"]
+    assert controls_input["type"] == "boolean"
+    assert controls_input["default"] is False
+    steps = config["jobs"]["build-and-deploy"]["steps"]
+    controls = next(step for step in steps if step.get("name") == "Apply reviewed Crew controls only")
+    assert controls["if"] == "${{ inputs.skip_deploy != true && inputs.crew_controls_only == true }}"
+    assert controls["env"]["ADP_CREW_S3_INTERFACE_IP"] == "${{ vars.ADP_CREW_S3_INTERFACE_IP }}"
+    credentials = next(step for step in steps if step.get("uses") == "./.github/actions/trusted-deployment")
+    assert steps.index(credentials) < steps.index(controls)
+
+
+@pytest.mark.parametrize("workflow,job,candidate", FRONTEND_PUBLISHERS)
+def test_frontend_publishers_guard_both_events_before_credentials(workflow, job, candidate):
+    config, triggers = load_workflow(workflow)
+    assert "push" in triggers and "workflow_dispatch" in triggers
+    approval_input = triggers["workflow_dispatch"]["inputs"]["adp_approved_revision"]
+    assert approval_input["type"] == "string"
+    assert approval_input["required"] is False
+    assert approval_input["default"] == ""
+    job_config = config["jobs"][job]
+    target = "adp-frontend-deploy-${{ inputs.environment || 'dev' }}"
+    assert job_config["environment"] == target
+    assert "github.ref == 'refs/heads/main'" in job_config["if"]
+    steps = job_config["steps"]
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@") and not step.get("with", {}).get("path"))
+    assert checkout["with"]["fetch-depth"] == 0
+    assert checkout["with"]["ref"] == candidate
+    loader = next(step for step in steps if step.get("name") == "Load maintained frontend deployment guard")
+    assert loader["env"] == {"ADP_WORKFLOW_REVISION": "${{ github.workflow_sha }}"}
+    assert 'git show "$ADP_WORKFLOW_REVISION:scripts/check-assistant-deploy-boundary.sh"' in loader["run"]
+    assert 'git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"' in loader["run"]
+    guard_step = next(step for step in steps if step.get("name") == "Guard assistant frontend deployment")
+    assert guard_step["env"] == {
+        "ADP_ASSISTANT_DEPLOY_COMPONENT": "frontend",
+        "ADP_ASSISTANT_DEPLOY_TARGET": target,
+        "ADP_ASSISTANT_DEPLOY_CANDIDATE": candidate,
+        "ADP_ASSISTANT_APPROVED_TARGET": "${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}",
+        "ADP_ASSISTANT_APPROVED_REVISION": "${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}",
+        "ADP_ASSISTANT_DISPATCH_APPROVED_REVISION": "${{ inputs.adp_approved_revision }}",
+        "ADP_DEPLOYED_BASELINE": "",
+    }
+    assert guard_step["run"] == 'bash "$RUNNER_TEMP/adp-frontend-assistant-guard.sh"'
+    credentials = next(step for step in steps if step.get("uses") == "./.github/actions/trusted-deployment")
+    assert steps.index(checkout) < steps.index(loader) < steps.index(guard_step) < steps.index(credentials)
+    if workflow == "gateway-frontend-deploy.yml":
+        source_input = triggers["workflow_dispatch"]["inputs"]["adp_source_revision"]
+        assert source_input["type"] == "string"
+        assert source_input["required"] is False
+        assert source_input["default"] == ""
+        pins = next(step for step in steps if step.get("name") == "Guard engine delivery revisions")
+        assert pins["env"] == {
+            "ADP_CORRELATION": "${{ inputs.adp_correlation }}",
+            "ADP_SOURCE": "${{ inputs.adp_source_revision }}",
+            "ADP_DEFINITION": "${{ inputs.adp_definition_revision }}",
+            "ACTUAL_DEFINITION": "${{ github.workflow_sha }}",
+            "INPUT_PRODUCT_CASES": "${{ inputs.product_cases || 'none' }}",
+            "INPUT_ENVIRONMENT": "${{ inputs.environment || 'dev' }}",
+        }
+        ancestry = next(step for step in steps if step.get("name") == "Verify reviewed main source")
+        assert 'git fetch --no-tags origin "$GITHUB_SHA"' in ancestry["run"]
+        assert "git merge-base --is-ancestor HEAD FETCH_HEAD" in ancestry["run"]
+        assert steps.index(pins) < steps.index(checkout) < steps.index(ancestry) < steps.index(loader)
+        for step in (pins, ancestry):
+            assert not step.get("if") and not step.get("continue-on-error")
+    assert not guard_step.get("if") and not loader.get("if")
+    assert not guard_step.get("continue-on-error") and not loader.get("continue-on-error")
+    for step in steps[: steps.index(guard_step)]:
+        assert "aws " not in step.get("run", "")
+    row = next(line for line in INVENTORY.read_text().splitlines() if line.startswith(f"| `{workflow}` |"))
+    assert "Guarded" in row and "`frontend`" in row
+
+
 def test_previous_push_revision_is_no_longer_a_baseline_anywhere():
     retired = ("ADP_PUSH_" + "BEFORE", "event." + "before")
-    sources = [GUARD, Path(__file__), REPO / "docs/architecture/adp-assistant-6929.md", INVENTORY]
+    sources = [GUARD, Path(__file__), REPO / "docs/chief-of-staff/architecture.md", INVENTORY]
     sources += [WORKFLOWS / workflow for workflow, _, _, _ in GUARDED_WORKFLOWS]
+    sources += [WORKFLOWS / workflow for workflow, _, _ in FRONTEND_PUBLISHERS]
     for source in sources:
         text = source.read_text()
         for token in retired:
@@ -527,7 +651,7 @@ def test_manual_infra_apply_guards_chat_iam_before_deployment_credentials():
     job = config["jobs"]["apply"]
     assert job["environment"] == "adp-deploy-${{ inputs.environment || 'dev' }}"
     steps = job["steps"]
-    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@") and not step.get("with", {}).get("path"))
     guard_step = next(step for step in steps if step.get("name") == "Guard assistant IAM deployment")
     credentials = next(step for step in steps if step.get("uses") == "./.github/actions/trusted-deployment")
     assert checkout["with"]["fetch-depth"] == 0
@@ -553,3 +677,105 @@ def test_manual_infra_apply_requires_approved_iam_revision(repository):
     assert guard(repository, held, event="workflow_dispatch", component="chat-infra").returncode == 0
     assert guard(repository, None, event="workflow_dispatch", component="chat-infra", ADP_ASSISTANT_DISPATCH_APPROVED_REVISION=held).returncode == 0
     assert guard(repository, approved, event="workflow_dispatch", component="chat-worker").returncode == 1
+
+
+DEV_TARGETS = [
+    ("gateway", "adp-gateway-deploy-dev", "modules/gateway/src/app.py"),
+    ("chat-worker", "adp-chat-deploy-dev", "modules/agent-factory/agent/src/complex-task-chat/tools.ts"),
+    ("agent-worker", "adp-worker-deploy-dev", "modules/agent-factory/agent/src/complex-task-chat/tools.ts"),
+    ("frontend", "adp-frontend-deploy-dev", "modules/gateway/frontend/src/App.tsx"),
+    ("chat-infra", "adp-deploy-dev", "modules/agent-factory/infra/chat-worker-iam.tf"),
+]
+
+
+@pytest.mark.parametrize("component,target,path", DEV_TARGETS)
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_dev_deploys_changed_assistant_without_approval_or_baseline(repository, component, target, path, event):
+    previous = git(repository, "rev-parse", "HEAD")
+    commit(repository, path)
+    for approval in (None, previous, "obsolete-config"):
+        result = guard(
+            repository,
+            approval,
+            event=event,
+            component=component,
+            GITHUB_REF="refs/heads/main",
+            ADP_ASSISTANT_DEPLOY_TARGET=target,
+            ADP_ASSISTANT_APPROVED_TARGET=target,
+            ADP_DEPLOYED_BASELINE=None,
+        )
+        assert result.returncode == 0, result.stdout
+        assert "approval and deployed baseline are not required" in result.stdout
+    # The same changed payload must still require approval outside dev.
+    assert (
+        guard(
+            repository,
+            None,
+            event=event,
+            component=component,
+            GITHUB_REF="refs/heads/main",
+            ADP_ASSISTANT_DEPLOY_TARGET=target.replace("-dev", "-prod"),
+        ).returncode
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"GITHUB_REF": "refs/heads/feature"},
+        {"GITHUB_REF": "refs/tags/main"},
+        {"GITHUB_REF": None},
+        {"GITHUB_EVENT_NAME": "pull_request"},
+        {"GITHUB_SHA": "not-a-sha"},
+        {"GITHUB_SHA": "f" * 40},
+        {"ADP_ASSISTANT_DEPLOY_COMPONENT": "frontend"},
+        {"ADP_ASSISTANT_DEPLOY_TARGET": "other-gateway-deploy-dev"},
+    ],
+)
+def test_dev_policy_preserves_source_and_exact_target_checks(repository, overrides):
+    options = {"GITHUB_REF": "refs/heads/main", "ADP_ASSISTANT_DEPLOY_TARGET": "adp-gateway-deploy-dev", **overrides}
+    assert guard(repository, None, **options).returncode == 1
+
+
+def test_dev_manual_source_must_be_in_main_history(repository):
+    original = git(repository, "rev-parse", "HEAD")
+    main = commit(repository, "main-change.txt")
+    git(repository, "checkout", "--detach", original)
+    options = {
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_SHA": main,
+        "ADP_ASSISTANT_DEPLOY_CANDIDATE": original,
+        "ADP_ASSISTANT_DEPLOY_TARGET": "adp-gateway-deploy-dev",
+    }
+    assert guard(repository, None, event="workflow_dispatch", **options).returncode == 0
+    divergent = commit(repository, "unreviewed.txt")
+    options["ADP_ASSISTANT_DEPLOY_CANDIDATE"] = divergent
+    assert guard(repository, None, event="workflow_dispatch", **options).returncode == 1
+    options["ADP_ASSISTANT_DEPLOY_CANDIDATE"] = original
+    assert guard(repository, None, event="workflow_dispatch", **options).returncode == 1  # Checkout mismatch.
+
+
+def test_shared_release_queue_preserves_pending_deployments_without_overlap():
+    found = set()
+    for path in WORKFLOWS.glob("*.yml"):
+        config, _ = load_workflow(path.name)
+        scopes = [config, *config.get("jobs", {}).values()]
+        for scope in scopes:
+            concurrency = scope.get("concurrency", {})
+            if not isinstance(concurrency, dict) or "gateway-release-" not in str(concurrency.get("group", "")):
+                continue
+            found.add(path.name)
+            # cancel-in-progress=false alone still replaces the pending job.
+            # Every producer sharing this lock must retain the pending queue.
+            assert concurrency.get("queue") == "max", path.name
+            assert concurrency.get("cancel-in-progress") is False, path.name
+    assert {
+        "gateway-deploy.yml",
+        "agent-worker-image.yml",
+        "webhook-ingress-deploy.yml",
+        "gateway-infra-apply.yml",
+        "pricing-finalize.yml",
+        "gateway-release-reservation.yml",
+        "shared-runtime-maintenance.yml",
+    } <= found

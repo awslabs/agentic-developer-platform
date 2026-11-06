@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "coverage_definition (section 11.4)",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "if": {
+        "properties": {
+          "definition_kind": {
+            "const": "module"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "parent_ref": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "parent_ref": {
+            "allOf": [
+              {
+                "$ref": "references.schema.json#/$defs/record_ref"
+              },
+              {
+                "properties": {
+                  "record_type": {
+                    "const": "coverage_definition"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "definition_kind": {
+            "const": "scenario"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_result": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "const": "coverage_definition"
+    },
+    "definition_kind": {
+      "enum": [
+        "module",
+        "feature",
+        "scenario"
+      ]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parent_ref": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "references.schema.json#/$defs/record_ref"
+            },
+            {
+              "properties": {
+                "record_type": {
+                  "const": "coverage_definition"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "action": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expected_result": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "definition_kind",
+    "name",
+    "parent_ref",
+    "action",
+    "expected_result"
+  ],
+  "unevaluatedProperties": false
+}

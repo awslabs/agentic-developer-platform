@@ -6,6 +6,9 @@
   "scripts": {
     "build": "tsc",
     "build:sandbox": "esbuild src/complex-task-chat/sandbox-entrypoint.ts --bundle --platform=node --target=node22 --format=cjs --packages=external --outfile=dist/chat-sandbox-entrypoint.js",
+    "build:host-dashboard": "esbuild src/complex-task-chat/crew-host-entrypoint.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/crew-host-dashboard.js",
+    "build:host-model": "esbuild src/complex-task-chat/crew-host-model-entrypoint.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/crew-host-model.js",
+    "build:host-bootstrap": "esbuild src/complex-task-chat/crew-host-bootstrap.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/crew-host-bootstrap.js",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "probe:invocability": "node dist/invocability-probe/index.js",
@@ -31,7 +34,8 @@
     "@smithy/hash-node": "^4.2.14",
     "@smithy/signature-v4": "^5.3.14",
     "jsonwebtoken": "^9.0.0",
-    "zod": "^4.0.0"
+    "zod": "^4.6.6",
+    "@smithy/credential-provider-imds": "4.2.14"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
@@ -44,7 +48,7 @@
     "typescript": "^5.3.0"
   },
   "overrides": {
-    "handlebars": ">=4.7.9",
+    "handlebars": ">=4.7.10 <5",
     "picomatch": ">=4.0.4",
     "brace-expansion@^1": ">=1.1.18 <2",
     "brace-expansion@^2": ">=2.1.4 <3",
@@ -54,7 +58,7 @@
     "@modelcontextprotocol/sdk": ">=1.31.0 <2",
     "@hono/node-server": ">=2.0.10 <3",
     "@babel/core": ">=7.29.6 <8",
-    "body-parser": ">=2.3.0 <3",
+    "body-parser": ">=2.4.0 <3",
     "proxy-addr": ">=2.0.8 <3"
   },
   "engines": {

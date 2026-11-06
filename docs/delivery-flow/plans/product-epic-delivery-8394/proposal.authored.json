@@ -1,0 +1,1727 @@
+{
+  "flow_slug": "product-epic-delivery-8394",
+  "title": "Product-grounded epic delivery \u2014 four reviewed dev outcomes",
+  "org_id": "example-org",
+  "spec_revision": "44b8e127deb53d5e014030994b1780f490f747db",
+  "intent_ref": "8394",
+  "description": "Draft: dev-baseline checkpoint, then four implementation/deployment/integration/human-review stages. Reuses prepared fixtures. Complete actual operation/release/environment bindings before activation; no flow is started by this document. Stage 4 migration and qualification-harness implementation run independently after stage 3 acceptance; final qualification joins both.",
+  "epic_metadata": [
+    {
+      "epic_ref": "epic-8394",
+      "title": "Product-grounded epic flows",
+      "description": "One Product per flow, planning epic C, story issues and PRs in A/B. Four deployed outcomes after a verified dev baseline; no new Project workflow or Product-to-repository catalog."
+    }
+  ],
+  "wave_metadata": [
+    {
+      "epic_ref": "epic-8394",
+      "wave_ref": "s00-baseline",
+      "title": "Stage 0: operator deploys baseline; human reviews evidence"
+    },
+    {
+      "epic_ref": "epic-8394",
+      "wave_ref": "s01-foundation-build",
+      "title": "Stage 1: Product and repository foundation \u2014 implementation"
+    },
+    {
+      "epic_ref": "epic-8394",
+      "wave_ref": "s01-foundation-live",
+      "title": "Stage 1: deploy, integrate and review the outcome"
+    },
+    {
+      "epic_ref": "epic-8394",
+      "wave_ref": "s02-journey-build",
+      "title": "Stage 2: GitHub-to-delivery journey \u2014 implementation"
+    },
+    {
+      "epic_ref": "epic-8394",
+      "wave_ref": "s02-journey-live",
+      "title": "Stage 2: deploy, integrate and review the outcome"
+    },
+    {
+      "epic_ref": "epic-8394",
+      "wave_ref": "s03-evidence-build",
+      "title": "Stage 3: Evidence and corrections \u2014 implementation"
+    },
+    {
+      "epic_ref": "epic-8394",
+      "wave_ref": "s03-evidence-live",
+      "title": "Stage 3: deploy, integrate and review the outcome"
+    },
+    {
+      "epic_ref": "epic-8394",
+      "wave_ref": "s04-qualification-build",
+      "title": "Stage 4: Full qualification and compatibility \u2014 implementation"
+    },
+    {
+      "epic_ref": "epic-8394",
+      "wave_ref": "s04-qualification-live",
+      "title": "Stage 4: deploy, integrate and review the outcome"
+    }
+  ],
+  "nodes": [
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s00-baseline/baseline-acceptance",
+      "kind": "eval",
+      "title": "Stage 0 \u2014 review dev deployment and API/CLI baseline evidence",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "human",
+        "evidence_schema": "orchestration-evaluation/v1",
+        "max_age_seconds": 3600,
+        "max_duration_seconds": 7200,
+        "criteria": [
+          {
+            "criterion_id": "MR-15-AC-01",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-15-AC-02",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-15-AC-03",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-15-AC-04",
+            "kind": "functional",
+            "required": true
+          }
+        ]
+      },
+      "issue_ref": "8516",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+      "kind": "story",
+      "title": "[MR-01] Bind flows to Products and persist story repository identity",
+      "issue_ref": "8395",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "kind": "story",
+      "title": "[MR-02] Resolve tenant-owned repository connections for each story",
+      "issue_ref": "8396",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09",
+      "kind": "story",
+      "title": "[MR-09] Version evaluation contracts for repository-qualified inputs",
+      "issue_ref": "8403",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence",
+      "kind": "eval",
+      "title": "Stage 1 \u2014 verify reviewed merges and required CI",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16",
+      "kind": "story",
+      "title": "[MR-16] Deploy and verify the Product and repository foundation on dev",
+      "issue_ref": "8517",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:gateway-backend"
+      ],
+      "required_inputs": [
+        {
+          "name": "implementation_repository",
+          "source": "repository:aws-e/adp"
+        },
+        {
+          "name": "mr_01_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01"
+        },
+        {
+          "name": "mr_02_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02"
+        },
+        {
+          "name": "mr_09_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09"
+        }
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance",
+      "kind": "eval",
+      "title": "Stage 1 \u2014 human review of deployed product and repository foundation",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "human",
+        "evidence_schema": "orchestration-evaluation/v1",
+        "max_age_seconds": 3600,
+        "max_duration_seconds": 7200,
+        "criteria": [
+          {
+            "criterion_id": "MR-16-AC-01",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-16-AC-02",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-16-AC-03",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-16-AC-04",
+            "kind": "functional",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03",
+      "kind": "story",
+      "title": "[MR-03] Route initial story dispatch and durable replay by accepted repository",
+      "issue_ref": "8397",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04",
+      "kind": "story",
+      "title": "[MR-04] Keep review, repair and diagnosis on the story repository",
+      "issue_ref": "8398",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05",
+      "kind": "story",
+      "title": "[MR-05] Coordinate repository-qualified stories across a flow",
+      "issue_ref": "8399",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06",
+      "kind": "story",
+      "title": "[MR-06] Bind epic planning references, commands and tracker updates",
+      "issue_ref": "8400",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07",
+      "kind": "story",
+      "title": "[MR-07] Create epic stories in their change repos through intake and CLI",
+      "issue_ref": "8401",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08",
+      "kind": "story",
+      "title": "[MR-08] Show Product, epic and story repositories in Delivery Flows",
+      "issue_ref": "8402",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence",
+      "kind": "eval",
+      "title": "Stage 2 \u2014 verify reviewed merges and required CI",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17",
+      "kind": "story",
+      "title": "[MR-17] Deploy and demonstrate GitHub-to-delivery through dev UI and CLI",
+      "issue_ref": "8518",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:gateway-backend"
+      ],
+      "required_inputs": [
+        {
+          "name": "implementation_repository",
+          "source": "repository:aws-e/adp"
+        },
+        {
+          "name": "mr_01_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01"
+        },
+        {
+          "name": "mr_02_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02"
+        },
+        {
+          "name": "mr_09_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09"
+        },
+        {
+          "name": "mr_03_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03"
+        },
+        {
+          "name": "mr_04_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04"
+        },
+        {
+          "name": "mr_05_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05"
+        },
+        {
+          "name": "mr_06_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06"
+        },
+        {
+          "name": "mr_07_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07"
+        },
+        {
+          "name": "mr_08_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08"
+        }
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s02-journey-live/outcome-acceptance",
+      "kind": "eval",
+      "title": "Stage 2 \u2014 human review of deployed github-to-delivery journey",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "human",
+        "evidence_schema": "orchestration-evaluation/v1",
+        "max_age_seconds": 3600,
+        "max_duration_seconds": 7200,
+        "criteria": [
+          {
+            "criterion_id": "MR-17-AC-01",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-17-AC-02",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-17-AC-03",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-17-AC-04",
+            "kind": "functional",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10",
+      "kind": "story",
+      "title": "[MR-10] Evaluate PR and CI evidence across story repositories",
+      "issue_ref": "8404",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11",
+      "kind": "story",
+      "title": "[MR-11] Evaluate deployed cross-repository changes and route corrections",
+      "issue_ref": "8405",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/code-evidence",
+      "kind": "eval",
+      "title": "Stage 3 \u2014 verify reviewed merges and required CI",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18",
+      "kind": "story",
+      "title": "[MR-18] Deploy and verify combined evidence and correction routing on dev",
+      "issue_ref": "8519",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:gateway-backend"
+      ],
+      "required_inputs": [
+        {
+          "name": "implementation_repository",
+          "source": "repository:aws-e/adp"
+        },
+        {
+          "name": "mr_01_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01"
+        },
+        {
+          "name": "mr_02_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02"
+        },
+        {
+          "name": "mr_09_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09"
+        },
+        {
+          "name": "mr_03_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03"
+        },
+        {
+          "name": "mr_04_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04"
+        },
+        {
+          "name": "mr_05_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05"
+        },
+        {
+          "name": "mr_06_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06"
+        },
+        {
+          "name": "mr_07_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07"
+        },
+        {
+          "name": "mr_08_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08"
+        },
+        {
+          "name": "mr_10_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10"
+        },
+        {
+          "name": "mr_11_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11"
+        }
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/outcome-acceptance",
+      "kind": "eval",
+      "title": "Stage 3 \u2014 human review of deployed evidence and corrections",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "human",
+        "evidence_schema": "orchestration-evaluation/v1",
+        "max_age_seconds": 3600,
+        "max_duration_seconds": 7200,
+        "criteria": [
+          {
+            "criterion_id": "MR-18-AC-01",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-18-AC-02",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-18-AC-03",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-18-AC-04",
+            "kind": "functional",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12",
+      "kind": "story",
+      "title": "[MR-12] Migrate legacy bindings and retire global repository routing",
+      "issue_ref": "8406",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-13",
+      "kind": "story",
+      "title": "[MR-13] Build Product and cross-repository epic flow qualification",
+      "issue_ref": "8407",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/code-evidence",
+      "kind": "eval",
+      "title": "Stage 4 \u2014 verify reviewed merges and required CI",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-13",
+            "required_checks": [
+              {
+                "name": "Qualification harness unit tests (offline)",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 359123346,
+                  "workflow_path": ".github/workflows/orchestration-harness-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14",
+      "kind": "story",
+      "title": "[MR-14] Qualify Product-bound epic delivery across repositories",
+      "issue_ref": "8408",
+      "lineage": {
+        "size": "M"
+      },
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:gateway-backend"
+      ],
+      "required_inputs": [
+        {
+          "name": "implementation_repository",
+          "source": "repository:aws-e/adp"
+        },
+        {
+          "name": "mr_01_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01"
+        },
+        {
+          "name": "mr_02_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02"
+        },
+        {
+          "name": "mr_09_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09"
+        },
+        {
+          "name": "mr_03_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03"
+        },
+        {
+          "name": "mr_04_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04"
+        },
+        {
+          "name": "mr_05_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05"
+        },
+        {
+          "name": "mr_06_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06"
+        },
+        {
+          "name": "mr_07_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07"
+        },
+        {
+          "name": "mr_08_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08"
+        },
+        {
+          "name": "mr_10_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10"
+        },
+        {
+          "name": "mr_11_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11"
+        },
+        {
+          "name": "mr_12_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12"
+        },
+        {
+          "name": "mr_13_reviewed_merge",
+          "source": "node:product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-13"
+        }
+      ]
+    },
+    {
+      "address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/outcome-acceptance",
+      "kind": "eval",
+      "title": "Stage 4 \u2014 human review of deployed full qualification and compatibility",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "human",
+        "evidence_schema": "orchestration-evaluation/v1",
+        "max_age_seconds": 3600,
+        "max_duration_seconds": 7200,
+        "criteria": [
+          {
+            "criterion_id": "EPIC-8394-EC-01",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "EPIC-8394-EC-02",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "EPIC-8394-EC-03",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "EPIC-8394-EC-04",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "EPIC-8394-EC-05",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "EPIC-8394-EC-06",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-14-AC-01",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-14-AC-02",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-14-AC-03",
+            "kind": "functional",
+            "required": true
+          },
+          {
+            "criterion_id": "MR-14-AC-04",
+            "kind": "functional",
+            "required": true
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s00-baseline/baseline-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s00-baseline/baseline-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s00-baseline/baseline-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16",
+      "to_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17",
+      "to_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/outcome-acceptance"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s02-journey-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/code-evidence",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18",
+      "to_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/outcome-acceptance"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-13"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s03-evidence-live/outcome-acceptance",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-13"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/code-evidence",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-13",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/code-evidence"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-13",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14"
+    },
+    {
+      "from_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14",
+      "to_address": "product-epic-delivery-8394/epic-8394/s04-qualification-live/outcome-acceptance"
+    }
+  ],
+  "proposed_execution_policy": {
+    "schema_version": 3,
+    "org_id": "example-org",
+    "repository_ids": [
+      "aws-e/adp"
+    ],
+    "environment_connection_ids": [],
+    "allowed_actions": [
+      "develop",
+      "review",
+      "repair",
+      "merge",
+      "operate",
+      "deploy",
+      "evaluate"
+    ],
+    "human_gates": [],
+    "evaluation_acceptance": {
+      "product-epic-delivery-8394/epic-8394/s00-baseline/baseline-acceptance": "human",
+      "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence": "machine",
+      "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance": "human",
+      "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence": "machine",
+      "product-epic-delivery-8394/epic-8394/s02-journey-live/outcome-acceptance": "human",
+      "product-epic-delivery-8394/epic-8394/s03-evidence-build/code-evidence": "machine",
+      "product-epic-delivery-8394/epic-8394/s03-evidence-live/outcome-acceptance": "human",
+      "product-epic-delivery-8394/epic-8394/s04-qualification-build/code-evidence": "machine",
+      "product-epic-delivery-8394/epic-8394/s04-qualification-live/outcome-acceptance": "human"
+    },
+    "expires_at": "2026-10-28T23:59:59Z",
+    "limits": {
+      "max_spend_usd": "1500",
+      "max_attempts_per_node": 3,
+      "max_concurrent_actions": 4,
+      "max_wall_clock_seconds": 604800
+    }
+  }
+}

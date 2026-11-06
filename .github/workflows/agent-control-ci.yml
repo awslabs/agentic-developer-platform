@@ -152,6 +152,10 @@ on:
       - 'modules/agent-factory/agent/src/control-runtime.integration.ts'
       - 'modules/agent-factory/agent/src/control-runtime-factory.ts'
       - 'modules/agent-factory/agent/src/control-runtime-factory.test.ts'
+      - 'modules/agent-factory/agent/src/operations-story-entry.ts'
+      - 'modules/agent-factory/agent/src/operations-story-entry.test.ts'
+      - 'modules/agent-factory/agent/src/operations-story-control.ts'
+      - 'modules/agent-factory/agent/src/operations-story-control.test.ts'
       - 'modules/agent-factory/agent/src/registered-control-fixture.ts'
       - 'modules/agent-factory/agent/src/registered-control-fixture.test.ts'
       - 'modules/agent-factory/agent/src/harnesses/**'
@@ -167,6 +171,13 @@ on:
       # Delegated authority and the CLI need the same fast gate as the listener.
       - 'modules/gateway/src/agentauth/**'
       - 'modules/gateway/tests/agentauth/**'
+      - 'modules/gateway/src/auth/__init__.py'
+      - 'modules/gateway/tests/conftest.py'
+      - 'modules/gateway/tests/sqlite_schema.py'
+      - 'modules/gateway/tests/migrations/conftest_postgres.py'
+      - 'modules/gateway/pyproject.toml'
+      - 'modules/gateway/tests/ci_sharding.py'
+      - 'modules/gateway/.test_durations'
       # The gateway contract tests exercise these real ingress writers/handlers.
       - 'modules/agent-factory/webhook-ingress/lambda/common/agent_authority.py'
       - 'modules/agent-factory/webhook-ingress/lambda/common/service_authority.py'
@@ -286,7 +297,7 @@ concurrency:
   # The dispatched SHA is part of the group so two manual runs against different
   # revisions do not cancel each other: on a workflow_dispatch `github.sha` is the
   # workflow ref, which would be identical for both.
-  group: ${{ github.workflow }}-agent-control-ci-${{ github.event.pull_request.number || inputs.source_sha || github.sha }}
+  group: ${{ github.workflow }}-agent-control-ci-${{ github.event.pull_request.number || inputs.source_sha || (github.event_name == 'push' && github.ref) || github.sha }}
   cancel-in-progress: true
 
 permissions:
@@ -345,9 +356,9 @@ jobs:
           echo "expected=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "Manual run against $SOURCE_SHA." >> "$GITHUB_STEP_SUMMARY"
 
-  agent-control-tests:
-    # AC-S7 required-check name. Do not rename.
-    name: Agent control tests
+  control-contract-tests:
+    # The stable Agent control tests gate below includes this job and all shards.
+    name: Control contracts and coverage
     runs-on: arc-runner-org
     needs: resolve-source
     steps:
@@ -410,7 +421,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: modules/gateway
-        run: pip install -e ".[dev]"
+        run: pip install -e '.[dev]' -e '../L5-services[dev]'
 
       - name: Lint control modules
         working-directory: modules/gateway
@@ -434,11 +445,10 @@ jobs:
         # when a PR lands two of the three edits.
         run: |
           pytest \
-            tests/activity/test_control_proxy.py \
             tests/activity/test_agent_control_flag_parity.py \
             tests/orchestration/test_controls.py \
             tests/features/test_routes.py \
-            -v --tb=short --timeout=120
+            -q --tb=short --timeout=120 -n 4 --dist loadfile
 
       - name: Run shared terminal-vocabulary tests
         working-directory: modules/gateway
@@ -458,63 +468,7 @@ jobs:
             tests/activity/test_status_aborted.py \
             tests/activity/test_liveness.py \
             tests/activity/test_stats_service.py \
-            -v --tb=short --timeout=120
-
-      - name: Setup Node for chat ports
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: modules/agent-factory/agent/package-lock.json
-
-      - name: Install chat-worker test dependencies
-        working-directory: modules/agent-factory/agent
-        run: npm ci --include=dev --ignore-scripts
-
-      - name: Run delegated authorization tests
-        working-directory: modules/gateway
-        # Require the existing security suites by name, then collect the whole
-        # directory so new bootstrap/route integration tests join this gate.
-        # Deleting a required suite must fail rather than reduce coverage silently.
-        run: |
-          for suite in \
-            test_adapter.py test_envelope.py test_envelope_vectors.py \
-            test_execution.py test_grants.py test_policy.py \
-            test_run_credential.py test_store.py test_store_lifecycle.py \
-            test_store_reservations.py test_wave_dispatch.py test_revalidation.py test_human_control.py \
-            test_run_services.py test_artifact_service.py \
-            test_task_delivery.py test_task_routes.py \
-            test_abort_receipt.py test_abort_redelivery_refusal.py \
-            test_abort_intent_store.py test_abort_reconciliation.py \
-            test_exit_retention.py test_retained_abort_recovery.py \
-            test_knowledge_service.py test_knowledge_service_postgres.py; do
-            test -f "tests/agentauth/$suite" || exit 1
-          done
-          # -n 4 pinned to the runner's cpu limit (arc-runner/main.tf). This step
-          # was 12m29s of a ~15m job — every other step here is under a minute —
-          # because it ran ~1700 tests serially on one core while tests/agentauth
-          # grew by 313 tests in three days. Measured on the exact selection
-          # above: 328s serial -> 126s at -n 4, 2.6x, with byte-identical results
-          # (1703 passed, 5 skipped both ways).
-          #
-          # NEVER `-n auto`: nproc inside the runner pod reports the NODE's 32
-          # cores, not the pod's cgroup limit, so auto oversubscribes and runs
-          # slower than a pinned value.
-          #
-          # `--dist loadfile` keeps every test in a file on one worker. The
-          # gateway suite has cross-file ordering dependencies that the default
-          # round-robin distribution breaks (see gateway-ci.yml for the measured
-          # case: 9 phantom failures without it, 6 with). Removing it here
-          # invites the same class of flake.
-          # The chat data-path suites (tests/agentauth/test_chat_*.py, #6932) are
-          # gateway storage tests: ~500 tests that each boot moto + the app. They
-          # run in Gateway CI's full-tree shards and its dedicated chat-ports job.
-          # Running them again here pushed this single-runner job from ~1700 to
-          # ~3000 tests and the runner died mid-run (log ends at 30% with no
-          # summary); this gate stays scoped to agent-control suites.
-          pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py \
-            --ignore-glob='tests/agentauth/test_chat_*.py' \
-            -v --tb=short --timeout=120 -n 4 --dist loadfile
+            -q --tb=short --timeout=120 -n 4 --dist loadfile
 
       # Coverage is enforced per-file with `--cov-fail-under`, not as a repo-wide
       # average. The story requires >=85% line AND branch on the NEW control
@@ -530,7 +484,7 @@ jobs:
             tests/agentauth/test_abort_reconciliation.py \
             --cov=src.agentauth.exit_retention --cov=src.agentauth.retained_abort_recovery \
             --cov=src.agentauth.abort_reconciliation --cov-branch \
-            --cov-report=json:abort-recovery-coverage.json --timeout=120
+            --cov-report=json:abort-recovery-coverage.json --timeout=120 -n 4 --dist loadfile
           python - <<'PYCODE'
           import json
           report = json.load(open("abort-recovery-coverage.json"))
@@ -556,7 +510,7 @@ jobs:
             --cov-branch \
             --cov-report=term-missing \
             --cov-fail-under=85 \
-            --timeout=120
+            --timeout=120 -n 4 --dist loadfile
 
       - name: Assert only implemented control verbs are advertised
         working-directory: modules/gateway
@@ -703,6 +657,151 @@ jobs:
           terraform init -backend=false -input=false -no-color
           terraform validate -no-color
 
+  agent-authority-tests:
+    name: Agent authority shard ${{ matrix.shard }}
+    runs-on: arc-runner-org
+    needs: resolve-source
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined rather than factored into a local composite action, deliberately: a
+      # `uses: ./...` step resolves from the CHECKED-OUT tree, so a dispatch against a
+      # revision that predates the action would fail to find it — and the whole point
+      # of the manual path is gating revisions other than this one.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: agent-authority-${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          # `workflow_ref_sha` is recorded ALONGSIDE the checked-out SHA, never as it:
+          # on a manual run github.sha names the ref this workflow file came from, not
+          # the revision under test. Evaluation #3967 reads `checked_out_revision`.
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - name: Retain checkout evidence in S3
+        env:
+          CI_EVIDENCE_NAME: checked-out-revision-agent-authority-${{ matrix.shard }}
+          CI_EVIDENCE_PATH: ${{ runner.temp }}/checked-out-revision/agent-authority-${{ matrix.shard }}.json
+        run: |
+          set -euo pipefail
+          # Manual evaluation may check out a revision predating the uploader.
+          # Load tooling from the exact workflow revision without changing HEAD.
+          [[ "$GITHUB_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags --depth=1 origin "$GITHUB_WORKFLOW_SHA"
+          git show "$GITHUB_WORKFLOW_SHA:.github/scripts/upload_ci_evidence_s3.py" > "$RUNNER_TEMP/upload_ci_evidence_s3.py"
+          python3 "$RUNNER_TEMP/upload_ci_evidence_s3.py"
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/gateway/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: modules/gateway
+        run: pip install -e '.[dev]' -e '../L5-services[dev]'
+
+      - name: Setup Node for chat ports
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+
+      - name: Install chat-worker test dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci --include=dev --ignore-scripts
+
+      - name: Run delegated authorization tests
+        working-directory: modules/gateway
+        # Require the existing security suites by name, then collect the whole
+        # directory so new bootstrap/route integration tests join this gate.
+        # Deleting a required suite must fail rather than reduce coverage silently.
+        run: |
+          for suite in \
+            test_adapter.py test_envelope.py test_envelope_vectors.py \
+            test_execution.py test_grants.py test_policy.py \
+            test_run_credential.py test_store.py test_store_lifecycle.py \
+            test_store_reservations.py test_wave_dispatch.py test_revalidation.py test_human_control.py \
+            test_run_services.py test_artifact_service.py \
+            test_task_delivery.py test_task_routes.py \
+            test_abort_receipt.py test_abort_redelivery_refusal.py \
+            test_abort_intent_store.py test_abort_reconciliation.py \
+            test_exit_retention.py test_retained_abort_recovery.py \
+            test_knowledge_service.py test_knowledge_service_postgres.py; do
+            test -f "tests/agentauth/$suite" || exit 1
+          done
+          # Historical manual dispatches can target a revision predating the
+          # file selector. Keep those revisions runnable with the legacy splitter.
+          if [ -f tests/ci_sharding.py ]; then
+            shard_args=(--ci-file-shards=${{ strategy.job-total }} --ci-file-shard=${{ matrix.shard }}
+              --ci-timing-output=ci-results/authority/durations.json
+              --ci-collection-output=ci-results/authority/test-ids.json)
+          else
+            python -m pip install pytest-split==0.11.0
+            shard_args=(--splits=${{ strategy.job-total }} --group=${{ matrix.shard }})
+          fi
+          # These four files execute once in the mandatory coverage job above.
+          # The aggregate gate requires both jobs to succeed.
+          pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py \
+            --ignore-glob='tests/agentauth/test_chat_*.py' \
+            --ignore=tests/agentauth/test_exit_retention.py \
+            --ignore=tests/agentauth/test_retained_abort_recovery.py \
+            --ignore=tests/agentauth/test_abort_reconciliation.py \
+            --ignore=tests/agentauth/test_human_control.py \
+            -q --tb=short --timeout=120 -n 4 --dist loadfile \
+            "${shard_args[@]}"
+
+      - name: Retain authority timing and selection evidence
+        # Historical source revisions use pytest-split and produce no selector
+        # evidence. Modern revisions must retain their timing and selection data.
+        if: ${{ always() && hashFiles('modules/gateway/tests/ci_sharding.py') != '' }}
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: authority-test-timing-${{ matrix.shard }}
+          path: modules/gateway/ci-results/authority/
+
+  agent-control-tests:
+    # AC-S7 required-check name. Do not rename.
+    name: Agent control tests
+    runs-on: arc-runner-org
+    needs: [control-contract-tests, agent-authority-tests]
+    if: always()
+    steps:
+      - name: Verify control contracts, coverage and every authority shard passed
+        env:
+          CONTRACTS: ${{ needs.control-contract-tests.result }}
+          AUTHORITY: ${{ needs.agent-authority-tests.result }}
+        run: |
+          test "$CONTRACTS" = success
+          test "$AUTHORITY" = success
+
   worker-control-tests:
     # AC-S7 required-check name. Do not rename.
     name: Worker control tests
@@ -764,6 +863,10 @@ jobs:
       - name: Install agent dependencies
         working-directory: modules/agent-factory/agent
         run: npm ci
+
+      - name: Verify installed Claude SDK settlement refusal without live models
+        working-directory: modules/agent-factory/agent
+        run: python3 ../codex-harness/test/run-isolated.py -- node tests/sdk-settlement-refusal.mjs
 
       - name: Typecheck
         working-directory: modules/agent-factory/agent
@@ -873,6 +976,7 @@ jobs:
             src/control-runtime-timeout.assembly.test.ts \
             src/control-runtime-steering-probe.test.ts \
             src/control-runtime-factory.test.ts src/registered-control-fixture.test.ts \
+            src/operations-story-entry.test.ts src/operations-story-control.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \

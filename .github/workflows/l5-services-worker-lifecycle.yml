@@ -1,0 +1,138 @@
+name: L5 Service Worker Lifecycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        required: true
+        type: choice
+        options: [status, rollout, rollback, resume, teardown, reconcile-wa-schedule-scope]
+      reconciliation_mode:
+        description: WA scope reconciliation only; plan inspects, apply verifies and applies one saved plan
+        type: choice
+        default: plan
+        options: [plan, apply]
+      reviewed_plan_digest:
+        description: WA apply only; digest from the reviewed plan-only reconciliation receipt
+        required: false
+        type: string
+      service:
+        type: choice
+        default: security
+        options: [security, devops, transform, well_architected, finops]
+      environment:
+        required: true
+        type: choice
+        options: [dev, test, prod]
+      release_source_sha:
+        description: Reviewed main ancestor of the worker artifact; required for rollout, rollback, resume and WA reconciliation
+        required: false
+        type: string
+      gateway_wheel_sha256:
+        description: Expected installed gateway wheel digest; required for rollout, rollback and resume
+        required: false
+        type: string
+      manifest_version:
+        description: Private version ID of the selected release manifest
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: l5-services-release-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  lifecycle:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+    environment: adp-gateway-deploy-${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check selected reviewed source
+        env:
+          SOURCE_SHA: ${{ inputs.release_source_sha }}
+          OPERATION: ${{ inputs.operation }}
+          SERVICE: ${{ inputs.service }}
+        run: |
+          set -euo pipefail
+          if [[ "$OPERATION" == rollout || "$OPERATION" == rollback || "$OPERATION" == resume || "$OPERATION" == reconcile-wa-schedule-scope ]]; then
+            [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git merge-base --is-ancestor "$SOURCE_SHA" HEAD
+          fi
+          if [[ "$OPERATION" == reconcile-wa-schedule-scope ]]; then
+            test "$SERVICE" = well_architected
+          fi
+      - uses: hashicorp/setup-terraform@v4
+        if: inputs.operation == 'reconcile-wa-schedule-scope'
+        with:
+          terraform_wrapper: false
+          terraform_version: 1.14.0
+      - id: identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Apply bounded worker operation
+        if: inputs.operation != 'reconcile-wa-schedule-scope'
+        env:
+          OPERATION: ${{ inputs.operation }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SOURCE_SHA: ${{ inputs.release_source_sha }}
+          GATEWAY_WHEEL: ${{ inputs.gateway_wheel_sha256 }}
+          MANIFEST_VERSION: ${{ inputs.manifest_version }}
+          RELEASE_BUCKET: ${{ vars.ADP_L5_RELEASE_BUCKET }}
+          SERVICE: ${{ inputs.service }}
+          DEPLOY_ROLE: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN || vars.ADP_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_BUCKET"
+          [[ "$DEPLOY_ROLE" =~ ^arn:aws:iam::([0-9]{12}):role/[A-Za-z0-9+=,.@_/-]+$ ]]
+          TARGET_ACCOUNT="${BASH_REMATCH[1]}"
+          python3 modules/L5-services/scripts/worker-lifecycle.py "$OPERATION" \
+            --service "$SERVICE" --environment "$ENVIRONMENT" --account "$TARGET_ACCOUNT" --role-arn "$DEPLOY_ROLE" \
+            --bucket "$RELEASE_BUCKET" --source-sha "$SOURCE_SHA" \
+            --gateway-wheel-sha256 "$GATEWAY_WHEEL" --manifest-version "$MANIFEST_VERSION" \
+            --receipt "$RUNNER_TEMP/l5-worker-lifecycle-receipt.json"
+      - name: Reconcile only WA schedule admission permissions
+        if: inputs.operation == 'reconcile-wa-schedule-scope'
+        env:
+          RECONCILIATION_MODE: ${{ inputs.reconciliation_mode || 'plan' }}
+          REVIEWED_PLAN_DIGEST: ${{ inputs.reviewed_plan_digest }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SOURCE_SHA: ${{ inputs.release_source_sha }}
+          GATEWAY_WHEEL: ${{ inputs.gateway_wheel_sha256 }}
+          MANIFEST_VERSION: ${{ inputs.manifest_version }}
+          RELEASE_BUCKET: ${{ vars.ADP_L5_RELEASE_BUCKET }}
+          DEPLOY_ROLE: ${{ vars.ADP_L5_DEPLOY_ROLE_ARN }}
+          TARGET_REGION: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+          L5_INFRA_CONFIG_JSON: ${{ secrets.ADP_L5_INFRA_CONFIG_JSON }}
+        run: |
+          set -euo pipefail
+          python3 modules/L5-services/scripts/reconcile-wa-schedule-scope.py "$RECONCILIATION_MODE" \
+            --reviewed-plan-digest "$REVIEWED_PLAN_DIGEST" \
+            --environment "$ENVIRONMENT" --region "$TARGET_REGION" --role-arn "$DEPLOY_ROLE" \
+            --bucket "$RELEASE_BUCKET" --source-sha "$SOURCE_SHA" \
+            --gateway-wheel-sha256 "$GATEWAY_WHEEL" --manifest-version "$MANIFEST_VERSION" \
+            --receipt "$RUNNER_TEMP/l5-worker-lifecycle-receipt.json"
+      - name: Save private lifecycle and retained-resource evidence
+        if: always() && steps.identity.outcome == 'success'
+        env:
+          RELEASE_BUCKET: ${{ vars.ADP_L5_RELEASE_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [[ -f "$RUNNER_TEMP/l5-worker-lifecycle-receipt.json" ]]; then
+            version=$(aws s3api put-object --bucket "$RELEASE_BUCKET" \
+              --key "l5/security/operations/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}.json" \
+              --body "$RUNNER_TEMP/l5-worker-lifecycle-receipt.json" --if-none-match '*' --query VersionId --output text)
+            [[ -n "$version" && "$version" != None && "$version" != null ]]
+          fi

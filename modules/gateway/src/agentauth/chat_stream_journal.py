@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from botocore.exceptions import BotoCoreError, ClientError
 
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, ChatLaunchStore
+from src.agentauth.chat_delivery import owner_mismatch
 from src.agentauth.chat_event_journal import ChatEventJournal
 from src.agentauth.chat_history_store import ChatHistoryStore
 from src.agentauth.chat_history_write import ChatHistoryWriter
@@ -13,8 +14,9 @@ from src.orchestration.chat_data_migration import _owns_context_row
 
 
 def append_stream_event(authority, launch, delivery, event_id, payload, *, now):
-    if any(getattr(delivery, field) != getattr(launch, field) for field in ("tenant_id", "team_id", "user_id", "session_id", "run_id")):
-        raise ChatAuthorizationRefusedError("chat stream delivery changed")
+    mismatch = owner_mismatch(delivery, launch)
+    if mismatch:
+        raise ChatAuthorizationRefusedError("chat stream delivery changed: " + ",".join(mismatch))
     store = authority.store
     owner = (launch.tenant_id, launch.team_id, launch.user_id)
     writer = ChatHistoryWriter(authority, ChatHistoryStore(authority.context_table, None))

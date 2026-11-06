@@ -38,6 +38,8 @@ they are load-bearing, not boilerplate: without them `begin_nested()` becomes th
 outermost unit of work and `compile_proposal`'s savepoint is not exercised.
 """
 
+import json
+
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import event
@@ -45,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from src.admin.config import Permission
+from src.orchestration.compile import ApprovalContext
 from src.orchestration.models import (
     DecisionKind,
     OrchestrationAcceptedPlan,
@@ -53,11 +56,14 @@ from src.orchestration.models import (
     OrchestrationFlow,
     OrchestrationNode,
 )
-from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode
+from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode, RepositoryConnection
 from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.state import ActorKind, NodeState
+from src.products.models import Product
 from src.shared.models.base import Base
-from src.shared.models.organization import Organization
+from src.shared.models.organization import Organization, User
+from tests.orchestration.legacy_plan import persist_legacy_plan
+from tests.orchestration.product_fixture import seed_product, seed_product_membership
 
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
@@ -82,6 +88,84 @@ def dispatch_repo_configured(monkeypatch):
 
 
 @pytest.fixture
+def verified_repositories(monkeypatch):
+    from src.orchestration import repository_binding
+
+    async def resolve(_session, *, tenant_id, name, repository_id, issue, operation, installation_id, **_kwargs):
+        assert tenant_id == ORG_A
+        assert (name, repository_id) in {("demo/repo-a", 1001), ("demo/repo-b", 1002)}
+        selected = installation_id or (12345 if repository_id == 1001 else 901)
+        return repository_binding.VerifiedRepository("github", repository_id, name, selected, name, issue, operation)
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", resolve)
+
+
+@pytest.fixture
+def authenticated_story_provider(monkeypatch):
+    from types import SimpleNamespace
+
+    import httpx
+
+    from src.admin.connections.github_client import GitHubAppClient
+    from src.admin.installations.resolver import OwnerState
+    from src.orchestration import repository_binding
+
+    state = {"case": "valid", "paths": []}
+
+    def respond(request):
+        path = request.url.path
+        state["paths"].append(path)
+        case = state["case"]
+        observed_name = "demo/renamed" if case in {"rename", "reused_name"} else "demo/repo-b"
+        if path == "/repositories/1002":
+            return httpx.Response(200, json={"id": 2002 if case == "id_mismatch" else 1002, "full_name": observed_name})
+        if path == "/repos/demo/repo-b":
+            return httpx.Response(200, json={"id": 2002, "full_name": "demo/repo-b"}) if case == "reused_name" else httpx.Response(404)
+        if path == f"/repos/{observed_name}/issues/42":
+            issue_repository = "demo/repo-a" if case == "issue_in_a" else observed_name
+            return httpx.Response(
+                200,
+                json={
+                    "id": 9001,
+                    "node_id": "I_9001",
+                    "number": 43 if case == "issue_number_mismatch" else 42,
+                    "repository_url": f"https://api.github.com/repos/{issue_repository}",
+                    "html_url": f"https://github.com/{issue_repository}/issues/42",
+                },
+            )
+        pytest.fail(f"unexpected provider request {path}")
+
+    transport = httpx.MockTransport(respond)
+    original_client = httpx.AsyncClient
+
+    def client(*args, **kwargs):
+        return original_client(*args, transport=transport, **kwargs)
+
+    async def owner(installation_id, *, db):
+        assert installation_id == 11
+        return SimpleNamespace(tenant_id=ORG_A, github_account_id="111"), OwnerState.RESOLVED
+
+    async def credentials(tenant_id):
+        assert tenant_id == ORG_A
+        return "fictional-app", "fictional-key"
+
+    async def token(*args, **kwargs):
+        assert kwargs.get("repository_ids") == [1002] or kwargs.get("repositories") == ["repo-b"]
+        return "synthetic-token", "unused"
+
+    async def installation(_self, installation_id):
+        assert installation_id == 11
+        return {"account": {"id": 111}}
+
+    monkeypatch.setattr(repository_binding, "resolve_installation_owner", owner)
+    monkeypatch.setattr(repository_binding, "resolve_tenant_app_credentials", credentials)
+    monkeypatch.setattr(repository_binding, "mint_installation_token_with_expiry", token)
+    monkeypatch.setattr(repository_binding.httpx, "AsyncClient", client)
+    monkeypatch.setattr(GitHubAppClient, "get_installation", installation)
+    return state
+
+
+@pytest.fixture
 async def session():
     """In-memory SQLite session with working SAVEPOINTs. See module docstring."""
     engine = create_async_engine(
@@ -103,6 +187,8 @@ async def session():
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as s:
+        await seed_product(s, org_id=ORG_A, actor_id=USER_ID)
+        await s.commit()
         yield s
     await engine.dispose()
 
@@ -122,6 +208,7 @@ def valid_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
     payload = {
         "flow_slug": FLOW,
         "title": "Delivery loop",
+        "product_id": f"product-{org_id}",
         "org_id": org_id,
         "spec_revision": SPEC_REVISION,
         "intent_ref": "4120",
@@ -305,6 +392,780 @@ async def submitted_flow_nodes(session: AsyncSession, flow_id: str, *, org_id: s
 
 class TestHappyPath:
     """An authorized submission creates the graph the engine sweeps."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("second_repository_id", "ordered"),
+        [(1001, False), (1001, True), (1002, False)],
+        ids=["same-repository-unordered", "same-repository-ordered", "different-repositories-unordered"],
+    )
+    async def test_duplicate_work_scenario_through_flow_acceptance(
+        self, session, app_with_router, second_repository_id, ordered, verified_repositories
+    ):
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        await session.merge(User(id=USER_ID, org_id=ORG_A, team_id="team", email="owner@example.test"))
+        await seed_product_membership(session, org_id=ORG_A, user_id=USER_ID)
+        session.add(
+            Product(
+                team_id=f"product-team-{ORG_A}",
+                id="product-1",
+                tenant_id=ORG_A,
+                name="Demo",
+                purpose="Demo",
+                intended_users=["team"],
+                owner_user_id=USER_ID,
+                starting_point="running_product",
+                created_by=USER_ID,
+            )
+        )
+        await session.flush()
+        proposal = valid_proposal(product_id="product-1")
+        proposal.nodes[0].issue_ref = "42"
+        proposal.nodes[0].repository_identity = "demo/repo-a"
+        proposal.nodes[0].provider_repository_id = 1001
+        proposal.nodes.insert(
+            1,
+            ProposedNode(
+                address=address("story-b"),
+                kind="story",
+                title="Follow-up",
+                issue_ref="#42",
+                repository_identity="demo/repo-a" if second_repository_id == 1001 else "demo/repo-b",
+                provider_repository_id=second_repository_id,
+            ),
+        )
+        proposal.edges.append(ProposedEdge(from_address=address("story-b"), to_address=address("eval")))
+        if ordered:
+            proposal.edges.append(ProposedEdge(from_address=address("story-a"), to_address=address("story-b")))
+
+        response = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+
+        if second_repository_id == 1001 and not ordered:
+            assert response.status_code == 422, response.text
+            assert {violation["rule"] for violation in response.json()["detail"]["violations"]} >= {"unordered_same_issue"}
+            for table in (OrchestrationFlow, OrchestrationNode, OrchestrationEdge, OrchestrationAcceptedPlan, OrchestrationDecision):
+                assert await count_rows(session, table) == 0
+            return
+
+        assert response.status_code == 201, response.text
+        flow_id = response.json()["flow_id"]
+        plan = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=flow_id)
+        assert plan.plan_document["product_id"] == "product-1"
+        assert {(node["provider_repository_id"], node["issue_ref"]) for node in plan.plan_document["nodes"] if node["kind"] == "story"} == {
+            (1001, "42"),
+            (second_repository_id, "#42"),
+        }
+        projected = await submitted_flow_nodes(session, flow_id)
+        assert {projected[address(story)].provider_repository_id for story in ("story-a", "story-b")} == {1001, second_repository_id}
+        assert ({"from_address": address("story-a"), "to_address": address("story-b")} in plan.plan_document["edges"]) is ordered
+
+    @pytest.mark.asyncio
+    async def test_same_repository_repeated_issue_requires_accepted_order(self, session, app_with_router, verified_repositories):
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        await session.merge(User(id=USER_ID, org_id=ORG_A, team_id="team", email="owner@example.test"))
+        await seed_product_membership(session, org_id=ORG_A, user_id=USER_ID)
+        session.add(
+            Product(
+                team_id=f"product-team-{ORG_A}",
+                id="product-1",
+                tenant_id=ORG_A,
+                name="Demo",
+                purpose="Demo",
+                intended_users=["team"],
+                owner_user_id=USER_ID,
+                starting_point="running_product",
+                created_by=USER_ID,
+            )
+        )
+        await session.flush()
+        proposal = valid_proposal(product_id="product-1")
+        proposal.nodes[0].issue_ref = "42"
+        proposal.nodes[0].repository_identity = "demo/repo-a"
+        proposal.nodes[0].provider_repository_id = 1001
+        proposal.nodes.insert(
+            1,
+            ProposedNode(
+                address=address("story-b"),
+                kind="story",
+                title="Follow-up",
+                issue_ref="#42",
+                repository_identity="demo/repo-a",
+                provider_repository_id=1001,
+            ),
+        )
+        proposal.edges.append(ProposedEdge(from_address=address("story-b"), to_address=address("eval")))
+        client = client_for(app_with_router, permitted=True)
+
+        unordered = client.post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert unordered.status_code == 422, unordered.text
+        assert "unordered_same_issue" in str(unordered.json())
+        assert await count_rows(session, OrchestrationFlow) == 0
+        assert await count_rows(session, OrchestrationAcceptedPlan) == 0
+
+        proposal.edges.append(ProposedEdge(from_address=address("story-a"), to_address=address("story-b")))
+        ordered = client.post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert ordered.status_code == 201, ordered.text
+        plan = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=ordered.json()["flow_id"])
+        assert {("demo/repo-a", 1001, "42"), ("demo/repo-a", 1001, "#42")} <= {
+            (node["repository_identity"], node["provider_repository_id"], node["issue_ref"])
+            for node in plan.plan_document["nodes"]
+            if node["kind"] == "story"
+        }
+        assert {"from_address": address("story-a"), "to_address": address("story-b")} in plan.plan_document["edges"]
+
+    @pytest.mark.asyncio
+    async def test_product_bound_stories_in_two_repositories(self, session, app_with_router, verified_repositories):
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        await session.merge(User(id=USER_ID, org_id=ORG_A, team_id="team", email="owner@example.test"))
+        await seed_product_membership(session, org_id=ORG_A, user_id=USER_ID)
+        session.add(
+            Product(
+                team_id=f"product-team-{ORG_A}",
+                id="product-1",
+                tenant_id=ORG_A,
+                name="Demo",
+                purpose="Demo",
+                intended_users=["team"],
+                owner_user_id=USER_ID,
+                starting_point="running_product",
+                created_by=USER_ID,
+            )
+        )
+        await session.flush()
+        proposal = valid_proposal(product_id="product-1")
+        proposal.nodes[0].issue_ref = "42"
+        proposal.nodes[0].repository_identity = "demo/repo-a"
+        proposal.nodes[0].provider_repository_id = 1001
+        proposal.nodes.insert(
+            1,
+            ProposedNode(
+                address=address("story-b"),
+                kind="story",
+                title="Story B",
+                issue_ref="#42",
+                repository_identity="demo/repo-b",
+                provider_repository_id=1002,
+            ),
+        )
+        proposal.edges.append(ProposedEdge(from_address=address("story-b"), to_address=address("eval")))
+        proposal.nodes[1].repository_connection = RepositoryConnection(provider="github", installation_id=901)
+
+        response = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+
+        assert response.status_code == 201, response.text
+        flow_id = response.json()["flow_id"]
+        flow = await session.get(OrchestrationFlow, flow_id)
+        plan = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=flow_id)
+        stories = [node for node in (await submitted_flow_nodes(session, flow_id)).values() if node.kind == "story"]
+        assert flow.product_id == plan.plan_document["product_id"] == "product-1"
+        assert {(node.repository_identity, node.provider_repository_id) for node in stories} == {("demo/repo-a", 1001), ("demo/repo-b", 1002)}
+        assert response.json()["product_id"] == "product-1"
+        client = client_for(app_with_router, permitted=True)
+        graph = client.get(f"{ROUTE}/{flow_id}")
+        assert graph.status_code == 200, graph.text
+        assert graph.json()["product_id"] == "product-1"
+        assert next(node for node in graph.json()["nodes"] if node["node_ref"] == "story-b")["repository_connection"] == {
+            "provider": "github",
+            "installation_id": 901,
+        }
+        assert {(node["repository_identity"], node["provider_repository_id"]) for node in graph.json()["nodes"] if node["kind"] == "story"} == {
+            ("demo/repo-a", 1001),
+            ("demo/repo-b", 1002),
+        }
+        summaries = client.get(ROUTE)
+        assert summaries.status_code == 200, summaries.text
+        assert next(item for item in summaries.json()["flows"] if item["id"] == flow_id)["product_id"] == "product-1"
+        assert response.json()["dispatchable"] is False
+        assert "repository_execution_withheld" in causes_of(response.json())
+        assert "compatible execution readers" in response.json()["dispatch_blocked_reason"]
+
+        retried = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert retried.status_code == 200, retried.text
+        assert retried.json()["flow_id"] == flow_id
+        assert retried.json()["dispatchable"] is False
+        assert "repository_execution_withheld" in causes_of(retried.json())
+
+    @pytest.mark.asyncio
+    async def test_two_verified_stories_admit_repositories_but_withhold_worker_dispatch(
+        self, session, app_with_router, verified_repositories, monkeypatch
+    ):
+        from src.orchestration import repository_binding
+        from src.orchestration.accepted_node import accepted_node_contract
+        from src.orchestration.dispatch_pass import DispatchPassConfig, run_dispatch_pass
+        from src.orchestration.models import OrchestrationWorkClaim
+        from src.orchestration.work_admission import resolve_accepted_repository
+
+        await seed_org(session, ORG_A, installation_ids=["12345", "901", "777"])
+        await seed_product(session, org_id=ORG_A, actor_id=USER_ID, product_id="product-1")
+        proposal = valid_proposal(product_id="product-1")
+        proposal.nodes[0].issue_ref = "42"
+        proposal.nodes[0].repository_identity = "demo/repo-a"
+        proposal.nodes[0].provider_repository_id = 1001
+        proposal.nodes.insert(
+            1,
+            ProposedNode(
+                address=address("story-b"),
+                kind="story",
+                title="Story B",
+                issue_ref="42",
+                repository_identity="demo/repo-b",
+                provider_repository_id=1002,
+                repository_connection=RepositoryConnection(provider="github", installation_id=901),
+            ),
+        )
+        proposal.nodes[2].issue_ref = "43"
+        proposal.edges.append(ProposedEdge(from_address=address("story-b"), to_address=address("eval")))
+        calls = []
+        resolve = repository_binding.resolve_story_repository
+
+        async def checked(*args, **kwargs):
+            calls.append((kwargs["operation"], kwargs["name"], kwargs.get("installation_id")))
+            return await resolve(*args, **kwargs)
+
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", checked)
+        accepted = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert accepted.status_code == 201, accepted.text
+        assert causes_of(accepted.json()) == {"repository_execution_withheld"}
+        flow_id = accepted.json()["flow_id"]
+        flow = await session.get(OrchestrationFlow, flow_id)
+        flow.execution_paused = False
+        nodes = await submitted_flow_nodes(session, flow_id)
+        stories = [node for node in nodes.values() if node.kind == "story"]
+        assert {(node.repository_identity, node.provider_repository_id, node.repository_connection["installation_id"]) for node in stories} == {
+            ("demo/repo-a", 1001, 12345),
+            ("demo/repo-b", 1002, 901),
+        }
+        admission_results = {
+            await resolve_accepted_repository(session, node=story, contract=await accepted_node_contract(session, story), repo="demo/default")
+            for story in stories
+        }
+        assert admission_results == {(12345, 1001, "demo/repo-a"), (901, 1002, "demo/repo-b")}
+        assert [call[0] for call in calls].count("accept") == 2
+        assert {call[2] for call in calls if call[0] == "dispatch"} == {12345, 901}
+        for story in stories:
+            story.state = NodeState.READY.value
+        await session.flush()
+        monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+        report = await run_dispatch_pass(
+            session,
+            DispatchPassConfig(queue_url="https://sqs.us-east-1.amazonaws.com/123456789012/test.fifo", repo="demo/default"),
+        )
+        assert report.errors == report.admission_refused == report.dispatched == 0
+        assert report.undispatchable == 2
+        assert report.pending == []
+        assert (await session.scalars(sa.select(OrchestrationWorkClaim))).all() == []
+        assert all(story.state == NodeState.READY.value and story.attempts == 0 for story in stories)
+
+    @pytest.mark.asyncio
+    async def test_unbound_product_story_cannot_use_default_installation_at_admission(self, session, app_with_router):
+        from src.orchestration.accepted_node import accepted_node_contract
+        from src.orchestration.work_admission import resolve_accepted_repository
+        from src.orchestration.work_claims import WorkClaimError
+
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        await seed_product(session, org_id=ORG_A, actor_id=USER_ID, product_id="product-1")
+        proposal = valid_proposal(product_id="product-1")
+        accepted = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert accepted.status_code == 201, accepted.text
+        assert "repository_verification_pending" in causes_of(accepted.json())
+        story = (await submitted_flow_nodes(session, accepted.json()["flow_id"]))[address("story-a")]
+        with pytest.raises(WorkClaimError) as caught:
+            await resolve_accepted_repository(session, node=story, contract=await accepted_node_contract(session, story), repo="demo/default")
+        assert caught.value.code == "repository_unavailable"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("case", "selector", "expected"),
+        [
+            ("missing", False, "repository_unavailable"),
+            ("wrong_tenant", True, "connection_not_owned"),
+            ("revoked", True, "connection_revoked"),
+            ("ambiguous", False, "repository_connection_ambiguous"),
+            ("policy", True, "repository_not_permitted"),
+            ("provider_unavailable", True, "repository_verification_unavailable"),
+            ("owner_unavailable", True, "repository_verification_unavailable"),
+        ],
+    )
+    async def test_repository_refusals_through_flow_acceptance(self, session, app_with_router, monkeypatch, case, selector, expected):
+        from types import SimpleNamespace
+
+        from src.admin.installations.resolver import OwnerState
+        from src.orchestration import repository_binding
+        from src.orchestration.models import OrchestrationWorkClaim
+        from src.shared.models.vault import ChannelTenantMap
+
+        await seed_org(session, ORG_A, installation_ids=["11", "22"])
+        await seed_product(session, org_id=ORG_A, actor_id=USER_ID, product_id="product-1")
+        for installation_id in () if case == "missing" else (11, 22) if case == "ambiguous" else (11,):
+            session.add(
+                ChannelTenantMap(
+                    provider="github",
+                    provider_scope_id=str(installation_id + 100),
+                    org_id=ORG_A,
+                    installation_id=str(installation_id),
+                    install_metadata={"account_id": str(installation_id + 100)},
+                )
+            )
+        await session.flush()
+        reads = []
+
+        async def owner(installation_id, *, db):
+            if case == "owner_unavailable":
+                raise TimeoutError("owner metadata unavailable")
+            tenant_id = ORG_B if case == "wrong_tenant" else ORG_A
+            state = OwnerState.REVOKED if case == "revoked" else OwnerState.RESOLVED
+            return SimpleNamespace(tenant_id=tenant_id, github_account_id=str(installation_id + 100)), state
+
+        async def read(_tenant, installation_id, name, repository_id, issue):
+            reads.append(installation_id)
+            if case == "provider_unavailable":
+                raise TimeoutError("provider metadata unavailable")
+            assert (name, repository_id, issue) == ("demo/repo-a", 1001, 42)
+            return {"id": 1001, "full_name": name}, {"account": {"id": installation_id + 100}}, {"id": issue + 10000, "node_id": f"I_{issue}"}
+
+        monkeypatch.setattr(repository_binding, "resolve_installation_owner", owner)
+        monkeypatch.setattr(repository_binding, "_provider_read", read)
+        proposal = valid_proposal(product_id="product-1")
+        proposal.nodes[0].issue_ref = "42"
+        proposal.nodes[0].repository_identity = "demo/repo-a"
+        proposal.nodes[0].provider_repository_id = 1001
+        if selector:
+            proposal.nodes[0].repository_connection = RepositoryConnection(provider="github", installation_id=11)
+        if case == "policy":
+            from tests.orchestration.test_execution_policy_acceptance import a_policy
+
+            proposal.execution_policy = a_policy(repository_ids=["demo/other"], evaluation_acceptance={})
+        response = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert response.status_code == 422, response.text
+        assert [item["rule"] for item in response.json()["detail"]["violations"]] == [expected]
+        assert await count_rows(session, OrchestrationFlow) == 0
+        assert await count_rows(session, OrchestrationAcceptedPlan) == 0
+        assert await count_rows(session, OrchestrationWorkClaim) == 0
+        assert len(reads) <= 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("case", "expected"),
+        [
+            ("missing", "connection_not_owned"),
+            ("wrong_tenant", "connection_not_owned"),
+            ("revoked", "connection_revoked"),
+            ("provider_unavailable", "repository_verification_unavailable"),
+            ("owner_unavailable", "repository_verification_unavailable"),
+            ("invalid_issue", "repository_invalid"),
+        ],
+    )
+    async def test_repository_refusals_through_direct_admission(self, session, app_with_router, monkeypatch, case, expected):
+        from types import SimpleNamespace
+
+        from src.admin.installations.resolver import OwnerState
+        from src.orchestration import repository_binding
+        from src.orchestration.accepted_node import accepted_node_contract
+        from src.orchestration.models import OrchestrationWorkClaim
+        from src.orchestration.work_admission import resolve_accepted_repository
+        from src.orchestration.work_claims import WorkClaimError
+        from src.shared.models.vault import ChannelTenantMap
+
+        await seed_org(session, ORG_A, installation_ids=["11"])
+        await seed_product(session, org_id=ORG_A, actor_id=USER_ID, product_id="product-1")
+        connection = ChannelTenantMap(
+            provider="github",
+            provider_scope_id="111",
+            org_id=ORG_A,
+            installation_id="11",
+            install_metadata={"account_id": "111"},
+        )
+        session.add(connection)
+        await session.flush()
+        state = {"case": "available"}
+
+        async def owner(installation_id, *, db):
+            if state["case"] == "owner_unavailable":
+                raise TimeoutError("owner metadata unavailable")
+            tenant_id = ORG_B if state["case"] == "wrong_tenant" else ORG_A
+            owner_state = OwnerState.REVOKED if state["case"] == "revoked" else OwnerState.RESOLVED
+            return SimpleNamespace(tenant_id=tenant_id, github_account_id="111"), owner_state
+
+        async def read(_tenant, installation_id, name, repository_id, issue):
+            if state["case"] == "provider_unavailable":
+                raise TimeoutError("provider metadata unavailable")
+            return {"id": 1001, "full_name": name}, {"account": {"id": 111}}, {"id": issue + 10000, "node_id": f"I_{issue}"}
+
+        monkeypatch.setattr(repository_binding, "resolve_installation_owner", owner)
+        monkeypatch.setattr(repository_binding, "_provider_read", read)
+        proposal = valid_proposal(product_id="product-1")
+        proposal.nodes[0].issue_ref = "42"
+        proposal.nodes[0].repository_identity = "demo/repo-a"
+        proposal.nodes[0].provider_repository_id = 1001
+        proposal.nodes[0].repository_connection = RepositoryConnection(provider="github", installation_id=11)
+        accepted = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert accepted.status_code == 201, accepted.text
+        assert "repository_execution_withheld" in causes_of(accepted.json())
+        story = (await submitted_flow_nodes(session, accepted.json()["flow_id"]))[address("story-a")]
+        state["case"] = case
+        if case == "missing":
+            await session.delete(connection)
+            await session.flush()
+        if case == "invalid_issue":
+            story.issue_ref = "not-an-issue"
+            await session.flush()
+        with pytest.raises(WorkClaimError) as caught:
+            await resolve_accepted_repository(session, node=story, contract=await accepted_node_contract(session, story), repo="demo/default")
+        assert caught.value.code == expected
+        assert await count_rows(session, OrchestrationWorkClaim) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("case", "expected"),
+        [
+            ("issue_in_a", "repository_identity_mismatch"),
+            ("issue_number_mismatch", "repository_identity_mismatch"),
+            ("id_mismatch", "repository_identity_mismatch"),
+            ("reused_name", "repository_identity_mismatch"),
+            ("rename", None),
+        ],
+    )
+    async def test_authenticated_issue_identity_through_acceptance(self, session, app_with_router, authenticated_story_provider, case, expected):
+        from src.orchestration.models import OrchestrationWorkClaim
+        from src.shared.models.vault import ChannelTenantMap
+
+        await seed_org(session, ORG_A, installation_ids=["11"])
+        await seed_product(session, org_id=ORG_A, actor_id=USER_ID, product_id="product-1")
+        session.add(
+            ChannelTenantMap(provider="github", provider_scope_id="111", org_id=ORG_A, installation_id="11", install_metadata={"account_id": "111"})
+        )
+        await session.flush()
+        proposal = valid_proposal(product_id="product-1")
+        proposal.nodes[0].issue_ref = "42"
+        proposal.nodes[0].repository_identity = "demo/repo-b"
+        proposal.nodes[0].provider_repository_id = 1002
+        proposal.nodes[0].repository_connection = RepositoryConnection(provider="github", installation_id=11)
+        authenticated_story_provider["case"] = case
+
+        response = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+
+        if expected:
+            assert response.status_code == 422, response.text
+            assert [item["rule"] for item in response.json()["detail"]["violations"]] == [expected]
+            assert await count_rows(session, OrchestrationAcceptedPlan) == 0
+            assert await count_rows(session, OrchestrationWorkClaim) == 0
+        else:
+            assert response.status_code == 201, response.text
+            assert "repository_execution_withheld" in causes_of(response.json())
+            story = (await submitted_flow_nodes(session, response.json()["flow_id"]))[address("story-a")]
+            plan = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=response.json()["flow_id"])
+            assert story.repository_identity == plan.plan_document["nodes"][0]["repository_identity"] == "demo/repo-b"
+            assert story.provider_repository_id == plan.plan_document["nodes"][0]["provider_repository_id"] == 1002
+            assert "/repos/demo/renamed/issues/42" in authenticated_story_provider["paths"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("case", "expected"),
+        [
+            ("issue_in_a", "repository_identity_mismatch"),
+            ("reused_name", "repository_identity_mismatch"),
+            ("projection_issue", "repository_binding_changed"),
+            ("projection_name", "repository_binding_changed"),
+            ("rename", None),
+        ],
+    )
+    async def test_authenticated_issue_identity_through_direct_admission(
+        self, session, app_with_router, authenticated_story_provider, case, expected
+    ):
+        from src.orchestration.accepted_node import accepted_node_contract
+        from src.orchestration.models import OrchestrationWorkClaim
+        from src.orchestration.work_admission import resolve_accepted_repository
+        from src.orchestration.work_claims import WorkClaimError
+        from src.shared.models.vault import ChannelTenantMap
+
+        await seed_org(session, ORG_A, installation_ids=["11"])
+        await seed_product(session, org_id=ORG_A, actor_id=USER_ID, product_id="product-1")
+        session.add(
+            ChannelTenantMap(provider="github", provider_scope_id="111", org_id=ORG_A, installation_id="11", install_metadata={"account_id": "111"})
+        )
+        await session.flush()
+        proposal = valid_proposal(product_id="product-1")
+        proposal.nodes[0].issue_ref = "42"
+        proposal.nodes[0].repository_identity = "demo/repo-b"
+        proposal.nodes[0].provider_repository_id = 1002
+        proposal.nodes[0].repository_connection = RepositoryConnection(provider="github", installation_id=11)
+        response = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert response.status_code == 201, response.text
+        story = (await submitted_flow_nodes(session, response.json()["flow_id"]))[address("story-a")]
+        plan = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=response.json()["flow_id"])
+        authenticated_story_provider["case"] = case
+        if case == "projection_issue":
+            story.issue_ref = "43"
+        if case == "projection_name":
+            story.repository_identity = "demo/repo-a"
+        await session.flush()
+        contract = await accepted_node_contract(session, story)
+        if expected:
+            with pytest.raises(WorkClaimError) as caught:
+                await resolve_accepted_repository(session, node=story, contract=contract, repo="demo/default")
+            assert caught.value.code == expected
+        else:
+            assert await resolve_accepted_repository(session, node=story, contract=contract, repo="demo/default") == (11, 1002, "demo/renamed")
+        assert plan.plan_document["nodes"][0]["issue_ref"] == "42"
+        assert plan.plan_document["nodes"][0]["repository_identity"] == "demo/repo-b"
+        assert await count_rows(session, OrchestrationWorkClaim) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("change", "expected"),
+        [
+            ("other_connection", "repository_unavailable"),
+            ("revoked", "connection_revoked"),
+            ("reused", "repository_identity_mismatch"),
+        ],
+    )
+    async def test_previewed_connection_change_refuses_at_route_and_admission_with_dispatch_held(
+        self, session, app_with_router, monkeypatch, change, expected
+    ):
+        from types import SimpleNamespace
+
+        from src.admin.installations.resolver import OwnerState
+        from src.orchestration import repository_binding
+        from src.orchestration.accepted_node import accepted_node_contract
+        from src.orchestration.dispatch_pass import DispatchPassConfig, run_dispatch_pass
+        from src.orchestration.models import OrchestrationWorkClaim
+        from src.orchestration.planning import PlanningInputs, ResolvedRepository, plan_from_draft
+        from src.orchestration.work_admission import resolve_accepted_repository
+        from src.orchestration.work_claims import WorkClaimError
+        from src.shared.models.vault import ChannelTenantMap
+
+        await seed_org(session, ORG_A, installation_ids=["11", "22"])
+        await seed_product(session, org_id=ORG_A, actor_id=USER_ID, product_id="product-1")
+        for installation_id in (11, 22):
+            session.add(
+                ChannelTenantMap(
+                    provider="github",
+                    provider_scope_id=str(installation_id + 100),
+                    org_id=ORG_A,
+                    installation_id=str(installation_id),
+                    install_metadata={"account_id": str(installation_id + 100)},
+                )
+            )
+        await session.flush()
+        authority = {11: 1001, 22: None}
+        revoked = False
+        reads = []
+
+        async def owner(installation_id, *, db):
+            if revoked and installation_id == 11:
+                return None, OwnerState.REVOKED
+            return SimpleNamespace(tenant_id=ORG_A, github_account_id=str(installation_id + 100)), OwnerState.RESOLVED
+
+        async def read(_tenant, installation_id, name, repository_id, issue):
+            reads.append(installation_id)
+            if not authority[installation_id]:
+                return None
+            return (
+                {"id": authority[installation_id], "full_name": name},
+                {"account": {"id": installation_id + 100}},
+                {"id": issue + 10000, "node_id": f"I_{issue}"},
+            )
+
+        monkeypatch.setattr(repository_binding, "resolve_installation_owner", owner)
+        monkeypatch.setattr(repository_binding, "_provider_read", read)
+        preview = await repository_binding.resolve_story_repository(
+            session, tenant_id=ORG_A, name="demo/repo-a", issue=42, operation="preview", installation_id=11
+        )
+        proposal = plan_from_draft(
+            PlanningInputs(
+                flow_slug="preview-flow",
+                title="Reviewed story",
+                outcomes=("Ship story",),
+                issue_ref="42",
+                intent="Ship story",
+                org_id=ORG_A,
+                repository=ResolvedRepository(preview.full_name, preview.installation_id, True, preview.repository_id),
+                last_activity_epoch=1800000000,
+            )
+        )
+        proposal.product_id = "product-1"
+        proposal.proposed_execution_policy = None
+        assert proposal.nodes[0].repository_connection.installation_id == 11
+        assert proposal.nodes[0].provider_repository_id == 1001
+        client = client_for(app_with_router, permitted=True)
+
+        def change_authority():
+            nonlocal revoked
+            if change == "other_connection":
+                authority[11], authority[22] = None, 1001
+            elif change == "revoked":
+                revoked = True
+            else:
+                authority[11] = 2002
+
+        change_authority()
+        reads.clear()
+        refused = client.post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert refused.status_code == 422, refused.text
+        assert [item["rule"] for item in refused.json()["detail"]["violations"]] == [expected]
+        assert reads == ([] if revoked else [11])
+        assert await count_rows(session, OrchestrationAcceptedPlan) == 0
+        authority[11], authority[22], revoked = 1001, None, False
+        accepted = client.post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert accepted.status_code == 201, accepted.text
+        assert "repository_execution_withheld" in causes_of(accepted.json())
+        flow_id = accepted.json()["flow_id"]
+        plan = await OrchestrationRepository(session).get_accepted_plan(org_id=ORG_A, flow_id=flow_id)
+        story = next(node for node in (await submitted_flow_nodes(session, flow_id)).values() if node.kind == "story")
+        assert plan.plan_document["nodes"][0]["repository_connection"]["installation_id"] == 11
+        assert story.repository_connection["installation_id"] == 11
+        change_authority()
+        reads.clear()
+        with pytest.raises(WorkClaimError) as caught:
+            await resolve_accepted_repository(session, node=story, contract=await accepted_node_contract(session, story), repo="demo/default")
+        assert caught.value.code == expected
+        assert reads == ([] if revoked else [11])
+        flow = await session.get(OrchestrationFlow, flow_id)
+        flow.execution_paused = False
+        story.state = NodeState.READY.value
+        await session.flush()
+        monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+        report = await run_dispatch_pass(
+            session,
+            DispatchPassConfig(queue_url="https://sqs.us-east-1.amazonaws.com/123456789012/test.fifo", repo="demo/default"),
+        )
+        assert report.dispatched == 0 and report.pending == [] and report.undispatchable == 1
+        assert story.state == NodeState.READY.value and story.attempts == 0
+        assert await count_rows(session, OrchestrationWorkClaim) == 0
+
+    @pytest.mark.asyncio
+    async def test_acceptance_and_admission_reject_a_resolver_that_switches_the_reviewed_installation(
+        self, session, app_with_router, verified_repositories, monkeypatch
+    ):
+        from dataclasses import replace
+
+        from src.orchestration import repository_binding
+        from src.orchestration.accepted_node import accepted_node_contract
+        from src.orchestration.models import OrchestrationWorkClaim
+        from src.orchestration.work_admission import resolve_accepted_repository
+        from src.orchestration.work_claims import WorkClaimError
+
+        await seed_org(session, ORG_A, installation_ids=["11", "22"])
+        await seed_product(session, org_id=ORG_A, actor_id=USER_ID, product_id="product-1")
+        proposal = valid_proposal(product_id="product-1")
+        proposal.nodes[0].issue_ref = "42"
+        proposal.nodes[0].repository_identity = "demo/repo-a"
+        proposal.nodes[0].provider_repository_id = 1001
+        proposal.nodes[0].repository_connection = RepositoryConnection(provider="github", installation_id=11)
+        switched = True
+        resolve = repository_binding.resolve_story_repository
+
+        async def inconsistent(*args, **kwargs):
+            verified = await resolve(*args, **kwargs)
+            return replace(verified, installation_id=22) if switched else verified
+
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", inconsistent)
+        client = client_for(app_with_router, permitted=True)
+        refused = client.post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert refused.status_code == 422, refused.text
+        assert [item["rule"] for item in refused.json()["detail"]["violations"]] == ["repository_binding_changed"]
+        assert await count_rows(session, OrchestrationAcceptedPlan) == 0
+        switched = False
+        accepted = client.post(ROUTE, json=proposal.model_dump(mode="json"))
+        assert accepted.status_code == 201, accepted.text
+        story = (await submitted_flow_nodes(session, accepted.json()["flow_id"]))[address("story-a")]
+        assert story.repository_connection["installation_id"] == 11
+        switched = True
+        with pytest.raises(WorkClaimError) as caught:
+            await resolve_accepted_repository(session, node=story, contract=await accepted_node_contract(session, story), repo="demo/default")
+        assert caught.value.code == "repository_binding_changed"
+        assert await count_rows(session, OrchestrationWorkClaim) == 0
+
+    @pytest.mark.asyncio
+    async def test_legacy_accepted_flow_reads_and_retries_without_changing_identity(self, session, app_with_router):
+        from .test_compile import valid_proposal as literal_legacy_proposal
+
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        proposal = literal_legacy_proposal(product_id=None)
+        document = proposal.model_dump(mode="json")
+        assert "product_id" not in document
+        assert document["nodes"][0]["repository_identity"] is None
+        expected_hash = "445deca4c2b5f2db7954752501c3e5779d5fa2c36b29554fc2e705c2a7f5c587"
+        client = client_for(app_with_router, permitted=True)
+
+        await persist_legacy_plan(session, proposal, ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
+        first = client.post(ROUTE, json=document)
+        assert first.status_code == 200, first.text
+        flow_id = first.json()["flow_id"]
+        decision_id = first.json()["decision_id"]
+        assert first.json()["product_id"] is None
+        assert first.json()["plan_hash"] == expected_hash
+        assert "repository_verification_pending" not in causes_of(first.json())
+        repository = OrchestrationRepository(session)
+        plan = await repository.get_accepted_plan(org_id=ORG_A, flow_id=flow_id)
+        plan_id = plan.id
+        original_bytes = json.dumps(plan.plan_document, sort_keys=True, separators=(",", ":")).encode()
+        story_id = (await submitted_flow_nodes(session, flow_id))["demo-flow/epic-1/wave-1/story-a"].id
+        (await session.get(OrchestrationNode, story_id)).attempts = 2
+        await session.commit()
+        session.expire_all()
+
+        detail = client.get(f"{ROUTE}/{flow_id}")
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["product_id"] is None
+        story = next(item for item in detail.json()["nodes"] if item["id"] == story_id)
+        assert story["attempts"] == 2
+        assert (story["repository_identity"], story["provider_repository_id"], story["repository_connection"]) == (None, None, None)
+        summaries = client.get(ROUTE)
+        assert summaries.status_code == 200, summaries.text
+        assert next(item for item in summaries.json()["flows"] if item["id"] == flow_id)["product_id"] is None
+        versions = client.get(f"{ROUTE}/{flow_id}/plans")
+        assert versions.status_code == 200, versions.text
+        assert versions.json()[0]["plan_hash"] == expected_hash
+        assert json.dumps(versions.json()[0]["plan_document"], sort_keys=True, separators=(",", ":")).encode() == original_bytes
+
+        retry = client.post(ROUTE, json=document)
+        assert retry.status_code == 200, retry.text
+        assert (retry.json()["flow_id"], retry.json()["decision_id"], retry.json()["plan_hash"], retry.json()["product_id"]) == (
+            flow_id,
+            decision_id,
+            expected_hash,
+            None,
+        )
+        current = await repository.get_accepted_plan(org_id=ORG_A, flow_id=flow_id)
+        assert current.id == plan_id
+        assert json.dumps(current.plan_document, sort_keys=True, separators=(",", ":")).encode() == original_bytes
+        assert (await session.get(OrchestrationNode, story_id)).attempts == 2
+        assert await count_rows(session, OrchestrationAcceptedPlan) == 1
+        assert await count_rows(session, OrchestrationDecision) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("product_id", [None, "missing", "inaccessible"])
+    async def test_repository_bound_submission_rejects_invalid_product(self, session, app_with_router, product_id):
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        if product_id == "inaccessible":
+            await seed_product_membership(session, org_id=ORG_A, user_id="someone-else")
+            session.add(
+                Product(
+                    team_id=f"product-team-{ORG_A}",
+                    id=product_id,
+                    tenant_id=ORG_A,
+                    name="Other",
+                    purpose="Other",
+                    intended_users=["team"],
+                    owner_user_id="someone-else",
+                    starting_point="running_product",
+                    created_by="someone-else",
+                )
+            )
+            await session.flush()
+        proposal = valid_proposal(product_id=product_id)
+        proposal.nodes[0].repository_identity = "demo/repo-a"
+        proposal.nodes[0].provider_repository_id = 1001
+
+        response = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+
+        assert response.status_code == 422, response.text
+        assert await count_rows(session, OrchestrationFlow) == 0
+        assert await count_rows(session, OrchestrationAcceptedPlan) == 0
 
     @pytest.mark.asyncio
     async def test_submission_returns_201_with_a_flow_id(self, session, app_with_router):
@@ -514,7 +1375,8 @@ class TestTenantIsolation:
         await seed_org(session, ORG_B, installation_ids=["999"])
         from src.auth.dependencies import get_current_user
 
-        app_with_router.dependency_overrides[get_current_user] = lambda: _token_context(ORG_B)
+        app_with_router.dependency_overrides[get_current_user] = lambda: _token_context(ORG_B, user_id="org-b-actor")
+        await seed_product(session, org_id=ORG_B, actor_id="org-b-actor")
         client = client_for(app_with_router, permitted=True)
 
         flow_id = client.post(ROUTE, json=valid_proposal(org_id=ORG_B).model_dump(mode="json")).json()["flow_id"]
@@ -697,7 +1559,7 @@ class TestDispatchabilityIsVisibleAtSubmission:
     """
 
     @pytest.mark.asyncio
-    async def test_a_fully_routed_plan_is_dispatchable(self, session, app_with_router):
+    async def test_a_fully_routed_plan_is_dispatchable(self, session, app_with_router, verified_repositories):
         """No false positives: a plan the engine would dispatch is reported clean.
 
         The load-bearing direction of this test is the *negative* space. Every
@@ -708,7 +1570,14 @@ class TestDispatchabilityIsVisibleAtSubmission:
         await seed_org(session, ORG_A, installation_ids=["12345"])
         client = client_for(app_with_router, permitted=True)
 
-        body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
+        proposal = routable_proposal()
+        story = proposal.nodes[0]
+        story.repository_identity = "demo/repo-a"
+        story.provider_repository_id = 1001
+        story.repository_connection = RepositoryConnection(provider="github", installation_id=12345)
+        await persist_legacy_plan(session, proposal, ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
+        body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
 
         assert body["dispatchable"] is True
         assert body["dispatch_blocked_reason"] is None
@@ -726,6 +1595,8 @@ class TestDispatchabilityIsVisibleAtSubmission:
         await seed_org(session, ORG_A, installation_ids=["12345"])
         client = client_for(app_with_router, permitted=True)
 
+        await persist_legacy_plan(session, routable_proposal(), ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         flow_id = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()["flow_id"]
 
         nodes = await submitted_flow_nodes(session, flow_id)
@@ -746,10 +1617,12 @@ class TestDispatchabilityIsVisibleAtSubmission:
         proposal = routable_proposal()
         proposal.nodes[0].issue_ref = None
 
+        await persist_legacy_plan(session, proposal, ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
 
         assert body["dispatchable"] is False
-        assert causes_of(body) == {"missing_issue_ref"}
+        assert causes_of(body) == {"legacy_binding_unresolved", "missing_issue_ref"}
         assert "story-a" in body["dispatch_blocked_reason"]
 
     @pytest.mark.asyncio
@@ -766,10 +1639,12 @@ class TestDispatchabilityIsVisibleAtSubmission:
         proposal = routable_proposal()
         proposal.nodes[1].issue_ref = None
 
+        await persist_legacy_plan(session, proposal, ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
 
         assert body["dispatchable"] is False
-        assert causes_of(body) == {"missing_issue_ref"}
+        assert causes_of(body) == {"legacy_binding_unresolved", "missing_issue_ref"}
         assert "eval" in body["dispatch_blocked_reason"]
 
     @pytest.mark.asyncio
@@ -786,10 +1661,12 @@ class TestDispatchabilityIsVisibleAtSubmission:
         proposal = routable_proposal()
         proposal.nodes[0].issue_ref = "not-an-issue"
 
+        await persist_legacy_plan(session, proposal, ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
 
         assert body["dispatchable"] is False
-        assert causes_of(body) == {"malformed_issue_ref"}
+        assert causes_of(body) == {"legacy_binding_unresolved", "malformed_issue_ref"}
 
     @pytest.mark.asyncio
     async def test_all_routing_blockers_are_reported_together(self, session, app_with_router):
@@ -806,10 +1683,12 @@ class TestDispatchabilityIsVisibleAtSubmission:
         proposal.nodes[0].issue_ref = None
         proposal.nodes[1].issue_ref = "not-an-issue"
 
+        await persist_legacy_plan(session, proposal, ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
 
         assert body["dispatchable"] is False
-        assert causes_of(body) == {"missing_issue_ref", "malformed_issue_ref", "ambiguous_installation"}
+        assert causes_of(body) == {"legacy_binding_unresolved", "missing_issue_ref", "malformed_issue_ref", "ambiguous_installation"}
         reason = body["dispatch_blocked_reason"]
         assert "exactly one GitHub installation" in reason
         assert "story-a" in reason and "eval" in reason
@@ -828,10 +1707,12 @@ class TestDispatchabilityIsVisibleAtSubmission:
         await seed_org(session, ORG_A, installation_ids=["12345"])
         client = client_for(app_with_router, permitted=True)
 
+        await persist_legacy_plan(session, routable_proposal(), ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
 
         assert body["dispatchable"] is False
-        assert causes_of(body) == {"unknown_dispatch_repo"}
+        assert causes_of(body) == {"legacy_binding_unresolved"}
 
     @pytest.mark.asyncio
     async def test_the_disabled_sentinel_counts_as_unconfigured(self, session, app_with_router, monkeypatch):
@@ -846,9 +1727,11 @@ class TestDispatchabilityIsVisibleAtSubmission:
         await seed_org(session, ORG_A, installation_ids=["12345"])
         client = client_for(app_with_router, permitted=True)
 
+        await persist_legacy_plan(session, routable_proposal(), ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
 
-        assert causes_of(body) == {"unknown_dispatch_repo"}
+        assert causes_of(body) == {"legacy_binding_unresolved"}
 
     @pytest.mark.asyncio
     async def test_a_cause_detail_names_only_the_submitters_own_nodes(self, session, app_with_router):
@@ -863,6 +1746,8 @@ class TestDispatchabilityIsVisibleAtSubmission:
 
         proposal = routable_proposal()
         proposal.nodes[0].issue_ref = None
+        await persist_legacy_plan(session, proposal, ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
 
         details = " ".join(cause["detail"] for cause in body["dispatch_blocked_causes"])
@@ -887,6 +1772,8 @@ class TestDispatchabilityIsVisibleAtSubmission:
         proposal = routable_proposal()
         proposal.nodes[0].issue_ref = None  # story: missing
         proposal.nodes[1].issue_ref = "not-an-issue"  # eval: malformed
+        await persist_legacy_plan(session, proposal, ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
 
         nodes = await submitted_flow_nodes(session, body["flow_id"])
@@ -897,25 +1784,29 @@ class TestDispatchabilityIsVisibleAtSubmission:
         assert causes_of(body) >= {b.value for b in blockers if b is not None}, "the route must report exactly what the engine's guard refuses"
 
     @pytest.mark.asyncio
-    async def test_exactly_one_installation_is_dispatchable(self, session, app_with_router):
+    async def test_exactly_one_installation_does_not_resolve_legacy_repository(self, session, app_with_router):
         await seed_org(session, ORG_A, installation_ids=["12345"])
         client = client_for(app_with_router, permitted=True)
 
+        await persist_legacy_plan(session, routable_proposal(), ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
 
-        assert body["dispatchable"] is True
-        assert body["dispatch_blocked_reason"] is None
+        assert body["dispatchable"] is False
+        assert causes_of(body) == {"legacy_binding_unresolved"}
 
     @pytest.mark.asyncio
     async def test_no_installation_is_reported_undispatchable(self, session, app_with_router):
         await seed_org(session, ORG_A, installation_ids=[])
         client = client_for(app_with_router, permitted=True)
 
+        await persist_legacy_plan(session, routable_proposal(), ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
 
         assert body["dispatchable"] is False
         assert "exactly one GitHub installation" in body["dispatch_blocked_reason"]
-        assert causes_of(body) == {"ambiguous_installation"}
+        assert causes_of(body) == {"legacy_binding_unresolved", "ambiguous_installation"}
 
     @pytest.mark.asyncio
     async def test_two_installations_are_reported_undispatchable(self, session, app_with_router):
@@ -924,11 +1815,13 @@ class TestDispatchabilityIsVisibleAtSubmission:
         await seed_org(session, ORG_A, installation_ids=["12345", "67890"])
         client = client_for(app_with_router, permitted=True)
 
+        await persist_legacy_plan(session, routable_proposal(), ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
 
         assert body["dispatchable"] is False
         assert "exactly one GitHub installation" in body["dispatch_blocked_reason"]
-        assert causes_of(body) == {"ambiguous_installation"}
+        assert causes_of(body) == {"legacy_binding_unresolved", "ambiguous_installation"}
 
     @pytest.mark.asyncio
     async def test_the_installation_reason_wording_is_unchanged(self, session, app_with_router):
@@ -942,9 +1835,11 @@ class TestDispatchabilityIsVisibleAtSubmission:
         await seed_org(session, ORG_A, installation_ids=[])
         client = client_for(app_with_router, permitted=True)
 
+        await persist_legacy_plan(session, routable_proposal(), ApprovalContext(org_id=ORG_A, actor_id=USER_ID, actor_role="org_admin"))
+        await session.commit()
         body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
 
-        assert body["dispatch_blocked_reason"] == (
+        assert body["dispatch_blocked_reason"].endswith(
             f"org {ORG_A!r} does not resolve to exactly one GitHub installation, so no node in this flow can be "
             "dispatched; the engine will count every node undispatchable until exactly one installation is configured"
         )
@@ -978,7 +1873,7 @@ class TestDispatchabilityIsVisibleAtSubmission:
         await seed_org(session, ORG_A, installation_ids=["12345", "67890"])
         client = client_for(app_with_router, permitted=True)
 
-        proposal = routable_proposal()
+        proposal = routable_proposal(product_id=f"product-{ORG_A}")
         proposal.nodes[0].issue_ref = None
         proposal.nodes[1].issue_ref = "not-an-issue"
 
@@ -999,7 +1894,7 @@ class TestDispatchabilityIsVisibleAtSubmission:
         """
         await seed_org(session, ORG_A, installation_ids=[])
         client = client_for(app_with_router, permitted=True)
-        payload = routable_proposal().model_dump(mode="json")
+        payload = routable_proposal(product_id=f"product-{ORG_A}").model_dump(mode="json")
 
         first = client.post(ROUTE, json=payload)
         second = client.post(ROUTE, json=payload)
@@ -1068,3 +1963,23 @@ class TestAmendmentRegression:
         assert len(versions) == 1
         assert versions[0]["version"] == 1
         assert {node["address"] for node in versions[0]["plan_document"]["nodes"]} == {address("story-a"), address("eval")}
+
+
+@pytest.mark.asyncio
+async def test_readiness_does_not_require_global_for_verified_product_story(session, app_with_router, verified_repositories, monkeypatch):
+    monkeypatch.setenv("ADP_PRODUCT_STORY_DISPATCH_ENABLED", "true")
+    monkeypatch.delenv("BG_ORCH_DISPATCH_REPO", raising=False)
+    await seed_org(session, ORG_A, installation_ids=["12345", "901"])
+    await seed_product(session, org_id=ORG_A, actor_id=USER_ID, product_id="product-1")
+    proposal = valid_proposal(product_id="product-1")
+    story = proposal.nodes[0]
+    story.issue_ref = "42"
+    story.repository_identity = "demo/repo-a"
+    story.provider_repository_id = 1001
+    story.repository_connection = RepositoryConnection(provider="github", installation_id=12345)
+    proposal.nodes[1].issue_ref = "43"
+
+    response = client_for(app_with_router, permitted=True).post(ROUTE, json=proposal.model_dump(mode="json"))
+    assert response.status_code == 201, response.text
+    assert causes_of(response.json()) == set()
+    assert response.json()["dispatchable"] is True

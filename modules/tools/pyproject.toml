@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adp-tools-shared"
+version = "0.1.0"
+description = "Shared validation, authorization and storage helpers for ADP tools"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.35,<2",
+    "fastapi>=0.115,<1",
+    "pydantic>=2,<3",
+    "requests>=2.32,<3",
+    "rfc8785>=0.1.4,<1",
+]
+
+[tool.setuptools]
+packages = ["adp_tools"]

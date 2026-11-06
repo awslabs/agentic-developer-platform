@@ -44,6 +44,25 @@ run "complete_lambda_vpc_permissions" {
   }
 }
 
+run "product_story_dispatch_defaults_off" {
+  command = plan
+  assert {
+    condition     = aws_lambda_function.tick.environment[0].variables.ADP_PRODUCT_STORY_DISPATCH_ENABLED == "false"
+    error_message = "Product-bound dispatch must remain disabled without explicit rollout authority."
+  }
+}
+
+run "product_story_dispatch_is_an_independent_explicit_rollout" {
+  command = plan
+  variables {
+    product_story_dispatch_enabled = true
+  }
+  assert {
+    condition     = aws_lambda_function.tick.environment[0].variables.ADP_PRODUCT_STORY_DISPATCH_ENABLED == "true" && aws_lambda_function.tick.environment[0].variables.AGENT_AUTHORITY_ENABLED == "false"
+    error_message = "The explicit Product dispatch setting must not alter separate authority migration controls."
+  }
+}
+
 run "shared_reporting_signing_key_is_parameter_reference_only" {
   command = plan
   variables {
@@ -97,5 +116,125 @@ run "reuse_gateway_redis_with_exact_network_and_iam_scope" {
   assert {
     condition     = jsondecode(aws_iam_role_policy.tick_redis[0].policy) == jsondecode(jsonencode({ Version = "2012-10-17", Statement = [{ Sid = "ConnectSharedBudgetRedis", Effect = "Allow", Action = ["elasticache:Connect"], Resource = ["arn:aws:elasticache:us-east-1:123456789012:replicationgroup:existing-cache", "arn:aws:elasticache:us-east-1:123456789012:user:existing-user"] }] }))
     error_message = "Redis IAM scope must contain only Connect for the gateway replication group and existing IAM user."
+  }
+}
+
+run "operations_default_off" {
+  command = plan
+  assert {
+    condition     = aws_lambda_function.tick.environment[0].variables.ADP_ENGINE_OPERATIONS_EXECUTOR == "false"
+    error_message = "Operations must remain disabled by default."
+  }
+}
+
+run "operations_require_reporting" {
+  command = plan
+  variables {
+    engine_operations_executor_enabled = true
+    agent_authority_enabled            = true
+    shared_run_reporting_enabled       = false
+    webhook_events_table_name          = "webhook-events"
+    webhook_events_kms_key_arn         = "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-1111-1111-111111111111"
+  }
+  expect_failures = [var.engine_operations_executor_enabled]
+}
+
+run "operations_enable_tick" {
+  command = plan
+  variables {
+    engine_operations_executor_enabled = true
+    agent_authority_enabled            = true
+    shared_run_reporting_enabled       = true
+    webhook_events_table_name          = "webhook-events"
+    webhook_events_kms_key_arn         = "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-1111-1111-111111111111"
+  }
+  assert {
+    condition     = aws_lambda_function.tick.environment[0].variables.ADP_ENGINE_OPERATIONS_EXECUTOR == "true"
+    error_message = "The scheduled engine must receive the same operations opt-in."
+  }
+}
+
+
+override_data {
+  target = data.aws_partition.current
+  values = { partition = "aws" }
+}
+
+run "delivery_reconciliation_can_read_tenant_app_without_command_bridge" {
+  command = plan
+  variables {
+    engine_enabled = true
+  }
+  assert {
+    condition = one([for s in jsondecode(aws_iam_role_policy.tick.policy).Statement : s if s.Sid == "EngineCommandAckCredentials"]) == jsondecode(jsonencode({
+      Sid      = "EngineCommandAckCredentials", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"],
+      Resource = ["arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/tenants/*/github-app-??????"]
+    }))
+    error_message = "Engine reconciliation needs only tenant App credential reads, independently of command bridge inputs."
+  }
+}
+
+run "disabled_engine_does_not_gain_secret_access" {
+  command = plan
+  variables {
+    engine_enabled               = false
+    agent_authority_enabled      = false
+    shared_run_reporting_enabled = false
+  }
+  assert {
+    condition     = length([for s in jsondecode(aws_iam_role_policy.tick.policy).Statement : s if s.Sid == "EngineCommandAckCredentials"]) == 0
+    error_message = "An inactive engine must not gain a default secret read grant."
+  }
+}
+
+run "shared_reporting_has_delivery_credential_access" {
+  command = plan
+  variables {
+    engine_enabled               = false
+    shared_run_reporting_enabled = true
+  }
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.tick.policy).Statement : s.Resource if s.Sid == "EngineCommandAckCredentials"]) == ["arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/tenants/*/github-app-??????"]
+    error_message = "Shared delivery reporting must not depend on optional command bridge configuration."
+  }
+}
+
+run "explicit_tenant_credential_scope_is_preserved" {
+  command = plan
+  variables {
+    engine_enabled                = true
+    github_app_secret_arn_pattern = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/tenants/example/github-app-AbCdEf"
+  }
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.tick.policy).Statement : s.Resource if s.Sid == "EngineCommandAckCredentials"]) == [var.github_app_secret_arn_pattern]
+    error_message = "Explicit operator scope must not be broadened by the fallback."
+  }
+}
+
+
+run "review_artifacts_are_bound_to_configured_bucket" {
+  command = plan
+  variables {
+    environment                = "staging"
+    agent_run_logs_bucket_name = "example-staging-agent-run-logs"
+  }
+  assert {
+    condition     = aws_lambda_function.tick.environment[0].variables.ENVIRONMENT == "staging" && aws_lambda_function.tick.environment[0].variables.AGENT_RUN_LOGS_BUCKET == "example-staging-agent-run-logs"
+    error_message = "Credential and review-artifact readers must receive the actual environment and bucket reference."
+  }
+  assert {
+    condition = one([for s in jsondecode(aws_iam_role_policy.tick.policy).Statement : s if s.Sid == "ReadVerifiedReviewArtifacts"]) == jsondecode(jsonencode({
+      Sid      = "ReadVerifiedReviewArtifacts", Effect = "Allow", Action = ["s3:GetObject"],
+      Resource = ["arn:aws:s3:::example-staging-agent-run-logs/runs/*/*/attempt-*/review-result/*.json"]
+    }))
+    error_message = "The tick may read only review-result objects in the configured bucket, with no writes or transcript reads."
+  }
+}
+
+run "unconfigured_review_bucket_grants_no_access" {
+  command = plan
+  assert {
+    condition     = !contains(keys(aws_lambda_function.tick.environment[0].variables), "AGENT_RUN_LOGS_BUCKET") && length([for s in jsondecode(aws_iam_role_policy.tick.policy).Statement : s if s.Sid == "ReadVerifiedReviewArtifacts"]) == 0
+    error_message = "An unconfigured module must not invent a bucket or grant artifact reads."
   }
 }

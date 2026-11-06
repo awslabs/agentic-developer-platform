@@ -131,10 +131,29 @@
     },
     "scenarios": {
       "type": "array",
-      "description": "Scenario adapter ids to run, supplied by #5157. Empty or absent means all registered adapters; an id with no registered adapter is an error, not a smaller run.",
+      "description": "Scenario adapter ids to run. Empty selects legacy delivery or Product epic delivery. product-epic-recovery selects resume/cleanup only; legacy-attribution explicitly selects Product-less delivery. Unknown ids refuse the run.",
       "items": {
         "type": "string",
         "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      }
+    },
+    "product_epic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product_id", "epic", "stories"],
+      "description": "Reviewed Product and retained planning epic; the runner creates only owned story fixtures in the two distinct change repositories. Repository and installation IDs are provider identities, not credentials.",
+      "properties": {
+        "product_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+        "epic": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["target", "issue_number"],
+          "properties": {
+            "target": {"$ref": "#/$defs/repositoryTarget"},
+            "issue_number": {"type": "integer", "minimum": 1}
+          }
+        },
+        "stories": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/repositoryTarget"}}
       }
     }
   },
@@ -142,6 +161,27 @@
     "pinnedVersion": {
       "type": "string",
       "pattern": "^(?:\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?|[0-9a-f]{40})$"
+    },
+    "repositoryTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "connection_ref", "repository_id", "installation_id"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"},
+        "connection_ref": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+        "repository_id": {"type": "integer", "minimum": 1},
+        "installation_id": {"type": "integer", "minimum": 1}
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["scenarios"], "properties": {"scenarios": {"contains": {"enum": ["product-epic-delivery", "product-epic-recovery"]}}}},
+      "then": {"required": ["product_epic"]}
+    },
+    {
+      "if": {"required": ["product_epic", "scenarios"], "properties": {"scenarios": {"minItems": 1}}},
+      "then": {"properties": {"scenarios": {"enum": [["product-epic-delivery"], ["product-epic-recovery"]]}}}
+    }
+  ]
 }

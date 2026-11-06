@@ -7,9 +7,20 @@
 # Build stage
 FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81 AS builder
 WORKDIR /app
+# Refresh pip's vendored trust store as well as the application certifi dependency.
+ADD --checksum=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70 https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl /tmp/pip-26.2.2-py3-none-any.whl
+RUN --network=none python -m pip install --no-index --no-deps --no-cache-dir /tmp/pip-26.2.2-py3-none-any.whl \
+    && rm /tmp/pip-26.2.2-py3-none-any.whl
 COPY pyproject.toml .
 # Install core dependencies
 RUN pip install --no-cache-dir .
+COPY common-wheel/ /tmp/common-wheel/
+RUN (cd /tmp/common-wheel && sha256sum -c wheel.sha256) \
+    && for wheel in /tmp/common-wheel/adp_common-*.whl; do pip install --no-cache-dir "${wheel}[l5-consumers]"; done \
+    && python -c 'from adp_platform_common.l5_contributions import assertions, http, stores'
+COPY .l5-release/ /tmp/l5-release/
+RUN (cd /tmp/l5-release && sha256sum -c *.whl.sha256) \
+    && pip install --no-cache-dir --no-deps /tmp/l5-release/*.whl
 # Issue #144: Install tracing dependencies (adds ~20MB but only active when OTEL_ENABLED=true)
 RUN pip install --no-cache-dir ".[tracing]" || echo "Tracing dependencies not available, skipping"
 # Issue #4203: the AWS Lambda Runtime Interface Client, so this same image can be
@@ -18,8 +29,8 @@ RUN pip install --no-cache-dir ".[tracing]" || echo "Tracing dependencies not av
 # RDS CA bundle below, all of which only exist in this image — no Lambda layer
 # provides them.
 #
-# The image's ENTRYPOINT/CMD are deliberately left alone: the K8s deployment
-# overrides neither, so it relies on the uvicorn CMD at the bottom of this file.
+# The default K8s serving command matches the uvicorn CMD below. The optional
+# capacity profile declares its own serving arguments.
 # The Lambda supplies the RIC via `image_config.entry_point` in
 # infra/modules/orchestration-tick/main.tf instead, so the pod path is untouched.
 RUN pip install --no-cache-dir awslambdaric==3.1.1
@@ -29,6 +40,11 @@ RUN pip install --no-cache-dir awslambdaric==3.1.1
 COPY security/stdlib /tmp/gateway-stdlib-security/
 RUN python /tmp/gateway-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
     && python /tmp/gateway-stdlib-security/check.py
+
+COPY skills-source/ /app/skills-source/
+COPY scripts/build-skills-archive.sh /app/build-skills-archive.sh
+COPY cli/adp /app/skills-cli-version
+RUN bash /app/build-skills-archive.sh --build /app/skills-source /app/generated-skills /app/skills-cli-version
 
 # Runtime stage
 FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81
@@ -77,6 +93,10 @@ COPY --from=builder /usr/local/lib/python3.13/urllib/request.py /usr/local/lib/p
 COPY security/stdlib /opt/gateway-stdlib-security/
 RUN python /opt/gateway-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
     && python /opt/gateway-stdlib-security/check.py
+COPY l5-wheel/ /opt/l5-wheel/
+RUN cd /opt/l5-wheel && sha256sum -c wheel.sha256 \
+    && python -m pip install --no-deps --no-cache-dir adp_l5_services-*.whl \
+    && python -c 'from l5_services.api.router import create_router'
 COPY src/ src/
 COPY deployment_evidence/ deployment_evidence/
 # Issue #4969: the shared Bedrock pricing policy and its immutable rate snapshots.
@@ -94,13 +114,21 @@ COPY pricing_policy/ pricing_policy/
 # `contract_unavailable` — honest, but a total outage discovered on first use, which
 # is why `src.orchestration.review_contract_selfcheck` gates the build below.
 COPY contracts/ contracts/
+# Import the staged observer with only the standard library available. Missing
+# staging, damaged bytes or an adapter application dependency must fail the build.
+RUN python -I -B -S src/orchestration/adapter_observer_selfcheck.py
+RUN python -I -B src/internal/domain_closed_cleanup_source.py
+RUN python -c "from contracts.insights import results; assert results.ResultsReader"
 RUN python src/auth/operation_contract.py
+RUN python -c "from src.products.jira_context_contract import JiraContextQuery; assert JiraContextQuery.model_fields['limit'].default == 20"
 COPY alembic/ alembic/
 COPY alembic.ini .
+COPY .l5-release/ l5-release/
 # Issue #4146: the /setup page's Download button is served by GET /api/cli/{script_name}
 # (src/cli_download/routes.py), which reads bg-cognito-auth.sh off disk. Without this
 # the route 404s in the image while working fine locally.
 COPY cli/ cli/
+COPY --from=builder /app/generated-skills/adp-skills.tar.gz /app/generated-skills/adp-skills.tar.gz.sha256 cli/
 
 # Everything above needed privilege (apt-get, the RDS bundle fetch, the contract
 # self-check). Everything the container actually RUNS is below this line, so the
@@ -116,4 +144,10 @@ COPY cli/ cli/
 USER 65532:65532
 
 EXPOSE 8080
-CMD ["uvicorn", "src.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]
+# Both gateway ALBs retain idle target connections for 900 seconds. Keep the
+# server connection alive longer so the ALB retires it first instead of racing
+# a five-second server close and intermittently returning 502 on connection reuse.
+# One async worker per default one-CPU container. Uvicorn 0.34's multiprocess
+# supervisor can kill workers while injected Python instrumentation initializes
+# before their five-second ping check; Kubernetes owns process health/restarts.
+CMD ["uvicorn", "src.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--timeout-keep-alive", "910"]

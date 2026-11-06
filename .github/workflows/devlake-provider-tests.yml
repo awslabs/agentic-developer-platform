@@ -1,0 +1,56 @@
+name: DevLake provider foundation
+
+on:
+  pull_request:
+    paths:
+      - 'modules/connectors/devlake/providers/**'
+      - 'modules/connectors/devlake/cmd/connector-api/**'
+      - 'modules/connectors/devlake/patches/**'
+      - 'modules/connectors/devlake/source-lock.json'
+      - 'modules/connectors/devlake/scripts/build.py'
+      - 'modules/connectors/devlake/scripts/build.sh'
+      - 'modules/connectors/devlake/scripts/test-providers.sh'
+      - 'modules/connectors/devlake/scripts/test-discovery.sh'
+      - 'modules/gateway/src/product_onboarding/**'
+      - 'modules/gateway/src/products/**'
+      - 'modules/gateway/src/internal/profile_discovery_authority.py'
+      - 'modules/gateway/src/internal/connector_source_broker.py'
+      - 'modules/gateway/src/internal/auth_deps.py'
+      - 'modules/gateway/src/internal/service_authorization.py'
+      - 'modules/gateway/tests/products/**'
+      - 'modules/gateway/tests/conftest.py'
+      - 'modules/gateway/tests/sqlite_schema.py'
+      - 'modules/gateway/pyproject.toml'
+      - 'modules/L5-services/pyproject.toml'
+      - 'libs/python/adp-common/pyproject.toml'
+      - '.github/actions/setup-gateway-python/**'
+      - '.github/workflows/devlake-provider-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devlake-provider-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  isolated-providers:
+    name: DevLake providers / isolated tests
+    runs-on: arc-runner-org
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: '2'
+      GOFLAGS: '-p=2'
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+          cache: false
+      - uses: ./.github/actions/setup-gateway-python
+      - name: Exercise extracted providers and served Profile discovery
+        run: DEVLAKE_PROFILE_PYTEST="$(command -v pytest)" modules/connectors/devlake/scripts/test-providers.sh

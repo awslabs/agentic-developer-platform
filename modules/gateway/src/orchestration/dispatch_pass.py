@@ -137,6 +137,7 @@ it as undispatchable. Dispatch does not create issues or invent test results.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -145,7 +146,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import case, select
+from sqlalchemy import case, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -156,7 +157,15 @@ from .dispatch import DispatchStatus, dispatch_node
 from .flow_execution import flow_is_paused
 from .genesis import APPROVAL_DECISION_KINDS, EngineGenesis, GenesisRefusedError, resolve_engine_genesis
 from .handoff import HANDOFF_RECEIPT_CONTRACT_VERSION
-from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
+from .models import (
+    DecisionKind,
+    NodeKind,
+    OrchestrationAcceptedPlan,
+    OrchestrationAmendmentIssueBinding,
+    OrchestrationDecision,
+    OrchestrationFlow,
+    OrchestrationNode,
+)
 from .policy_admission import authorize_node_dispatch
 from .state import ActorKind, NodeState
 
@@ -259,7 +268,6 @@ def routing_blocker_for_node(*, kind: str, issue_ref: str | None) -> RoutingBloc
 # unconfigured environment must be visible as unconfigured rather than looking
 # like a successful no-op.
 QUEUE_URL_ENV = "BG_ORCH_DISPATCH_QUEUE_URL"
-REPO_ENV = "BG_ORCH_DISPATCH_REPO"
 PERSONA_ENV = "BG_ORCH_DISPATCH_PERSONA"
 MAX_PER_TICK_ENV = "BG_ORCH_DISPATCH_MAX_PER_TICK"
 
@@ -276,6 +284,7 @@ DEFAULT_MAX_DISPATCHES_PER_TICK = 10
 # nothing downstream may read it as such.
 DEFAULT_PERSONA = "developer"
 EVALUATION_PERSONA = "operations"
+OPERATIONS_RELEASE_TIMEOUT_SECONDS = 30
 
 
 def attempt_run_id(node_id: str, attempt: int) -> str:
@@ -332,9 +341,7 @@ class DispatchPassConfig:
     """
 
     queue_url: str
-    # `owner/name` of the repository the engine dispatches into. Configuration
-    # rather than graph state because `OrchestrationNode` carries no repo — see
-    # the module docstring's scope section.
+    # Per-attempt resolved target; environment configuration never supplies it.
     repo: str
     persona: str = DEFAULT_PERSONA
     max_dispatches_per_tick: int = DEFAULT_MAX_DISPATCHES_PER_TICK
@@ -346,14 +353,8 @@ class DispatchPassConfig:
 
     @property
     def configured(self) -> bool:
-        """Whether this config can actually produce a dispatch.
-
-        Both fields are required. An empty queue url means there is nowhere to
-        publish; an empty repo means no complete `source_ref` can be built. Either
-        way the honest outcome is "nothing was dispatched and here is why", which
-        is what `undispatchable` records.
-        """
-        return bool(self.queue_url and self.repo)
+        """Whether publication is available; accepted stories supply their own target."""
+        return bool(self.queue_url)
 
     @classmethod
     def from_env(cls) -> DispatchPassConfig:
@@ -375,7 +376,7 @@ class DispatchPassConfig:
 
         return cls(
             queue_url=(os.environ.get(QUEUE_URL_ENV) or "").strip(),
-            repo=(os.environ.get(REPO_ENV) or "").strip(),
+            repo="",
             persona=(os.environ.get(PERSONA_ENV) or "").strip() or DEFAULT_PERSONA,
             max_dispatches_per_tick=cap,
             aws_region=os.environ.get("AWS_REGION") or os.environ.get("BG_AWS_REGION") or "us-east-1",
@@ -447,6 +448,7 @@ class DispatchPassReport:
     nodes_examined: int = 0
     dispatches_attempted: int = 0
     dispatched: int = 0
+    continued: int = 0  # A stalled, resumed story re-entered its live execution (#7467)
     # A `GenesisRefusedError`: no approval row could root this dispatch. Fail-closed
     # and counted, never a downgrade to an unrooted dispatch.
     genesis_refused: int = 0
@@ -520,6 +522,7 @@ class DispatchPassReport:
                 "nodes_examined": 0,
                 "dispatches_attempted": 0,
                 "dispatched": 0,
+                "continued": 0,
                 "genesis_refused": 0,
                 "undispatchable": 0,
                 "publish_failed": 0,
@@ -535,6 +538,31 @@ class DispatchPassReport:
         """Increment a counter both in total and for one org."""
         setattr(self, key, getattr(self, key) + amount)
         self._org(org_id)[key] += amount
+
+
+async def recover_session(session: AsyncSession, *, node_id: str) -> bool:
+    """Keep one node's failure from taking the rest of the tick down (#7889).
+
+    A failure that left the connection's transaction aborted (a cancelled statement,
+    a deadlock the savepoint could not roll back) makes every later statement raise
+    ``PendingRollbackError``. Probe once; if the session is unusable, roll it back
+    fully so later nodes and passes run. The pass's uncommitted work since the last
+    commit is lost and redone next tick — strictly better than a fatal tick every
+    minute. Returns True when a rollback was needed.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError, PendingRollbackError
+
+    try:
+        await session.execute(text("SELECT 1"))
+        return False
+    except (PendingRollbackError, DBAPIError):
+        logger.error(
+            "orchestration dispatch: session unusable after node %s; rolling back this pass's uncommitted work so later nodes and passes continue",
+            node_id,
+        )
+        await session.rollback()
+        return True
 
 
 async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[OrchestrationNode]:
@@ -554,6 +582,7 @@ async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[Orche
         .join(OrchestrationFlow, (OrchestrationFlow.id == OrchestrationNode.flow_id) & (OrchestrationFlow.org_id == OrchestrationNode.org_id))
         .where(
             OrchestrationFlow.execution_paused.is_(False),
+            OrchestrationFlow.archived_at.is_(None),
             OrchestrationNode.state == NodeState.READY.value,
             OrchestrationNode.kind.in_([NodeKind.STORY.value, NodeKind.EVAL.value]),
         )
@@ -719,17 +748,70 @@ async def _dispatch_one_unclaimed(
     reject the message after the node had already committed to running, which is
     the invisible-dispatch failure by another route.
     """
-    # READY may predate an amendment that added a prerequisite. Recheck under
-    # the candidate row lock before dispatching against the current topology.
+    flow = await session.scalar(
+        select(OrchestrationFlow)
+        .where(OrchestrationFlow.org_id == node.org_id, OrchestrationFlow.id == node.flow_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if flow is None or flow.archived_at is not None:
+        return
+
+    # READY may predate an amendment that added a prerequisite or input. Recheck
+    # both under the candidate row lock before dispatching.
+    from .accepted_node import accepted_node_contract, unresolved_required_inputs
     from .tick import _predecessor_states, _unsatisfied
 
     if _unsatisfied(await _predecessor_states(session, org_id=node.org_id, node_id=node.id)):
         return
+    unresolved = await unresolved_required_inputs(session, node)
+    if unresolved:
+        contract = await accepted_node_contract(session, node)
+        if contract is not None and contract.node.operational_release_binding is not None:
+            raise _AdmissionRefusedError(
+                _admission_refused(
+                    "operations_release_unverified",
+                    owner="flow-owner",
+                    required_input="provide scoped, settled predecessor release receipts",
+                    detail="operational release prerequisites are not verified",
+                )
+            )
+        # A silent counter here left ready nodes parked indefinitely with no visible
+        # cause (tools flow L2, 2026-10-15). Name the inputs so the operator can see
+        # what the plan still has to supply; the node view surfaces the same list.
+        logger.warning(
+            "orchestration dispatch: node %s has unresolved required inputs %s — not dispatching",
+            node.id,
+            [f"{item.name} ({item.source})" for item in unresolved],
+        )
+        report.record(node.org_id, "undispatchable")
+        return
+    contract = await accepted_node_contract(session, node)
+    if contract is not None:
+        expected_owner = EVALUATION_PERSONA if node.kind == NodeKind.EVAL.value else config.persona
+        if contract.node.execution_owner not in {None, expected_owner} or contract.node.execution_adapter not in {None, "engine_dispatch"}:
+            report.record(node.org_id, "undispatchable")
+            return
+        if contract.node.repository_identity and "/" in contract.node.repository_identity:
+            config = replace(config, repo=contract.node.repository_identity)
+    from .evaluation_correction_state import validate_correction
+
+    correction = await validate_correction(session, node)
+    if correction is not None and (source := correction.detail.get("source_authorization")) is not None:
+        config = replace(config, repo=source["repository"])
+    if not config.repo:
+        raise _AdmissionRefusedError(
+            _admission_refused(
+                "repository_binding_missing",
+                owner="flow-owner",
+                required_input="set the story repository in the accepted plan",
+                detail="the accepted story has no repository target",
+            )
+        )
     org_id = node.org_id
     observed_attempts = node.attempts
 
-    from dataclasses import replace
-
+    from .developer_personas import OPERATIONS_PERSONAS
     from .executor_assignment import accepted_executor_persona
 
     try:
@@ -747,10 +829,9 @@ async def _dispatch_one_unclaimed(
     # --- Everything needed for a valid envelope, checked before any write. ---
     if not config.configured:
         logger.warning(
-            "orchestration dispatch: node %s is ready but dispatch is unconfigured (%s / %s unset) — not dispatching",
+            "orchestration dispatch: node %s is ready but dispatch is unconfigured (%s unset) — not dispatching",
             node.id,
             QUEUE_URL_ENV,
-            REPO_ENV,
         )
         report.record(org_id, "undispatchable")
         return
@@ -779,7 +860,24 @@ async def _dispatch_one_unclaimed(
         report.record(org_id, "undispatchable")
         return
 
-    installation_id = await resolve_installation_id(session, org_id=org_id)
+    if correction is not None and (source := correction.detail.get("source_authorization")) is not None:
+        installation_id = source["installation_id"]
+        if repository_id is not None and repository_id != source["provider_repository_id"]:
+            report.record(org_id, "policy_blocked")
+            return
+        repository_id = source["provider_repository_id"]
+    elif node.kind == NodeKind.STORY.value and contract is not None and contract.node.repository_identity:
+        from .work_admission import resolve_accepted_repository
+
+        installation_id, repository_id, observed_name = await resolve_accepted_repository(
+            session,
+            node=node,
+            contract=contract,
+            repo=config.repo,
+        )
+        config = replace(config, repo=observed_name)
+    else:
+        installation_id = await resolve_installation_id(session, org_id=org_id)
     if installation_id is None:
         logger.warning(
             "orchestration dispatch: org %s has no single unambiguous GitHub installation — not dispatching node %s",
@@ -799,6 +897,10 @@ async def _dispatch_one_unclaimed(
             repository_id = await resolve_repository_id(org_id=org_id, installation_id=installation_id, repo=config.repo)
         except Exception:
             logger.warning("orchestration PR binding: repository identity unavailable node=%s", node.id)
+            report.record(org_id, "undispatchable")
+            return
+        if contract is not None and contract.node.provider_repository_id not in {None, repository_id}:
+            logger.warning("orchestration PR binding: accepted repository identity changed node=%s", node.id)
             report.record(org_id, "undispatchable")
             return
 
@@ -879,7 +981,7 @@ async def _dispatch_one_unclaimed(
         installation_resolved=True,
         provider_repository_id=repository_id,
         expected_invocation_id=attempt_run_id(node.id, node.attempts + 1),
-        action_override=Action.REPAIR if correction is not None else None,
+        action_override=Action.REPAIR if correction is not None else Action.OPERATE if config.persona in OPERATIONS_PERSONAS else None,
     )
     if not admission.permitted:
         # `reason` is a typed `DenyReason` (#5122 renders these), so it is logged as
@@ -959,6 +1061,48 @@ async def _dispatch_one_unclaimed(
                 return
             prior_revision = prior_binding.revision
 
+    release_resolution = None
+    if contract is not None and contract.node.operational_release_binding is not None:
+        from .operations_release_resolution import resolve_operations_release
+        from .review_cycle import CycleBlockedError
+
+        try:
+            async with asyncio.timeout(OPERATIONS_RELEASE_TIMEOUT_SECONDS):
+                release_resolution = await resolve_operations_release(session, node, installation_id=installation_id, repository_id=repository_id)
+        except (CycleBlockedError, TimeoutError) as exc:
+            timed_out = isinstance(exc, TimeoutError)
+            raise _AdmissionRefusedError(
+                _admission_refused(
+                    "operations_release_unverified",
+                    owner="platform-operator" if timed_out else "flow-owner",
+                    required_input="wait for automatic admission retry; inspect provider latency if it repeats"
+                    if timed_out
+                    else "provide verified predecessor merges, a permitted target and repository evidence",
+                    detail="operations_release_verification_timed_out" if timed_out else str(exc),
+                )
+            ) from None
+
+    recovery = None
+    if observed_attempts:
+        from .developer_recovery import retry_context
+
+        # Read the authorized failed->ready edge before dispatch appends its own
+        # ready->running decision and increments the attempt. In particular, a
+        # human resume must remain visible in the replacement worker's context.
+        recovery = await retry_context(session, node, observed_attempts)
+        if recovery is not None and recovery.get("automatic") is True:
+            from .recovery_control import automatic_recovery_enabled
+
+            if not await automatic_recovery_enabled(session, org_id=node.org_id, flow_id=node.flow_id):
+                raise _AdmissionRefusedError(
+                    _admission_refused(
+                        "automatic_recovery_disabled",
+                        owner="flow-owner",
+                        required_input="enable automatic retry recovery for this flow when ready",
+                        detail="Saved progress and approved limits are retained; automatic retry recovery is off.",
+                    )
+                )
+
     outcome = await dispatch_node(session, node, genesis)
 
     if outcome.status is DispatchStatus.REJECTED:
@@ -991,12 +1135,34 @@ async def _dispatch_one_unclaimed(
         cognito_sub=cognito_sub,
     )
     envelope.update(launch_configuration)
-    if observed_attempts:
-        from .developer_recovery import retry_context
-
-        recovery = await retry_context(session, node, observed_attempts)
-        if recovery is not None:
-            envelope["orchestration"]["developer_recovery"] = recovery
+    if contract is not None and node.kind == NodeKind.STORY.value and config.persona not in OPERATIONS_PERSONAS:
+        # The issue can be an epic or shared by several delivery stages. Carry
+        # the accepted node rather than making the worker derive its scope from
+        # that wider issue. This is context, not additional execution authority.
+        envelope["orchestration"]["developer_node_context"] = {
+            "schema_version": 1,
+            "flow_id": genesis.flow_id,
+            "node_id": node.id,
+            "graph_address": run.graph_address,
+            "plan_version": contract.plan_version,
+            "repository": config.repo,
+            "issue_number": issue,
+            "title": contract.node.title,
+            "criteria": list(contract.node.criteria),
+            "evidence_expectations": list(contract.node.evidence_expectations),
+            "delivery_mode": contract.node.delivery_mode,
+        }
+    if config.persona in OPERATIONS_PERSONAS:
+        envelope["orchestration"]["executor_role"] = "operate"
+        if contract is not None:
+            envelope["orchestration"]["workflow_allowlist"] = [
+                item.source.removeprefix("deployment_workflow:")
+                for item in contract.node.required_inputs
+                if item.source.startswith("deployment_workflow:")
+            ]
+    if recovery is not None:
+        key = "operations_recovery" if recovery.get("reason") in {"operations_runtime_unverified", "operations_failed"} else "developer_recovery"
+        envelope["orchestration"][key] = recovery
 
     if correction is not None:
         detail = correction.detail
@@ -1020,7 +1186,43 @@ async def _dispatch_one_unclaimed(
     # dispatch record is what makes the boundary deterministic rather than a
     # deploy-time or wall-clock inference.
     #
-    binding_required = node.kind == NodeKind.STORY.value
+    from .developer_personas import operations_executor_enabled
+
+    operational_delivery = (
+        operations_executor_enabled()
+        and config.persona in OPERATIONS_PERSONAS
+        and contract is not None
+        and contract.node.executor is not None
+        and contract.node.executor.role == "operate"
+        and any(item.startswith("runtime_verified:") for item in contract.node.evidence_expectations)
+    )
+    if operational_delivery:
+        from .accepted_node import operational_revision_inputs
+        from .report_dispatch import reporting_enabled
+
+        pins = release_resolution[0] if release_resolution is not None else operational_revision_inputs(contract)
+        if pins is None:
+            raise _AdmissionRefusedError(
+                _admission_refused(
+                    "deployment_revisions_missing",
+                    owner="flow-owner",
+                    required_input="pin the deployment source, workflow definition and branch in the accepted node inputs",
+                    detail="operational workflow revisions are not uniquely pinned in the accepted plan",
+                )
+            )
+        if not reporting_enabled() or os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+            raise _AdmissionRefusedError(
+                _admission_refused(
+                    "authority_unverifiable",
+                    owner="platform-operator",
+                    required_input="enable protected authority and shared run reporting before operations dispatch",
+                    detail="operational work requires a protected execution and authenticated report",
+                )
+            )
+        envelope["orchestration"].update(conclusion_authority="evidence", deployment_revisions=pins)
+        if release_resolution is not None:
+            envelope["orchestration"]["release_binding"] = {**release_resolution[1], "pins": pins}
+    binding_required = node.kind == NodeKind.STORY.value and not operational_delivery
     if binding_required:
         envelope["pr_binding_required"] = True
 
@@ -1038,8 +1240,17 @@ async def _dispatch_one_unclaimed(
     # Policy-bound only, for the reason #5128 states once: a flow with no accepted
     # policy keeps legacy semantics exactly, so it gets no marker and reaches the
     # code it reached before.
+    if operational_delivery and (not work_claim_required or claim is None):
+        raise _AdmissionRefusedError(
+            _admission_refused(
+                "authority_unverifiable",
+                owner="platform-operator",
+                required_input="restore the operational work claim before dispatch",
+                detail="operational evidence requires a fenced execution",
+            )
+        )
     admission = _NO_POLICY
-    if binding_required and work_claim_required and claim is not None:
+    if (binding_required or operational_delivery) and work_claim_required and claim is not None:
         admission = await _admit_execution(
             session,
             node=node,
@@ -1054,8 +1265,53 @@ async def _dispatch_one_unclaimed(
         # typed refusal after the rollback (where it can survive).
         raise _AdmissionRefusedError(admission)
     execution_admitted = admission.kind is AdmissionKind.ADMITTED
+    if operational_delivery and not execution_admitted:
+        raise _AdmissionRefusedError(
+            _admission_refused(
+                "authority_unverifiable",
+                owner="platform-operator",
+                required_input="restore accepted operational execution policy",
+                detail="operational story has no admitted execution",
+            )
+        )
+    if operational_delivery:
+        from .models import OrchestrationAction, OrchestrationExecution
+        from .operations_tasks import seed_operations_tasks
+
+        if release_resolution is not None:
+            resolution = envelope["orchestration"]["release_binding"]
+            prior = await session.scalar(
+                select(OrchestrationAction).where(
+                    OrchestrationAction.org_id == node.org_id,
+                    OrchestrationAction.execution_id == admission.execution_id,
+                    OrchestrationAction.operation_key == "operations-release:1",
+                )
+            )
+            if prior is not None and prior.detail != resolution:
+                raise _AdmissionRefusedError(
+                    _admission_refused(
+                        "operations_release_changed",
+                        owner="platform-operator",
+                        required_input="reconcile the persisted operational release",
+                        detail="the admitted execution has a different release binding",
+                    )
+                )
+            if prior is None:
+                session.add(
+                    OrchestrationAction(
+                        org_id=node.org_id,
+                        execution_id=admission.execution_id,
+                        operation_key="operations-release:1",
+                        kind="operations_release_binding",
+                        status="succeeded",
+                        attempt=node.attempts,
+                        detail=resolution,
+                    )
+                )
+                await session.flush()
+        await seed_operations_tasks(session, await session.get(OrchestrationExecution, admission.execution_id))
     shared_continuation = execution_admitted and await _shared_continuation(session, node)
-    receipt_required = execution_admitted and not shared_continuation
+    receipt_required = execution_admitted and not shared_continuation and not operational_delivery
     if execution_admitted:
         if receipt_required:
             envelope["handoff_required"] = True
@@ -1081,7 +1337,9 @@ async def _dispatch_one_unclaimed(
         }
         if shared_continuation:
             envelope["execution_continuation"] = dict(envelope["handoff_expect"])
-            envelope["action"] = Action.REPAIR.value if observed_attempts else Action.DEVELOP.value
+            envelope["action"] = (
+                Action.OPERATE.value if config.persona in OPERATIONS_PERSONAS else Action.REPAIR.value if observed_attempts else Action.DEVELOP.value
+            )
 
     if prior_binding is not None:
         from .pr_bindings import binding_summary
@@ -1096,6 +1354,30 @@ async def _dispatch_one_unclaimed(
             "provider_pr_node_id": repair_pr.provider_pr_node_id,
         }
 
+    accepted_plan = await session.scalar(
+        select(OrchestrationAcceptedPlan).where(
+            OrchestrationAcceptedPlan.org_id == org_id,
+            OrchestrationAcceptedPlan.flow_id == node.flow_id,
+            OrchestrationAcceptedPlan.superseded_at.is_(None),
+        )
+    )
+    assignment = {
+        "tenant_id": org_id,
+        "flow_id": node.flow_id,
+        "node_id": node.id,
+        "graph_address": run.graph_address,
+        "accepted_plan_version": accepted_plan.version if accepted_plan is not None else None,
+        "accepted_plan_hash": accepted_plan.plan_hash if accepted_plan is not None else None,
+        "execution_id": admission.execution_id,
+        "invocation_id": envelope["message_id"],
+        "attempt": node.attempts,
+        "issue": issue,
+        "repo": config.repo,
+        "provider_repository_id": repository_id,
+        "installation_id": installation_id,
+        "claim_id": claim["claim_id"] if claim is not None else None,
+        "claim_generation": claim["generation"] if claim is not None else None,
+    }
     session.add(
         OrchestrationDecision(
             org_id=org_id,
@@ -1113,10 +1395,13 @@ async def _dispatch_one_unclaimed(
                     "attempt": node.attempts,
                     "arrived_at": envelope["arrived_at"],
                     "repo": config.repo,
+                    "flow_id": node.flow_id,
+                    "assignment": assignment,
                     "issue": issue,
                     "root_decision_id": genesis.decision_id,
                     "pr_binding_required": binding_required,
                     "handoff_required": receipt_required,
+                    **({"conclusion_authority": "evidence"} if operational_delivery else {}),
                     "provider_repository_id": repository_id,
                     "installation_id": installation_id,
                     **(
@@ -1153,7 +1438,11 @@ async def _dispatch_one_unclaimed(
     # been verified. The assignment commits atomically with this exact dispatch.
     from .report_dispatch import reporting_enabled
 
-    if binding_required and reporting_enabled() and (shared_continuation or os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true"):
+    if (
+        (binding_required or operational_delivery)
+        and reporting_enabled()
+        and (operational_delivery or shared_continuation or os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true")
+    ):
         from .run_reports import prepare_run_report
 
         await prepare_run_report(session, envelope)
@@ -1356,6 +1645,80 @@ class _ExecutionAdmission:
 _NO_POLICY = _ExecutionAdmission(kind=AdmissionKind.NO_POLICY)
 
 
+async def product_binding_hold(session: AsyncSession, *, org_id: str, flow_id: str) -> str | None:
+    plan_document = await session.scalar(
+        select(OrchestrationAcceptedPlan.plan_document).where(
+            OrchestrationAcceptedPlan.org_id == org_id,
+            OrchestrationAcceptedPlan.flow_id == flow_id,
+            OrchestrationAcceptedPlan.superseded_at.is_(None),
+        )
+    )
+    if plan_document is None or plan_document.get("product_id") is None:
+        return None
+    nodes = plan_document.get("nodes")
+    if not isinstance(nodes, list) or not nodes or any(not isinstance(node, dict) for node in nodes):
+        return "repository_verification_pending"
+    stories = [node for node in nodes if node.get("kind") == NodeKind.STORY.value]
+    epic_refs = {
+        reference.get("address"): reference.get("issue")
+        for reference in plan_document.get("tracker_refs") or []
+        if isinstance(reference, dict) and reference.get("scope") == "epic"
+    }
+    published = [
+        (node, epic_refs.get("/".join(node["address"].split("/")[:2])))
+        for node in stories
+        if node.get("proposal_identity") and isinstance(node.get("address"), str)
+    ]
+    published = [(node, epic) for node, epic in published if isinstance(epic, dict)]
+    if published:
+        identities = {(node.get("provider_repository_id"), node["proposal_identity"]) for node, _ in published}
+        rows = (
+            await session.scalars(
+                select(OrchestrationAmendmentIssueBinding).where(
+                    OrchestrationAmendmentIssueBinding.org_id == org_id,
+                    tuple_(OrchestrationAmendmentIssueBinding.provider_repository_id, OrchestrationAmendmentIssueBinding.proposal_identity).in_(
+                        identities
+                    ),
+                )
+            )
+        ).all()
+        bindings = {(row.provider_repository_id, row.proposal_identity): row for row in rows}
+        if len(bindings) != len(rows) or any(
+            (row := bindings.get((node.get("provider_repository_id"), node["proposal_identity"]))) is None
+            or row.state != "created"
+            or row.issue_number != issue_number_for_dispatch(node.get("issue_ref"))
+            or row.parent_repository_id != epic.get("repository_id")
+            or row.parent_issue_id is None
+            or row.link_confirmed_at is None
+            for node, epic in published
+        ):
+            return "amendment_issue_link_unconfirmed"
+    if not stories or any(
+        not isinstance(node.get("repository_identity"), str)
+        or not node["repository_identity"]
+        or type(node.get("provider_repository_id")) is not int
+        or node["provider_repository_id"] <= 0
+        or not isinstance(node.get("repository_connection"), dict)
+        or node["repository_connection"].get("provider") != "github"
+        or type(node["repository_connection"].get("installation_id")) is not int
+        or node["repository_connection"]["installation_id"] <= 0
+        for node in stories
+    ):
+        return "repository_verification_pending"
+    if os.environ.get("ADP_PRODUCT_STORY_DISPATCH_ENABLED", "false").lower() != "true":
+        return "repository_execution_withheld"
+    projected_product = await session.scalar(
+        select(OrchestrationFlow.product_id).where(OrchestrationFlow.org_id == org_id, OrchestrationFlow.id == flow_id)
+    )
+    if projected_product != plan_document["product_id"]:
+        return "repository_verification_pending"
+    return None
+
+
+async def product_binding_pending_verification(session: AsyncSession, *, org_id: str, flow_id: str) -> bool:
+    return await product_binding_hold(session, org_id=org_id, flow_id=flow_id) is not None
+
+
 def _admission_refused(code: str, *, owner: str, required_input: str, detail: str) -> _ExecutionAdmission:
     return _ExecutionAdmission(
         kind=AdmissionKind.REFUSED,
@@ -1419,15 +1782,58 @@ async def _shared_continuation(session, node) -> bool:
 
 
 async def _dispatch_one_attempt(session, node, *, config, report, scope) -> None:
-    from .evaluation_plan import accepted_evaluation, managed_evaluation
-    from .work_admission import admit, enabled, require_authority, resolve_repository_id
+    from .accepted_node import accepted_node_contract
+    from .evaluation_plan import accepted_evaluation, human_evaluation, managed_evaluation
+    from .work_admission import admit, enabled, require_authority
     from .work_claims import ClaimOwner, OwnerKind, WorkClaimError
 
+    contract = await accepted_node_contract(session, node)
+    if contract is not None and contract.node.repository_identity and "/" in contract.node.repository_identity:
+        config = replace(config, repo=contract.node.repository_identity)
+    from .evaluation_correction_state import validate_correction
+
+    correction = await validate_correction(session, node)
+    if correction is not None and (source := correction.detail.get("source_authorization")) is not None:
+        config = replace(config, repo=source["repository"])
+
+    human = await human_evaluation(session, node)
+    if human and (human[1] is None or human[1].evidence_schema != "multi-repository-evaluation/v1"):
+        report.record(node.org_id, "undispatchable")
+        return
+
     if await managed_evaluation(session, node):
-        from .repository_evaluation import observe_repository_evaluation
+        from .evaluation_contract import MULTI_REPOSITORY_SCHEMA
+        from .repository_evaluation import block_on_required_inputs, observe_repository_evaluation
 
         accepted = await accepted_evaluation(session, node)
-        if accepted is not None and accepted[1].evidence_schema in {"repository-evaluation/v1", "cli-live-evaluation/v1", "workflow-evaluation/v1"}:
+        if accepted is not None and accepted[1].evidence_schema == MULTI_REPOSITORY_SCHEMA:
+            from .repository_evaluation import repository_mode_supported
+
+            if not repository_mode_supported(accepted[1]):
+                await _record_admission_refusal(
+                    session,
+                    node_id=node.id,
+                    org_id=node.org_id,
+                    flow_id=node.flow_id,
+                    admission=_admission_refused(
+                        "evaluation_adapter_unavailable",
+                        owner="orchestration-owner",
+                        required_input="Enable the approved repository or deployed evaluation adapter before retrying",
+                        detail="This evaluation version has no execution adapter; legacy workers and human acceptance cannot substitute.",
+                    ),
+                    scope=scope,
+                )
+                report.record(node.org_id, "admission_refused")
+                return
+        if await block_on_required_inputs(session, node):
+            report.record(node.org_id, "undispatchable")
+            return
+        if accepted is not None and accepted[1].evidence_schema in {
+            "repository-evaluation/v1",
+            "cli-live-evaluation/v1",
+            "workflow-evaluation/v1",
+            MULTI_REPOSITORY_SCHEMA,
+        }:
             if not report._repository_evaluation_attempted:
                 report._repository_evaluation_attempted = True
                 await observe_repository_evaluation(session, node)
@@ -1450,6 +1856,15 @@ async def _dispatch_one_attempt(session, node, *, config, report, scope) -> None
         # The machine controller owns admission. Do not claim its issue lane or
         # create an operations worker while it is waiting for genuine evidence.
         return
+    if not config.repo:
+        raise _AdmissionRefusedError(
+            _admission_refused(
+                "repository_binding_missing",
+                owner="flow-owner",
+                required_input="set the story repository in the accepted plan",
+                detail="the accepted story has no repository target",
+            )
+        )
     if not config.configured:
         await _dispatch_one_unclaimed(session, node, config=config, report=report)
         return
@@ -1479,10 +1894,12 @@ async def _dispatch_one_attempt(session, node, *, config, report, scope) -> None
     before = len(report.pending)
     if not shared_continuation:
         require_authority()
-    installation = await resolve_installation_id(session, org_id=node.org_id)
-    if installation is None:
-        raise WorkClaimError("installation_unresolved", "Ownership requires a tenant installation.")
-    repository_id = await resolve_repository_id(org_id=node.org_id, installation_id=installation, repo=config.repo)
+    from .work_admission import resolve_accepted_repository
+
+    installation, repository_id, observed_name = await resolve_accepted_repository(session, node=node, contract=contract, repo=config.repo)
+    config = replace(config, repo=observed_name)
+    if contract is not None and contract.node.provider_repository_id not in {None, repository_id}:
+        raise WorkClaimError("repository_changed", "The accepted immutable repository identity no longer matches the routed repository.")
     issue = int(str(node.issue_ref).lstrip("#"))
     async with session.begin_nested():
         claim = await admit(
@@ -1506,14 +1923,96 @@ async def _dispatch_one_attempt(session, node, *, config, report, scope) -> None
             raise _AdmissionUnusedError()
 
 
+async def _continue_stalled_execution(session, node, *, report) -> bool:
+    """Re-enter a live execution the stall watchdog interrupted instead of starting attempt N+1.
+
+    A story the watchdog failed on the engine's clock, and a human then resumed,
+    still owns its execution: the claim is held by this flow and the K2 record is
+    not terminal (awaiting review, merge-ready, deploying). Admitting a new attempt
+    here is refused anyway — the lane is held — and would repeat development that
+    already produced a reviewed pull request. The honest move is the one
+    `resume-continuation` makes for a failed node: put the node back to `running`
+    so the execution runner continues exactly where it was. Only the
+    `node_stalled -> failed`, `node_resumed -> ready` history qualifies; a human
+    who sent a running story back to `ready` asked for a fresh attempt and gets one.
+    """
+    if node.kind != NodeKind.STORY.value or node.attempts < 1:
+        return False
+    recent = (
+        await session.scalars(
+            select(OrchestrationDecision)
+            .where(
+                OrchestrationDecision.org_id == node.org_id,
+                OrchestrationDecision.node_id == node.id,
+                OrchestrationDecision.to_state.is_not(None),
+                OrchestrationDecision.rejection_reason.is_(None),
+            )
+            .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+            .limit(2)
+        )
+    ).all()
+    # The resume route records `failed -> ready` under the kind its table maps for
+    # a failed node (historically `node_stalled`, the kind of the failure it clears),
+    # so the edge and the human actor identify the resume, not the kind. The stall
+    # itself is the engine's `node_stalled` to `failed`.
+    if (
+        len(recent) != 2
+        or (recent[0].from_state, recent[0].to_state, recent[0].actor_kind) != (NodeState.FAILED.value, NodeState.READY.value, ActorKind.HUMAN.value)
+        or recent[1].kind != DecisionKind.NODE_STALLED.value
+        or (recent[1].from_state, recent[1].to_state) != (NodeState.RUNNING.value, NodeState.FAILED.value)
+    ):
+        return False
+    from .execution_state import TERMINAL_EXECUTION_STATUSES, OutcomeKind
+    from .execution_store import load_execution
+    from .handoff import identity_for_attempt
+    from .models import OrchestrationWorkClaim
+
+    identity = await identity_for_attempt(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
+    if identity is None:
+        return False
+    loaded = await load_execution(session, identity=identity)
+    if loaded is None or loaded.kind is not OutcomeKind.APPLIED or loaded.record is None or loaded.record.status in TERMINAL_EXECUTION_STATUSES:
+        return False
+    claim = await session.get(OrchestrationWorkClaim, identity.claim_id)
+    if (
+        claim is None
+        or claim.state != "held"
+        or claim.owner_kind != "engine_flow"
+        or claim.owner_ref != node.flow_id
+        or claim.generation != identity.claim_generation
+    ):
+        return False
+    from .dispatch import continue_node_execution
+
+    if not await continue_node_execution(
+        session,
+        node=node,
+        execution_id=loaded.record.id,
+        phase=str(loaded.record.phase),
+        claim_id=identity.claim_id,
+        claim_generation=identity.claim_generation,
+    ):
+        return False
+    report.record(node.org_id, "continued")
+    logger.info(
+        "orchestration dispatch: node %s re-enters execution %s at %s instead of a new attempt", node.id, loaded.record.id, loaded.record.phase
+    )
+    return True
+
+
 async def _dispatch_one(session, node, *, config, report) -> None:
     from .admission_diagnostics import description, safe_claim_code
+    from .evaluation_contract import EvaluationVersionError
     from .policy_admission import load_in_force_policy
+    from .review_cycle import CycleBlockedError
     from .work_claims import WorkClaimError
 
     # Capture scalar identity before any savepoint rollback expires the ORM node.
     node_id, org_id, flow_id = node.id, node.org_id, node.flow_id
     if await flow_is_paused(session, org_id=org_id, flow_id=flow_id, lock=True):
+        return
+    if await product_binding_pending_verification(session, org_id=org_id, flow_id=flow_id):
+        report.record(org_id, "undispatchable")
         return
     inputs = await load_in_force_policy(session, org_id=org_id, flow_id=flow_id)
     scope = {
@@ -1522,15 +2021,35 @@ async def _dispatch_one(session, node, *, config, report) -> None:
         "policy_hash": inputs.policy.policy_hash if inputs.policy else None,
     }
     try:
+        if await _continue_stalled_execution(session, node, report=report):
+            return
         await _dispatch_one_attempt(session, node, config=config, report=report, scope=scope)
     except _AdmissionUnusedError:
         return
+    except CycleBlockedError as exc:
+        logger.warning("orchestration correction refused for node %s: %s", node_id, exc)
+        report.record(org_id, "policy_blocked")
     except _AdmissionRefusedError as exc:
         # The claim/dispatch savepoint has rolled back. Only this diagnostic is
         # persisted; no claim, execution, dispatch record or attempt is retained.
         await _record_admission_refusal(session, node_id=node_id, org_id=org_id, flow_id=flow_id, admission=exc.admission, scope=scope)
         report.record(org_id, "admission_refused")
         logger.warning("orchestration admission refused node=%s reason=%s", node_id, exc.admission.block_code)
+    except EvaluationVersionError as error:
+        await _record_admission_refusal(
+            session,
+            node_id=node_id,
+            org_id=org_id,
+            flow_id=flow_id,
+            admission=_admission_refused(
+                str(error),
+                owner="orchestration-owner",
+                required_input="Supply a supported, approved evaluation version",
+                detail="Unknown evaluation versions cannot use a legacy adapter or worker.",
+            ),
+            scope=scope,
+        )
+        report.record(org_id, "admission_refused")
     except WorkClaimError as exc:
         code = safe_claim_code(exc.code)
         owner, detail, required_input = description(code)
@@ -1624,11 +2143,9 @@ async def run_dispatch_pass(
         # they are counted as `undispatchable` below, so an unwired environment is
         # visible rather than reading as idle.
         logger.warning(
-            "orchestration dispatch: pass is unconfigured (%s=%r, %s=%r); ready nodes will be reported as undispatchable",
+            "orchestration dispatch: pass is unconfigured (%s=%r); ready nodes will be reported as undispatchable",
             QUEUE_URL_ENV,
             cfg.queue_url,
-            REPO_ENV,
-            cfg.repo,
         )
 
     try:
@@ -1646,6 +2163,7 @@ async def run_dispatch_pass(
             break
         node_id, org_id = node.id, node.org_id
         report.record(org_id, "nodes_examined")
+        pending_count = len(report.pending)
         try:
             async with session.begin_nested():
                 await _dispatch_one(session, node, config=cfg, report=report)
@@ -1654,21 +2172,34 @@ async def run_dispatch_pass(
             # non-success, keep going.
             logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node_id, org_id)
             report.record(org_id, "errors")
+            del report.pending[pending_count:]
+            if await recover_session(session, node_id=node_id):
+                # A full rollback also discarded earlier dispatch records. Their
+                # in-memory envelopes cannot survive it or reach the queue.
+                report.pending.clear()
+                return report
 
     from .protected_dispatch_recovery import recover_pending_protected
     from .report_dispatch import recover_pending_reports
 
-    try:
-        await recover_pending_protected(session, config=cfg, report=report)
-    except Exception:
-        logger.exception("orchestration dispatch: protected outbox could not be recovered")
-        report.errors += 1
-
-    try:
-        await recover_pending_reports(session, config=cfg, report=report)
-    except Exception:
-        logger.exception("orchestration dispatch: durable report outbox could not be recovered")
-        report.errors += 1
+    for recover, name in ((recover_pending_protected, "protected"), (recover_pending_reports, "durable report")):
+        pending_count = len(report.pending)
+        try:
+            # PostgreSQL marks the transaction aborted after a SQL error, even
+            # if a recovery helper catches it. Keep that failure inside a
+            # savepoint so COMMIT cannot silently roll back fresh dispatches.
+            async with session.begin_nested():
+                await recover(session, config=cfg, report=report)
+                # Raise inside the savepoint when a helper swallowed a SQL
+                # error; a failed RELEASE can no longer roll that savepoint back.
+                await session.execute(select(1))
+        except Exception:
+            del report.pending[pending_count:]
+            logger.exception("orchestration dispatch: %s outbox could not be recovered", name)
+            report.errors += 1
+            if await recover_session(session, node_id=f"{name} outbox"):
+                report.pending.clear()
+                return report
 
     return report
 

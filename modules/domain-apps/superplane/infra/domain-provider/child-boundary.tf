@@ -2,6 +2,7 @@
 # changed by the provisioner. In particular there is no IAM, AssumeRole, PassRole,
 # secret, backend-state, ELB or EBS mutation grant here.
 locals {
+  image_regions = distinct([for arn in var.node_image_repository_arns : split(":", arn)[3] if split(":", arn)[3] != var.aws_region])
   child_reads = [
     "ec2:DescribeInstances", "ec2:DescribeInstanceTypes", "ec2:DescribeTags",
     "ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups",
@@ -57,6 +58,8 @@ locals {
       { Effect = "Deny", Action = ["iam:*", "sts:AssumeRole*", "s3:*", "dynamodb:*", "secretsmanager:*", "ssm:*"], Resource = "*" },
       ], var.execution == null ? [] : [
       { Effect = "Allow", Action = ["kms:DescribeKey"], Resource = var.execution.kms_key_arn }
+      ], length(local.image_regions) == 0 ? [] : [
+      { Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = "*", Condition = { StringEquals = { "aws:RequestedRegion" = local.image_regions } } }
     ])
   }
 }

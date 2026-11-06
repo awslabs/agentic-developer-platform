@@ -10,10 +10,9 @@ from src.shared.models.persona_models import PersonaModelPolicySetting
 
 
 @pytest.fixture
-async def test_engine(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'authority.sqlite'}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+async def test_engine(tmp_path, sqlite_schemas):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'authority.sqlite'}", connect_args={"check_same_thread": False})
+    await sqlite_schemas.create_all(engine, Base.metadata)
     yield engine
     await engine.dispose()
 

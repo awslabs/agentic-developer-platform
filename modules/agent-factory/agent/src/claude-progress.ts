@@ -15,7 +15,7 @@ export class ClaudeProgress {
   private tools = new Map<string, string>();
   private messageId = '';
   private blocks = new Map<number, string>();
-  constructor(private events: ExplanationEvents) {}
+  constructor(private events: ExplanationEvents, private checklist?: (block: any) => string | undefined) {}
   observe(message: any): void {
     if (message.type === 'stream_event') {
       const event = message.event;
@@ -43,7 +43,7 @@ export class ClaudeProgress {
         if (block.type === 'text' && typeof block.text === 'string') this.events.publish(block.text, {
           id: `${message.message.id}:${index}`, category: 'message', state: 'completed',
         });
-        const checklist = claudeTaskChecklist(block);
+        const checklist = this.checklist ? this.checklist(block) : claudeTaskChecklist(block);
         if (checklist) this.events.publish(checklist, { id: 'task-checklist', category: 'plan', state: 'completed' });
         if (block.type === 'tool_use') {
           this.tools.set(block.id, block.name);

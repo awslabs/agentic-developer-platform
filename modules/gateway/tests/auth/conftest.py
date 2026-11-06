@@ -41,9 +41,12 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 # APPENDED rather than inserted: tests/cli/ prepends `modules/gateway/cli/` for
 # its own flat `import adp_common`, and prepending here would order this library
 # ahead of paths the rest of the suite relies on for no benefit.
-_ADP_COMMON_SRC = Path(__file__).resolve().parents[4] / "libs" / "python" / "adp-common" / "src"
-if str(_ADP_COMMON_SRC) not in sys.path:
-    sys.path.append(str(_ADP_COMMON_SRC))
+for _ancestor in Path(__file__).resolve().parents:
+    _ADP_COMMON_SRC = _ancestor / "libs/python/adp-common/src"
+    if _ADP_COMMON_SRC.is_dir():
+        if str(_ADP_COMMON_SRC) not in sys.path:
+            sys.path.append(str(_ADP_COMMON_SRC))
+        break
 
 
 @pytest.fixture(scope="session")
@@ -373,6 +376,9 @@ async def create_sample_token(
 
 
 # Superplane policy is packaged separately from the shared platform library.
-_SUPERPLANE_AUTH = Path(__file__).resolve().parents[3] / "domain-apps/superplane/auth"
-if str(_SUPERPLANE_AUTH) not in sys.path:
-    sys.path.append(str(_SUPERPLANE_AUTH))
+for _ancestor in Path(__file__).resolve().parents:
+    _SUPERPLANE_AUTH = _ancestor / "domain-apps/superplane/auth"
+    if _SUPERPLANE_AUTH.is_dir():
+        if str(_SUPERPLANE_AUTH) not in sys.path:
+            sys.path.append(str(_SUPERPLANE_AUTH))
+        break

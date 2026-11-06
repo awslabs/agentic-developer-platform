@@ -34,6 +34,40 @@ def test_admission_rate_count_is_atomic_and_idempotent(client, store):
     assert item["request_count"] == {"N": "10"}
 
 
+def test_project_scope_is_captured_in_task_and_protected_run_input(client, store):
+    from dataclasses import replace
+
+    request = _request(request_payload={"instructions": "investigate", "product_id": "product"})
+    scope = {"tenant_id": "tenant-a", "product_id": "product", "project_id": "base", "relationship_revision": 1}
+    request = replace(request, immutable_input={**request.immutable_input, "work_scope": scope})
+    assert not store.accept(request).replayed
+    assert store.accept(request).replayed
+    task = store.read_task(request.task_id)
+    assert (task["product_id"], task["project_id"]) == ("product", "base")
+    grant = store._get_authority("TENANT#tenant-a", request.grant_reference)
+    assert grant["input"]["work_scope"] == scope
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": request.grant_reference}},
+        UpdateExpression="SET #input.work_scope.project_id = :other",
+        ExpressionAttributeNames={"#input": "input"},
+        ExpressionAttributeValues={":other": {"S": "another-project"}},
+    )
+    with pytest.raises(WorkBindingError):
+        store.resolve_work(request.dispatch_id)
+
+
+def test_task_store_rejects_missing_or_foreign_project_scope(store):
+    from dataclasses import replace
+
+    request = _request(request_payload={"instructions": "investigate", "product_id": "product"})
+    with pytest.raises(TaskStoreError, match="scope is incomplete"):
+        store.accept(request)
+    foreign = {"tenant_id": "other", "product_id": "product", "project_id": "base", "relationship_revision": 1}
+    with pytest.raises(TaskStoreError, match="scope disagrees"):
+        store.accept(replace(request, immutable_input={**request.immutable_input, "work_scope": foreign}))
+
+
 @pytest.mark.asyncio
 async def test_real_admission_reserves_once_and_failed_loser_cannot_release(client, store):
     from types import SimpleNamespace

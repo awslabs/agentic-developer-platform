@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools==84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adp-l5-services"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["httpx==0.28.1", "fastapi==0.136.3", "sqlalchemy[asyncio]==2.0.46", "pydantic==2.12.5", "asyncpg==0.30.0", "rfc8785==0.1.4", "boto3==1.43.111", "botocore==1.43.119"]
+
+[project.optional-dependencies]
+dev = ["aiosqlite==0.22.1", "pytest==9.0.3", "pytest-asyncio==1.4.0", "pytest-xdist==3.8.0", "jsonschema==4.25.1", "alembic==1.14.1", "PyYAML>=6,<7", "uv==0.13.5"]
+devops-worker = ["boto3==1.43.111"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+l5_services = ["certs/*.pem", "contracts/v1/*.json", "contracts/v1/*.tsv", "contracts/v1/*.md", "migrations/versions/*.py"]
+
+[tool.pytest.ini_options]
+pythonpath = ["../gateway", "../gateway/src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

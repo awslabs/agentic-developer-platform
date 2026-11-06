@@ -219,6 +219,21 @@ class RateLimitService(IRateLimitService):
 
         return RateLimitCheckResult(allowed=True)
 
+    async def consume_tool_rate_limit(self, context: TokenContext, tool: str) -> RateLimitCheckResult:
+        """Debit isolated per-tool buckets for the verified human and tenant."""
+        await asyncio.wait_for(self._load_from_db(force=True), timeout=3)
+        for entity_type, entity_id in (
+            (EntityType.USER, f"tool___{tool}___{context.user_id}"),
+            (EntityType.ORGANIZATION, f"tool___{tool}"),
+        ):
+            key = self._get_entity_key(entity_type, entity_id, context.attributed_org_id)
+            rpm = self._rate_limits.get(key, {}).get("rpm") or self._config.default_rpm
+            capacity = max(1, int(rpm * self._config.burst_multiplier / 60.0 * self._config.refill_buffer_seconds))
+            allowed, remaining, retry_after = await self._backend.consume(key, LimitType.RPM, capacity, rpm / 60.0)
+            if not allowed:
+                return RateLimitCheckResult(allowed=False, limit_type="rpm", limit=rpm, remaining=remaining, retry_after_seconds=max(1, retry_after))
+        return RateLimitCheckResult(allowed=True)
+
     async def _check_entity_limits(
         self,
         entity_type: EntityType,

@@ -1,0 +1,13 @@
+{
+  "name": "adp-kirocrew-clients",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.100.0",
+    "@anthropic-ai/claude-code": "2.1.318",
+    "@openai/codex": "0.166.0"
+  },
+  "overrides": {
+    "zod": "4.6.6"
+  }
+}

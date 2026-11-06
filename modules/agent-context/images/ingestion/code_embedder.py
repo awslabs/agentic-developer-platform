@@ -180,6 +180,12 @@ class S3VectorsCodeWriter:
     Read-back verification queries the index for vectors tagged with the repo.
     """
 
+    def __new__(cls, *args, **kwargs):
+        from job_client import enabled, VectorWriter
+        if enabled():
+            return VectorWriter()
+        return super().__new__(cls)
+
     def __init__(self, bucket_name: str, region_name: str | None = None):
         import boto3
 
@@ -240,6 +246,51 @@ class S3VectorsCodeWriter:
         )
         return len(response.get("vectors", []))
 
+    def clear_asset_vectors(self, index_name: str, asset_id: str, ingestion_attempt_id: str) -> None:
+        """Remove retry leftovers for exactly one registry asset and ingestion attempt.
+
+        Other attempts remain untouched, so a late worker cannot delete newer results.
+        Collect keys before deleting so pagination is not changed mid-scan. No
+        caller-supplied prefix is accepted; colon is prohibited in registry IDs.
+        """
+        import re
+        if not isinstance(asset_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", asset_id):
+            raise ValueError("Invalid registry asset ID")
+        from scope import validate_ingestion_attempt
+        attempt = validate_ingestion_attempt(ingestion_attempt_id)
+        prefix = f"{asset_id}:{attempt}:"
+        self._ensure_index(index_name)
+        keys = []
+        token = None
+        while True:
+            response = self._client.list_vectors(
+                vectorBucketName=self.bucket_name, indexName=index_name,
+                returnData=False, returnMetadata=False,
+                **({"nextToken": token} if token else {}),
+            )
+            keys.extend(item["key"] for item in response.get("vectors", [])
+                        if item.get("key", "").startswith(prefix))
+            token = response.get("nextToken")
+            if not token:
+                break
+        for offset in range(0, len(keys), 500):
+            self._client.delete_vectors(vectorBucketName=self.bucket_name, indexName=index_name,
+                                        keys=keys[offset:offset + 500])
+
+    def count_asset_vectors(self, index_name, query_vector, tenant_id, product_id, asset_id, ingestion_attempt_id, owner_sub=None) -> int:
+        """Verify the current Product registration, never another copy of the source."""
+        response = self._client.query_vectors(
+            vectorBucketName=self.bucket_name, indexName=index_name,
+            queryVector={"float32": query_vector}, topK=1,
+            filter={"$and": [{key: {"$eq": value}} for key, value in {
+                "visibility": "product" if product_id else "personal", "asset_id": asset_id,
+                "ingestion_attempt_id": ingestion_attempt_id,
+                **({"tenant_id": tenant_id} if tenant_id else {}),
+                **({"product_id": product_id} if product_id else {"owner_sub": owner_sub}),
+            }.items()]},
+        )
+        return len(response.get("vectors", []))
+
 
 def embed_code_repo(
     clone_path: str,
@@ -252,6 +303,9 @@ def embed_code_repo(
     visibility: str = "shared",
     tenant_id: str | None = None,
     owner_sub: str | None = None,
+    product_id: str | None = None,
+    registry_asset_id: str | None = None,
+    ingestion_attempt_id: str | None = None,
     shard_count: int = 4,
     max_files: int = 500,
 ) -> dict[str, Any]:
@@ -267,6 +321,11 @@ def embed_code_repo(
     """
     from botocore.exceptions import ClientError
 
+    from scope import parse_scope, asset_storage_prefix, validate_ingestion_attempt
+    scope = parse_scope({"visibility": visibility, "tenant_id": tenant_id, "owner_sub": owner_sub, "product_id": product_id})
+    if scope.is_product or registry_asset_id:
+        asset_storage_prefix(scope, "content", registry_asset_id)
+        ingestion_attempt_id = validate_ingestion_attempt(ingestion_attempt_id)
     if not bucket_name:
         log.info(
             "embed_vectors: S3 Vectors bucket not configured — skipping %s (see #2486)",
@@ -281,7 +340,15 @@ def embed_code_repo(
         tenant_id=tenant_id,
         owner_sub=owner_sub,
         shard_count=shard_count,
+        product_id=product_id,
     )
+
+    if scope.is_product or (scope.is_personal and registry_asset_id):
+        try:
+            vector_writer = vector_writer or S3VectorsCodeWriter(bucket_name, region_name=region_name)
+            vector_writer.clear_asset_vectors(index_name, registry_asset_id, ingestion_attempt_id)
+        except Exception as exc:
+            return {"status": "replace_failed", "error": str(exc), "vectors": 0, "files": 0}
 
     # Discover + chunk source files.
     source_files = discover_source_files(clone_path, max_files=max_files)
@@ -310,9 +377,14 @@ def embed_code_repo(
                     first_embedding = embedding
                 vectors.append(
                     {
-                        "key": f"code:{org_repo}:{rel}:{idx}",
+                        "key": f"{registry_asset_id}:{ingestion_attempt_id}:code:{org_repo}:{rel}:{idx}" if registry_asset_id else f"code:{org_repo}:{rel}:{idx}",
                         "embedding": embedding,
                         "metadata": {
+                            **({"visibility": visibility} if registry_asset_id else {}),
+                            **({"tenant_id": tenant_id} if tenant_id else {}),
+                            **({"owner_sub": owner_sub} if owner_sub and registry_asset_id else {}),
+                            **({"product_id": product_id} if product_id else {}),
+                            **({"asset_id": registry_asset_id, "ingestion_attempt_id": ingestion_attempt_id} if registry_asset_id else {}),
                             "repo": org_repo,
                             "org_id": org_id,
                             "source_type": "code",
@@ -352,7 +424,13 @@ def embed_code_repo(
     verified = False
     try:
         if first_embedding is not None:
-            verified = writer.count_repo_vectors(index_name, first_embedding, org_repo) > 0
+            if scope.is_product:
+                verified = writer.count_asset_vectors(index_name, first_embedding, tenant_id, product_id, registry_asset_id, ingestion_attempt_id) > 0
+            elif scope.is_personal and registry_asset_id:
+                verified = writer.count_asset_vectors(index_name, first_embedding, tenant_id, None,
+                                                     registry_asset_id, ingestion_attempt_id, owner_sub=owner_sub) > 0
+            else:
+                verified = writer.count_repo_vectors(index_name, first_embedding, org_repo) > 0
     except ClientError as e:
         log.warning("embed_vectors: verification query failed for %s: %s", org_repo, e)
         verified = False
@@ -379,3 +457,55 @@ def embed_code_repo(
         "files": embedded_files,
         "index": index_name,
     }
+
+
+def embed_registered_documents(
+    documents: list[dict[str, str]], scope, registry_asset_id: str,
+    *, embedding_client=None, vector_writer=None, ingestion_attempt_id=None,
+) -> dict[str, Any]:
+    """Embed an owned URL crawl or converted document with registration provenance."""
+    import hashlib
+    from config import settings
+    from scope import asset_storage_prefix, parse_scope, validate_ingestion_attempt
+
+    scope = parse_scope(scope.to_dict())
+    if not (scope.is_product or scope.is_personal):
+        raise ValueError("Registered document embeddings require Product or personal scope")
+    asset_storage_prefix(scope, "content", registry_asset_id)
+    ingestion_attempt_id = validate_ingestion_attempt(ingestion_attempt_id)
+    bucket = settings.s3_vectors_bucket
+    if not bucket:
+        return {"status": "failed", "error": "S3 Vectors bucket is not configured", "vectors": 0}
+    index = _resolve_vector_index(scope.visibility, "", scope.tenant_id, scope.owner_sub, 4, scope.product_id)
+    try:
+        writer = vector_writer or S3VectorsCodeWriter(bucket, settings.effective_s3_vectors_region)
+        client = embedding_client or LiteLLMEmbeddingClient(settings.llm_base_url, settings.embed_model)
+        # Clear leftovers for this attempt; other attempts are rejected by registry checks.
+        writer.clear_asset_vectors(index, registry_asset_id, ingestion_attempt_id)
+        vectors = []
+        for document in documents:
+            source = document["source"]
+            source_hash = hashlib.sha256(source.encode()).hexdigest()[:24]
+            for idx, chunk in enumerate(chunk_file_text(document["text"])):
+                vectors.append({
+                    "key": f"{registry_asset_id}:{ingestion_attempt_id}:content:{source_hash}:{idx}",
+                    "embedding": client.embed(chunk),
+                    "metadata": {
+                        "visibility": scope.visibility, "asset_id": registry_asset_id,
+                        **({"tenant_id": scope.tenant_id} if scope.tenant_id else {}),
+                        **({"product_id": scope.product_id} if scope.is_product else {"owner_sub": scope.owner_sub}),
+                        "ingestion_attempt_id": ingestion_attempt_id,
+                        "source_type": document["source_type"], "source_ref": source,
+                        "source": source, "content_s3_key": document["s3_key"],
+                        "chunk_idx": idx, "chunk_text": chunk[:500],
+                    },
+                })
+        if not vectors:
+            return {"status": "failed", "error": "No document text was indexed", "vectors": 0}
+        writer.put_vectors(index, vectors)
+        if not writer.count_asset_vectors(index, vectors[0]["embedding"], scope.tenant_id,
+                                          scope.product_id, registry_asset_id, ingestion_attempt_id, owner_sub=scope.owner_sub):
+            return {"status": "failed", "error": "Embedding read-back verification failed", "vectors": 0}
+        return {"status": "complete", "vectors": len(vectors), "index": index}
+    except Exception as exc:
+        return {"status": "failed", "error": str(exc), "vectors": 0}

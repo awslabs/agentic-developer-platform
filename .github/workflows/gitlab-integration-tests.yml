@@ -2,6 +2,7 @@ name: GitLab Integration Tests
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('gitlab-contract-pr-{0}', github.event.number) || 'cli-live-eval-dev' }}
   cancel-in-progress: false
+  queue: max
 jobs:
   gitlab-webhook-contract:
     name: GitLab Webhook Contract
@@ -32,7 +33,7 @@ jobs:
     name: GitLab Live Fleet
     runs-on: arc-runner-org
     timeout-minutes: 20
-    environment: adp-checks-dev
+    environment: adp-checks-${{ inputs.target_environment || 'dev' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -65,7 +66,7 @@ jobs:
             -m "live_fleet" \
             --junitxml=live-fleet-results.xml
       - name: Upload live-fleet results and latency
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         if: always()
         with:
           name: gitlab-live-fleet-results
@@ -108,7 +109,7 @@ jobs:
         if: always()
         run: python .github/scripts/regression_report.py junit --suite gitlab-live-fleet --junit modules/agent-factory/live-fleet-results.xml
           --inventory test-results/gitlab-live-fleet-inventory.json --output test-results/gitlab-live-fleet-result.json
-      - uses: actions/upload-artifact@v7
+      - uses: ./.github/actions/upload-ci-evidence-s3
         if: always()
         with:
           name: gitlab-live-fleet-coverage
@@ -139,7 +140,7 @@ jobs:
     name: GitLab Deployed Webhook Contract
     runs-on: arc-runner-org
     timeout-minutes: 10
-    environment: adp-checks-dev
+    environment: adp-checks-${{ inputs.target_environment || 'dev' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -178,7 +179,7 @@ jobs:
             --junitxml=contract-results.xml
         id: live_tests
       - name: Upload contract test results
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         if: always()
         with:
           name: gitlab-contract-test-results
@@ -209,7 +210,7 @@ jobs:
         if: always()
         run: python .github/scripts/regression_report.py junit --suite gitlab-deployed-contract --junit modules/agent-factory/contract-results.xml
           --inventory test-results/gitlab-deployed-contract-inventory.json --output test-results/gitlab-deployed-contract-result.json
-      - uses: actions/upload-artifact@v7
+      - uses: ./.github/actions/upload-ci-evidence-s3
         if: always()
         with:
           name: gitlab-deployed-contract-coverage
@@ -250,6 +251,12 @@ jobs:
       - modules/agent-factory/**
       - modules/source-control/gitlab/**
   workflow_call:
+    inputs:
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
     outputs:
       cleanup_ok:
         description: Integration fixtures completed or no live tests started

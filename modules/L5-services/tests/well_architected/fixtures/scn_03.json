@@ -1,0 +1,21 @@
+{
+  "scenario": "SCN-03",
+  "fixture_kind": "offline_contract_not_live_client",
+  "fixed_clock": "2026-10-27T00:00:00Z",
+  "products": [
+    {"tenant_id": "tenant-alpha", "product_id": "product-alpha", "project_id": "project-alpha", "repository_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "document_revision": "doc-alpha-v1"},
+    {"tenant_id": "tenant-beta", "product_id": "product-beta", "project_id": "project-beta", "repository_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "document_revision": "doc-beta-v1"}
+  ],
+  "negative_cases": [
+    {"id": "resource_inspection", "target": "configuration", "field": "well_architected.review_mode", "value": "resource_inspection"},
+    {"id": "unsupported_pillar", "target": "configuration", "field": "well_architected.pillars", "value": ["SUSTAINABILITY"]},
+    {"id": "duplicate_pillar", "target": "configuration", "field": "well_architected.pillars", "value": ["SECURITY", "SECURITY"]},
+    {"id": "authority_override", "target": "configuration", "field": "roleArn", "value": "untrusted"},
+    {"id": "untrusted_client_token", "target": "run", "field": "clientToken", "value": "untrusted"},
+    {"id": "resource_source", "target": "run", "field": "sources.0.record_type", "value": "resource"},
+    {"id": "unpinned_source", "target": "run", "field": "sources.1.record_revision", "value": "HEAD"},
+    {"id": "cross_service", "target": "run", "field": "service_id", "value": "security"},
+    {"id": "null_execution_role", "target": "configuration", "field": "well_architected.execution_role_ref", "value": null},
+    {"id": "null_parent_task", "target": "run", "field": "parent_task_ref", "value": null}
+  ]
+}

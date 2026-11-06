@@ -5,9 +5,15 @@
  */
 
 import { apiClient } from './api';
+import { getAccessToken } from './auth';
 
 export interface FeatureFlags {
+  product_profile?: boolean;
+  devlake_connectors?: boolean;
   chat: boolean;
+  crew_dashboard_origin?: string;
+  crew_dashboard?: boolean;
+  assistant_ui: boolean;
   knowledge: boolean;
   indexing: boolean;
   /** Legacy GitHub-to-ADP organization links menu. */
@@ -42,9 +48,13 @@ export interface FeaturesResponse {
  *  legacy GitHub-driven mode stays the default, so a pending or failed
  *  /features fetch must NOT reveal the new path. */
 export const ALL_FEATURES_ENABLED: FeatureFlags = {
+  product_profile: false,
+  devlake_connectors: false,
   chat: true,
   knowledge: true,
   indexing: true,
+  assistant_ui: false,
+  crew_dashboard: false,
   tenant_org_links: false,
   connections: true,
   credentials: true,
@@ -87,7 +97,18 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   agent_models: false,
 };
 
-export async function fetchFeatures(): Promise<FeatureFlags> {
-  const response = await apiClient.get<FeaturesResponse>('/features');
-  return response.features;
+// Legacy and preview flags intentionally have different query-cache lifetimes.
+// Share only concurrent HTTP reads for the same session, never settled results.
+const pendingFeatures = new Map<string | null, Promise<FeatureFlags>>();
+
+export function fetchFeatures(): Promise<FeatureFlags> {
+  const token = getAccessToken();
+  const pending = pendingFeatures.get(token);
+  if (pending) return pending;
+
+  const request = apiClient.get<FeaturesResponse>('/features')
+    .then((response) => response.features)
+    .finally(() => pendingFeatures.delete(token));
+  pendingFeatures.set(token, request);
+  return request;
 }

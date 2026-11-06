@@ -11,8 +11,10 @@
 import './run-workspace.css';
 import { useEffect, useState } from 'react';
 import { Modal } from '@/components/ui';
+import { useActivityScope } from '@/contexts/ActivityScopeContext';
 import { TranscriptContent } from '@/components/TranscriptViewer';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
+import { Link } from 'react-router-dom';
 // Issue #4207: was a local formatCost with the same sub-cent convention.
 import { formatCost } from '@/utils/cost';
 import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
@@ -104,6 +106,7 @@ export interface InvocationDetailProps {
   item: InvocationItem | null;
   isOpen: boolean;
   onClose: () => void;
+  assistantHref?: string;
   /** Use admin transcript endpoint. */
   isAdmin?: boolean;
   /**
@@ -121,8 +124,10 @@ export function InvocationDetail({
   isOpen,
   onClose,
   isAdmin = false,
+  assistantHref,
   onRefreshItem,
 }: InvocationDetailProps) {
+  const activityScope = useActivityScope();
   const [showTranscript, setShowTranscript] = useState(false);
 
   useEffect(() => { setShowTranscript(false); }, [item?.invocation_id]);
@@ -188,7 +193,7 @@ export function InvocationDetail({
           confirm", never "stopped": loss of contact is not evidence of exit, and
           a run described as ended is a run someone will retry.
         */}
-        {!isTerminal &&
+        {!isTerminal && item.channel !== 'tool' &&
           (livenessConfig && item.liveness === 'unverifiable' ? (
             <p className="text-xs text-amber-700 dark:text-amber-400">
               {livenessConfig.description}
@@ -278,7 +283,7 @@ export function InvocationDetail({
           </span>
         </DetailRow>
       )}
-      {!item.completed_at && !isTerminal && item.invoked_at && (
+      {!item.completed_at && !isTerminal && item.channel !== 'tool' && item.invoked_at && (
         <DetailRow label="Duration">
           <span className="text-gray-400 dark:text-gray-500 italic">
             {item.liveness === 'unverifiable' ? 'Invoked' : 'Running since'} {formatRelativeTime(item.invoked_at)}
@@ -296,8 +301,13 @@ export function InvocationDetail({
           <p>{item.call_count} call{item.call_count !== 1 ? 's' : ''}</p>
         )}
         {item.total_cost_usd != null && (
-          <p>{formatCost(item.total_cost_usd)}</p>
+          <p>Recorded spend: {formatCost(item.total_cost_usd)}</p>
         )}
+        {item.budget_usage && <p>Outstanding reservations: {formatCost(item.budget_usage.outstanding_reservations_usd)}</p>}
+        {isBudgetStoppedStatus(item.status) && <p className="text-xs text-gray-500 dark:text-gray-400">
+          Budget checks include recorded spend, outstanding reservations and the next request’s estimate.
+          {!item.budget_usage && ' Reservation details are unavailable.'}
+        </p>}
         {item.total_tokens != null && (
           <p className="text-xs text-gray-500 dark:text-gray-400">
             {item.total_tokens.toLocaleString()} tokens
@@ -305,6 +315,16 @@ export function InvocationDetail({
         )}
       </div>
     </DetailRow>
+  ) : null;
+
+  const toolRow = item.channel === 'tool' ? (
+    <>
+      <DetailRow label="Tool">{item.tool_name || item.topic || 'Unknown tool'}</DetailRow>
+      <DetailRow label="Cost estimate">
+        {formatCost(item.estimated_cost_usd)} — conservative authorization estimate, not a settled provider charge
+      </DetailRow>
+      <DetailRow label="Receipt"><span className="font-mono">{item.receipt_id || 'Unavailable'}</span></DetailRow>
+    </>
   ) : null;
 
   const topicRow = item.topic ? (
@@ -430,8 +450,19 @@ export function InvocationDetail({
   // Layout: error-first for failed runs (Issue #3765), default order otherwise
   // ---------------------------------------------------------------------------
 
+  if (item.channel === 'tool') return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Tool authorization" size="lg">
+      <dl className="divide-y divide-gray-200 dark:divide-gray-700">
+        {statusRow}
+        {toolRow}
+        {timingRows}
+      </dl>
+    </Modal>
+  );
+
   if (item.source_type !== 'task') return (
     <Modal isOpen={isOpen} onClose={onClose} title="Run workspace" size="workspace">
+      {assistantHref && <Link to={assistantHref}>Ask about this activity</Link>}
       <header className="run-identity">
         <div><strong>{item.repo ?? 'Agent run'}{item.issue_number ? ` #${item.issue_number}` : ''}</strong>
           <span className="ml-3 text-sm">{item.persona ?? item.channel}</span>
@@ -460,7 +491,7 @@ export function InvocationDetail({
             {statusRow}{errorRow}{skipReasonRow}{stopReasonRow}{summaryRow}
             {durationRow}{costRow}{sourceRow}{runLogRow}{transcriptRow}
           </dl>
-          <ControlPanel invocationId={item.invocation_id} isOpen={isOpen} isTerminalRun={isTerminal} onCommandApplied={onRefreshItem} />
+          {!activityScope || item.viewer_is_run_owner ? <ControlPanel invocationId={item.invocation_id} isOpen={isOpen} isTerminalRun={isTerminal} onCommandApplied={onRefreshItem} /> : <p className="text-sm mt-4">Shared read access. The run owner can pause, resume or stop this run.</p>}
           <details open>
             <summary className="font-semibold mt-4 cursor-pointer">Debugging context</summary>
             <dl className="divide-y divide-gray-200 dark:divide-gray-700">{identifierRows}{lineageRow}{timingRows}{channelRow}{topicRow}</dl>
@@ -473,6 +504,7 @@ export function InvocationDetail({
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={showTranscript ? (item.source_type === 'task' ? 'Retained Task report' : 'Run Transcript') : 'Invocation Detail'} size="lg">
+      {assistantHref && <Link to={assistantHref}>Ask about this activity</Link>}
       {showTranscript ? (
         /* Issue #3767: Inline transcript content swap (replaces nested modal) */
         <div>
@@ -520,6 +552,7 @@ export function InvocationDetail({
                 {/* Issue #4187: same placement, same reasoning — for a run a cap
                     stopped, why it stopped is the headline fact. */}
                 {stopReasonRow}
+                {toolRow}
                 {identifierRows}
                 {timingRows}
                 {channelRow}

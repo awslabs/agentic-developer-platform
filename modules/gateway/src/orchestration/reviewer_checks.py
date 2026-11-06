@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.shared.database import get_session_factory
 
+from .ci_failure_evidence import failure_details, redact_details
 from .execution_policy import Action, CredentialScope, ResourceRef, authorize_action
 from .merge_evidence import EligibilityReason, EvidenceUnavailableError, GitHubMergeObserver, evaluate_observation, evaluate_required_checks
 from .merge_provider import MergeProvider
@@ -32,7 +33,7 @@ class ReviewChecksRequest(BaseModel):
 
 
 async def observe_reviewer_checks(session, *, credential=None, head_sha, for_merge=False, provider=None, storage=None, protected=None):
-    async def assigned():
+    async def assigned(*, check_review=True):
         if protected is None:
             row = await authenticate_run_report(session, credential, lock=False)
             execution, identity = await validate_current_report_assignment(session, row)
@@ -96,9 +97,10 @@ async def observe_reviewer_checks(session, *, credential=None, head_sha, for_mer
                     raise CycleBlockedError(decision.reason.value)
             else:
                 await authority.authorize(session, context, node, binding, row.run_id, Action.REVIEW)
-        if for_merge:
+        if for_merge and check_review:
             # Read-only authorization of an accepted review. The worker performs
             # the merge; this endpoint neither mutates GitHub nor schedules work.
+            before_review = (row.run_id, binding.id, binding.revision, copy.deepcopy(row.dispatch_metadata))
             await load_merge_review(
                 session,
                 context=SimpleNamespace(execution=execution, identity=identity),
@@ -108,13 +110,28 @@ async def observe_reviewer_checks(session, *, credential=None, head_sha, for_mer
                 raw_execution={"current_attempt": {"N": "1"}},
                 head_sha=head_sha,
                 storage=storage,
+                release_before_io=True,
             )
+            session.expunge_all()
+            await session.rollback()
+            row, binding = await assigned(check_review=False)
+            if (row.run_id, binding.id, binding.revision, row.dispatch_metadata) != before_review:
+                raise RunReportError("review_checks_unavailable", retryable=True)
         return row, binding
 
     row, binding = await assigned()
     assignment = (row.run_id, binding.id, binding.revision, copy.deepcopy(row.dispatch_metadata))
+    session.expunge_all()
+    await session.rollback()
     provider = provider or MergeProvider()
-    token = await provider.token(binding, evidence=True)
+    actions_available = True
+    try:
+        token = await provider.token(binding, evidence=True, actions=True)
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code not in {403, 422} or "permission" not in error.response.text.lower():
+            raise
+        token = await provider.token(binding, evidence=True)
+        actions_available = False
     async with httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False) as client:
         observer = GitHubMergeObserver(client, token, lambda: datetime.now(UTC))
         observation = await observer.observe(binding)
@@ -132,13 +149,27 @@ async def observe_reviewer_checks(session, *, credential=None, head_sha, for_mer
                 raw = await observer.get(f"/repos/{binding.repo}/check-runs/{check.provider_id}", kind="failed_check")
                 if raw.get("head_sha") != head_sha or raw.get("id") != check.provider_id:
                     raise RunReportError("review_checks_head_changed", retryable=False)
+                if (
+                    raw.get("name") != check.name
+                    or (raw.get("app") or {}).get("id") != check.app_id
+                    or (raw.get("check_suite") or {}).get("id") != check.check_suite_id
+                ):
+                    raise RunReportError("review_checks_identity_changed", retryable=False)
                 output = raw.get("output") or {}
-                item["details"] = "\n".join(str(output.get(key) or "") for key in ("title", "summary", "text"))[:4000]
+                detail = "\n".join(str(output.get(key) or "") for key in ("title", "summary", "text")).strip()
+                if detail:
+                    item["details"] = redact_details(detail, token=token)
+                else:
+                    item.update(await failure_details(observer, binding.repo, raw, head_sha, actions_available=actions_available))
             failures.append(item)
         session.expire_all()
         current, current_binding = await assigned()
         if (current.run_id, current_binding.id, current_binding.revision, current.dispatch_metadata) != assignment:
-            raise RunReportError("review_checks_assignment_changed", retryable=False)
+            # Both reads authenticated the current assignment, but this provider
+            # observation straddled a revision. Refuse it and use the existing
+            # bounded, model-free checks retry. The next request must authenticate
+            # and authorize again; revoked ownership still fails in assigned().
+            raise RunReportError("review_checks_unavailable", retryable=True)
     state = "failed" if EligibilityReason.REQUIRED_CHECK_FAILED in reasons else "pending" if reasons else "passed"
     result = {
         "contract_version": 1,

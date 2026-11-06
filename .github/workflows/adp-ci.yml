@@ -8,6 +8,7 @@ name: ADP CI
     paths:
       - .github/workflows/adp-*.yml
       - .github/workflows/_regression-*.yml
+      - .github/workflows/_environment-smoke-snapshot.yml
       - .github/workflows/nightly-cli-regression.yml
       - .github/workflows/gateway-live-tests.yml
       - .github/workflows/e2e-*-playwright.yml
@@ -15,10 +16,15 @@ name: ADP CI
       - .github/scripts/regression_*.py
       - .github/regression-profiles.json
       - tests/unit/test_regression_catalog.py
+      - tests/unit/test_environment_smoke.py
       - tests/regression/**
       - tests/unit/test_regression_stack.py
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('adp-ci-pr-{0}', github.event.pull_request.number) || format('adp-ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   gateway-ci:
     uses: ./.github/workflows/gateway-ci.yml
@@ -195,10 +201,10 @@ jobs:
           python-version: '3.12'
       - run: pip install pytest pytest-timeout pytest-socket pyyaml boto3 httpx ruff==0.9.6
       - run: |-
-          ruff check .github/scripts/regression_*.py tests/regression tests/unit/test_regression_catalog.py tests/unit/test_regression_stack.py
-          python -m pytest tests/unit/test_regression_catalog.py tests/unit/test_regression_stack.py tests/unit/test_cli_regression.py -q --disable-socket --timeout=60
+          ruff check .github/scripts/regression_*.py tests/regression tests/unit/test_regression_catalog.py tests/unit/test_regression_stack.py tests/unit/test_environment_smoke.py
+          python -m pytest tests/unit/test_regression_catalog.py tests/unit/test_regression_stack.py tests/unit/test_cli_regression.py tests/unit/test_environment_smoke.py -q --disable-socket --timeout=60
   summary:
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     needs:
       - gateway-ci
       - agent-context-ci
@@ -243,8 +249,6 @@ jobs:
           cyber-tools-ci cyber-url-analysis-ci shared-agentcore-tools-ci platform-upgrade-tests adp-release-tests script-tests gateway-hardening-ci
           automation-trust-ci agent-explanations-browser agent-gateway-build-tests regression-contracts security
   security:
-    needs:
-      - automation-trust-ci
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/_regression-security.yml
     permissions:

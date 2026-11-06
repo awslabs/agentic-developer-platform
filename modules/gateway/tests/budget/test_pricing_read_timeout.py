@@ -13,6 +13,39 @@ from src.budget import pricing_decisions, pricing_v2_reader
 
 
 @pytest.mark.asyncio
+async def test_completed_pricing_uses_accounting_and_cached_rates_on_checkout_failure(monkeypatch):
+    snapshot = load_snapshot()
+    generation = ActiveGeneration(7, 9, snapshot.snapshot_version, 1, snapshot.rates, "2026-09-12T00:00:00+00:00")
+    cache = V2RateCache(ttl_seconds=0)
+    cache.record_success(generation, monotonic=time.monotonic())
+    monkeypatch.setattr(pricing_v2_reader, "_cache", cache)
+
+    def accounting_failure():
+        raise ConnectionError("accounting checkout unavailable")
+
+    def unexpected_request_factory():
+        raise AssertionError("request pool used for post-provider pricing")
+
+    monkeypatch.setattr(pricing_decisions, "get_accounting_session_factory", accounting_failure)
+    monkeypatch.setattr(pricing_decisions, "get_session_factory", unexpected_request_factory)
+    result = await pricing_decisions.price_completed_usage(
+        request_id="checkout-failed",
+        org_id="tenant",
+        raw_usage={"input_tokens": 1000, "output_tokens": 1000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        evidence=RoutingEvidence(
+            original_model_id="openai.gpt-5.6-sol",
+            billing_model_id="openai.gpt-5.6-sol",
+            geography="in_region",
+            endpoint_region="us-east-1",
+            served_service_tier_raw="standard",
+        ),
+    )
+    assert result.generation_id == 7
+    assert result.ledger_cost > 0
+    assert cache.cache_failure_minutes(time.monotonic()) is not None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("completion", [False, True])
 async def test_stalled_read_times_out_retains_generation_and_releases_lock(monkeypatch, capsys, completion):
     snapshot = load_snapshot()

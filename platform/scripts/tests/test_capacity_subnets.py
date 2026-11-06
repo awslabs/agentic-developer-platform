@@ -146,9 +146,10 @@ def test_an_unresolvable_zone_refuses_rather_than_dropping_the_subnet():
         cap.as_zone_map({"subnet-0e57a000000000001": "us-east-1a", "subnet-09affe00000000001": None})
 
 
-def test_two_additions_in_one_zone_cannot_be_represented_and_refuse():
-    with pytest.raises(cap.Refused, match="share availability zone"):
-        cap.as_zone_map({"subnet-0e57a000000000001": "us-east-1a", "subnet-0e57a000000000002": "us-east-1a"})
+def test_two_additions_in_one_zone_are_both_retained():
+    assert cap.as_zone_map({"subnet-0e57a000000000002": "us-east-1a", "subnet-0e57a000000000001": "us-east-1a"}) == {
+        "us-east-1a": ["subnet-0e57a000000000001", "subnet-0e57a000000000002"]}
+
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +261,41 @@ def test_a_subnet_claimed_under_two_zones_after_merging_refuses():
     with pytest.raises(cap.Refused, match="more than one"):
         cap.effective_additions(
             {**ADDED, "us-east-1c": "subnet-0e57a000000000001"}, ADDED)
+
+
+def test_repeated_expansion_keeps_old_and_new_subnets_in_the_same_zone():
+    expanded = {**ADDED, "us-east-1a": [ADDED["us-east-1a"], "subnet-0e57a000000000003"]}
+    assert cap.effective_additions(expanded, ADDED) == expanded
+    assert cap.effective_additions(None, expanded) == expanded
+    assert cap.effective_additions({}, expanded) == expanded
+    with pytest.raises(cap.Refused, match="omit subnet"):
+        cap.effective_additions(ADDED, expanded)
+    assert cap.effective_additions(ADDED, expanded, allow_removal=True) == ADDED
+
+
+def test_resolver_retains_multiple_live_additions_in_one_zone(monkeypatch):
+    zones = {ADDED["us-east-1a"]: "us-east-1a", ADDED["us-east-1b"]: "us-east-1a"}
+    expected = {"us-east-1a": sorted(zones)}
+    assert run_resolver(monkeypatch, [*BASELINE, *zones], zones=zones) == expected
+    assert resolver.configured(json.dumps(expected)) == expected
+
+
+@pytest.mark.parametrize("entries", [[], [None], [12], [["subnet-0e57a000000000001"]],
+                                      ["subnet-0e57a000000000001", "subnet-0e57a000000000001"]])
+def test_malformed_capacity_lists_refuse(entries):
+    with pytest.raises(cap.Refused):
+        resolver.configured(json.dumps({"us-east-1a": entries}))
+
+
+def test_existing_subnet_cannot_be_moved_to_another_zone_during_removal():
+    with pytest.raises(cap.Refused, match="cannot move"):
+        cap.effective_additions({"us-east-1c": ADDED["us-east-1a"]}, ADDED, allow_removal=True)
+
+
+@pytest.mark.parametrize("missing_cluster", [False, True])
+def test_terraform_context_reads_existing_cluster_instead_of_assuming_it(monkeypatch, missing_cluster):
+    monkeypatch.setattr(resolver, "aws", fake_aws(BASELINE, state(), {}, missing_cluster=missing_cluster))
+    args = type("Args", (), {"environment": "dev", "bucket": "b", "configured": "", "allow_removal": False})()
+    additions, cluster = resolver.resolve_with_cluster(args)
+    assert additions == {}
+    assert cluster == ("" if missing_cluster else "adp-dev-eks-cluster")

@@ -1,5 +1,6 @@
 """Persistent terminal delivery uses the owner transport without destroying the pod."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -42,7 +43,8 @@ async def commit(client, runtime, state, **changes):
 
 
 @pytest.mark.parametrize("mailbox", ["persistent"], indirect=True)
-async def test_persistent_result_reaches_owner_before_followup_can_advance(mailbox, sts, monkeypatch, transport, consumer):
+@pytest.mark.parametrize("reply_granularity", [None, "row"])
+async def test_persistent_result_reaches_owner_before_followup_can_advance(mailbox, sts, monkeypatch, transport, consumer, reply_granularity):
     client, runtime, token, state, _ = mailbox
     supervisor(sts, monkeypatch)
     assert (await commit(client, runtime, state)).status_code == 409
@@ -69,6 +71,7 @@ async def test_persistent_result_reaches_owner_before_followup_can_advance(mailb
             "session_id": "session-a",
             "outcome": "completed",
             "message_id": reply.json()["message_id"],
+            **({"reply_granularity": reply_granularity} if reply_granularity else {}),
         },
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -154,6 +157,31 @@ async def test_persistent_result_reaches_owner_before_followup_can_advance(mailb
         "lease_generation": {"N": "2"},
     }
     assert not runtime[1].current(runtime[0].launches.load("run-followup"), now)
+
+
+@pytest.mark.parametrize("error_class", ["executor_not_wired", "executor_down"])
+@pytest.mark.parametrize("mailbox", ["persistent"], indirect=True)
+async def test_persistent_crew_failure_reports_class_to_owner(mailbox, sts, monkeypatch, transport, consumer, error_class):
+    client, runtime, token, state, _ = mailbox
+    supervisor(sts, monkeypatch)
+    assert (await commit(client, runtime, state)).status_code == 409
+    assert (await fixtures.next_turn(client, token)).status_code == 200
+    result = await client.post(
+        "/v1/chat/data/turn/result",
+        json={"run_id": "run-user", "session_id": "session-a", "outcome": "failed", "error_class": error_class},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["error_class"] == error_class
+    assert (await commit(client, runtime, state)).status_code == 409
+    payload = publication.payload(transport)
+    assert payload["status"] == "failed" and payload["error_class"] == error_class
+    consumer._process_response(payload)
+    frame = json.loads(consumer.ws_router._client.post_to_connection.call_args.kwargs["Data"])
+    assert frame["status"] == "failed" and frame["error_class"] == error_class
+    delivered = await commit(client, runtime, state)
+    assert delivered.status_code == 200, delivered.text
+    assert delivered.json()["terminal"]["error_class"] == error_class
 
 
 @pytest.mark.parametrize("mailbox", ["persistent"], indirect=True)

@@ -1,0 +1,1 @@
+{"id":"msg_baseline","type":"message","role":"assistant","content":[{"type":"text","text":"Hello"}],"model":"claude-test","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":4,"output_tokens":2,"cache_read_input_tokens":null,"cache_creation_input_tokens":null}}

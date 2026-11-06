@@ -1,0 +1,1 @@
+{"type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_fixture_add","name":"add","input":{"left":2,"right":3}}],"stop_reason":"tool_use","usage":{"input_tokens":82}}

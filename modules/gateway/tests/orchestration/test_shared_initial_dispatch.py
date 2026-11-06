@@ -79,7 +79,7 @@ async def test_fresh_story_dispatch_model_handoff_and_review(shared, monkeypatch
             access = SimpleNamespace(get_user_role=AsyncMock(return_value=(SimpleNamespace(value="owner"), None, None)), check_permission=AsyncMock())
             outcome = await apply_gate_answer_for_context(
                 db,
-                context=SimpleNamespace(org_id=ctx.node.org_id, user_id="human"),
+                context=SimpleNamespace(org_id=ctx.node.org_id, user_id="human", account_type="human", auth_source="jwt"),
                 node_id=gate.id,
                 approve=True,
                 reason="Accept the exact current plan before initial dispatch",

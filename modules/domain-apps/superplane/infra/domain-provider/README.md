@@ -16,7 +16,9 @@ references, never resources this state may delete.
    real provider RoleId for the separate `lifecycle-foundations` owner.
 2. That owner prepares the retained key and three bootstrap actors against the
    real provider ARN/RoleId. Preserve its separate state and ownership.
-3. Supply the real key, actor ARNs, backend and validation profile in `execution`.
+3. Supply the real key, actor ARNs, backend and validation profile in `execution`. Also supply `node_image_ids`
+   (the exact AMIs for the reviewed EKS releases) and `node_instance_types`.
+   These describe the workspace nodes, independently of the validation profile.
    Review a fresh plan for the four policies/attachments and final child boundary.
    No inline policy or other managed attachment is supported on the provider.
 4. The authority owner pins the provider ARN/RoleId, live trust, exact four policy
@@ -25,10 +27,13 @@ references, never resources this state may delete.
    determine whether any human or paid operation is authorized.
 
 An execution-policy output is configuration evidence, never runtime readiness.
-Policy changes require separately reviewed revocation/re-enrollment; do not change
+General policy changes require separately reviewed revocation/re-enrollment; do not change
 an active child boundary in place. Existing STS sessions can last up to 900 seconds.
 The deployment owner must verify service-linked prerequisites before execution;
 this role cannot create or change account-wide service-linked roles.
+The exact original combined AssumeRole/TagSession trust has a restricted owner
+repair in [provider authority](../../installation/PROVIDER-AUTHORITY.md#restricted-session-tag-trust-repair);
+it preserves ExternalId on AssumeRole and every session-tag restriction.
 
 ## Action/resource/condition matrix
 
@@ -45,7 +50,9 @@ this role cannot create or change account-wide service-linked roles.
 | Later EKS actions | Exact deterministic cluster/default-nodegroup/vpc-cni ARNs. Access-entry creation names only three retained actors; later grants target those entry ARN prefixes and the explicit EKS access-policy set. Existing operation-owned temporary grant journals/restrictions remain mandatory. |
 | Foundation | Assume only three reviewed actors; Describe/GetKeyPolicy/CreateGrant only the retained workspace key. CreateGrant can delegate cryptographic operations on that key without an IAM recipient restriction. The protected approved runtime controls grant requests; the existing supplied-key verifier requires context-free simulation and a direct grant dry-run, while EKS encryption setup does not set GrantIsForAWSResource. This is key-scoped authority, not a recipient-only guarantee. Review the real retained key policy and plan separately; the key survives retirement. |
 | State | Exact state object and exact DynamoDB lock/checksum keys. Governed backend discovery uses its workspace's deterministic `workspace_key_prefix`, still with only Terraform's default workspace; it does not list the bucket-wide `env:/` prefix. |
-| Validation | Only the non-delivered `superplane-provider-validation` tagged session can permission-check RunInstances against one AMI/type/subnet/SG profile, without an instance profile. The maintained validator sends DryRun. AWS IAM has no DryRun-only permission; protected Gateway code is part of this boundary. Paid-operation sessions cannot RunInstances. This proves EC2 profile permission, not all Terraform rights or physical capacity. |
+| EKS account prerequisite | `iam:GetRole` on the exact existing `eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup` ARN lets EKS validate managed node-group creation. The provider cannot create or mutate this shared service role. Existing enrolled providers use the restricted owner repair and refresh generation-bound validation before resuming. |
+| Node launch check | EKS requires the caller to have `ec2:RunInstances` and atomic `ec2:CreateTags` when the node launch template contains tags. The operation grant requires an owned template and subnet, exact reviewed node AMIs/types, IMDSv2, and a same-account regional template reference. Security groups are regional; subnet/VPC compatibility and the owned-template checks apply to the complete request. New resource tags remain mandatory at actual tagging. EKS’s preliminary launch check omits request tags, so the hypothetical instance check relies on the existing template/subnet ownership. |
+| Validation | Only the non-delivered `superplane-provider-validation` tagged session can permission-check RunInstances against one AMI/type/subnet/SG profile, without an instance profile. The maintained validator sends DryRun. AWS IAM has no DryRun-only permission; protected Gateway code is part of this boundary. Paid-operation sessions use the separate workspace-template grant above; AWS IAM cannot restrict it to DryRun, so the protected approved runtime remains part of the execution boundary. This proves EC2 profile permission, not all Terraform rights or physical capacity. |
 
 The four exact managed policies avoid IAM's 10,240-byte aggregate inline-role
 limit. Each has its own 6,144-byte plan precondition, and the Terraform test checks
@@ -54,6 +61,18 @@ is not an authorization boundary; evaluate their union together with the child
 boundary, session tags and protected execution path.
 
 ## Verification
+
+Tagged bootstrap access-entry creation needs both `eks:CreateAccessEntry` on the
+cluster and `eks:TagResource` on the new entry. Tagging is limited to the same
+three actor entry ARNs as deletion; node entries and other clusters are excluded.
+The create grant still requires the exact organization and workspace request tags.
+
+For an existing enrollment, review and apply the provider Terraform plan, then use
+`installation.provider_authority --repair-access-entry-tags-from` with the exact
+predecessor document, authenticated policy snapshot, successor document and new
+managed-policy version. This conditional repair adds only that tagging action and
+advances the enrollment generation without extending its expiry or changing other
+permissions. It does not reconcile a failed bootstrap journal or authorize a retry.
 
 `terraform init -backend=false` and `terraform test` use Terraform 1.9.8 and the
 pinned AWS provider. Tests use mocked AWS resources; they create no cloud objects.
@@ -74,3 +93,5 @@ The pinned CNI release's `pkg/awsutils/awsutils.go` applies additional ENI tags 
 CreateNetworkInterface TagSpecifications. Its deployed add-on schema must expose
 `ADDITIONAL_ENI_TAGS` as a string. This is prerequisite evidence, not live CNI
 readiness.
+
+Completed apply inventory requires region-bound `tag:GetResources`. AWS exposes this read on `*`; ownership filters and physical-resource validation remain enforced by the inventory reader. No tag mutation is granted.

@@ -29,6 +29,8 @@ a real server; SQLite proves semantics only, for the reasons
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, select
@@ -43,6 +45,7 @@ from src.orchestration.models import (
     DecisionKind,
     NodeKind,
     NodeState,
+    OrchestrationAcceptedPlan,
     OrchestrationDecision,
     OrchestrationFlow,
     OrchestrationNode,
@@ -57,6 +60,7 @@ from src.orchestration.pr_bindings import (
     active_bindings_for_flow,
     binding_summary,
     completion_candidate,
+    continuation_binding_hold,
     evidence_for_binding,
     hold_explanation,
     recover_binding,
@@ -133,6 +137,8 @@ async def _story(
     issue: int = ISSUE,
     dispatch_attempt: int | None = None,
     run_id: str | None = None,
+    accepted: bool = False,
+    dispatch_repository_id: int | None = None,
 ) -> tuple[OrchestrationNode, str]:
     """A dispatched story: flow + node + its `NODE_DISPATCHED` decision.
 
@@ -153,6 +159,9 @@ async def _story(
         state=NodeState.AWAITING_MERGE.value,
         title="Implement the thing",
         issue_ref=str(issue),
+        repository_identity=repo if accepted else None,
+        provider_repository_id=OTHER_REPO_ID if accepted else None,
+        repository_connection={"installation_id": 7777} if accepted else None,
         attempts=attempts,
     )
     session.add(node)
@@ -174,6 +183,22 @@ async def _story(
                     "repo": repo,
                     "issue": issue,
                     "pr_binding_required": True,
+                    **(
+                        {
+                            "provider_repository_id": OTHER_REPO_ID,
+                            "installation_id": 7777,
+                            "assignment": {
+                                "repo": repo,
+                                "issue": issue,
+                                "flow_id": flow.id,
+                                "provider_repository_id": OTHER_REPO_ID,
+                                "installation_id": 7777,
+                            },
+                        }
+                        if accepted
+                        else {}
+                    ),
+                    **({"provider_repository_id": dispatch_repository_id} if dispatch_repository_id is not None else {}),
                 }
             ),
         )
@@ -340,6 +365,113 @@ async def test_pr_from_another_repository_is_refused(session):
     with pytest.raises(BindingError) as exc:
         await _bind(session, story, pr=_pr(repo=OTHER_REPO, repo_id=OTHER_REPO_ID))
     assert exc.value.code is BindingRefusal.REPOSITORY_MISMATCH
+
+
+async def test_accepted_story_uses_frozen_installation_and_repository_id(session):
+    _, run_id = await _story(session, repo=OTHER_REPO, accepted=True)
+    target = await resolve_registration_target(session, run_id=run_id)
+    assert target.installation_id == 7777
+    with pytest.raises(BindingError) as wrong:
+        await register_binding(session, target=target, pr=_pr(repo=OTHER_REPO), actor_id=SERVICE, actor_kind=ActorKind.SERVICE)
+    assert wrong.value.code is BindingRefusal.REPOSITORY_MISMATCH
+    binding, created = await register_binding(
+        session, target=target, pr=_pr(repo=OTHER_REPO, repo_id=OTHER_REPO_ID), actor_id=SERVICE, actor_kind=ActorKind.SERVICE
+    )
+    assert created and binding.installation_id == 7777 and binding.provider_repository_id == OTHER_REPO_ID
+
+
+@pytest.mark.parametrize("operation", ["register", "recover"])
+async def test_legacy_named_repository_retains_dispatched_installation(session, operation):
+    node, run_id = await _story(session, repo=OTHER_REPO, accepted=True)
+    node.repository_connection = None
+    await session.flush()
+    pr = _pr(repo=OTHER_REPO, repo_id=OTHER_REPO_ID)
+    if operation == "register":
+        target = await resolve_registration_target(session, run_id=run_id)
+        assert target.installation_id == 7777
+        binding, _ = await register_binding(session, target=target, pr=pr, actor_id=SERVICE, actor_kind=ActorKind.SERVICE)
+    else:
+        with pytest.raises(BindingError) as wrong:
+            await recover_binding(session, org_id=ORG_A, node_id=node.id, pr=pr, installation_id=4242, actor_id="operator", reason="recover")
+        assert wrong.value.code is BindingRefusal.REPOSITORY_MISMATCH
+        binding = await recover_binding(session, org_id=ORG_A, node_id=node.id, pr=pr, installation_id=7777, actor_id="operator", reason="recover")
+    assert (binding.repo, binding.provider_repository_id, binding.installation_id) == (OTHER_REPO, OTHER_REPO_ID, 7777)
+    assert json.loads(binding.accepted_scope)["node"]["issue_ref"] == str(ISSUE)
+
+
+@pytest.mark.parametrize("change", ["repository", "issue", "connection", "product", "product_plan", "accepted_connection"])
+async def test_legacy_repository_compatibility_does_not_bypass_assignment_guards(session, change):
+    node, run_id = await _story(session, repo=OTHER_REPO, accepted=True)
+    target = await resolve_registration_target(session, run_id=run_id)
+    node.repository_connection = None
+    if change == "repository":
+        node.provider_repository_id = REPO_ID
+    elif change == "issue":
+        node.issue_ref = str(ISSUE + 1)
+    elif change == "connection":
+        node.repository_connection = {"installation_id": 4242}
+    elif change == "product":
+        (await session.get(OrchestrationFlow, node.flow_id)).product_id = "fictional-product"
+    else:
+        flow = await session.get(OrchestrationFlow, node.flow_id)
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id=ORG_A,
+                flow_id=flow.id,
+                version=1,
+                plan_hash="a" * 64,
+                plan_document={
+                    "product_id": "fictional-product" if change == "product_plan" else None,
+                    "nodes": [
+                        {
+                            "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                            "repository_connection": None if change == "product_plan" else {"installation_id": 7777},
+                        }
+                    ],
+                },
+            )
+        )
+    await session.flush()
+    with pytest.raises(BindingError) as resolved:
+        await resolve_registration_target(session, run_id=run_id)
+    assert resolved.value.code is BindingRefusal.REPOSITORY_MISMATCH
+    with pytest.raises(BindingError) as registered:
+        await register_binding(session, target=target, pr=_pr(repo=OTHER_REPO, repo_id=OTHER_REPO_ID), actor_id=SERVICE, actor_kind=ActorKind.SERVICE)
+    assert registered.value.code is BindingRefusal.REPOSITORY_MISMATCH
+    assert await session.scalar(select(OrchestrationPullRequestBinding)) is None
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_legacy_named_repository_continuation_checks_saved_identity_and_owner(session, monkeypatch, revoked):
+    from src.admin.installations.resolver import OwnerState
+
+    node, run_id = await _story(session, repo=OTHER_REPO, accepted=True)
+    node.repository_connection = None
+    await session.flush()
+    binding, _ = await _bind(session, (node, run_id), pr=_pr(repo=OTHER_REPO, repo_id=OTHER_REPO_ID))
+    contract = SimpleNamespace(
+        node=SimpleNamespace(repository_identity=OTHER_REPO, provider_repository_id=OTHER_REPO_ID, repository_connection=None, issue_ref=str(ISSUE))
+    )
+    monkeypatch.setattr("src.orchestration.accepted_node.accepted_node_contract", AsyncMock(return_value=contract))
+    owner = AsyncMock(return_value=(None if revoked else SimpleNamespace(tenant_id=ORG_A), OwnerState.RESOLVED))
+    monkeypatch.setattr("src.admin.installations.resolver.resolve_installation_owner", owner)
+    assert await continuation_binding_hold(session, node, binding) == ("repository_connection_unavailable" if revoked else None)
+    assert owner.await_args.args == (7777,)
+
+
+async def test_colliding_pr_numbers_bind_only_to_their_dispatched_repository(session):
+    story_a = await _story(session, dispatch_repository_id=REPO_ID)
+    story_b = await _story(session, issue=ISSUE + 1, repo=OTHER_REPO, accepted=True)
+    bound_b, created = await _bind(session, story_b, pr=_pr(repo=OTHER_REPO, repo_id=OTHER_REPO_ID, node_id="PR_story_b"))
+    assert created and bound_b.pr_number == PR_NUMBER
+    with pytest.raises(BindingError) as wrong:
+        await _bind(session, story_a, pr=_pr(repo=REPO, repo_id=OTHER_REPO_ID, node_id="PR_story_b"))
+    assert wrong.value.code is BindingRefusal.REPOSITORY_MISMATCH
+    assert story_a[0].state == NodeState.AWAITING_MERGE.value
+    rows = (await session.scalars(select(OrchestrationPullRequestBinding))).all()
+    assert len(rows) == 1 and rows[0].id == bound_b.id
+    bound_a, created = await _bind(session, story_a, pr=_pr(repo_id=REPO_ID, node_id="PR_story_a"))
+    assert created and bound_a.pr_number == bound_b.pr_number and bound_a.provider_repository_id != bound_b.provider_repository_id
 
 
 async def test_one_pr_cannot_implement_two_stories(session):
@@ -511,6 +643,41 @@ async def test_recovery_records_who_attested_to_the_binding(session):
     assert completion_candidate(binding) is None
 
 
+async def test_operator_can_attest_to_an_unchanged_service_binding_once(session):
+    story = await _story(session)
+    original, _ = await _bind(session, story)
+    original_id, original_revision = original.id, original.revision
+    arguments = dict(
+        org_id=ORG_A,
+        node_id=story[0].id,
+        pr=_pr(),
+        installation_id=4242,
+        actor_id="operator@example.com",
+        reason="Verified existing work after the original developer failed",
+    )
+    recovered = await recover_binding(session, **arguments)
+    assert recovered.id == original_id and recovered.head_sha == HEAD
+    assert recovered.revision == original_revision + 1
+    assert recovered.registered_by_kind == "human"
+    assert recovered.registered_by == arguments["actor_id"]
+    assert recovered.recovery_reason == arguments["reason"]
+    replay = await recover_binding(session, **arguments)
+    assert replay.revision == original_revision + 1
+    revisions = list(
+        await session.scalars(
+            select(OrchestrationDecision)
+            .where(
+                OrchestrationDecision.node_id == story[0].id,
+                OrchestrationDecision.kind == DecisionKind.PR_BINDING_CHANGED.value,
+            )
+            .order_by(OrchestrationDecision.created_at, OrchestrationDecision.id)
+        )
+    )
+    assert len(revisions) == 2
+    assert {row.actor_kind for row in revisions} == {"service", "human"}
+    assert story[0].state == NodeState.AWAITING_MERGE.value
+
+
 # ---------------------------------------------------------------------------
 # The hold explains itself, and the read surface leaks no provenance
 # ---------------------------------------------------------------------------
@@ -642,3 +809,95 @@ async def test_flow_loader_omits_superseded_bindings(session):
     )
     loaded = await active_bindings_for_flow(session, org_id=ORG_A, flow_id=node.flow_id)
     assert loaded[node.id].pr_number == PR_NUMBER + 1
+
+
+# ---------------------------------------------------------------------------
+# #7818: a superseded story's successor adopts its pull request
+# ---------------------------------------------------------------------------
+
+
+async def _successor_story(session, predecessor, *, issue=ISSUE, flow_id=None, attempts=1):
+    """A new node for the same issue, dispatched in the predecessor's flow (or another)."""
+    node = OrchestrationNode(
+        org_id=predecessor.org_id,
+        flow_id=flow_id or predecessor.flow_id,
+        epic_ref="epic-1",
+        wave_ref="wave-1",
+        node_ref=f"story-{issue}-core2",
+        kind=NodeKind.STORY.value,
+        state=NodeState.RUNNING.value,
+        title="Implement the thing",
+        issue_ref=str(issue),
+        attempts=attempts,
+    )
+    session.add(node)
+    await session.flush()
+    run_id = attempt_run_id(node.id, attempts)
+    session.add(
+        OrchestrationDecision(
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            kind=DecisionKind.NODE_DISPATCHED.value,
+            actor_id="engine",
+            actor_role="service",
+            actor_kind=ActorKind.SERVICE.value,
+            reason=json.dumps({"run_id": run_id, "attempt": attempts, "repo": REPO, "issue": issue, "pr_binding_required": True}),
+        )
+    )
+    await session.flush()
+    return node, run_id
+
+
+async def test_successor_of_a_superseded_story_adopts_its_pull_request(session):
+    """cos-runtime COS-S15, 2026-10-15: PR #7750 stayed bound to the retired `ec2-target`
+    node after the owner's split, so `ec2-target-core2` ended two developer runs with
+    `already_bound_elsewhere`. Same flow, same issue, holder superseded: the row moves."""
+    retired, _ = await _story(session, issue=ISSUE)
+    first, created = await _bind(session, (retired, attempt_run_id(retired.id, 1)))
+    assert created
+    retired.state = NodeState.SUPERSEDED.value
+    await session.flush()
+    successor = await _successor_story(session, retired)
+
+    binding, created = await _bind(session, successor)
+
+    assert not created and binding.id == first.id
+    assert binding.node_id == successor[0].id and binding.flow_id == successor[0].flow_id
+    assert binding.attempt == 1 and binding.run_id == successor[1] and binding.revision == 2
+    assert binding.state == BindingState.ACTIVE.value and "adopted from superseded story" in binding.recovery_reason
+    assert await active_binding_for_node(session, org_id=ORG_A, node_id=retired.id, attempt=1) is None
+    assert (await active_binding_for_node(session, org_id=ORG_A, node_id=successor[0].id, attempt=1)).id == first.id
+    recorded = (
+        await session.scalars(
+            select(OrchestrationDecision).where(
+                OrchestrationDecision.node_id == successor[0].id, OrchestrationDecision.kind == DecisionKind.PR_BINDING_CHANGED.value
+            )
+        )
+    ).all()
+    assert len(recorded) == 1
+
+
+@pytest.mark.parametrize("case", ["holder_live", "other_issue", "other_flow", "binding_superseded"])
+async def test_adoption_requires_a_superseded_holder_of_the_same_work(session, case):
+    retired, _ = await _story(session, issue=ISSUE)
+    first, _ = await _bind(session, (retired, attempt_run_id(retired.id, 1)))
+    if case != "holder_live":
+        retired.state = NodeState.SUPERSEDED.value
+    if case == "binding_superseded":
+        first.state = BindingState.SUPERSEDED.value
+    await session.flush()
+    other_flow = None
+    if case == "other_flow":
+        other_flow = OrchestrationFlow(org_id=ORG_A, slug="another-flow", title="Another epic", state="running")
+        session.add(other_flow)
+        await session.flush()
+    successor = await _successor_story(
+        session, retired, issue=ISSUE + 1 if case == "other_issue" else ISSUE, flow_id=other_flow.id if other_flow else None
+    )
+
+    with pytest.raises(BindingError) as exc:
+        await _bind(session, successor)
+
+    assert exc.value.code is BindingRefusal.ALREADY_BOUND_ELSEWHERE, case
+    assert (await active_binding_for_node(session, org_id=ORG_A, node_id=retired.id, attempt=1) is not None) == (case != "binding_superseded")

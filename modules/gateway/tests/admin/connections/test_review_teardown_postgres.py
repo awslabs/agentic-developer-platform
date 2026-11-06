@@ -13,16 +13,15 @@ from src.admin.org_connections.schemas import GitHubConnectionAttachRequest
 from src.shared.models.organization import Organization
 from src.shared.models.vault import ChannelTenantMap, InstallationRevocation
 from tests.admin.connections import test_installation_revocation_durable as fx
-from tests.migrations.conftest_postgres import pg_server, pg_url, to_async_url, upgrade
+from tests.migrations.conftest_postgres import pg_server, pg_url, to_async_url
 
 projection = fx.projection
 __all__ = ["pg_server", "pg_url"]
 
 
 @pytest.fixture
-async def sessions(pg_url):
-    upgrade(pg_url)
-    engine = create_async_engine(to_async_url(pg_url))
+async def sessions(pg_head_url):
+    engine = create_async_engine(to_async_url(pg_head_url))
     try:
         yield async_sessionmaker(engine, expire_on_commit=False)
     finally:

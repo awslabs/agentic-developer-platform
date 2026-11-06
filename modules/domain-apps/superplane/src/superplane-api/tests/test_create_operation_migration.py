@@ -13,8 +13,51 @@ def test_create_operation_migration_is_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["044_organization_grant_changes"]
-    assert scripts.get_revision("044_organization_grant_changes").down_revision == "043_workspace_grant_changes"
+    assert scripts.get_heads() == ["058_interrupted_planning"]
+    assert (
+        scripts.get_revision("054_unstarted_bootstrap").down_revision
+        == "053_partial_preparation_refresh"
+    )
+    assert (
+        scripts.get_revision("053_partial_preparation_refresh").down_revision
+        == "052_partial_apply_repair"
+    )
+    assert (
+        scripts.get_revision("052_partial_apply_repair").down_revision
+        == "051_saved_plan_completion"
+    )
+    assert (
+        scripts.get_revision("051_saved_plan_completion").down_revision
+        == "050_planning_budget_confirmation"
+    )
+    assert (
+        scripts.get_revision("050_planning_budget_confirmation").down_revision
+        == "049_planning_budget"
+    )
+    assert (
+        scripts.get_revision("049_planning_budget").down_revision
+        == "048_planning_recovery"
+    )
+    assert (
+        scripts.get_revision("048_planning_recovery").down_revision
+        == "047_provider_recovery"
+    )
+    assert (
+        scripts.get_revision("047_provider_recovery").down_revision
+        == "046_dispatch_reauthorization"
+    )
+    assert (
+        scripts.get_revision("046_dispatch_reauthorization").down_revision
+        == "045_approval_policy"
+    )
+    assert (
+        scripts.get_revision("045_approval_policy").down_revision
+        == "044_organization_grant_changes"
+    )
+    assert (
+        scripts.get_revision("044_organization_grant_changes").down_revision
+        == "043_workspace_grant_changes"
+    )
     assert (
         scripts.get_revision("043_workspace_grant_changes").down_revision
         == "042_controller_cleanup_snapshots"

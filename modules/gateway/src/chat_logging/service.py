@@ -19,7 +19,8 @@ from src.chat_logging.comprehend_client import PII_DETECTION_FAILED_PLACEHOLDER,
 from src.chat_logging.config import ScrubLevel, get_chat_logging_settings
 from src.chat_logging.s3_writer import ChatLogS3Writer
 from src.chat_logging.schemas import ChatLog, ChatLogRequest, ChatLogResponse, ScrubbingMetadata, UsageInfo
-from src.chat_logging.scrubber import ScrubPipeline
+from src.chat_logging.scrub_executor import ScrubCapacityError, run_scrub
+from src.chat_logging.scrubber import SCRUB_LIMIT_PLACEHOLDER, ScrubPipeline, ScrubResult
 from src.shared.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,41 @@ class ChatLoggingService:
 
         return True
 
+    async def write_usage_recovery(self, **event) -> bool:
+        """Persist required usage-only evidence independently of transcript settings.
+
+        Never persist a prompt, response text or headers on the recovery path.
+        The usage object triggers the existing, idempotent usage tracker.
+        Failure leaves the original reservation in place.
+        """
+        if not self._bucket_name or not event.get("pricing_decision") or not event.get("usage_recovery"):
+            return False
+        log = ChatLog(
+            request_id=event["request_id"],
+            timestamp=event["timestamp"],
+            org_id=event["org_id"],
+            user_id=event["user_id"],
+            team_id=event.get("team_id"),
+            department_id=event.get("department_id"),
+            root_human_id=event.get("root_human_id", ""),
+            account_type=event["account_type"],
+            model=event["model"],
+            api_format=event["api_format"],
+            latency_ms=event["latency_ms"],
+            request=ChatLogRequest(),
+            response=ChatLogResponse(model=event["model"], usage=UsageInfo(**event["response_body"]["usage"])),
+            pricing_decision=event["pricing_decision"],
+            usage_recovery=event["usage_recovery"],
+            scrubbing=ScrubbingMetadata(level="off"),
+        )
+        return await self._get_s3_writer().write_log(
+            log_data=log.model_dump(mode="json"),
+            org_id=log.org_id,
+            user_id=log.user_id,
+            request_id=log.request_id,
+            timestamp=log.timestamp,
+        )
+
     def log_chat_async(
         self,
         request_id: str,
@@ -141,6 +177,7 @@ class ChatLoggingService:
         pricing_decision: dict[str, Any] | None = None,
         pricing_capture: Any = None,
         only_priced: bool = False,
+        usage_recovery: dict[str, Any] | None = None,
     ) -> None:
         """Fire-and-forget log a chat interaction.
 
@@ -203,6 +240,7 @@ class ChatLoggingService:
                 headers=headers,
                 root_human_id=root_human_id,
                 pricing_decision=pricing_decision,
+                usage_recovery=usage_recovery,
             ),
             name=f"chat_log_{request_id}",
         )
@@ -224,6 +262,7 @@ class ChatLoggingService:
         root_human_id: str = "",
         department_id: str | None = None,
         pricing_decision: dict[str, Any] | None = None,
+        usage_recovery: dict[str, Any] | None = None,
     ) -> None:
         """Implementation of chat logging.
 
@@ -232,13 +271,17 @@ class ChatLoggingService:
         """
         try:
             # Step 1: Apply basic scrubbing (headers + regex)
-            scrubbed_request, request_result = self._scrub_pipeline.scrub_request(
-                request_body.copy(),
-                headers,
-            )
-            scrubbed_response, response_result = self._scrub_pipeline.scrub_response(
-                response_body.copy(),
-            )
+            try:
+                (scrubbed_request, request_result), (scrubbed_response, response_result) = await run_scrub(
+                    lambda: (
+                        self._scrub_pipeline.scrub_request(request_body.copy(), headers),
+                        self._scrub_pipeline.scrub_response(response_body.copy()),
+                    )
+                )
+            except ScrubCapacityError:
+                scrubbed_request = {"messages": [{"content": SCRUB_LIMIT_PLACEHOLDER}]}
+                scrubbed_response = {"content": SCRUB_LIMIT_PLACEHOLDER}
+                request_result = response_result = ScrubResult(content=None, redactions_count=1, patterns_matched=["scrub_limit"])
 
             # Track scrubbing metadata
             total_redactions = request_result.redactions_count + response_result.redactions_count
@@ -323,6 +366,7 @@ class ChatLoggingService:
             )
 
             # Step 4: Write to S3
+            chat_log.usage_recovery = usage_recovery
             s3_writer = self._get_s3_writer()
             await s3_writer.write_log(
                 log_data=chat_log.model_dump(mode="json"),

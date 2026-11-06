@@ -17,12 +17,22 @@ ROOT = Path(__file__).resolve().parents[4]
 
 
 class RuntimeTarget(Strict):
-    kind: Literal["deployment", "scaledjob"] = "deployment"
+    kind: Literal["deployment", "scaledjob", "job"] = "deployment"
     cluster: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
     namespace: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
-    deployment: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    deployment: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     container: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     ecr_repository: str = Field(pattern=r"^[a-z0-9][a-z0-9/_-]{0,127}$")
+
+    @model_validator(mode="after")
+    def workload_identity(self):
+        if self.kind == "job" and self.deployment is not None:
+            raise ValueError(
+                "client Job name is resolved from its workflow run, not preconfigured"
+            )
+        if self.kind != "job" and self.deployment is None:
+            raise ValueError("deployment and scaledjob targets require a workload name")
+        return self
 
 
 class Manifest(Strict):
@@ -36,6 +46,7 @@ class Manifest(Strict):
     runtime: dict[str, RuntimeTarget]
     required_checks: list[str] = Field(min_length=1, max_length=32)
     deployment_workflows: list[str] = Field(min_length=1, max_length=8)
+    source_workflows: dict[str, str] = Field(default_factory=dict)
     poll_seconds: int = Field(default=10, ge=1, le=30)
     native_faults: bool = False
     worker_loss: bool = False
@@ -59,11 +70,37 @@ class Manifest(Strict):
             or parsed.fragment
         ):
             raise ValueError("api_origin must be an HTTPS origin without credentials")
-        if self.planned_gates != ["release", "refusal"] or set(self.runtime) != {
-            "engine",
-            "worker",
-        }:
+        if self.planned_gates != ["release", "refusal"] or set(self.runtime) not in (
+            {"engine", "worker"},
+            {"engine", "worker", "api", "client"},
+        ):
             raise ValueError("manifest must pin release gate and engine/worker targets")
+        if "api" in self.runtime and (
+            self.runtime["api"].kind != "deployment"
+            or self.runtime["client"].kind != "job"
+            or set(self.source_workflows) != {"first", "second"}
+            or len(set(self.source_workflows.values())) != 2
+            or any(
+                not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_-]+\.ya?ml", path)
+                for path in self.source_workflows.values()
+            )
+        ):
+            raise ValueError(
+                "Product source deployments require distinct reviewed API and client workflows and runtime targets"
+            )
+        if "api" in self.runtime:
+            targets = [
+                (target.cluster, target.namespace, target.deployment)
+                for target in self.runtime.values()
+            ]
+            if len(set(targets)) != len(targets):
+                raise ValueError(
+                    "Product source workloads must not alias engine or worker targets"
+                )
+        if "api" not in self.runtime and self.source_workflows:
+            raise ValueError(
+                "Product source workflows require API and client runtime targets"
+            )
         if self.runtime["engine"].kind != "deployment":
             raise ValueError("engine probes require a verified gateway deployment")
         if any(
@@ -94,10 +131,36 @@ def load_manifest(config):
         raise ValueError("embedded credential in scenario manifest")
     manifest = Manifest.model_validate(raw)
     policy = manifest.execution_policy
+    if config.product_epic is None and "api" in manifest.runtime:
+        raise ValueError("Product source targets require a Product-bound qualification")
+    if config.product_epic is not None and "api" not in manifest.runtime:
+        raise ValueError(
+            "Product qualification requires reviewed API and client source runtime targets"
+        )
+    if config.product_epic is None:
+        repositories = [config.repository]
+        connections = [config.connection_ref]
+    else:
+        repositories = list(
+            dict.fromkeys(
+                [
+                    config.repository,
+                    *(target.repository for target in config.product_epic.stories),
+                ]
+            )
+        )
+        connections = list(
+            dict.fromkeys(
+                [
+                    config.connection_ref,
+                    *(target.connection_ref for target in config.product_epic.stories),
+                ]
+            )
+        )
     if (
         policy.get("org_id") != config.org_ref
-        or policy.get("repository_ids") != [config.repository]
-        or policy.get("environment_connection_ids") != [config.connection_ref]
+        or policy.get("repository_ids") != repositories
+        or policy.get("environment_connection_ids") != connections
     ):
         raise ValueError("manifest policy scope differs from qualification config")
     if (

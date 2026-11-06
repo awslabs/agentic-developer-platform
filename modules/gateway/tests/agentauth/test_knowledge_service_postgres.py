@@ -70,7 +70,55 @@ async def sessions(pg_url, monkeypatch):  # noqa: F811 - imported pytest fixture
 
 async def test_protected_subject_resolves_only_own_tenant_link(sessions):
     async with service.locked_door_identity(RECORD, GRANT) as headers:
-        assert headers == {"x-github-login": "actual-user", "x-owner-sub": OWNER, "x-tenant-id": "tenant-one", "x-adp-run-service": "true"}
+        assert headers == {
+            "x-github-login": "actual-user",
+            "x-owner-sub": OWNER,
+            "x-asset-owner-id": "human-one",
+            "x-tenant-id": "tenant-one",
+            "x-adp-run-service": "true",
+        }
+
+
+async def test_workspace_account_uses_registration_owner_and_locks_login_account(sessions):
+    """An org-placement link preserves ownership without switching tenant scope."""
+    from sqlalchemy.exc import DBAPIError
+
+    from src.shared.identity.resolver import resolve_canonical_user_id
+
+    async with sessions() as db:
+        db.add(
+            UserIdentity(
+                user_id="human-two",
+                org_id="tenant-two",
+                team_id="",
+                provider="cognito",
+                provider_user_id=OWNER,
+                verification_method="org_placement",
+            )
+        )
+        await db.execute(update(User).where(User.id == "human-two").values(cognito_sub=None))
+        await db.commit()
+        registered_owner = await resolve_canonical_user_id(db, OWNER)
+    record = replace(RECORD, tenant_id="tenant-two")
+    grant = replace(GRANT, tenant_id="tenant-two", authority=replace(GRANT.authority, org_id="tenant-two", human_id="human-two"))
+    async with service.locked_door_identity(record, grant) as headers:
+        assert headers["x-asset-owner-id"] == registered_owner == "human-one"
+        assert headers["x-owner-sub"] == OWNER
+        assert headers["x-tenant-id"] == "tenant-two"
+        assert headers["x-github-login"] == "victim"
+        async with sessions() as db:
+            await db.execute(text("SET LOCAL lock_timeout = '150ms'"))
+            with pytest.raises(DBAPIError) as error:
+                await db.execute(update(User).where(User.id == "human-one").values(cognito_sub=None))
+            assert error.value.orig.sqlstate == "55P03"
+            await db.rollback()
+    # The login-account lock is held only for the upstream use.
+    async with sessions() as db:
+        await db.execute(update(User).where(User.id == "human-one").values(cognito_sub=None))
+        await db.commit()
+    async with service.locked_door_identity(record, grant) as headers:
+        assert headers["x-asset-owner-id"] == OWNER
+        assert headers["x-tenant-id"] == "tenant-two"
 
 
 @pytest.mark.parametrize("attack", ["other-human", "other-tenant", "inactive", "shadow", "bot", "service"])

@@ -101,7 +101,14 @@ SHA), scoped ECR push on the **two exact** repositories, and S3 write only to
 protected workflow role needs only the scoped CodeBuild start/read, source
 archive and artifact read, and Terraform permissions. Also supply approved
 role trust bindings, a separate S3 state key with the repository's existing
-DynamoDB lock table and reviewed tfvars. The ARC runner has no Docker daemon;
+DynamoDB lock table and reviewed tfvars. After the reviewed tools bootstrap,
+place the **exact cleanup-only key ARN and its dedicated signer role ARN** in the
+protected `ADP_SHARED_TOOLS_TFVARS_HCL` as `tools_reconciler_key_arn` and
+`tools_reconciler_role_arn`. The protected workflow rejects missing, duplicate,
+cross-account, cross-region or wrong-environment bindings before a plan. The
+coordinator supplies and verifies these private values; the shared deployment
+role does not read the tools SSM namespace, and the workflow does not depend on
+`ADP_TOOLS_ENVIRONMENT` to discover them. The ARC runner has no Docker daemon;
 CI checks packaging/imports offline and the manual CodeBuild lane compiles images.
 Check the `aws sts get-caller-identity` account **with the requester** before any
 subsequently authorized deployment; follow `AGENTS.md` and

@@ -14,6 +14,7 @@ BaseHTTPMiddleware hang bug when inner middleware short-circuits.
 """
 
 import logging
+import os
 import time
 import uuid
 
@@ -21,6 +22,7 @@ from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from src.shared.logging import clear_request_context, get_request_id, set_request_context
+from src.shared.performance_diagnostics import finish_pressure_capture, start_pressure_capture
 from src.shared.schemas.auth import TokenContext
 from src.shared.timing import get_timings
 
@@ -76,6 +78,7 @@ class LoggingMiddleware:
         request = Request(scope, receive, send)
 
         start_time = time.monotonic()
+        pressure_done = start_pressure_capture(os.getenv("BG_DIAGNOSTIC_DATABASE_URL"), request_id) if not should_skip else None
 
         if not should_skip:
             _log_request_start(request)
@@ -120,7 +123,7 @@ class LoggingMiddleware:
                             team_id=token_context.team_id,
                             department_id=token_context.department_id,
                         )
-                    _log_request_end(request, response_status[0], latency_ms)
+                    _log_request_end(request, response_status[0], latency_ms, delegation=getattr(token_context, "delegation", "") or None)
 
         try:
             await self.app(scope, receive, send_wrapper)
@@ -141,6 +144,7 @@ class LoggingMiddleware:
             )
             raise
         finally:
+            finish_pressure_capture(pressure_done)
             clear_request_context()
 
 
@@ -160,6 +164,20 @@ def _extract_request_id(headers: list) -> str | None:
     return None
 
 
+# Query parameters that carry a credential and must never reach a log line: the
+# Crew handoff ticket (#7902) and the Kiro Crew login link it redirects to.
+SENSITIVE_QUERY_KEYS = frozenset({"ticket", "token"})
+REDACTED = "[redacted]"
+
+
+def redacted_query_items(request: Request) -> list[tuple[str, str]]:
+    return [(key, REDACTED if key.lower() in SENSITIVE_QUERY_KEYS else value) for key, value in request.query_params.multi_items()]
+
+
+def redacted_query_string(request: Request) -> str:
+    return "&".join(f"{key}={value}" for key, value in redacted_query_items(request))
+
+
 def _log_request_start(request: Request) -> None:
     extra = {
         "event": "request_start",
@@ -168,7 +186,7 @@ def _log_request_start(request: Request) -> None:
     }
     if request.scope.get("state", {}).get("client_request_id"):
         extra["client_request_id"] = request.scope["state"]["client_request_id"]
-    query = str(request.query_params) if request.query_params else None
+    query = redacted_query_string(request) if request.query_params else None
     if query:
         extra["query_string"] = query
     user_agent = request.headers.get("User-Agent")
@@ -180,7 +198,7 @@ def _log_request_start(request: Request) -> None:
     logger.info("Request started", extra=extra)
 
 
-def _log_request_end(request: Request, status_code: int, latency_ms: float) -> None:
+def _log_request_end(request: Request, status_code: int, latency_ms: float, *, delegation: str | None = None) -> None:
     extra = {
         "event": "request_end",
         "method": request.method,
@@ -188,6 +206,9 @@ def _log_request_end(request: Request, status_code: int, latency_ms: float) -> N
         "status_code": status_code,
         "latency_ms": round(latency_ms, 2),
     }
+    if delegation:
+        # #9640: the principal is the owner; this names the Dev Box host run acting for them.
+        extra["delegation"] = delegation
     timings = get_timings(request)
     timings_dict = timings.to_dict()
     if timings_dict:

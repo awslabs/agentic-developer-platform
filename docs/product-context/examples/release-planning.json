@@ -1,0 +1,1051 @@
+{
+  "schema_version": "1.0",
+  "context_snapshot_id": "snapshot-release-plan-1",
+  "tenant_id": "tenant-example",
+  "project_id": "project-checkout",
+  "generated_at": "2026-10-15T09:00:00Z",
+  "records": [
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "adp-example",
+      "record_type": "product",
+      "record_id": "product-checkout",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Checkout",
+        "purpose": "Help shoppers complete purchases reliably.",
+        "intended_users": [
+          "Online shoppers"
+        ],
+        "owner_ref": {
+          "kind": "user",
+          "id": "user-example"
+        },
+        "starting_point": "idea",
+        "lifecycle_status": "draft"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/purpose",
+            "/data/intended_users",
+            "/data/owner_ref",
+            "/data/starting_point",
+            "/data/lifecycle_status"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-product-checkout",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-product",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "adp-example",
+      "record_type": "project",
+      "record_id": "project-checkout",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Checkout delivery",
+        "owner_ref": {
+          "kind": "user",
+          "id": "user-example"
+        },
+        "state": "registered"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/owner_ref",
+            "/data/state"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-project-checkout",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-project",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "github-example",
+      "record_type": "repository",
+      "record_id": "repo-example",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "example/checkout",
+        "provider": "github",
+        "web_url": "https://github.example.com/example/checkout",
+        "default_branch": "main",
+        "archived": false
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/provider",
+            "/data/web_url",
+            "/data/default_branch",
+            "/data/archived"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "github-example",
+              "record_type": "source_observation",
+              "record_id": "input-repo-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-repository",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "github-example",
+      "record_type": "work_item",
+      "record_id": "issue-epic-example",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "kind": "epic",
+        "native_type": "Epic",
+        "title": "Simplify checkout",
+        "status": "in_progress",
+        "status_native": "In progress"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/kind",
+            "/data/native_type",
+            "/data/title",
+            "/data/status",
+            "/data/status_native"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "github-example",
+              "record_type": "source_observation",
+              "record_id": "input-issue-epic-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-work_item",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "github-example",
+      "record_type": "work_item",
+      "record_id": "issue-story-a-example",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "kind": "story",
+        "native_type": "Story",
+        "title": "Save delivery address",
+        "status": "done",
+        "status_native": "Closed: completed"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/kind",
+            "/data/native_type",
+            "/data/title",
+            "/data/status",
+            "/data/status_native"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "github-example",
+              "record_type": "source_observation",
+              "record_id": "input-issue-story-a-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-work_item",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "github-example",
+      "record_type": "work_item",
+      "record_id": "issue-story-b-example",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "kind": "story",
+        "native_type": "Story",
+        "title": "Validate address before payment",
+        "status": "in_progress",
+        "status_native": "In progress"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/kind",
+            "/data/native_type",
+            "/data/title",
+            "/data/status",
+            "/data/status_native"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "github-example",
+              "record_type": "source_observation",
+              "record_id": "input-issue-story-b-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-work_item",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "adp-example",
+      "record_type": "release",
+      "record_id": "release-example",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Checkout autumn release",
+        "objective": "Reduce address-entry friction.",
+        "owner_ref": {
+          "kind": "user",
+          "id": "user-example"
+        },
+        "planning_status": "planned",
+        "target_timezone": "Etc/UTC",
+        "planned_start_date": "2026-10-15",
+        "target_at": "2027-01-15T17:00:00Z"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/planning_status",
+            "/data/target_at"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "github-example",
+              "record_type": "github_milestone",
+              "record_id": "milestone-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-release",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        },
+        {
+          "paths": [
+            "/data/objective"
+          ],
+          "state": "inferred",
+          "method": "extracted",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "docs-example",
+              "record_type": "document",
+              "record_id": "release-brief-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-release",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        },
+        {
+          "paths": [
+            "/data/owner_ref",
+            "/data/target_timezone",
+            "/data/planned_start_date"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-release-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-release",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "adp-example",
+      "record_type": "allocation",
+      "record_id": "allocation-example",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Release AI allocation",
+        "target_ref": {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "release",
+          "record_id": "release-example",
+          "record_revision": "1"
+        },
+        "amount": {
+          "amount": "5000.00",
+          "currency": "USD"
+        },
+        "category": "ai",
+        "period_start": "2026-10-15",
+        "period_end": "2027-01-14",
+        "approval_status": "proposed",
+        "owner_ref": {
+          "kind": "user",
+          "id": "user-example"
+        }
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/amount",
+            "/data/period_start",
+            "/data/period_end"
+          ],
+          "state": "accepted",
+          "method": "extracted",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "docs-example",
+              "record_type": "document",
+              "record_id": "release-brief-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-allocation",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "confirmed_by": {
+            "kind": "user",
+            "id": "user-example"
+          },
+          "confirmed_at": "2026-10-15T09:00:00Z"
+        },
+        {
+          "paths": [
+            "/data/name",
+            "/data/target_ref",
+            "/data/category",
+            "/data/approval_status",
+            "/data/owner_ref"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-allocation-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-allocation",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "confirmed_by": {
+            "kind": "user",
+            "id": "user-example"
+          },
+          "confirmed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "adp-example",
+      "record_type": "connection",
+      "record_id": "aws-connection-example",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "provider": "aws",
+        "namespace": "cloud-example",
+        "capabilities": [
+          "environment.read"
+        ],
+        "health": "healthy",
+        "verified_at": "2026-10-15T09:00:00Z"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/provider",
+            "/data/namespace",
+            "/data/capabilities",
+            "/data/health",
+            "/data/verified_at"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-aws-connection-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-connection",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-example",
+      "project_id": "project-checkout",
+      "source_connection_id": "adp-example",
+      "record_type": "environment",
+      "record_id": "environment-test-example",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Test",
+        "environment_class": "test",
+        "provider": "aws",
+        "connection_ref": {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "connection",
+          "record_id": "aws-connection-example",
+          "record_revision": "1"
+        },
+        "cloud_target": {
+          "provider": "aws",
+          "account_id": "000000000001",
+          "regions": [
+            "us-east-1"
+          ],
+          "role_ref": "connection-role-example"
+        }
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/environment_class",
+            "/data/provider",
+            "/data/connection_ref",
+            "/data/cloud_target"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-example",
+              "project_id": "project-checkout",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-environment-test-example",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-checkout",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-environment",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "relationship_id": "link-product-project",
+      "relationship_type": "product_project",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-checkout",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "project",
+        "record_id": "project-checkout",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-product-project",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-repo",
+      "relationship_type": "project_repository",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "project",
+        "record_id": "project-checkout",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "repository",
+        "record_id": "repo-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-repo",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-epic",
+      "relationship_type": "product_work",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-checkout",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "work_item",
+        "record_id": "issue-epic-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-epic",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-parent-a",
+      "relationship_type": "work_parent",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "work_item",
+        "record_id": "issue-epic-example",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "work_item",
+        "record_id": "issue-story-a-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-parent-a",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-parent-b",
+      "relationship_type": "work_parent",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "work_item",
+        "record_id": "issue-epic-example",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "work_item",
+        "record_id": "issue-story-b-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-parent-b",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-dependency",
+      "relationship_type": "work_depends_on",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "work_item",
+        "record_id": "issue-story-b-example",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "work_item",
+        "record_id": "issue-story-a-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-dependency",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-release",
+      "relationship_type": "product_release",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-checkout",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "release",
+        "record_id": "release-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-release",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-plan-a",
+      "relationship_type": "release_plans_work",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "release",
+        "record_id": "release-example",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "work_item",
+        "record_id": "issue-story-a-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-plan-a",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-plan-b",
+      "relationship_type": "release_plans_work",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "release",
+        "record_id": "release-example",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "github-example",
+        "record_type": "work_item",
+        "record_id": "issue-story-b-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-plan-b",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-connection",
+      "relationship_type": "project_connection",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "project",
+        "record_id": "project-checkout",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "connection",
+        "record_id": "aws-connection-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-connection",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-environment",
+      "relationship_type": "project_environment",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "project",
+        "record_id": "project-checkout",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "environment",
+        "record_id": "environment-test-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-environment",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-target",
+      "relationship_type": "release_targets_environment",
+      "from_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "release",
+        "record_id": "release-example",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-example",
+        "project_id": "project-checkout",
+        "source_connection_id": "adp-example",
+        "record_type": "environment",
+        "record_id": "environment-test-example",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-example",
+          "project_id": "project-checkout",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-target",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    }
+  ]
+}

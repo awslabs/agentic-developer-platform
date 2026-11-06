@@ -19,6 +19,7 @@ def parser():
     root = common.Parser(prog="adp gitlab")
     groups = root.add_subparsers(dest="area", required=True)
     user = groups.add_parser("gitlab").add_subparsers(dest="action", required=True)
+    user.add_parser("setup", help="Use the ADP login with native glab and HTTPS Git")
     admin = groups.add_parser("admin").add_subparsers(dest="domain", required=True)
     managed = admin.add_parser("gitlab").add_subparsers(dest="action", required=True)
     for group, actions in [(user, ("status", "connect", "disconnect")), (managed, ("status", "configure", "revalidate"))]:
@@ -124,6 +125,10 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
         args = parser().parse_args(argv)
+        if args.area == "gitlab" and args.action == "setup":
+            import adp_gitlab_auth
+
+            return adp_gitlab_auth.main(["setup"])
         return common.emit(execute(args, common.Api()), args.json)
     except (common.CliError, ValueError, TypeError, OSError, http.client.HTTPException) as exc:
         return common.report_error(exc, "adp gitlab", "--json" in argv)

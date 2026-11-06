@@ -8,6 +8,14 @@ identities, resource IDs, operator profiles, or private evidence in documentatio
 Use fictional examples and private configuration. Run
 `python3 scripts/check-public-docs.py` before publishing documentation changes.
 
+## Epic and story authoring
+
+Follow the [canonical issue-authoring guide](modules/agent-factory/rules/agents/issue-authoring.md)
+and its epic/story templates. Preserve native parent links and stable acceptance
+and scenario IDs; specify independent test assertions and relevant determinism
+controls. The [Engineering Insights walkthrough](docs/engineering-insights/issue-authoring.md)
+provides filled examples and an optional offline format check.
+
 ## Deployment
 
 To deploy ADP, read and follow the canonical agent-deploy guide:
@@ -33,5 +41,5 @@ The essentials, so you don't start down the wrong path:
   publication. Follow the canonical guide for ordering and scope. GitHub App
   browser wiring comes after deployment.
 
-This file is intentionally a redirect so the deploy procedure has one source of
+The deployment instructions are intentionally a redirect so the procedure has one source of
 truth and never drifts across the agent-entry files.

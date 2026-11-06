@@ -30,7 +30,7 @@ class PricingCapture:
     response_body: dict[str, Any] = field(default_factory=dict)
     routing: RoutingEvidence | None = None
     decision: dict[str, Any] | None = None
-    finalization_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    finalization_task: asyncio.Task[bool] | None = field(default=None, repr=False)
     buffer: StreamingResponseBuffer = field(default_factory=StreamingResponseBuffer)
     _served_tier_conflict: bool = field(default=False, repr=False)
     provider_request_id: str | None = None

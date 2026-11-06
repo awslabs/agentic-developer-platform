@@ -34,7 +34,9 @@ def settle(log, monkeypatch):
     monkeypatch.setattr(handler, "upsert_budget_usage", writes)
     monkeypatch.setattr(handler, "bridge_cost_to_usage_logs", MagicMock())
     state = V2RateCache().state(monotonic=0, now_iso=datetime.now(UTC).isoformat())
-    handler.process_chat_log(MagicMock(), log, state)
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value.fetchone.return_value = (None,)
+    handler.process_chat_log(connection, log, state)
     return writes
 
 

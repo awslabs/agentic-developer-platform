@@ -14,12 +14,14 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from .continuation import digest
-from .execution_policy import ExecutionPolicy, policy_hash, stamp_policy
+from .execution_policy import MAX_WALL_CLOCK_SECONDS, ExecutionPolicy, policy_hash, stamp_policy
 from .models import OrchestrationDecision, OrchestrationExecution
+from .policy_identity import same_human_principal
 from .state import ActorKind
 
 CONTRACT = "shared-window-renewal/v1"
 KIND = "execution_window_renewed"
+MAX_RENEWAL_SECONDS = 7 * 86_400
 
 
 class WindowRenewalError(ValueError):
@@ -31,7 +33,7 @@ class WindowRenewalRequest(BaseModel):
     expected_plan_version: int = Field(strict=True, gt=0)
     expected_plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     expires_at: AwareDatetime
-    max_wall_clock_seconds: int | None = Field(default=None, strict=True, gt=0, le=604_800)
+    max_wall_clock_seconds: int | None = Field(default=None, strict=True, gt=0, le=MAX_WALL_CLOCK_SECONDS)
     resume_expired: bool = Field(default=False, strict=True)
     reason: str = Field(min_length=8, max_length=4000)
     expected_snapshot: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
@@ -54,17 +56,7 @@ def accepted_document_hash(plan):
 
 
 async def policy_owner_matches(session, actor_id, policy):
-    if actor_id == policy.principal_id:
-        return True
-    # Protected plans can retain the verified login subject, while the human
-    # control route attributes decisions to the canonical workspace user ID.
-    from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
-
-    try:
-        owner = await resolve_root_user_entity_id(session, policy.org_id, policy.principal_id or "")
-    except UnresolvableUserEntityError:
-        return False
-    return actor_id == owner
+    return await same_human_principal(session, org_id=policy.org_id, recorded_id=policy.principal_id, current_id=actor_id)
 
 
 def apply_window(policy, limit, decision_id, wall_clock=None):
@@ -80,13 +72,14 @@ def apply_window(policy, limit, decision_id, wall_clock=None):
     return effective
 
 
-async def effective_shared_window(session, plan, policy):
+async def effective_shared_window(session, plan, policy, *, display_lineage=None, as_of=None):
     decision = await session.scalar(
         select(OrchestrationDecision)
         .where(
             OrchestrationDecision.org_id == plan.org_id,
             OrchestrationDecision.flow_id == plan.flow_id,
             OrchestrationDecision.kind == KIND,
+            *([OrchestrationDecision.created_at <= as_of] if as_of is not None else []),
         )
         .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
         .limit(1)
@@ -122,7 +115,7 @@ async def effective_shared_window(session, plan, policy):
     if data["plan_version"] < plan.version:
         from .plan_lineage import receipt_plan
 
-        plan = await receipt_plan(session, plan, data)
+        plan = await display_lineage.receipt_plan(session, plan, data) if display_lineage is not None else await receipt_plan(session, plan, data)
         if plan is None:
             return policy  # General plan changes still require a fresh approval.
     original = ExecutionPolicy.model_validate(plan.plan_document["execution_policy"])
@@ -131,7 +124,7 @@ async def effective_shared_window(session, plan, policy):
     if wall_clock is not None and (
         type(wall_clock) is not int
         or type(prior_wall_clock) is not int
-        or not original.limits.max_wall_clock_seconds <= prior_wall_clock <= wall_clock <= 604_800
+        or not original.limits.max_wall_clock_seconds <= prior_wall_clock <= wall_clock <= MAX_WALL_CLOCK_SECONDS
         or (
             wall_clock != prior_wall_clock
             and not valid_wall_clock(prior_wall_clock, wall_clock, accepted, started=started, resume_expired=data.get("resume_expired") is True)
@@ -151,7 +144,7 @@ async def effective_shared_window(session, plan, policy):
         or data.get("original_policy_hash") != original.policy_hash
         or original.policy_hash != policy_hash(original)
         or policy.policy_hash != policy_hash(policy)
-        or data.get("principal_id") != policy.principal_id
+        or not await same_human_principal(session, org_id=plan.org_id, recorded_id=data.get("principal_id"), current_id=policy.principal_id)
     ):
         raise WindowRenewalError("window_receipt_unverifiable")
     if limit < policy.expires_at or (limit == policy.expires_at and (wall_clock is None or wall_clock <= policy.limits.max_wall_clock_seconds)):
@@ -160,25 +153,28 @@ async def effective_shared_window(session, plan, policy):
 
 
 def valid_wall_clock(prior, seconds, now, *, started=None, resume_expired=False):
-    if type(prior) is not int or type(seconds) is not int or not prior < seconds <= 604_800:
+    if type(prior) is not int or type(seconds) is not int or not prior < seconds <= MAX_WALL_CLOCK_SECONDS:
         return False
-    if seconds - prior <= 86_400:
+    if seconds - prior <= MAX_RENEWAL_SECONDS:
         return True
     # An explicit owner resumption can recover after a long gate wait. Keep
-    # elapsed time and cap the newly granted future window at 24 hours.
+    # elapsed time and cap the newly granted future window at seven days.
     return bool(
         resume_expired
         and started is not None
         and started.tzinfo is not None
         and started + timedelta(seconds=prior) <= now
-        and now < started + timedelta(seconds=seconds) <= now + timedelta(hours=24)
+        and now < started + timedelta(seconds=seconds) <= now + timedelta(seconds=MAX_RENEWAL_SECONDS)
     )
 
 
 def valid_extension(before, after, now, prior_seconds, seconds, *, started=None, resume_expired=False):
     if after == before:
         return after > now and valid_wall_clock(prior_seconds, seconds, now, started=started, resume_expired=resume_expired)
-    return max(now, before) < after <= now + timedelta(hours=24)
+    # Extend the existing deadline, rather than shortening the requested renewal
+    # by whatever time remains before it. Expired windows extend from now.
+    base = max(now, before)
+    return base < after <= base + timedelta(seconds=MAX_RENEWAL_SECONDS)
 
 
 async def prepare_renewal(session, *, flow_id, actor, request):
@@ -221,7 +217,7 @@ async def prepare_renewal(session, *, flow_id, actor, request):
         started=started,
         resume_expired=request.resume_expired,
     ):
-        raise WindowRenewalError("renewal_must_extend_within_24_hours")
+        raise WindowRenewalError("renewal_must_extend_by_at_most_7_days")
     if not await policy_owner_matches(session, actor.actor_id, policy):
         raise WindowRenewalError("original_principal_required")
     if flow.state not in {"pending", "running"}:
@@ -231,7 +227,7 @@ async def prepare_renewal(session, *, flow_id, actor, request):
     if request.max_wall_clock_seconds is not None and not valid_wall_clock(
         current_wall_clock, wall_clock, now, started=started, resume_expired=request.resume_expired
     ):
-        raise WindowRenewalError("wall_clock_must_increase_by_at_most_24_hours")
+        raise WindowRenewalError("wall_clock_must_increase_by_at_most_7_days")
     if started + timedelta(seconds=wall_clock) <= now:
         raise WindowRenewalError("renewed_wall_clock_already_elapsed")
     deadlines = await capped_deadlines(session, flow, plan, policy.expires_at, request.expires_at, current_wall_clock, wall_clock)

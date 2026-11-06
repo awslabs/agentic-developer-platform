@@ -143,7 +143,7 @@ class TestCodexSetup:
 
         assert config.read_text() == first, "second run must be a no-op diff"
 
-    def test_preserves_an_existing_codex_config(self, run_adp, adp_home: Path) -> None:
+    def test_preserves_an_existing_codex_config(self, run_adp, adp_home: Path, adp_bin: Path) -> None:
         """Merge, not overwrite: another provider, MCP servers and unrelated
         top-level keys must all survive."""
         import tomllib
@@ -169,7 +169,14 @@ class TestCodexSetup:
         assert parsed["model"] == "openai.gpt-5.6-sol"
         assert parsed["approval_policy"] == "on-request"
         assert parsed["model_providers"]["some-other"] == {"name": "keep me"}
-        assert parsed["mcp_servers"] == {"foo": {"command": "bar"}}
+        assert parsed["mcp_servers"] == {
+            "foo": {"command": "bar"},
+            "adp-tools": {
+                "command": str(adp_bin / "adp"),
+                "args": ["--deployment", "default", "mcp"],
+                "env": {"BG_CONFIG_DIR": str(adp_home / ".bedrock-gateway"), "ADP_DEPLOYMENT_ID": "default", "ADP_DEPLOYMENT_URL": GATEWAY_URL},
+            },
+        }
         # …and ours replaced theirs rather than being appended alongside.
         assert parsed["model_provider"] == "adp-gateway"
 

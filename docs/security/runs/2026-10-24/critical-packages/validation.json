@@ -1,0 +1,224 @@
+{
+  "review_date": "2026-10-24",
+  "source_revision": "e589e06d171587a49daa2d2aeb51a4fd552394b2",
+  "runtime_image_ids": {
+    "browser": "sha256:b9880a9e18f6b860e6d4748cdd6a6b2cfe9de90bf4c604cd4e28e2cdc823609a",
+    "ingestion": "sha256:c3ba15718199e4fbeab7436be4ffc31d2edbf8956f01282b084d57327641395d",
+    "pytorch": "sha256:7401bf082023e5d18a848029fd98c2d687229dbda5aff94e6cb9172d77705df3",
+    "skypilot": "sha256:b23d8ccf77ddf4a13c83e0e809c2b23047909b9d0e9932a98c86977fd9f6f381",
+    "skypilot-normal": "sha256:53f3be9fccfaa447878393e8cd196163b3f1af4361661f9da40c61c8263806e7",
+    "skypilot-rsync": "sha256:50cf4c5a1458dda29be49f83783790707e514fee0e06b387a54482d62088e5c6",
+    "skypilot-openssh": "sha256:58ddbb515c6f3784e59659b4e867254172ad3c770d4a4ee3199304a6be6af7a1"
+  },
+  "crypto_acceptance_sha256": "edc1e3ed819ebe03a9f4b4869fd9e544d3a0a3b337ddf07060c81796d251f751",
+  "runtime_checks": {
+    "browser/font": "passed",
+    "browser/pillow_regression.py": "passed",
+    "browser/verify_tls.py": "passed",
+    "browser/pip-check": "passed",
+    "ingestion/font": "passed",
+    "ingestion/pillow_regression.py": "passed",
+    "ingestion/verify_tls.py": "passed",
+    "ingestion/verify_brotli.py": "passed",
+    "ingestion/pip-check": "passed",
+    "pytorch/font": "passed",
+    "pytorch/pillow_regression.py": "passed",
+    "pytorch/verify_tls.py": "passed",
+    "pytorch/verify_brotli.py": "passed",
+    "pytorch/pip-check": "passed",
+    "skypilot/font": "passed",
+    "skypilot/runtime": "passed",
+    "skypilot/pip-check": "passed",
+    "skypilot-normal/font": "passed",
+    "skypilot-normal/runtime": "passed",
+    "skypilot-normal/pip-check": "passed",
+    "skypilot-rsync/font": "passed",
+    "skypilot-rsync/runtime": "passed",
+    "skypilot-rsync/pip-check": "passed",
+    "skypilot-openssh/font": "passed",
+    "skypilot-openssh/runtime": "passed",
+    "skypilot-openssh/pip-check": "passed",
+    "skypilot-api": "passed",
+    "skypilot-ssh": "passed",
+    "provider": "passed",
+    "crypto": "passed",
+    "jwt": "passed"
+  },
+  "real_ghostscript_eps": {
+    "browser": "passed",
+    "skypilot": "passed"
+  },
+  "additional_runtime_checks": {
+    "deepwiki/verify_tls.py": "passed",
+    "deepwiki/verify_brotli.py": "passed",
+    "curl-python/verify_tls.py": "passed",
+    "curl-python/brotli_absence_preserved": "passed"
+  },
+  "sharp_optimizer": {
+    "deepwiki": {
+      "sharp": {
+        "aom": "3.15.1",
+        "archive": "3.8.9",
+        "cairo": "1.18.6",
+        "cgif": "0.5.4",
+        "exif": "0.6.26",
+        "expat": "2.8.5",
+        "ffi": "3.8.0",
+        "fontconfig": "2.18.3",
+        "freetype": "2.14.3",
+        "fribidi": "1.0.17",
+        "glib": "2.90.0",
+        "harfbuzz": "14.5.0",
+        "heif": "1.23.5",
+        "highway": "1.4.0",
+        "imagequant": "2.4.1",
+        "lcms": "2.19.1",
+        "mozjpeg": "0826579",
+        "pango": "1.58.2",
+        "pixman": "0.46.4",
+        "png": "1.6.58",
+        "proxy-libintl": "0.5",
+        "rsvg": "2.63.2",
+        "tiff": "4.7.2",
+        "uhdr": "2.0.2",
+        "vips": "8.18.7",
+        "webp": "1.6.0",
+        "xml2": "2.15.4",
+        "zlib-ng": "2.3.3",
+        "sharp": "0.35.5"
+      },
+      "next_image_optimizer": {
+        "image/jpeg": "passed",
+        "image/webp": "passed",
+        "image/png": "passed",
+        "raster_resize": "passed"
+      },
+      "malformed_rejected": true
+    },
+    "curl": {
+      "sharp": {
+        "aom": "3.15.1",
+        "archive": "3.8.9",
+        "cairo": "1.18.6",
+        "cgif": "0.5.4",
+        "exif": "0.6.26",
+        "expat": "2.8.5",
+        "ffi": "3.8.0",
+        "fontconfig": "2.18.3",
+        "freetype": "2.14.3",
+        "fribidi": "1.0.17",
+        "glib": "2.90.0",
+        "harfbuzz": "14.5.0",
+        "heif": "1.23.5",
+        "highway": "1.4.0",
+        "imagequant": "2.4.1",
+        "lcms": "2.19.1",
+        "mozjpeg": "0826579",
+        "pango": "1.58.2",
+        "pixman": "0.46.4",
+        "png": "1.6.58",
+        "proxy-libintl": "0.5",
+        "rsvg": "2.63.2",
+        "tiff": "4.7.2",
+        "uhdr": "2.0.2",
+        "vips": "8.18.7",
+        "webp": "1.6.0",
+        "xml2": "2.15.4",
+        "zlib-ng": "2.3.3",
+        "sharp": "0.35.5"
+      },
+      "next_image_optimizer": {
+        "image/jpeg": "passed",
+        "image/webp": "passed",
+        "image/png": "passed",
+        "raster_resize": "passed"
+      },
+      "malformed_rejected": true
+    }
+  },
+  "repository_tests": {
+    "scanner": {
+      "passed": 220,
+      "skipped": 2
+    },
+    "release": {
+      "passed": 81
+    }
+  },
+  "scans": {
+    "browser": {
+      "raw_scan_sha256": "458bf7e5c160eb1311a08e7ecd8365dba183086239c2c92a298a566930521986",
+      "scope": "Trivy library packages in the candidate image",
+      "critical_matches": []
+    },
+    "deepwiki": {
+      "raw_scan_sha256": "55c93ba238c378a98d66407301927ea23b164a094190bfd5b8d4bcd63bd6ab89",
+      "scope": "Trivy library packages in the candidate image",
+      "critical_matches": [
+        {
+          "advisory": "GHSA-2464-fhr4-w9xw",
+          "package": "next",
+          "version": "15.5.24",
+          "path": "app/node_modules/next/package.json"
+        }
+      ]
+    },
+    "ingestion": {
+      "raw_scan_sha256": "57c43b227c1562ec7079a56e1534a1380e74b39498fc6ac0a64086676ea96d12",
+      "scope": "Trivy library packages in the candidate image",
+      "critical_matches": []
+    },
+    "skypilot": {
+      "raw_scan_sha256": "54d025dbd0938207912436cb9305b21dd754fefc48c3c404512981541c03eddd",
+      "scope": "Trivy library packages in the candidate image",
+      "critical_matches": [
+        {
+          "advisory": "CVE-2026-112393",
+          "package": "pillow",
+          "version": "12.3.0+adp1",
+          "path": "usr/local/lib/python3.10/site-packages/pillow-12.3.0+adp1.dist-info/METADATA"
+        },
+        {
+          "advisory": "CVE-2026-112398",
+          "package": "pillow",
+          "version": "12.3.0+adp1",
+          "path": "usr/local/lib/python3.10/site-packages/pillow-12.3.0+adp1.dist-info/METADATA"
+        },
+        {
+          "advisory": "CVE-2026-112403",
+          "package": "pillow",
+          "version": "12.3.0+adp1",
+          "path": "usr/local/lib/python3.10/site-packages/pillow-12.3.0+adp1.dist-info/METADATA"
+        },
+        {
+          "advisory": "CVE-2026-112900",
+          "package": "pillow",
+          "version": "12.3.0+adp1",
+          "path": "usr/local/lib/python3.10/site-packages/pillow-12.3.0+adp1.dist-info/METADATA"
+        },
+        {
+          "advisory": "CVE-2026-96639",
+          "package": "pillow",
+          "version": "12.3.0+adp1",
+          "path": "usr/local/lib/python3.10/site-packages/pillow-12.3.0+adp1.dist-info/METADATA"
+        }
+      ]
+    },
+    "pytorch": {
+      "raw_scan_sha256": "45737d08c1503f2e719b7dea853eac49c643e22e71d3d483746a340f3c05bc2e",
+      "scope": "Trivy library packages in the candidate image",
+      "critical_matches": []
+    }
+  },
+  "expected_version_matches": {
+    "Pillow 12.x +adp1": "Exact upstream backports, wheel hashes and runtime regressions retained.",
+    "Next.js 15.5.24": "The official advisory permits sharp >=0.35.5. Runtime checks prove Next resolves 0.35.5."
+  },
+  "scope_limits": [
+    "GPU execution not exercised.",
+    "Cloud provisioning and live Postgres not exercised.",
+    "Executor and curl Python updates checked with diagnostic overlays; those images are not publication candidates.",
+    "Normal ingestion and DeepWiki source recipes share the tested maintenance operations; full rebuild acceptance used their retained high-security recipes.",
+    "Existing OS/source-backport dispositions and unrelated High/Medium matches remain separate."
+  ]
+}

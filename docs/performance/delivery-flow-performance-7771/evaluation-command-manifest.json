@@ -1,0 +1,121 @@
+{
+  "schema_version": 2,
+  "scope": "Story-scoped runnable evaluation commands; scenario identifiers are local to each story.",
+  "stories": {
+    "7775": {
+      "issue": 7775,
+      "scope": "Owned local PostgreSQL 16 fixtures; no live service, inference or dispatch.",
+      "setup": "cd modules/gateway && uv sync --frozen --python 3.12 --extra dev",
+      "environment": "For local tests set AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true. The pg_url fixture creates and drops owned databases.",
+      "commands": {
+        "AC-01/SCN-01": "uv run --no-sync pytest -q -s tests/orchestration/test_decision_projection.py::test_graph_never_reads_full_ledger tests/orchestration/test_decision_projection.py::test_all_categories_bound_each_node",
+        "AC-02/MOD-018-F001-S005": "uv run --no-sync pytest -q tests/orchestration/test_decision_payload_qualification.py tests/orchestration/test_decision_projection.py::test_decision_scope_order_and_audit",
+        "AC-03/MOD-018-F001-S004": "uv run --no-sync pytest -q tests/orchestration/test_decision_projection.py::test_decision_scope_order_and_audit tests/migrations/test_104_decision_display_projection.py"
+      },
+      "limitations": "Commands run in modules/gateway. Parser and index tests require Python 3.12 dev dependencies. PostgreSQL skips are not acceptance; live rollout remains with story 7777. JUnit properties retain comparative synthetic plans and parser timings when an operator supplies a private --junitxml destination."
+    },
+    "7772": {
+      "issue": 7772,
+      "scope": "Local gateway read-path regressions; no external fixture or service is provisioned.",
+      "commands": {
+        "AC-01": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_bounded_lineage_queries_cover_rows_chips_waves_and_graph",
+        "SCN-01": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_bounded_multi_hop_lineage_queries",
+        "AC-02-refusals": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_lineage_refusals_do_not_grant_stalled_state tests/orchestration/test_flow_read_performance.py::test_lineage_refuses_101_hops_but_not_99_or_100",
+        "AC-02-overflow": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_candidate_overflow_does_not_poison_smaller_page_waves tests/orchestration/test_flow_read_performance.py::test_plan_receipt_overflow_refuses_tenant_but_keeps_complete_page",
+        "AC-03-snapshot": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_postgres_snapshot_sets_read_only_isolation_before_projection tests/orchestration/test_flow_read_performance.py::test_graph_ends_relational_snapshot_before_optional_activity tests/orchestration/test_flow_read_performance.py::test_concurrent_amendment_cannot_mix_rows_and_chips tests/orchestration/test_flow_read_performance.py::test_second_request_sees_committed_amendment_in_list_and_graph tests/orchestration/test_flow_read_performance.py::test_read_snapshot_preserves_empty_filtered_archived_and_paginated_lists",
+        "AC-03-postgres-concurrent": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_postgres_concurrent_amendment_on_configured_fixture",
+        "AC-01-postgres": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_postgres_bounded_lineage_queries",
+        "SCN-01-postgres": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_postgres_bounded_multi_hop_lineage",
+        "AC-02-postgres": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_postgres_lineage_refusals tests/orchestration/test_flow_read_performance.py::test_postgres_hop_boundaries tests/orchestration/test_flow_read_performance.py::test_postgres_candidate_overflow tests/orchestration/test_flow_read_performance.py::test_postgres_plan_receipt_overflow",
+        "AC-03-postgres": "cd modules/gateway && uv run --extra dev pytest -q tests/orchestration/test_flow_read_performance.py::test_postgres_concurrent_amendment_on_configured_fixture tests/orchestration/test_flow_read_performance.py::test_postgres_read_after_amendment tests/orchestration/test_flow_read_performance.py::test_postgres_list_filters"
+      },
+      "limitations": "PostgreSQL selectors use the Python 3.12 pg_url fixture by default. ADP_TEST_POSTGRES_URL may instead select an already authorized isolated PostgreSQL database with CREATE SCHEMA rights. Each fixture applies the projection migration and drops only its own temporary schema. Local SQLite WAL and mocked setup checks do not establish PostgreSQL acceptance."
+    },
+    "7774": {
+      "issue": 7774,
+      "scope": "Local frontend fixtures only; no backend, cloud resources, dispatch or live acceptance.",
+      "prerequisites": "Run npm ci --include=dev in modules/gateway/frontend. The test host must have Playwright Chromium and its OS libraries/fonts; the existing flow-read.config.ts starts a local preview server.",
+      "vitest_command_prefix": "cd modules/gateway/frontend && npx vitest run",
+      "playwright_command_prefix": "cd modules/gateway/frontend && npx playwright test",
+      "cases": [
+        {
+          "scenario_id": "MOD-018-F001-S001",
+          "acceptance_ids": ["AC-01"],
+          "vitest_selectors": ["src/__tests__/pages/GraphView.test.tsx -t AC-01", "src/__tests__/services/orchestration.test.ts"],
+          "playwright_selectors": ["tests/e2e/flow-read-performance.spec.ts --config tests/e2e/flow-read.config.ts --grep test_graph_before_activity"],
+          "assertions": "Core graph and controls render before held activity; collapsed stories do not request activity, and expanded story batches have at most 20 IDs."
+        },
+        {
+          "scenario_id": "MOD-018-F001-S005",
+          "acceptance_ids": ["AC-02"],
+          "vitest_selectors": ["src/__tests__/pages/GraphView.test.tsx -t AC-02"],
+          "playwright_selectors": ["tests/e2e/flow-read-performance.spec.ts --config tests/e2e/flow-read.config.ts --grep 'test_navigation_cancels_stale_activity|test_workspace_scope_cancels_activity|test_attempt_refresh_keeps_graph'"],
+          "assertions": "Navigation aborts old requests, workspace or attempt changes cannot display stale activity, and same-flow refresh keeps the graph visible."
+        },
+        {
+          "scenario_id": "SCN-01",
+          "acceptance_ids": ["AC-03"],
+          "vitest_selectors": ["src/__tests__/pages/GraphView.test.tsx -t AC-03", "src/__tests__/services/api.test.ts", "src/__tests__/services/orchestration.test.ts"],
+          "playwright_selectors": ["tests/e2e/flow-read-performance.spec.ts --config tests/e2e/flow-read.config.ts --grep test_activity_error_and_legacy"],
+          "assertions": "Activity errors stay local without automatic retries or false completion; an explicit retry requeues once, and absent/true legacy markers use the enriched core response without extra calls."
+        }
+      ]
+    },
+    "7773": {
+      "schema_version": 1,
+      "issue": 7773,
+      "phase": "before-merge backend fixtures",
+      "working_directory": "repository root",
+      "runner": {
+        "python": ">=3.12 (verified locally with 3.13.16)",
+        "uv": "0.13.1 (verified locally)",
+        "pytest": "9.0.3 (pinned in the gateway dev extra)"
+      },
+      "environment": "Inert SQLite and mocked activity provider; disable EC2 metadata discovery and set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY to nonfunctional test values in the shell. No deployed target, inference, or dispatch is required.",
+      "command_prefix": "AWS_EC2_METADATA_DISABLED=true AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test uv run --frozen --project modules/gateway --extra dev pytest -q",
+      "cases": [
+        {
+          "scenario_id": "MOD-018-F001-S001",
+          "acceptance_ids": [
+            "AC-01"
+          ],
+          "pytest_selectors": [
+            "modules/gateway/tests/orchestration/test_flow_read_performance.py::test_core_graph_skips_activity"
+          ],
+          "assertions": "Core skips provider reads, preserves graph and run identity, and legacy default remains enriched."
+        },
+        {
+          "scenario_id": "SCN-01",
+          "acceptance_ids": [
+            "AC-02"
+          ],
+          "pytest_selectors": [
+            "modules/gateway/tests/orchestration/test_flow_read_performance.py::test_activity_deadline_and_concurrency",
+            "modules/gateway/tests/orchestration/test_flow_read_performance.py::test_cancelled_activity_request_drains_without_scheduling_new_reads",
+            "modules/gateway/tests/orchestration/test_flow_read_performance.py::test_activity_http_deadline_for_twenty_mixed_stories",
+            "modules/gateway/tests/activity/test_bounded_chain.py::test_bounded_chain_counts_empty_pages_and_preserves_truncation"
+          ],
+          "assertions": "At most four worker calls, at most 20 pages including empty pages, cancellation drains without new calls, and 20 mixed HTTP items finish within 5.5 seconds."
+        },
+        {
+          "scenario_id": "MOD-018-F001-S004",
+          "acceptance_ids": [
+            "AC-03"
+          ],
+          "pytest_selectors": [
+            "modules/gateway/tests/orchestration/test_flow_read_performance.py::test_activity_scope_and_attempt",
+            "modules/gateway/tests/orchestration/test_flow_read_performance.py::test_activity_rejects_invalid_or_foreign_selection_before_provider",
+            "modules/gateway/tests/orchestration/test_flow_read_performance.py::test_activity_long_history_uses_current_dispatch",
+            "modules/gateway/tests/orchestration/test_flow_read_performance.py::test_incomplete_activity_binding_starts_no_provider_reads",
+            "modules/gateway/tests/orchestration/test_flow_read_performance.py::test_activity_requires_authenticated_user_before_provider"
+          ],
+          "assertions": "Only tenant-authorized current-attempt runs appear; invalid or incomplete selections start no provider calls."
+        }
+      ],
+      "vitest_selectors": [],
+      "vitest_owner": "UI adoption #7774; no Vitest selector belongs to this backend story.",
+      "playwright_selectors": [],
+      "playwright_owner": "Browser fixture and runner #7776; live verification #7777. Not a pre-merge backend assertion."
+    }
+  }
+}

@@ -50,6 +50,9 @@ export async function resolveInstallationId(
     try {
       // Refuse a redirect before another destination receives a request. An
       // after-the-fact final-origin check cannot prevent that network access.
+      // Fixed GitHub origin; kind is a local literal and owner is validated above.
+      // Redirects are refused, so the App JWT cannot leave this destination.
+      // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
       const response = await fetch(url, { headers: authHeaders, redirect: 'error' });
       if (!response.ok || response.redirected || response.url !== url) continue;
       const data = await response.json() as { id?: unknown };

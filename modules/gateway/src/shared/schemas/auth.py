@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from src.budget.run_binding import RunBinding
     from src.orchestration.dispatch import GraphAttribution
     from src.orchestration.provider_quotes import ProviderQuote
+    from src.products.work_scope import ProjectAttribution
     from src.usage.persona_attribution import PersonaUsageAttribution
 
 
@@ -64,8 +65,18 @@ class TokenContext(BaseModel):
     # are never internal-plane principals. Only scopes in INTERNAL_PLANE_SCOPES
     # may act on the internal plane.
     scope: str = ""
+    token_scopes: str = ""
+    token_use: str = ""
+    # Issue #9640: who is acting on the principal's behalf when the token was minted
+    # for a delegate instead of presented by the principal's own login. The only
+    # value shape today is ``dev-box:<box_id>:<host_run_id>``: the owner's Dev Box
+    # host run exchanged its verified identity for an owner session. Empty for every
+    # login token. Carried into the request log; it never widens authority (the
+    # context IS the owner's) and nothing may read it as a permission.
+    delegation: str = ""
     # Registry-owned requirement, never accepted from a worker request/header.
     requires_run_identity: bool = False
+    requires_host_identity: bool = False
     # Issue #4131: the credential scopes this caller has actually been granted,
     # resolved server-side from the agent_registry entry. Empty for human/JWT
     # callers and for any agent that has not been granted one. This is the
@@ -155,7 +166,23 @@ class TokenContext(BaseModel):
     # degraded registry lookup all reserve no run/chain target and so release
     # none, reconciling exactly as they did before this issue.
     _run_scope_reservations: "list[ReservationTarget]" = PrivateAttr(default_factory=list)
+    # Raw subject from signature-verified Cognito claims, before service-client
+    # aliasing. Native designation checks must not lose it when user_id differs.
+    _authenticated_subject_id: str = PrivateAttr(default="")
+    # #9024: the Dev Box owner behind a host-route call (set by crew.host_tools.current_host_target),
+    # so their conversations list includes what ran on the box under the guest identity.
+    _crew_owner_user_id: str | None = PrivateAttr(default=None)
+    # Set only by validated legacy token authentication; never from caller claims.
+    _authenticated_token_record_id: str = PrivateAttr(default="")
     _budget_admission_targets: "list[ReservationTarget] | None" = PrivateAttr(default=None)
+    # Set only by the registered execution scope resolver, never caller headers.
+    _project_attribution: "ProjectAttribution | None" = PrivateAttr(default=None)
+    # Server-composed #8078 middleware supplies this in-process single-use handoff.
+    # Capability/header data cannot populate it through TokenContext parsing.
+    _native_test_handoff: object | None = PrivateAttr(default=None)
+    _native_test_dispatch_deadline: float | None = PrivateAttr(default=None)
+    # Server-owned paid-effect quote verifier. Never parsed from HTTP/JSON.
+    _native_test_effect_quote_guard: object | None = PrivateAttr(default=None)
     # Set after protected pod/grant verification, or authenticated shared-run
     # assignment and accepted policy verification in the model middleware.
     # Neither model parsing nor headers can supply a pydantic private attribute.
@@ -203,6 +230,9 @@ class TokenContext(BaseModel):
     _policy_scope_caps: tuple[Decimal, Decimal] | None = PrivateAttr(default=None)
     _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)
     _policy_request_id: str | None = PrivateAttr(default=None)
+    _dev_box_host_run_id: str | None = PrivateAttr(default=None)
+    _dev_box_instance_id: str | None = PrivateAttr(default=None)
+    _dev_box_role_arn: str | None = PrivateAttr(default=None)
     # Issue #5225: the typed quote whose total became _policy_estimated_cost. Kept
     # alongside the amount so the reservation can be audited against the request
     # bytes, billing model and pricing revision that were actually priced —

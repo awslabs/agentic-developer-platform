@@ -300,3 +300,9 @@ variable "internal_route_source_cidrs" {
   description = "CIDRs permitted to call /internal/* — normally the NAT EIPs. This is the busiest path on the API (the webhook Lambda's identity resolution), so a stale value here fails agent invocation at the resolve step, which presents as a GitHub or tenant problem rather than a networking one."
   default     = []
 }
+
+variable "edge_provenance_secret" {
+  description = "Shared origin proof owned by the gateway root, independent of Cognito."
+  type        = string
+  sensitive   = true
+}

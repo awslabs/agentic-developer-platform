@@ -10,8 +10,11 @@
 #   docker push ${ECR_REGISTRY}/agent-context/ingestion:latest
 # Use the same immutable ADP security build as the search Deployment.
 # Override ZOEKT_IMAGE only together with the serving image.
-ARG ZOEKT_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:9526ea64a3d05fb90358d739474dd233780b61a3cadb063dd597c14b538d144f
-FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2 AS high-security-tools
+ARG ZOEKT_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:29e0ded26418f3f1546a3758a10786f78e822ece44379ccc304598d274d50eed
+ARG PILLOW_SECURITY_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:7b3df072a13b928bddbf70d71735fdc8572006442048868914627ebc8e635b68
+
+FROM ${PILLOW_SECURITY_IMAGE} AS pillow-security
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:934b09fa0c9d4f52c90c68fa9227ba890ecadb303f8cff01a533fac3062c6c10 AS high-security-tools
 
 FROM public.ecr.aws/docker/library/ruby:3.4.11-slim-trixie@sha256:5b53e16f47e05acae56897d0f96b9d03dcb4563276e71c96415bf7777c9ba207 AS ruby-security
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
@@ -59,9 +62,8 @@ RUN npm install -g --prefix /usr \
     && npm cache clean --force
 
 # Go 1.26+ (scip-go v0.2.7 requires go >= 1.25; kept for dep resolution of Go repos)
-ARG GO_VERSION=1.26.8
-RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
-    | tar -xz -C /usr/local
+ADD --checksum=sha256:42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d https://go.dev/dl/go1.26.9.linux-amd64.tar.gz /tmp/go.tar.gz
+RUN rm -rf /usr/local/go && tar -xzf /tmp/go.tar.gz -C /usr/local && rm /tmp/go.tar.gz
 ENV GOPATH="/opt/go"
 ENV PATH="/usr/local/go/bin:/opt/go/bin:${PATH}"
 
@@ -83,22 +85,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends libyaml-0-2 lib
     && gem install sorbet-static sorbet --no-document
 
 # .NET SDK (for scip-dotnet)
-RUN curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --version 8.0.425 --install-dir /usr/share/dotnet && \
-    ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+ADD --checksum=sha256:bb691c98abc8797eedbd48d3a766bc734214aed746e52e2691d8bbb268c60764 https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.426/dotnet-sdk-8.0.426-linux-x64.tar.gz /tmp/dotnet-sdk.tar.gz
+RUN rm -rf /usr/share/dotnet && mkdir -p /usr/share/dotnet \
+    && tar -xzf /tmp/dotnet-sdk.tar.gz -C /usr/share/dotnet && rm /tmp/dotnet-sdk.tar.gz
+RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 ENV DOTNET_ROOT="/usr/share/dotnet"
 
 # JVM deferred — scip-java not in current corpus (D7 in neptune-deep-graph-design.md)
 # When Java support is added, install: default-jdk-headless maven
 
-# Validated Go 1.26.8 builds with fixed transitive modules; source locks and
-# reproduction recipes are in high-security/. Keep OSV's independent release.
+# Validated Go 1.26.9 builds with fixed transitive modules; source locks and
+# reproduction recipes are in high-security/, including the retained OSV source.
 COPY --from=high-security-tools /bin/syft /bin/trivy /usr/local/bin/
 COPY --from=high-security-tools /bin/tsc /usr/lib/node_modules/@sourcegraph/scip-python/node_modules/@typescript/typescript-linux-x64/lib/tsc
 COPY --from=high-security-tools /usr/share/licenses/ingestion-security-tools/ /usr/share/licenses/ingestion-security-tools/
 COPY --from=zoekt /usr/share/licenses/ /usr/share/licenses/zoekt-security/
-ARG OSV_SCANNER_VERSION=2.6.0
-RUN curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
-        -o /usr/local/bin/osv-scanner && chmod +x /usr/local/bin/osv-scanner
+COPY --from=high-security-tools /bin/osv-scanner /usr/local/bin/osv-scanner
+COPY --from=high-security-tools /usr/share/licenses/osv-scanner/ /usr/share/licenses/osv-scanner/
 
 # Regenerate the verified legacy SCIP bindings before resolving modern protobuf.
 COPY security-build/patch-codegraph-wheel.py /tmp/patch-codegraph-wheel.py
@@ -118,12 +121,16 @@ RUN pip install --no-cache-dir \
     tree-sitter-typescript \
     tree-sitter-go \
     requests \
+    "certifi>=2026.10.19" \
+    "pip==26.2.2" \
+    "brotli==1.2.1" \
+    "Pillow>=13.0.0,<14" \
     defusedxml>=0.7.1 \
     crawl4ai \
     boto3 \
     gremlinpython \
     opensearch-py \
-    markitdown \
+    "markitdown[pdf,docx,pptx]" \
     PyJWT[crypto] \
     pydantic-settings \
     psycopg2-binary \
@@ -137,7 +144,9 @@ RUN pip install --no-cache-dir \
     opentelemetry-exporter-otlp-proto-grpc>=1.20.0 \
     opentelemetry-sdk-extension-aws>=2.0.0 \
     opentelemetry-propagator-aws-xray>=1.0.0 \
-    && pip check && rm -rf /tmp/upstream /tmp/patched /tmp/patch-codegraph-wheel.py
+    && pip check \
+    && python -c "import pdfminer.high_level, mammoth, pptx" \
+    && rm -rf /tmp/upstream /tmp/patched /tmp/patch-codegraph-wheel.py
 
 # Download Amazon RDS/Neptune CA bundle for TLS verification (#2224)
 RUN curl -fsSL -o /etc/ssl/certs/rds-global-bundle.pem \
@@ -160,9 +169,11 @@ RUN crawl4ai-setup && python -m playwright install chromium
 # ownership guards imported by ingest-url.py and ingest-doc.py (#5658). Without
 # them those scripts die at import, which is the correct failure mode but a
 # needless one — they are listed here and asserted by the smoke check below.
-COPY config.py telemetry.py tracing.py metrics.py s3_store.py wiki_store.py code_embedder.py sbom_parser.py db.py stage_tracker.py github_auth.py scope.py status_callback.py registry_reader.py lang_go.py url_denylist.py url_fetch.py browser_fetch.py s3_source_guard.py source_admission.py repo_acl.py /app/
+COPY config.py telemetry.py tracing.py metrics.py s3_store.py wiki_store.py code_embedder.py sbom_parser.py db.py stage_tracker.py github_auth.py scope.py status_callback.py ingestion_result.py registry_reader.py lang_go.py url_denylist.py url_fetch.py browser_fetch.py s3_source_guard.py source_admission.py repo_acl.py job_client.py receive-job.py queue-refresh.py stored_code_index.py /app/
 COPY scip_ingester.py scip_indexer.py scip_neptune_csv.py scip_neptune_loader.py /app/
 COPY iac_terraform_parser.py iac_neptune_csv.py /app/
+COPY source_snapshot.py isolated_runner.py isolated_parser.py dep_preparation.py \
+     parser_capability.py parser_manifest.py parser_publisher.py /app/
 COPY scip_proto/ /app/scip_proto/
 COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
      discover-infra.py sqs-worker.py publish-ingestion.py \
@@ -175,7 +186,8 @@ COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
 # shipped in source but never copied, silently breaking the daily refresh (#2800).
 # Only pure-import modules (no env/DB needed at import time) are listed here.
 RUN cd /app && python -c "import registry_reader, scope, status_callback, lang_go" \
-    && python -c "import url_denylist, url_fetch, browser_fetch, s3_source_guard, source_admission, repo_acl"
+    && python -c "import url_denylist, url_fetch, browser_fetch, s3_source_guard, source_admission, repo_acl" \
+    && python -c "import source_snapshot, isolated_runner, isolated_parser"
 
 # Vulnerability scanner pipeline package (used by scan-vulns.py, #2536)
 COPY pipeline/ /app/pipeline/
@@ -252,6 +264,12 @@ RUN python /tmp/patch-dotnet.py && rm /tmp/xml.8.0.4.nupkg /tmp/patch-dotnet.py 
     && HOME=/tmp/adp-dotnet-validation DOTNET_CLI_HOME=/tmp/adp-dotnet-validation XDG_CACHE_HOME=/tmp/adp-dotnet-validation/.cache dotnet format --version \
     && rm -rf /tmp/adp-dotnet-validation
 
+# The source-built Pillow 13 wheel also fixes its bundled Brotli decoder.
+RUN --network=none --mount=type=bind,from=pillow-security,source=/wheels,target=/pillow-wheels \
+    python -m pip install --no-index --no-deps --force-reinstall --no-cache-dir /pillow-wheels/pillow-13.0.0+adp1-cp313-*.whl \
+    && python -m pip check
+COPY --from=pillow-security /maintenance/pillow/ /opt/adp-security/pillow/
+COPY --from=pillow-security /maintenance/pillow-wheel-lock.json /opt/adp-security/pillow/wheel-lock.json
 USER appuser
 
 # Default: run refresh (CronJob entrypoint)

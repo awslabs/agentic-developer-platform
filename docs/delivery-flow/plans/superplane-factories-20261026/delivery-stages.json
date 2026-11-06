@@ -1,0 +1,1020 @@
+{
+  "schema": "superplane-delivery-handoff/v1",
+  "purpose": "Scheduling input; not an accepted execution plan",
+  "epic": "https://github.com/aws-e/adp/issues/8950",
+  "source_revision": "55c340f5c5b949bbdf4f9ac2c5646a868e4886d2",
+  "project_id": "470fb7f1-aa72-4544-a92d-b6cfedf1e761",
+  "all_story_sizes": "M",
+  "gateway_policy": "Continuously rolling shared dependency; no freeze, rollback-to-old-source or per-story full-deployment prerequisite",
+  "release_batches": {
+    "R1": {
+      "release": "R01",
+      "verification": [
+        "V01",
+        "V07"
+      ],
+      "activation_without_rebuild": [
+        "R04"
+      ]
+    },
+    "R2": {
+      "release": "R02",
+      "verification": [
+        "V02"
+      ]
+    },
+    "R3": {
+      "release": "R03",
+      "verification": [
+        "V03",
+        "V04",
+        "V05",
+        "V06"
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "alias": "C01",
+      "issue": "https://github.com/aws-e/adp/issues/8951",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "contracts",
+      "batch": "R1",
+      "depends_on": [],
+      "topological_level": 0
+    },
+    {
+      "alias": "C02",
+      "issue": "https://github.com/aws-e/adp/issues/8952",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "contracts",
+      "batch": "R1",
+      "depends_on": [
+        "C01"
+      ],
+      "topological_level": 1
+    },
+    {
+      "alias": "C08",
+      "issue": "https://github.com/aws-e/adp/issues/8953",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "release",
+      "batch": "R1",
+      "depends_on": [
+        "C01"
+      ],
+      "topological_level": 1
+    },
+    {
+      "alias": "W03",
+      "issue": "https://github.com/aws-e/adp/issues/8954",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "applications",
+      "batch": "R1",
+      "depends_on": [
+        "C01"
+      ],
+      "topological_level": 1
+    },
+    {
+      "alias": "C03",
+      "issue": "https://github.com/aws-e/adp/issues/8955",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "contracts",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C02"
+      ],
+      "topological_level": 2
+    },
+    {
+      "alias": "T04",
+      "issue": "https://github.com/aws-e/adp/issues/8956",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-platform",
+      "batch": "R2",
+      "depends_on": [
+        "W03",
+        "C01"
+      ],
+      "topological_level": 2
+    },
+    {
+      "alias": "W01",
+      "issue": "https://github.com/aws-e/adp/issues/8957",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "applications",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C08"
+      ],
+      "topological_level": 2
+    },
+    {
+      "alias": "C04",
+      "issue": "https://github.com/aws-e/adp/issues/8958",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "authority",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C03"
+      ],
+      "topological_level": 3
+    },
+    {
+      "alias": "C06",
+      "issue": "https://github.com/aws-e/adp/issues/8959",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "api",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C03"
+      ],
+      "topological_level": 3
+    },
+    {
+      "alias": "T01",
+      "issue": "https://github.com/aws-e/adp/issues/8960",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-contracts",
+      "batch": "R2",
+      "depends_on": [
+        "C02",
+        "C03"
+      ],
+      "topological_level": 3
+    },
+    {
+      "alias": "C05",
+      "issue": "https://github.com/aws-e/adp/issues/8961",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "runtime",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "C04"
+      ],
+      "topological_level": 4
+    },
+    {
+      "alias": "C07",
+      "issue": "https://github.com/aws-e/adp/issues/8962",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "publication",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "C04"
+      ],
+      "topological_level": 4
+    },
+    {
+      "alias": "T02",
+      "issue": "https://github.com/aws-e/adp/issues/8963",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "planning",
+      "batch": "R2",
+      "depends_on": [
+        "T01",
+        "C02"
+      ],
+      "topological_level": 4
+    },
+    {
+      "alias": "U01",
+      "issue": "https://github.com/aws-e/adp/issues/8964",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "experience",
+      "batch": "R1",
+      "depends_on": [
+        "C06",
+        "C01"
+      ],
+      "topological_level": 4
+    },
+    {
+      "alias": "U02",
+      "issue": "https://github.com/aws-e/adp/issues/8965",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "experience",
+      "batch": "R1",
+      "depends_on": [
+        "C06",
+        "C02"
+      ],
+      "topological_level": 4
+    },
+    {
+      "alias": "A01",
+      "issue": "https://github.com/aws-e/adp/issues/8966",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "accounts",
+      "batch": "R1",
+      "depends_on": [
+        "C02",
+        "C04",
+        "C05"
+      ],
+      "topological_level": 5
+    },
+    {
+      "alias": "P01",
+      "issue": "https://github.com/aws-e/adp/issues/8967",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "C02",
+        "C04",
+        "C05"
+      ],
+      "topological_level": 5
+    },
+    {
+      "alias": "P04",
+      "issue": "https://github.com/aws-e/adp/issues/8968",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "C02",
+        "C04",
+        "C05"
+      ],
+      "topological_level": 5
+    },
+    {
+      "alias": "P07",
+      "issue": "https://github.com/aws-e/adp/issues/8969",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "C02",
+        "C04",
+        "C05"
+      ],
+      "topological_level": 5
+    },
+    {
+      "alias": "T03",
+      "issue": "https://github.com/aws-e/adp/issues/8970",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-authority",
+      "batch": "R2",
+      "depends_on": [
+        "T01",
+        "T02",
+        "C04"
+      ],
+      "topological_level": 5
+    },
+    {
+      "alias": "A02",
+      "issue": "https://github.com/aws-e/adp/issues/8971",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "accounts",
+      "batch": "R1",
+      "depends_on": [
+        "A01"
+      ],
+      "topological_level": 6
+    },
+    {
+      "alias": "N01",
+      "issue": "https://github.com/aws-e/adp/issues/8972",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "networking",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "A01"
+      ],
+      "topological_level": 6
+    },
+    {
+      "alias": "P10",
+      "issue": "https://github.com/aws-e/adp/issues/8973",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "P01"
+      ],
+      "topological_level": 6
+    },
+    {
+      "alias": "P11",
+      "issue": "https://github.com/aws-e/adp/issues/8974",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-environments",
+      "batch": "R3",
+      "depends_on": [
+        "P04"
+      ],
+      "topological_level": 6
+    },
+    {
+      "alias": "T10",
+      "issue": "https://github.com/aws-e/adp/issues/8975",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-experience",
+      "batch": "R2",
+      "depends_on": [
+        "T02",
+        "T03",
+        "U01"
+      ],
+      "topological_level": 6
+    },
+    {
+      "alias": "K01",
+      "issue": "https://github.com/aws-e/adp/issues/8976",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "clusters",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "N01"
+      ],
+      "topological_level": 7
+    },
+    {
+      "alias": "N02",
+      "issue": "https://github.com/aws-e/adp/issues/8977",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "networking",
+      "batch": "R1",
+      "depends_on": [
+        "N01"
+      ],
+      "topological_level": 7
+    },
+    {
+      "alias": "N03",
+      "issue": "https://github.com/aws-e/adp/issues/8978",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "networking",
+      "batch": "R1",
+      "depends_on": [
+        "N01",
+        "C05"
+      ],
+      "topological_level": 7
+    },
+    {
+      "alias": "P02",
+      "issue": "https://github.com/aws-e/adp/issues/8979",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-networking",
+      "batch": "R3",
+      "depends_on": [
+        "P01",
+        "N01",
+        "C05"
+      ],
+      "topological_level": 7
+    },
+    {
+      "alias": "P05",
+      "issue": "https://github.com/aws-e/adp/issues/8980",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-networking",
+      "batch": "R3",
+      "depends_on": [
+        "P04",
+        "N01",
+        "C05"
+      ],
+      "topological_level": 7
+    },
+    {
+      "alias": "P08",
+      "issue": "https://github.com/aws-e/adp/issues/8981",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-networking",
+      "batch": "R3",
+      "depends_on": [
+        "P07",
+        "N01",
+        "C05"
+      ],
+      "topological_level": 7
+    },
+    {
+      "alias": "K02",
+      "issue": "https://github.com/aws-e/adp/issues/8982",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "bootstrap",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "K01"
+      ],
+      "topological_level": 8
+    },
+    {
+      "alias": "M01",
+      "issue": "https://github.com/aws-e/adp/issues/8983",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "migration",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "K01"
+      ],
+      "topological_level": 8
+    },
+    {
+      "alias": "P12",
+      "issue": "https://github.com/aws-e/adp/issues/8984",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-infrastructure",
+      "batch": "R3",
+      "depends_on": [
+        "C01",
+        "P02"
+      ],
+      "topological_level": 8
+    },
+    {
+      "alias": "P13",
+      "issue": "https://github.com/aws-e/adp/issues/8985",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-infrastructure",
+      "batch": "R3",
+      "depends_on": [
+        "C01",
+        "P05"
+      ],
+      "topological_level": 8
+    },
+    {
+      "alias": "P14",
+      "issue": "https://github.com/aws-e/adp/issues/8986",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-infrastructure",
+      "batch": "R3",
+      "depends_on": [
+        "C01",
+        "P08"
+      ],
+      "topological_level": 8
+    },
+    {
+      "alias": "W02",
+      "issue": "https://github.com/aws-e/adp/issues/8987",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "applications",
+      "batch": "R1",
+      "depends_on": [
+        "W01",
+        "C04",
+        "N02",
+        "K01"
+      ],
+      "topological_level": 8
+    },
+    {
+      "alias": "K03",
+      "issue": "https://github.com/aws-e/adp/issues/8988",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "bootstrap",
+      "batch": "R1",
+      "depends_on": [
+        "K02",
+        "W03"
+      ],
+      "topological_level": 9
+    },
+    {
+      "alias": "P03",
+      "issue": "https://github.com/aws-e/adp/issues/8989",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-clusters",
+      "batch": "R3",
+      "depends_on": [
+        "P02",
+        "K01",
+        "K03",
+        "W02",
+        "P12"
+      ],
+      "topological_level": 10
+    },
+    {
+      "alias": "P06",
+      "issue": "https://github.com/aws-e/adp/issues/8990",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-clusters",
+      "batch": "R3",
+      "depends_on": [
+        "P05",
+        "K01",
+        "K03",
+        "W02",
+        "P13"
+      ],
+      "topological_level": 10
+    },
+    {
+      "alias": "P09",
+      "issue": "https://github.com/aws-e/adp/issues/8991",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "provider-clusters",
+      "batch": "R3",
+      "depends_on": [
+        "P08",
+        "K01",
+        "K03",
+        "W02",
+        "P14"
+      ],
+      "topological_level": 10
+    },
+    {
+      "alias": "W04",
+      "issue": "https://github.com/aws-e/adp/issues/8992",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "applications",
+      "batch": "R1",
+      "depends_on": [
+        "C06",
+        "C07",
+        "W02",
+        "W03",
+        "K02",
+        "K03"
+      ],
+      "topological_level": 10
+    },
+    {
+      "alias": "L01",
+      "issue": "https://github.com/aws-e/adp/issues/8993",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "reconciliation",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "C06",
+        "K01",
+        "W04"
+      ],
+      "topological_level": 11
+    },
+    {
+      "alias": "L02",
+      "issue": "https://github.com/aws-e/adp/issues/8994",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "reconciliation",
+      "batch": "R1",
+      "depends_on": [
+        "C05",
+        "C04",
+        "N03",
+        "W04"
+      ],
+      "topological_level": 11
+    },
+    {
+      "alias": "T05",
+      "issue": "https://github.com/aws-e/adp/issues/8995",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-runtime",
+      "batch": "R2",
+      "depends_on": [
+        "T03",
+        "T04",
+        "W04"
+      ],
+      "topological_level": 11
+    },
+    {
+      "alias": "M02",
+      "issue": "https://github.com/aws-e/adp/issues/8996",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "migration",
+      "batch": "R1",
+      "depends_on": [
+        "M01",
+        "C04",
+        "C05",
+        "W04",
+        "L01"
+      ],
+      "topological_level": 12
+    },
+    {
+      "alias": "T06",
+      "issue": "https://github.com/aws-e/adp/issues/8997",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-observation",
+      "batch": "R2",
+      "depends_on": [
+        "T05",
+        "C06"
+      ],
+      "topological_level": 12
+    },
+    {
+      "alias": "T08",
+      "issue": "https://github.com/aws-e/adp/issues/8998",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "capacity",
+      "batch": "R2",
+      "depends_on": [
+        "T03",
+        "T05",
+        "C05"
+      ],
+      "topological_level": 12
+    },
+    {
+      "alias": "M03",
+      "issue": "https://github.com/aws-e/adp/issues/8999",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "migration",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "C07",
+        "M02"
+      ],
+      "topological_level": 13
+    },
+    {
+      "alias": "M04",
+      "issue": "https://github.com/aws-e/adp/issues/9000",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "migration",
+      "batch": "R1",
+      "depends_on": [
+        "C03",
+        "C05",
+        "M02"
+      ],
+      "topological_level": 13
+    },
+    {
+      "alias": "T07",
+      "issue": "https://github.com/aws-e/adp/issues/9001",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-runtime",
+      "batch": "R2",
+      "depends_on": [
+        "T05",
+        "T06",
+        "L02"
+      ],
+      "topological_level": 13
+    },
+    {
+      "alias": "T09",
+      "issue": "https://github.com/aws-e/adp/issues/9002",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "capacity",
+      "batch": "R2",
+      "depends_on": [
+        "T08",
+        "K03",
+        "N02"
+      ],
+      "topological_level": 13
+    },
+    {
+      "alias": "T13",
+      "issue": "https://github.com/aws-e/adp/issues/9003",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "tracking",
+      "batch": "R2",
+      "depends_on": [
+        "T06"
+      ],
+      "topological_level": 13
+    },
+    {
+      "alias": "R01",
+      "issue": "https://github.com/aws-e/adp/issues/9004",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R1",
+      "depends_on": [
+        "C01",
+        "C02",
+        "C03",
+        "C04",
+        "C05",
+        "C06",
+        "C07",
+        "C08",
+        "A01",
+        "A02",
+        "N01",
+        "N02",
+        "N03",
+        "K01",
+        "K02",
+        "W01",
+        "W02",
+        "W03",
+        "W04",
+        "U01",
+        "U02",
+        "L01",
+        "L02",
+        "M01",
+        "M02",
+        "M03",
+        "K03",
+        "M04"
+      ],
+      "topological_level": 14
+    },
+    {
+      "alias": "T11",
+      "issue": "https://github.com/aws-e/adp/issues/9005",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-experience",
+      "batch": "R2",
+      "depends_on": [
+        "T02",
+        "T03",
+        "T06",
+        "T07"
+      ],
+      "topological_level": 14
+    },
+    {
+      "alias": "T14",
+      "issue": "https://github.com/aws-e/adp/issues/9006",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-runtime",
+      "batch": "R2",
+      "depends_on": [
+        "T05",
+        "T06",
+        "T07"
+      ],
+      "topological_level": 14
+    },
+    {
+      "alias": "R03",
+      "issue": "https://github.com/aws-e/adp/issues/9007",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "R01",
+        "P01",
+        "P04",
+        "P07",
+        "P02",
+        "P05",
+        "P08",
+        "P03",
+        "P06",
+        "P09",
+        "P10",
+        "P11",
+        "P12",
+        "P13",
+        "P14"
+      ],
+      "topological_level": 15
+    },
+    {
+      "alias": "T12",
+      "issue": "https://github.com/aws-e/adp/issues/9008",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "agent-experience",
+      "batch": "R2",
+      "depends_on": [
+        "T03",
+        "T06",
+        "T07",
+        "T11"
+      ],
+      "topological_level": 15
+    },
+    {
+      "alias": "T15",
+      "issue": "https://github.com/aws-e/adp/issues/9009",
+      "kind": "implementation",
+      "size": "M",
+      "stream": "training-experience",
+      "batch": "R2",
+      "depends_on": [
+        "T06",
+        "T07",
+        "T14",
+        "T10"
+      ],
+      "topological_level": 15
+    },
+    {
+      "alias": "V01",
+      "issue": "https://github.com/aws-e/adp/issues/9010",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R1",
+      "depends_on": [
+        "R01"
+      ],
+      "topological_level": 15
+    },
+    {
+      "alias": "V07",
+      "issue": "https://github.com/aws-e/adp/issues/9011",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R1",
+      "depends_on": [
+        "R01",
+        "A02"
+      ],
+      "topological_level": 15
+    },
+    {
+      "alias": "R02",
+      "issue": "https://github.com/aws-e/adp/issues/9012",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R2",
+      "depends_on": [
+        "R01",
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T09",
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T15"
+      ],
+      "topological_level": 16
+    },
+    {
+      "alias": "R04",
+      "issue": "https://github.com/aws-e/adp/issues/9013",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R1",
+      "depends_on": [
+        "V01",
+        "M01",
+        "M02",
+        "M03",
+        "M04"
+      ],
+      "topological_level": 16
+    },
+    {
+      "alias": "V03",
+      "issue": "https://github.com/aws-e/adp/issues/9014",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "R03",
+        "P03",
+        "P10"
+      ],
+      "topological_level": 16
+    },
+    {
+      "alias": "V04",
+      "issue": "https://github.com/aws-e/adp/issues/9015",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "R03",
+        "P06",
+        "P11"
+      ],
+      "topological_level": 16
+    },
+    {
+      "alias": "V05",
+      "issue": "https://github.com/aws-e/adp/issues/9016",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "R03",
+        "P09",
+        "P07"
+      ],
+      "topological_level": 16
+    },
+    {
+      "alias": "V02",
+      "issue": "https://github.com/aws-e/adp/issues/9017",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R2",
+      "depends_on": [
+        "R02"
+      ],
+      "topological_level": 17
+    },
+    {
+      "alias": "V06",
+      "issue": "https://github.com/aws-e/adp/issues/9018",
+      "kind": "operations",
+      "size": "M",
+      "stream": "release-acceptance",
+      "batch": "R3",
+      "depends_on": [
+        "V02",
+        "V04",
+        "T14"
+      ],
+      "topological_level": 18
+    }
+  ],
+  "shared_writer_rules": [
+    "C02 -> C03 -> T01 schema chain",
+    "Serialize shared release writers using maintained locks",
+    "T10 -> T15 shared BatchPanel UI changes",
+    "Do not dispatch existing and new issue for the same implementation"
+  ],
+  "execution_policy": "Delivery owner supplies bounded budget, duration, retries, concurrency and approved target manifests before flow acceptance"
+}

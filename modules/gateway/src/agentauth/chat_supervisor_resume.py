@@ -3,6 +3,7 @@
 from botocore.exceptions import BotoCoreError, ClientError
 
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, ChatLaunchStore
+from src.agentauth.chat_crew_run import CrewRunConflictError, current_crew_store
 from src.agentauth.chat_delivery import load_registered_delivery
 from src.agentauth.chat_history_write import ChatHistoryConflictError
 from src.agentauth.chat_pre_admission_cleanup import recover_bound_cleanup
@@ -49,7 +50,7 @@ def resume_supervisor_turn(authority, capabilities, body, role, bindings, *, now
                     delivery.session_id,
                 ):
                     raise ChatAuthorizationRefusedError("chat predecessor owner changed")
-                if not fence_expired_session(authority, capabilities, owner, now=now):
+                if not fence_expired_session(authority, capabilities, owner, now=now, crew_store=current_crew_store()):
                     return {**response, "state": "session_pending", "session_mode": "persistent"}
                 previous_delivery = load_registered_delivery(authority, owner.run_id, owner.tenant_id)
                 previous = store._read(f"TENANT#{owner.tenant_id}", f"EXEC#{owner.run_id}") or {}
@@ -82,8 +83,26 @@ def resume_supervisor_turn(authority, capabilities, body, role, bindings, *, now
         if "workload_binding" in execution or creation is not None:
             if removed and (execution.get("pod_name") != {"S": body.pod_name} or execution.get("workload_binding") != {"S": body.pod_uid}):
                 raise ChatAuthorizationRefusedError("chat cleanup pod refused")
-            cleanup = recover_bound_cleanup(authority, delivery, pointer, execution, removed=removed, now=now, creation=creation)
+            # A supervisor that watched its reserved pod fail to start names it on resume (#8061);
+            # the name must be the reserved one, the uid is only used when no exit is observable.
+            named_name, named_uid = (None, None) if removed else (getattr(body, "pod_name", None), getattr(body, "pod_uid", None))
+            if named_name is not None and execution.get("pod_name") != {"S": named_name}:
+                raise ChatAuthorizationRefusedError("chat cleanup pod refused")
+            cleanup = recover_bound_cleanup(authority, delivery, pointer, execution, removed=removed, now=now, creation=creation, pod_uid=named_uid)
             if cleanup["removed"]:
+                if creation is not None and "crew_run_id" in creation:
+                    crew_store = current_crew_store()
+                    crew_run_id = creation["crew_run_id"]["S"]
+                    try:
+                        crew_store.revoke_for_lease(
+                            tenant_id=delivery.tenant_id,
+                            session_id=delivery.session_id,
+                            lease_generation=int(creation["crew_lease_generation"]["N"]),
+                            expected_run_id=crew_run_id,
+                        )
+                    except CrewRunConflictError:
+                        if crew_store.read_run(crew_run_id) is not None:
+                            raise ChatHistoryConflictError("crew creation binding changed; retry") from None
                 publish_pre_admission_terminal_delivery(authority, delivery)
             return {**response, **cleanup}
         if removed:
@@ -129,7 +148,24 @@ def resume_supervisor_turn(authority, capabilities, body, role, bindings, *, now
         )
         if launch.session_run_id:
             response.update(session_mode="persistent", session_run_id=launch.session_run_id)
-            if fence_expired_session(authority, capabilities, launch, now=now):
+            creation = store._read(f"CHAT-LAUNCH#{launch.session_run_id}", "CREATION") or {}
+            crew_run_id = creation.get("crew_run_id", {}).get("S")
+            row = current_crew_store().read_run(crew_run_id) if crew_run_id else None
+            if row and row.get("executor_scope") == "user":
+                if (
+                    row.get("kind") != "crew"
+                    or row.get("tenant_id") != launch.tenant_id
+                    or row.get("user_id") != launch.user_id
+                    or row.get("target_kind") != "eks-pod"
+                    or row.get("target_ref") != response["pod_name"]
+                    or row.get("pod_uid") != launch.sandbox_uid
+                    or creation.get("crew_lease_generation") != {"N": str(row.get("lease_generation"))}
+                ):
+                    raise ChatAuthorizationRefusedError("Crew recovery owner changed")
+                response["crew_owner_pod"] = True
+                if launch.run_id == launch.session_run_id and row.get("session_id") == launch.session_id:
+                    response["crew_readiness"] = {"run_id": crew_run_id, "lease_generation": int(row["lease_generation"])}
+            if fence_expired_session(authority, capabilities, launch, now=now, crew_store=current_crew_store()):
                 response["recovery_required"] = True
                 execution = store._read(f"TENANT#{tenant}", f"EXEC#{body.run_id}")
                 checks[1] = {"ConditionCheck": evidence._unchanged(execution)}

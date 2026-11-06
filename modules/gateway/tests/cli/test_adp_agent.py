@@ -19,6 +19,92 @@ RUN = "owned-run"
 ID = "67eb5564-4dce-4fa0-9320-72cf728ca140"
 
 
+def recovery_args(*extra):
+    return args(
+        "recover-exit",
+        "--operation-id",
+        ID,
+        "--expected-attempt",
+        "1",
+        "--expected-credential-epoch",
+        "1",
+        "--expected-workload-uid",
+        ID,
+        "--audit-id",
+        ID,
+        "--audit-at",
+        "2026-10-18T11:44:12Z",
+        *extra,
+    )
+
+
+def recovery_receipt(status="verified", **changes):
+    return {
+        "status": status,
+        "run_id": RUN,
+        "operation_id": ID,
+        "attempt": 1,
+        "credential_epoch": 1,
+        "workload_uid": ID,
+        "audit_id": ID,
+        "outcome": "failed",
+        "registration_generation": None,
+        "request_digest": "a" * 64,
+        "evidence_digest": "b" * 64,
+        "audit_event_id": "provider-event",
+        **changes,
+    }
+
+
+def test_exit_recovery_dry_run_calls_only_evidence_preview():
+    client = Mock()
+    client.post.return_value = recovery_receipt()
+    assert agent.execute(recovery_args("--dry-run"), client)["status"] == "dry_run"
+    assert client.post.call_count == 1
+    assert client.post.call_args.args[0].endswith("/reconcile-exit/preview")
+
+
+@pytest.mark.parametrize("lost", [False, True])
+def test_exit_recovery_validates_receipt_and_reconciles_lost_ack_without_second_intent(lost):
+    client = Mock()
+    client.post.side_effect = [
+        recovery_receipt(),
+        agent.common.CliError("lost", "unknown_mutation_outcome", 4) if lost else recovery_receipt("recovered"),
+    ]
+    client.get.return_value = recovery_receipt("recovered")
+    result = agent.execute(recovery_args("--yes"), client)
+    assert result["status"] == "ok" and result["detail"]["outcome"] == "failed"
+    assert client.post.call_count == 2  # preview and one mutation; never a second mutation
+    if lost:
+        assert client.get.call_args.args[0].endswith("/reconcile-exit/" + ID)
+
+
+def test_exit_recovery_unresolved_ack_is_unknown_and_never_reposted():
+    client = Mock()
+    client.post.side_effect = [recovery_receipt(), agent.common.CliError("lost", "unknown_mutation_outcome", 4)]
+    client.get.side_effect = agent.common.CliError("unavailable", "gateway_unavailable", 4)
+    assert agent.execute(recovery_args("--yes"), client)["detail"]["status"] == "unknown"
+    assert client.post.call_count == 2
+
+
+def test_exit_recovery_foreign_receipt_cannot_claim_success():
+    client = Mock()
+    client.post.side_effect = [recovery_receipt(), recovery_receipt("recovered", request_digest="b" * 64)]
+    with pytest.raises(agent.common.CliError, match="identity did not match"):
+        agent.execute(recovery_args("--yes"), client)
+
+
+@pytest.mark.parametrize("missing", ["evidence_digest", "registration_generation", "audit_event_id"])
+def test_exit_recovery_incomplete_receipt_never_posts_terminal_intent(missing):
+    client = Mock()
+    receipt = recovery_receipt()
+    del receipt[missing]
+    client.post.return_value = receipt
+    with pytest.raises(agent.common.CliError, match="incomplete"):
+        agent.execute(recovery_args("--yes"), client)
+    assert client.post.call_count == 1
+
+
 def args(action, *extra):
     return agent.parser().parse_args([action, "--run", RUN, *extra])
 

@@ -259,8 +259,11 @@ _CACHE_PREFIX = "runbind"
 # ever bound, and no attribution ever published, silently, in every environment
 # (found live during the #4591 smoke). It must travel through the ``#status``
 # alias in _PROJECTION_NAMES below.
-_PROJECTION = "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, #status, arrived_at"
-_PROJECTION_NAMES = {"#status": "status"}
+_PROJECTION = (
+    "user_id, tenant_id, root_human_id, is_human_rooted, correlation_id, #status, arrived_at, #kind, "
+    "lease_expires_at, session_id, lease_generation, executor_scope, expires_at, target_kind, target_ref, deployment_id, host_role_arn"
+)
+_PROJECTION_NAMES = {"#status": "status", "#kind": "kind"}
 
 # The two principal kinds ``root_human_id`` can name. Issue #4337 D4: DERIVED from
 # the row's ``is_human_rooted`` flag, never a new column and never a value any
@@ -296,6 +299,7 @@ class RunBinding:
     # Only authenticated worker middleware supplies an assigned engine flow.
     # Legacy capability lookups must never infer this from an asserted header.
     flow_id: str | None = None
+    session_id: str | None = None
 
     @property
     def root_principal_type(self) -> str:
@@ -495,6 +499,8 @@ class RunBindingResolver:
             # the ingress-write race pin "unknown" for the whole run lifetime,
             # turning a millisecond race into a run-long outage.
             return None
+        if row.get("kind") == "crew":
+            return row
 
         # Issue #4346: `correlation_id` normalizes to "" for chat-originated runs —
         # the chat row writer (agent-factory ingest `invocation_logger`) never writes
@@ -509,6 +515,7 @@ class RunBindingResolver:
             "tenant_id": str(row.get("tenant_id") or ""),
             "root_human_id": str(row.get("root_human_id") or ""),
             "correlation_id": str(row.get("correlation_id") or ""),
+            "session_id": str(row.get("session_id") or ""),
             # Issue #4344: normalized to bool/None here rather than left raw so the
             # value that goes into the cache is the value that comes back out.
             # `json.dumps` round-trips bool and None losslessly; a DDB Decimal or a
@@ -618,6 +625,14 @@ def verify_row_matches_caller(
     row_root_human = str(row.get("root_human_id") or "")
     row_status = str(row.get("status") or "")
 
+    if row.get("kind") == "crew":
+        import time
+
+        if row_status != "active" or int(row.get("expires_at") or 0) <= time.time():
+            raise RunBindingError("terminal_run", "Crew lease is no longer active.")
+        if not row_root_human or row_user != row_root_human or row.get("is_human_rooted") is not True:
+            raise RunBindingError("missing_run_owner", "Crew run owner is invalid.")
+
     # Property 2 (B1): the row is the authority, the caller merely asserts.
     if not row_tenant or row_tenant != caller_org_id:
         raise RunBindingError(
@@ -635,6 +650,7 @@ def verify_row_matches_caller(
     return RunBinding(
         run_id=run_id,
         correlation_id=str(row.get("correlation_id") or ""),
+        session_id=str(row.get("session_id") or "") or None,
         # The SERVER-WRITTEN tenant, not the asserted one. They are equal by the
         # check above, so this is not a behavioural difference today — it is the
         # provenance that matters: everything downstream (the run/chain reservation

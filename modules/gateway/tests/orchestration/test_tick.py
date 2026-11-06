@@ -28,6 +28,7 @@ from sqlalchemy.pool import StaticPool
 from src.orchestration import tick as tick_module
 from src.orchestration.models import (
     DecisionKind,
+    OrchestrationAcceptedPlan,
     OrchestrationDecision,
     OrchestrationEdge,
     OrchestrationFlow,
@@ -131,6 +132,47 @@ async def _state_of(session: AsyncSession, node_id: str) -> str:
 
 class TestReadiness:
     """A pending node moves exactly when its predecessors are satisfied."""
+
+    async def test_named_input_blocks_until_its_accepted_source_is_available(self, session):
+        flow = await _make_flow(session)
+        source = await _make_node(session, flow, node_ref="source")
+        target = await _make_node(session, flow, node_ref="target")
+        source_address = f"{flow.slug}/4191/wave-3/source"
+        target_address = f"{flow.slug}/4191/wave-3/target"
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id=ORG_A,
+                flow_id=flow.id,
+                version=1,
+                plan_hash="a" * 64,
+                plan_document={
+                    "flow_slug": flow.slug,
+                    "title": flow.title,
+                    "org_id": ORG_A,
+                    "spec_revision": "test",
+                    "nodes": [
+                        {"address": source_address, "kind": "story", "title": source.title},
+                        {
+                            "address": target_address,
+                            "kind": "story",
+                            "title": target.title,
+                            "required_inputs": [{"name": "authorized source", "source": f"node:{source_address}"}],
+                        },
+                    ],
+                    "edges": [],
+                },
+            )
+        )
+        await session.flush()
+
+        first = await run_tick(session)
+        assert first.blocked[target.id] == [f"required_input:authorized source:node:{source_address}"]
+        source.state = NodeState.PASSED.value
+        await session.flush()
+
+        second = await run_tick(session)
+        assert second.transitions_effected == 1
+        assert await _state_of(session, target.id) == NodeState.READY.value
 
     async def test_all_predecessors_satisfied_becomes_ready(self, session):
         flow = await _make_flow(session)

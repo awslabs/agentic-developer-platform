@@ -1,0 +1,1947 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ADP Context Model v1 \u2014 proposed bounded snapshot",
+  "description": "Design schema only. Does not establish authorization, source truth, cross-record integrity or production API availability.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "context_snapshot_id": {
+      "$ref": "#/$defs/id"
+    },
+    "tenant_id": {
+      "$ref": "#/$defs/id"
+    },
+    "project_id": {
+      "$ref": "#/$defs/id"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/instant"
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/record"
+      },
+      "maxItems": 1000,
+      "minItems": 2
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relationship"
+      },
+      "maxItems": 5000,
+      "minItems": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "context_snapshot_id",
+    "tenant_id",
+    "project_id",
+    "generated_at",
+    "records",
+    "relationships"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "\\S"
+    },
+    "revision": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/id"
+        }
+      ],
+      "not": {
+        "enum": [
+          "latest",
+          "null"
+        ]
+      }
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 10000,
+      "pattern": "\\S"
+    },
+    "instant": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "date": {
+      "type": "string",
+      "format": "date"
+    },
+    "uri": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "maxLength": 4096
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,6})?$",
+      "maxLength": 32
+    },
+    "principal_ref": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "user",
+            "team",
+            "service"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "record_ref": {
+      "type": "object",
+      "properties": {
+        "tenant_id": {
+          "$ref": "#/$defs/id"
+        },
+        "project_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_connection_id": {
+          "$ref": "#/$defs/id"
+        },
+        "record_type": {
+          "$ref": "#/$defs/id"
+        },
+        "record_id": {
+          "$ref": "#/$defs/id"
+        },
+        "record_revision": {
+          "$ref": "#/$defs/revision"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "project_id",
+        "source_connection_id",
+        "record_type",
+        "record_id",
+        "record_revision"
+      ],
+      "additionalProperties": false
+    },
+    "money": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "$ref": "#/$defs/decimal"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "additionalProperties": false
+    },
+    "work_status": {
+      "type": "string",
+      "enum": [
+        "backlog",
+        "planned",
+        "in_progress",
+        "done",
+        "canceled",
+        "unknown"
+      ]
+    },
+    "approval_status": {
+      "type": "string",
+      "enum": [
+        "proposed",
+        "approved",
+        "rejected",
+        "withdrawn",
+        "unknown"
+      ]
+    },
+    "field_provenance": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/data/[^/]+",
+            "maxLength": 1024
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "inferred",
+            "missing",
+            "conflicting",
+            "not_applicable"
+          ]
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "connector",
+            "derived",
+            "extracted"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/record_ref"
+          },
+          "maxItems": 32,
+          "minItems": 0
+        },
+        "authority_mapping_ref": {
+          "$ref": "#/$defs/record_ref"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/instant"
+        },
+        "stale_after": {
+          "$ref": "#/$defs/instant"
+        },
+        "confirmed_by": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "confirmed_at": {
+          "$ref": "#/$defs/instant"
+        },
+        "override_until": {
+          "$ref": "#/$defs/instant"
+        }
+      },
+      "required": [
+        "paths",
+        "state",
+        "method",
+        "source_refs",
+        "authority_mapping_ref",
+        "observed_at"
+      ],
+      "additionalProperties": false,
+      "dependentRequired": {
+        "confirmed_by": [
+          "confirmed_at"
+        ],
+        "confirmed_at": [
+          "confirmed_by"
+        ],
+        "override_until": [
+          "confirmed_by",
+          "confirmed_at"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "accepted",
+                  "inferred",
+                  "conflicting"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "source_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "cloud_target": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "const": "aws"
+            },
+            "account_id": {
+              "type": "string",
+              "pattern": "^[0-9]{12}$"
+            },
+            "regions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/name"
+              },
+              "maxItems": 50,
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "role_ref": {
+              "$ref": "#/$defs/id"
+            }
+          },
+          "required": [
+            "provider",
+            "account_id",
+            "regions",
+            "role_ref"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "const": "azure"
+            },
+            "subscription_id": {
+              "$ref": "#/$defs/id"
+            },
+            "locations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/name"
+              },
+              "maxItems": 50,
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "provider",
+            "subscription_id",
+            "locations"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "const": "gcp"
+            },
+            "cloud_project_id": {
+              "$ref": "#/$defs/id"
+            },
+            "regions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/name"
+              },
+              "maxItems": 50,
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "provider",
+            "cloud_project_id",
+            "regions"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "product_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "purpose": {
+          "$ref": "#/$defs/text"
+        },
+        "intended_users": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/name"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "starting_point": {
+          "type": "string",
+          "enum": [
+            "idea",
+            "existing_assets",
+            "running_product"
+          ]
+        },
+        "lifecycle_status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "active",
+            "retired"
+          ]
+        },
+        "domain": {
+          "$ref": "#/$defs/name"
+        },
+        "goals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "maxItems": 50,
+          "minItems": 0
+        }
+      },
+      "required": [
+        "name",
+        "purpose",
+        "intended_users",
+        "owner_ref",
+        "starting_point",
+        "lifecycle_status"
+      ],
+      "additionalProperties": false
+    },
+    "project_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "registered",
+            "suspended",
+            "archived"
+          ]
+        },
+        "execution_policy_ref": {
+          "$ref": "#/$defs/record_ref"
+        },
+        "budget_policy_ref": {
+          "$ref": "#/$defs/record_ref"
+        }
+      },
+      "required": [
+        "name",
+        "owner_ref",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "connection_data": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/name"
+        },
+        "namespace": {
+          "$ref": "#/$defs/id"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/name"
+          },
+          "maxItems": 100,
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "health": {
+          "type": "string",
+          "enum": [
+            "unverified",
+            "healthy",
+            "degraded",
+            "revoked"
+          ]
+        },
+        "verified_at": {
+          "$ref": "#/$defs/instant"
+        }
+      },
+      "required": [
+        "provider",
+        "namespace",
+        "capabilities",
+        "health"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "health": {
+                "const": "healthy"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "verified_at"
+            ]
+          }
+        }
+      ]
+    },
+    "repository_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "github",
+            "gitlab",
+            "other"
+          ]
+        },
+        "web_url": {
+          "$ref": "#/$defs/uri"
+        },
+        "default_branch": {
+          "$ref": "#/$defs/name"
+        },
+        "archived": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "provider",
+        "web_url",
+        "archived"
+      ],
+      "additionalProperties": false
+    },
+    "component_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "service",
+            "library",
+            "frontend",
+            "worker",
+            "infrastructure",
+            "other"
+          ]
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "document_data": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "$ref": "#/$defs/name"
+        },
+        "url": {
+          "$ref": "#/$defs/uri"
+        },
+        "content_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "media_type": {
+          "$ref": "#/$defs/name"
+        }
+      },
+      "required": [
+        "title",
+        "url",
+        "content_revision",
+        "media_type"
+      ],
+      "additionalProperties": false
+    },
+    "initiative_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "objective": {
+          "$ref": "#/$defs/text"
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "status": {
+          "$ref": "#/$defs/work_status"
+        }
+      },
+      "required": [
+        "name",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "business_case_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "objective": {
+          "$ref": "#/$defs/text"
+        },
+        "approval_status": {
+          "$ref": "#/$defs/approval_status"
+        },
+        "funding_ref": {
+          "$ref": "#/$defs/record_ref"
+        }
+      },
+      "required": [
+        "name",
+        "approval_status"
+      ],
+      "additionalProperties": false
+    },
+    "work_item_data": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "epic",
+            "story",
+            "task",
+            "bug",
+            "other"
+          ]
+        },
+        "native_type": {
+          "$ref": "#/$defs/name"
+        },
+        "title": {
+          "$ref": "#/$defs/name"
+        },
+        "description": {
+          "$ref": "#/$defs/text"
+        },
+        "description_ref": {
+          "$ref": "#/$defs/record_ref"
+        },
+        "status": {
+          "$ref": "#/$defs/work_status"
+        },
+        "status_native": {
+          "$ref": "#/$defs/name"
+        },
+        "assignee_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "estimate": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/decimal"
+            },
+            "unit": {
+              "type": "string",
+              "enum": [
+                "points",
+                "hours"
+              ]
+            }
+          },
+          "required": [
+            "value",
+            "unit"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "kind",
+        "native_type",
+        "title",
+        "status",
+        "status_native"
+      ],
+      "additionalProperties": false
+    },
+    "release_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "objective": {
+          "$ref": "#/$defs/text"
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "planning_status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "planned",
+            "active",
+            "complete",
+            "canceled",
+            "unknown"
+          ]
+        },
+        "target_date": {
+          "$ref": "#/$defs/date"
+        },
+        "target_at": {
+          "$ref": "#/$defs/instant"
+        },
+        "target_timezone": {
+          "$ref": "#/$defs/name"
+        },
+        "planned_start_date": {
+          "$ref": "#/$defs/date"
+        },
+        "manifest_ref": {
+          "$ref": "#/$defs/record_ref"
+        },
+        "published_at": {
+          "$ref": "#/$defs/instant"
+        }
+      },
+      "required": [
+        "name",
+        "planning_status"
+      ],
+      "additionalProperties": false,
+      "not": {
+        "required": [
+          "target_date",
+          "target_at"
+        ]
+      }
+    },
+    "allocation_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "target_ref": {
+          "$ref": "#/$defs/record_ref"
+        },
+        "amount": {
+          "$ref": "#/$defs/money"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "ai",
+            "cloud",
+            "other"
+          ]
+        },
+        "period_start": {
+          "$ref": "#/$defs/date"
+        },
+        "period_end": {
+          "$ref": "#/$defs/date"
+        },
+        "approval_status": {
+          "$ref": "#/$defs/approval_status"
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "parent_allocation_ref": {
+          "$ref": "#/$defs/record_ref"
+        },
+        "enforcement_policy_ref": {
+          "$ref": "#/$defs/record_ref"
+        }
+      },
+      "required": [
+        "name",
+        "target_ref",
+        "amount",
+        "category",
+        "period_start",
+        "period_end",
+        "approval_status",
+        "owner_ref"
+      ],
+      "additionalProperties": false
+    },
+    "environment_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "environment_class": {
+          "type": "string",
+          "enum": [
+            "development",
+            "test",
+            "staging",
+            "production",
+            "other"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "aws",
+            "azure",
+            "gcp",
+            "on_premises",
+            "other"
+          ]
+        },
+        "connection_ref": {
+          "$ref": "#/$defs/record_ref"
+        },
+        "cloud_target": {
+          "$ref": "#/$defs/cloud_target"
+        }
+      },
+      "required": [
+        "name",
+        "environment_class",
+        "provider"
+      ],
+      "additionalProperties": false,
+      "dependentRequired": {
+        "cloud_target": [
+          "connection_ref"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "aws"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cloud_target": {
+                "properties": {
+                  "provider": {
+                    "const": "aws"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "azure"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cloud_target": {
+                "properties": {
+                  "provider": {
+                    "const": "azure"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "gcp"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cloud_target": {
+                "properties": {
+                  "provider": {
+                    "const": "gcp"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "on_premises",
+                  "other"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "cloud_target"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "record": {
+      "type": "object",
+      "properties": {
+        "tenant_id": {
+          "$ref": "#/$defs/id"
+        },
+        "project_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_connection_id": {
+          "$ref": "#/$defs/id"
+        },
+        "record_id": {
+          "$ref": "#/$defs/id"
+        },
+        "record_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "record_type": {
+          "type": "string",
+          "enum": [
+            "product",
+            "project",
+            "connection",
+            "repository",
+            "component",
+            "document",
+            "initiative",
+            "business_case",
+            "work_item",
+            "release",
+            "allocation",
+            "environment",
+            "program",
+            "contribution",
+            "coordination_milestone",
+            "portfolio"
+          ]
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/instant"
+        },
+        "source_url": {
+          "$ref": "#/$defs/uri"
+        },
+        "data": {
+          "type": "object"
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field_provenance"
+          },
+          "maxItems": 200,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "tenant_id",
+        "project_id",
+        "source_connection_id",
+        "record_id",
+        "record_revision",
+        "record_type",
+        "recorded_at",
+        "data",
+        "provenance"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "product"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/product_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "project"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/project_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "connection"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/connection_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "repository"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/repository_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "component"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/component_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "document"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/document_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "initiative"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/initiative_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "business_case"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/business_case_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "work_item"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/work_item_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "release"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/release_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "allocation"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/allocation_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "environment"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/environment_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "program"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/program_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "contribution"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/contribution_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "coordination_milestone"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/coordination_milestone_data"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "portfolio"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/portfolio_data"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "relationship": {
+      "type": "object",
+      "properties": {
+        "relationship_id": {
+          "$ref": "#/$defs/id"
+        },
+        "relationship_type": {
+          "type": "string",
+          "enum": [
+            "product_project",
+            "product_work",
+            "product_initiative",
+            "initiative_work",
+            "business_case_funds",
+            "project_repository",
+            "project_environment",
+            "project_connection",
+            "project_document",
+            "component_repository",
+            "component_environment",
+            "component_depends_on",
+            "work_parent",
+            "work_depends_on",
+            "product_release",
+            "release_targets_environment",
+            "release_plans_work",
+            "release_delivers_work",
+            "work_pr",
+            "pr_commit",
+            "commit_artifact",
+            "release_deployment",
+            "deployment_artifact",
+            "deployment_environment",
+            "work_test",
+            "program_initiative",
+            "contribution_work",
+            "contribution_depends_on",
+            "milestone_release",
+            "work_story_revision",
+            "portfolio_product"
+          ]
+        },
+        "from_ref": {
+          "$ref": "#/$defs/record_ref"
+        },
+        "to_ref": {
+          "$ref": "#/$defs/record_ref"
+        },
+        "valid_from": {
+          "$ref": "#/$defs/instant"
+        },
+        "valid_to": {
+          "$ref": "#/$defs/instant"
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/instant"
+        },
+        "mapping_version": {
+          "$ref": "#/$defs/revision"
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/record_ref"
+          },
+          "maxItems": 32,
+          "minItems": 1
+        },
+        "milestone_requirement": {
+          "$ref": "#/$defs/milestone_requirement"
+        },
+        "source_connection_id": {
+          "$ref": "#/$defs/id"
+        },
+        "relationship_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "supersedes_revision": {
+          "$ref": "#/$defs/revision"
+        }
+      },
+      "required": [
+        "relationship_id",
+        "relationship_type",
+        "from_ref",
+        "to_ref",
+        "valid_from",
+        "recorded_at",
+        "mapping_version",
+        "source_refs",
+        "source_connection_id",
+        "relationship_revision"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "relationship_type": {
+                "const": "milestone_release"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "milestone_requirement"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "milestone_requirement"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "relationship_type": {
+                "const": "program_initiative"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "type": "string",
+                        "enum": [
+                          "program"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "to_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "type": "string",
+                        "enum": [
+                          "initiative"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "relationship_type": {
+                "const": "contribution_work"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "type": "string",
+                        "enum": [
+                          "contribution"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "to_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "type": "string",
+                        "enum": [
+                          "work_item"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "relationship_type": {
+                "const": "contribution_depends_on"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "type": "string",
+                        "enum": [
+                          "contribution"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "to_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "type": "string",
+                        "enum": [
+                          "contribution"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "relationship_type": {
+                "const": "milestone_release"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "type": "string",
+                        "enum": [
+                          "coordination_milestone"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "to_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "type": "string",
+                        "enum": [
+                          "release"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "relationship_type": {
+                "const": "work_story_revision"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "const": "work_item"
+                      }
+                    }
+                  }
+                ]
+              },
+              "to_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "const": "story_revision"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "relationship_type": {
+                "const": "portfolio_product"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "const": "portfolio"
+                      }
+                    }
+                  }
+                ]
+              },
+              "to_ref": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/record_ref"
+                  },
+                  {
+                    "properties": {
+                      "record_type": {
+                        "const": "product"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "program_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "objective": {
+          "$ref": "#/$defs/text"
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "status": {
+          "$ref": "#/$defs/work_status"
+        },
+        "planned_start_date": {
+          "$ref": "#/$defs/date"
+        },
+        "target_date": {
+          "$ref": "#/$defs/date"
+        }
+      },
+      "required": [
+        "name",
+        "objective",
+        "owner_ref",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "contribution_data": {
+      "type": "object",
+      "properties": {
+        "initiative_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record_ref"
+            },
+            {
+              "properties": {
+                "record_type": {
+                  "type": "string",
+                  "enum": [
+                    "initiative"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "product_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record_ref"
+            },
+            {
+              "properties": {
+                "record_type": {
+                  "type": "string",
+                  "enum": [
+                    "product"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "objective": {
+          "$ref": "#/$defs/text"
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "valid_from": {
+          "$ref": "#/$defs/instant"
+        },
+        "valid_to": {
+          "$ref": "#/$defs/instant"
+        },
+        "planned_start_date": {
+          "$ref": "#/$defs/date"
+        },
+        "target_date": {
+          "$ref": "#/$defs/date"
+        }
+      },
+      "required": [
+        "initiative_ref",
+        "product_ref",
+        "objective",
+        "owner_ref",
+        "valid_from"
+      ],
+      "additionalProperties": false
+    },
+    "coordination_milestone_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "scope_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record_ref"
+            },
+            {
+              "properties": {
+                "record_type": {
+                  "type": "string",
+                  "enum": [
+                    "program",
+                    "initiative"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "planning_status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "planned",
+            "canceled"
+          ]
+        },
+        "target_date": {
+          "$ref": "#/$defs/date"
+        },
+        "target_at": {
+          "$ref": "#/$defs/instant"
+        },
+        "target_timezone": {
+          "$ref": "#/$defs/name"
+        },
+        "requirements_revision": {
+          "$ref": "#/$defs/revision"
+        }
+      },
+      "required": [
+        "name",
+        "scope_ref",
+        "owner_ref",
+        "planning_status"
+      ],
+      "additionalProperties": false,
+      "not": {
+        "required": [
+          "target_date",
+          "target_at"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "planning_status": {
+                "const": "planned"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "requirements_revision"
+            ],
+            "anyOf": [
+              {
+                "required": [
+                  "target_date",
+                  "target_timezone"
+                ]
+              },
+              {
+                "required": [
+                  "target_at"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "milestone_requirement": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "published",
+            "deployed"
+          ]
+        },
+        "environment_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record_ref"
+            },
+            {
+              "properties": {
+                "record_type": {
+                  "type": "string",
+                  "enum": [
+                    "environment"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "requirements_revision": {
+          "$ref": "#/$defs/revision"
+        }
+      },
+      "required": [
+        "required",
+        "outcome",
+        "requirements_revision"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "deployed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "environment_ref"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "environment_ref"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "portfolio_data": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "objective": {
+          "$ref": "#/$defs/text"
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/principal_ref"
+        },
+        "lifecycle_status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "active",
+            "retired"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "owner_ref",
+        "lifecycle_status"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

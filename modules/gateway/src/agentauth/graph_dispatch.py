@@ -23,7 +23,7 @@ from src.agentauth.waves import load_issue_wave, successor_ready, validate_wave_
 from src.orchestration.dispatch import dispatch_node, graph_address
 from src.orchestration.execution_policy import Action
 from src.orchestration.genesis import resolve_engine_genesis
-from src.orchestration.models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
+from src.orchestration.models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationEdge, OrchestrationFlow, OrchestrationNode
 from src.orchestration.state import ActorKind, NodeState
 
 
@@ -160,7 +160,44 @@ async def _coordinator_anchor(session, *, grant, node_id):
     return anchor
 
 
-async def _lock_assignment(session, *, grant, issue):
+async def _predecessors_passed(session, *, grant, node):
+    source_ids = list(
+        await session.scalars(
+            select(OrchestrationEdge.from_node_id)
+            .where(
+                OrchestrationEdge.org_id == grant.tenant_id,
+                OrchestrationEdge.flow_id == grant.flow_id,
+                OrchestrationEdge.to_node_id == node.id,
+            )
+            .with_for_update()
+        )
+    )
+    if not source_ids:
+        return True
+    predecessors = list(
+        await session.scalars(
+            select(OrchestrationNode)
+            .where(
+                OrchestrationNode.id.in_(source_ids),
+                OrchestrationNode.org_id == grant.tenant_id,
+                OrchestrationNode.flow_id == grant.flow_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    return len(predecessors) == len(set(source_ids)) and all(source.state == NodeState.PASSED.value for source in predecessors)
+
+
+async def _wave_has_ready_story(session, *, grant, nodes):
+    for member in nodes:
+        if member.kind == NodeKind.STORY.value and member.state == NodeState.READY.value:
+            if await _predecessors_passed(session, grant=grant, node=member):
+                return True
+    return False
+
+
+async def _lock_assignment(session, *, grant, issue, repo):
     flow = (
         await session.execute(
             select(OrchestrationFlow)
@@ -186,18 +223,37 @@ async def _lock_assignment(session, *, grant, issue):
             )
         ).scalars()
     )
-    if len(nodes) != 1:
-        raise BootstrapRefusedError("no unique eligible story assignment")
-    return flow, nodes[0]
+    qualified = [node for node in nodes if node.repository_identity is not None or node.provider_repository_id is not None]
+    if qualified:
+        from src.orchestration.accepted_node import accepted_node_contract
+
+        if len(qualified) != len(nodes):
+            raise BootstrapRefusedError("no unique eligible story assignment")
+        matching = [node for node in qualified if node.repository_identity == repo]
+        if len(matching) != 1:
+            raise BootstrapRefusedError("no unique eligible story assignment")
+        contract = await accepted_node_contract(session, matching[0])
+        if (
+            contract is None
+            or contract.node.repository_identity != repo
+            or contract.node.provider_repository_id != matching[0].provider_repository_id
+            or contract.node.issue_ref != matching[0].issue_ref
+            or not matching[0].provider_repository_id
+            or (contract.node.repository_connection.model_dump() if contract.node.repository_connection else None)
+            != matching[0].repository_connection
+        ):
+            raise BootstrapRefusedError("accepted story repository changed")
+        return flow, matching[0]
+    raise BootstrapRefusedError("no unique eligible story assignment")
 
 
-async def dispatch_graph(*, service, session_factory, body, credential_token, workload_binding, configured_repo):
+async def dispatch_graph(*, service, session_factory, body, credential_token, workload_binding):
     caller = service.policy.resolve_caller(credential_token)
     grant = await run_in_threadpool(
         service.store.live_grant, invocation_id=caller.invocation_id, tenant_id=caller.tenant_id, attempt=caller.attempt, now=service.now()
     )
-    if not configured_repo or body.target.repo != configured_repo or configured_repo not in grant.repo_scope:
-        raise BootstrapRefusedError("workflow repository is not configured for this dispatch")
+    if body.target.repo not in grant.repo_scope:
+        raise BootstrapRefusedError("workflow repository is outside delegated scope")
     parent = await run_in_threadpool(service.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
     request_key = envelope_digest({"principal": caller.principal, "request_id": body.request_id})
     receipt_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"adp-graph-dispatch:{caller.tenant_id}:{request_key}"))
@@ -220,9 +276,20 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
             if coordinates:
                 receipt_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"adp-wave-launch:{grant.tenant_id}:{mapping['receipt_id']}"))
         elif body.persona in {"developer", "reviewer"}:
-            flow, node = await _lock_assignment(session, grant=grant, issue=body.target.issue)
+            flow, node = await _lock_assignment(session, grant=grant, issue=body.target.issue, repo=body.target.repo)
         else:
             raise BootstrapRefusedError("unsupported workflow persona")
+        if not node.repository_identity and not (mapping and mapping.get("provider_repository_id")):
+            raise BootstrapRefusedError("workflow repository identity is unresolved")
+        if node.repository_identity and node.repository_identity != body.target.repo:
+            raise BootstrapRefusedError("wave repository does not match accepted assignment")
+        from src.orchestration.policy_admission import load_in_force_policy
+
+        inputs = await load_in_force_policy(session, org_id=grant.tenant_id, flow_id=grant.flow_id)
+        if inputs.refusal is not None:
+            raise PolicyError(409, f"execution policy refused: {inputs.refusal.reason.value}")
+        if inputs.policy is not None and body.target.repo not in inputs.policy.repository_ids:
+            raise BootstrapRefusedError("workflow repository is outside accepted policy")
         await validate_engine_authority(session=session, execution=parent or {}, grant=grant, store=service.store)
         if parent.get("wave_coordinator") == {"BOOL": True}:
             own, _, own_nodes, own_eval = await validate_wave_coordinator(session=session, execution=parent, grant=grant, store=service.store)
@@ -249,6 +316,8 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
                 coordinator_anchor_id = own_eval.id
         if not parent.get("coordinator_flow_id") and (body.persona != "reviewer" or parent.get("orchestration_node_id") != {"S": node.id}):
             raise BootstrapRefusedError("dispatch is outside the assigned story")
+        if not coordinates and not await _predecessors_passed(session, grant=grant, node=node):
+            raise BootstrapRefusedError("workflow predecessor or gate is not satisfied")
         receipt = (
             await session.execute(
                 select(OrchestrationDecision).where(
@@ -272,7 +341,7 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
             attempt = metadata["node_attempt"]
         else:
             if coordinates:
-                if not any(n.kind == NodeKind.STORY.value and n.state == NodeState.READY.value for n in nodes):
+                if not await _wave_has_ready_story(session, grant=grant, nodes=nodes):
                     raise BootstrapRefusedError("wave has no eligible work")
             elif node.state != (NodeState.RUNNING.value if body.persona == "reviewer" else NodeState.READY.value):
                 raise BootstrapRefusedError("node is not eligible for this persona")
@@ -284,6 +353,20 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
             graph_address(node, flow_slug=flow.slug),
             wave_key(grant.flow_id, mapping["epic_ref"], mapping["wave_ref"]) if mapping else None,
             coordinates,
+            repository_id=(
+                mapping["provider_repository_id"]
+                if mapping and mapping.get("provider_repository_id")
+                else node.provider_repository_id
+                if node.kind == NodeKind.STORY.value and node.repository_identity
+                else None
+            ),
+            installation_id=(
+                mapping["installation_id"]
+                if mapping and mapping.get("provider_repository_id")
+                else node.repository_connection["installation_id"]
+                if node.kind == NodeKind.STORY.value and node.repository_identity
+                else None
+            ),
         )
         if body.persona == "reviewer":
             from src.orchestration.review_dispatch import review_dispatch_expectation
@@ -295,7 +378,7 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
                 node=node,
                 attempt=attempt,
                 reviewer_run_id=reviewer_run_id,
-                installation_id=int(parent.get("installation_id", {}).get("N", "0")),
+                installation_id=graph.installation_id or int(parent.get("installation_id", {}).get("N", "0")),
                 repo=body.target.repo,
             )
             graph = replace(graph, review_expect=review_expect)
@@ -363,11 +446,20 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
     # between this validation and the queue send. Bootstrap revalidates on arrival.
     async with session_factory() as session:
         if mapping:
-            await load_issue_wave(
+            loaded = await load_issue_wave(
                 service=service, session=session, tenant_id=grant.tenant_id, flow_id=grant.flow_id, repo=body.target.repo, issue=body.target.issue
             )
+            if loaded is None or loaded[0] != mapping:
+                raise BootstrapRefusedError("wave assignment changed before publication")
+            if coordinates and command.get("publish_state") != {"S": "published"}:
+                if not await _wave_has_ready_story(session, grant=grant, nodes=loaded[2]):
+                    raise BootstrapRefusedError("wave has no eligible work")
+            elif not coordinates and not await _predecessors_passed(session, grant=grant, node=loaded[3]):
+                raise BootstrapRefusedError("workflow predecessor or gate is not satisfied")
         else:
-            _, node = await _lock_assignment(session, grant=grant, issue=body.target.issue)
+            _, node = await _lock_assignment(session, grant=grant, issue=body.target.issue, repo=body.target.repo)
+            if not await _predecessors_passed(session, grant=grant, node=node):
+                raise BootstrapRefusedError("workflow predecessor or gate is not satisfied")
         execution = await run_in_threadpool(service.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{command['invocation_id']['S']}")
         await validate_engine_authority(session=session, execution=execution, grant=grant, store=service.store)
         if body.persona == "reviewer":
@@ -377,7 +469,7 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
                 node=node,
                 attempt=graph.attempt,
                 reviewer_run_id=command["invocation_id"]["S"],
-                installation_id=int(execution.get("installation_id", {}).get("N", "0")),
+                installation_id=graph.installation_id or int(execution.get("installation_id", {}).get("N", "0")),
                 repo=body.target.repo,
             )
             graph = replace(graph, review_expect=review_expect)

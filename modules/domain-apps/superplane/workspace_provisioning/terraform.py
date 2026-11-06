@@ -115,7 +115,20 @@ def require_owned_networking(config):
         )
 
 
-def prepare(operation, context, config, request, account_id, process, *, destroy=False):
+def prepare(
+    operation,
+    context,
+    config,
+    request,
+    account_id,
+    process,
+    *,
+    destroy=False,
+    daily_budget_micros=None,
+    partial_repair=None,
+):
+    if partial_repair is not None and destroy:
+        raise LifecycleRefused("partial repair cannot prepare workspace retirement")
     require_owned_networking(config)
     lease = operation.grant.lease
     target = {
@@ -165,12 +178,20 @@ def prepare(operation, context, config, request, account_id, process, *, destroy
             "--terraform-binary",
             config["binaries"]["terraform"],
             *(["--destroy"] if destroy else []),
+            *(["--review-only"] if partial_repair is not None else []),
         ],
         timeout=operation.max_runtime_seconds,
     )
     inventory = json.loads((output / "workspace-inventory.json").read_text())
     estimate = json.loads((output / "workspace-estimate.json").read_text())
-    if inventory["destructive_addresses"] and not destroy:
+    repair_review = None
+    if partial_repair is not None:
+        from .partial_apply_plan import repair_changes
+
+        repair_review = repair_changes(
+            json.loads((output / "workspace-plan.json").read_text()), partial_repair
+        )
+    if inventory["destructive_addresses"] and not destroy and repair_review is None:
         raise LifecycleRefused(
             "workspace provisioning cannot approve destructive infrastructure changes"
         )
@@ -180,12 +201,16 @@ def prepare(operation, context, config, request, account_id, process, *, destroy
         * Decimal(24)
         / Decimal(730)
     )
-    if not destroy and fixed_daily_micros > int(
-        operation.request.parameters["lifecycle_allocation_max_cost_micros"]
-    ):
-        raise LifecycleRefused(
-            "prepared infrastructure exceeds the admitted daily cost limit"
+    if not destroy:
+        limit = (
+            int(operation.request.parameters["lifecycle_allocation_max_cost_micros"])
+            if daily_budget_micros is None
+            else daily_budget_micros
         )
+        if fixed_daily_micros > limit:
+            raise LifecycleRefused(
+                "prepared infrastructure exceeds the admitted daily cost limit"
+            )
     files = (
         "workspace.tfplan",
         "workspace-plan.json",
@@ -200,7 +225,16 @@ def prepare(operation, context, config, request, account_id, process, *, destroy
     if source_digest(module) != source_revision:
         raise LifecycleRefused("workspace source changed while preparing the plan")
     return target, {
-        "next_phase": "retire-workspace" if destroy else "apply-infrastructure",
+        "next_phase": "partial-apply-repair"
+        if repair_review is not None
+        else "retire-workspace"
+        if destroy
+        else "apply-infrastructure",
+        **(
+            {"partial_repair": {"snapshot": partial_repair, "changes": repair_review}}
+            if repair_review is not None
+            else {}
+        ),
         "files": hashes,
         "module_sha256": source_revision,
         "plan_file_sha256": hashes["workspace.tfplan"],

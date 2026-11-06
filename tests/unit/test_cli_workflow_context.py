@@ -27,6 +27,8 @@ def fixture(monkeypatch):
         ADP_CHECKOUT_SHA=sha,
         GITHUB_WORKFLOW_SHA=sha,
         GITHUB_REF="refs/heads/main",
+        GITHUB_REPOSITORY="aws-e/adp",
+        GITHUB_WORKFLOW_REF="aws-e/adp/.github/workflows/eval-cli-uplift.yml@refs/heads/main",
         GITHUB_REPOSITORY_ID="123",
         GITHUB_RUN_ID="12",
         GITHUB_RUN_ATTEMPT="1",
@@ -63,6 +65,23 @@ def test_verified_context_contains_no_transport_inputs(monkeypatch):
     assert result["source_revision"] == result["workflow_revision"] == "a" * 40
     assert result["resource_kind"] == "cli-evaluation"
     assert not any(key.startswith("adp_") for key in result["inputs"])
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        "aws-e/adp/.github/workflows/gateway-deploy.yml@refs/heads/main",
+        "aws-e/adp/.github/workflows/adp-regression.yml@refs/heads/main",
+        "other/repo/.github/workflows/eval-cli-uplift.yml@refs/heads/main",
+        "aws-e/adp/.github/workflows/eval-cli-uplift.yml@refs/heads/topic",
+        "",
+    ],
+)
+def test_parent_workflow_cannot_publish_direct_knowledge_context(monkeypatch, caller):
+    env, inputs = fixture(monkeypatch)
+    env["GITHUB_WORKFLOW_REF"] = caller
+    with pytest.raises(ValueError, match="direct CLI workflow"):
+        workflow_context.build_context(env, inputs, "123456789012")
 
 
 @pytest.mark.parametrize(

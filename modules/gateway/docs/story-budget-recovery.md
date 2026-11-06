@@ -24,17 +24,25 @@ Receipt recovery also runs on the existing policy admission path for continuing
 nodes. Model authorization and observation remain read-only. This is recovery on
 admission, not a periodic billing sweep or provider receipt retrieval service.
 
+Recovery also repairs the receipt's exact run and chain counters before clearing
+its flow marker. If the original SQL write failed, the existing S3 usage tracker
+can restore that row and its scope links from gateway-authored evidence. See
+[Responses reservations and settlement recovery](responses-budget-reservations.md)
+for request estimates, transient SQL retries and the usage-only fallback.
+
 ## Limits
 
 - Failure alone is not proof of worker exit. A failed node with a live or
   unverified execution retains its admission hold.
-- Calls without trusted usage receipts retain their original estimate. Existing
+- Calls without trusted usage receipts retain conservative exposure. Existing
   receipts without scope evidence are not retroactively trusted. The change does
   not infer zero cost, refund historical unknown calls, or raise the delivery cap.
-- Redis updates are atomic and preserve the original request deadline. They do not
-  recreate missing meters, renew accounting lifetimes, or remove expired/unbounded
+- Flow retention maintenance extends existing charge deadlines through the
+  accepted lifetime before reconciliation or new model spending. It preserves
+  pending receipt deadlines and unknown markers, and cannot recreate a missing
+  meter. A late finalizer cannot erase an expired charge from initialized
   accounting. Actual cost above the estimate still counts in full and can block
-  admission.
+  admission. Other reservation scopes retain their existing expiry semantics.
 - The receipt lookup uses tenant and request identity and checks the exact flow
   scope before applying a cost. Legacy receipts cannot starve later recoverable
   requests behind a fixed result limit.

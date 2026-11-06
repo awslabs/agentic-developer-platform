@@ -315,6 +315,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * than left `undefined`, so a caller cannot accidentally distinguish "absent"
  * from "not provided by this server version" when the distinction is meaningless.
  */
+function parseProvisioningProgress(raw: unknown): WorkspaceSummary['provisioning_progress'] {
+  if (!isRecord(raw) || !Array.isArray(raw.steps) || raw.steps.length === 0 || raw.steps.length > 20 ||
+      typeof raw.message !== 'string' || typeof raw.observed_at !== 'string' ||
+      !Number.isFinite(Date.parse(raw.observed_at)) ||
+      !(raw.current_step === null || typeof raw.current_step === 'string')) return null;
+  const states = ['pending', 'running', 'waiting', 'completed', 'failed', 'paused', 'unknown'];
+  if (!raw.steps.every((step) => isRecord(step) && typeof step.id === 'string' &&
+      typeof step.label === 'string' && states.includes(step.state as string))) return null;
+  const steps = raw.steps as NonNullable<WorkspaceSummary['provisioning_progress']>['steps'];
+  if (new Set(steps.map((step) => step.id)).size !== steps.length ||
+      raw.total !== steps.length || raw.completed !== steps.filter((step) => step.state === 'completed').length ||
+      (raw.current_step !== null && !steps.some((step) => step.id === raw.current_step))) return null;
+  return { steps, completed: raw.completed as number, total: raw.total as number,
+    current_step: raw.current_step as string | null, message: raw.message, observed_at: raw.observed_at };
+}
+
 export function parseWorkspace(raw: unknown): WorkspaceSummary | null {
   if (!isRecord(raw)) return null;
   const id = raw.id;
@@ -325,12 +341,19 @@ export function parseWorkspace(raw: unknown): WorkspaceSummary | null {
   }
   return {
     id,
+    provisioning_progress: parseProvisioningProgress(raw.provisioning_progress),
     org_id: typeof raw.org_id === 'string' ? raw.org_id : '',
     name,
     display_name: typeof raw.display_name === 'string' ? raw.display_name : name,
     isolation_mode: typeof raw.isolation_mode === 'string' ? raw.isolation_mode : '',
     status,
     is_default: raw.is_default === true,
+    account_id: typeof raw.account_id === 'string' ? raw.account_id : null,
+    requested_region: typeof raw.requested_region === 'string' ? raw.requested_region : null,
+    cluster_name: typeof raw.cluster_name === 'string' ? raw.cluster_name : null,
+    cluster_region: typeof raw.cluster_region === 'string' ? raw.cluster_region : null,
+    cloud_provider: typeof raw.cloud_provider === 'string' ? raw.cloud_provider : null,
+    cluster_id: typeof raw.cluster_id === 'string' ? raw.cluster_id : null,
     cluster_health: typeof raw.cluster_health === 'string' ? raw.cluster_health : null,
     last_heartbeat: typeof raw.last_heartbeat === 'string' ? raw.last_heartbeat : null,
     created_at: typeof raw.created_at === 'string' ? raw.created_at : '',
@@ -864,6 +887,7 @@ export function parseApproval(raw: unknown): OperationApproval | null {
   return {
     approval_id: raw.approval_id, workspace_id: raw.workspace_id,
     result: raw.result as OperationApproval['result'], can_decide: raw.can_decide === true,
+    requires_distinct_approver: raw.requires_distinct_approver !== false,
     action: typeof request.action === 'string' ? request.action : 'not reported', target,
     plan_digest: typeof raw.plan_digest === 'string' ? raw.plan_digest : '',
     expires_at: typeof raw.expires_at === 'string' ? raw.expires_at : '', revoked: raw.revoked === true,
@@ -966,6 +990,7 @@ export function parseOperationReceipt(raw: unknown): OperationReceipt | null {
   return {
     operationId: typeof operationId === 'string' && operationId ? operationId : null,
     idempotencyKey: requestId,
+    version: typeof raw.version === 'number' && Number.isSafeInteger(raw.version) && raw.version > 0 ? raw.version : undefined,
     state: parseOperationState(raw.state),
     workspaceId: typeof raw.workspace_id === 'string' && raw.workspace_id ? raw.workspace_id : null,
     phase: typeof raw.phase === 'string' ? raw.phase : null,
@@ -1033,4 +1058,17 @@ export function revokeConnection(
     // empty response to `{}`, so success is not inferred from response content.
     () => ({ revoked: true }) as const,
   );
+}
+
+
+export type ControlPlaneHealth = { status: string; observed_at: string };
+
+export function getControlPlaneHealth(guard: ScopeGuard): Promise<Outcome<ControlPlaneHealth>> {
+  return call(guard, 'controlPlaneHealth', {}, undefined, (raw) => {
+    if (!raw || typeof raw !== 'object') return null;
+    const value = raw as Record<string, unknown>;
+    return typeof value.status === 'string' && typeof value.observed_at === 'string' &&
+      Number.isFinite(Date.parse(value.observed_at))
+      ? { status: value.status, observed_at: value.observed_at } : null;
+  });
 }

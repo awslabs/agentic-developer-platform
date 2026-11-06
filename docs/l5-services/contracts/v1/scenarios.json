@@ -1,0 +1,22 @@
+[
+  {"id":"scope-current","kind":"scope","tenant":"example-team","project":"project-example","source_tenant":"example-team","source_project":"project-example","revoked":false,"expected":true},
+  {"id":"scope-foreign-tenant","kind":"scope","tenant":"example-team","project":"project-example","source_tenant":"other-team","source_project":"project-example","revoked":false,"expected":false},
+  {"id":"scope-foreign-project","kind":"scope","tenant":"example-team","project":"project-example","source_tenant":"example-team","source_project":"other-project","revoked":false,"expected":false},
+  {"id":"scope-revoked-history","kind":"scope","tenant":"example-team","project":"project-example","source_tenant":"example-team","source_project":"project-example","revoked":true,"expected":false},
+  {"id":"pinned-source","kind":"pin","admitted_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","materialized_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected":true},
+  {"id":"worker-cannot-repin","kind":"pin","admitted_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","materialized_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","expected":false},
+  {"id":"unknown-not-retryable","kind":"retry","state":"outcome_unknown","no_effect_proven":false,"expected":false},
+  {"id":"failed-not-necessarily-retryable","kind":"retry","state":"failed","no_effect_proven":false,"expected":false},
+  {"id":"proven-no-effect-retry","kind":"retry","state":"failed","no_effect_proven":true,"expected":true},
+  {"id":"configuration-refresh","kind":"lifecycle","entity":"Configuration","owner":"configuration_api","states":["draft","needs_input","ready"],"provider_submits":0,"binding_deleted":false},
+  {"id":"setup-before-ready","kind":"lifecycle","entity":"Operation","owner":"setup_worker","states":["accepted","running","waiting","succeeded"],"provider_submits":0,"binding_deleted":false},
+  {"id":"unknown-create-reconciliation","kind":"lifecycle","entity":"Binding","owner":"setup_worker","states":["provisioning","outcome_unknown","ready"],"provider_submits":0,"binding_deleted":false},
+  {"id":"bounded-assessment","kind":"lifecycle","entity":"Run","owner":"execution_worker","states":["admitted","materializing","queued","submitting","running","collecting","succeeded"],"provider_submits":1,"binding_deleted":false,"run_id":"run-a","binding_id":"binding-example","admitted_input":{"configuration_revision":7,"binding_generation":1,"source_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","binding_id":"binding-example"},"input_hash":"b33c71ec5187b93af63fe2fcb4717f0e7357a969a83c9df18b86386252674785"},
+  {"id":"assessment-after-source-update","kind":"lifecycle","entity":"Run","owner":"execution_worker","states":["admitted","materializing","queued","submitting","running","collecting","succeeded"],"provider_submits":1,"binding_deleted":false,"run_id":"run-b","binding_id":"binding-example","admitted_input":{"configuration_revision":8,"binding_generation":1,"source_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","binding_id":"binding-example"},"input_hash":"a249a6d10cfce1a980f882437ad4a18085cbe793237d0d75b29d4b09eee381c6"},
+  {"id":"publication-recovery","kind":"lifecycle","entity":"Publication","owner":"publication_worker","states":["pending","publishing","retry_wait","publishing","published"],"provider_submits":0,"binding_deleted":false,"run_id":"run-a","fault":"consumer_timeout","result_version":1},
+  {"id":"binding-revoked","kind":"lifecycle","entity":"Binding","owner":"lifecycle_api","states":["ready","suspended"],"provider_submits":0,"binding_deleted":false},
+  {"id":"SCN-01","kind":"contract_fixture","fixture":"security-fixtures.json","selector":"test_security_contracts"},
+  {"id":"SCN-02","kind":"contract_fixture","fixture":"lifecycle-fixtures.json","selector":"test_lifecycle_boundaries"},
+  {"id":"SCN-03","kind":"contract_fixture","fixture":"compatibility-fixtures.json","selector":"test_compatibility_fixtures"},
+  {"id":"revocation-invalidation","kind":"lifecycle","entity":"Publication","owner":"publication_worker","states":["published","invalidated"],"provider_submits":0,"binding_deleted":false}
+]

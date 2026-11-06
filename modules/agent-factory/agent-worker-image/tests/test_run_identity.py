@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
+import requests
+from botocore.credentials import Credentials
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from adp_trigger import client as trigger_client
@@ -358,6 +360,60 @@ def test_unsupported_policy_revision_is_reported_and_never_blocks_legacy_identit
     assert session.model_policy_report.enforcement_failure is None
 
 
+def test_engine_run_verifies_the_policy_decision_against_its_flow_chain(
+    identity, monkeypatch, tmp_path
+):
+    """The gateway roots an engine run's snapshot on its flow and signs that chain.
+
+    `correlation.correlation_id` names the run, so comparing the decision chain
+    against it refused every engine dispatch with decision_chain_mismatch the
+    moment a signed decision was returned (#7596). The envelope's
+    `orchestration.flow_id` is the chain the gateway signs.
+    """
+    _, _ = identity
+    envelope = {
+        "message_id": "run-a",
+        "tenant_id": "tenant",
+        "persona": "agent-codex-operations",
+        "correlation": {"correlation_id": "run-a"},
+        "orchestration": {"flow_id": "flow-f", "node_id": "node-1"},
+        "source_ref": {"repo": "org/repo"},
+    }
+    directory = tmp_path / "engine"
+    directory.mkdir()
+    session = RunIdentitySession(envelope=envelope, directory=directory)
+    try:
+        monkeypatch.setattr(
+            session,
+            "_request",
+            lambda: reply(
+                model_policy=policy_reply(
+                    correlation_id="flow-f", envelope_changes={"chain_id": "flow-f"}
+                )
+            ),
+        )
+        session.refresh()
+        assert session.model_policy_report is not None
+        assert session.model_policy_report.status == "proposed"
+        assert session.model_policy_report.posture_verified is True
+        assert session.model_policy_report.enforcement_failure is None
+        # A decision rooted on some other chain is still refused.
+        monkeypatch.setattr(
+            session,
+            "_request",
+            lambda: reply(
+                model_policy=policy_reply(
+                    correlation_id="run-a", envelope_changes={"chain_id": "run-a"}
+                )
+            ),
+        )
+        session.refresh()
+        assert session.model_policy_report.status == "unavailable"
+        assert session.model_policy_report.reason == "decision_chain_mismatch"
+    finally:
+        session.close()
+
+
 @pytest.mark.parametrize("deadline", [None, "bad", "2026-09-19T15:00:00Z"])
 def test_start_projects_verified_absolute_deadline_without_extending_it_on_refresh(
     identity, monkeypatch, deadline
@@ -552,6 +608,135 @@ def test_start_refuses_before_launching_background_thread(identity, monkeypatch)
     monkeypatch.setattr(session, "_request", refused)
     with pytest.raises(RunIdentityError):
         session.start()
+    assert session._thread is None
+    assert not session.credential_path.exists()
+
+
+def _bootstrap_http(monkeypatch, outcomes):
+    """Exercise signing, transport and validation while replacing only HTTP I/O."""
+    monkeypatch.setattr(
+        "adp_trigger.transport_identity.worker_credentials",
+        lambda _: Credentials("test-access", "test-secret", "test-session"),
+    )
+    http = MagicMock()
+    http.__enter__.return_value = http
+    replies = []
+    for outcome in outcomes:
+        if isinstance(outcome, Exception):
+            replies.append(outcome)
+            continue
+        status, body = outcome
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status_code = status
+        response.raw.read.return_value = body
+        replies.append(response)
+    http.post.side_effect = replies
+    monkeypatch.setattr("lib.run_identity.requests.Session", lambda: http)
+    monkeypatch.setattr("lib.run_identity.threading.Thread", MagicMock())
+    return http
+
+
+@pytest.mark.parametrize("failure", [requests.ReadTimeout, requests.ConnectionError])
+def test_start_recovers_lost_bootstrap_response_on_same_binding(
+    identity, monkeypatch, caplog, failure
+):
+    session, proof = identity
+    http = _bootstrap_http(
+        monkeypatch,
+        [failure("sensitive-transport-detail"), (200, json.dumps(reply()).encode())],
+    )
+    waits = []
+
+    def wait(delay):
+        assert not session.credential_path.exists()
+        assert session._thread is None
+        waits.append(delay)
+        proof.write_text("pod-token-two")
+        return False
+
+    monkeypatch.setattr(session._stop, "wait", wait)
+    session.start()
+    first, second = [call.kwargs for call in http.post.call_args_list]
+    assert first["data"] == second["data"]
+    assert json.loads(second["data"]) == {
+        "invocation_id": "run-a",
+        "envelope_digest": session._digest,
+    }
+    assert first["headers"]["X-Adp-Workload-Token"] == "pod-token-one"
+    assert second["headers"]["X-Adp-Workload-Token"] == "pod-token-two"
+    assert len(waits) == 1
+    assert session.credential_path.read_text().strip() == "adpr1.first.signature"
+    assert session._attempt == 1
+    assert "sensitive-transport-detail" not in caplog.text
+    assert "pod-token" not in caplog.text
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_start_retries_transient_gateway_unavailability(identity, monkeypatch, status):
+    session, _ = identity
+    http = _bootstrap_http(monkeypatch, [(status, b""), (200, json.dumps(reply()).encode())])
+    monkeypatch.setattr(session._stop, "wait", lambda _: False)
+    session.start()
+    assert http.post.call_count == 2
+    assert session.credential_path.read_text().strip() == "adpr1.first.signature"
+
+
+def test_start_transport_retries_are_bounded_without_credential(identity, monkeypatch):
+    session, _ = identity
+    http = _bootstrap_http(monkeypatch, [requests.ReadTimeout("private detail")] * 10)
+    waits = []
+    monkeypatch.setattr(session._stop, "wait", lambda delay: waits.append(delay) or False)
+    with pytest.raises(RunIdentityError, match="startup"):
+        session.start()
+    assert http.post.call_count == 4
+    assert waits == [2, 4, 8]
+    assert session._thread is None
+    assert not session.credential_path.exists()
+
+
+def test_close_interrupts_bootstrap_retry_before_any_identity_is_installed(identity, monkeypatch):
+    session, _ = identity
+    http = _bootstrap_http(monkeypatch, [requests.ReadTimeout("private detail")])
+    monkeypatch.setattr(session._stop, "wait", lambda _: True)
+    with pytest.raises(RunIdentityError):
+        session.start()
+    assert http.post.call_count == 1
+    assert session._thread is None
+    assert not session.credential_path.exists()
+
+
+@pytest.mark.parametrize("status", [301, 400, 401, 403, 404, 409, 429, 500])
+def test_start_does_not_retry_gateway_refusal(identity, monkeypatch, status):
+    session, _ = identity
+    http = _bootstrap_http(monkeypatch, [(status, b"private response")])
+    wait = MagicMock()
+    monkeypatch.setattr(session._stop, "wait", wait)
+    with pytest.raises(RunIdentityError, match="refused"):
+        session.start()
+    assert http.post.call_count == 1
+    wait.assert_not_called()
+    assert session._thread is None
+    assert not session.credential_path.exists()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        requests.exceptions.SSLError("private certificate detail"),
+        (200, b"invalid json"),
+        (200, json.dumps(reply(invocation_id="other-run")).encode()),
+    ],
+)
+def test_start_does_not_retry_invalid_trust_or_identity(identity, monkeypatch, outcome):
+    session, _ = identity
+    http = _bootstrap_http(monkeypatch, [outcome])
+    wait = MagicMock()
+    monkeypatch.setattr(session._stop, "wait", wait)
+    with pytest.raises(RunIdentityError):
+        session.start()
+    assert http.post.call_count == 1
+    wait.assert_not_called()
     assert session._thread is None
     assert not session.credential_path.exists()
 

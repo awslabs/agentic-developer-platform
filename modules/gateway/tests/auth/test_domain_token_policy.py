@@ -252,22 +252,10 @@ def test_the_principal_is_immutable(policy):
 
 # --- 4. environment state is asserted, never inferred (R5 acc. 5) ------------
 #
-# The two credential-binding flags are per-environment and their *code* defaults
-# are not the deployed values:
-#
-#   src/shared/config.py:196  enforce_credential_binding = True
-#   src/shared/config.py:125  vault_enforce_credential_host_binding = False
-#
-# while gateway-deploy.yml sources both from SSM per environment and records that
-# "dev stays in shadow mode via /adp/dev/gateway/enforce-credential-binding=false".
-# `src/internal/credential_binding.py` says the same thing from the other side —
-# the flag "is `false` on at least one live environment, so a control gated on it
-# silently shadows instead of enforcing".
-#
-# So reading the dataclass default and calling it the environment's state gives
-# the WRONG answer for dev, in the permissive direction. That is the inference
-# acc. 5 forbids, which is why EnforcementState has no defaults: a caller cannot
-# construct one without stating both values.
+# EnforcementState describes observed environment posture, including legacy
+# credential-binding deployments. Code defaults do not establish that posture:
+# destination binding defaults to enforcement but an explicit SSM override can
+# still select shadow mode. Callers must supply both observed values.
 
 
 def test_enforcement_state_cannot_be_constructed_without_stating_both_flags():
@@ -362,9 +350,8 @@ def test_a_fully_enforcing_environment_satisfies_both_flags():
 def test_the_host_binding_flag_is_reported_independently():
     """The flags are separate controls, so one enforcing does not cover the other.
 
-    ``VAULT_ENFORCE_CREDENTIAL_HOST_BINDING`` defaults to shadow mode everywhere,
-    so an environment that has flipped the first flag and not the second is the
-    expected configuration rather than an edge case.
+    An explicit shadow-mode override can disable host binding independently of
+    the other credential control, despite the enforcing application default.
     """
     partial = EnforcementState(
         environment="staging",

@@ -19,21 +19,28 @@ import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.admin import tool_routes
+from src.agentauth.routes import get_agent_runtime
+from src.auth import vault_routes
 from src.auth.middleware import get_current_user_context
 from src.auth.vault_routes import get_secrets_manager, router
 from src.shared.database import get_db
+from src.shared.models.audit import AuditLog
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
+from src.shared.models.tool_entitlement import ToolEntitlement
 from src.shared.models.vault import CredentialType, UserCredential, UserIdentity, VerificationMethod
 from src.shared.schemas.auth import TokenContext
 from src.shared.services.secrets_manager import SecretsManagerHelper
@@ -233,6 +240,231 @@ async def _insert_identity(
 # ===========================================================================
 # Credential endpoint tests
 # ===========================================================================
+
+
+async def _add_entitlement(db, tool_name, *, enabled=True):
+    from sqlalchemy import select as _select
+
+    from src.shared.models.tool_entitlement import ToolEntitlement
+
+    row = await db.scalar(
+        _select(ToolEntitlement).where(ToolEntitlement.org_id == "org-acme", ToolEntitlement.team_id == "", ToolEntitlement.tool_name == tool_name)
+    )
+    if row is None:
+        db.add(ToolEntitlement(org_id="org-acme", team_id="", tool_name=tool_name, enabled=enabled))
+    else:
+        row.enabled = enabled
+    await db.commit()
+
+
+class TestAgentConsent:
+    def test_owner_toggle_persists_and_non_owner_cannot_toggle(self, db, sm):
+        event_loop = asyncio.get_event_loop()
+        own = event_loop.run_until_complete(_insert_cred(db, user_id="user-alice"))
+        other = event_loop.run_until_complete(_insert_cred(db, user_id="user-bob"))
+        client = _make_app(ALICE, db, sm)
+        assert next(item for item in client.get("/auth/credentials").json() if item["id"] == own.id)["agent_consent"] is False
+        path = f"/auth/credentials/{own.id}/agent-consent"
+        assert client.put(path, json={"agent_consent": True}).json()["agent_consent"] is True
+        assert next(item for item in client.get("/auth/credentials").json() if item["id"] == own.id)["agent_consent"] is True
+        assert client.put(f"/auth/credentials/{other.id}/agent-consent", json={"agent_consent": True}).status_code == 404
+        assert client.put(path, json={"agent_consent": False}).json()["agent_consent"] is False
+
+    def test_tools_policy_consent_scoped_and_entitlement_bounded(self, db, sm, monkeypatch):
+        policy = {"status": "active", "allowed_tools": ["websearch.search"]}
+        read = MagicMock(return_value=policy)
+        write = MagicMock()
+        monkeypatch.setattr(vault_routes, "_tools_policy", lambda runtime: SimpleNamespace(get=read, put_consent=write))
+        client = _make_app(ALICE, db, sm)
+        client.app.dependency_overrides[get_agent_runtime] = lambda: object()
+        # #8387: a never-edited row is in default mode, but an admin-allowed tool the tenant has
+        # not entitled is never consented by default.
+        assert client.get("/auth/tools/consent").json() == {
+            "allowed_tools": ["websearch.search"],
+            "consented_tools": [],
+            "revision": 0,
+            "consent_mode": "default",
+            "opted_out_tools": [],
+            "tenant_consent_default": "granted",
+            "entitled_tools": [],
+        }
+        assert client.put("/auth/tools/consent", json={"consented_tools": ["websearch.search"], "expected_revision": 0}).status_code == 200
+        assert client.put("/auth/tools/consent", json={"consented_tools": []}).status_code == 422
+        assert client.put("/auth/tools/consent", json={"expected_revision": 0}).status_code == 422
+        assert client.put("/auth/tools/consent", json={"consented_tools": [], "consent_mode": "default", "expected_revision": 0}).status_code == 422
+        read.assert_called_with(tenant_id="org-acme", owner_id="user-alice")
+        write.assert_called_once_with(
+            tenant_id="org-acme",
+            owner_id="user-alice",
+            allowed_tools=["websearch.search"],
+            consented_tools=["websearch.search"],
+            previous_consent=[],
+            expected_revision=0,
+            consent_mode="explicit",
+            opted_out_tools=[],
+        )
+        assert client.put("/auth/tools/consent", json={"consented_tools": ["unentitled.tool"], "expected_revision": 0}).status_code == 400
+        assert write.call_count == 1
+        assert client.put("/auth/tools/consent", json={"consented_tools": [], "expected_revision": 1}).status_code == 409
+        assert write.call_count == 1
+
+    def test_entitled_first_party_tools_are_consentable_without_an_admin_policy_row(self, db, sm, monkeypatch):
+        """#8113: tenant entitlement is the admin grant for read-only platform tools; #8387: it is also the default consent."""
+        asyncio.get_event_loop().run_until_complete(_add_entitlement(db, "platform.my_work_items"))
+        policy = {"row": None}
+        ensured = []
+
+        def ensure_policy(**kwargs):
+            ensured.append(kwargs)
+            policy["row"] = {"status": "active", "allowed_tools": [], "consented_tools": [], "revision": 0}
+
+        def write(**changes):
+            assert changes["allowed_tools"] == policy["row"]["allowed_tools"]
+            policy["row"]["consented_tools"] = changes["consented_tools"]
+            policy["row"]["consent_mode"] = changes["consent_mode"]
+            policy["row"]["opted_out_tools"] = changes["opted_out_tools"]
+            policy["row"]["revision"] += 1
+
+        store = SimpleNamespace(get=lambda **kwargs: policy["row"], ensure_policy=ensure_policy, put_consent=write)
+        monkeypatch.setattr(vault_routes, "_tools_policy", lambda runtime: store)
+        client = _make_app(ALICE, db, sm)
+        client.app.dependency_overrides[get_agent_runtime] = lambda: object()
+        granted_by_default = client.get("/auth/tools/consent").json()
+        assert granted_by_default["allowed_tools"] == ["platform.my_work_items"]
+        assert granted_by_default["consented_tools"] == ["platform.my_work_items"]
+        assert granted_by_default["consent_mode"] == "default" and granted_by_default["entitled_tools"] == ["platform.my_work_items"]
+        assert client.put("/auth/tools/consent", json={"consented_tools": ["platform.my_budget"], "expected_revision": 0}).status_code == 400
+        assert client.put("/auth/tools/consent", json={"opted_out_tools": ["platform.my_budget"], "expected_revision": 0}).status_code == 400
+        # Opting out of one tool keeps the default mode and creates the row the write fences on.
+        opted = client.put(
+            "/auth/tools/consent", json={"consent_mode": "default", "opted_out_tools": ["platform.my_work_items"], "expected_revision": 0}
+        )
+        assert opted.status_code == 200, opted.text
+        assert opted.json()["consent_mode"] == "default" and opted.json()["consented_tools"] == [] and opted.json()["revision"] == 1
+        assert ensured == [{"tenant_id": "org-acme", "owner_id": "user-alice"}]
+        assert client.get("/auth/tools/consent").json()["consented_tools"] == []
+        # Explicit consent still works and switches the owner to the opt-in contract.
+        granted = client.put("/auth/tools/consent", json={"consented_tools": ["platform.my_work_items"], "expected_revision": 1})
+        assert granted.status_code == 200 and granted.json()["revision"] == 2 and granted.json()["consent_mode"] == "explicit"
+        assert client.get("/auth/tools/consent").json()["consented_tools"] == ["platform.my_work_items"]
+        # Back to the organisation default: nothing opted out, so the entitled tool is consented again.
+        back = client.put("/auth/tools/consent", json={"consent_mode": "default", "expected_revision": 2})
+        assert back.status_code == 200 and back.json()["consented_tools"] == ["platform.my_work_items"]
+        # A later admin policy row for a third-party tool is unioned with the entitled platform tools.
+        policy["row"]["allowed_tools"] = ["websearch.search"]
+        assert client.get("/auth/tools/consent").json()["allowed_tools"] == ["websearch.search", "platform.my_work_items"]
+        # A tenant that entitles nothing first-party keeps the pre-existing 404 for a missing policy.
+        asyncio.get_event_loop().run_until_complete(_add_entitlement(db, "platform.my_work_items", enabled=False))
+        policy["row"] = None
+        assert client.get("/auth/tools/consent").status_code == 404
+
+    def test_tenant_requiring_explicit_consent_keeps_opt_in(self, db, sm, monkeypatch):
+        """#8387 AC-04: the tenant override (or platform flag) forces every owner into opt-in semantics."""
+        asyncio.get_event_loop().run_until_complete(_add_entitlement(db, "platform.my_work_items"))
+
+        async def set_tenant(value):
+            from src.shared.models.organization import Organization
+
+            org = await db.get(Organization, "org-acme")
+            if org is None:
+                org = Organization(id="org-acme", name="Acme")
+                db.add(org)
+            org.settings = {"tools": {"consent_default": value}} if value else {}
+            await db.commit()
+
+        policy = {"status": "active", "allowed_tools": [], "consented_tools": [], "revision": 3}
+        write = MagicMock()
+        monkeypatch.setattr(vault_routes, "_tools_policy", lambda runtime: SimpleNamespace(get=lambda **kwargs: policy, put_consent=write))
+        client = _make_app(ALICE, db, sm)
+        client.app.dependency_overrides[get_agent_runtime] = lambda: object()
+        asyncio.get_event_loop().run_until_complete(set_tenant("explicit"))
+        state = client.get("/auth/tools/consent").json()
+        assert state["consent_mode"] == "explicit" and state["consented_tools"] == [] and state["tenant_consent_default"] == "explicit"
+        assert state["allowed_tools"] == ["platform.my_work_items"]
+        refused = client.put("/auth/tools/consent", json={"consent_mode": "default", "expected_revision": 3})
+        assert refused.status_code == 400 and write.call_count == 0
+        asyncio.get_event_loop().run_until_complete(set_tenant(None))
+        monkeypatch.setenv("ADP_TOOLS_CONSENT_DEFAULT", "explicit")
+        assert client.get("/auth/tools/consent").json()["consent_mode"] == "explicit"
+        monkeypatch.setenv("ADP_TOOLS_CONSENT_DEFAULT", "granted")
+        assert client.get("/auth/tools/consent").json()["consented_tools"] == ["platform.my_work_items"]
+
+    def test_consent_grant_and_revoke_have_independent_revisioned_audit_receipts(self, db, sm, monkeypatch):
+        policy = {"status": "active", "allowed_tools": ["browser.start"], "consented_tools": [], "revision": 1}
+
+        def write(**changes):
+            policy["consented_tools"] = changes["consented_tools"]
+            policy["revision"] += 1
+
+        monkeypatch.setattr(vault_routes, "_tools_policy", lambda runtime: SimpleNamespace(get=lambda **kwargs: policy, put_consent=write))
+        client = _make_app(ALICE, db, sm)
+        client.app.dependency_overrides[get_agent_runtime] = lambda: object()
+        grant = client.put("/auth/tools/consent", json={"consented_tools": ["browser.start"], "expected_revision": 1})
+        assert grant.status_code == 200 and grant.json()["revision"] == 2
+        revoke = client.put("/auth/tools/consent", json={"consented_tools": [], "expected_revision": 2})
+        assert revoke.status_code == 200 and revoke.json()["revision"] == 3
+        rows = asyncio.get_event_loop().run_until_complete(db.scalars(select(AuditLog)))
+        receipts = rows.all()
+        assert [entry.event_type for entry in receipts] == [
+            "tools_consent_started",
+            "tools_consent_updated",
+            "tools_consent_started",
+            "tools_consent_updated",
+        ]
+        assert all(entry.actor_id == "user-alice" and entry.org_id == "org-acme" for entry in receipts)
+        assert receipts[1].details["operation_id"] == grant.json()["operation_id"] == receipts[0].details["operation_id"]
+        assert receipts[3].details["operation_id"] == revoke.json()["operation_id"] == receipts[2].details["operation_id"]
+        assert receipts[1].details["revision"] == 2 and receipts[1].details["requested_consent"] == ["browser.start"]
+        assert receipts[3].details["revision"] == 3 and receipts[3].details["requested_consent"] == []
+        assert receipts[2].details["previous_consent"] == ["browser.start"]
+
+    def test_consent_audit_admission_and_partial_write_failure_remain_visible(self, db, sm, monkeypatch):
+        policy = {"status": "active", "allowed_tools": ["browser.start"], "consented_tools": [], "revision": 1}
+        write = MagicMock()
+        monkeypatch.setattr(vault_routes, "_tools_policy", lambda runtime: SimpleNamespace(get=lambda **kwargs: policy, put_consent=write))
+        client = _make_app(ALICE, db, sm)
+        client.app.dependency_overrides[get_agent_runtime] = lambda: object()
+        persist = vault_routes._record_tools_consent_audit
+        monkeypatch.setattr(vault_routes, "_record_tools_consent_audit", AsyncMock(side_effect=RuntimeError("audit unavailable")))
+        refused = client.put("/auth/tools/consent", json={"consented_tools": ["browser.start"], "expected_revision": 1})
+        assert refused.status_code == 503 and refused.json()["detail"]["error"] == "tool_consent_audit_unavailable"
+        write.assert_not_called()
+        monkeypatch.setattr(vault_routes, "_record_tools_consent_audit", persist)
+        write.side_effect = HTTPException(409, "tool policy changed; reload and retry")
+        conflict = client.put("/auth/tools/consent", json={"consented_tools": ["browser.start"], "expected_revision": 1})
+        assert conflict.status_code == 409
+        rows = asyncio.get_event_loop().run_until_complete(db.scalars(select(AuditLog)))
+        receipts = rows.all()
+        assert [entry.event_type for entry in receipts] == ["tools_consent_started", "tools_consent_refused"]
+        assert receipts[1].details["outcome"] == "denied"
+        write.side_effect = None
+
+        def updated(**changes):
+            policy["consented_tools"] = changes["consented_tools"]
+            policy["revision"] += 1
+
+        write.side_effect = updated
+
+        async def fail_terminal(**kwargs):
+            if kwargs["event_type"] == "tools_consent_updated":
+                raise RuntimeError("terminal audit unavailable")
+            return await persist(**kwargs)
+
+        monkeypatch.setattr(vault_routes, "_record_tools_consent_audit", fail_terminal)
+        uncertain = client.put("/auth/tools/consent", json={"consented_tools": ["browser.start"], "expected_revision": 1})
+        assert uncertain.status_code == 503
+        assert uncertain.json()["detail"]["error"] == "tool_consent_audit_reconciliation_required"
+        assert policy["consented_tools"] == ["browser.start"] and policy["revision"] == 2
+        rows = asyncio.get_event_loop().run_until_complete(db.scalars(select(AuditLog)))
+        receipts = rows.all()
+        assert receipts[-1].event_type == "tools_consent_started"
+        assert receipts[-1].details["operation_id"] == uncertain.json()["detail"]["operation_id"]
+
+    def test_missing_tool_policy_does_not_create_entitlements(self, db, sm, monkeypatch):
+        monkeypatch.setattr(vault_routes, "_tools_policy", lambda runtime: SimpleNamespace(get=lambda **kwargs: None))
+        client = _make_app(ALICE, db, sm)
+        client.app.dependency_overrides[get_agent_runtime] = lambda: object()
+        assert client.put("/auth/tools/consent", json={"consented_tools": ["websearch.search"], "expected_revision": 0}).status_code == 404
 
 
 class TestListCredentials:
@@ -1264,3 +1496,92 @@ async def test_revision_adapter_requires_precondition_and_hides_foreign_target(d
     path = f"/auth/credentials/{cred.id}/metadata"
     assert client.patch(path, json={"label": "new"}).status_code == 422
     assert client.patch(path, json={"label": "new", "expected_revision": "2026-09-25T00:00:00Z"}).status_code == 404
+
+
+def test_effective_tool_access_is_self_scoped_without_admin_permission(db, sm, monkeypatch):
+    async def seed():
+        db.add(ToolEntitlement(org_id="org-acme", team_id="", tool_name="browser.start", enabled=True))
+        await db.commit()
+
+    asyncio.get_event_loop().run_until_complete(seed())
+    monkeypatch.setattr(tool_routes, "tool_catalogue", lambda: {"tools": [{"name": "browser.start"}]})
+    policy = MagicMock(
+        side_effect=lambda **kw: {
+            "status": "active",
+            "allowed_tools": ["browser.start"],
+            "consented_tools": [],
+            "consent_mode": "explicit",  # #8387: an explicit row keeps the opt-in semantics this test proves
+            "tool_max_cost_usd": {"browser.start": "0.20"},
+        }
+        if kw["owner_id"] == "user-alice"
+        else None
+    )
+    monkeypatch.setattr(vault_routes, "_tools_policy", lambda runtime: SimpleNamespace(get=policy))
+    client = _make_app(ALICE, db, sm)
+    client.app.dependency_overrides[get_agent_runtime] = lambda: object()
+    report = client.get("/auth/tools/access")
+    assert report.status_code == 200
+    assert report.json()["user_id"] == "user-alice"
+    assert report.json()["tools"][0]["reason"] == "not_consented"
+    policy.assert_called_with(tenant_id="org-acme", owner_id="user-alice")
+    other = _make_app(BOB, db, sm)
+    other.app.dependency_overrides[get_agent_runtime] = lambda: object()
+    # #8387: Bob has no row, so the default posture allows and consents the entitled tool; the
+    # tenant set no ceiling, so the report stops at the cost policy rather than at "not_allowed".
+    assert other.get("/auth/tools/access").json()["tools"][0]["reason"] == "cost_policy_missing"
+    foreign = _make_app(_make_context(user_id="user-alice", org_id="org-other"), db, sm)
+    foreign.app.dependency_overrides[get_agent_runtime] = lambda: object()
+    assert foreign.get("/auth/tools/access").status_code == 403
+
+
+@pytest.mark.parametrize("consented", [True, False])
+def test_tool_access_refreshes_expired_metadata_without_granting_consent(db, sm, monkeypatch, consented):
+    import httpx
+
+    from src.internal import tools_discovery
+
+    async def seed():
+        db.add(ToolEntitlement(org_id="org-acme", team_id="", tool_name="knowledge.search", enabled=True))
+        await db.commit()
+
+    asyncio.get_event_loop().run_until_complete(seed())
+    discovered = []
+
+    def catalogue():
+        return {
+            "tools": [{"name": "knowledge.search"}] if discovered else [],
+            "connectors": [{"name": "knowledge", "dynamic": True, "discovery_status": "ready" if discovered else "unavailable"}],
+        }
+
+    def handler(req):
+        assert req.method == "GET" and str(req.url) == tools_discovery.FACADE_DISCOVERY_URL
+        assert req.headers["authorization"] == "Bearer synthetic-user-token"
+        discovered.append(True)
+        return httpx.Response(200, json={"tools": []})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(tools_discovery.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    monkeypatch.setattr(tool_routes, "tool_catalogue", catalogue)
+    policy = {
+        "status": "active",
+        "allowed_tools": ["knowledge.search"],
+        "consented_tools": ["knowledge.search"] if consented else [],
+        "consent_mode": "explicit",  # #8387: opt-in semantics under test
+        "tool_max_cost_usd": {"knowledge.search": "0.20"},
+        "catalog": [{"name": "knowledge___search"}],
+        "revision": 7,
+    }
+    monkeypatch.setattr(vault_routes, "_tools_policy", lambda runtime: SimpleNamespace(get=lambda **kwargs: policy))
+    client = _make_app(ALICE, db, sm)
+    client.app.dependency_overrides[get_agent_runtime] = lambda: object()
+    response = client.get("/auth/tools/access", headers={"Authorization": "Bearer synthetic-user-token"})
+    assert response.status_code == 200
+    report = response.json()
+    assert report["user_id"] == "user-alice" and report["policy_revision"] == 7
+    assert report["tools"][0]["ready"] is consented
+    assert report["tools"][0]["reason"] == (None if consented else "not_consented")
+    assert len(discovered) == 1
+    foreign = _make_app(_make_context(user_id="user-alice", org_id="org-other"), db, sm)
+    foreign.app.dependency_overrides[get_agent_runtime] = lambda: object()
+    assert foreign.get("/auth/tools/access", headers={"Authorization": "Bearer synthetic-user-token"}).status_code == 403
+    assert len(discovered) == 1

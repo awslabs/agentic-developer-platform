@@ -154,6 +154,20 @@ def spawn_persona(
         _emit_metric("UnknownPersonaBlocked", {"persona": persona})
         block_reason = "unknown_persona"
 
+    elif not correlation_ctx.get("is_new_chain") and (
+        not isinstance(correlation_ctx.get("chain_depth"), int)
+        or isinstance(correlation_ctx.get("chain_depth"), bool)
+        or correlation_ctx["chain_depth"] < 0
+    ):
+        block_reason = "invalid_chain_depth"
+
+    elif "credential_chain_depth" in correlation_ctx and (
+        not isinstance(correlation_ctx["credential_chain_depth"], int)
+        or isinstance(correlation_ctx["credential_chain_depth"], bool)
+        or correlation_ctx["credential_chain_depth"] < 0
+    ):
+        block_reason = "invalid_chain_depth"
+
     # --- Guards 2-5: Only apply to bot senders ---
     elif _is_bot_sender(sender):
         block = _apply_bot_guards(
@@ -344,9 +358,28 @@ def spawn_persona(
     )
 
     # --- Step 9: Publish to SQS ---
-    from common.sqs_publisher import publish_envelope
+    from common.sqs_publisher import WorkOwnedByActiveRunError, publish_envelope
 
-    message_id = publish_envelope(envelope)
+    try:
+        message_id = publish_envelope(envelope)
+    except WorkOwnedByActiveRunError:
+        # #9541: the previous run on this issue still owns the work after the
+        # bounded wait. This is not a transport failure: tell the user on the
+        # issue and report a guard block (200) so GitHub does not see a 500.
+        from common.work_owned_notice import post_work_owned_notice
+
+        logger.warning(
+            "spawn_persona: work owned by an active run persona=%s repo=%s",
+            persona,
+            repo,
+        )
+        post_work_owned_notice(
+            installation_id=installation_id,
+            repo_full_name=repo,
+            repository_id=payload.get("repository", {}).get("id"),
+            issue_number=payload.get("issue", {}).get("number"),
+        )
+        return SpawnResult(success=False, block_reason="work_owned_by_active_run")
     if not message_id:
         logger.error("spawn_persona: SQS publish failed for persona=%s", persona)
         return SpawnResult(success=False, block_reason="sqs_publish_failed")
@@ -391,8 +424,8 @@ def _advance_chain_depth(correlation_ctx: dict) -> dict:
 
     A caller cannot use this to reset depth. The inherited value still comes from
     server-written state only (``handler._resolve_pointer_provenance`` reads the
-    ``webhook-events`` GSI per #4129, ``agent_trigger._resolve_chain_depth`` 422s
-    on absent/malformed/negative per #4128), and ``is_new_chain`` is False on
+    ``webhook-events`` GSI per #4129; the retired shared-IAM trigger cannot
+    submit any depth), and ``is_new_chain`` is False on
     every chain-continuation branch — a bot cannot present a continuation as a
     fresh root.
 
@@ -639,7 +672,7 @@ def _build_envelope(
         "correlation": {
             "correlation_id": correlation_ctx.get("correlation_id", ""),
             "root_human_id": correlation_ctx.get("root_human_id", ""),
-            "is_human_rooted": correlation_ctx.get("is_human_rooted", True),
+            "is_human_rooted": correlation_ctx.get("is_human_rooted", False),
             "parent_invocation_id": correlation_ctx.get("parent_invocation_id"),
             "chain_depth": correlation_ctx.get("chain_depth", 0),
             # Issue #5365: unlike a local-only guard value, the conservative
@@ -755,16 +788,22 @@ def _compute_authorized_user_id(
         The authorized_user_id string ("" means no vault access).
     """
     is_human_rooted = correlation_ctx.get("is_human_rooted", False)
-    if not is_human_rooted:
+    if not is_human_rooted or not correlation_ctx.get("root_human_id"):
         return ""
 
     # Issue #5365: use the separately persisted conservative horizon when a
     # dispatch route supplies it. It advances and serializes across every hop,
     # so a later shallow cap depth cannot restore root-human vault authority.
     # Older producers omit it and retain their existing ``chain_depth`` policy.
-    chain_depth = correlation_ctx.get("credential_chain_depth")
-    if not isinstance(chain_depth, int) or isinstance(chain_depth, bool):
-        chain_depth = correlation_ctx.get("chain_depth", 0)
+    chain_depth = correlation_ctx.get(
+        "credential_chain_depth", correlation_ctx.get("chain_depth")
+    )
+    if not (
+        isinstance(chain_depth, int)
+        and not isinstance(chain_depth, bool)
+        and chain_depth >= 0
+    ):
+        return ""
     if chain_depth >= max_credential_chain_depth:
         return ""
 

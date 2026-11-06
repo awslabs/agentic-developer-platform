@@ -3,19 +3,23 @@ locals {
   # preserves each complete statement without splitting multi-resource grants.
   policy_shard_indexes = {
     network          = concat(range(2, 6), range(37, 45), [47])
-    identity         = range(13, 23)
-    lifecycle        = concat(range(6, 13), [23, 24, 25, 45, 46])
-    state-validation = concat([0, 1], range(26, 37))
+    identity         = concat(range(13, 23), [52])
+    lifecycle        = concat(range(6, 13), [23, 24, 25, 45, 46, 53])
+    state-validation = concat([0, 1], range(26, 37), range(48, 52), local.cross_region_management ? [54] : [])
   }
 
-  ec2_resources = "${local.ec2_prefix}:*/*"
-  ec2_creates   = ["CreateVpc", "CreateSubnet", "CreateInternetGateway", "AllocateAddress", "CreateNatGateway", "CreateRouteTable", "CreateSecurityGroup", "CreateVpcEndpoint", "CreateLaunchTemplate", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"]
-  ec2_mutators  = ["ModifyVpcAttribute", "ModifySubnetAttribute", "AttachInternetGateway", "DetachInternetGateway", "DeleteInternetGateway", "ReleaseAddress", "DeleteNatGateway", "CreateRoute", "DeleteRoute", "ReplaceRoute", "AssociateRouteTable", "DisassociateRouteTable", "DeleteRouteTable", "DeleteSubnet", "DeleteVpc", "DeleteSecurityGroup", "RevokeSecurityGroupIngress", "RevokeSecurityGroupEgress", "DeleteVpcEndpoints", "ModifyVpcEndpoint", "CreateLaunchTemplateVersion", "DeleteLaunchTemplateVersions", "ModifyLaunchTemplate", "DeleteLaunchTemplate"]
+  cross_region_management = var.management_region != null && var.management_region != var.aws_region
+  state_region            = coalesce(var.state_region, var.aws_region)
+  ec2_resources           = "${local.ec2_prefix}:*/*"
+  ec2_creates             = ["CreateVpc", "CreateSubnet", "CreateInternetGateway", "AllocateAddress", "CreateNatGateway", "CreateRouteTable", "CreateSecurityGroup", "CreateVpcEndpoint", "CreateLaunchTemplate", "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"]
+  ec2_mutators            = ["ModifyVpcAttribute", "ModifySubnetAttribute", "AttachInternetGateway", "DetachInternetGateway", "DeleteInternetGateway", "ReleaseAddress", "DeleteNatGateway", "CreateRoute", "DeleteRoute", "ReplaceRoute", "AssociateRouteTable", "DisassociateRouteTable", "DeleteRouteTable", "DeleteSubnet", "DeleteVpc", "DeleteSecurityGroup", "RevokeSecurityGroupIngress", "RevokeSecurityGroupEgress", "DeleteVpcEndpoints", "ModifyVpcEndpoint", "CreateLaunchTemplateVersion", "DeleteLaunchTemplateVersions", "ModifyLaunchTemplate", "DeleteLaunchTemplate"]
   provider_reads = distinct(concat(local.child_reads, [
+    "ec2:DescribeAddressesAttribute", "ec2:DescribePrefixLists",
     "ec2:DescribeVpcAttribute", "ec2:DescribeNatGateways", "ec2:DescribeNetworkAcls", "ec2:DescribeVpcEndpoints",
     "ec2:DescribeSecurityGroupRules", "ec2:DescribeLaunchTemplates", "ec2:DescribeLaunchTemplateVersions",
     "ec2:DescribeImages", "ec2:DescribeInstanceTypeOfferings", "ec2:DescribeCapacityReservations",
     "eks:DescribeAddonVersions", "eks:DescribeAddonConfiguration", "eks:ListAccessPolicies",
+    "tag:GetResources",
   ]))
   state_key = "${var.environment}/modules/superplane-workspaces/v2/${var.org_id}/${var.workspace_id}/terraform.tfstate"
   execution_policy = {
@@ -26,7 +30,7 @@ locals {
       # New resources require owner tags atomically. Dependencies of multi-resource
       # creates separately require pre-existing owner tags in the following grant.
       { Effect = "Allow", Action = [for action in concat(local.ec2_creates, local.ec2_mutators) : "ec2:${action}"], Resource = local.ec2_resources, Condition = { StringEquals = merge(local.owned_resource, local.operation) } },
-      { Effect = "Allow", Action = ["ec2:CreateTags"], Resource = local.ec2_resources, Condition = { StringEquals = merge(local.owned_request, local.operation, { "ec2:CreateAction" = local.ec2_creates }) } },
+      { Effect = "Allow", Action = ["ec2:CreateTags"], Resource = local.ec2_resources, Condition = { StringEquals = merge(local.owned_request, local.operation, { "ec2:CreateAction" = concat(local.ec2_creates, ["RunInstances"]) }) } },
       { Effect = "Allow", Action = ["ec2:CreateTags"], Resource = local.ec2_resources, Condition = { StringEquals = merge(local.owned_resource, local.operation), StringEqualsIfExists = local.owned_request } },
       { Effect = "Allow", Action = ["ec2:DeleteTags"], Resource = local.ec2_resources, Condition = { StringEquals = merge(local.owned_resource, local.operation) } },
       # AWS does not support resource/name/VPC/subnet conditions on CreateCluster.
@@ -58,7 +62,9 @@ locals {
         Condition = { StringEquals = merge(local.owned_request, local.operation, { "eks:principalArn" = sort(tolist(var.execution.actor_role_arns)), "eks:accessEntryType" = "STANDARD" }) }
       },
       {
-        Effect    = "Allow", Action = ["eks:DescribeAccessEntry", "eks:ListAssociatedAccessPolicies", "eks:DeleteAccessEntry", "eks:DisassociateAccessPolicy"]
+        # Tagged CreateAccessEntry also checks TagResource on this entry ARN.
+        # The create action above independently requires the exact ownership tags.
+        Effect    = "Allow", Action = ["eks:ListAssociatedAccessPolicies", "eks:DeleteAccessEntry", "eks:DisassociateAccessPolicy", "eks:TagResource"]
         Resource  = [for arn in var.execution.actor_role_arns : "${local.eks_prefix}:access-entry/${local.workspace_name}/role/${var.account_id}/${basename(arn)}/*"]
         Condition = { StringEquals = local.operation }
       },
@@ -98,15 +104,28 @@ locals {
       { Effect = "Allow", Action = ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy", "logs:AssociateKmsKey", "logs:ListTagsForResource", "logs:ListTagsLogGroup", "logs:TagResource", "logs:UntagResource", "logs:TagLogGroup", "logs:UntagLogGroup"], Resource = ["arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/eks/${local.workspace_name}/cluster", "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/eks/${local.workspace_name}/cluster:*"], Condition = { StringEquals = local.operation } },
       { Effect = "Allow", Action = ["logs:DescribeLogGroups"], Resource = "*", Condition = { StringEquals = local.regional } },
       { Effect = "Allow", Action = ["s3:GetBucketVersioning", "s3:GetBucketLocation"], Resource = "arn:aws:s3:::${var.execution.state_bucket}" },
-      { Effect = "Allow", Action = ["s3:ListBucket"], Resource = "arn:aws:s3:::${var.execution.state_bucket}", Condition = { StringLike = { "s3:prefix" = [local.state_key, "${dirname(local.state_key)}/workspaces/*"] } } },
+      { Effect = "Allow", Action = ["s3:ListBucket", "s3:ListBucketVersions"], Resource = "arn:aws:s3:::${var.execution.state_bucket}", Condition = { StringLike = { "s3:prefix" = [local.state_key, "${dirname(local.state_key)}/workspaces/*"] } } },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], Resource = "arn:aws:s3:::${var.execution.state_bucket}/${local.state_key}", Condition = { StringEquals = local.operation } },
-      { Effect = "Allow", Action = ["dynamodb:DescribeTable"], Resource = "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.execution.lock_table}" },
-      { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"], Resource = "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.execution.lock_table}", Condition = { StringEquals = local.operation, "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["${var.execution.state_bucket}/${local.state_key}", "${var.execution.state_bucket}/${local.state_key}-md5"] } } },
+      { Effect = "Allow", Action = ["dynamodb:DescribeTable"], Resource = "arn:aws:dynamodb:${local.state_region}:${var.account_id}:table/${var.execution.lock_table}" },
+      { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"], Resource = "arn:aws:dynamodb:${local.state_region}:${var.account_id}:table/${var.execution.lock_table}", Condition = { StringEquals = local.operation, "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["${var.execution.state_bucket}/${local.state_key}", "${var.execution.state_bucket}/${local.state_key}-md5"] } } },
       # Prevent boundary replacement/removal even if another policy is attached
       # later. No managed-policy writer is granted to the provider.
       { Effect = "Deny", Action = ["iam:PutRolePermissionsBoundary", "iam:DeleteRolePermissionsBoundary", "iam:CreatePolicyVersion", "iam:SetDefaultPolicyVersion", "iam:DeletePolicyVersion"], Resource = "*" },
       { Effect = "Deny", Action = ["ec2:DeleteTags", "iam:UntagOpenIDConnectProvider", "eks:UntagResource"], Resource = "*", Condition = { "ForAnyValue:StringEquals" = { "aws:TagKeys" = ["OrgId", "WorkspaceId"] } } },
-    ], local.validation_statements, local.ec2_create_statements)))
+      ], local.validation_statements, local.ec2_create_statements, local.node_launch_statements, [{
+        # EKS verifies this existing account prerequisite on CreateNodegroup.
+        # Provisioning may inspect it, but must never create or manage it.
+        Effect   = "Allow", Action = ["iam:GetRole"]
+        Resource = "arn:aws:iam::${var.account_id}:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup"
+        }, {
+        # Cleanup safety inventories every principal, including EKS-managed node
+        # entries. Reading an entry must not grant mutation of that principal.
+        Effect    = "Allow", Action = ["eks:DescribeAccessEntry"]
+        Resource  = "${local.eks_prefix}:access-entry/${local.workspace_name}/*"
+        Condition = { StringEquals = local.operation }
+      }], local.cross_region_management ? [
+      { Effect = "Allow", Action = ["ec2:DescribeNatGateways"], Resource = "*", Condition = { StringEquals = { "aws:RequestedRegion" = var.management_region } } }
+    ] : [])))
   }
   # Never combine all create actions with all resource kinds: request tags on
   # the new subnet must not also authorize its existing parent VPC. Each new
@@ -130,7 +149,7 @@ locals {
   }]
   # RunInstances is permission-checked even with DryRun. Only the Gateway's
   # non-delivered validator session receives it, for one reviewed profile, with
-  # no IAM instance profile. Paid-operation sessions do not receive this grant.
+  # no IAM instance profile. Paid-operation sessions use the separate workspace-template grants below.
   validation_statements = jsondecode(var.execution == null ? "[]" : jsonencode([
     {
       Effect    = "Allow", Action = ["ec2:RunInstances"]
@@ -151,6 +170,42 @@ locals {
       Effect    = "Allow", Action = ["ec2:RunInstances"]
       Resource  = ["${local.ec2_prefix}:network-interface/*", "${local.ec2_prefix}:volume/*"]
       Condition = { StringEquals = { "aws:PrincipalTag/adp:agent_id" = "superplane-provider-validation" } }
+    },
+  ]))
+}
+
+locals {
+  # EKS checks the caller's RunInstances permission when a managed node group's
+  # launch template contains tags. Its check omits RequestTag, so ownership is
+  # enforced on the existing template and subnet, not the hypothetical instance.
+  # A caller still needs every resource grant, including the owned template.
+  # https://docs.aws.amazon.com/eks/latest/userguide/launch-templates.html
+  node_launch_context = {
+    StringEquals = local.operation
+    ArnLike      = { "ec2:LaunchTemplate" = "${local.ec2_prefix}:launch-template/*" }
+  }
+  node_launch_statements = jsondecode(var.execution == null ? "[]" : jsonencode([
+    {
+      Effect    = "Allow", Action = ["ec2:RunInstances"]
+      Resource  = concat([for id in var.execution.node_image_ids : "arn:aws:ec2:${var.aws_region}::image/${id}"], ["${local.ec2_prefix}:security-group/*"])
+      Condition = local.node_launch_context
+    },
+    {
+      Effect   = "Allow", Action = ["ec2:RunInstances"]
+      Resource = "${local.ec2_prefix}:instance/*"
+      Condition = merge(local.node_launch_context, { StringEquals = merge(local.operation, {
+        "ec2:InstanceType" = sort(tolist(var.execution.node_instance_types)), "ec2:MetadataHttpTokens" = "required"
+      }) })
+    },
+    {
+      Effect    = "Allow", Action = ["ec2:RunInstances"]
+      Resource  = ["${local.ec2_prefix}:volume/*", "${local.ec2_prefix}:network-interface/*"]
+      Condition = local.node_launch_context
+    },
+    {
+      Effect    = "Allow", Action = ["ec2:RunInstances"]
+      Resource  = ["${local.ec2_prefix}:launch-template/*", "${local.ec2_prefix}:subnet/*"]
+      Condition = { StringEquals = merge(local.owned_resource, local.operation) }
     },
   ]))
 }

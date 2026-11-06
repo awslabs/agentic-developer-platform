@@ -614,11 +614,14 @@ def deepwiki_generate(org_repo: str, timeout: int = 900) -> str | None:
         org_repo: GitHub org/repo name.
         timeout: Request timeout in seconds (default 900s, use 1800s for large repos).
     """
+    token_path = Path("/tmp/github-token")
+    credential = token_path.read_text().strip() if token_path.is_file() else None
     try:
         resp = requests.post(
             f"{DEEPWIKI_URL}/chat/completions/stream",
             json={
                 "repo_url": f"https://github.com/{org_repo}",
+                **({"token": credential} if credential else {}),
                 "messages": [
                     {
                         "role": "user",
@@ -634,6 +637,7 @@ def deepwiki_generate(org_repo: str, timeout: int = 900) -> str | None:
                 "language": "en",
                 "type": "github",
             },
+            allow_redirects=False,
             timeout=timeout,
             stream=False,  # Get full response (not SSE chunks)
         )
@@ -654,17 +658,16 @@ def deepwiki_generate(org_repo: str, timeout: int = 900) -> str | None:
             return wiki_text
         else:
             log.warning(
-                "DeepWiki returned HTTP %d for %s — response body: %s",
+                "DeepWiki returned HTTP %d for %s",
                 resp.status_code,
                 org_repo,
-                resp.text[:2000],
             )
             return None
     except requests.Timeout:
         log.warning("DeepWiki timed out for %s (timeout=%ds)", org_repo, timeout)
         return None
     except Exception as e:
-        log.warning("DeepWiki failed for %s: %s", org_repo, e)
+        log.warning("DeepWiki failed for %s (%s)", org_repo, type(e).__name__)
         return None
 
 

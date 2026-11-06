@@ -1,0 +1,35 @@
+{
+  "hashes": {
+    "workspace_bootstrap/superplane_bootstrap/adapters.py": "cbc7945cbdd9981bb747a0f5d77a1ea80e76ce6b74e04a149796b68a7689cd9a",
+    "workspace_bootstrap/superplane_bootstrap/authority_backend.py": "2599dff2a26e663ae755d7d9960ce75ea2ef9564011e9bdc724f657a1d19ddd3",
+    "workspace_bootstrap/superplane_bootstrap/authority_journal.py": "b9e822b50da2787ad85b24c9fba9f30fbd4fde6c457a7ea6c4d3e9b5d6b590a1",
+    "workspace_bootstrap/superplane_bootstrap/authority_runtime.py": "9538408f2d93dfdececd7773ea86920f6d01a81eb7bf9b641b12af04bd7e4fac",
+    "workspace_bootstrap/superplane_bootstrap/eks_grants.py": "5eb39df58972494892c1d2fe03e5b9790b1c7fb2671efc70b9d46f57792de0d7",
+    "workspace_bootstrap/superplane_bootstrap/grant_plan.py": "74cf8985a01f66622e29bbb48cc8d1f4b397f111775653743d9f974e781e8e4d",
+    "workspace_bootstrap/superplane_bootstrap/kube_grants.py": "f9224c3687980b690ca948c3fb0a048128c0c43c3187636050975d7cb540b456",
+    "workspace_bootstrap/superplane_bootstrap/registry.py": "d0accd4bf212c41bcaf4d8a95adbe767c9b49ab17babc29833acc14285a110b5",
+    "workspace_bootstrap/superplane_bootstrap/retirement_fence.py": "abc31fcfa709ca346e3929792a95586b7b2365e9dc2a7ad512ac68a2c5bb6a68",
+    "workspace_bootstrap/superplane_bootstrap/temporary_authority.py": "e8d0d9778e92c595a821cee0c311ddd5908d35b2b122b7a8b0c53a32379634e6",
+    "workspace_bootstrap/superplane_bootstrap/workspace.py": "2f6ca486ad84c7c8a1e7c61130e25fa6281f4435f17307957a9399eeabbf7348",
+    "workspace_provisioning/bootstrap_retry.py": "5d99f743c892ca63c73efca6af436ec3930def811bb057216e8bb8ef6d00ac31",
+    "workspace_provisioning/bootstrap_runtime.py": "a48df38ff49693dd74cce584a8116f921b6d70b241c38a97e815afb3e132a54c",
+    "workspace_provisioning/cluster_clients.py": "58d85532d2e97a3d6975db207697812fa5abb212f3fb29bc5d7d1a8c37b2f093",
+    "workspace_provisioning/credentials.py": "751f599d96748e69a4ac2ca3f271ab41a94bf2a8414ff7653789971df8c67fde",
+    "workspace_provisioning/diagnostics.py": "cadcc0bd044b2498fb791bbc3e37c64663238634c05a6bb471e6f914f86d3615",
+    "workspace_provisioning/network.py": "84d124c105b5c3564f3b9c647bc646889a7b69b3ecd3212bc8ffc09387d70433",
+    "workspace_provisioning/process.py": "c95be08f81b1faf384adb55f3bf30bcbd935c7046fd56e2d492e048c12e795d2",
+    "workspace_provisioning/runtime.py": "04ae9dceaecbf10fbfc7508969823ce7db88a31d18844b981b6b991a44fbfd05"
+  },
+  "image_digest": "sha256:9fd2a13be7c5e147fe00cf5433fcd792ab751d27cd5ce86206c1d9bc326212bb",
+  "method": "Exact image inspected with networking disabled and read-only filesystem; all barrier files match recorded Git revision and preceding qualified image.",
+  "permission_boundary_hashes": {
+    "workspace_bootstrap/superplane_bootstrap/component_journal.py": "eb9bf8e31c4d490c198bef2b062de9ab467de597524f6f9e1d9d745cdbc4f836",
+    "workspace_bootstrap/superplane_bootstrap/components.py": "9d3d2d9146c05c3e6e96b0e557f41feed2272b0c04b08db654284168e52d9f08",
+    "workspace_bootstrap/superplane_bootstrap/inventory.py": "1205e8aa885e53e97b5bacabf38279e069f97bee5fe836b2c05fadee3c9d59e0",
+    "workspace_bootstrap/superplane_bootstrap/permissions.py": "49db22f67c26ae46423d762b1b8144c41d4454812a12e6a5472e38da754ebac1",
+    "workspace_bootstrap/superplane_bootstrap/prerequisites.py": "3c78521467bbd5c3748dd378a589a3b2071ac0b32856c37840ebcd33dd60619e"
+  },
+  "permission_boundary_method": "Exact stopped-image call graph and prerequisite writer were read with networking disabled and matched revision 61fcfc. After the active-only prerequisite marker, with no retain_workspace marker, a self_subject_access_review credential-refresh refusal can occur only in the installation permission gate, before namespace, CRD or component writes. Fresh authenticated original-pod failure evidence is additionally required.",
+  "revision": "61fcfc098e6e110411402342fcfc3a3531130d21",
+  "version": 1
+}

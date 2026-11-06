@@ -114,6 +114,19 @@ async def resolve_canonical_user_id(db: AsyncSession, cognito_sub: str, *, org_i
     return cognito_sub
 
 
+async def resolve_asset_owner_id(db: AsyncSession, login_subject: str) -> str:
+    """Match the Knowledge registry's canonical login-account ownership.
+
+    A verified workspace account can have a different users.id. Registration
+    resolves the login subject without an org filter, so retrieval must use the
+    same stable owner while independently enforcing the active workspace tenant.
+    Hold the login-account row through dispatch to prevent reassignment races.
+    Database failures propagate; they cannot grant a different ownership scope.
+    """
+    canonical = (await db.execute(select(User.id).where(User.cognito_sub == login_subject).with_for_update(read=True, of=User))).scalar_one_or_none()
+    return canonical or login_subject
+
+
 class UnresolvableUserEntityError(BedrockGatewayError):
     """A supplied person-scoped entity id cannot be resolved to a real user.
 

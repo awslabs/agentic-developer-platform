@@ -80,6 +80,43 @@ async def test_finalization_reaches_owner_websocket_once_without_unlock_or_model
     consumer.sqs.send_message.assert_not_called()
 
 
+async def test_classified_crew_failure_reaches_owner_without_private_error_text(client, runtime, ready, transport, consumer):
+    recorded = await fixtures.results.commit(client, ready, error_class="executor_not_wired")
+    assert recorded.status_code == 200, recorded.text
+    result = await fixtures.finalization.request(client, runtime)
+    assert result.status_code == 200, result.text
+    assert result.json()["error_class"] == "executor_not_wired"
+    queued = payload(transport)
+    assert queued["status"] == "failed" and queued["error_class"] == "executor_not_wired"
+    assert queued["text"] == "The assistant could not complete this turn."
+    consumer._process_response(queued)
+    frame = json.loads(consumer.ws_router._client.post_to_connection.call_args.kwargs["Data"])
+    assert frame["status"] == "failed" and frame["error_class"] == "executor_not_wired"
+    assert (await fixtures.finalization.request(client, runtime)).json() == result.json()
+
+
+async def test_reasoned_failure_reaches_owner_as_last_response_without_new_payload_fields(client, runtime, ready, transport, consumer):
+    """#7968: a refused model-policy decision ends the turn with the reason visible, through the existing failed channel."""
+    message = (
+        "The assistant cannot run this turn: the model policy decision was unavailable (probing_disabled). "
+        "Ask the platform operator to enable model invocability probing."
+    )
+    recorded = await fixtures.results.commit(client, ready, error_message=message)
+    assert recorded.status_code == 200, recorded.text
+    result = await fixtures.finalization.request(client, runtime)
+    assert result.status_code == 200, result.text
+    terminal = result.json()
+    assert terminal["outcome"] == "failed" and terminal["retryable"] is False and terminal["message_id"] is None
+    assert "error_message" not in terminal and "error_class" not in terminal
+    queued = payload(transport)
+    assert queued["status"] == "failed" and queued["text"] == message and "error_class" not in queued
+    consumer._process_response(queued)
+    frame = json.loads(consumer.ws_router._client.post_to_connection.call_args.kwargs["Data"])
+    assert frame["status"] == "failed" and frame["content"] == message and frame["terminal_delivery"] is True
+    assert session(transport)["last_response"] == message
+    assert (await fixtures.finalization.request(client, runtime)).json() == terminal
+
+
 @pytest.mark.parametrize("failure", ["queue", "missing-receipt", "receipt-write", "receipt-response"])
 async def test_uncertain_queue_handoff_retries_same_delivery_id(client, runtime, ready, transport, monkeypatch, failure):
     protected = runtime[1].store
@@ -139,6 +176,21 @@ async def test_websocket_failure_retries_without_duplicate_history_or_unlock(cli
     monkeypatch.setattr(consumer.ws_router, "route", route)
     assert consumer.lambda_handler(event, None) == {"statusCode": 200}
     assert len(session(transport)["messages"]) == 1
+
+
+async def test_no_live_connection_leaves_the_persisted_receipt_without_retry(client, runtime, ready, transport, consumer):
+    """A session polled over REST has no connection_id; the reply is durable, so the record succeeds (#8047)."""
+    assert (await fixtures.finalization.request(client, runtime)).status_code == 200
+    transport.sessions.put_item(Item={**session(transport), "connection_id": ""})
+    event = {"Records": [{"messageId": "notification-a", "body": json.dumps(payload(transport))}]}
+    assert consumer.lambda_handler(event, None) == {"statusCode": 200}
+    consumer.ws_router._client.post_to_connection.assert_not_called()
+    row = session(transport)
+    assert row["threads"]["thread-a"]["terminal_delivery"]["status"] == "persisted"
+    assert row["threads"]["thread-a"]["processing_task_id"] == "task-a"
+    assert len(row["messages"]) == 1 and row["last_response"] == row["messages"][0]["content"]
+    assert consumer.lambda_handler(event, None) == {"statusCode": 200}
+    assert session(transport) == row
 
 
 async def test_fifo_batch_stops_after_failed_terminal_delivery(client, runtime, ready, transport, consumer, monkeypatch):

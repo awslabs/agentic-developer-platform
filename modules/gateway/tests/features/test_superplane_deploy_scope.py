@@ -39,6 +39,7 @@ own installer and workflows.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -58,7 +59,12 @@ _AWS_STUB = """#!/usr/bin/env bash
 # Minimal `aws` good-citizen stub. Answers only what deploy-all.sh's preamble needs.
 case "$1 $2" in
   "sts get-caller-identity") echo "111122223333" ;;
-  "ecr describe-images") echo "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
+  "ecr describe-images")
+    # The chat sandbox variant must resolve to a digest distinct from the supervisor's.
+    case "$*" in
+      *imageTag=sandbox-*) echo "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;
+      *) echo "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
+    esac ;;
   "s3api head-bucket") exit 0 ;;
   "dynamodb describe-table") echo '{"Table":{}}' ;;
   "eks describe-cluster") echo "ACTIVE" ;;
@@ -68,8 +74,30 @@ case "$1 $2" in
   "ssm get-parameters") echo '{"Parameters":[],"InvalidParameters":[]}' ;;
   "ssm get-parameter")
     case "$*" in
+      *gateway/tool-adapter-config*|*gateway/platform-operator-role-arns*|*gateway/l5-consumer-targets*)
+        echo "An error occurred (ParameterNotFound) when calling GetParameter" >&2
+        exit 254
+        ;;
+      *gateway/native-credentials-config*)
+        echo "An error occurred (${TEST_NATIVE_CONFIG_ERROR:-ParameterNotFound}) when calling GetParameter" >&2
+        exit 254
+        ;;
+      *gateway/insights-results-bucket*)
+        [ "${TEST_INSIGHTS_RESULTS_BUCKET+x}" = x ] || exit 254
+        printf '%s\\n' "$TEST_INSIGHTS_RESULTS_BUCKET"
+        ;;
       *model-root-bindings*|*arc-model-bindings*) echo '[]' ;;
-      *chat-authority-worker-images*) echo "" ;;
+      # Digest allowlists: empty means "no pinned images" (Terraform seeds " ").
+      *chat-authority-worker-images*|*chat-sandbox-image-digests*|*chat-crew-image-digests*) echo "" ;;
+      # The delegated chat stage derives GATEWAY_HTTPS_ORIGIN (API Gateway stage URL) from this parameter.
+      *gateway/apigw-invoke-url*) echo "https://abc123def4.execute-api.us-east-1.amazonaws.com/dev" ;;
+      # Model-probe controls (#7967): the delegated stage refuses unless probing is armed.
+      *gateway/model-probe-enabled*) echo "${TEST_MODEL_PROBE_ENABLED:-true}" ;;
+      # Chat model-policy posture (#7997): the probing checks fail only under enforced.
+      *gateway/chat-model-policy-posture*) echo "${TEST_CHAT_MODEL_POLICY_POSTURE:-advisory}" ;;
+      *gateway/model-probe-max-slots-per-cycle*) echo "24" ;;
+      *gateway/model-probe-budget-usd-per-cycle*) echo "5" ;;
+      *gateway/model-probe-max-budget-usd-per-attempt*) echo "0.50" ;;
       *) echo "None" ;;
     esac ;;
 
@@ -89,6 +117,11 @@ _NOOP_STUB = "#!/usr/bin/env bash\ncat >/dev/null 2>&1 || true\nexit 0\n"
 _KUBECTL_STUB = """#!/usr/bin/env bash
 if [ "$1 $2 $3" = "get scaledjob agent-gateway-worker" ]; then
   echo "111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  exit 0
+fi
+# The delegated chat stage checks the ScaledJob it applied runs as the supervisor.
+if [ "$1 $2 $3" = "get scaledjob chat-agent-worker" ]; then
+  echo "adp-chat-supervisor"
   exit 0
 fi
 cat >/dev/null 2>&1 || true
@@ -128,6 +161,12 @@ _SUB_SCRIPTS = {
     "modules/gateway/scripts/verify-restricted-admission.sh": "STUB-RESTRICTED-ADMISSION",
     "modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh": "STUB-WEBHOOK-INGRESS",
     "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh": "STUB-DEPLOY-CHAT-SCALEDJOB",
+    # `--chat delegated` provisions the sandbox gateway TLS endpoint and captures the
+    # script's stdout as the CA ConfigMap name, so the stub prints a well-formed one.
+    "platform/scripts/apply-chat-tls.sh": "STUB-APPLY-CHAT-TLS",
+    # `--chat delegated` records invocability evidence with one probe cycle after the
+    # ScaledJob is Ready (#7967); exit 3 (nothing to claim) is tolerated, others stop.
+    "platform/scripts/run-probe-cycle.sh": "STUB-RUN-PROBE-CYCLE",
     # Invoked as `bash deploy.sh` after a cd into the module, so it is a relative path.
     "modules/agent-context/deploy.sh": "STUB-AGENT-CONTEXT-DEPLOY",
 }
@@ -216,9 +255,29 @@ def harness(tmp_path):
         root / "modules/gateway/scripts/sync-gateway-engine.py",
         '#!/usr/bin/env python3\nprint("STUB-ENGINE-ALIGNMENT")\n',
     )
+    # This suite exercises deploy phase selection without cloud calls. The
+    # retirement helper's queue, identity and drain guards have their own tests.
+    _write_exec(
+        root / "platform/scripts/upgrade-chat.py",
+        '#!/usr/bin/env python3\nimport sys\nprint("STUB-CHAT-RETIREMENT-" + sys.argv[1])\n',
+    )
+
+    # Use the real offline configuration validator before the stubbed cloud phases.
+    admin_helper = Path("modules/gateway/scripts/bootstrap-admin.py")
+    _write_exec(root / admin_helper, (_REPO_ROOT / admin_helper).read_text())
 
     signing_helper = Path("modules/gateway/scripts/ensure-signing-secret.py")
     _write_exec(root / signing_helper, (_REPO_ROOT / signing_helper).read_text())
+
+    native_config_helper = Path("modules/gateway/scripts/native-credential-config.py")
+    _write_exec(root / native_config_helper, (_REPO_ROOT / native_config_helper).read_text())
+    adapter_config_helper = Path("modules/gateway/scripts/tool-adapter-config.py")
+    _write_exec(root / adapter_config_helper, (_REPO_ROOT / adapter_config_helper).read_text())
+    for helper in (
+        Path("modules/gateway/scripts/platform-operator-roles.py"),
+        Path("modules/gateway/src/l5_consumer_config.py"),
+    ):
+        _write_exec(root / helper, (_REPO_ROOT / helper).read_text())
 
     # deploy-all invokes this validator with python3 before continuing the
     # gateway phase.  Keep the offline scope harness self-contained: the
@@ -236,7 +295,20 @@ def harness(tmp_path):
 
     for rel, marker in _SUB_SCRIPTS.items():
         failure = 'exit "${TEST_FAIL_WEBHOOK:-0}"' if "deploy-webhook-ingress.sh" in rel else "exit 0"
-        _write_exec(root / rel, f'#!/usr/bin/env bash\necho "{marker}"\n{failure}\n')
+        if rel.endswith("run-probe-cycle.sh"):
+            failure = 'exit "${TEST_PROBE_CYCLE_EXIT:-0}"'
+        body = f'#!/usr/bin/env bash\necho "{marker}"\n{failure}\n'
+        if rel.endswith("apply-chat-tls.sh"):
+            # deploy-all.sh captures stdout; the marker goes to stderr and the last
+            # stdout line is a well-formed CA ConfigMap name.
+            body = f'#!/usr/bin/env bash\necho "{marker}" >&2\necho "chat-sandbox-gateway-ca-0123456789abcdef"\nexit 0\n'
+        elif rel.endswith("deploy-chat-scaledjob.sh"):
+            report = (
+                "crew_controls_only=${ADP_CHAT_CREW_CONTROLS_ONLY:-} supervisor=${SUPERVISOR_IMAGE:-} "
+                "sandbox=${SANDBOX_IMAGE:-} origin=${GATEWAY_HTTPS_ORIGIN:-}"
+            )
+            body = f'#!/usr/bin/env bash\necho "{marker} {report}"\nexit 0\n'
+        _write_exec(root / rel, body)
 
     _write_exec(
         root / "platform" / "scripts" / "undeploy-phases.sh",
@@ -275,6 +347,54 @@ def harness(tmp_path):
         root / "modules" / "gateway" / "scripts" / "pricing-rollout.py",
         "#!/usr/bin/env python3\nraise SystemExit(0)\n",
     )
+    # migrate-before-rollout.py runs the schema migration Job before the gateway
+    # Deployment is applied (parity with gateway-deploy.yml, #7898); it is invoked the
+    # same way, so the file itself has to exist.
+    _write_exec(
+        root / "modules" / "gateway" / "scripts" / "migrate-before-rollout.py",
+        "#!/usr/bin/env python3\nprint('STUB-MIGRATE-BEFORE-ROLLOUT')\n",
+    )
+    _write_exec(
+        root / "platform/scripts/gateway-capacity-lock.py",
+        """#!/usr/bin/env python3
+import os
+import sys
+print("STUB-CAPACITY-" + sys.argv[1])
+raise SystemExit(int(os.environ.get("TEST_CAPACITY_LOCK_EXIT", "0")))
+""",
+    )
+    _write_exec(
+        root / "platform/scripts/render-gateway-capacity.py",
+        """#!/usr/bin/env python3
+import argparse
+import os
+from pathlib import Path
+parser = argparse.ArgumentParser()
+for name in ("manifest", "root", "environment", "output-dir", "verify-bundle", "verify-applied", "verify-deployment"):
+    parser.add_argument("--" + name)
+args = parser.parse_args()
+if args.output_dir:
+    assert Path(args.manifest).is_file()
+    for name in ("deployment", "hpa", "pdb"):
+        (Path(args.output_dir) / (name + ".json")).write_text("{}")
+    print("STUB-CAPACITY-RENDER")
+else:
+    bundle = Path(args.verify_bundle or args.verify_applied or args.verify_deployment)
+    assert all((bundle / (name + ".json")).is_file() for name in ("deployment", "hpa", "pdb"))
+    mode = "APPLIED" if args.verify_applied else "DEPLOYMENT" if args.verify_deployment else "BUNDLE"
+    print("STUB-CAPACITY-VERIFY-" + mode)
+    raise SystemExit(int(os.environ.get("TEST_CAPACITY_VERIFY_EXIT", "0")))
+""",
+    )
+    _write_exec(
+        root / "modules/gateway/scripts/apply-gateway-deployment.py",
+        """#!/usr/bin/env python3
+import sys
+from pathlib import Path
+assert Path(sys.argv[sys.argv.index("--manifest") + 1]).is_file()
+print("STUB-REPLICA-SAFE-APPLY")
+""",
+    )
 
     # The gateway and agent-factory deploy phases `sed` k8s manifests and pipe the result
     # into kubectl. `sed` is a real binary here — stubbing it would break the script's own
@@ -296,6 +416,9 @@ def harness(tmp_path):
         stub_dir = root / real_dir.relative_to(_REPO_ROOT)
         stub_dir.mkdir(parents=True, exist_ok=True)
         for manifest in sorted(real_dir.glob("*.yaml")):
+            if manifest == _REPO_ROOT / "modules/gateway/k8s/configmap.yaml":
+                (stub_dir / manifest.name).write_text(manifest.read_text())
+                continue
             (stub_dir / manifest.name).write_text("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: stub\n")
 
     assert_no_real_tooling(bin_dir)
@@ -304,6 +427,8 @@ def harness(tmp_path):
         # Strip every AWS_* variable so an ambient IRSA identity (the agent runtime and
         # ARC runners both have one) cannot reach the child process.
         child_env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
+        child_env["ADP_BOOTSTRAP_ADMIN_EMAIL"] = "operator@example.com"
+        child_env["ADP_BOOTSTRAP_USE_TEST_ADMIN"] = "false"
         child_env["PATH"] = f"{bin_dir}:{child_env.get('PATH', '')}"
         child_env["TF_VAR_eks_public_access_cidrs"] = '["203.0.113.10/32"]'
         if env:
@@ -321,6 +446,8 @@ def harness(tmp_path):
             stdin=subprocess.DEVNULL if input_text is None else None,
         )
 
+    # Tests that read the checkpoint journal need the throwaway tree.
+    run.root = root
     return run
 
 
@@ -390,6 +517,56 @@ class TestHarnessIsOffline:
     def test_script_parses(self):
         result = subprocess.run(["bash", "-n", str(_DEPLOY_ALL)], capture_output=True, text=True)
         assert result.returncode == 0, f"deploy-all.sh is not valid bash: {result.stderr}"
+
+
+class TestNativeCredentialConfiguration:
+    @pytest.mark.parametrize("error", ["AccessDeniedException", "ExpiredTokenException"])
+    def test_unreadable_configuration_stops_gateway_deployment(self, harness, error):
+        result = harness("--gateway-only", env={"TEST_NATIVE_CONFIG_ERROR": error})
+        assert result.returncode != 0
+        assert "Cannot read native credential configuration; deployment refused" in result.stderr
+        assert "Step 4/11: Build and deploy gateway" in result.stdout
+        assert "Step 5/11" not in result.stdout
+
+
+class TestInsightsResultsConfiguration:
+    @pytest.mark.parametrize("bucket", [None, "", "example-insights-results"])
+    def test_optional_or_valid_bucket_allows_gateway_deployment(self, harness, bucket):
+        env = {} if bucket is None else {"TEST_INSIGHTS_RESULTS_BUCKET": bucket}
+        result = harness("--gateway-only", env=env)
+        assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+        assert "STUB-MIGRATE-BEFORE-ROLLOUT" in result.stdout
+
+    @pytest.mark.parametrize("bucket", ["None", "Invalid_Bucket"])
+    def test_invalid_bucket_stops_before_migration(self, harness, bucket):
+        result = harness("--gateway-only", env={"TEST_INSIGHTS_RESULTS_BUCKET": bucket})
+        assert result.returncode != 0
+        assert "Invalid Insights results bucket setting" in result.stdout
+        assert "STUB-MIGRATE-BEFORE-ROLLOUT" not in result.stdout
+        assert "Step 5/11" not in result.stdout
+
+
+class TestGatewayCapacityIntegration:
+    def test_gateway_scope_keeps_capacity_and_migration_order(self, harness):
+        result = harness("--gateway-only")
+        assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+        markers = (
+            "STUB-CAPACITY-acquire",
+            "STUB-CAPACITY-RENDER",
+            "STUB-MIGRATE-BEFORE-ROLLOUT",
+            "STUB-REPLICA-SAFE-APPLY",
+            "STUB-CAPACITY-VERIFY-APPLIED",
+            "STUB-CAPACITY-release",
+        )
+        positions = [result.stdout.index(marker) for marker in markers]
+        assert positions == sorted(positions)
+
+    def test_capacity_owner_failure_stops_before_migration_and_apply(self, harness):
+        result = harness("--gateway-only", env={"TEST_CAPACITY_LOCK_EXIT": "1"})
+        assert result.returncode != 0
+        assert "Another gateway capacity deployment owns this target" in result.stdout
+        for marker in ("STUB-CAPACITY-RENDER", "STUB-MIGRATE-BEFORE-ROLLOUT", "STUB-REPLICA-SAFE-APPLY", "Step 5/11"):
+            assert marker not in result.stdout
 
 
 class TestSuperplaneModuleBoundary:
@@ -501,15 +678,37 @@ class TestDeploymentResume:
     def test_webhook_failure_resumes_without_rebuilding_platform_or_gateway(self, harness):
         failed = harness(env={"TEST_FAIL_WEBHOOK": "17"})
         assert failed.returncode == 17, failed.stdout[-2000:] + failed.stderr
+        checkpoint = next((harness.root / ".adp-deploy-checkpoints").glob("*.json"))
+        assert json.loads(checkpoint.read_text())["phases"]["webhook"] == "failed"
+        assert Path(str(checkpoint) + ".capacity").stat().st_mode & 0o077 == 0
         resumed = harness("--resume")
         assert resumed.returncode == 0, resumed.stdout[-3000:] + resumed.stderr
         assert "Resuming: platform already complete" in resumed.stdout
         assert "Resuming: gateway already complete" in resumed.stdout
         assert "Step 2/11:" not in resumed.stdout
         assert "Step 4/11:" not in resumed.stdout
+        assert resumed.stdout.index("STUB-CAPACITY-acquire") < resumed.stdout.index("STUB-CAPACITY-VERIFY-DEPLOYMENT")
+        assert resumed.stdout.index("STUB-CAPACITY-VERIFY-DEPLOYMENT") < resumed.stdout.index("STUB-WEBHOOK-INGRESS")
         assert_ran(resumed.stdout, "webhook_ingress")
         assert_ran(resumed.stdout, "agent_factory")
         assert_ran(resumed.stdout, "frontend")
+
+    @pytest.mark.parametrize("problem", ["missing", "changed"])
+    def test_resume_refuses_missing_bundle_or_changed_selection_before_later_phases(self, harness, problem):
+        failed = harness(env={"TEST_FAIL_WEBHOOK": "17"})
+        assert failed.returncode == 17, failed.stdout[-2000:] + failed.stderr
+        env = {}
+        if problem == "missing":
+            saved_bundle = next((harness.root / ".adp-deploy-checkpoints").glob("*.json.capacity"))
+            shutil.rmtree(saved_bundle)
+        else:
+            env["TEST_CAPACITY_VERIFY_EXIT"] = "1"
+        resumed = harness("--resume", env=env)
+        assert resumed.returncode != 0
+        assert "Saved gateway capacity" in resumed.stdout
+        assert "replay from the gateway phase" in resumed.stdout
+        assert "STUB-WEBHOOK-INGRESS" not in resumed.stdout
+        assert "STUB-REPLICA-SAFE-APPLY" not in resumed.stdout
 
     def test_from_replays_requested_phase_and_later_phases(self, harness):
         first = harness()
@@ -527,3 +726,147 @@ class TestDeploymentResume:
         assert changed.returncode != 0
         assert "changed" in changed.stderr
         assert "Step 1/11:" not in changed.stdout
+
+
+class TestChatRolloutMode:
+    """`--chat retire|delegated|keep-legacy` (#7899): default unchanged, delegated gated and ordered."""
+
+    def test_default_run_retires_the_legacy_worker_and_never_activates_delegated_chat(self, harness):
+        result = harness()
+        assert result.returncode == 0, result.stdout[-3000:] + result.stderr
+        section = phase_section(result.stdout, "agent_factory")
+        assert "STUB-CHAT-RETIREMENT-drain" in section
+        assert "STUB-CHAT-RETIREMENT-verify" in section
+        assert "STUB-APPLY-CHAT-TLS" not in result.stdout + result.stderr
+        assert "STUB-DEPLOY-CHAT-SCALEDJOB" not in result.stdout
+        assert "Chat mode: retire" in _strip_ansi(result.stdout)
+        assert "chat becomes unavailable" in _strip_ansi(result.stdout)
+
+    def test_delegated_without_an_exception_record_refuses_before_any_phase(self, harness):
+        result = harness("--chat", "delegated")
+        assert result.returncode != 0
+        assert "--chat-exception" in result.stdout + result.stderr
+        assert "Step 1/11" not in result.stdout
+        assert "STUB-PREFLIGHT" not in result.stdout
+        assert "STUB-CODEBUILD" not in result.stdout
+
+    @pytest.mark.parametrize("flags", [("--chat", "bogus"), ("--chat-exception", "#6937")])
+    def test_invalid_chat_options_refuse_before_any_phase(self, harness, flags):
+        result = harness(*flags)
+        assert result.returncode != 0
+        assert "Step 1/11" not in result.stdout
+
+    def test_delegated_activates_tls_and_scaledjob_before_draining_the_legacy_worker(self, harness):
+        result = harness("--chat", "delegated", "--chat-exception", "#6937-evidence-7")
+        assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
+        out = _strip_ansi(result.stdout)
+        assert "Chat mode: delegated (qualification/exception record: #6937-evidence-7)" in out
+        section = phase_section(result.stdout, "agent_factory")
+        tls = result.stderr.index("STUB-APPLY-CHAT-TLS")
+        assert tls >= 0
+        crew = section.index("STUB-DEPLOY-CHAT-SCALEDJOB crew_controls_only=true")
+        full = section.index("STUB-DEPLOY-CHAT-SCALEDJOB crew_controls_only=false")
+        probe = section.index("STUB-RUN-PROBE-CYCLE")
+        drain = section.index("STUB-CHAT-RETIREMENT-drain")
+        verify = section.index("STUB-CHAT-RETIREMENT-verify")
+        assert section.index("Model invocability probing is armed") < section.index("adp-dev-chat-agent")
+        assert section.index("Sandbox gateway endpoint ready") < crew < full < probe < drain < verify
+        assert "Model invocability probe cycle recorded proven evidence" in section
+        assert ("supervisor=111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:" + "a" * 64) in section
+        assert ("sandbox=111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:" + "b" * 64) in section
+        assert "origin=https://abc123def4.execute-api.us-east-1.amazonaws.com/dev" in section
+        assert "Delegated chat is live" in section
+        # The decision is in the checkpoint journal.
+        journal = next((Path(harness.root) / ".adp-deploy-checkpoints").glob("*.json"))
+        notes = json.loads(journal.read_text())["notes"]
+        assert notes == {"chat-mode": "delegated", "chat-exception": "#6937-evidence-7"}
+
+    def test_delegated_refuses_before_the_chat_build_when_model_probing_is_off_under_enforced(self, harness):
+        """Under chat_model_policy_posture=enforced every turn without probe evidence is 503 probing_disabled (#7967)."""
+        result = harness(
+            "--chat",
+            "delegated",
+            "--chat-exception",
+            "#6937-evidence-7",
+            env={"TEST_MODEL_PROBE_ENABLED": "false", "TEST_CHAT_MODEL_POLICY_POSTURE": "enforced"},
+        )
+        assert result.returncode == 1, result.stdout[-2000:]
+        out = _strip_ansi(result.stdout)
+        assert "Chat model policy posture: enforced" in out
+        assert "Delegated chat enforces model policy (chat_model_policy_posture=enforced) and needs invocability evidence" in out
+        assert "environments/dev/modules/gateway.tfvars" in out and "persona_model_probe_enabled=true in webhook-ingress.tfvars" in out
+        assert "STUB-DEPLOY-CHAT-SCALEDJOB" not in out and "STUB-CHAT-RETIREMENT-drain" not in out
+        assert "STUB-APPLY-CHAT-TLS" not in result.stderr
+
+    @pytest.mark.parametrize("posture", ["advisory", "off", "None"])
+    def test_delegated_warns_and_proceeds_when_model_probing_is_off_under_advisory(self, harness, posture):
+        """#7997: advisory is the default; chat answers without evidence, so the rollout continues with the plumbing on."""
+        result = harness(
+            "--chat",
+            "delegated",
+            "--chat-exception",
+            "#6937-evidence-7",
+            env={"TEST_MODEL_PROBE_ENABLED": "false", "TEST_CHAT_MODEL_POLICY_POSTURE": posture},
+        )
+        assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
+        out = _strip_ansi(result.stdout)
+        effective = "advisory" if posture == "None" else posture
+        assert f"Chat model policy posture: {effective}" in out
+        assert f"Model invocability probing is not armed; chat model policy posture is {effective}" in out
+        assert "needs invocability evidence" not in out
+        section = phase_section(result.stdout, "agent_factory")
+        assert section.index("STUB-DEPLOY-CHAT-SCALEDJOB crew_controls_only=false") < section.index("STUB-CHAT-RETIREMENT-drain")
+        assert "Delegated chat is live" in section
+
+    def test_delegated_tolerates_a_probe_cycle_with_nothing_to_claim_but_not_a_failed_one_under_enforced(self, harness):
+        nothing = harness(
+            "--chat",
+            "delegated",
+            "--chat-exception",
+            "#6937-evidence-7",
+            env={"TEST_PROBE_CYCLE_EXIT": "3", "TEST_CHAT_MODEL_POLICY_POSTURE": "enforced"},
+        )
+        assert nothing.returncode == 0, nothing.stdout[-2000:] + nothing.stderr[-1000:]
+        section = phase_section(nothing.stdout, "agent_factory")
+        assert "probe cycle had nothing to claim" in section
+        assert section.index("STUB-RUN-PROBE-CYCLE") < section.index("STUB-CHAT-RETIREMENT-drain")
+        failed = harness(
+            "--chat",
+            "delegated",
+            "--chat-exception",
+            "#6937-evidence-7",
+            env={"TEST_PROBE_CYCLE_EXIT": "1", "TEST_CHAT_MODEL_POLICY_POSTURE": "enforced"},
+        )
+        assert failed.returncode == 1
+        out = _strip_ansi(failed.stdout)
+        assert "did not record proven evidence (exit 1); delegated chat would refuse every turn under chat_model_policy_posture=enforced" in out
+        assert "STUB-CHAT-RETIREMENT-drain" not in out
+
+    def test_delegated_only_warns_on_a_failed_probe_cycle_under_the_default_advisory_posture(self, harness):
+        result = harness("--chat", "delegated", "--chat-exception", "#6937-evidence-7", env={"TEST_PROBE_CYCLE_EXIT": "1"})
+        assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
+        section = phase_section(result.stdout, "agent_factory")
+        assert "did not record proven evidence (exit 1); chat model policy posture is advisory, so delegated chat answers without evidence" in section
+        assert section.index("STUB-RUN-PROBE-CYCLE") < section.index("STUB-CHAT-RETIREMENT-drain")
+        assert "Delegated chat is live" in section
+
+    def test_keep_legacy_skips_retirement_and_warns(self, harness):
+        result = harness("--chat", "keep-legacy")
+        assert result.returncode == 0, result.stdout[-3000:] + result.stderr
+        out = _strip_ansi(result.stdout)
+        section = phase_section(result.stdout, "agent_factory")
+        assert "STUB-CHAT-RETIREMENT-prepare" in section
+        assert "STUB-CHAT-RETIREMENT-drain" not in section
+        assert "STUB-CHAT-RETIREMENT-verify" not in section
+        assert "STUB-DEPLOY-CHAT-SCALEDJOB" not in section
+        assert "legacy credentialed chat worker" in out and "remain" in out
+        journal = next((Path(harness.root) / ".adp-deploy-checkpoints").glob("*.json"))
+        assert json.loads(journal.read_text())["notes"] == {"chat-mode": "keep-legacy"}
+
+
+@pytest.mark.parametrize("flags", [(), ("--gateway-only",)])
+def test_missing_admin_selection_stops_before_infrastructure(harness, flags):
+    result = harness(*flags, env={"ADP_BOOTSTRAP_ADMIN_EMAIL": ""})
+    assert result.returncode != 0
+    assert "ADP_BOOTSTRAP_ADMIN_EMAIL" in result.stderr + result.stdout
+    assert "Step 1/11:" not in result.stdout

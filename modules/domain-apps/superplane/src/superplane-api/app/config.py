@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     superplane_operation_gateway_region: str = ""
     # Omission preserves existing operation hosts; staged installs set false.
     superplane_operation_dispatch_enabled: bool = True
+    # Applies to new tickets in every installation; never read from a request.
+    superplane_require_distinct_approver: bool = False
     # Deployment selection, never supplied by an admission request.
     superplane_paid_worker_mode: Literal[
         "legacy", "native-controller", "native-lifecycle"
@@ -51,8 +53,22 @@ class Settings(BaseSettings):
             return value == "true"
         raise ValueError("SUPERPLANE_OPERATION_DISPATCH_ENABLED must be true or false")
 
+    @field_validator("superplane_require_distinct_approver", mode="before")
+    @classmethod
+    def strict_distinct_approver(cls, value):
+        if type(value) is bool:
+            return value
+        if value in ("true", "false"):
+            return value == "true"
+        raise ValueError("SUPERPLANE_REQUIRE_DISTINCT_APPROVER must be true or false")
+
     controller_status_url: str = ""
     controller_registry_credential: str = ""
+    # An installation-scoped health-only proxy credential, never provider access.
+    superplane_provider_health_url: str = ""
+    superplane_provider_health_token: str = ""
+    superplane_provider_health_org_id: str = ""
+    superplane_provider_health_workspace_ids: list[str] = []
 
     # AWS
     aws_region: str = "us-east-1"
@@ -62,14 +78,14 @@ class Settings(BaseSettings):
     cognito_user_pool_id: str = ""
     cognito_app_client_id: str = ""
     cognito_app_client_secret: str = ""
+    superplane_sso_approved_origins_file: str = ""
 
     # Production is strict by default. Legacy authentication is available only
     # through an explicit development profile and explicit enforcement opt-out.
     superplane_security_profile: Literal["production", "development"] = "production"
     domain_auth_enforced: bool = True
-    # Additive current-identity integration, not a switch for existing JWT/grant
-    # enforcement. Enable only with the protected ADP reader composed in API and
-    # worker processes. Existing releases retain their signed-token/live-grant path.
+    # Worker-side current-identity integration. Domain HTTP admission always
+    # requires current membership for mapped tenants regardless of this switch.
     current_identity_enforced: bool = False
 
     @model_validator(mode="after")

@@ -1,21 +1,21 @@
-"""The Superplane UI route and nav entry are unavailable with the flag off (#5037).
+"""The Superplane UI route is unavailable with the flag off (#5037).
 
 R1 acc. 1 is that while the gate is off, no Superplane route is reachable on any tenant
 and existing ADP flows are unaffected. This suite covers the parts of that claim that can
 be established without a deployed environment, and is explicit about the part that cannot.
 
 **Why these are text assertions.** The gating decision lives in the SPA bundle: `App.tsx`
-wraps the route in `FeatureGate`, `Navigation.tsx` pushes the nav entry behind
-`features.superplane`, and `features.ts` supplies the fail-closed default used while
+wraps the route in `FeatureGate`, and `features.ts` supplies the fail-closed default used while
 `/features` is in flight or failing. No Python runtime test can observe any of those, and
-the failure mode being guarded is a PR that lands the flag but forgets one of the three
+the failure mode being guarded is a PR that lands the flag but forgets one of those
 wirings — which every runtime test on the backend alone would pass.
 
 The browser-level check (navigate to /superplane in a flag-off environment, confirm the
 dashboard renders instead) is inherently live and belongs with the deferred criteria; it
 is not silently claimed here. What *is* established offline: the flag defaults off in
 both the backend payload and the frontend fallback, the route is gate-wrapped rather than
-bare, the nav entry is conditional, and no existing route or nav entry gained a gate.
+bare, and no existing route gained a gate. Superplane navigation is hidden for the core
+release; frontend navigation tests verify its absence even when the flag is enabled.
 """
 
 from __future__ import annotations
@@ -35,7 +35,6 @@ ROUTE_PATH = "/superplane"
 
 _GATEWAY_ROOT = Path(__file__).resolve().parents[2]
 _APP_TSX = _GATEWAY_ROOT / "frontend" / "src" / "App.tsx"
-_NAVIGATION_TSX = _GATEWAY_ROOT / "frontend" / "src" / "components" / "Navigation.tsx"
 _FRONTEND_FEATURES = _GATEWAY_ROOT / "frontend" / "src" / "services" / "features.ts"
 
 
@@ -72,28 +71,6 @@ class TestRouteIsGated:
         gate = (_GATEWAY_ROOT / "frontend" / "src" / "components" / "FeatureGate.tsx").read_text()
         assert "Navigate" in gate and "!features[feature]" in gate, (
             "FeatureGate no longer redirects on a disabled flag; /superplane would become reachable by direct URL entry."
-        )
-
-
-class TestNavEntryIsGated:
-    """The nav entry is conditional on the flag."""
-
-    def test_nav_push_is_inside_the_flag_conditional(self):
-        nav = _NAVIGATION_TSX.read_text()
-        assert f"to: '{ROUTE_PATH}'" in nav, f"No nav entry for {ROUTE_PATH} in Navigation.tsx"
-
-        # The push must be governed by `features.superplane`. Checked by locating the
-        # conditional and confirming the push falls inside its block, rather than merely
-        # confirming both strings appear somewhere in a 200-line file.
-        match = re.search(
-            rf"if \(features\.{FLAG_KEY}\) \{{(.*?)\}}",
-            nav,
-            re.DOTALL,
-        )
-        assert match, f"No `if (features.{FLAG_KEY})` conditional found in Navigation.tsx"
-        assert f"to: '{ROUTE_PATH}'" in match.group(1), (
-            f"The {ROUTE_PATH} nav entry is not inside the `if (features.{FLAG_KEY})` block. "
-            "An unconditional push advertises a menu item whose route redirects away."
         )
 
 

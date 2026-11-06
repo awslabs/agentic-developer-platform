@@ -16,7 +16,7 @@
 
 # Stage 2: SCIP toolchain
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
-FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2 AS high-security-tools
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:934b09fa0c9d4f52c90c68fa9227ba890ecadb303f8cff01a533fac3062c6c10 AS high-security-tools
 FROM public.ecr.aws/docker/library/node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS node-release
 FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81 AS parser
 
@@ -51,9 +51,9 @@ RUN npm install -g --prefix /usr \
 # compiler build with fixed x/text rather than npm's affected bundled binary.
 COPY --from=high-security-tools /bin/tsc /usr/lib/node_modules/@sourcegraph/scip-python/node_modules/@typescript/typescript-linux-x64/lib/tsc
 
-# Install Go 1.26.8 and scip-go (#6122)
-RUN curl -fsSL https://go.dev/dl/go1.26.8.linux-amd64.tar.gz \
-    | tar -C /usr/local -xz
+# Install Go 1.26.9 and scip-go (#6122)
+ADD --checksum=sha256:42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d https://go.dev/dl/go1.26.9.linux-amd64.tar.gz /tmp/go.tar.gz
+RUN rm -rf /usr/local/go && tar -xzf /tmp/go.tar.gz -C /usr/local && rm /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
 # Use the same reviewed scip-go build as ingestion.
 COPY --from=high-security-tools /bin/scip-go /usr/local/bin/scip-go

@@ -10,6 +10,8 @@ import logging
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from src.agentauth.adapter import CREDENTIAL_HEADER
@@ -19,6 +21,7 @@ from src.agentauth.run_credential import CredentialError
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
 from src.internal.credential_authorization import BROKER_CAPABILITIES, require_broker_capability
+from src.shared.models.vault import UserCredential
 
 BROKER_PATHS = frozenset({*BROKER_CAPABILITIES, "/internal/v1/github-installation-token"})
 logger = logging.getLogger(__name__)
@@ -26,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 def worker_tenant(request: Request) -> str | None:
     grant = getattr(request.state, "agent_broker_grant", None)
+    authority = getattr(request.state, "agent_tools_credential_authority", None)
+    if authority is not None:
+        return authority.tenant_id
     return grant.tenant_id if grant is not None else None
 
 
@@ -54,7 +60,7 @@ async def verify_broker_worker(request: Request) -> None:
             request.headers.get(CREDENTIAL_HEADER, ""),
             request.headers.get(WORKLOAD_HEADER, ""),
         )
-        from src.agentauth.grants import AUTHORITY_PAID_DOMAIN_OPERATION
+        from src.agentauth.grants import AUTHORITY_GITHUB_EVENT, AUTHORITY_PAID_DOMAIN_OPERATION
 
         if context[3].authority.kind == AUTHORITY_PAID_DOMAIN_OPERATION:
             raise BootstrapRefusedError("paid domain worker has no broker authority")
@@ -67,12 +73,28 @@ async def verify_broker_worker(request: Request) -> None:
         execution = await run_in_threadpool(runtime.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
         if not execution:
             raise BootstrapRefusedError("broker execution unavailable")
+        dispatch_envelope = None
+        if (
+            context[3].authority.kind == AUTHORITY_GITHUB_EVENT
+            and request.url.path == "/internal/v1/github-installation-token"
+            and body.get("identity") == "review"
+        ):
+            from src.agentauth.human_review_identity import original_review_dispatch
+
+            dispatch_envelope = await run_in_threadpool(
+                original_review_dispatch, runtime.store, pod_uid=context[0].uid, invocation_id=caller.invocation_id, execution=execution
+            )
         from src.orchestration.runtime_policy import WorkerCredentialDecision, authorize_worker_credential
         from src.shared.database import get_session_factory
 
         async with get_session_factory()() as session:
             decision = await authorize_worker_credential(
-                session, execution=execution, grant=context[3], broker_path=request.url.path, credential_request=body
+                session,
+                execution=execution,
+                grant=context[3],
+                broker_path=request.url.path,
+                credential_request=body,
+                dispatch_envelope=dispatch_envelope,
             )
         if not decision.permitted:
             logger.info(
@@ -82,6 +104,9 @@ async def verify_broker_worker(request: Request) -> None:
             raise BootstrapRefusedError("worker credential policy refused")
         if isinstance(decision, WorkerCredentialDecision):
             request.state.agent_authorized_action = decision.action
+            # Protected persona of this execution; the token route uses it to
+            # let a reviewer-owned repair continuation keep its reviewer identity.
+            request.state.agent_execution_persona = execution.get("persona", {}).get("S")
             request.state.agent_github_permissions = decision.permissions
             request.state.agent_github_not_after = decision.not_after
             request.state.agent_user_credential_authority = decision if decision.provider_permissions else None
@@ -95,10 +120,14 @@ async def verify_broker_worker(request: Request) -> None:
             # from the execution row just compared above — never from the body. The
             # route re-asserts it on the default path, so both paths bind the same
             # fact and a protected caller is not silently exempted from the check.
+            recorded_repository_id = execution.get("provider_repository_id", {}).get("N")
             request.state.agent_installation_binding = InstallationBinding(
                 tenant_id=caller.tenant_id,
                 installation_id=int(body["installation_id"]),
                 repo=execution.get("repo", {}).get("S") or None,
+                # #9550: the repository id the trusted producer recorded, for the
+                # Product-scoped token set; never read from the body.
+                repository_id=int(recorded_repository_id) if recorded_repository_id and str(recorded_repository_id).isdecimal() else None,
             )
         else:
             # Exact trusted row, never a caller-selected partition/query result.
@@ -137,16 +166,53 @@ async def verify_broker_worker(request: Request) -> None:
         raise HTTPException(503, "agent authority unavailable") from None
 
 
-async def verify_selected_user_credential(request: Request, credential, *, revalidate: bool = False) -> None:
+async def verify_selected_user_credential(request: Request, credential, *, db: AsyncSession, revalidate: bool = False) -> None:
     """Bind the endpoint's actual selection and repeat live checks before effects."""
-    authority = getattr(request.state, "agent_user_credential_authority", None)
-    if authority is None:
-        return
-    if revalidate:
-        await verify_broker_worker(request)
+    # Personal vault consent applies to every agent authority, including webhook
+    # and service-policy runs without an accepted engine policy. Shared credentials
+    # retain their existing owner-scope policy; the personal consent endpoint cannot
+    # manage team, organization, or domain-app credentials.
+    if credential.user_id is not None and getattr(credential, "agent_consent", False) is not True:
+        raise HTTPException(403, {"error": "not_consented"})
+
+    tools_authority = getattr(request.state, "agent_tools_credential_authority", None)
+    if tools_authority is not None and revalidate:
+        from src.internal.tools_credential_auth import verify_tools_credential_request
+
+        await verify_tools_credential_request(request)
+        tools_authority = getattr(request.state, "agent_tools_credential_authority", None)
+        if tools_authority is None:
+            raise HTTPException(403, {"error": "not_consented"})
+    if tools_authority is not None:
+        if (
+            credential.id not in tools_authority.credential_ids
+            or credential.org_id != tools_authority.tenant_id
+            or credential.user_id != tools_authority.user_id
+        ):
+            raise HTTPException(403, {"error": "not_consented"})
+    else:
+        had_policy_authority = getattr(request.state, "agent_user_credential_authority", None) is not None
+        if revalidate and (had_policy_authority or getattr(request.state, "agent_broker_grant", None) is not None):
+            await verify_broker_worker(request)
         authority = getattr(request.state, "agent_user_credential_authority", None)
-    if authority is None or authority.credential_id != credential.id or authority.credential_secret_arn != credential.secret_arn:
-        raise HTTPException(404, "not found")
+        if authority is None and had_policy_authority:
+            raise HTTPException(404, "not found")
+        if authority is not None and (authority.credential_id != credential.id or authority.credential_secret_arn != credential.secret_arn):
+            raise HTTPException(404, "not found")
+
+    if credential.user_id is not None and revalidate:
+        # Select the column after the asynchronous authority checks, not the ORM
+        # object: its identity-map snapshot may predate revocation during an effect.
+        consent = await db.scalar(
+            select(UserCredential.agent_consent).where(
+                UserCredential.id == credential.id,
+                UserCredential.user_id == credential.user_id,
+                UserCredential.org_id == credential.org_id,
+                UserCredential.secret_arn == credential.secret_arn,
+            )
+        )
+        if consent is not True:
+            raise HTTPException(403, {"error": "not_consented"})
 
 
 def user_credential_audit(request: Request) -> dict:

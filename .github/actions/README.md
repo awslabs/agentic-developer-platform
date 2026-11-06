@@ -14,8 +14,9 @@ checks, then update the references and trust-contract expectations in both
 repositories. Keep workflow environments, permissions, and credential ordering
 intact. Synchronizing source does not configure AWS roles or provision runners.
 
-The `public-workflow-contracts` job runs on a GitHub-hosted runner without cloud
-credentials. It rejects private upstream action dependencies and mutable public
+The `public-workflow-contracts` job runs on `arc-runner-org` in `aws-e/adp`
+and a GitHub-hosted runner in public mirrors, with read-only GitHub permissions
+and no deployment role. It rejects private upstream action dependencies and mutable public
 credential-helper references on workflow, action, and contract-test changes.
 Run its tests locally with:
 

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Connect ADP</title></head>
+  <body>
+    <main>
+      <h1>Connect Jira to ADP</h1>
+      <p>In ADP, open Settings → Connections → Atlassian → Install ADP app. Copy the connection code into this form.</p>
+      <p>ADP will use this app’s identity to read the Jira sources shared with your selected Products.</p>
+      <form id="pair-form">
+        <label for="pair-code">ADP connection code</label>
+        <input id="pair-code" type="password" required autocomplete="off" minlength="32" maxlength="128" />
+        <button type="submit">Connect</button>
+      </form>
+      <p id="status" role="status" aria-live="polite"></p>
+      <p>After connecting, ADP maintains access automatically. You can revoke shared access in ADP or uninstall this app in Jira.</p>
+    </main>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

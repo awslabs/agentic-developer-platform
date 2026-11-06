@@ -20,18 +20,22 @@ from __future__ import annotations
 
 import ast
 import inspect
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.orchestration import repository_binding
 from src.orchestration import tick_handler as tick_handler_module
 from src.orchestration.models import (
     DecisionKind,
     NodeKind,
     NodeState,
+    OrchestrationAcceptedPlan,
     OrchestrationDecision,
     OrchestrationFlow,
     OrchestrationNode,
@@ -81,6 +85,20 @@ async def session_factory(monkeypatch):
 def _enabled(monkeypatch):
     monkeypatch.setenv("FEATURE_ORCHESTRATION_ENGINE_ENABLED", "true")
     monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", REPO)
+    monkeypatch.delenv("WEBHOOK_EVENTS_TABLE", raising=False)
+
+    async def verified(_session, **kwargs):
+        return repository_binding.VerifiedRepository(
+            "github",
+            kwargs["repository_id"],
+            kwargs["name"],
+            kwargs["installation_id"],
+            kwargs["name"],
+            kwargs["issue"],
+            kwargs["operation"],
+        )
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", verified)
 
     async def _resolve(_session, *, org_id):
         return INSTALLATION
@@ -121,7 +139,9 @@ async def _seed(factory, *, states: list[str], approved: bool = True) -> list[st
     is what the authorization test below uses to model a draft.
     """
     async with factory() as session:
-        flow = OrchestrationFlow(org_id=ORG, slug="engine", title="Engine", intent_ref="4191")
+        reference = dict(provider="github", repository_id=3003, repository=REPO, installation_id=INSTALLATION, issue_number=EPIC)
+        tracker_refs = [dict(scope="epic", address=f"engine/epic-{EPIC}", issue=reference)]
+        flow = OrchestrationFlow(org_id=ORG, slug="engine", title="Engine", intent_ref="4191", tracker_refs=tracker_refs)
         session.add(flow)
         await session.flush()
         if approved:
@@ -152,6 +172,11 @@ async def _seed(factory, *, states: list[str], approved: bool = True) -> list[st
             session.add(node)
             await session.flush()
             ids.append(node.id)
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id=ORG, flow_id=flow.id, version=1, plan_document={"nodes": [], "tracker_refs": tracker_refs}, plan_hash="f" * 64
+            )
+        )
         await session.commit()
         return ids
 
@@ -232,6 +257,32 @@ async def test_projection_failure_does_not_discard_engine_work(session_factory, 
     assert provider.writes == []
 
 
+async def test_failed_outbox_insert_does_not_rollback_dispatch_or_flush_tracker(session_factory, provider, monkeypatch):
+    from src.orchestration.dispatch_pass import DispatchPassReport
+    from src.orchestration.models import OrchestrationTrackerPublication
+    from src.orchestration.tracker_outbox import stage_tracker_publications
+
+    await _seed(session_factory, states=[NodeState.RUNNING.value])
+
+    async def dispatch(session):
+        await session.execute(update(OrchestrationFlow).values(title="Committed dispatch state"))
+        return DispatchPassReport()
+
+    async def sql_failure(session, report):
+        await stage_tracker_publications(session, report)
+        await session.execute(text("INSERT INTO orchestration_tracker_publications (id) VALUES ('invalid')"))
+
+    monkeypatch.setattr(tick_handler_module, "run_dispatch_pass", dispatch)
+    monkeypatch.setattr(tick_handler_module, "stage_tracker_publications", sql_failure)
+    report = await tick_handler_module._run()
+
+    assert report.tracker_projection_report.errors == 1
+    assert provider.writes == []
+    async with session_factory() as session:
+        assert (await session.scalars(select(OrchestrationFlow))).one().title == "Committed dispatch state"
+        assert (await session.scalars(select(OrchestrationTrackerPublication))).all() == []
+
+
 async def test_a_provider_outage_leaves_state_and_dispatch_untouched(session_factory, provider):
     """AC3: a GitHub outage changes no node state, bypasses no gate, dispatches nothing."""
     await _seed(session_factory, states=[NodeState.RUNNING.value, NodeState.AWAITING_GATE.value])
@@ -256,7 +307,276 @@ async def test_a_second_tick_over_unchanged_state_writes_nothing(session_factory
     second = await tick_handler_module._run()
 
     assert len(provider.writes) == 1
-    assert getattr(second, "tracker_projection_report").projections_unchanged == 1
+    assert getattr(second, "tracker_projection_report").pending == []
+
+
+async def test_failed_tracker_write_restarts_with_the_same_target_and_content(session_factory, provider):
+    from src.orchestration.models import OrchestrationTrackerPublication
+
+    await _seed(session_factory, states=[NodeState.RUNNING.value])
+    provider.fail_write = True
+    first = await tick_handler_module._run()
+    assert first.tracker_projection_report.projections_failed == 1
+
+    async with session_factory() as session:
+        rows = (await session.scalars(select(OrchestrationTrackerPublication))).all()
+        assert len(rows) == 1
+        snapshot = (rows[0].id, rows[0].repository_id, rows[0].repo, rows[0].installation_id, rows[0].issue_number, rows[0].body_region)
+        assert rows[0].completed_at is None
+
+    provider.fail_write = False
+    second = await tick_handler_module._run()
+    assert second.tracker_projection_report.projections_written >= 1
+    assert snapshot[5] in provider.writes[0]
+    async with session_factory() as session:
+        recovered = await session.get(OrchestrationTrackerPublication, snapshot[0])
+        assert (
+            recovered.id,
+            recovered.repository_id,
+            recovered.repo,
+            recovered.installation_id,
+            recovered.issue_number,
+            recovered.body_region,
+        ) == snapshot
+        assert recovered.completed_at is not None
+
+
+@pytest.mark.parametrize("revoked_after_staging", [False, True])
+async def test_tick_refuses_revoked_planning_connection_before_provider_write(
+    session_factory,
+    provider,
+    monkeypatch,
+    revoked_after_staging,
+):
+    from src.orchestration.models import OrchestrationTrackerPublication
+
+    node_ids = await _seed(session_factory, states=[NodeState.PASSED.value])
+    revoked = not revoked_after_staging
+    provider_read = AsyncMock(return_value=BODY)
+    monkeypatch.setattr(provider, "read_issue_body", provider_read)
+
+    async def verified(_session, **kwargs):
+        if revoked:
+            raise repository_binding.RepositoryBindingError("connection_revoked")
+        return repository_binding.VerifiedRepository(
+            "github",
+            kwargs["repository_id"],
+            kwargs["name"],
+            kwargs["installation_id"],
+            kwargs["name"],
+            kwargs["issue"],
+            kwargs["operation"],
+        )
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", verified)
+    original_stage = tick_handler_module.stage_tracker_publications
+
+    async def stage(session, report):
+        nonlocal revoked
+        await original_stage(session, report)
+        if revoked_after_staging:
+            assert len(report.pending) == 1
+            revoked = True
+
+    monkeypatch.setattr(tick_handler_module, "stage_tracker_publications", stage)
+    result = await tick_handler_module._run()
+    assert await _states(session_factory) == {node_ids[0]: NodeState.PASSED.value}
+    assert provider.writes == []
+    provider_read.assert_not_awaited()
+    async with session_factory() as session:
+        owed = (await session.scalars(select(OrchestrationTrackerPublication))).all()
+        assert len(owed) == (1 if revoked_after_staging else 0)
+        if owed:
+            assert owed[0].completed_at is None
+            assert (owed[0].repository_id, owed[0].repo, owed[0].installation_id) == (3003, REPO, INSTALLATION)
+    assert result.tracker_projection_report.projections_refused == 1
+
+
+async def test_lost_tracker_ack_reconciles_without_a_second_write(session_factory, provider, monkeypatch):
+    from src.orchestration import tracker_outbox
+    from src.orchestration.models import OrchestrationTrackerPublication
+
+    await _seed(session_factory, states=[NodeState.PASSED.value])
+    original = tracker_outbox.complete_publication
+
+    async def lost_ack(*args, **kwargs):
+        raise RuntimeError("completion acknowledgment lost")
+
+    monkeypatch.setattr(tracker_outbox, "complete_publication", lost_ack)
+    first = await tick_handler_module._run()
+    assert first.tracker_projection_report.projections_failed == 1
+    assert len(provider.writes) == 1
+    async with session_factory() as session:
+        pending = (await session.scalars(select(OrchestrationTrackerPublication))).one()
+        operation_id = pending.id
+        assert pending.completed_at is None
+
+    monkeypatch.setattr(tracker_outbox, "complete_publication", original)
+    second = await tick_handler_module._run()
+    assert second.tracker_projection_report.projections_unchanged == 1
+    assert len(provider.writes) == 1
+    async with session_factory() as session:
+        completed = (await session.scalars(select(OrchestrationTrackerPublication))).one()
+        assert completed.id == operation_id
+        assert completed.completed_at is not None
+
+
+async def test_planning_repository_id_above_signed_integer_range_is_preserved(session_factory, provider):
+    from src.orchestration.models import OrchestrationTrackerPublication
+
+    await _seed(session_factory, states=[NodeState.PASSED.value])
+    large_id = 2**31 + 7
+    async with session_factory() as session:
+        flow = (await session.scalars(select(OrchestrationFlow))).one()
+        plan = (await session.scalars(select(OrchestrationAcceptedPlan))).one()
+        refs = [
+            dict(
+                scope="epic",
+                address=f"engine/epic-{EPIC}",
+                issue=dict(
+                    provider="github",
+                    repository_id=large_id,
+                    repository=REPO,
+                    installation_id=INSTALLATION,
+                    issue_number=EPIC,
+                ),
+            )
+        ]
+        flow.tracker_refs = refs
+        plan.plan_document = {**plan.plan_document, "tracker_refs": refs}
+        await session.commit()
+
+    await tick_handler_module._run()
+    assert len(provider.writes) == 1
+    async with session_factory() as session:
+        row = (await session.scalars(select(OrchestrationTrackerPublication))).one()
+        assert row.repository_id == large_id
+
+
+async def test_owed_tracker_backlog_preserves_new_capacity_and_limits_growth(session_factory, provider):
+    from src.orchestration.models import OrchestrationTrackerPublication
+    from src.orchestration.tracker_outbox import stage_tracker_publications
+    from src.orchestration.tracker_projection import PendingTrackerProjection, TrackerProjectionReport
+
+    await _seed(session_factory, states=[NodeState.PASSED.value])
+    provider.fail_write = True
+    for _ in range(3):
+        await tick_handler_module._run()
+    async with session_factory() as session:
+        owed = (await session.scalars(select(OrchestrationTrackerPublication))).all()
+        assert len(owed) == 1
+        flow = (await session.scalars(select(OrchestrationFlow))).one()
+        session.add(
+            OrchestrationTrackerPublication(
+                id="2" * 64,
+                org_id=ORG,
+                flow_id=flow.id,
+                repository_id=3003,
+                epic_ref=f"epic-{EPIC}",
+                repo=REPO,
+                installation_id=INSTALLATION,
+                issue_number=EPIC + 1,
+                body_region="old",
+                version=1,
+                watermark=1,
+            )
+        )
+        await session.flush()
+        report = TrackerProjectionReport(
+            pending=[
+                PendingTrackerProjection(
+                    org_id=ORG,
+                    flow_id=flow.id,
+                    repo="example/new",
+                    repository_id=2**31 + 7,
+                    epic_ref=f"epic-{EPIC}",
+                    installation_id=INSTALLATION,
+                    issue_number=EPIC,
+                    body_region="new",
+                    version=2,
+                    watermark=2,
+                )
+            ]
+        )
+        await stage_tracker_publications(session, report, limit=2)
+        assert len(report.pending) == 2
+        assert report.pending[0].operation_id in {owed[0].id, "2" * 64}
+        assert report.pending[1].repo == "example/new"
+        await session.rollback()
+
+
+async def test_completed_tracker_operation_ages_out_in_bounded_cleanup(session_factory, provider):
+    from src.orchestration.models import OrchestrationTrackerPublication
+    from src.orchestration.tracker_outbox import stage_tracker_publications
+    from src.orchestration.tracker_projection import TrackerProjectionReport
+
+    await _seed(session_factory, states=[NodeState.PASSED.value])
+    await tick_handler_module._run()
+    async with session_factory() as session:
+        row = (await session.scalars(select(OrchestrationTrackerPublication))).one()
+        row.completed_at = datetime.now(UTC) - timedelta(days=31)
+        await session.commit()
+    async with session_factory() as session:
+        report = TrackerProjectionReport()
+        await stage_tracker_publications(session, report)
+        assert report.pending == []
+        assert (await session.scalars(select(OrchestrationTrackerPublication))).all() == []
+        await session.commit()
+
+
+async def test_legacy_unbound_plan_remains_readable_without_queuing_a_write(session_factory, provider):
+    from src.orchestration.models import OrchestrationTrackerPublication
+
+    await _seed(session_factory, states=[NodeState.RUNNING.value])
+    async with session_factory() as session:
+        flow = (await session.scalars(select(OrchestrationFlow))).one()
+        plan = (await session.scalars(select(OrchestrationAcceptedPlan))).one()
+        flow.tracker_refs = None
+        plan.plan_document = {"nodes": []}
+        plan.plan_hash = "old-hash"
+        await session.commit()
+
+    report = await tick_handler_module._run()
+    assert report.tracker_projection_report.projections_refused == 1
+    assert provider.writes == []
+    async with session_factory() as session:
+        assert (await session.scalars(select(OrchestrationTrackerPublication))).all() == []
+        assert (await session.scalars(select(OrchestrationAcceptedPlan))).one().plan_hash == "old-hash"
+
+
+async def test_changed_planning_binding_does_not_move_queued_write(session_factory, provider, monkeypatch):
+    from src.orchestration.models import OrchestrationTrackerPublication
+
+    await _seed(session_factory, states=[NodeState.PASSED.value])
+    provider.fail_write = True
+    await tick_handler_module._run()
+    async with session_factory() as session:
+        old = (await session.scalars(select(OrchestrationTrackerPublication))).one()
+        original_id = old.id
+        flow = (await session.scalars(select(OrchestrationFlow))).one()
+        plan = (await session.scalars(select(OrchestrationAcceptedPlan))).one()
+        changed = dict(provider="github", repository_id=5005, repository="example/planning", installation_id=505, issue_number=EPIC)
+        flow.tracker_refs = [dict(scope="epic", address=f"engine/epic-{EPIC}", issue=changed)]
+        plan.plan_document = {**plan.plan_document, "tracker_refs": flow.tracker_refs}
+        await session.commit()
+
+    attempted = []
+    original_write = provider.write_issue_body
+
+    async def capture_write(*, body, **kwargs):
+        attempted.append(kwargs)
+        await original_write(body=body, **kwargs)
+
+    monkeypatch.setattr(provider, "write_issue_body", capture_write)
+    provider.fail_write = False
+    second = await tick_handler_module._run()
+    assert second.tracker_projection_report.projections_refused == 1
+    assert second.tracker_projection_report.projections_written == 1
+    assert [(item["repo"], item["installation_id"]) for item in attempted] == [("example/planning", 505)]
+    async with session_factory() as session:
+        old = await session.get(OrchestrationTrackerPublication, original_id)
+        assert old.completed_at is None
+        assert (old.repository_id, old.repo, old.installation_id) == (3003, REPO, INSTALLATION)
 
 
 async def test_the_pass_is_off_unless_the_flag_is_literally_true(session_factory, provider, monkeypatch):

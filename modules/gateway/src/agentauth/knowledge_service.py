@@ -14,9 +14,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.responses import Response
 
 from src.agentauth.grants import AUTHORITY_SERVICE_POLICY
+from src.agentauth.product_knowledge import authorize_product, product_from_body
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_transport
 from src.agentauth.run_services import live_context
 from src.shared.database import get_session_factory
+from src.shared.identity.resolver import resolve_asset_owner_id
+from src.shared.identity.workspaces import login_subject_for_user
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import User
 from src.shared.models.vault import UserIdentity
@@ -29,7 +32,7 @@ router = APIRouter(prefix="/internal/v1/agent/self", tags=["agent-authority"], d
 
 
 @asynccontextmanager
-async def locked_door_identity(record, grant):
+async def locked_door_identity(record, grant, *, product_id: str | None = None):
     """Read current tenant membership and linked identity, locking through use.
 
     These shared locks prevent membership removal or identity reassignment while
@@ -46,7 +49,7 @@ async def locked_door_identity(record, grant):
     async with get_session_factory()() as db, db.begin():
         user = (
             await db.execute(
-                select(User.cognito_sub)
+                select(User)
                 .join(TenantMembership, TenantMembership.user_id == User.id)
                 .where(
                     User.id == grant.authority.human_id,
@@ -59,7 +62,7 @@ async def locked_door_identity(record, grant):
                 )
                 .with_for_update(read=True, of=(User, TenantMembership))
             )
-        ).one_or_none()
+        ).scalar_one_or_none()
         if user is None:
             raise HTTPException(404, "not found")
         linked = (
@@ -80,12 +83,21 @@ async def locked_door_identity(record, grant):
             if not isinstance(linked.provider_username, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", linked.provider_username):
                 raise HTTPException(404, "not found")
             headers["x-github-login"] = linked.provider_username.lower()
-        if user.cognito_sub:
-            if not re.fullmatch(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", user.cognito_sub):
-                raise HTTPException(404, "not found")
-            headers["x-owner-sub"] = user.cognito_sub.lower()
+        try:
+            subject = await login_subject_for_user(db, user, lock=True)
+        except ValueError:
+            raise HTTPException(404, "not found") from None
+        if not isinstance(subject, str) or not re.fullmatch(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", subject):
+            raise HTTPException(404, "not found")
+        headers["x-owner-sub"] = subject.lower()
+        headers["x-asset-owner-id"] = await resolve_asset_owner_id(db, subject)
+        if product_id:
+            await authorize_product(db, user_id=user.id, tenant_id=record.tenant_id, product_id=product_id)
+            headers["x-product-id"] = product_id
         # Platform teams are not GitHub teams. Do not fabricate GitHub ACL grants.
         yield headers
+        if product_id:
+            await authorize_product(db, user_id=grant.authority.human_id, tenant_id=record.tenant_id, product_id=product_id)
 
 
 async def bounded_body(request: Request) -> bytes:
@@ -99,10 +111,10 @@ async def bounded_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
-def door_config(runtime: AgentRuntime) -> str:
+def door_config(runtime: AgentRuntime | None = None) -> str:
     import os
 
-    env = os.environ if runtime.env is None else runtime.env
+    env = os.environ if runtime is None or runtime.env is None else runtime.env
     base = env.get("ADP_DOOR_SERVICE_URL", "").rstrip("/")
     parsed = urlsplit(base)
     if (
@@ -153,7 +165,9 @@ async def own_knowledge(path: str, request: Request, runtime: AgentRuntime = Dep
     try:
         async with asyncio.timeout(SERVICE_TIMEOUT_SECONDS):
             body = await bounded_body(request)
-            async with locked_door_identity(initial[2], initial[3]) as identity:
+            product_id = product_from_body(body, target_path)
+            product_options = {"product_id": product_id} if product_id else {}
+            async with locked_door_identity(initial[2], initial[3], **product_options) as identity:
                 current = await live_context(request, runtime)
                 if initial[1:] != current[1:]:
                     raise HTTPException(404, "not found")

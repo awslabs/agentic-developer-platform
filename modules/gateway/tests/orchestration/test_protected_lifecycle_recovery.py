@@ -20,7 +20,9 @@ async def test_protected_completed_reviewer_resumes_same_assignment(cycle, monke
         assert result["resumed"]
         await db.commit()
     async with cycle.factory() as db:
-        assert not (await recover(db, cycle, request(run)))["resumed"]
+        duplicate = await recover(db, cycle, request(run))
+        assert not duplicate["resumed"]
+        assert duplicate["decision_id"] == result["decision_id"]
     after = await protocol.state(cycle)
     assert after[2].state == "running" and after[2].attempts == prior[2].attempts
     assert after[1].active_run_id == run and after[1].generation == prior[1].generation
@@ -28,6 +30,31 @@ async def test_protected_completed_reviewer_resumes_same_assignment(cycle, monke
     await protocol.review(cycle, approve=True)
     result = await protocol.tick(cycle)
     assert (await protocol.state(cycle))[0].phase == "merge_ready", result
+
+
+async def test_budget_stopped_reviewer_restores_tracking_but_keeps_budget_hold(cycle, monkeypatch):  # noqa: F811
+    monkeypatch.setattr("src.agentauth.engine.get_engine_authority_writer", lambda: cycle.service.writer)
+    run = await timeout(cycle)
+    await cycle.finish(run)
+    raw = cycle.store._read(f"TENANT#{protocol.ORG}", f"EXEC#{run}")
+    raw["terminal_outcome"] = {"S": "budget_stopped"}
+    cycle.store.client.put_item(TableName=cycle.store.table, Item=raw)
+    before = await protocol.state(cycle)
+    async with cycle.factory() as db:
+        result = await recover(db, cycle, request(run))
+        assert result["resumed"]
+        await db.commit()
+    # Repeated reconciliation must diagnose the limit, never spend another
+    # attempt or silently release it because the operator restored tracking.
+    for _ in range(2):
+        await protocol.tick(cycle)
+        execution, claim, node, _ = await protocol.state(cycle)
+        assert execution.block_code == "budget_exhausted"
+        assert "budget" in execution.block_required_input
+        assert node.state == "running" and node.attempts == before[2].attempts
+        assert claim.active_run_id == run and claim.generation == before[1].generation
+        assert execution.attempts == before[0].attempts and len(cycle.calls) == 1
+    assert cycle.store._read(f"TENANT#{protocol.ORG}", f"EXEC#{run}")["terminal_outcome"] == {"S": "budget_stopped"}
 
 
 @pytest.mark.parametrize("change", ["aborted", "active", "claim", "capability", "revoked"])
@@ -79,6 +106,10 @@ async def test_protected_failed_reviewer_resumes_only_with_remaining_retry_allow
         result = await recover(db, ctx, request(run))
         assert result["resumed"] and result["attempt"] == 1
         await db.commit()
+    async with ctx.factory() as db:
+        duplicate = await recover(db, ctx, request(run))
+        assert not duplicate["resumed"]
+        assert duplicate["decision_id"] == result["decision_id"]
     resumed = await protocol.state(ctx)
     assert resumed[1].generation == before[1].generation
     assert resumed[1].active_run_id == run

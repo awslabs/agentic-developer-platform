@@ -46,7 +46,8 @@ async def ledger(monkeypatch):
 async def request(ledger, *, request_id="next", targets=None, quote=QUOTE, strict=True):
     # The real service/Lua cap gate and real ASGI denial; unrelated DB identity
     # fixtures are covered by test_flow_meter's full hierarchy tests.
-    async def check(context, estimated_cost, request_id=None, run_id=None):
+    async def check(context, estimated_cost, request_id=None, run_id=None, *, reserve=True):
+        assert reserve is True
         result = await ledger.service._reserve_or_degrade(request_id, quote, targets or ledger.targets, strict=strict)
         return result or EnforcementResult(allowed=True)
 
@@ -311,3 +312,45 @@ async def test_durable_receipt_retry_preserves_strict_accounting(ledger, mutatio
     else:
         assert (await ledger.client.hget(ledger.flow.key(), "request")).split(":")[1] == before.split(":")[1]
         assert not await ledger.store.reconcile_receipt("request", Decimal("0.1"), ledger.flow)
+
+
+async def test_aged_settled_fields_and_anchor_deadline_keep_the_meter_readable(ledger):
+    # #7648: every field (the anchor included) is written with deadline now+ttl and
+    # nothing refreshes the anchor, so after one TTL window a healthy flow read as
+    # "budget unavailable" until a write pruned it — and no write could happen
+    # because admission needs the read first. Settled fields that merely aged out
+    # are ignored; the anchor marks initialization and has no expiry of its own.
+    assert (await request(ledger, request_id="first")).status == 200
+    await ledger.store.reconcile("first", Decimal("0.12"), ledger.targets)
+    assert (await ledger.store.snapshot(ledger.flow)).total_usd == Decimal("0.12")
+    ledger.clock[0] += 86401  # anchor and the settled field are now past their deadlines
+    snapshot_after = await ledger.store.snapshot(ledger.flow)
+    assert snapshot_after is not None and snapshot_after.total_usd == Decimal(0)
+    assert (await ledger.store.reserve("second", Decimal(2), [ledger.flow])).admitted
+    entries = await ledger.client.hgetall(ledger.flow.key())
+    assert "first" not in entries  # pruned on write
+    assert "__initialized__" in entries
+    assert (await ledger.store.snapshot(ledger.flow)).total_usd == Decimal(2)
+
+
+async def test_aged_unsettled_reservation_still_reads_as_unknown(ledger):
+    assert (await request(ledger, request_id="first")).status == 200  # strict: pending marker written
+    ledger.clock[0] += 86401
+    assert await ledger.store.snapshot(ledger.flow) is None
+    assert await ledger.store.reserve("second", Decimal(2), [ledger.flow]) is None  # unavailable, not a cap wait
+
+
+async def test_aged_retained_failed_bound_no_longer_blocks_the_meter(ledger):
+    # A retained failed bound is a known upper bound: counted while live, ignored
+    # once it ages out. Gateway rollouts interrupt model streams and leave these
+    # markers behind; three of them froze the tools flow with budget_unavailable
+    # after their TTL passed (2026-10-14).
+    assert (await request(ledger, request_id="first")).status == 200
+    await ledger.store.mark_unknown("first", ledger.flow)
+    assert await ledger.store.retain_failed_bound("first", ledger.flow)
+    assert (await ledger.store.snapshot(ledger.flow)).total_usd == QUOTE
+    ledger.clock[0] += 86401
+    snapshot_after = await ledger.store.snapshot(ledger.flow)
+    assert snapshot_after is not None and snapshot_after.total_usd == Decimal(0)
+    assert (await ledger.store.reserve("second", Decimal(2), [ledger.flow])).admitted
+    assert "bounded:first" not in await ledger.client.hgetall(ledger.flow.key())

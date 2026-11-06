@@ -6,6 +6,10 @@ mock_provider "tls" {}
 run "domain_apps_are_absent_without_an_explicit_opt_in" {
   command = plan
   assert {
+    condition     = aws_dynamodb_table.agent_authority.ttl[0].enabled && aws_dynamodb_table.agent_authority.ttl[0].attribute_name == "knowledge_replay_ttl"
+    error_message = "Only knowledge replay records must be eligible for authority-table TTL cleanup."
+  }
+  assert {
     condition = (
       length(data.terraform_remote_state.cyber) == 0 &&
       length(local.domain_worker_environment) == 0 &&
@@ -427,7 +431,8 @@ run "active_run_services_are_gateway_owned" {
       kubernetes_config_map.worker_gateway[0].data.ADP_RUN_TASK_QUEUE_URL == aws_sqs_queue.agent_submit.url &&
       kubernetes_config_map.worker_gateway[0].data.AGENT_RUN_LOGS_BUCKET == aws_s3_bucket.agent_run_logs.bucket &&
       kubernetes_config_map.worker_gateway[0].data.AGENT_FALLBACK_BUCKET == aws_s3_bucket.agent_run_logs.bucket &&
-      kubernetes_config_map.worker_gateway[0].data.ADP_DOOR_SERVICE_URL == var.agent_door_service_url
+      kubernetes_config_map.worker_gateway[0].data.ADP_DOOR_SERVICE_URL == var.agent_door_service_url &&
+      kubernetes_config_map.worker_gateway[0].data.AGENT_WORKER_AUDIT_LOG_GROUP == "/aws/eks/${local.eks_cluster_name}/cluster"
     )
     error_message = "Gateway task and archive settings must select only this environment's resources."
   }
@@ -452,6 +457,13 @@ run "active_run_services_are_gateway_owned" {
       Resource = ["${aws_s3_bucket.agent_run_logs.arn}/runs/*"]
     }
     error_message = "Gateway archive writes must be limited to the run namespace."
+  }
+  assert {
+    condition = jsondecode(aws_iam_role_policy.gateway_authorized_dispatch[0].policy).Statement[4] == {
+      Sid      = "ReadWorkerExitAudit", Effect = "Allow", Action = ["logs:FilterLogEvents"],
+      Resource = ["arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/aws/eks/${local.eks_cluster_name}/cluster:*"]
+    }
+    error_message = "Worker-exit recovery may read only this cluster's audit log group."
   }
   assert {
     condition = (
@@ -527,6 +539,13 @@ run "managed_gateway_grants_do_not_consume_inline_quota" {
       Resource = ["arn:aws:s3:::adp-dev-agent-run-logs-123456789012/runs/*"]
     }
     error_message = "Managed policy must retain the exact run archive prefix."
+  }
+  assert {
+    condition = jsondecode(aws_iam_policy.gateway_authorized_dispatch[0].policy).Statement[4] == {
+      Sid      = "ReadWorkerExitAudit", Effect = "Allow", Action = ["logs:FilterLogEvents"],
+      Resource = ["arn:aws:logs:us-east-1:123456789012:log-group:/aws/eks/adp-dev-eks-cluster/cluster:*"]
+    }
+    error_message = "Managed worker-exit recovery must not broaden the audit-read scope."
   }
   assert {
     condition = (
@@ -719,5 +738,42 @@ run "workers_cannot_read_internal_authority" {
   assert {
     condition     = length([for s in local.agent_worker_scoped_policy.Statement : s if try(s.Sid, "") == "DenyInternalAuthoritySecrets" && s.Effect == "Deny"]) == 1
     error_message = "Even legacy worker policies must explicitly deny internal authority secret access."
+  }
+}
+
+run "operations_default_off" {
+  command = plan
+  assert {
+    condition     = local.worker_gateway_config.ADP_ENGINE_OPERATIONS_EXECUTOR == "false" && !output.release_configuration.engine_operations_executor_enabled
+    error_message = "Operations must remain off in new installations and runtime wiring by default."
+  }
+}
+
+run "operations_require_protected_authority" {
+  command = plan
+  variables {
+    engine_operations_executor_enabled = true
+    agent_authority_enabled            = false
+    shared_run_reporting_enabled       = true
+  }
+  expect_failures = [var.engine_operations_executor_enabled]
+}
+
+run "operations_enable_all_consumers" {
+  command = plan
+  variables {
+    engine_operations_executor_enabled     = true
+    agent_authority_enabled                = true
+    shared_run_reporting_enabled           = true
+    agent_authority_runtime_ready          = true
+    agent_authority_legacy_workers_drained = true
+    agent_worker_admission_paused          = true
+  }
+  assert {
+    condition = (
+      local.worker_gateway_config.ADP_ENGINE_OPERATIONS_EXECUTOR == "true" &&
+      output.release_configuration.engine_operations_executor_enabled
+    )
+    error_message = "Gateway and retained upgrade settings must share the operations opt-in."
   }
 }

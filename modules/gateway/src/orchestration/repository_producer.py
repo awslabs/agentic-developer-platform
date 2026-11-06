@@ -18,9 +18,19 @@ from .execution_runner import OperationIdentity, RunnerContext
 from .execution_state import ActionIntent, ExecutionIdentity, ExecutionPhase, Observation, ObservedOutcome, OutcomeKind
 from .execution_store import create_execution, load_execution, prepare_action, record_observation
 from .models import OrchestrationAcceptedPlan, OrchestrationAction, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
-from .repository_evaluation import authorize, record, sources_for
+from .repository_evaluation import (
+    _ProviderBudget,
+    authorize,
+    block_on_required_inputs,
+    multi_repository_sources,
+    record,
+    repository_mode_supported,
+    scoped_binding,
+    sources_for,
+)
 from .repository_evaluation_contract import canonical, harness_digest
 from .repository_evaluation_provider import RepositoryEvidenceProvider, require
+from .review_cycle import CycleBlockedError
 from .runtime_policy import flow_started_at
 from .state import ActorKind, NodeState, transition
 from .work_claims import ClaimBinding, ClaimOwner, Disposition, OwnerKind, claim_work
@@ -28,6 +38,8 @@ from .work_claims import ClaimBinding, ClaimOwner, Disposition, OwnerKind, claim
 CONTEXT_KIND = "repository_scan_context"
 PRODUCER_KIND = "repository_scan_dispatch"
 CLI_PRODUCER_KIND = "cli_qualification_dispatch"
+MULTI_CONTEXT_KIND = "multi_repository_context"
+MULTI_PROBE_KIND = "multi_repository_probe_dispatch"
 
 # Collection-only compatibility for the verifier that admitted bounded knowledge
 # runs but rejected their shared workflow triggers at settlement. It cannot admit
@@ -36,10 +48,39 @@ COLLECTION_COMPATIBLE_HARNESSES = frozenset({"1ac0df68d1dd5c762d704148f43b7026ea
 
 
 def producer_kind(spec):
+    if spec.evidence_schema == "multi-repository-evaluation/v1" and spec.mode == "deployed":
+        return MULTI_PROBE_KIND
     return CLI_PRODUCER_KIND if spec.evidence_schema == "cli-live-evaluation/v1" else PRODUCER_KIND
 
 
+def probe_manifest(sources, environment):
+    """Only deployment coordinates, never the engine's claim or Product identity."""
+    return canonical(
+        {
+            "runtime_contract": environment.runtime_contract,
+            "target_contract_hash": environment.target_contract_hash,
+            "sources": sorted(
+                (
+                    {
+                        "address": source["address"],
+                        "repository_id": source["repository_id"],
+                        "revision": source["head_sha"],
+                        "deployment_receipt_key": source["deployment_receipt_key"],
+                        "components": sorted(source["components"]),
+                        "runtime_artifacts": sorted(source["runtime_artifacts"], key=lambda item: item["component"]),
+                        "targets": source["deployment_targets"],
+                    }
+                    for source in sources
+                ),
+                key=lambda source: source["address"],
+            ),
+        }
+    )
+
+
 def context_kind(spec):
+    if spec.evidence_schema == "multi-repository-evaluation/v1":
+        return MULTI_CONTEXT_KIND
     return "cli_qualification_context" if spec.evidence_schema == "cli-live-evaluation/v1" else CONTEXT_KIND
 
 
@@ -56,6 +97,48 @@ class RepositoryScanProvider(WorkflowProvider):
         # Reuse the repository-scoped reader across preflight/reconciliation.
         # An actions-write credential is minted only for the single dispatch.
         return await super().token(binding, write=True) if write else await self.evidence.token(binding)
+
+    async def probe_preflight(self, binding, spec, source_snapshot_hash, sources):
+        probe = spec.probe
+        require(probe is not None and spec.environment is not None, "probe_specification_missing")
+        manifest = probe_manifest(sources, spec.environment)
+        from .evaluation_contract import multi_repository_models
+
+        criteria = canonical([item.model_dump(mode="json") for item in spec.criteria])
+        inputs = {
+            **probe.inputs,
+            "source_snapshot_hash": source_snapshot_hash,
+            "source_manifest": manifest,
+            "specification_digest": multi_repository_models().specification_digest(spec),
+            "probe_criteria": criteria,
+        }
+        require(
+            len(inputs) + len(TRANSPORT_INPUTS) <= 10 and sum(len(name.encode()) + len(value.encode()) for name, value in inputs.items()) <= 60000,
+            "probe_dispatch_inputs_too_large",
+        )
+        ref = WorkflowRef(
+            path=probe.path,
+            definition_revision=probe.definition_revision,
+            allowed_inputs={name: frozenset({value}) for name, value in inputs.items()},
+            correlation_input=CORRELATION_INPUT,
+        )
+        definition = await self.definition(binding, ref, spec.harness.source_revision)
+        require(definition.dispatchable and definition.evidence_transport == "github-artifact", "probe_workflow_unavailable")
+        require(
+            definition.defaults.keys() == inputs.keys() | TRANSPORT_INPUTS,
+            "probe_workflow_inputs_changed",
+        )
+        _, content = await self.evidence.definition_blob(binding, probe.path, probe.definition_revision)
+        document = yaml.safe_load(content)
+        events = document.get("on", document.get(True)) if isinstance(document, dict) else None
+        concurrency = document.get("concurrency") if isinstance(document, dict) else None
+        require(isinstance(events, dict) and set(events) == {"workflow_dispatch"}, "probe_workflow_events_changed")
+        require(
+            isinstance(concurrency, dict) and bool(concurrency.get("group")) and concurrency.get("cancel-in-progress") is False,
+            "probe_workflow_concurrency_missing",
+        )
+        require(document.get("run-name") == "${{ format('ADP deployment {0}', inputs.adp_correlation) }}", "probe_run_name_unverifiable")
+        return dict(source_revision=spec.harness.source_revision, definition=asdict(definition), workflow=asdict(ref), inputs=inputs)
 
     async def observe(self, binding, *, workflow, definition, target, source_revision, inputs, correlation):
         # Repository-wide history is unbounded and the scanned source can differ
@@ -117,7 +200,17 @@ class RepositoryScanProvider(WorkflowProvider):
         )
         definition = await self.definition(binding, ref, source)
         require(TRANSPORT_INPUTS <= definition.defaults.keys(), "producer_correlation_unavailable")
-        require(definition.defaults.keys() - TRANSPORT_INPUTS == producer.inputs.keys(), "producer_unaccepted_default_inputs")
+        # Every lane input must be pinned by the accepted contract, except the lane
+        # inputs whose only acceptable value the contract already implies: for those
+        # the workflow default must equal the implied pin, so a new default cannot
+        # re-point an evaluation that was accepted before the input existed (#7695).
+        implied = producer.implied_inputs() if hasattr(producer, "implied_inputs") else {}
+        unpinned = definition.defaults.keys() - TRANSPORT_INPUTS - producer.inputs.keys()
+        require(
+            producer.inputs.keys() <= definition.defaults.keys() - TRANSPORT_INPUTS
+            and all(name in implied and definition.defaults.get(name) == implied[name] for name in unpinned),
+            "producer_unaccepted_default_inputs",
+        )
         _, content = await self.evidence.definition_blob(binding, workflow.path, definition_revision)
         document = yaml.safe_load(content)
         events = document.get("on", document.get(True)) if isinstance(document, dict) else None
@@ -159,14 +252,17 @@ async def binding_for(session, node, spec):
     )
 
 
-async def producer_state(session, context):
+async def producer_state(session, context, *, allow_multi_source_refresh=False, observed_at=None):
     loaded = await load_execution(session, identity=context.identity)
     require(loaded is not None and loaded.kind is OutcomeKind.APPLIED, "producer_execution_changed")
     node = await session.get(OrchestrationNode, context.identity.node_id, populate_existing=True)
     require(node is not None and node.org_id == context.identity.org_id and node.flow_id == context.execution.flow_id, "producer_node_changed")
     require(node.kind == "eval" and node.state == "running" and node.attempts == context.identity.cycle, "producer_cycle_changed")
     accepted = await accepted_evaluation(session, node)
-    require(accepted is not None and accepted[1].producer is not None, "producer_contract_missing")
+    require(
+        accepted is not None and (accepted[1].evidence_schema == "multi-repository-evaluation/v1" or accepted[1].producer is not None),
+        "producer_contract_missing",
+    )
     plan, spec, _ = accepted
     attached = await accepted_contract(session, node=node, plan=plan)
     require(attached is not None and plan.version == context.identity.accepted_plan_version, "producer_acceptance_changed")
@@ -191,6 +287,54 @@ async def producer_state(session, context):
         "producer_acceptance_changed",
     )
     require(data["plan_id"] == plan.id and data["plan_hash"] == plan.plan_hash, "producer_plan_or_harness_changed")
+    if spec.evidence_schema == "multi-repository-evaluation/v1":
+        require(repository_mode_supported(spec), "producer_plan_or_harness_changed")
+        claim = await session.get(OrchestrationWorkClaim, context.identity.claim_id, populate_existing=True)
+        require(
+            claim is not None
+            and claim.state == "held"
+            and claim.generation == context.identity.claim_generation
+            and claim.owner_kind == "engine_flow"
+            and claim.owner_ref == node.flow_id
+            and claim.provider_repository_id == spec.harness.repository_id
+            and node.issue_ref is not None
+            and str(claim.issue_number) == node.issue_ref,
+            "producer_claim_changed",
+        )
+        if data.get("correction_operation_key"):
+            require(spec.mode == "deployed", "producer_retest_mode_changed")
+            require(
+                sorted(data["receipt_keys"]) == data["receipt_keys"]
+                and len(data["receipt_keys"]) == len(set(data["receipt_keys"])) == len(spec.predecessors)
+                and set(data["unchanged_revisions"])
+                == {source.address for source in spec.predecessors if source.address != data["affected_source_address"]},
+                "producer_retest_scope_changed",
+            )
+            spec = spec.model_copy(update={"environment": spec.environment.model_copy(update={"deployment_receipt_keys": data["receipt_keys"]})})
+        sources, _, harness = await multi_repository_sources(session, node, plan, spec, observed_at=observed_at)
+        if data.get("correction_operation_key"):
+            require(
+                data["receipt_keys"] == sorted(source["deployment_receipt_key"] for source in sources)
+                and all(
+                    source["head_sha"] == data["unchanged_revisions"][source["address"]]
+                    for source in sources
+                    if source["address"] != data["affected_source_address"]
+                ),
+                "producer_retest_sources_changed",
+            )
+        current_hash = digest(sources)
+        if current_hash != data["source_snapshot_hash"]:
+            require(
+                not data.get("correction_operation_key") and allow_multi_source_refresh and context.execution.status in {"blocked", "concluded"},
+                "producer_sources_changed",
+            )
+            require(datetime.now(UTC) < context.execution.deadline_at, "producer_deadline_expired")
+            require(
+                data.get("source_scope") == [[source["address"], source["node_id"], source["repository_id"]] for source in sources],
+                "producer_source_scope_changed",
+            )
+            data = {**data, "source_snapshot_hash": current_hash}
+        return node, plan, spec, attached, data, sources, scoped_binding(node.org_id, harness)
     if spec.runner.harness_sha256 != harness_digest():
         require(
             spec.evidence_schema == "workflow-evaluation/v1" and spec.runner.harness_sha256 in COLLECTION_COMPATIBLE_HARNESSES,
@@ -226,14 +370,18 @@ async def producer_state(session, context):
 
 async def admit_producer(session, node, *, provider=None):
     evidence = provider or RepositoryEvidenceProvider()
-    producer_provider = RepositoryScanProvider(evidence=evidence)
     accepted = await accepted_evaluation(session, node)
+    if accepted is not None and accepted[1].evidence_schema == "multi-repository-evaluation/v1":
+        return await admit_multi_repository_producer(session, node, accepted, evidence=evidence)
+    producer_provider = RepositoryScanProvider(evidence=evidence)
     require(accepted is not None and accepted[1].producer is not None, "producer_contract_missing")
     plan, spec, _ = accepted
     require(spec.runner.harness_sha256 == harness_digest(), "producer_harness_changed")
     attached = await accepted_contract(session, node=node, plan=plan)
     require(attached is not None, "producer_explicit_acceptance_required")
     require(node.state == "ready", "producer_node_not_ready")
+    if await block_on_required_inputs(session, node):
+        return True
     binding = await binding_for(session, node, spec)
     authority = await authorize(session, node, plan, spec, binding, evidence)
     sources = await sources_for(session, node, plan, spec)
@@ -269,6 +417,8 @@ async def admit_producer(session, node, *, provider=None):
         "producer_admission_changed",
     )
     require(await authorize(session, node, current, spec, binding, evidence) == authority, "producer_authority_changed")
+    if await block_on_required_inputs(session, node):
+        return True
     previous = await session.scalar(
         select(OrchestrationAction.id)
         .where(
@@ -332,5 +482,169 @@ async def admit_producer(session, node, *, provider=None):
     )
     await record(
         session, node, dict(action="repository_scan_admitted", execution_id=created.record.id, acceptance_decision_id=fresh[0].id), before="ready"
+    )
+    return True
+
+
+async def admit_multi_repository_producer(session, node, accepted, *, evidence):
+    from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+    plan, spec, _ = accepted
+    require(repository_mode_supported(spec), "evaluation_adapter_unavailable")
+    attached = await accepted_contract(session, node=node, plan=plan)
+    require(attached is not None, "producer_explicit_acceptance_required")
+    require(node.state == "ready" and node.issue_ref is not None and node.issue_ref.isdecimal(), "harness_issue_required")
+    if await block_on_required_inputs(session, node):
+        return True
+    sources, bindings, harness = await multi_repository_sources(session, node, plan, spec)
+    try:
+        verified_issue = await resolve_story_repository(
+            session,
+            tenant_id=node.org_id,
+            name=spec.harness.repository,
+            issue=int(node.issue_ref),
+            operation="evaluate",
+            repository_id=spec.harness.repository_id,
+            installation_id=spec.harness.installation_id,
+        )
+    except RepositoryBindingError as error:
+        raise CycleBlockedError("repository_evaluation_harness_" + error.code) from None
+    require(
+        verified_issue.issue_id is not None
+        and verified_issue.repository_id == harness.repository_id
+        and verified_issue.installation_id == harness.installation_id,
+        "harness_issue_unverifiable",
+    )
+    harness_binding = scoped_binding(node.org_id, verified_issue)
+    async with _ProviderBudget():
+        for verified in bindings.values():
+            await evidence.token(scoped_binding(node.org_id, verified))
+    source_repositories = tuple(bindings[expected.address].full_name for expected in spec.predecessors)
+    authority = await authorize(
+        session,
+        node,
+        plan,
+        spec,
+        harness_binding,
+        evidence,
+        source_repositories=source_repositories,
+    )
+    expected = (plan.id, plan.version, plan.plan_hash, attached[0].id, digest(sources), node.attempts)
+    flow = await session.scalar(
+        select(OrchestrationFlow)
+        .where(OrchestrationFlow.id == node.flow_id, OrchestrationFlow.org_id == node.org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    current = await session.scalar(
+        select(OrchestrationAcceptedPlan)
+        .where(
+            OrchestrationAcceptedPlan.flow_id == node.flow_id,
+            OrchestrationAcceptedPlan.org_id == node.org_id,
+            OrchestrationAcceptedPlan.superseded_at.is_(None),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    node = await session.scalar(
+        select(OrchestrationNode)
+        .where(OrchestrationNode.id == node.id, OrchestrationNode.org_id == node.org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    require(flow is not None and flow.state in {"pending", "running"} and node.state == "ready", "producer_admission_raced")
+    require(current is not None, "producer_admission_changed")
+    fresh = await accepted_contract(session, node=node, plan=current)
+    require(
+        fresh is not None
+        and fresh[1] == spec
+        and (
+            current.id,
+            current.version,
+            current.plan_hash,
+            fresh[0].id,
+            digest(await sources_for(session, node, current, spec, lock=True)),
+            node.attempts,
+        )
+        == expected,
+        "producer_admission_changed",
+    )
+    require(
+        await authorize(session, node, current, spec, harness_binding, evidence, source_repositories=source_repositories) == authority,
+        "producer_authority_changed",
+    )
+    if await block_on_required_inputs(session, node):
+        return True
+    previous = await session.scalar(
+        select(OrchestrationAction.id)
+        .where(
+            OrchestrationAction.org_id == node.org_id,
+            OrchestrationAction.kind == MULTI_CONTEXT_KIND,
+            OrchestrationAction.detail["acceptance_decision_id"].as_string() == fresh[0].id,
+        )
+        .limit(1)
+    )
+    require(previous is None, "producer_acceptance_already_admitted")
+    started = await flow_started_at(session, org_id=node.org_id, flow_id=node.flow_id)
+    require(started is not None, "producer_start_time_unverifiable")
+    deadline = min(fresh[2].expires_at, started + timedelta(seconds=fresh[2].limits.max_wall_clock_seconds))
+    claim = await claim_work(
+        session,
+        binding=ClaimBinding(node.org_id, harness.repository_id, int(node.issue_ref)),
+        owner=ClaimOwner(OwnerKind.ENGINE_FLOW, node.flow_id),
+        event_id="multi-repository-evaluation:" + fresh[0].id,
+    )
+    require(claim.disposition is Disposition.ADMITTED, "producer_claim_unavailable")
+    require(
+        transition(node.state, NodeState.RUNNING, actor_kind=ActorKind.SERVICE, reason="Accepted repository evidence collection").allowed,
+        "producer_transition_refused",
+    )
+    node.state = "running"
+    node.attempts += 1
+    identity = ExecutionIdentity(node.org_id, node.id, node.attempts, current.version, claim.claim_id, claim.generation)
+    created = await create_execution(
+        session,
+        identity=identity,
+        flow_id=node.flow_id,
+        phase=ExecutionPhase.EVALUATION_PENDING,
+        next_check_at=datetime.now(UTC),
+        deadline_at=deadline,
+    )
+    require(created.kind is OutcomeKind.APPLIED, "producer_execution_conflict")
+    context = RunnerContext(identity, created.record, datetime.now(UTC))
+    key = OperationIdentity.from_context(context, MULTI_CONTEXT_KIND, fresh[0].id).key
+    data = dict(
+        source_scope=[[source["address"], source["node_id"], source["repository_id"]] for source in sources],
+        acceptance_decision_id=fresh[0].id,
+        specification_hash=digest(spec.model_dump(mode="json")),
+        source_snapshot_hash=digest(sources),
+        plan_id=current.id,
+        plan_hash=current.plan_hash,
+        evaluation_policy_hash=authority[1],
+    )
+    require(
+        (await prepare_action(session, identity=identity, intent=ActionIntent(key, MULTI_CONTEXT_KIND, detail=data))).kind is OutcomeKind.APPLIED,
+        "producer_context_conflict",
+    )
+    require(
+        (
+            await record_observation(
+                session,
+                identity=identity,
+                observation=Observation(
+                    key,
+                    ObservedOutcome.SUCCEEDED,
+                    receipt_ref="evaluation/context/" + created.record.id,
+                ),
+            )
+        ).kind
+        is OutcomeKind.APPLIED,
+        "producer_context_conflict",
+    )
+    await record(
+        session,
+        node,
+        dict(action="multi_repository_admitted", execution_id=created.record.id, acceptance_decision_id=fresh[0].id),
+        before="ready",
     )
     return True

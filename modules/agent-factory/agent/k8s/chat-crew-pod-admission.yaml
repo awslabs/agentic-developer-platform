@@ -1,0 +1,187 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: adp-crew-pod-template
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+        scope: Namespaced
+  matchConditions:
+    - name: crew-pod-only
+      expression: >-
+        ((has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'adp-crew-pod') ||
+         (has(object.metadata.labels) && 'adp.io/crew-pod' in object.metadata.labels))
+  validations:
+    - expression: >-
+        object.spec.serviceAccountName == 'adp-crew-pod' &&
+        has(object.metadata.labels) && object.metadata.labels['adp.io/crew-pod'] == 'true' &&
+        !('adp.io/chat-sandbox' in object.metadata.labels) &&
+        !('adp.io/run-hash' in object.metadata.labels) &&
+        !('adp.io/session-hash' in object.metadata.labels) &&
+        'adp.io/owner-key' in object.metadata.labels &&
+        object.metadata.labels['adp.io/owner-key'].matches('^[a-f0-9]{52}$') &&
+        has(object.metadata.annotations) &&
+        'adp.io/session-hash' in object.metadata.annotations &&
+        object.metadata.annotations['adp.io/session-hash'].matches('^[a-f0-9]{64}$') &&
+        'adp.io/run-hash' in object.metadata.annotations &&
+        object.metadata.annotations['adp.io/run-hash'].matches('^[a-f0-9]{64}$') &&
+        has(object.metadata.generateName) &&
+        object.metadata.generateName == 'chat-turn-' + object.metadata.annotations['adp.io/run-hash'].substring(0, 12) + '-'
+      message: Chat Crew pod identity and run digest annotation must match the trusted template
+    - expression: >-
+        request.userInfo.username == 'system:serviceaccount:adp-gateway-agents:adp-chat-supervisor'
+      message: Only the trusted supervisor may create Crew pods
+    - expression: >-
+        object.spec.automountServiceAccountToken == false &&
+        object.spec.enableServiceLinks == false &&
+        object.spec.shareProcessNamespace == false &&
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false) &&
+        object.spec.restartPolicy == 'Never' && !has(object.spec.activeDeadlineSeconds) && object.spec.terminationGracePeriodSeconds == 120 &&
+        !has(object.spec.initContainers) && !has(object.spec.ephemeralContainers) &&
+        !has(object.spec.imagePullSecrets)
+      message: Chat Crew podes cannot access host namespaces, service links or extra containers
+    - expression: >-
+        has(object.spec.securityContext) && object.spec.securityContext.runAsNonRoot == true &&
+        object.spec.securityContext.runAsUser == 10001 &&
+        object.spec.securityContext.fsGroup == 10001 &&
+        object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
+      message: Chat Crew pod pod security context must be restricted
+    # resource.Quantity has no CEL type in the apiserver's Pod schema (OpenAPI oneOf
+    # string|number), so the type checker drops those fields and a direct reference is
+    # reported in status.typeChecking as "undefined field". Read them through dyn() and
+    # compare as quantities (Kubernetes CEL quantity library).
+    - expression: >-
+        size(object.spec.volumes) == 4 &&
+        object.spec.volumes.exists_one(volume, volume.name == 'gateway-ca' && has(volume.configMap) &&
+          volume.configMap.name.matches('^chat-sandbox-gateway-ca-[a-f0-9]{16}$') &&
+          volume.configMap.defaultMode == 292 &&
+          size(volume.configMap.items) == 1 && volume.configMap.items[0].key == 'ca.crt' && volume.configMap.items[0].path == 'ca.crt') &&
+        object.spec.volumes.exists_one(v, v.name == 'scratch' && has(v.emptyDir) && has(dyn(v.emptyDir).sizeLimit) &&
+          quantity(dyn(v.emptyDir).sizeLimit) == quantity('2Gi')) &&
+        object.spec.volumes.exists_one(v, v.name == 'crew-home' && has(v.persistentVolumeClaim) &&
+          v.persistentVolumeClaim.claimName == 'crew-home-' + object.metadata.labels['adp.io/owner-key'] &&
+          (!has(v.persistentVolumeClaim.readOnly) || v.persistentVolumeClaim.readOnly == false)) &&
+        object.spec.volumes.exists_one(v, v.name == 'sandbox-identity' && has(v.projected) &&
+          v.projected.defaultMode == 292 &&
+          size(v.projected.sources) == 1 && has(v.projected.sources[0].serviceAccountToken) &&
+          v.projected.sources[0].serviceAccountToken.audience == 'adp-agent-bootstrap' &&
+          v.projected.sources[0].serviceAccountToken.path == 'token' &&
+          v.projected.sources[0].serviceAccountToken.expirationSeconds == 600)
+      message: Chat Crew podes may mount only their scoped identity, public gateway CA and fresh scratch
+    - expression: >-
+        size(object.spec.containers) == 1 &&
+        object.spec.containers[0].name == 'chat-agent' &&
+        object.spec.containers[0].image.matches('^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$') &&
+        object.spec.containers[0].imagePullPolicy == 'IfNotPresent' &&
+        object.spec.containers[0].command == ['/app/chat-sandbox-entrypoint'] &&
+        object.spec.containers[0].workingDir == '/tmp' &&
+        !has(object.spec.containers[0].args) &&
+        !has(object.spec.containers[0].envFrom)
+      message: Chat Crew pod image and entrypoint must be pinned
+    # resource.Quantity has no CEL type in the apiserver's Pod schema (OpenAPI oneOf
+    # string|number), so the type checker drops those fields and a direct reference is
+    # reported in status.typeChecking as "undefined field". Read them through dyn() and
+    # compare as quantities (Kubernetes CEL quantity library).
+    - expression: >-
+        has(dyn(object.spec.containers[0].resources).requests) &&
+        has(dyn(object.spec.containers[0].resources).limits) &&
+        quantity(dyn(object.spec.containers[0].resources).requests.cpu) == quantity('500m') &&
+        quantity(dyn(object.spec.containers[0].resources).requests.memory) == quantity('1Gi') &&
+        quantity(dyn(object.spec.containers[0].resources).requests['ephemeral-storage']) == quantity('256Mi') &&
+        quantity(dyn(object.spec.containers[0].resources).limits.cpu) == quantity('2') &&
+        quantity(dyn(object.spec.containers[0].resources).limits.memory) == quantity('6Gi') &&
+        quantity(dyn(object.spec.containers[0].resources).limits['ephemeral-storage']) == quantity('4Gi')
+      message: Crew pod resources must stay within the reviewed budget
+    - expression: >-
+        (object.spec.containers[0].env.exists(e, e.name == 'ADP_EXECUTOR' && e.value == 'kirocrew') ?
+          (size(object.spec.containers[0].env) == 14 || size(object.spec.containers[0].env) == 15 ||
+           size(object.spec.containers[0].env) == 16) :
+          size(object.spec.containers[0].env) == 12) &&
+        object.spec.containers[0].env.all(e,
+          (e.name == 'ADP_CREW_POD_IP' && has(e.valueFrom) && !has(e.value) &&
+           e.valueFrom.fieldRef.fieldPath == 'status.podIP') ||
+          (has(e.value) && !has(e.valueFrom) &&
+          e.name in ['ADP_CHAT_MODEL_POLICY_ENABLED', 'ADP_CHAT_DATA_ENABLED',
+            'ADP_CHAT_DATA_URL', 'CONTEXT_STRATEGY', 'MEMORY_STRATEGY',
+            'ARTIFACT_STRATEGY', 'ADP_WORKLOAD_TOKEN_FILE', 'CLAUDE_CONFIG_DIR', 'HOME', 'NODE_EXTRA_CA_CERTS', 'KIROCREW_HOME', 'ADP_RUN_ID', 'ADP_CREW_CUSTODY_PORT', 'ADP_CREW_DASHBOARD_ORIGIN', 'ADP_CREW_SCOPE'])) &&
+        (!object.spec.containers[0].env.exists(e, e.name == 'ADP_EXECUTOR' && e.value == 'kirocrew') ||
+          object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CREW_POD_IP' && has(e.valueFrom) &&
+            e.valueFrom.fieldRef.fieldPath == 'status.podIP')) &&
+        (!object.spec.containers[0].env.exists(e, e.name == 'ADP_EXECUTOR' && e.value == 'kirocrew') ||
+          object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CREW_CUSTODY_PORT' && e.value == '5477')) &&
+        (!object.spec.containers[0].env.exists(e, e.name == 'ADP_CREW_SCOPE') ||
+          object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CREW_SCOPE' && e.value == 'user')) &&
+        (!object.spec.containers[0].env.exists(e, e.name == 'ADP_CREW_DASHBOARD_ORIGIN') ||
+          object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CREW_DASHBOARD_ORIGIN' &&
+            e.value.matches('^https://[a-z0-9.-]+$'))) &&
+        object.spec.containers[0].env.exists_one(entry, entry.name == 'NODE_EXTRA_CA_CERTS' && entry.value == '/var/run/adp-chat-ca/ca.crt') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CHAT_MODEL_POLICY_ENABLED' && e.value == 'true') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CHAT_DATA_ENABLED' && e.value == 'true') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_WORKLOAD_TOKEN_FILE' && e.value == '/var/run/adp-model/token') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'CONTEXT_STRATEGY' && e.value == 'gateway') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'MEMORY_STRATEGY' && e.value == 'gateway') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ARTIFACT_STRATEGY' && e.value == 'gateway') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'CLAUDE_CONFIG_DIR' && e.value == '/tmp/workspace/.claude') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'HOME' && e.value == '/tmp/workspace') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'KIROCREW_HOME' && e.value == '/tmp/workspace') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_RUN_ID' && e.value.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')) &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CHAT_DATA_URL' && e.value == 'https://chat-sandbox-gateway.adp-gateway.svc:8443')
+      message: Chat Crew podes cannot inherit service credentials or configuration
+    - expression: >-
+        size(object.spec.containers[0].volumeMounts) == 4 &&
+        object.spec.containers[0].volumeMounts.exists_one(mount,
+          mount.name == 'gateway-ca' && mount.mountPath == '/var/run/adp-chat-ca' && mount.readOnly == true &&
+          !has(mount.subPath) && !has(mount.subPathExpr)) &&
+        object.spec.containers[0].volumeMounts.exists_one(m,
+          m.name == 'sandbox-identity' && m.mountPath == '/var/run/adp-model' && m.readOnly == true &&
+          !has(m.subPath) && !has(m.subPathExpr)) &&
+        object.spec.containers[0].volumeMounts.exists_one(m,
+          m.name == 'scratch' && m.mountPath == '/tmp' && !has(m.subPath) && !has(m.subPathExpr)) &&
+        object.spec.containers[0].volumeMounts.exists_one(m,
+          m.name == 'crew-home' && m.mountPath == '/tmp/workspace' &&
+          (!has(m.readOnly) || m.readOnly == false) && !has(m.subPath) && !has(m.subPathExpr))
+      message: Chat Crew pod identity and scratch mounts must not be substituted
+    - expression: >-
+        has(object.spec.containers[0].securityContext) &&
+        object.spec.containers[0].securityContext.runAsNonRoot == true &&
+        object.spec.containers[0].securityContext.runAsUser == 10001 &&
+        object.spec.containers[0].securityContext.readOnlyRootFilesystem == true &&
+        object.spec.containers[0].securityContext.allowPrivilegeEscalation == false &&
+        !has(object.spec.containers[0].securityContext.privileged) &&
+        object.spec.containers[0].securityContext.capabilities.drop == ['ALL'] &&
+        object.spec.containers[0].securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        (object.spec.containers[0].env.exists(e, e.name == 'ADP_EXECUTOR' && e.value == 'kirocrew') ?
+          (has(object.spec.containers[0].ports) && size(object.spec.containers[0].ports) == 2 &&
+            object.spec.containers[0].ports.exists_one(p, p.containerPort == 5476 && p.protocol == 'TCP' &&
+              !has(p.name) && !has(p.hostPort) && !has(p.hostIP)) &&
+            object.spec.containers[0].ports.exists_one(p, p.containerPort == 5477 && p.protocol == 'TCP' &&
+              !has(p.name) && !has(p.hostPort) && !has(p.hostIP))) :
+          !has(object.spec.containers[0].ports)) &&
+        !has(object.spec.containers[0].volumeDevices)
+      message: Chat Crew pod process must not gain host or container privileges
+    - expression: >-
+        has(object.spec.hostAliases) && size(object.spec.hostAliases) == 1 &&
+        object.spec.hostAliases[0].hostnames == ['chat-sandbox-gateway.adp-gateway.svc'] &&
+        object.spec.hostAliases[0].ip.matches('^(10[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])') &&
+        size(object.spec.hostAliases[0].ip.split('.')) == 4 &&
+        object.spec.hostAliases[0].ip.split('.').all(octet, octet.matches('^(0|[1-9][0-9]{0,2})$') && int(octet) <= 255)
+      message: Chat Crew pod address mapping must name only the private gateway Service
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: adp-crew-pod-template
+spec:
+  policyName: adp-crew-pod-template
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: adp-gateway-agents

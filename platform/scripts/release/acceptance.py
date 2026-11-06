@@ -1,5 +1,6 @@
 """Live promotion gate. Emit only allowlisted results, never tokens or state."""
 import json
+import importlib.util
 from pathlib import Path
 import subprocess
 import tempfile
@@ -52,8 +53,7 @@ def check(directory, environment, upgrade_directory):
     require(gateway['spec']['template']['spec']['containers'][0]['image'] == image_uri(manifest, 'gateway', account), 'Gateway image differs from release')
     checks.append('gateway_ready_at_release_digest')
     for name, namespace, image in [('agent-scaledjob', 'adp-agents', 'agent-runtime'),
-                                   ('agent-gateway-worker', 'adp-gateway-agents', 'agent-gateway'),
-                                   ('chat-agent-worker', 'adp-gateway-agents', 'chat-agent')]:
+                                   ('agent-gateway-worker', 'adp-gateway-agents', 'agent-gateway')]:
         scaled = kube('scaledjob', name, namespace)
         check_worker_admission(scaled, name)
         require(any(c['type'] == 'Ready' and c['status'] == 'True' for c in scaled['status']['conditions']), f'{name} is not Ready')
@@ -63,9 +63,15 @@ def check(directory, environment, upgrade_directory):
         daemon = kube('daemonset', name, namespace)
         require(daemon['status'].get('numberReady', 0) == daemon['status']['desiredNumberScheduled'] > 0, f'{name} is not Ready')
         require(daemon['spec']['template']['spec']['containers'][0]['image'] == image_uri(manifest, image, account), f'{name} image differs from release')
-    config = kube('configmap', 'chat-agent-config', 'adp-gateway-agents')['data']
-    require(not any('REPLACE_WITH_' in value for value in config.values()) and config['ADP_BEDROCK_VIA'] == 'gateway', 'Incomplete chat configuration')
     checks.append('required_factory_workers_ready_at_release_digests')
+    # The candidate retires the credentialed chat worker. Verify that intended
+    # state explicitly; neither a paused legacy worker nor a dead entrypoint is
+    # evidence of functioning delegated chat.
+    spec = importlib.util.spec_from_file_location('chat_retirement', ROOT / 'platform/scripts/upgrade-chat.py')
+    chat = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(chat)
+    chat_status = chat.verify(chat.identity(account, REGION, 'dev'), account, REGION, 'dev', directory / 'lambda/ingest.zip')
+    checks.append('legacy_chat_retired_no_running_jobs_or_legacy_grants')
     functions = {name: deployed for name, (_, _, deployed) in LAMBDAS.items()}
     functions.update({'github-auth-broker': 'bedrockgw-dev-github-auth-broker', 'webhook-github': 'adp-dev-github-webhook'})
     # GitLab is optional; validate its package if Terraform says it is installed.
@@ -143,4 +149,4 @@ def check(directory, environment, upgrade_directory):
     checks.append('existing_admin_login_and_authenticated_websocket')
     return {'status': 'passed', 'account': account, 'environment': environment, 'source_sha': manifest['source_sha'],
             'release_id': manifest['release_id'], 'manifest_sha256': sha256(directory / 'manifest.json'),
-            'frontend_url': base, 'checks': checks}
+            'frontend_url': base, 'checks': checks, 'chat': chat_status}

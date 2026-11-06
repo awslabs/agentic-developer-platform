@@ -1,0 +1,35 @@
+{
+  "kind": "superplane-scoped-backport-source-record-v1",
+  "purpose": "Dedicated reader, provider health and settled bootstrap recovery on the existing integration runtime",
+  "runtime": {
+    "base_revision": "0025522e4a21c5373aa24aa3f0473ccbef4d5f66",
+    "source_revision": "1eb49977c32e6a9c763257ee8f3dbbdce92292dd",
+    "api_digest": "sha256:ea47ea853276a0820acbf7f1019f4f8226fb2a622979ecf4f97165281fd40e21",
+    "worker_digest": "sha256:c1c26cc85a737b818b7d2b70483de8650483d0aa6edc18be1a80728c6f5e9a6c"
+  },
+  "gateway": {
+    "base_revision": "ea320b85207d0b8f780c485f635630f038d99942",
+    "source_revision": "b92794b199e56bd93e5079b47523143b1d595c36",
+    "digest": "sha256:f1115d95550c4c38e2ea8e47d5f6b8113ed5069a9bddf719a791cef98dd05309"
+  },
+  "controller": {
+    "source_revision": "97a992058b49f13d0e8b557f8cbe86a5d6a81701",
+    "digest": "sha256:cd6a4ffda8ac1fab3827278dd8d21fff7df62ee0ca991da3a1fe01c18c78c298",
+    "reuse": "Controller source and build inputs are unchanged in the final runtime revision"
+  },
+  "canonical_pull_requests": [
+    9472,
+    9473,
+    9474,
+    9475
+  ],
+  "canonical_health_test_correction": "2496880943617132b91ffbc5f422b1b62f5712d8",
+  "integration": "Standard merges preserve the canonical application tree while retaining the actual built backport commits in source history",
+  "deployment": "Use the pinned artifact sources, reviewed saved plans and native ownership/admission gates; this source record is not runtime acceptance",
+  "binding_maintenance": {
+    "source_revision": "d0748f6aaa9f0cf6ca6db54707bdde01f2082564",
+    "runtime_parent": "1eb49977c32e6a9c763257ee8f3dbbdce92292dd",
+    "canonical_fix": "834aa37ec3b3cb4b22d4eca8f9e9daf1faae25f4",
+    "scope": "Tooling and its test only; preserve observed shared ConfigMap data while changing the worker digest"
+  }
+}

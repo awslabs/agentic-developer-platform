@@ -48,5 +48,8 @@ export function terminalChatResponse(
     }
   }
   if (matching < 0) return [...messages, result];
-  return messages.map((message, position) => position === matching ? { ...result, id: message.id } : message);
+  // The protected terminal text replaces the streamed bubble, but the source coverage the
+  // AG-UI `answer_evidence` event attached to that bubble is kept with it (#8113).
+  return messages.map((message, position) => position === matching
+    ? { ...result, id: message.id, ...(message.evidence ? { evidence: message.evidence } : {}) } : message);
 }

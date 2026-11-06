@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.org/insights/devlake-observation/v1/observation.schema.json",
+  "title": "Sealed DevLake source observation 1.0",
+  "description": "A sealed source observation, not an authorized admission receipt. Missing source/effective/recorded times and Story associations are not inferred; a separate policy descriptor and current authorization are required before storage.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": "devlake-observation/1.0"},
+    "mapping_version": {"const": "devlake-observation/1.0"},
+    "subject_ref": {"$ref": "#/$defs/qualified_ref"},
+    "source_ref": {"$ref": "#/$defs/qualified_ref"},
+    "source_native_key": {"$ref": "#/$defs/native_ref"},
+    "source_revision": {"$ref": "#/$defs/id"},
+    "source_snapshot": {
+      "type": "object",
+      "properties": {
+        "batch_id": {"type": "string", "format": "uuid"},
+        "generation": {"type": "integer", "minimum": 1},
+        "manifest_sha256": {"$ref": "#/$defs/digest"},
+        "item_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "required": ["batch_id", "generation", "manifest_sha256", "item_sha256"],
+      "additionalProperties": false
+    },
+    "binding": {
+      "type": "object",
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "generation": {"type": "integer", "minimum": 1},
+        "revision": {"type": "integer", "minimum": 1}
+      },
+      "required": ["id", "generation", "revision"],
+      "additionalProperties": false
+    },
+    "native_bytes": {"type": "string", "contentEncoding": "base64"},
+    "native_sha256": {"$ref": "#/$defs/digest"},
+    "normalized_bytes": {"type": "string", "contentEncoding": "base64"},
+    "normalized_sha256": {"$ref": "#/$defs/digest"},
+    "field_map_version": {"$ref": "#/$defs/id"},
+    "source_schema_version": {"$ref": "#/$defs/id"},
+    "source_policy_version": {"$ref": "#/$defs/id"},
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "From": {"$ref": "#/$defs/native_ref"},
+          "To": {"$ref": "#/$defs/native_ref"},
+          "Relation": {"const": "source-reference"},
+          "NativeEvidenceID": {"$ref": "#/$defs/id"}
+        },
+        "required": ["From", "To", "Relation", "NativeEvidenceID"],
+        "additionalProperties": false
+      }
+    },
+    "resolved_relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "from": {"$ref": "#/$defs/qualified_ref"},
+          "to": {"$ref": "#/$defs/qualified_ref"},
+          "relation": {"const": "source-reference"},
+          "native_evidence_id": {"$ref": "#/$defs/id"}
+        },
+        "required": ["from", "to", "relation", "native_evidence_id"],
+        "additionalProperties": false
+      }
+    },
+    "observation_status": {"const": "observation_only"}
+  },
+  "required": ["schema_version", "mapping_version", "subject_ref", "source_ref", "source_native_key", "source_revision", "source_snapshot", "binding", "native_bytes", "native_sha256", "normalized_bytes", "normalized_sha256", "field_map_version", "source_schema_version", "source_policy_version", "relationships", "resolved_relationships", "observation_status"],
+  "additionalProperties": false,
+  "$defs": {
+    "id": {"type": "string", "minLength": 1},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "qualified_ref": {
+      "type": "object",
+      "properties": {
+        "tenant_id": {"$ref": "#/$defs/id"},
+        "project_id": {"$ref": "#/$defs/id"},
+        "source_connection_id": {"$ref": "#/$defs/id"},
+        "record_type": {"$ref": "#/$defs/id"},
+        "record_id": {"$ref": "#/$defs/id"},
+        "record_revision": {"$ref": "#/$defs/id"}
+      },
+      "required": ["tenant_id", "project_id", "source_connection_id", "record_type", "record_id", "record_revision"],
+      "additionalProperties": false
+    },
+    "native_ref": {
+      "type": "object",
+      "properties": {
+        "CellID": {"$ref": "#/$defs/id"},
+        "TenantID": {"$ref": "#/$defs/id"},
+        "ProjectID": {"$ref": "#/$defs/id"},
+        "Tool": {"enum": ["github", "jira"]},
+        "ConnectionID": {"$ref": "#/$defs/id"},
+        "Scope": {"$ref": "#/$defs/id"},
+        "Kind": {"$ref": "#/$defs/id"},
+        "NativeID": {"$ref": "#/$defs/id"}
+      },
+      "required": ["CellID", "TenantID", "ProjectID", "Tool", "ConnectionID", "Scope", "Kind", "NativeID"],
+      "additionalProperties": false
+    }
+  }
+}

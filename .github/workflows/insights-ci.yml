@@ -1,0 +1,64 @@
+name: Insights CI
+on:
+  pull_request:
+    paths:
+      - 'modules/insights/**'
+      - 'docs/engineering-insights/architecture.md'
+      - 'docs/engineering-insights/lineage-schema.md'
+      - 'docs/engineering-insights/README.md'
+      - 'docs/engineering-insights/agentic-engineering-insights-overview.md'
+      - 'docs/engineering-insights/issue-authoring.md'
+      - 'docs/engineering-insights/examples/**'
+      - 'modules/agent-factory/rules/agents/issue-authoring.md'
+      - 'modules/agent-factory/rules/agents/issue-delivery-review.md'
+      - 'modules/agent-factory/rules/templates/developer-issue.md'
+      - 'modules/agent-factory/rules/templates/epic-issue.md'
+      - 'modules/agent-factory/agent/Dockerfile'
+      - 'modules/agent-factory/agent/Dockerfile.dockerignore'
+      - 'modules/agent-factory/agent-worker-image/Dockerfile'
+      - '.github/ISSUE_TEMPLATE/developer-task.md'
+      - '.github/ISSUE_TEMPLATE/engineering-epic.md'
+      - '.github/workflows/insights-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-insights-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: arc-runner-org
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run isolated Insights contract tests
+        run: python3 -m unittest discover -s modules/insights/tests -p 'test_*.py'
+      - name: Check deploy entrypoint when present
+        run: |
+          if [ -f modules/insights/deploy.sh ]; then bash -n modules/insights/deploy.sh; fi
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+      - name: Validate Insights infrastructure without backend or AWS access
+        working-directory: modules/insights/platform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
+  validate-lineage:
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r modules/insights/schemas/requirements.txt
+      - name: Check authoring format, examples and template parity
+        run: python -m unittest discover -s modules/insights/authoring -p 'test_*.py'
+      - run: python -m unittest discover -s modules/insights/schemas -p 'test_*.py'
+      - run: python modules/insights/schemas/validate.py
+      - run: python modules/insights/schemas/check_traceability.py
+      - run: python modules/insights/schemas/validate.py --version v2
+      - run: python modules/insights/schemas/check_traceability_v2.py

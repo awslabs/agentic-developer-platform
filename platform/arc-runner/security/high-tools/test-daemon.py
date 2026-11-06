@@ -13,7 +13,7 @@ try:
   time.sleep(1)
  else:raise RuntimeError('nested daemon did not become ready: '+r.stderr)
  info=json.loads(r.stdout)
- assert info['ServerVersion']=='29.8.1',info['ServerVersion']
+ assert info['ServerVersion']=='29.9.1',info['ServerVersion']
  # Import a local pre-pulled Alpine image; no daemon registry credentials/network.
  archive=p/'alpine-runtime.tar'
  call(['docker','save','-o',str(archive),'public.ecr.aws/docker/library/alpine:3.23'])

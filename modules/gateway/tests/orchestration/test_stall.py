@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, select
@@ -984,6 +986,62 @@ class TestBoundedReads:
 
         assert report.nodes_examined == 4, "the backstop must bound the scan"
         assert report.truncated is True, "running out of budget must not read as having nothing left to do"
+
+
+@pytest.mark.parametrize("seconds,stalled", [(1199, False), (1200, True)])
+async def test_never_acknowledged_threshold_with_frozen_clock_persists_stall(session, monkeypatch, seconds, stalled):
+    from src.orchestration.dispatch_pass import attempt_run_id
+
+    flow = await _make_flow(session)
+    flow.execution_paused = False
+    node = await _make_node(session, flow, node_ref="unacknowledged", attempts=1, running_for=timedelta(seconds=1200))
+    run_id = attempt_run_id(node.id, 1)
+    dispatch = OrchestrationDecision(
+        org_id=flow.org_id,
+        flow_id=flow.id,
+        node_id=node.id,
+        kind="node_dispatched",
+        actor_id="system:orchestration-dispatch",
+        actor_kind="service",
+        actor_role="engine",
+        created_at=NOW - timedelta(seconds=seconds),
+        reason=json.dumps({"attempt": 1, "run_id": run_id}),
+    )
+    session.add(dispatch)
+    await session.commit()
+    fence = {"fence": "unacknowledged_stall", "claim_id": "frozen-claim", "claim_generation": 1, "run_id": run_id}
+    fence_assignment = AsyncMock(return_value=fence)
+    monkeypatch.setattr(stall_module, "_fence_unacknowledged_assignment", fence_assignment)
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+
+    outcome = await detect_stalls(session, NOW, config=StallConfig(never_acknowledged_seconds=1200))
+    await session.commit()
+    assert outcome.stalls_detected == int(stalled), (outcome, fence_assignment.await_count)
+    assert await _state_of(session, node.id) == ("failed" if stalled else "running")
+    decisions = await _decisions(session, node.id)
+    stalls = [decision for decision in decisions if decision.kind == "node_stalled"]
+    assert len(stalls) == int(stalled)
+    if stalled:
+        fence_assignment.assert_awaited_once()
+        assert json.loads(stalls[0].reason)["fence"] == "unacknowledged_stall"
+        assert stalls[0].from_state == "running" and stalls[0].to_state == "failed"
+        assert outcome.notifications_sent == 0
+    else:
+        fence_assignment.assert_not_awaited()
+
+
+@pytest.mark.parametrize("value", [0, -1, 19_440, "not-a-number", True])
+def test_never_acknowledged_config_refuses_invalid_threshold(value):
+    with pytest.raises(StallConfigError):
+        StallConfig(never_acknowledged_seconds=value)
+
+
+def test_never_acknowledged_env_validates_at_load(monkeypatch):
+    monkeypatch.setenv("ORCH_NEVER_ACKNOWLEDGED_SECONDS", "0")
+    with pytest.raises(StallConfigError):
+        StallConfig.from_env()
+    monkeypatch.setenv("ORCH_NEVER_ACKNOWLEDGED_SECONDS", "1200")
+    assert StallConfig.from_env().never_acknowledged_seconds == 1200
 
 
 class TestDefaults:

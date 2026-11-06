@@ -1063,3 +1063,93 @@ async def test_a_revoked_workspace_grant_reports_revoked_rather_than_absent(auth
     assert status.revoked is True
     assert status.is_member is True
     assert not status.may_approve
+
+
+@pytest.mark.parametrize("distinct", [False, True])
+async def test_deployment_policy_controls_self_approval_through_persisted_admission(
+    authority, monkeypatch, distinct,
+):
+    from app.config import settings
+    from app.services.operation_approvals import ApprovalDenied
+    from harness_jobs.approval import evaluate_approval
+
+    monkeypatch.setattr(settings, "superplane_require_distinct_approver", distinct)
+    org, requester = await authority.organization()
+    workspace = uuid.uuid4()  # First workspace uses real organization authority.
+    principal = await authority.ask(org, requester, workspace)
+    request = await _request()
+    if distinct:
+        with pytest.raises(ApprovalDenied, match="no distinct"):
+            await authority.approvals.issue(workspace_id=str(workspace), request=request)
+        return
+    ticket = await authority.approvals.issue(workspace_id=str(workspace), request=request)
+    assert ticket["requires_distinct_approver"] is False
+    assert ticket["can_decide"] is True
+    assert ticket["result"] == "pending"  # Issuing is never implicit approval.
+    assert ticket["approvers"] == [requester]
+    # Changing deployment policy does not rewrite an existing immutable ticket.
+    monkeypatch.setattr(settings, "superplane_require_distinct_approver", True)
+    replay = await authority.approvals.issue(workspace_id=str(workspace), request=request)
+    assert replay["approval_id"] == ticket["approval_id"]
+    assert replay["requires_distinct_approver"] is False
+    decided = await authority.approvals.decide(ticket["approval_id"], "allowed-once")
+    assert decided["decided_by"] == requester
+    context = await authority.resolver.approval_for(principal=principal, request=request)
+    assert context.record.requires_distinct_approver is False
+    assert evaluate_approval(
+        context.record, principal=principal, request=request,
+        requested_envelope=context.requested_envelope,
+        approver_statuses=context.approver_statuses, now=datetime.now(timezone.utc),
+    ).permitted
+
+
+async def test_strict_ticket_retains_policy_after_flag_disabled(authority, monkeypatch):
+    from app.config import settings
+    from app.services.operation_approvals import ApprovalDenied
+
+    monkeypatch.setattr(settings, "superplane_require_distinct_approver", True)
+    org, workspace, requester, _, _, request, ticket = await _approval_participants(authority)
+    assert ticket["requires_distinct_approver"] is True
+    monkeypatch.setattr(settings, "superplane_require_distinct_approver", False)
+    replay = await authority.approvals.issue(workspace_id=str(workspace), request=request)
+    assert replay["approval_id"] == ticket["approval_id"]
+    assert replay["requires_distinct_approver"] is True
+    await authority.ask(org, requester, workspace)
+    assert not (await authority.approvals.read(ticket["approval_id"]))["can_decide"]
+    with pytest.raises(ApprovalDenied):
+        await authority.approvals.decide(ticket["approval_id"], "allowed-once")
+
+
+@pytest.mark.parametrize("native,runtime", [(False, 3600), (True, 1800), (True, 7200)])
+async def test_new_native_ticket_covers_sts_and_runtime_without_renewing_existing(
+    authority, monkeypatch, native, runtime
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "superplane_require_distinct_approver", False)
+    org, requester = await authority.organization()
+    workspace = uuid.uuid4()
+    await authority.ask(org, requester, workspace)
+    parameters = {"max_runtime_seconds": str(runtime)}
+    if native:
+        parameters["lifecycle_request"] = '{"mode":"existing-account-managed"}'
+    request = await _request(**parameters)
+    before = datetime.now(timezone.utc)
+    ticket = await authority.approvals.issue(
+        workspace_id=str(workspace), request=request
+    )
+    duration = (ticket["expires_at"] - before).total_seconds()
+    if native:
+        assert duration >= max(3600, runtime + 900)
+        assert duration - 120 > 900  # A two-minute dispatch delay still permits STS.
+    else:
+        assert 900 <= duration < 905
+    assert ticket["result"] == "pending"
+    # Re-issuing the exact request preserves the recorded expiry and identity.
+    replay = await authority.approvals.issue(
+        workspace_id=str(workspace), request=request
+    )
+    assert (replay["approval_id"], replay["expires_at"]) == (
+        ticket["approval_id"],
+        ticket["expires_at"],
+    )

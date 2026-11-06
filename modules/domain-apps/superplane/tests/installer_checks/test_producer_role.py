@@ -335,6 +335,15 @@ def test_identity_preflight_has_exact_readiness_invoke_route(managed):
         "controller-execution/current-identity",
         "controller-execution/current-identity/readiness",
         "credential-evidence",
+        "controller-execution/recover-undispatched",
+        "controller-execution/recover-uncredentialed",
+        "controller-execution/recover-unstarted-planning",
+        "controller-execution/recover-interrupted-planning",
+        "controller-execution/recover-unstarted-bootstrap",
+        "controller-execution/recover-settled-bootstrap",
+        "controller-execution/complete-saved-plan",
+        "controller-execution/partial-apply-observation",
+        "controller-execution/repair-partial-apply",
     }
     assert all("*" not in resource for resource in resources)
 
@@ -351,6 +360,16 @@ def provider_create_plan(planned):
             Path(__file__).parent / "fixtures/producer-role-create-aws-6.67.json"
         ).read_text()
     )
+    # Preserve the captured provider shape, with the current exact route policy.
+    # The historical fixture itself remains unchanged as evidence.
+    _, policy = producer_role.documents(
+        installer.env, installer.receipt["api_producer_role_preflight"]["oidc"]
+    )
+    next(
+        r
+        for r in plan["resource_changes"]
+        if r["address"] == "aws_iam_role.api_producer[0]"
+    )["change"]["after"]["inline_policy"][0]["policy"] = json.dumps(policy)
     return installer, plan
 
 

@@ -124,7 +124,17 @@ def documents(env, oidc):
                     )
                 ]
                 + [
-                    prefix.removesuffix("controller-execution/") + "credential-evidence"
+                    prefix.removesuffix("controller-execution/")
+                    + "credential-evidence",
+                    prefix + "recover-undispatched",
+                    prefix + "recover-uncredentialed",
+                    prefix + "recover-unstarted-planning",
+                    prefix + "complete-saved-plan",
+                    prefix + "partial-apply-observation",
+                    prefix + "repair-partial-apply",
+                    prefix + "recover-unstarted-bootstrap",
+                    prefix + "recover-settled-bootstrap",
+                    prefix + "recover-interrupted-planning",
                 ],
             }
         ],

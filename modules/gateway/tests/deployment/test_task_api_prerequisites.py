@@ -39,11 +39,23 @@ def test_registered_client_credentials_get_server_owned_service_claims(monkeypat
 def test_v3_preserves_human_refresh_claim_semantics(monkeypatch):
     monkeypatch.setattr(boto3, "resource", Mock())
     trigger = load(ROOT / "infra/modules/cognito/lambda/pre_token_generation.py", "task_human_trigger")
+    client = Mock()
+    client.admin_get_user.return_value = {
+        "Username": "canonical-login",
+        "UserAttributes": [
+            {"Name": "sub", "Value": "verified-sub"},
+            {"Name": "custom:org_id", "Value": "human-tenant"},
+            {"Name": "custom:role", "Value": "member"},
+        ],
+    }
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: client)
     result = trigger.handler(
         {
             "version": "3",
             "triggerSource": "TokenGeneration_RefreshTokens",
-            "request": {"userAttributes": {"custom:org_id": "human-tenant", "custom:role": "member"}},
+            "userPoolId": "managed-pool",
+            "userName": "canonical-login",
+            "request": {"userAttributes": {"sub": "verified-sub", "custom:org_id": "human-tenant", "custom:role": "member"}},
         },
         None,
     )

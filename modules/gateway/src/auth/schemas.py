@@ -103,6 +103,7 @@ class TokenClaims(BaseModel):
     exp: int = Field(..., description="Expiration timestamp")
     iat: int = Field(..., description="Issued at timestamp")
     jti: str = Field(..., description="JWT ID (token hash)")
+    delegation: str | None = Field(default=None, description="Delegate acting for the subject (#9640), e.g. dev-box:<box>:<run>")
 
     class Config:
         json_schema_extra = {

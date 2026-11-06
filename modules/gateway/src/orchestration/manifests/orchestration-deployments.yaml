@@ -92,7 +92,242 @@
 
 schema_version: 1
 
+# WHY `path_rules` LIVES HERE (#7457)
+# ---------------------------------
+# The engine decides which pipeline a merged change needs by mapping the changed
+# repository paths to components and then selecting the entries that cover those
+# components. That mapping used to be an if-chain in Python, so every new module,
+# workflow file or script needed an engine release before its deployment phase
+# could even be evaluated — the opposite of letting an agent add a pipeline in
+# the same pull request as the code it deploys. As manifest data it is reviewed
+# with the pipelines it names, under the same review as the entries below.
+#
+# Rules are evaluated in order; the first match wins, so put narrower rules
+# before broader ones. `pattern` is a shell glob over the full repository path
+# (`*` crosses `/`). `component: ignore` marks paths that never need a deployment
+# (documentation, CI-only definitions, tests, the engine's own task records). A
+# path that matches no rule blocks the deployment phase with
+# `deployment_component_unmapped`: unknown stays unknown, and the fix is a rule
+# in the pull request that introduces the path.
+path_rules:
+  # Owned Product qualification fixtures for epic #8394. Exact source pins
+  # and accepted repository policy independently restrict these components.
+  - { pattern: "qualification-api/*", component: qualification-api }
+  - { pattern: "qualification-client/*", component: qualification-client }
+  - { pattern: "app.py", component: qualification-api }
+  - { pattern: "client.py", component: qualification-client }
+  - { pattern: ".github/workflows/qualification-api-deploy.yml", component: qualification-api }
+  - { pattern: ".github/workflows/qualification-client-deploy.yml", component: qualification-client }
+  - { pattern: ".github/workflows/ci.yml", component: ignore }
+  - { pattern: "modules/user-services/dev-box/*", component: dev-box }
+  - { pattern: ".github/workflows/dev-box-ci.yml", component: dev-box }
+  - { pattern: ".github/workflows/dev-box-deploy.yml", component: dev-box }
+  # Worker lifecycle is protected and manual; target authority is never inferred from paths.
+  - { pattern: "modules/L5-services/tests/*", component: ignore }
+  - { pattern: "modules/L5-services/*.md", component: ignore }
+  - { pattern: "modules/L5-services/*", component: l5-security }
+  - { pattern: ".github/workflows/l5-services-worker-lifecycle.yml", component: l5-security }
+  - { pattern: ".github/workflows/l5-services-release.yml", component: l5-security }
+  - { pattern: ".github/workflows/l5-services-ci.yml", component: ignore }
+  # Insights
+  - { pattern: "modules/insights/*", component: insights }
+  - { pattern: ".github/workflows/insights-deploy.yml", component: insights }
+  # Gateway: frontend and migrations before the backend catch-all
+  - { pattern: "modules/gateway/frontend/*", component: gateway-frontend }
+  - { pattern: "modules/gateway/alembic/*", component: gateway-migrations }
+  - { pattern: ".github/workflows/run-gateway-migrations.yml", component: gateway-migrations }
+  # Tools platform, façade and interceptor
+  - { pattern: "modules/tools/platform/*", component: tools-platform }
+  - { pattern: ".github/workflows/tools-platform-deploy.yml", component: tools-platform }
+  # Adapter source and its release workflow are separate from the tools gateway.
+  - { pattern: "modules/tools/adapters/tests/*", component: ignore }
+  - { pattern: "modules/tools/adapters/*.md", component: ignore }
+  - { pattern: "modules/tools/adapters/*", component: tool-adapters }
+  - { pattern: "modules/tools/adp_tools/adapter_contracts.py", component: tool-adapters }
+  - { pattern: "codebuild/bs-tools-adapters-build.yml", component: tool-adapters }
+  - { pattern: ".github/workflows/tools-adapters-deploy.yml", component: tool-adapters }
+  - { pattern: ".github/workflows/tools-adapters-ci.yml", component: ignore }
+  - { pattern: "modules/tools/facade/*", component: tools-facade }
+  - { pattern: "modules/tools/scripts/facade_receipt.py", component: tools-facade }
+  - { pattern: ".github/workflows/tools-facade-deploy.yml", component: tools-facade }
+  - { pattern: "modules/tools/interceptor/*", component: tools-interceptor }
+  - { pattern: ".github/workflows/tools-interceptor-deploy.yml", component: tools-interceptor }
+  # The shared tools deploy entry points release the platform (which carries the targets).
+  - { pattern: "modules/tools/deploy.sh", component: tools-platform }
+  - { pattern: "modules/tools/orchestrate.sh", component: tools-platform }
+  # CI-only definitions never deploy anything.
+  - { pattern: ".github/workflows/tools-ci.yml", component: ignore }
+  - { pattern: ".github/workflows/tools-platform-ci.yml", component: ignore }
+  - { pattern: ".github/workflows/tools-interceptor-ci.yml", component: ignore }
+  - { pattern: "codebuild/bs-tools-facade-smoke.yml", component: ignore }
+  # Knowledge door
+  - { pattern: "modules/agent-context/door/*", component: knowledge-door }
+  - { pattern: "modules/agent-context/scripts/door_release_evidence.py", component: knowledge-door }
+  - { pattern: ".github/workflows/agent-context-deploy.yml", component: knowledge-door }
+  # Tests, documentation and the engine's own records
+  - { pattern: "modules/gateway/tests/*", component: ignore }
+  - { pattern: "modules/agent-context/tests/*", component: ignore }
+  - { pattern: "tests/*", component: ignore }
+  - { pattern: "docs/*", component: ignore }
+  - { pattern: "aidlc/*", component: ignore }
+  - { pattern: "*.md", component: ignore }
+  - { pattern: ".adp/*", component: ignore }
+  - { pattern: ".gitignore", component: ignore }
+  # Gateway backend catch-all (after the narrower gateway rules above)
+  - { pattern: "modules/gateway/*", component: gateway-backend }
+  - { pattern: ".github/workflows/gateway-deploy.yml", component: gateway-backend }
+  # Agent factory
+  - { pattern: ".github/workflows/chat-agent-deploy.yml", component: agent-worker }
+  - { pattern: "modules/agent-factory/agent-worker-image/*", component: agent-worker }
+  - { pattern: "modules/agent-factory/agent/src/complex-task-chat/*", component: chat-worker }
+  - { pattern: "modules/agent-factory/agent/*", component: agent-worker }
+  - { pattern: "modules/agent-factory/webhook-ingress/*", component: agent-webhook }
+
 entries:
+  - entry_id: adp-dev-tool-adapters
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    mutation_role_arn: arn:aws:iam::879318057152:role/adp-dev-tools-trusted-deployment
+    component_selectors:
+      - tool-adapters
+    resource_kind: eks-namespace
+    resource_id: adp-dev-eks-cluster/adp-tools-adapters
+    workflow:
+      path: .github/workflows/tools-platform-deploy.yml
+      definition_revision: 166dfa700e2b10fcfa419ffafa6a1461d8c519a7
+      correlation_input: adp_correlation
+      allowed_inputs:
+        environment:
+          - dev
+        mode:
+          - release
+        stage:
+          - tool-adapters
+    artifact_revision: 166dfa700e2b10fcfa419ffafa6a1461d8c519a7
+    verification_adapter: tool-adapters-runtime-verification
+    rollback_adapter: ~
+    release_group: atlassian-foundation
+    docs_only: false
+
+  - entry_id: adp-dev-atlassian-foundation-gateway
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    mutation_role_arn: arn:aws:iam::879318057152:role/adp-dev-gateway-trusted-deployment
+    component_selectors:
+      - gateway-backend
+    resource_kind: eks-namespace
+    resource_id: adp-dev-eks-cluster/adp-gateway
+    workflow:
+      path: .github/workflows/gateway-deploy.yml
+      definition_revision: 166dfa700e2b10fcfa419ffafa6a1461d8c519a7
+      correlation_input: adp_correlation
+      allowed_inputs:
+        environment:
+          - dev
+        release_group:
+          - atlassian-foundation
+    artifact_revision: 166dfa700e2b10fcfa419ffafa6a1461d8c519a7
+    verification_adapter: gateway-health-verification
+    rollback_adapter: gateway-revision-rollback
+    release_group: atlassian-foundation
+    docs_only: false
+
+  - entry_id: adp-dev-agent-worker
+    status: unresolved
+    unresolved_reason: >-
+      The operator must verify the dev environment connection and its cluster
+      and namespace, then approve the reviewed workflow and image revisions
+      before enabling engine deployment.
+    connection_id: ~
+    component_selectors:
+      - agent-worker
+      - chat-worker
+    resource_kind: ~
+    resource_id: ~
+    workflow:
+      path: .github/workflows/chat-agent-deploy.yml
+      definition_revision: c9bf5b2864b383430ca257dc3d9aaaee67da63e7
+      correlation_input: adp_correlation
+      allowed_inputs: {}
+    artifact_revision: ~
+    verification_adapter: crew-pod-verification
+    rollback_adapter: ~
+    docs_only: false
+
+  - entry_id: adp-dev-insights
+    status: unresolved
+    unresolved_reason: >-
+      Platform owner must verify the dev environment connection, cluster and
+      adp-insights namespace by readback, configure the protected deployment
+      environment and runner permissions, then approve an exact service image
+      and matching workflow revision. Until services run with ready pods, D3
+      deliberately refuses an infra-only release. Prod needs a separate approval.
+    connection_id: ~
+    component_selectors:
+      - insights
+    resource_kind: ~
+    resource_id: ~
+    workflow:
+      path: .github/workflows/insights-deploy.yml
+      definition_revision: 42904b64f819bc528bc5f81d3a02f3f1f9bf3953
+      allowed_inputs:
+        environment:
+          - dev
+        stage:
+          - emitter
+          - distiller
+        mode:
+          - apply
+        image: ~
+    artifact_revision: ~
+    verification_adapter: insights-health-verification
+    rollback_adapter: ~
+    docs_only: false
+
+  # Verified dev Gateway namespace; separate from the unresolved embark1 pilot.
+  # The accepted plan must also name this connection and target. A changed
+  # workflow requires a verified definition predecessor in the release binding;
+  # neither this baseline pin nor a branch name approves later workflow edits.
+  - entry_id: adp-dev-gateway
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    component_selectors:
+      - gateway-backend
+    resource_kind: eks-namespace
+    resource_id: adp-dev-eks-cluster/adp-gateway
+    workflow:
+      path: .github/workflows/gateway-deploy.yml
+      definition_revision: 8ccec3882c6ab9e9f4bf18cf148e5e0855aa0db4
+      correlation_input: adp_correlation
+      allowed_inputs:
+        environment:
+          - dev
+    artifact_revision: 8ccec3882c6ab9e9f4bf18cf148e5e0855aa0db4
+    verification_adapter: gateway-health-verification
+    rollback_adapter: gateway-revision-rollback
+    docs_only: false
+
+  - entry_id: adp-dev-gateway-frontend
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    component_selectors:
+      - gateway-frontend
+    resource_kind: eks-namespace
+    resource_id: adp-dev-eks-cluster/adp-gateway
+    workflow:
+      path: .github/workflows/gateway-frontend-deploy.yml
+      # Use the reviewed squash merge (#8363); its feature-branch head is not
+      # an ancestor of releases built from the default branch.
+      definition_revision: 18435f88cbe77c500c676747bf1a677015478d9d
+      correlation_input: adp_correlation
+      allowed_inputs:
+        environment:
+          - dev
+    artifact_revision: 18435f88cbe77c500c676747bf1a677015478d9d
+    verification_adapter: gateway-health-verification
+    rollback_adapter: ~
+    docs_only: false
+
   # --------------------------------------------------------------------------
   # The existing pilot environment's gateway deployment.
   # --------------------------------------------------------------------------
@@ -194,4 +429,227 @@ entries:
     # human procedure and the engine is granted no permission to perform it.
     rollback_adapter: ~
 
+    docs_only: false
+
+  - entry_id: adp-dev-tools-platform
+    # Enabled 2026-10-14 (owner decision, #7457 TLS-X01): dev connection
+    # 3cac43fc… verified by real AssumeRole into the platform account via the
+    # administrator-listed operator role (BG_PLATFORM_OPERATOR_ROLE_ARNS, #7682);
+    # target = the live dev AgentCore tools gateway. Re-pinned 2026-10-14 15:30Z to
+    # main 353710ef: the previous pin (27aeb8b1) predates the TLS-S15 interceptor
+    # change, and deploy.sh refuses a platform release whose interceptor source
+    # does not match the live interceptor version (built from 3af54073).
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    component_selectors:
+      - tools-platform
+    resource_kind: agentcore-gateway
+    resource_id: arn:aws:bedrock-agentcore:us-east-1:879318057152:gateway/adp-tools-ftgob4rcuu
+    workflow:
+      path: .github/workflows/tools-platform-deploy.yml
+      definition_revision: ba28822e50a6bde22d4805835dcadda22b41f92e
+      allowed_inputs:
+        environment:
+          - dev
+        customer_account_id:
+          - "879318057152"
+        customer_user_id:
+          - 1fb07e6f-8108-41a2-964d-5f76d63895fe
+        customer_aws_label:
+          - dev-platform
+    artifact_revision: ba28822e50a6bde22d4805835dcadda22b41f92e
+    verification_adapter: agentcore-gateway-verification
+    rollback_adapter: ~
+    docs_only: false
+
+  - entry_id: adp-dev-tools-facade
+    # Enabled 2026-10-14 under the tools flow's dev deployment authority (TLS-X01
+    # L1 chain). Same connection, principal and account as adp-dev-tools-platform;
+    # the physical target is the tools-facade Deployment in adp-gateway on the dev
+    # cluster. Pinned to the same reviewed revision as the platform entry.
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    component_selectors:
+      - tools-facade
+    resource_kind: eks-deployment
+    resource_id: adp-dev-eks-cluster/adp-gateway/tools-facade
+    workflow:
+      path: .github/workflows/tools-facade-deploy.yml
+      definition_revision: c9ca5556031aa23149f6689be846608aa6bca6bc
+      allowed_inputs:
+        environment:
+          - dev
+        customer_account_id:
+          - "879318057152"
+        customer_user_id:
+          - 1fb07e6f-8108-41a2-964d-5f76d63895fe
+        customer_aws_label:
+          - dev-platform
+    artifact_revision: c9ca5556031aa23149f6689be846608aa6bca6bc
+    verification_adapter: tools-facade-health-verification
+    rollback_adapter: ~
+    docs_only: false
+
+  - entry_id: adp-dev-tools-interceptor
+    # Enabled 2026-10-14 under the tools flow's dev deployment authority (TLS-X01
+    # L1 chain). The physical target is the adp-tools-dev-interceptor function; the
+    # `live` alias is what lambda-version-verification reads. Pinned to the same
+    # reviewed revision as the platform entry (the interceptor source at ba28822e is
+    # the TLS-S15 release currently live as version 9).
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    component_selectors:
+      - tools-interceptor
+    resource_kind: lambda-function
+    resource_id: arn:aws:lambda:us-east-1:879318057152:function:adp-tools-dev-interceptor
+    workflow:
+      path: .github/workflows/tools-interceptor-deploy.yml
+      definition_revision: c9ca5556031aa23149f6689be846608aa6bca6bc
+      allowed_inputs:
+        environment:
+          - dev
+        customer_account_id:
+          - "879318057152"
+        customer_user_id:
+          - 1fb07e6f-8108-41a2-964d-5f76d63895fe
+        customer_aws_label:
+          - dev-platform
+    artifact_revision: c9ca5556031aa23149f6689be846608aa6bca6bc
+    verification_adapter: lambda-version-verification
+    rollback_adapter: ~
+    docs_only: false
+
+  - entry_id: adp-dev-knowledge-door
+    # Enabled 2026-10-15 under the tools flow's dev deployment authority (TLS-X02
+    # L2 chain, owner go). Same connection, principal and account as the tools
+    # entries; the physical target is the context-mcp Deployment (the Knowledge
+    # Door) in agent-context on the dev cluster. definition_revision is the main
+    # commit at which the deploy workflow declares its environment default as dev
+    # (#7868, so the receipts' recorded inputs equal the declared defaults) and
+    # publishes its context and release receipt to the S3 evidence bucket
+    # (#7829, #7830); it contains the litellm-proxy injection opt-out (#7814)
+    # and the guard fix (#7794, #7802). artifact_revision is the same commit, at
+    # which the context-mcp image was rebuilt (images-build run 38836168182) so
+    # the workflow's imageTag lookup, the deploy scripts the workflow needs and
+    # the identity verifier all agree on one revision.
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    component_selectors:
+      - knowledge-door
+    # The Door's deployment context names the namespace (cluster/namespace), as the
+    # engine's target model expects for every EKS component except tools-facade
+    # (deployment_target.py, deployment_runtime_reader.py); the identity verifier
+    # locates the context-mcp Deployment itself (#7829).
+    resource_kind: eks-namespace
+    resource_id: adp-dev-eks-cluster/agent-context
+    workflow:
+      path: .github/workflows/agent-context-deploy.yml
+      definition_revision: 0fe14cc01be22a3fbe72f00086bc25e4ed72da8c
+      allowed_inputs:
+        environment:
+          - dev
+        customer_account_id:
+          - "879318057152"
+        customer_user_id:
+          - 1fb07e6f-8108-41a2-964d-5f76d63895fe
+        customer_aws_label:
+          - dev-platform
+    artifact_revision: 0fe14cc01be22a3fbe72f00086bc25e4ed72da8c
+    verification_adapter: door-identity-verification
+    rollback_adapter: ~
+    docs_only: false
+
+  # No reviewed private target or gateway runtime verifier is installed.
+  - entry_id: l5-security-target-pending
+    status: unresolved
+    unresolved_reason: >-
+      The delivery owner must select a verified private target, reviewed IAM
+      boundary and scoped grants, pin the lifecycle definition and release,
+      and qualify a runtime verifier before operations can dispatch this workflow.
+    connection_id: ~
+    component_selectors:
+      - l5-security
+    resource_kind: ~
+    resource_id: ~
+    workflow:
+      path: .github/workflows/l5-services-worker-lifecycle.yml
+      definition_revision: ~
+      allowed_inputs:
+        operation: [status]
+        environment: [dev]
+    artifact_revision: ~
+    verification_adapter: ~
+    rollback_adapter: ~
+    docs_only: false
+
+  - entry_id: adp-dev-dev-box
+    status: unresolved
+    unresolved_reason: >-
+      Platform operator must verify the selected environment connection, exact
+      private EC2 target, approved base image, budget, state backend and release
+      artifact store, then review the module workflow revision and enable this
+      entry. Controller lifecycle and live qualification are separate stories.
+    connection_id: ~
+    component_selectors:
+      - dev-box
+    resource_kind: ~
+    resource_id: ~
+    workflow:
+      path: .github/workflows/dev-box-deploy.yml
+      definition_revision: ~
+      allowed_inputs:
+        environment:
+          - dev
+        customer_account_id: ~
+        customer_user_id: ~
+        customer_aws_label: ~
+    artifact_revision: ~
+    verification_adapter: dev-box-release-verification
+    rollback_adapter: dev-box-admission-rollback
+    docs_only: false
+
+  # Reviewed exact fixture releases; owned namespace and existing connection.
+  - entry_id: qualification-api-8394
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    component_selectors:
+    - qualification-api
+    resource_kind: eks-deployment
+    resource_id: adp-dev-eks-cluster/adp-qualification-8394/api
+    workflow:
+      path: .github/workflows/qualification-api-deploy.yml
+      definition_revision: 8b72cfe13fdb4ae94c5112473286fc9f3515ef87
+      correlation_input: adp_correlation
+      allowed_inputs:
+        customer_account_id:
+        - '879318057152'
+        customer_user_id:
+        - 1fb07e6f-8108-41a2-964d-5f76d63895fe
+        customer_aws_label:
+        - dev-platform
+    artifact_revision: 8b72cfe13fdb4ae94c5112473286fc9f3515ef87
+    verification_adapter: qualification-api-runtime-verification
+    rollback_adapter: null
+    docs_only: false
+  - entry_id: qualification-client-8394
+    status: enabled
+    connection_id: 3cac43fc-f877-4cb0-9b36-9eb68244266c
+    component_selectors:
+    - qualification-client
+    resource_kind: eks-namespace
+    resource_id: adp-dev-eks-cluster/adp-qualification-8394
+    workflow:
+      path: .github/workflows/qualification-client-deploy.yml
+      definition_revision: f99487960b2cb169f9d0f6a6b9237def4176f374
+      correlation_input: adp_correlation
+      allowed_inputs:
+        customer_account_id:
+        - '879318057152'
+        customer_user_id:
+        - 1fb07e6f-8108-41a2-964d-5f76d63895fe
+        customer_aws_label:
+        - dev-platform
+    artifact_revision: f99487960b2cb169f9d0f6a6b9237def4176f374
+    verification_adapter: qualification-client-job-verification
+    rollback_adapter: null
     docs_only: false

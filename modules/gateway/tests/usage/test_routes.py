@@ -371,6 +371,7 @@ class TestUsageLogsEndpoint:
                     "timestamp": datetime.now(UTC).isoformat(),
                     "org_id": "org-001",
                     "user_id": "user-001",
+                    "root_human_id": "user-001",
                     "model": "claude-3-sonnet",
                     "input_tokens": 100,
                     "output_tokens": 200,
@@ -386,6 +387,7 @@ class TestUsageLogsEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert len(data["items"]) == 1
+        assert data["items"][0]["root_human_id"] == "user-001"
 
     def test_get_usage_logs_with_filters(self, client, mock_usage_service):
         """Test getting usage logs with filters."""

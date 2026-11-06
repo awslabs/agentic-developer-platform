@@ -1,8 +1,13 @@
-import type { ChildPersona, PolicyAction, PolicySummary } from '@/types/orchestration';
+import type { ChildPersona, GraphNode, PlanningEpicReference, PolicyAction, PolicySummary } from '@/types/orchestration';
 
 interface PlanSummaryProps {
   stories: number;
+  product?: { id?: string | null; name?: string | null; status?: 'accessible' | 'unavailable' | null } | null;
+  planningEpics?: PlanningEpicReference[];
+  storyTargets?: GraphNode[];
   waves: number;
+  /** Displayed BOLT cards; waves counts only the remaining standalone waves. */
+  bolts?: number;
   gates: number;
   evaluations: number;
   /** Issue-linked evaluations; absent on older list API responses. */
@@ -71,13 +76,15 @@ function expiryLabel(expiresAt: string): string {
  * Nothing here is a control: it describes authority that was already granted
  * elsewhere. Approving, amending and revoking stay on their existing surfaces.
  */
-export function PlanSummary({ stories, waves, gates, evaluations, evaluationStories, policy }: PlanSummaryProps) {
+export function PlanSummary({ stories, waves, bolts = 0, gates, evaluations, evaluationStories, policy, product, planningEpics, storyTargets }: PlanSummaryProps) {
   const totalStories = stories + (evaluationStories ?? 0);
   const checkpoints = evaluations - (evaluationStories ?? 0);
   return (
     <div className="text-sm text-gray-700 dark:text-gray-300" data-testid="plan-summary">
       <p className="font-medium">
-        {totalStories} {evaluationStories === undefined ? 'implementation ' : ''}{totalStories === 1 ? 'story' : 'stories'} across {waves} {waves === 1 ? 'wave' : 'waves'}
+        {totalStories} {evaluationStories === undefined ? 'implementation ' : ''}{totalStories === 1 ? 'story' : 'stories'} across{' '}
+        {bolts > 0 && <>{bolts} {bolts === 1 ? 'BOLT' : 'BOLTs'}{waves > 0 && ' and '}</>}
+        {(waves > 0 || bolts === 0) && <>{waves} {waves === 1 ? 'wave' : 'waves'}</>}
       </p>
       <p className="text-xs text-gray-500 dark:text-gray-400">
         {evaluationStories !== undefined && <>{stories} implementation · {evaluationStories} evaluation · </>}
@@ -86,6 +93,36 @@ export function PlanSummary({ stories, waves, gates, evaluations, evaluationStor
           ? <> · {evaluations} {evaluations === 1 ? 'evaluation' : 'evaluations'}</>
           : checkpoints > 0 && <> · {checkpoints} evaluation {checkpoints === 1 ? 'checkpoint' : 'checkpoints'}</>}
       </p>
+
+      {product && (
+        <p className="text-sm" data-testid="plan-product">
+          Product: {product.status === 'unavailable' ? 'unavailable or inaccessible'
+            : product.status === 'accessible' && product.id && product.name ? `${product.name} (${product.id})`
+              : product.id ? `${product.id} (status not verified)` : 'identity not provided'}
+        </p>
+      )}
+      {planningEpics?.map((epic) => (
+        <p className="text-sm" key={epic.address}>
+          Planning epic: {epic.issue.repository}#{epic.issue.issue_number}
+        </p>
+      ))}
+      {storyTargets?.filter((node) => node.kind === 'story' && node.state !== 'superseded').map((node) => (
+        <div className="text-sm" key={node.id} data-testid={`plan-story-readiness-${node.id}`}>
+          <p>{node.title} target: {node.repository_status === 'verified' ? node.repository_identity
+            : node.repository_status === 'unbound' ? 'unbound'
+            : node.repository_status ? `${node.repository_identity ?? 'unknown'} (${node.repository_status})` : 'verification unavailable'}
+            {node.repository_status === 'verified' && node.repository_identity && node.issue_ref && node.issue_url && (
+              <> · <a className="underline" href={node.issue_url}>{node.repository_identity}#{node.issue_ref?.replace(/^#/, '')}</a></>
+            )}
+          </p>
+          <p>Repository binding: {node.repository_status ? { verified: 'verified binding', unbound: 'unbound', denied: 'denied by admission', stale: 'stale; review required' }[node.repository_status] : 'verification unavailable'}</p>
+          <p>Issue publication: {node.issue_publication_status
+            ? { issue_pending: 'issue not yet confirmed', issue_created: 'issue created; no planning epic', issue_created_link_pending: 'issue created; native epic link pending', linked: 'native epic link confirmed', unconfirmed: 'publication cannot be confirmed' }[node.issue_publication_status]
+            : 'status not reported'}</p>
+          {node.readiness_hold && <p>Execution hold: {{ amendment_issue_link_unconfirmed: 'native epic link unconfirmed', repository_verification_pending: 'repository verification pending', repository_execution_withheld: 'compatible execution readers not enabled' }[node.readiness_hold] ?? node.readiness_hold}</p>}
+          {node.delivery_progress?.stage === 'admission' && <p>Current admission: {node.delivery_progress.detail}</p>}
+        </div>
+      ))}
 
       {policy && (
         <div
@@ -113,6 +150,16 @@ export function PlanSummary({ stories, waves, gates, evaluations, evaluationStor
             <span className="text-gray-500 dark:text-gray-400">Agents may, without asking: </span>
             {policy.autonomous_actions.length > 0 ? actionList(policy.autonomous_actions) : 'nothing — every action needs a person'}
           </p>
+
+          {policy.repair_scope && (
+            <p data-testid="policy-repair-scope">
+              <span className="text-gray-500 dark:text-gray-400">Repair scope: </span>
+              {policy.repair_scope === 'repository'
+                ? 'files in the authorized repositories'
+                : `${policy.repair_path_count ?? 0} specified files`}.
+              {' '}Existing CI, workflow, credential and merge rules still apply.
+            </p>
+          )}
 
           {/* Rendered only when the policy actually gates something. An empty
               "waits for you: none" line reads as reassurance that a control exists,

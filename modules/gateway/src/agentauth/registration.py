@@ -97,6 +97,7 @@ from src.agentauth.execution import ExecutionRecord, ExecutionStateError, Execut
 from src.agentauth.policy import AgentAuthorizationService, PolicyError
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import VerifiedPod
+from src.shared.model_admission import reported_admission_status
 
 logger = logging.getLogger("bedrockgateway.agentauth.registration")
 
@@ -128,6 +129,8 @@ ALLOWED_STATUSES: frozenset[str] = frozenset(
 ALLOWED_STATUS_FIELDS: dict[str, int] = {
     "run_id": 256,
     "summary": 4096,
+    "model_admission_status": 64,
+    "model_admission_sequence": 16,
     "transcript_key": 1024,
     "session_id": 256,
     "token_mode": 32,
@@ -308,12 +311,32 @@ class AgentRegistrationService:
         if unknown:
             raise RegistrationRefusedError("unsupported field")
 
+        try:
+            admission_status = reported_admission_status(supplied)
+        except (TypeError, ValueError):
+            raise RegistrationRefusedError("unsupported model admission status") from None
+
+        observed = self._now()
         names = {"#st": "status", "#su": "status_updated_at"}
         values = {
             ":status": {"S": status},
-            ":status_updated_at": {"S": _iso(self._now())},
+            ":status_updated_at": {"S": _iso(observed)},
         }
         sets = ["#st = :status", "#su = :status_updated_at"]
+        if admission_status is not None:
+            sequence = supplied.pop("model_admission_sequence", str(int(observed.timestamp() * 1000)))
+            if not isinstance(sequence, str) or not sequence.isascii() or not sequence.isdecimal() or len(sequence) > 16:
+                raise RegistrationRefusedError("unsupported model admission sequence")
+            if not -90000 <= int(sequence) - int(observed.timestamp() * 1000) <= 30000:
+                raise RegistrationRefusedError("stale model admission sequence")
+            supplied["model_admission_status"] = admission_status
+            names["#ma_updated"] = "model_admission_updated_at"
+            names["#ma_sequence"] = "model_admission_sequence"
+            values[":ma_updated"] = values[":status_updated_at"]
+            values[":ma_sequence"] = {"N": sequence}
+            sets.extend(["#ma_updated = :ma_updated", "#ma_sequence = :ma_sequence"])
+        elif "model_admission_sequence" in supplied:
+            raise RegistrationRefusedError("model admission status required")
         for index, (field, bound) in enumerate(sorted(ALLOWED_STATUS_FIELDS.items())):
             raw = supplied.get(field)
             if raw is None or raw == "":
@@ -328,7 +351,13 @@ class AgentRegistrationService:
 
         update = "SET " + ", ".join(sets)
         if status == "in_progress":
-            self._update_row(record, update=update, names=names, values=values)
+            self._update_row(
+                record,
+                update=update,
+                names=names,
+                values=values,
+                extra_condition="(attribute_not_exists(#ma_sequence) OR #ma_sequence < :ma_sequence)" if admission_status is not None else None,
+            )
         else:
             self._commit_terminal(record, status=status, supplied=supplied, update=update, names=names, values=values)
 
@@ -340,7 +369,10 @@ class AgentRegistrationService:
                 raise RegistrationRefusedError("terminal report conflicts with recorded outcome")
             return
         execution_update = self._execution_check(record)["ConditionCheck"]
-        execution_update["UpdateExpression"] = "SET #st = :complete, terminal_report_digest = :digest, terminal_outcome = :outcome"
+        execution_update["UpdateExpression"] = (
+            "SET #st = :complete, terminal_report_digest = :digest, terminal_outcome = :outcome, terminal_recorded_at = :terminal_at"
+        )
+        execution_update["ExpressionAttributeValues"][":terminal_at"] = values[":status_updated_at"]
         execution_update["ExpressionAttributeValues"].update({":complete": {"S": "completed"}, ":digest": {"S": digest}, ":outcome": {"S": status}})
         transaction = [
             {

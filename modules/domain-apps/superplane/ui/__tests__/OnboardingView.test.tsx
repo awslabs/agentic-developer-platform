@@ -125,8 +125,10 @@ let restoreDeployment: () => void;
 
 const baselineCapabilitiesServed = ENDPOINTS.capabilities.served;
 beforeEach(() => {
+  server.use(http.get('/api/superplane/v1/workspaces/:workspace_id/provider-authority', ({ params }) => HttpResponse.json({ workspace_id: params.workspace_id, managed: false })));
   restoreDeployment = withoutOnboardingEndpoints();
   server.use(
+    http.get(API('/control-plane-health'), () => HttpResponse.json({ detail: 'not available' }, { status: 503 })),
     http.get(API('/workspaces/:workspaceId'), ({ params }) => HttpResponse.json(workspaceRow({ id: params.workspaceId }))),
     http.get(API('/workspaces/:workspaceId/deployments'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, deployments: [] })),
     http.get(API('/workspaces/:workspaceId/batch-jobs'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, jobs: [], truncated: false })),
@@ -330,6 +332,18 @@ describe('AC-04: control-plane health never marks a workspace execution-ready', 
     expect(within(rows[0]).getByText(/has not been reached yet/i)).toBeInTheDocument();
   });
 
+  it('reports actual control-plane health without making a provisioning workspace ready', async () => {
+    listReturns([workspaceRow({ status: 'Provisioning', last_heartbeat: null, cluster_health: null })]);
+    server.use(http.get(API('/control-plane-health'), () => HttpResponse.json({
+      status: 'healthy', observed_at: new Date().toISOString(),
+    })));
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    const rows = within(screen.getByRole('region', { name: 'Readiness' })).getAllByRole('listitem');
+    await waitFor(() => expect(within(rows[0]).getByText('Ready')).toBeInTheDocument());
+    expect(within(rows[1]).getByText('Not ready')).toBeInTheDocument();
+  });
+
   it('never renders a single combined readiness verdict', async () => {
     // A guard against someone later adding the one badge everybody wants. If a
     // summary verdict appears anywhere on this screen, this fails.
@@ -358,6 +372,17 @@ describe('AC-04: control-plane health never marks a workspace execution-ready', 
 });
 
 describe('AC-04: truthful workspace details and access', () => {
+  it('accepts the authenticated listing domain organization while retaining the ADP session scope', async () => {
+    const row = workspaceRow({ org_id: 'mapped-domain-uuid', account_id: '123456789012' });
+    listReturns([row]);
+    server.use(http.get(API('/workspaces/:workspaceId'), () => HttpResponse.json(row)));
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    const details = await screen.findByRole('region', { name: 'Workspace details' });
+    expect(await within(details).findByText('123456789012')).toBeInTheDocument();
+    expect(within(details).queryByText(/did not match the selected organization/)).not.toBeInTheDocument();
+  });
+
   it('reports read access only and leaves unsupported account, region and placement unknown', async () => {
     listReturns([workspaceRow({ cluster_health: null, last_heartbeat: null })]);
     server.use(http.get(API('/workspaces/:workspaceId'), () => HttpResponse.json(workspaceRow({ cluster_health: null, last_heartbeat: null }))));
@@ -365,8 +390,8 @@ describe('AC-04: truthful workspace details and access', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
     const details = await screen.findByRole('region', { name: 'Workspace details' });
     expect(await within(details).findByText(/Allowed for this request. Cluster and workload access are not established/)).toBeInTheDocument();
-    expect(within(details).getByText(/Not reported by the workspace detail API. Check the original reviewed plan/)).toBeInTheDocument();
-    expect(within(details).getByText(/Isolation mode does not establish cluster ownership or access/)).toBeInTheDocument();
+    expect(within(details).getByText('AWS account')).toBeInTheDocument();
+    expect(within(details).getByText('No cluster registered yet')).toBeInTheDocument();
     expect(within(details).getByText(/Unknown; no usable cluster observation/)).toBeInTheDocument();
     const workspaceReading = within(screen.getByRole('region', { name: 'Readiness' })).getAllByRole('listitem')[1];
     expect(within(workspaceReading).getByText('Unknown')).toBeInTheDocument();

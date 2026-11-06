@@ -2,6 +2,8 @@ import { useEffect } from 'react';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAccessStatus } from '@/hooks/useAccessStatus';
 import { LoadingScreen } from './LoadingScreen';
+import { useFeaturesQuery } from '@/hooks/useFeatures';
+import { loadFlowsList, loadFlowGraph } from '@/routing/flowPages';
 
 /**
  * Route wrapper that intercepts authenticated users and redirects
@@ -12,6 +14,18 @@ export function OnboardingGuard() {
   const { status, isLoading } = useAccessStatus();
   const navigate = useNavigate();
   const location = useLocation();
+  const flowPage = /^\/flows\/?$/.test(location.pathname) ? 'list'
+    : /^\/flows\/[^/]+\/?$/.test(location.pathname) ? 'graph' : null;
+  // Independent startup reads can overlap. This only prepares the existing
+  // feature query; onboarding and FeatureGate still withhold the route.
+  const features = useFeaturesQuery({ enabled: flowPage !== null });
+  useEffect(() => {
+    if (!flowPage || features.data?.orchestration_engine !== true ||
+        (!isLoading && status !== 'registered')) return;
+    const load = flowPage === 'list' ? loadFlowsList : loadFlowGraph;
+    // A preload failure is handled by the route's normal lazy boundary.
+    void load().catch(() => {});
+  }, [flowPage, features.data?.orchestration_engine, isLoading, status]);
 
   useEffect(() => {
     if (isLoading || !status) return;

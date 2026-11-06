@@ -26,6 +26,29 @@ from tests.orchestration.test_repository_evaluation import repository_evaluation
 from tests.orchestration.test_shared_cycle import cycle, pg_server, pg_url, shared, store  # noqa: F401
 
 
+@pytest.mark.parametrize("repair_scope", ["paths", "repository"])
+def test_evaluation_policy_narrows_operations_repair_authority(repair_scope):
+    from src.orchestration.evaluation_acceptance import evaluation_policy
+    from src.orchestration.execution_policy import stamp_policy
+    from tests.orchestration.test_policy_admission import _policy
+
+    scope = {"repair_paths": ["modules/example.py"]} if repair_scope == "paths" else {"repair_scope": "repository"}
+    base = stamp_policy(
+        _policy(schema_version=3, allowed_actions=["operate", "repair", "evaluate"], repair_required_checks=["unit tests"], **scope),
+        principal_id="human",
+        org_id="org-alpha",
+    )
+    before = base.model_dump(mode="json")
+
+    policy = evaluation_policy(base, actor_id="human", address="flow/epic/wave/evidence")
+
+    assert [action.value for action in policy.allowed_actions] == ["evaluate"]
+    assert policy.repair_paths == [] and policy.repair_scope is None and policy.repair_required_checks == []
+    assert policy.limits == base.limits and policy.expires_at == base.expires_at
+    assert policy.org_id == base.org_id and policy.repository_ids == base.repository_ids
+    assert base.model_dump(mode="json") == before
+
+
 @pytest.fixture
 async def contract_request(repository_evaluation):  # noqa: F811
     ctx = repository_evaluation
@@ -56,8 +79,39 @@ async def accept(ctx, db, request=None):
     return await accept_evaluation(db, flow_id=ctx.flow.id, actor=ctx.actor, request=request), request
 
 
-async def test_acceptance_is_attributed_idempotent_and_keeps_worker_plan_meter_and_runs(contract_request):
+@pytest.mark.parametrize("previous", ["original", "attached"])
+async def test_repository_mode_cannot_replace_cli_live_contract(contract_request, monkeypatch, previous):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.orchestration import evaluation_acceptance
+    from tests.orchestration.test_multi_repository_evaluation_contract import evaluation
+
     ctx = contract_request
+    request = ctx.request.model_copy(update={"specification": evaluation()})
+    async with ctx.factory() as db:
+        if previous == "original":
+            plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+            document = deepcopy(plan.plan_document)
+            document["nodes"][-1]["evaluation"] = {"evidence_schema": "cli-live-evaluation/v1"}
+            plan.plan_document = document
+            await db.flush()
+        else:
+            monkeypatch.setattr(
+                evaluation_acceptance,
+                "accepted_contract",
+                AsyncMock(return_value=(None, SimpleNamespace(evidence_schema="cli-live-evaluation/v1"), None)),
+            )
+        with pytest.raises(EvaluationAcceptanceError, match="live_contract_cannot_be_replaced"):
+            await preview_evaluation(db, flow_id=ctx.flow.id, actor=ctx.actor, request=request)
+
+
+@pytest.mark.parametrize("upgraded", [False, True])
+async def test_acceptance_is_attributed_idempotent_and_keeps_worker_plan_meter_and_runs(contract_request, monkeypatch, upgraded):
+    ctx = contract_request
+    if upgraded:
+        monkeypatch.setattr("src.orchestration.evaluation_acceptance.harness_digest", lambda: "f" * 64)
+        monkeypatch.setattr("src.orchestration.repository_evaluation.harness_digest", lambda: "f" * 64)
     async with ctx.factory() as db:
         before = [
             (row.id, row.accepted_plan_version, row.phase, row.status, row.revision) for row in await db.scalars(select(OrchestrationExecution))
@@ -84,6 +138,18 @@ async def test_acceptance_is_attributed_idempotent_and_keeps_worker_plan_meter_a
         assert await observe_repository_evaluation(db, node, provider=ctx.provider)
         assert node.state == "passed"
         assert plan.plan_document == ctx.saved_plan
+
+
+async def test_exact_verifier_pin_still_blocks_acceptance_after_upgrade(contract_request, monkeypatch):
+    ctx = contract_request
+    spec = deepcopy(ctx.request.specification)
+    spec["runner"]["harness_policy"] = "exact"
+    request = ctx.request.model_copy(update={"specification": spec})
+    monkeypatch.setattr("src.orchestration.evaluation_acceptance.harness_digest", lambda: "f" * 64)
+    async with ctx.factory() as db:
+        with pytest.raises(EvaluationAcceptanceError, match="evaluation_harness_mismatch"):
+            await preview_evaluation(db, flow_id=ctx.flow.id, actor=ctx.actor, request=request)
+        assert await db.scalar(select(OrchestrationDecision.id).where(OrchestrationDecision.kind == ACCEPTANCE_KIND)) is None
 
 
 async def test_lost_acceptance_response_replays_after_evaluation_finishes(contract_request, monkeypatch):

@@ -29,7 +29,7 @@ def receipt(runtime):
 async def admitted(client, runtime, sts, monkeypatch):
     supervisor(sts, monkeypatch)
     assert (await admit(client, runtime)).status_code == 200
-    state = {"exited": True, "removed": False, "observations": []}
+    state = {"exited": True, "removed": False, "terminating": False, "observations": []}
 
     def exited(**kwargs):
         state["observations"].append(("exit", kwargs))
@@ -39,8 +39,13 @@ async def admitted(client, runtime, sts, monkeypatch):
         state["observations"].append(("removed", kwargs))
         return state["removed"]
 
+    def terminating(**kwargs):
+        state["observations"].append(("terminating", kwargs))
+        return state["terminating"]
+
     monkeypatch.setattr(runtime[1].workloads, "has_exited", exited)
     monkeypatch.setattr(runtime[1].workloads, "is_absent", removed)
+    monkeypatch.setattr(runtime[1].workloads, "is_terminating", terminating)
     return state
 
 
@@ -259,4 +264,40 @@ async def test_supervisor_binding_does_not_broaden_tenant_or_persona(client, run
     monkeypatch.setenv("ADP_MODEL_ROOT_BINDINGS", json.dumps(bindings))
     assert (await observe(client, runtime)).status_code == 404
     assert not admitted["observations"]
+    assert receipt(runtime) is None
+
+
+FINALIZE = "/internal/v1/agent/chat/data/finalize"
+COMPLETE = "/internal/v1/agent/chat/data/complete"
+
+
+async def test_terminating_exited_pod_counts_as_removed_for_completion(client, runtime, admitted):
+    """The API server keeps returning a deleted pod until the kubelet confirms; once the container
+    exited and deletionTimestamp is set nothing can run again, so completion need not wait (#8047)."""
+    assert (await observe(client, runtime)).json()["terminated"] is True
+    assert ("terminating", {"name": "chat-a", "uid": "chat-pod"}) not in admitted["observations"]
+    assert (await observe(client, runtime, TEARDOWN)).json()["removed"] is False
+    assert admitted["observations"][-2:] == [("removed", {"name": "chat-a"}), ("terminating", {"name": "chat-a", "uid": "chat-pod"})]
+    admitted["terminating"] = True
+    response = await observe(client, runtime, TEARDOWN)
+    assert response.json() == {"run_id": "run-a", "pod_uid": "chat-pod", "removed": True}
+    assert "removed_at" in receipt(runtime)
+    admitted.update(terminating=False, removed=False)
+    assert (await observe(client, runtime, TEARDOWN)).json()["removed"] is True
+
+
+@pytest.mark.parametrize("path", [FINALIZE, COMPLETE])
+async def test_unconfirmed_removal_answers_the_distinct_conflict_body(client, runtime, admitted, path):
+    assert (await observe(client, runtime)).json()["terminated"] is True
+    response = await observe(client, runtime, path)
+    assert response.status_code == 409, response.text
+    assert response.json() == {"detail": {"error": "chat_sandbox_removal_unconfirmed"}}
+    assert response.headers["cache-control"] == "no-store"
+    assert "removed_at" not in receipt(runtime)
+
+
+async def test_terminating_pod_is_not_exit_evidence(client, runtime, admitted):
+    admitted.update(exited=False, terminating=True)
+    assert (await observe(client, runtime)).json()["terminated"] is False
+    assert all(kind != "terminating" for kind, _ in admitted["observations"])
     assert receipt(runtime) is None

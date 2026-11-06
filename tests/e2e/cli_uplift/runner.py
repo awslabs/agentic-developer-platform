@@ -68,6 +68,11 @@ FAULTS = (
     "missing_usage",
     "cleanup_failure",
     "expired_token",
+    "assistant_duplicate_delivery",
+    "assistant_disconnect",
+    "assistant_worker_loss",
+    "assistant_queue_unavailable",
+    "assistant_supervisor_restart",
     "instance_loss",
 )
 
@@ -133,6 +138,10 @@ def fingerprint(cfg):
     }
     if cfg.get("gateway_deployment") is not None:
         material["gateway_deployment"] = cfg["gateway_deployment"]
+    if cfg.get("product_cases") is not None:
+        material["product_cases"] = cfg["product_cases"]
+    if cfg.get("product_run_id") is not None:
+        material["product_run_id"] = cfg["product_run_id"]
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
 
 
@@ -229,6 +238,11 @@ def initial_state(cfg, suites, evaluation_id, *, now, fault="none"):
     matrix = cases.new_matrix(suites)
     return {
         "evaluation_id": evaluation_id,
+        **(
+            {"product_run_id": cfg["product_run_id"]}
+            if cfg.get("product_run_id")
+            else {}
+        ),
         "attempt": 1,
         "attempt_id": f"{evaluation_id}-a1",
         "attempts": [
@@ -495,6 +509,29 @@ class Evaluation:
             cleanup_ok=document["cleanup_ok"],
             stages=document["stages"],
         )
+        if any(case_id.startswith("PR03-") for case_id in document["matrix"]):
+            product_document = {
+                "cases": [
+                    {"id": case_id, "status": entry["status"]}
+                    for case_id, entry in document["matrix"].items()
+                ],
+                "evaluation_id": document["evaluation_id"],
+                "attempt_id": document["attempt_id"],
+                "expected_revision": document["expected_revision"],
+                "preflight": document.get("preflight") or {},
+                "cleanup": "complete" if document["cleanup_ok"] else "failed",
+            }
+            product_evidence = report.product_cli_report(
+                product_document,
+                document.get("product_cli_attempts") or (),
+                document.get("cleanup_outstanding") or (),
+            )
+            if product_evidence["status"] != "passed":
+                status = cases.FAILED
+                reasons = [
+                    *reasons,
+                    "Required installed Product CLI evidence is incomplete",
+                ]
         document["status"], document["reasons"] = status, reasons
         close_attempt(document, status, now=self.clock())
         self.state.write(document)
@@ -548,8 +585,18 @@ def publish(document, cfg, out_dir, *, now, run_url=None):
         transcript=document.get("transcript") or (),
         preflight=document.get("preflight") or {},
         stages=document.get("stages") or {},
+        product_cli_attempts=document.get("product_cli_attempts") or (),
+        cleanup_outstanding=document.get("cleanup_outstanding") or (),
     )
-    paths = report.write(out_dir, payload, matrix, document["evaluation_id"])
+    paths = report.write(
+        out_dir,
+        payload,
+        matrix,
+        document["evaluation_id"],
+        product_run_id=cfg.get("product_run_id"),
+        product_cli_attempts=document.get("product_cli_attempts") or (),
+        cleanup_outstanding=document.get("cleanup_outstanding") or (),
+    )
     text = report.summary(
         matrix,
         suites,
@@ -931,7 +978,26 @@ def main(argv=None, stages=None, *, clock=time.time, store=None):
                     # Surfaced so the step log names the stage that broke; the
                     # authoritative verdict is `status`, which already accounts
                     # for it via the persisted stage map.
-                    "stage_failure": type(failure).__name__ if failure else None,
+                    #
+                    # The SENTENCE, not the bare class name, under exactly the
+                    # rule the recorded errors list already applies: every one of
+                    # the harness's OWN error types is written to carry no
+                    # provider text, so publishing its message is safe, while a
+                    # foreign exception still contributes its type alone. Printing
+                    # the class alone reported a refused transport as
+                    # `stage_failure: "PortError"` and left the sentence naming
+                    # the refused read reachable only inside the report artifact,
+                    # so an operator reading the step log could not tell which
+                    # read was refused.
+                    "stage_failure": (
+                        (
+                            f"{type(failure).__name__}: {failure}"
+                            if isinstance(failure, OWN_ERRORS)
+                            else type(failure).__name__
+                        )
+                        if failure
+                        else None
+                    ),
                 },
                 indent=2,
             )

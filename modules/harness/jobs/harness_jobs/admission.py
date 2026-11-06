@@ -995,9 +995,10 @@ async def _commit_admission(
                 INSERT INTO harness_approval_consumption (
                     approval_id, operation_id, org_id, workspace_id, plan_digest,
                     requester, approved_by, max_resource_units, max_runtime_seconds,
-                    max_cost_micros, reservation_id, reservation_state
+                    max_cost_micros, reservation_id, reservation_state,
+                    requires_distinct_approver
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                 ON CONFLICT (approval_id) DO NOTHING
                 RETURNING approval_id
                 """,
@@ -1013,6 +1014,7 @@ async def _commit_admission(
                 approval.envelope.max_cost_micros,
                 reservation.reservation_id,
                 ReservationState.CONFIRMED.value,
+                approval.requires_distinct_approver,
             )
         except Exception as error:
             if not _is_unique_violation(error):

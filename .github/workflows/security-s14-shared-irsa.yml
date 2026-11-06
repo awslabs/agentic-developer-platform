@@ -67,22 +67,24 @@ jobs:
         run: python3 diagnostic/scripts/security/s14/diagnostic.py --config diagnostic/scripts/security/s14/config.json --receipt "$RECEIPT" --stage runtime --execute
       - name: Preserve runtime summary
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./diagnostic/.github/actions/upload-ci-evidence-s3
         with:
           name: s14-${{ github.run_id }}-runtime
           path: ${{ runner.temp }}/s14-${{ github.run_id }}/summary.json
           if-no-files-found: warn
           retention-days: 14
+          source-directory: ${{ github.workspace }}/source
       - name: Start exactly one nonpublishing PR build
         run: python3 diagnostic/scripts/security/s14/diagnostic.py --config diagnostic/scripts/security/s14/config.json --receipt "$RECEIPT" --stage start-build --source-root "$GITHUB_WORKSPACE/source" --source-sha c6f20b35491541a99bc48e83b8e801296ffc645f --execute
       - name: Preserve build-start summary
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./diagnostic/.github/actions/upload-ci-evidence-s3
         with:
           name: s14-${{ github.run_id }}-build-start
           path: ${{ runner.temp }}/s14-${{ github.run_id }}/summary.json
           if-no-files-found: warn
           retention-days: 14
+          source-directory: ${{ github.workspace }}/source
       - name: Poll saved build without restart
         shell: bash
         run: |
@@ -99,9 +101,10 @@ jobs:
           exit 1
       - name: Preserve final summary
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./diagnostic/.github/actions/upload-ci-evidence-s3
         with:
           name: s14-${{ github.run_id }}-final
           path: ${{ runner.temp }}/s14-${{ github.run_id }}/summary.json
           if-no-files-found: warn
           retention-days: 14
+          source-directory: ${{ github.workspace }}/source

@@ -112,3 +112,32 @@ def test_historical_kimi_unconfirmed_tier_estimate_remains_replayable():
     payload["routing"]["served_service_tier_raw"] = "default"
     payload["content_sha256"] = _decision_content_hash(payload)
     assert verify_pricing_decision(payload, request_id="old-kimi-test", org_id="test") == decision.ledger_cost
+
+
+INDIA_CARD = CARD.with_name("kimi-k3-india-pricing.md")
+
+
+def test_additional_india_row_preserves_reviewed_routes_and_prices():
+    snapshot = load_snapshot()
+    old = parse_kimi_card(CARD.read_bytes(), snapshot.rates, verified_at=NOW)
+    new = parse_kimi_card(INDIA_CARD.read_bytes(), snapshot.rates, verified_at=NOW)
+    assert len(new) == len(old) == 111
+    from dataclasses import replace
+
+    assert new == tuple(replace(row, source_content_sha256=new[0].source_content_sha256) for row in old)
+    assert not any(row.geography == "geo_cris" and row.region.startswith("ap-south-") for row in new)
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("IN CRIS | $3.30", "EU CRIS | $3.30"),
+        ("IN CRIS | $3.30", "US CRIS | $3.30"),
+        ("IN CRIS | $3.30", "IN CRIS | unknown"),
+        ("Global CRIS | $3.00", "IN CRIS | $3.00"),
+        ("1.75x", "2x"),
+    ],
+)
+def test_additional_geography_does_not_relax_source_validation(old, new):
+    with pytest.raises(SourceValidationError):
+        parse_kimi_card(INDIA_CARD.read_bytes().replace(old.encode(), new.encode()), load_snapshot().rates, verified_at=NOW)

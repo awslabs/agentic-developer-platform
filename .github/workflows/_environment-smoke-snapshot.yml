@@ -1,0 +1,94 @@
+name: Environment smoke target and revision
+'on':
+  workflow_call:
+    inputs:
+      target_environment:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      region:
+        required: true
+        type: string
+      expected_revision:
+        required: true
+        type: string
+      modules:
+        type: string
+        default: ''
+      target_digest:
+        type: string
+        default: ''
+      phase:
+        required: true
+        type: string
+    outputs:
+      revision:
+        value: ${{ jobs.snapshot.outputs.revision }}
+      target_digest:
+        value: ${{ jobs.snapshot.outputs.target_digest }}
+      cli_scope:
+        value: ${{ jobs.snapshot.outputs.cli_scope }}
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: arc-runner-org
+    environment: ${{ inputs.target_environment }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      revision: ${{ steps.snapshot.outputs.revision }}
+      target_digest: ${{ steps.snapshot.outputs.target_digest }}
+      cli_scope: ${{ steps.snapshot.outputs.cli_scope }}
+    env:
+      AWS_REGION: ${{ inputs.region }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      SMOKE_TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+      SMOKE_TARGET_DIGEST: ${{ inputs.target_digest }}
+      SMOKE_MODULES: ${{ inputs.modules }}
+      ENVIRONMENT_SMOKE_TARGET_JSON: ${{ secrets.ENVIRONMENT_SMOKE_TARGET_JSON }}
+      CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+      CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
+      CLI_UPLIFT_EVAL_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require reviewed main and an explicit evaluator role
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          test "$GITHUB_REF" = refs/heads/main
+          if test -z "$ROLE_ARN"; then
+            echo 'Missing evaluator role in the protected target environment.' | tee test-results/environment-smoke-preflight.txt
+            exit 1
+          fi
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install boto3
+      - name: Validate module selection before live work
+        run: python -m tests.regression.environment_smoke plan
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: ${{ inputs.region }}
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-duration-seconds: 900
+      - name: Verify target identity and deployed gateway
+        id: snapshot
+        run: python -m tests.regression.environment_smoke snapshot
+      - uses: ./.github/actions/upload-ci-evidence-s3
+        if: always()
+        with:
+          name: environment-smoke-${{ inputs.phase }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 14

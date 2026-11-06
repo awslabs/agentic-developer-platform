@@ -17,14 +17,13 @@ export interface ReviewVerdict {
   verdict: "approve" | "request_changes";
   summary: string;
   findings: ReviewFinding[];
+  /** Reporting only. Missing evidence does not establish a current-PR defect. */
   validationGaps: string[];
 }
 
 export function requiresChanges(verdict: ReviewVerdict): boolean {
-  return (
-    verdict.verdict === "request_changes" ||
-    verdict.findings.some((finding) => finding.blocking)
-  );
+  // The model's headline cannot create a hold without an actual blocker.
+  return verdict.findings.some((finding) => finding.blocking);
 }
 
 interface CodexEnvelopeBase {
@@ -51,6 +50,7 @@ export interface CodexPullRequestReviewEnvelope extends CodexEnvelopeBase {
     expected_head_sha: string;
     html_url: string;
     triggering_comment?: string;
+    review_only?: { base_sha: string; merged: boolean; merge_sha: string | null };
   };
 }
 
@@ -199,12 +199,33 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
     "pull_request.head_ref",
   );
   const branchIssue = issueFromAgentBranch(headRef);
-  if (branchIssue === null) throw new Error("pull_request head is not an agent issue branch");
+  const readOnly = payload.review_only === true;
+  if (branchIssue === null && !readOnly) throw new Error("pull_request head is not an agent issue branch");
   const expectedSha = requiredString(
     head?.sha,
     "pull_request.expected_head_sha",
   );
   if (!SHA_RE.test(expectedSha)) throw new Error("expected_head_sha is invalid");
+  if (readOnly) {
+    const sender = payload.sender as Record<string, unknown> | undefined;
+    const author = comment?.user as Record<string, unknown> | undefined;
+    const correlation = value.correlation as Record<string, unknown> | undefined;
+    const intent = value.intent as Record<string, unknown> | undefined;
+    const issue = payload.issue as Record<string, unknown> | undefined;
+    const merged = pr.state === "closed" && pr.merged === true;
+    if (value.channel !== "github" || intent?.trigger !== "mentioned"
+        || sender?.type !== "User" || author?.type !== "User"
+        || !Number.isSafeInteger(sender?.id) || Number(sender?.id) <= 0 || sender?.id !== author?.id
+        || correlation?.is_human_rooted !== true || !correlation?.root_human_id
+        || typeof comment?.body !== "string" || !comment.body.trim()
+        || sourceRef?.issue !== pr.number || sourceRef?.pr !== pr.number || issue?.number !== pr.number
+        || sourceRef?.sha !== expectedSha || !SHA_RE.test(String(base?.sha))
+        || (head?.repo as Record<string, unknown> | undefined)?.full_name !== repository
+        || (base?.repo as Record<string, unknown> | undefined)?.full_name !== repository
+        || (pr.state !== "open" && !merged) || (merged && !SHA_RE.test(String(pr.merge_commit_sha)))) {
+      throw new Error("invalid human review-only PR context");
+    }
+  }
 
   return {
     ...common,
@@ -214,7 +235,7 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
         sourceRef?.pr,
         "pull_request.number",
       ),
-      issue_number: branchIssue,
+      issue_number: branchIssue ?? requiredPositiveInteger(sourceRef?.issue, "issue.number"),
       head_ref: headRef,
       base_ref: requiredString(
         base?.ref,
@@ -222,6 +243,10 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
       ),
       expected_head_sha: expectedSha,
       html_url: requiredString(pr.html_url, "pull_request.html_url"),
+      ...(readOnly ? { review_only: {
+        base_sha: base!.sha as string, merged: pr.merged === true,
+        merge_sha: pr.merged === true ? pr.merge_commit_sha as string : null,
+      } } : {}),
       ...(typeof comment?.body === "string" && comment.body.trim()
         ? { triggering_comment: comment.body }
         : {}),
@@ -271,7 +296,8 @@ export const reviewOutputSchema = {
         additionalProperties: false,
       },
     },
-    validationGaps: { type: "array", items: { type: "string" } },
+    validationGaps: { type: "array", items: { type: "string" },
+      description: "Non-blocking evidence notes: unrun checks, historical evidence, deferred acceptance and other validation limits. Never claim these passed. Concrete current-PR defects belong in findings; required CI is enforced independently by the controller." },
   },
   required: ["verdict", "summary", "findings", "validationGaps"],
   additionalProperties: false,
@@ -285,8 +311,6 @@ export function parseVerdict(raw: string): ReviewVerdict {
   if (!Array.isArray(parsed.findings) || !Array.isArray(parsed.validationGaps)) {
     throw new Error("Codex returned an invalid findings shape");
   }
-  if (parsed.findings.some((finding) => finding.blocking)) {
-    parsed.verdict = "request_changes";
-  }
+  parsed.verdict = requiresChanges(parsed) ? "request_changes" : "approve";
   return parsed;
 }

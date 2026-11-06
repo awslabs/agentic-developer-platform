@@ -1,6 +1,7 @@
 """Historical adoption verifies delivery without manufacturing worker execution."""
 
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,7 +28,6 @@ session = fixtures.session
 
 @pytest.fixture(autouse=True)
 def provider(monkeypatch):
-    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", REPO)
     monkeypatch.setattr("src.orchestration.delivery_adoption.resolve_installation_id", AsyncMock(return_value=INSTALLATION))
 
 
@@ -46,6 +46,8 @@ async def story(session):
         state="pending",
         attempts=0,
         issue_ref="5327",
+        repository_identity=REPO,
+        provider_repository_id=REPO_ID,
     )
     session.add(node)
     await session.flush()
@@ -151,7 +153,7 @@ async def test_adoption_refuses_scope_change_wrong_repository_and_active_owner(s
     node.title = "Changed scope"
     with pytest.raises(BindingError, match="scope changed"):
         await adopt(session, node, expected_scope=scope)
-    with pytest.raises(BindingError, match="configured engine repository"):
+    with pytest.raises(BindingError, match="saved or accepted story repository"):
         await adopt(session, node, pr=PullRequestIdentity(REPO_ID, PR_NODE, "other/repo", PR_NUMBER, HEAD))
     session.add(
         OrchestrationWorkClaim(
@@ -167,3 +169,33 @@ async def test_adoption_refuses_scope_change_wrong_repository_and_active_owner(s
     await session.flush()
     with pytest.raises(BindingError, match="active work owner"):
         await adopt(session, node)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_adoption_uses_accepted_story_repository_instead_of_global_setting(session, monkeypatch, legacy):
+    node = await story(session)
+    node.repository_identity = REPO
+    node.provider_repository_id = REPO_ID
+    node.repository_connection = None if legacy else {"installation_id": INSTALLATION}
+    contract = SimpleNamespace(
+        node=SimpleNamespace(
+            repository_identity=REPO,
+            provider_repository_id=REPO_ID,
+            repository_connection=SimpleNamespace(installation_id=INSTALLATION, model_dump=lambda **kwargs: node.repository_connection),
+            issue_ref=node.issue_ref,
+        ),
+        repository_ids={REPO},
+    )
+    monkeypatch.setattr("src.orchestration.accepted_node.accepted_node_contract", AsyncMock(return_value=contract))
+    verify = AsyncMock(return_value=SimpleNamespace(full_name=REPO, installation_id=INSTALLATION, repository_id=REPO_ID))
+    monkeypatch.setattr("src.orchestration.repository_binding.resolve_story_repository", verify)
+    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "fictional/global-a")
+    with pytest.raises(BindingError):
+        await adopt(session, node, pr=PullRequestIdentity(REPO_ID + 1, PR_NODE, REPO, PR_NUMBER, HEAD))
+    assert await session.scalar(select(OrchestrationPullRequestBinding)) is None
+    binding = await adopt(session, node)
+    assert binding.repo == REPO and binding.provider_repository_id == REPO_ID
+    if legacy:
+        verify.assert_not_awaited()
+    else:
+        assert verify.await_args.kwargs["name"] == REPO

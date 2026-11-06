@@ -17,6 +17,7 @@ from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.auth.dependencies import get_current_user
+from src.shared.accounting_health import AUDIT_WRITE_FAILURES, record_health_event
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.organization import Organization, User
@@ -134,6 +135,7 @@ async def begin_operation(request: Request, actor=Depends(get_current_user), db=
     try:
         await persist(operation, event_type="admin_operation_started", outcome="pending")
     except Exception:
+        record_health_event(AUDIT_WRITE_FAILURES)
         logger.error("Admin operation admission audit unavailable", extra={"operation_id": operation.operation_id})
         raise HTTPException(503, detail={"error": "admin_audit_unavailable", "operation_id": operation.operation_id}) from None
     operation.started = True
@@ -189,6 +191,8 @@ class AuditedAdminRoute(APIRoute):
                                 },
                             )
                         except Exception:
+                            if not self.audit_callback:
+                                record_health_event(AUDIT_WRITE_FAILURES)
                             # The durable pending intent remains an operator-visible
                             # reconciliation item; preserve the refusal response.
                             logger.error("Admin terminal audit unavailable", extra={"operation_id": operation.operation_id})
@@ -209,6 +213,8 @@ class AuditedAdminRoute(APIRoute):
                     await operation.db.commit()
                     await persist(operation, **operation.terminal)
                 except Exception:
+                    if not self.audit_callback:
+                        record_health_event(AUDIT_WRITE_FAILURES)
                     await operation.db.rollback()
                     logger.error("Admin completion requires reconciliation", extra={"operation_id": operation.operation_id})
                     raise HTTPException(

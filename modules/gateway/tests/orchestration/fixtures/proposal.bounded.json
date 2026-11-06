@@ -1,0 +1,41 @@
+{
+  "flow_slug": "example-delivery",
+  "title": "Example bounded delivery",
+  "org_id": "",
+  "product_id": "example-product",
+  "spec_revision": "example-revision-1",
+  "intent_ref": "100",
+  "nodes": [
+    {
+      "address": "example-delivery/epic-100/wave-1/story-101",
+      "kind": "story",
+      "title": "Build example",
+      "issue_ref": "101",
+      "executor": {"schema_version": 1, "kind": "agent", "role": "develop", "persona": "agent-codex-developer"},
+      "repository_identity": "example/repository",
+      "provider_repository_id": 12345,
+      "repository_connection": {"provider": "github", "installation_id": 67890}
+    },
+    {"address": "example-delivery/epic-100/wave-1/eval", "kind": "eval", "title": "Review example"}
+  ],
+  "edges": [
+    {"from_address": "example-delivery/epic-100/wave-1/story-101", "to_address": "example-delivery/epic-100/wave-1/eval"}
+  ],
+  "proposed_execution_policy": {
+    "schema_version": 1,
+    "org_id": "example-org",
+    "team_ids": [],
+    "repository_ids": ["example/repository"],
+    "environment_connection_ids": [],
+    "allowed_actions": ["develop", "review", "repair", "merge"],
+    "human_gates": [],
+    "evaluation_acceptance": {"example-delivery/epic-100/wave-1/eval": "human"},
+    "expires_at": "2026-11-16T22:23:00Z",
+    "limits": {
+      "max_spend_usd": "600",
+      "max_wall_clock_seconds": 1209600,
+      "max_attempts_per_node": 3,
+      "max_concurrent_actions": 2
+    }
+  }
+}

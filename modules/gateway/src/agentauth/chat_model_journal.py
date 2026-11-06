@@ -10,6 +10,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from src.agentauth.chat_admission import _encoded
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, ChatLaunch, _launch_json
+from src.agentauth.chat_execution_mode import execution_mode_update
 from src.agentauth.chat_user_turn import load_user_turn, verify_user_turn
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import WorkloadUnavailableError
@@ -27,21 +28,7 @@ class ChatModelJournal:
         self.authority = authority
 
     def _open_turn(self, launch):
-        return {
-            "ConditionCheck": {
-                "TableName": self.authority.store.table,
-                "Key": _encoded({"pk": f"TENANT#{launch.tenant_id}", "sk": f"EXEC#{launch.run_id}"}),
-                "ConditionExpression": (
-                    "#status = :active AND workload_binding = :pod AND current_attempt = :attempt "
-                    "AND current_credential_epoch = :epoch AND attribute_not_exists(abort_command_id) "
-                    "AND attribute_not_exists(chat_turn_sealed)"
-                ),
-                "ExpressionAttributeNames": {"#status": "status"},
-                "ExpressionAttributeValues": _encoded(
-                    {":active": "active", ":pod": launch.sandbox_uid, ":attempt": launch.attempt, ":epoch": launch.credential_epoch}
-                ),
-            }
-        }
+        return execution_mode_update(self.authority, launch, "model")
 
     def _read(self, run_id: str, operation_id: str) -> dict | None:
         try:

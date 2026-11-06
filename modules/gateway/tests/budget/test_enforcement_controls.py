@@ -84,6 +84,30 @@ async def test_toggle_never_deletes_accounting_gap(controls):
     assert (await routes.change(c.db, c.user, body(True, 1), c.flow.id))["accounting_incomplete"]
 
 
+async def test_global_gap_never_marks_other_requests_incomplete(controls):
+    """A gap with no flow behind it is an audit record, not a deployment-wide stop.
+
+    Regression: a chat turn cancelled by a pod rollout wrote one
+    ``scope_key='global'`` gap, and every enforced request on the gateway then
+    failed closed with ``budget_check_unavailable`` until the row was deleted
+    by hand.
+    """
+    c = controls
+    c.db.add(BudgetAccountingGap(request_id="chat-cancelled-by-rollout", scope_key="global"))
+    await c.db.commit()
+    assert not (await read_enforcement(c.db)).accounting_incomplete
+    assert not (await read_enforcement(c.db, org_id=c.flow.org_id, flow_id=c.flow.id)).accounting_incomplete
+    assert not (await routes.status(c.db, c.user))["accounting_incomplete"]
+    # A gap against a specific flow still fails that flow, and only that flow, closed.
+    c.db.add(BudgetAccountingGap(request_id="missing-observation", scope_key=flow_key(c.flow.org_id, c.flow.id)))
+    await c.db.commit()
+    assert (await read_enforcement(c.db, org_id=c.flow.org_id, flow_id=c.flow.id)).accounting_incomplete
+    assert not (await read_enforcement(c.db, org_id=c.flow.org_id, flow_id="another-flow")).accounting_incomplete
+    assert not (await read_enforcement(c.db)).accounting_incomplete
+    # The row itself is retained for audit.
+    assert len(list(await c.db.scalars(select(BudgetAccountingGap)))) == 2
+
+
 async def test_nonadmin_cannot_change_either_scope():
     for flow in (None, "flow"):
         with pytest.raises(AccessDeniedError):

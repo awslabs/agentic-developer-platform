@@ -17,11 +17,45 @@ interface ChatMessageRendererProps {
   message: ChatMessage;
 }
 
+const EVIDENCE_STATUS_LABELS = {
+  ok: 'Sources reported available',
+  empty: 'No records reported in the covered window',
+  denied: 'Permission denied: records were not available to this request',
+  unavailable: 'Source unavailable: missing records cannot be treated as empty',
+  partial: 'Partial results: some sources or pages are missing',
+} as const;
+
+function safeEvidenceUrl(href: string): string | null {
+  if (href.length > 2048 || /[\x00-\x1f\\]/.test(href)) return null;
+  if (/^\/(?!\/)/.test(href)) return href;
+  if (!/^https:\/\//i.test(href)) return null;
+  try {
+    const url = new URL(href);
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export function ChatMessageRenderer({ message }: ChatMessageRendererProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isError = message.status === 'error';
   const isStreaming = message.status === 'streaming';
+  const evidence = message.evidence && message.evidence.status in EVIDENCE_STATUS_LABELS ? message.evidence : null;
+  const coverage = Array.isArray(evidence?.coverage) ? evidence.coverage.filter(entry => entry && typeof entry.source === 'string') : [];
+  const sources = Array.isArray(evidence?.sources) ? evidence.sources.filter(entry => entry && typeof entry.url === 'string') : [];
+  const hasGaps = coverage.some(entry => ['denied', 'unavailable', 'partial'].includes(entry.status));
+  const sourceLinks = sources.map(source => ({ label: source.label, href: safeEvidenceUrl(source.url) }))
+    .filter((source): source is { label: string; href: string } => typeof source.label === 'string' && !!source.href);
+
+  const reportedStatus = evidence?.has_more || (hasGaps && (evidence?.status === 'ok' || evidence?.status === 'empty'))
+    ? 'partial' : evidence?.status;
+  const coverageLabel = reportedStatus === 'empty' && !coverage.length
+    ? 'Empty reported; source coverage unverified'
+    : reportedStatus === 'ok' && !coverage.length
+      ? 'Available reported; source coverage unverified'
+      : reportedStatus ? EVIDENCE_STATUS_LABELS[reportedStatus] : null;
 
   if (isSystem) {
     return (
@@ -131,6 +165,34 @@ export function ChatMessageRenderer({ message }: ChatMessageRendererProps) {
           </p>
         )}
 
+        {!isUser && (message.status === 'complete' || (isError && evidence)) && (
+          <section aria-label="Answer evidence" className="mt-3 border-t border-gray-200 pt-2 text-xs dark:border-gray-700">
+            {evidence ? (
+              <>
+                <p>{coverageLabel}</p>
+                <p>Window: {evidence.from && evidence.to && evidence.timezone
+                  ? `${evidence.from} (inclusive) to ${evidence.to} (exclusive); ${evidence.timezone}`
+                  : 'Window or timezone not reported'}</p>
+                <p>Freshness: {evidence.observed_at ? `Observed at ${evidence.observed_at}` : 'Not reported'}</p>
+                {coverage.length > 0 && (
+                  <ul aria-label="Source coverage" className="list-disc pl-4">
+                    {coverage.map((entry, index) => (
+                      <li key={`${entry.source}-${index}`}>{entry.source}: {entry.status}{entry.reason ? ` (${entry.reason})` : ''}</li>
+                    ))}
+                  </ul>
+                )}
+                {evidence.has_more && <p>More pages remain; this window is incomplete.</p>}
+                {sourceLinks.length > 0 ? (
+                  <ul aria-label="Source links" className="list-disc pl-4">
+                    {sourceLinks.map((source, index) => (
+                      <li key={`${source.href}-${index}`}><a href={source.href} target="_blank" rel="noopener noreferrer" className="underline">{source.label}</a></li>
+                    ))}
+                  </ul>
+                ) : <p>Source links not reported.</p>}
+              </>
+            ) : <p>Source window, freshness and coverage not reported for this answer.</p>}
+          </section>
+        )}
         {/* Timestamp */}
         <div
           className={`text-xs mt-1 ${

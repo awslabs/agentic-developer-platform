@@ -573,3 +573,5 @@ then requires matching original-Pod logs and retained termination results. It
 uses the existing workload lifecycle; no extra probe effect is added to existing
 admissions. Image release and exact shared-cluster node-placement observation
 remain pending prerequisites.
+
+The paid worker allows a 25-second response wait for the authenticated provider-session route, which performs STS issuance and repeated current-authority checks. Other authority requests retain their 10-second timeout. The session wait stays below the API Gateway integration limit; issuance is never automatically retried. A transport failure logs only its exception type and retains the durable uncertain outcome for recovery. This timeout does not extend any grant, approval, lease or provider credential expiry.

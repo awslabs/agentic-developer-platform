@@ -28,7 +28,7 @@ def main():
         print(json.dumps({"error": error.code, "retryable": error.retryable}))
         return
     except status_gateway_client.StatusGatewayError as error:
-        print(json.dumps({"error": "protected_review_checks_unavailable", "retryable": error.retryable}))
+        print(json.dumps({"error": error.code, "retryable": error.retryable}))
         return
     print(json.dumps(result))
 

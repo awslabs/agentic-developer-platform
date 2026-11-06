@@ -23,4 +23,15 @@ async def evaluation_inputs(session, *, org_id, flow_id):
     )
     if datetime.now(UTC) >= deadline:
         raise CycleBlockedError("wall_clock_limit_exceeded")
-    return inputs, {"prior_spend_usd": "0"}
+    # Membership is keyed by canonical users.id; the accepted policy records the
+    # approver's Cognito sub. Dispatch and the protected path resolve it the same
+    # way (#7419); authorizing with the raw sub answered membership_revoked.
+    from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
+
+    try:
+        principal = await resolve_root_user_entity_id(session, org_id, inputs.policy.principal_id)
+    except UnresolvableUserEntityError:
+        # Keep the recorded principal; the membership check then answers for it
+        # exactly as before, rather than inventing a second refusal here.
+        principal = inputs.policy.principal_id
+    return inputs, {"prior_spend_usd": "0", "principal_user_id": principal}

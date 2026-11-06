@@ -1,0 +1,3293 @@
+{
+  "flow_slug": "atlassian-adapters-8445-parallel",
+  "title": "Atlassian and shared adapters #8445: autonomous staged deployment, coordinated handoff and live proof",
+  "org_id": "example-org",
+  "spec_revision": "c8c42938888bcec577965d517acaeb7ff86d4914",
+  "intent_ref": "8445",
+  "description": "INERT DESIGN: generated controlled integration and actual deployment readback need no prepared provider data. Separate reads/UI/writes/CLI evidence permits up to three concurrent story actions; shared runtime mutations and revision-sensitive checks serialize. Actual provider/Identity readiness gates cutover; all original live criteria gate completion. Agents implement data generation, discovery, cleanup and workflow integration.",
+  "epic_metadata": [
+    {
+      "epic_ref": "epic-8445",
+      "title": "Atlassian and shared tool adapters",
+      "description": "AgentCore Identity; one coordinated four-connector migration with verified live behavior."
+    }
+  ],
+  "wave_metadata": [
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w01-proof",
+      "title": "Standalone Identity proof: build, run and review"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w02-proof-review",
+      "title": "Verify controlled probe support; keep authenticated provider proof separate"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w03-foundation",
+      "title": "Core recovery and standalone adapter foundation"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w03b-foundation-release",
+      "title": "Deploy and verify the foundation before dependent implementation"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w04-identity",
+      "title": "User lifecycle, observations and release fencing"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w05-reads-ui",
+      "title": "Reads and connector parity: independently verified"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w05b-connections",
+      "title": "Connections UI: independent implementation and verification"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w06-writes-clients",
+      "title": "Write recovery: independently verified"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w06b-clients",
+      "title": "CLI and clients: independent implementation and verification"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w07-release-code",
+      "title": "Release automation and maintained runtime verification"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w08-harness",
+      "title": "Build the full live harness before deploying the candidate"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w09-release",
+      "title": "Deploy compatible components and hand off all four connectors"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w10-live",
+      "title": "Collect and verify post-deployment live evidence"
+    },
+    {
+      "epic_ref": "epic-8445",
+      "wave_ref": "w11-acceptance",
+      "title": "Automatically verify complete criterion rollup and completion readiness"
+    }
+  ],
+  "nodes": [
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+      "kind": "story",
+      "title": "Build the standalone Identity/provider probe and bounded protected-workflow invocation",
+      "issue_ref": "8446",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "required_inputs": [
+        {
+          "name": "Repository and accepted dev deployment authority",
+          "source": "environment_connection:bind-private-dev-connection",
+          "description": "Only deployment needs the bound dev connection. Build generated Identity/provider cases and discover existing live capability; no consenting account or prepared dataset is a prerequisite for independent implementation."
+        }
+      ]
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/code-evidence",
+      "kind": "eval",
+      "title": "Verify reviewed code and phase CI",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "required_checks": [
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 381649008,
+                  "workflow_path": ".github/workflows/tools-ci.yml"
+                }
+              },
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/gateway-backend",
+      "kind": "story",
+      "title": "Deploy probe support and verify generated controlled cases; collect actual provider proof only when access exists",
+      "issue_ref": "8446",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:gateway-backend"
+      ],
+      "required_inputs": [
+        {
+          "name": "Verified private dev connection",
+          "source": "environment_connection:bind-private-dev-connection"
+        },
+        {
+          "name": "Protected workflow",
+          "source": "deployment_workflow:gateway-deploy.yml"
+        },
+        {
+          "name": "Reviewed predecessor",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        ],
+        "repository": "aws-e/adp",
+        "target": "bind-core-dev",
+        "component": "gateway-backend",
+        "workflows": [
+          "gateway-deploy.yml"
+        ],
+        "definition_predecessor": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+        "default_branch": "main"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/code-evidence",
+      "kind": "eval",
+      "title": "Automatically verify authenticated Identity proof and cleanup",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/gateway-backend",
+            "required_checks": []
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "stage.identity-proof",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/gateway-backend"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/gateway-backend"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-stage-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "identity-proof.identity",
+                    "pointer": "/stage_id",
+                    "operation": "equals",
+                    "expected": "identity-proof"
+                  },
+                  {
+                    "criterion_id": "identity-proof.cases",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8446.AC-01",
+                      "8446.AC-02",
+                      "8446.AC-03"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "phase_status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "identity-proof.runtime",
+                    "pointer": "/runtime_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "identity-proof.independent",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "identity-proof.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "identity-proof.unknown",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "identity-proof.verification_level",
+                    "pointer": "/verification_level",
+                    "operation": "equals",
+                    "expected": "controlled_integration"
+                  },
+                  {
+                    "criterion_id": "identity-proof.fixture_source",
+                    "pointer": "/fixture_source",
+                    "operation": "equals",
+                    "expected": "generated"
+                  },
+                  {
+                    "criterion_id": "identity-proof.provider_live_attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": false
+                  },
+                  {
+                    "criterion_id": "identity-proof.test_runtime_artifacts_match",
+                    "pointer": "/test_runtime_artifacts_match",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+      "kind": "story",
+      "title": "Implement core setup/recovery and separate adapter image/service contracts",
+      "issue_ref": "8447",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "delivery_mode": "code_only",
+      "evidence_expectations": [
+        "verified-merge"
+      ]
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/code-evidence",
+      "kind": "eval",
+      "title": "Verify reviewed code and phase CI",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 381649008,
+                  "workflow_path": ".github/workflows/tools-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/gateway-backend",
+      "kind": "story",
+      "title": "Install stage dispatch/recovery and adapter runtime support; verify core setup and recovery",
+      "issue_ref": "8447",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:gateway-backend"
+      ],
+      "required_inputs": [
+        {
+          "name": "Verified private dev connection",
+          "source": "environment_connection:bind-private-dev-connection"
+        },
+        {
+          "name": "Protected workflow",
+          "source": "deployment_workflow:gateway-deploy.yml"
+        },
+        {
+          "name": "Reviewed predecessor",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        },
+        {
+          "name": "Reviewed predecessor",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+          "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        ],
+        "repository": "aws-e/adp",
+        "target": "bind-core-dev",
+        "component": "gateway-backend",
+        "workflows": [
+          "gateway-deploy.yml"
+        ],
+        "definition_predecessor": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+        "default_branch": "main"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/tool-adapters",
+      "kind": "story",
+      "title": "Deploy isolated adapter foundation; verify private readiness and queue foundation checks",
+      "issue_ref": "8447",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:tool-adapters"
+      ],
+      "required_inputs": [
+        {
+          "name": "Verified private dev connection",
+          "source": "environment_connection:bind-private-dev-connection"
+        },
+        {
+          "name": "Protected workflow",
+          "source": "deployment_workflow:tools-platform-deploy.yml"
+        },
+        {
+          "name": "Reviewed predecessor",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        },
+        {
+          "name": "Reviewed predecessor",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+          "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        ],
+        "repository": "aws-e/adp",
+        "target": "bind-adapters-dev",
+        "component": "tool-adapters",
+        "workflows": [
+          "tools-platform-deploy.yml"
+        ],
+        "definition_predecessor": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+        "default_branch": "main"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/code-evidence",
+      "kind": "eval",
+      "title": "Verify deployed foundation, stage continuation and recovery",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/gateway-backend",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/tool-adapters",
+            "required_checks": []
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "stage.foundation",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/tool-adapters"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/tool-adapters"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-stage-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "foundation.identity",
+                    "pointer": "/stage_id",
+                    "operation": "equals",
+                    "expected": "foundation"
+                  },
+                  {
+                    "criterion_id": "foundation.cases",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8447.AC-01",
+                      "8447.AC-02",
+                      "8447.AC-03",
+                      "8447.AC-04"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "phase_status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "foundation.runtime",
+                    "pointer": "/runtime_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "foundation.independent",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "foundation.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "foundation.unknown",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "foundation.verification_level",
+                    "pointer": "/verification_level",
+                    "operation": "equals",
+                    "expected": "controlled_integration"
+                  },
+                  {
+                    "criterion_id": "foundation.fixture_source",
+                    "pointer": "/fixture_source",
+                    "operation": "equals",
+                    "expected": "generated"
+                  },
+                  {
+                    "criterion_id": "foundation.provider_live_attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": false
+                  },
+                  {
+                    "criterion_id": "foundation.test_runtime_artifacts_match",
+                    "pointer": "/test_runtime_artifacts_match",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "foundation.shared_release_lease",
+                    "pointer": "/shared_release_lease_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "foundation.fixture_isolation",
+                    "pointer": "/fixture_isolation_verified",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+      "kind": "story",
+      "title": "Implement core admission, Identity user lifecycle and adapter observations",
+      "issue_ref": "8448",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/code-evidence",
+      "kind": "eval",
+      "title": "Verify deployed Identity lifecycle and independent stage evidence",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 381649008,
+                  "workflow_path": ".github/workflows/tools-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "stage.identity",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-stage-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "identity.identity",
+                    "pointer": "/stage_id",
+                    "operation": "equals",
+                    "expected": "identity"
+                  },
+                  {
+                    "criterion_id": "identity.cases",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8448.AC-01",
+                      "8448.AC-02",
+                      "8448.AC-03",
+                      "8448.AC-04"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "phase_status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "identity.runtime",
+                    "pointer": "/runtime_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "identity.independent",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "identity.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "identity.unknown",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "identity.verification_level",
+                    "pointer": "/verification_level",
+                    "operation": "equals",
+                    "expected": "controlled_integration"
+                  },
+                  {
+                    "criterion_id": "identity.fixture_source",
+                    "pointer": "/fixture_source",
+                    "operation": "equals",
+                    "expected": "generated"
+                  },
+                  {
+                    "criterion_id": "identity.provider_live_attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": false
+                  },
+                  {
+                    "criterion_id": "identity.test_runtime_artifacts_match",
+                    "pointer": "/test_runtime_artifacts_match",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+      "kind": "story",
+      "title": "Extract all legacy connector execution and implement named Atlassian reads",
+      "issue_ref": "8449",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+      "kind": "story",
+      "title": "Implement one Connections card and admin/user journeys",
+      "issue_ref": "8451",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/code-evidence",
+      "kind": "eval",
+      "title": "Automatically verify reads and parity controlled phase evidence",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+            "required_checks": [
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 381649008,
+                  "workflow_path": ".github/workflows/tools-ci.yml"
+                }
+              },
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "stage.reads-parity",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-stage-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "reads-parity.identity",
+                    "pointer": "/stage_id",
+                    "operation": "equals",
+                    "expected": "reads-parity"
+                  },
+                  {
+                    "criterion_id": "reads-parity.cases",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8449.AC-01",
+                      "8449.AC-02",
+                      "8449.AC-03",
+                      "8449.AC-04",
+                      "8449.AC-05"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "phase_status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "reads-parity.runtime",
+                    "pointer": "/runtime_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "reads-parity.independent",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "reads-parity.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "reads-parity.unknown",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "reads-parity.verification_level",
+                    "pointer": "/verification_level",
+                    "operation": "equals",
+                    "expected": "controlled_integration"
+                  },
+                  {
+                    "criterion_id": "reads-parity.fixture_source",
+                    "pointer": "/fixture_source",
+                    "operation": "equals",
+                    "expected": "generated"
+                  },
+                  {
+                    "criterion_id": "reads-parity.provider_live_attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": false
+                  },
+                  {
+                    "criterion_id": "reads-parity.test_runtime_artifacts_match",
+                    "pointer": "/test_runtime_artifacts_match",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/code-evidence",
+      "kind": "eval",
+      "title": "Automatically verify Connections UI controlled phase evidence",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+            "required_checks": [
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "stage.connections",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-stage-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "connections.identity",
+                    "pointer": "/stage_id",
+                    "operation": "equals",
+                    "expected": "connections"
+                  },
+                  {
+                    "criterion_id": "connections.cases",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8451.AC-01",
+                      "8451.AC-02",
+                      "8451.AC-03"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "phase_status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "connections.runtime",
+                    "pointer": "/runtime_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "connections.independent",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "connections.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "connections.unknown",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "connections.verification_level",
+                    "pointer": "/verification_level",
+                    "operation": "equals",
+                    "expected": "controlled_integration"
+                  },
+                  {
+                    "criterion_id": "connections.fixture_source",
+                    "pointer": "/fixture_source",
+                    "operation": "equals",
+                    "expected": "generated"
+                  },
+                  {
+                    "criterion_id": "connections.provider_live_attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": false
+                  },
+                  {
+                    "criterion_id": "connections.test_runtime_artifacts_match",
+                    "pointer": "/test_runtime_artifacts_match",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+      "kind": "story",
+      "title": "Implement exact approved writes and uncertain-outcome recovery",
+      "issue_ref": "8450",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+      "kind": "story",
+      "title": "Implement automatic Claude/Codex MCP and qualify schema loading",
+      "issue_ref": "8452",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/code-evidence",
+      "kind": "eval",
+      "title": "Automatically verify write recovery controlled phase evidence",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+            "required_checks": [
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 381649008,
+                  "workflow_path": ".github/workflows/tools-ci.yml"
+                }
+              },
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "stage.write-recovery",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-stage-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "write-recovery.identity",
+                    "pointer": "/stage_id",
+                    "operation": "equals",
+                    "expected": "write-recovery"
+                  },
+                  {
+                    "criterion_id": "write-recovery.cases",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8450.AC-01",
+                      "8450.AC-02",
+                      "8450.AC-03",
+                      "8450.AC-04"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "phase_status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "write-recovery.runtime",
+                    "pointer": "/runtime_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "write-recovery.independent",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "write-recovery.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "write-recovery.unknown",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "write-recovery.verification_level",
+                    "pointer": "/verification_level",
+                    "operation": "equals",
+                    "expected": "controlled_integration"
+                  },
+                  {
+                    "criterion_id": "write-recovery.fixture_source",
+                    "pointer": "/fixture_source",
+                    "operation": "equals",
+                    "expected": "generated"
+                  },
+                  {
+                    "criterion_id": "write-recovery.provider_live_attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": false
+                  },
+                  {
+                    "criterion_id": "write-recovery.test_runtime_artifacts_match",
+                    "pointer": "/test_runtime_artifacts_match",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/code-evidence",
+      "kind": "eval",
+      "title": "Automatically verify CLI and client wiring controlled phase evidence",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "stage.clients",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-stage-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "clients.identity",
+                    "pointer": "/stage_id",
+                    "operation": "equals",
+                    "expected": "clients"
+                  },
+                  {
+                    "criterion_id": "clients.cases",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8452.AC-01",
+                      "8452.AC-02",
+                      "8452.AC-03"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "phase_status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "clients.runtime",
+                    "pointer": "/runtime_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "clients.independent",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "clients.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "clients.unknown",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "clients.verification_level",
+                    "pointer": "/verification_level",
+                    "operation": "equals",
+                    "expected": "controlled_integration"
+                  },
+                  {
+                    "criterion_id": "clients.fixture_source",
+                    "pointer": "/fixture_source",
+                    "operation": "equals",
+                    "expected": "generated"
+                  },
+                  {
+                    "criterion_id": "clients.provider_live_attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": false
+                  },
+                  {
+                    "criterion_id": "clients.test_runtime_artifacts_match",
+                    "pointer": "/test_runtime_artifacts_match",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+      "kind": "story",
+      "title": "Build coordinated release, adapter receipt verification and durable live-workflow handoff",
+      "issue_ref": "8453",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/code-evidence",
+      "kind": "eval",
+      "title": "Verify deployed release automation and autonomous repair rehearsal",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Build Container",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 381649008,
+                  "workflow_path": ".github/workflows/tools-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "stage.release-automation",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-stage-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "release-automation.identity",
+                    "pointer": "/stage_id",
+                    "operation": "equals",
+                    "expected": "release-automation"
+                  },
+                  {
+                    "criterion_id": "release-automation.cases",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8453.AC-01",
+                      "8453.AC-02",
+                      "8453.AC-03",
+                      "8453.AC-04"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "phase_status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "release-automation.runtime",
+                    "pointer": "/runtime_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "release-automation.independent",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "release-automation.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "release-automation.unknown",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "release-automation.verification_level",
+                    "pointer": "/verification_level",
+                    "operation": "equals",
+                    "expected": "controlled_integration"
+                  },
+                  {
+                    "criterion_id": "release-automation.fixture_source",
+                    "pointer": "/fixture_source",
+                    "operation": "equals",
+                    "expected": "generated"
+                  },
+                  {
+                    "criterion_id": "release-automation.provider_live_attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": false
+                  },
+                  {
+                    "criterion_id": "release-automation.test_runtime_artifacts_match",
+                    "pointer": "/test_runtime_artifacts_match",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+      "kind": "story",
+      "title": "Build full two-client live matrix, independent evidence reader and cleanup/recovery harness",
+      "issue_ref": "8454",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/code-evidence",
+      "kind": "eval",
+      "title": "Verify installed harness, recovery consumers and a real canary before handoff",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+            "required_checks": [
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 381649008,
+                  "workflow_path": ".github/workflows/tools-ci.yml"
+                }
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "stage.harness",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-stage-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "harness.identity",
+                    "pointer": "/stage_id",
+                    "operation": "equals",
+                    "expected": "harness"
+                  },
+                  {
+                    "criterion_id": "harness.cases",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8454.AC-01",
+                      "8454.AC-02",
+                      "8454.AC-03",
+                      "8454.AC-04",
+                      "8454.AC-05",
+                      "8454.AC-06"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "phase_status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "harness.runtime",
+                    "pointer": "/runtime_verified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "harness.independent",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "harness.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "harness.unknown",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "harness.verification_level",
+                    "pointer": "/verification_level",
+                    "operation": "equals",
+                    "expected": "controlled_integration"
+                  },
+                  {
+                    "criterion_id": "harness.fixture_source",
+                    "pointer": "/fixture_source",
+                    "operation": "equals",
+                    "expected": "generated"
+                  },
+                  {
+                    "criterion_id": "harness.provider_live_attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": false
+                  },
+                  {
+                    "criterion_id": "harness.test_runtime_artifacts_match",
+                    "pointer": "/test_runtime_artifacts_match",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-backend",
+      "kind": "story",
+      "title": "Publish compatible core/CLI, metadata migrations and recovery",
+      "issue_ref": "8453",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:gateway-backend"
+      ],
+      "required_inputs": [
+        {
+          "name": "Verified private dev connection",
+          "source": "environment_connection:bind-private-dev-connection"
+        },
+        {
+          "name": "Protected workflow",
+          "source": "deployment_workflow:gateway-deploy.yml"
+        },
+        {
+          "name": "Reviewed merge 8446",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        },
+        {
+          "name": "Reviewed merge 8447",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        },
+        {
+          "name": "Reviewed merge 8448",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+        },
+        {
+          "name": "Reviewed merge 8449",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+        },
+        {
+          "name": "Reviewed merge 8451",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+        },
+        {
+          "name": "Reviewed merge 8450",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+        },
+        {
+          "name": "Reviewed merge 8452",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+        },
+        {
+          "name": "Reviewed merge 8453",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+        },
+        {
+          "name": "Reviewed merge 8454",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+          "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+          "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+          "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+          "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+          "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+          "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+          "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+          "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        ],
+        "repository": "aws-e/adp",
+        "target": "bind-core-dev",
+        "component": "gateway-backend",
+        "workflows": [
+          "gateway-deploy.yml"
+        ],
+        "definition_predecessor": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+        "default_branch": "main"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-facade",
+      "kind": "story",
+      "title": "Publish compatible facade and reconciler",
+      "issue_ref": "8453",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:tools-facade"
+      ],
+      "required_inputs": [
+        {
+          "name": "Verified private dev connection",
+          "source": "environment_connection:bind-private-dev-connection"
+        },
+        {
+          "name": "Protected workflow",
+          "source": "deployment_workflow:tools-facade-deploy.yml"
+        },
+        {
+          "name": "Reviewed merge 8446",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        },
+        {
+          "name": "Reviewed merge 8447",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        },
+        {
+          "name": "Reviewed merge 8448",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+        },
+        {
+          "name": "Reviewed merge 8449",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+        },
+        {
+          "name": "Reviewed merge 8451",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+        },
+        {
+          "name": "Reviewed merge 8450",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+        },
+        {
+          "name": "Reviewed merge 8452",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+        },
+        {
+          "name": "Reviewed merge 8453",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+        },
+        {
+          "name": "Reviewed merge 8454",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+          "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+          "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+          "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+          "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+          "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+          "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+          "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+          "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        ],
+        "repository": "aws-e/adp",
+        "target": "bind-facade-dev",
+        "component": "tools-facade",
+        "workflows": [
+          "tools-facade-deploy.yml"
+        ],
+        "definition_predecessor": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+        "default_branch": "main"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-interceptor",
+      "kind": "story",
+      "title": "Publish compatible invocation authority",
+      "issue_ref": "8453",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:tools-interceptor"
+      ],
+      "required_inputs": [
+        {
+          "name": "Verified private dev connection",
+          "source": "environment_connection:bind-private-dev-connection"
+        },
+        {
+          "name": "Protected workflow",
+          "source": "deployment_workflow:tools-interceptor-deploy.yml"
+        },
+        {
+          "name": "Reviewed merge 8446",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        },
+        {
+          "name": "Reviewed merge 8447",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        },
+        {
+          "name": "Reviewed merge 8448",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+        },
+        {
+          "name": "Reviewed merge 8449",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+        },
+        {
+          "name": "Reviewed merge 8451",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+        },
+        {
+          "name": "Reviewed merge 8450",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+        },
+        {
+          "name": "Reviewed merge 8452",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+        },
+        {
+          "name": "Reviewed merge 8453",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+        },
+        {
+          "name": "Reviewed merge 8454",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+          "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+          "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+          "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+          "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+          "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+          "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+          "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+          "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        ],
+        "repository": "aws-e/adp",
+        "target": "bind-interceptor-dev",
+        "component": "tools-interceptor",
+        "workflows": [
+          "tools-interceptor-deploy.yml"
+        ],
+        "definition_predecessor": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+        "default_branch": "main"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-frontend",
+      "kind": "story",
+      "title": "Publish compatible Connections UI with candidate capabilities gated",
+      "issue_ref": "8453",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:gateway-frontend"
+      ],
+      "required_inputs": [
+        {
+          "name": "Verified private dev connection",
+          "source": "environment_connection:bind-private-dev-connection"
+        },
+        {
+          "name": "Protected workflow",
+          "source": "deployment_workflow:gateway-frontend-deploy.yml"
+        },
+        {
+          "name": "Reviewed merge 8446",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        },
+        {
+          "name": "Reviewed merge 8447",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        },
+        {
+          "name": "Reviewed merge 8448",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+        },
+        {
+          "name": "Reviewed merge 8449",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+        },
+        {
+          "name": "Reviewed merge 8451",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+        },
+        {
+          "name": "Reviewed merge 8450",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+        },
+        {
+          "name": "Reviewed merge 8452",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+        },
+        {
+          "name": "Reviewed merge 8453",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+        },
+        {
+          "name": "Reviewed merge 8454",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+          "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+          "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+          "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+          "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+          "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+          "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+          "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+          "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        ],
+        "repository": "aws-e/adp",
+        "target": "bind-frontend-dev",
+        "component": "gateway-frontend",
+        "workflows": [
+          "gateway-frontend-deploy.yml"
+        ],
+        "definition_predecessor": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+        "default_branch": "main"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tool-adapters",
+      "kind": "story",
+      "title": "Deploy adapter image/service and verify candidate readiness; no active legacy switch",
+      "issue_ref": "8453",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:tool-adapters"
+      ],
+      "required_inputs": [
+        {
+          "name": "Verified private dev connection",
+          "source": "environment_connection:bind-private-dev-connection"
+        },
+        {
+          "name": "Protected workflow",
+          "source": "deployment_workflow:tools-platform-deploy.yml"
+        },
+        {
+          "name": "Reviewed merge 8446",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        },
+        {
+          "name": "Reviewed merge 8447",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        },
+        {
+          "name": "Reviewed merge 8448",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+        },
+        {
+          "name": "Reviewed merge 8449",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+        },
+        {
+          "name": "Reviewed merge 8451",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+        },
+        {
+          "name": "Reviewed merge 8450",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+        },
+        {
+          "name": "Reviewed merge 8452",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+        },
+        {
+          "name": "Reviewed merge 8453",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+        },
+        {
+          "name": "Reviewed merge 8454",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+          "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+          "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+          "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+          "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+          "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+          "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+          "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+          "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        ],
+        "repository": "aws-e/adp",
+        "target": "bind-adapters-dev",
+        "component": "tool-adapters",
+        "workflows": [
+          "tools-platform-deploy.yml"
+        ],
+        "definition_predecessor": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+        "default_branch": "main"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform",
+      "kind": "story",
+      "title": "Coordinate all four routes; own full live qualification, scoped repair and cleanup before completion",
+      "issue_ref": "8453",
+      "repository_identity": "aws-e/adp",
+      "provider_repository_id": 1186991269,
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "evidence_expectations": [
+        "runtime_verified:tools-platform"
+      ],
+      "required_inputs": [
+        {
+          "name": "Verified private dev connection",
+          "source": "environment_connection:bind-private-dev-connection"
+        },
+        {
+          "name": "Protected workflow",
+          "source": "deployment_workflow:tools-platform-deploy.yml"
+        },
+        {
+          "name": "Reviewed merge 8446",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446"
+        },
+        {
+          "name": "Reviewed merge 8447",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+        },
+        {
+          "name": "Reviewed merge 8448",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+        },
+        {
+          "name": "Reviewed merge 8449",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+        },
+        {
+          "name": "Reviewed merge 8451",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+        },
+        {
+          "name": "Reviewed merge 8450",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+        },
+        {
+          "name": "Reviewed merge 8452",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+        },
+        {
+          "name": "Reviewed merge 8453",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+        },
+        {
+          "name": "Reviewed merge 8454",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        },
+        {
+          "name": "Actual provider and cutover readiness",
+          "source": "node:atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+          "description": "The retained operations owner must discover actual access and verify required authenticated Identity/provider/parity evidence and rollback readiness before shared routing changes. Controlled evidence cannot authorize activation. Missing live capability holds this handoff only; do not ask for manual test data."
+        }
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+          "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+          "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+          "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+          "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+          "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+          "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+          "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+          "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+        ],
+        "repository": "aws-e/adp",
+        "target": "bind-platform-dev",
+        "component": "tools-platform",
+        "workflows": [
+          "tools-platform-deploy.yml"
+        ],
+        "definition_predecessor": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+        "default_branch": "main"
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/code-evidence",
+      "kind": "eval",
+      "title": "Independently verify every component runtime receipt; this alone is not live acceptance",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-backend",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-facade",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-interceptor",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-frontend",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tool-adapters",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform",
+            "required_checks": []
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w10-live/live-evidence",
+      "kind": "eval",
+      "title": "Verify protected live-workflow evidence, complete matrix and cleanup; never accept a skipped cell",
+      "evidence_expectations": [
+        "trusted-evaluation"
+      ],
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform",
+            "required_checks": []
+          }
+        ],
+        "workflows": [
+          {
+            "criterion_id": "live.workflow",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-flow-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "live.complete",
+                    "pointer": "/matrix_complete",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "live.new-tools",
+                    "pointer": "/tool_cells",
+                    "operation": "records",
+                    "expected": [
+                      "claude:atlassian___search_jira",
+                      "claude:atlassian___get_jira_issue",
+                      "claude:atlassian___search_confluence",
+                      "claude:atlassian___get_confluence_page",
+                      "claude:atlassian___create_jira_issue",
+                      "claude:atlassian___update_jira_issue",
+                      "claude:atlassian___comment_jira_issue",
+                      "claude:atlassian___transition_jira_issue",
+                      "codex:atlassian___search_jira",
+                      "codex:atlassian___get_jira_issue",
+                      "codex:atlassian___search_confluence",
+                      "codex:atlassian___get_confluence_page",
+                      "codex:atlassian___create_jira_issue",
+                      "codex:atlassian___update_jira_issue",
+                      "codex:atlassian___comment_jira_issue",
+                      "codex:atlassian___transition_jira_issue"
+                    ],
+                    "id_field": "cell_id",
+                    "required_fields": {
+                      "status": [
+                        "pass"
+                      ],
+                      "cleanup": [
+                        "confirmed"
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "live.coverage",
+                    "pointer": "/cases",
+                    "operation": "records",
+                    "expected": [
+                      "release-six-components",
+                      "adapter-four-routes",
+                      "core-health-through-outage",
+                      "role-site-owner-denials",
+                      "consent-two-users-sites",
+                      "identity-expiry-refresh",
+                      "disconnect-revoke",
+                      "catalogue-next-session",
+                      "claude-schema-loading",
+                      "codex-schema-loading",
+                      "legacy-all-verbs",
+                      "partial-routing-apply",
+                      "controller-restart-stale-lease",
+                      "group-rollback-redeploy",
+                      "unknown-write-no-replay",
+                      "report-recovery",
+                      "runner-loss-resume",
+                      "fixture-cleanup",
+                      "legacy-8076",
+                      "legacy-7266",
+                      "unrelated-runtimes"
+                    ],
+                    "id_field": "case_id",
+                    "required_fields": {
+                      "status": [
+                        "pass"
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "live.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "live.unknowns",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "live.final-state",
+                    "pointer": "/final_release_state",
+                    "operation": "equals",
+                    "expected": "candidate_verified"
+                  },
+                  {
+                    "criterion_id": "live.provider-attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      }
+    },
+    {
+      "address": "atlassian-adapters-8445-parallel/epic-8445/w11-acceptance/code-evidence",
+      "kind": "eval",
+      "title": "Automatically accept EC-01\u201306 and every story criterion from independently verified live evidence",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "96c81b2583da42c59c394370540668fbc84e1f4c5ae7791f50e0abbc6d966986"
+        },
+        "predecessors": [
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-backend",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-facade",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-interceptor",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-frontend",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tool-adapters",
+            "required_checks": []
+          },
+          {
+            "address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform",
+            "required_checks": []
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "completion.workflow",
+            "path": ".github/workflows/tools-live-evaluation.yml",
+            "source": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform"
+            },
+            "definition": {
+              "predecessor": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "evaluate"
+            ],
+            "artifacts": [
+              {
+                "name": "tools-live-evaluation-{run_id}-{run_attempt}",
+                "path": "atlassian-flow-summary.json",
+                "predicates": [
+                  {
+                    "criterion_id": "live.complete",
+                    "pointer": "/matrix_complete",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "live.new-tools",
+                    "pointer": "/tool_cells",
+                    "operation": "records",
+                    "expected": [
+                      "claude:atlassian___search_jira",
+                      "claude:atlassian___get_jira_issue",
+                      "claude:atlassian___search_confluence",
+                      "claude:atlassian___get_confluence_page",
+                      "claude:atlassian___create_jira_issue",
+                      "claude:atlassian___update_jira_issue",
+                      "claude:atlassian___comment_jira_issue",
+                      "claude:atlassian___transition_jira_issue",
+                      "codex:atlassian___search_jira",
+                      "codex:atlassian___get_jira_issue",
+                      "codex:atlassian___search_confluence",
+                      "codex:atlassian___get_confluence_page",
+                      "codex:atlassian___create_jira_issue",
+                      "codex:atlassian___update_jira_issue",
+                      "codex:atlassian___comment_jira_issue",
+                      "codex:atlassian___transition_jira_issue"
+                    ],
+                    "id_field": "cell_id",
+                    "required_fields": {
+                      "status": [
+                        "pass"
+                      ],
+                      "cleanup": [
+                        "confirmed"
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "live.coverage",
+                    "pointer": "/cases",
+                    "operation": "records",
+                    "expected": [
+                      "release-six-components",
+                      "adapter-four-routes",
+                      "core-health-through-outage",
+                      "role-site-owner-denials",
+                      "consent-two-users-sites",
+                      "identity-expiry-refresh",
+                      "disconnect-revoke",
+                      "catalogue-next-session",
+                      "claude-schema-loading",
+                      "codex-schema-loading",
+                      "legacy-all-verbs",
+                      "partial-routing-apply",
+                      "controller-restart-stale-lease",
+                      "group-rollback-redeploy",
+                      "unknown-write-no-replay",
+                      "report-recovery",
+                      "runner-loss-resume",
+                      "fixture-cleanup",
+                      "legacy-8076",
+                      "legacy-7266",
+                      "unrelated-runtimes"
+                    ],
+                    "id_field": "case_id",
+                    "required_fields": {
+                      "status": [
+                        "pass"
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "live.cleanup",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "live.unknowns",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "live.final-state",
+                    "pointer": "/final_release_state",
+                    "operation": "equals",
+                    "expected": "candidate_verified"
+                  },
+                  {
+                    "criterion_id": "completion.criteria",
+                    "pointer": "/criteria",
+                    "operation": "records",
+                    "expected": [
+                      "8446.AC-01",
+                      "8446.AC-02",
+                      "8446.AC-03",
+                      "8447.AC-01",
+                      "8447.AC-02",
+                      "8447.AC-03",
+                      "8447.AC-04",
+                      "8448.AC-01",
+                      "8448.AC-02",
+                      "8448.AC-03",
+                      "8448.AC-04",
+                      "8449.AC-01",
+                      "8449.AC-02",
+                      "8449.AC-03",
+                      "8449.AC-04",
+                      "8449.AC-05",
+                      "8451.AC-01",
+                      "8451.AC-02",
+                      "8451.AC-03",
+                      "8450.AC-01",
+                      "8450.AC-02",
+                      "8450.AC-03",
+                      "8450.AC-04",
+                      "8452.AC-01",
+                      "8452.AC-02",
+                      "8452.AC-03",
+                      "8453.AC-01",
+                      "8453.AC-02",
+                      "8453.AC-03",
+                      "8453.AC-04",
+                      "8454.AC-01",
+                      "8454.AC-02",
+                      "8454.AC-03",
+                      "8454.AC-04",
+                      "8454.AC-05",
+                      "8454.AC-06",
+                      "8445.EC-01",
+                      "8445.EC-02",
+                      "8445.EC-03",
+                      "8445.EC-04",
+                      "8445.EC-05",
+                      "8445.EC-06"
+                    ],
+                    "id_field": "criterion_id",
+                    "required_fields": {
+                      "status": [
+                        "pass"
+                      ],
+                      "evidence_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "completion.stages",
+                    "pointer": "/stages",
+                    "operation": "records",
+                    "expected": [
+                      "identity-proof",
+                      "foundation",
+                      "identity",
+                      "reads-parity",
+                      "connections",
+                      "write-recovery",
+                      "clients",
+                      "release-automation",
+                      "harness"
+                    ],
+                    "id_field": "stage_id",
+                    "required_fields": {
+                      "status": [
+                        "pass"
+                      ],
+                      "runtime_verified": [
+                        true
+                      ]
+                    }
+                  },
+                  {
+                    "criterion_id": "completion.authority",
+                    "pointer": "/unresolved_prerequisites",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "completion.ready",
+                    "pointer": "/completion_ready",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "live.provider-attestation",
+                    "pointer": "/provider_live_attestation",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/gateway-backend"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/gateway-backend",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/gateway-backend"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/gateway-backend",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/gateway-backend",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/tool-adapters"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/tool-adapters",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-backend"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/code-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w10-live/live-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-backend",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-backend",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-facade"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-backend",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w11-acceptance/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-frontend",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-frontend",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tool-adapters"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-frontend",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w11-acceptance/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tool-adapters",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tool-adapters",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tool-adapters",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w11-acceptance/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-facade",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-facade",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-interceptor"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-facade",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w11-acceptance/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-interceptor",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-interceptor",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/gateway-frontend"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-interceptor",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w11-acceptance/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w10-live/live-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w09-release/tools-platform",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w11-acceptance/code-evidence"
+    },
+    {
+      "from_address": "atlassian-adapters-8445-parallel/epic-8445/w10-live/live-evidence",
+      "to_address": "atlassian-adapters-8445-parallel/epic-8445/w11-acceptance/code-evidence"
+    }
+  ],
+  "proposed_execution_policy": {
+    "schema_version": 3,
+    "org_id": "example-org",
+    "repository_ids": [
+      "aws-e/adp"
+    ],
+    "environment_connection_ids": [],
+    "allowed_actions": [
+      "develop",
+      "review",
+      "repair",
+      "merge",
+      "operate",
+      "deploy",
+      "evaluate"
+    ],
+    "human_gates": [],
+    "repair_paths": [
+      "modules/tools/adapters/pyproject.toml",
+      "modules/tools/adapters/Dockerfile",
+      "modules/tools/adapters/deploy.sh",
+      "modules/tools/adapters/tool_adapters/app.py",
+      "modules/tools/adapters/tool_adapters/atlassian.py",
+      "modules/tools/adapters/tool_adapters/github.py",
+      "modules/tools/adapters/tool_adapters/jira.py",
+      "modules/tools/adapters/tool_adapters/slack.py",
+      "modules/tools/adapters/tests/test_atlassian.py",
+      "modules/tools/adapters/tests/test_package.py",
+      "modules/tools/adp_tools/adapter_contracts.py",
+      ".github/workflows/gateway-deploy.yml",
+      ".github/workflows/gateway-frontend-deploy.yml",
+      ".github/workflows/tools-facade-deploy.yml",
+      ".github/workflows/tools-interceptor-deploy.yml",
+      ".github/workflows/tools-platform-deploy.yml",
+      ".github/workflows/tools-live-evaluation.yml",
+      "modules/tools/deploy.sh",
+      "modules/tools/facade/deploy.sh",
+      "modules/tools/facade/Dockerfile",
+      "modules/tools/interceptor/deploy.sh",
+      "modules/gateway/src/tools/tool_adapter_authority.py",
+      "modules/gateway/src/shared/identity/oauth_setup.py",
+      "modules/gateway/src/admin/connections/oauth_apps.py",
+      "modules/gateway/cli/adp",
+      "modules/gateway/cli/adp-mcp.py",
+      "modules/gateway/frontend/src/pages/settings/Connections.tsx",
+      "modules/gateway/frontend/src/pages/settings/components/OAuthAppSetup.tsx",
+      "tests/e2e/tools/runner.py",
+      "tests/e2e/tools/atlassian_oauth_probe.py",
+      "tests/e2e/tools/atlassian_integration.py"
+    ],
+    "repair_required_checks": [
+      "verify"
+    ],
+    "evaluation_acceptance": {
+      "atlassian-adapters-8445-parallel/epic-8445/w01-proof/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w02-proof-review/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w03b-foundation-release/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w04-identity/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w08-harness/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w09-release/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w10-live/live-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w11-acceptance/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/code-evidence": "machine",
+      "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/code-evidence": "machine"
+    },
+    "expires_at": "2026-10-28T23:59:59Z",
+    "limits": {
+      "max_spend_usd": "10000",
+      "max_wall_clock_seconds": 604800,
+      "max_attempts_per_node": 6,
+      "max_concurrent_actions": 3
+    }
+  }
+}

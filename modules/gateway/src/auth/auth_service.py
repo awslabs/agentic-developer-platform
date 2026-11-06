@@ -12,6 +12,7 @@ Now supports both:
 from datetime import UTC, datetime
 
 import jwt
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.config import get_settings
@@ -223,29 +224,49 @@ class AuthService(IAuthService):
 
                 return await validate_cognito_jwt("Bearer " + token)
 
+            cognito_context = None
             # Try Cognito validation first if enabled
             if self._cognito_enabled:
                 try:
                     cognito_context = await self._validate_cognito_token(token)
                     if cognito_context:
                         logger.debug(f"Cognito token validated for user: {cognito_context.user_id}")
-                        return cognito_context
                 except TokenValidationError:
                     # Cognito validation failed, try legacy validation
                     logger.debug("Cognito validation failed, trying legacy token validation")
 
             # Fall back to legacy token validation
-            token_context = await self.token_manager.validate_token(token, db)
+            token_context = cognito_context or await self.token_manager.validate_token(token, db)
 
-            logger.debug(f"Token validated for user: {token_context.user_id}")
-            return token_context
-
+        except HTTPException:
+            raise
         except TokenValidationError:
             # Re-raise token validation errors as-is
             raise
         except Exception as e:
             logger.error(f"Unexpected error during token validation: {e}")
             raise TokenValidationError(f"Token validation failed: {str(e)}")
+
+        # Authorization runs after credential resolution, outside its fallback.
+        # A valid but revoked Cognito identity must never try a legacy token path.
+        from src.admin.membership_revocation import require_not_revoked_context
+        from src.admin.platform_authority import apply_platform_admin_authority
+
+        try:
+            # Tenant-configurable legacy exchange identities never confer
+            # platform authority. Only verified Cognito logins can request it.
+            if cognito_context is None:
+                token_context = token_context.model_copy(update={"is_admin": False})
+            token_context = await apply_platform_admin_authority(token_context, db)
+            await require_not_revoked_context(token_context, db)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Tenant membership verification unavailable")
+            raise HTTPException(
+                503, {"error": "membership_verification_unavailable", "message": "Unable to verify organization access. Try again shortly."}
+            ) from None
+        return token_context
 
     async def _validate_cognito_token(self, token: str) -> TokenContext | None:
         """
@@ -327,6 +348,7 @@ class AuthService(IAuthService):
             cognito_username=claims.username or "",
             is_admin=is_admin,
             expires_at=datetime.fromtimestamp(claims.exp, UTC),
+            token_use=claims.token_use,
         )
 
     async def revoke_token(self, token: str, db: AsyncSession) -> None:

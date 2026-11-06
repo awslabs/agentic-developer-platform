@@ -177,7 +177,10 @@ echo "  ConfigMap agent-context-config deployed"
 # Apply ingestion pipeline RBAC (cross-namespace access for runner SA)
 echo ""
 echo "Applying ingestion pipeline RBAC..."
-export RUNNER_NAMESPACE RUNNER_SERVICE_ACCOUNT
+# ENVIRONMENT names the runtime verifier group (adp:runtime-verifier-<env>); the
+# Terraform block above only defaults it when state is initialised (#7870).
+ENVIRONMENT="${ENVIRONMENT:-dev}"
+export RUNNER_NAMESPACE RUNNER_SERVICE_ACCOUNT ENVIRONMENT
 template_file "${SCRIPT_DIR}/manifests/ingestion-rbac.yaml" | kubectl apply -f -
 echo "  Role: ingestion-pipeline-role (ns: ${NAMESPACE})"
 echo "  Binding: ${RUNNER_NAMESPACE}:${RUNNER_SERVICE_ACCOUNT} -> ingestion-pipeline-role"
@@ -243,6 +246,8 @@ echo "  Context MCP Server deployed (image: ${CONTEXT_MCP_IMAGE})"
 # Restrict who can reach the Door (#4073 finding #8). Defence in depth behind
 # the DOOR_API_KEY check — see the header comment in the manifest.
 template_file "${SCRIPT_DIR}/manifests/networkpolicy.yaml" | kubectl apply -f -
+export ACCOUNT_ID="${ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}" AWS_REGION
+bash "${SCRIPT_DIR}/scripts/deploy-door-gateway-ingress.sh"
 echo "  NetworkPolicy context-mcp-ingress applied"
 echo "  Endpoint: http://context-mcp.${NAMESPACE}.svc.cluster.local:5100"
 
@@ -354,7 +359,12 @@ elif [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
   source "${SCRIPT_DIR}/scripts/_common.sh"
   export NAMESPACE SERVICE_ACCOUNT INGESTION_IMAGE INGESTION_REFRESH_SCHEDULE
   export SQS_QUEUE_URL DYNAMO_TABLE
+  resolve_ingestion_authority_config
+  verify_ingestion_control_ready
+  template_file "${SCRIPT_DIR}/manifests/ingestion-serviceaccounts.yaml" | kubectl apply -f -
+  template_file "${SCRIPT_DIR}/manifests/ingestion-networkpolicy.yaml" | kubectl apply -f -
   template_file "${SCRIPT_DIR}/manifests/repo-refresh-cronjob.yaml" | kubectl apply -f -
+  template_file "${SCRIPT_DIR}/manifests/knowledge-maintenance-cronjob.yaml" | kubectl apply -f -
 
   echo "  CronJob deployed: schedule='${INGESTION_REFRESH_SCHEDULE}'"
   echo "  Manual trigger: kubectl create job --from=cronjob/ingestion-refresh manual-refresh -n ${NAMESPACE}"

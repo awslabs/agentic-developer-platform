@@ -136,3 +136,110 @@ not mark delivery successful, change a failed worker receipt, reset attempts or
 increase spending authority. The normal dispatcher rechecks authorization,
 remaining allowance, ownership, head and terminal evidence before starting a
 new reviewer. A later failure needs a separate owner recovery decision.
+
+## Review retained work after failed development
+
+For a protected-worker story whose developer attempts have failed but left an
+implementation PR, the policy owner may explicitly select
+`mode: "review_existing_work"`. First recover the implementation's PR binding
+through the attributed human binding control. Verify the provider repository and
+PR IDs, current head, accepted story scope and original producing run. A PR body
+without a correlation marker does not acquire one through recovery: the human
+association and durable original node-dispatch evidence supply the provenance.
+
+Use the existing `POST /orchestration/nodes/{node_id}/review-recovery/preview`
+endpoint with these fields, then review its returned snapshot and expiry:
+
+| Field | Value |
+| --- | --- |
+| `mode` | `review_existing_work` |
+| `source_run_id` | Original failed developer run that produced the retained work |
+| `expected_run_id` | Current, final failed developer assignment |
+| `expected_attempt` | Current development attempt, without resetting it |
+| `expected_plan_version` | Current accepted policy plan version |
+| `expected_head_sha` | Exact current 40-character PR head |
+| `reason` | Owner's reason for associating and reviewing this retained work |
+
+Send the same fields plus the returned `expected_snapshot` value (from
+`snapshot`) to `POST /orchestration/nodes/{node_id}/review-recovery/accept`.
+Authentication must be a human session with plan-approval permission and current
+policy ownership. The server records `retained_work_review_recovery`, reopens the
+same execution and reserves a newer generation of the same claim. Three failed
+developer attempts stay three; all failed protected receipts stay unchanged.
+The recovery authorizes one real reviewer, with no automatic story-repair grant.
+Normal review evidence, CI, merge and closure checks still apply.
+
+The snapshot expires at the next server 15-minute boundary, or earlier when its
+policy or grant expires. Acceptance and dispatch recheck current source lineage,
+policy, head, ownership, review-stage allowance and spending authority. The
+original flow chain meter must be readable and have at least the current run cap
+remaining, as must the flow meter. Legacy chain hashes may be read without an
+initialization anchor only when they contain valid charge entries and no unknown
+accounting. Missing meters, orphan markers, unbounded usage and malformed values
+refuse recovery. No cap, reservation or chain identity is reset by this control.
+
+If an accepted authorization expires before dispatch preparation commits, submit
+a fresh preview with the same fields and `renew_decision_id` set to the original
+`retained_work_review_recovery` decision ID. Review and accept its new snapshot.
+This creates a separate `retained_work_review_renewal`; the original receipt,
+claim generation, attempt totals and any uncommitted operation key remain intact.
+Renewal requires the same owner, still-current original facts, and an expired
+window. It refuses once a dispatch receipt or protected successor exists, or
+another run owns the claim. Publication uncertainty must be reconciled through
+the existing dispatch path and cannot authorize a replacement reviewer.
+
+Renewal extends the time window only. It cannot adopt a changed PR head, policy
+or cap after acceptance. Such a change preserves the existing intent and needs a
+separate audited recovery capability, which this control does not implement.
+Before acceptance, inspect changed facts or obtain the required budget approval
+and then request a fresh preview. A cap denial during dispatch persists an
+explicit budget block, with the existing action and spent attempts retained.
+
+| Refusal | Operator action |
+| --- | --- |
+| `operator_bound_delivery_required` | Verify and recover the exact implementation PR association as a human. |
+| `retained_source_*`, `report_assignment_changed`, `recovery_authority_changed` | Recheck original/current run lineage and accepted authority; do not rewrite historical receipts. |
+| `current_pr_changed`, `recovery_preview_changed` | Before acceptance, inspect current facts and obtain a new preview. After acceptance, reconcile changed facts against the pinned recovery. |
+| `retained_budget_exhausted` | Review spend and reservations; obtain any required financial approval. Changed limits after acceptance require reconciliation, not renewal. |
+| `retained_budget_unavailable` | Reconcile accounting from trusted evidence; never initialize a missing historical meter as zero. |
+| `retained_recovery_expired_renew_unstarted` | Request explicit renewal; the server will first prove dispatch remains unstarted. |
+| `retained_renewal_not_expired` | Use the current authorization while it remains valid. |
+| `retained_recovery_expired_reconciliation_required`, `retained_renewal_requires_reconciliation` | Reconcile the existing receipt, protected successor and queue outcome; renewal is unavailable. |
+| `continuation_attempts_exhausted` | Review the independently consumed review-stage allowance; this control never resets it. |
+
+## Restore a prematurely released retained reviewer
+
+If a retained-work reviewer exited failed and its claim was released while the
+same execution remained awaiting review, use the existing review-recovery
+preview and accept endpoints with `mode: "review_released_reviewer"`. Set
+`expected_run_id` to that failed reviewer, and supply the current
+`expected_attempt`, `expected_plan_version`, `expected_head_sha` and owner
+`reason`. Omit `source_run_id` and `reviewer_model`: the server derives the
+original source and preserves the retained review-only authority.
+
+Preview reads the existing meters without reconciling or initializing them. It
+pins the exact protected terminal workload and grant, original dispatch action
+and receipt, retained-work recovery and source, review findings, current claim,
+PR binding and policy. Unknown effects, a newer dispatch or retired dispatch
+ambiguity require reconciliation. Acceptance requires the preview's
+`expected_snapshot` and the current policy owner. It reserves the same claim at
+exactly the next generation and wakes the same execution. Developer attempts,
+execution attempts, original receipts, spend, author and correlation chain stay
+unchanged. The successor is one sibling reviewer under the verified original
+parent, with the prior findings and no additional repair authority (#8142,
+#8063).
+
+The same finite 15-minute window applies. An expired reservation can be renewed
+through a new preview and accept with `renew_decision_id` set to the original
+`released_reviewer_recovery` decision. The server proves that this recovery's
+successor remains unstarted; prior succeeded reviews remain immutable history.
+Renewal preserves the claim generation and any uncommitted operation key.
+`released_reviewer_expired_reconciliation_required` or
+`released_reviewer_renewal_requires_reconciliation` means a dispatch receipt,
+protected successor or changed owner may already exist: reconcile the existing
+operation instead of accepting another recovery. Replaying an acceptance never
+extends its expiry or creates another successor.
+
+New failed-reviewer callbacks retain an unfinished, exactly committed reviewer
+claim even when the original developer handoff is absent. Failed developers
+continue to use the existing failure and retained-work recovery path.

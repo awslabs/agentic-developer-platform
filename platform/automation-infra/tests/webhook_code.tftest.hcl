@@ -64,7 +64,7 @@ run "webhook_code_allows_only_lambda_read_and_update" {
     error_message = "Lambda policy must grant exactly read and code-update actions."
   }
   assert {
-    condition     = one([for s in jsondecode(aws_iam_role_policy.webhook_code_lambda[0].policy).Statement : s if s.Sid == "ReadAndUpdateAdmittedFunctions"]).Resource == ["arn:aws:lambda:us-east-1:123456789012:function:adp-test-github-webhook"]
+    condition     = one([for s in jsondecode(aws_iam_role_policy.webhook_code_lambda[0].policy).Statement : s if s.Sid == "ReadAndUpdateAdmittedFunctions"]).Resource == ["arn:aws:lambda:us-east-1:123456789012:function:adp-test-github-webhook", "arn:aws:lambda:us-east-1:123456789012:function:adp-test-github-webhook:$LATEST"]
     error_message = "Lambda policy must scope to the exact admitted function."
   }
 }
@@ -122,7 +122,7 @@ run "webhook_code_denies_other_lambda_targets" {
     webhook_code_archive_prefix = "lambda-artifacts/webhook-ingress"
   }
   assert {
-    condition     = one([for s in jsondecode(aws_iam_role_policy.webhook_code_ceiling[0].policy).Statement : s if s.Sid == "DenyOtherLambdaTargets"]).NotResource == ["arn:aws:lambda:us-east-1:123456789012:function:adp-test-github-webhook"]
+    condition     = one([for s in jsondecode(aws_iam_role_policy.webhook_code_ceiling[0].policy).Statement : s if s.Sid == "DenyOtherLambdaTargets"]).NotResource == ["arn:aws:lambda:us-east-1:123456789012:function:adp-test-github-webhook", "arn:aws:lambda:us-east-1:123456789012:function:adp-test-github-webhook:$LATEST"]
     error_message = "Webhook-code must deny Lambda operations on any function not in the admitted set."
   }
 }
@@ -259,5 +259,39 @@ run "webhook_only_inventory_never_admits_generic_cluster_admin" {
   assert {
     condition     = length(data.external.workload_admission) == 0
     error_message = "Webhook-only inventory must remain separate from generic cluster admission."
+  }
+}
+
+
+run "execution_boundary_preserves_webhook_data_and_blocks_escalation" {
+  command = plan
+  variables { enable_webhook_execution_boundary = true }
+  assert {
+    condition = toset(jsondecode(aws_iam_policy.webhook_execution_boundary[0].policy).Statement[0].Action) == toset([
+      "cloudwatch:PutMetricData",
+      "dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem",
+      "execute-api:Invoke",
+      "kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKey", "kms:GenerateDataKeyWithoutPlaintext",
+      "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents",
+      "secretsmanager:CreateSecret", "secretsmanager:GetSecretValue", "secretsmanager:TagResource",
+      "sqs:GetQueueAttributes", "sqs:GetQueueUrl", "sqs:SendMessage", "ssm:GetParameter",
+    ])
+    error_message = "Preserve the reviewed live webhook data APIs without identity or executable mutation."
+  }
+  assert {
+    condition     = jsondecode(aws_iam_policy.webhook_execution_boundary[0].policy).Statement[1].Effect == "Deny" && jsondecode(aws_iam_policy.webhook_execution_boundary[0].policy).Statement[1].Resource == "*" && toset(jsondecode(aws_iam_policy.webhook_execution_boundary[0].policy).Statement[1].NotAction) == toset(jsondecode(aws_iam_policy.webhook_execution_boundary[0].policy).Statement[0].Action)
+    error_message = "All other APIs must be explicitly denied, including resource-policy grants and future APIs."
+  }
+  assert {
+    condition     = jsondecode(aws_iam_policy.webhook_execution_boundary[0].policy).Statement[2].Effect == "Deny" && toset(jsondecode(aws_iam_policy.webhook_execution_boundary[0].policy).Statement[2].Action) == toset(["secretsmanager:CreateSecret", "secretsmanager:TagResource"]) && jsondecode(aws_iam_policy.webhook_execution_boundary[0].policy).Statement[2].NotResource == "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/test/tenants/*"
+    error_message = "Secret creation and tagging must stay inside the tenant App namespace."
+  }
+}
+
+run "execution_boundary_opt_in_only" {
+  command = plan
+  assert {
+    condition     = length(aws_iam_policy.webhook_execution_boundary) == 0
+    error_message = "Do not create workload boundaries without operator opt-in."
   }
 }

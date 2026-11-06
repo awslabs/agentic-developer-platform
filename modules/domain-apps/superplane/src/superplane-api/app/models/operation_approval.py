@@ -3,6 +3,7 @@
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     String,
@@ -42,13 +43,23 @@ class OperationApproval(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False)
     revoked = Column(Boolean, nullable=False, default=False)
     organization_scope = Column(Boolean, nullable=False, default=False)
+    requires_distinct_approver = Column(Boolean, nullable=False, default=True)
 
 
 class OperationSettlementReceipt(Base):
     __tablename__ = "operation_settlement_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_id", "claim_fence_token", name="uq_operation_settlement_claim"
+        ),
+        CheckConstraint(
+            "claim_fence_token>0", name="operation_settlement_positive_claim"
+        ),
+    )
 
     receipt_id = Column(String(128), primary_key=True)
-    operation_id = Column(String(255), nullable=False, unique=True)
+    operation_id = Column(String(255), nullable=False)
+    claim_fence_token = Column(BigInteger, nullable=False)
     reservation_id = Column(String(128), nullable=False)
     payload_digest = Column(String(64), nullable=False)
     payload_json = Column(Text, nullable=False)

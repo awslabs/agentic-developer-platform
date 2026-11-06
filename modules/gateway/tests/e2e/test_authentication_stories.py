@@ -32,6 +32,7 @@ from src.shared.exceptions import (
     UnregisteredServiceAccountError,
 )
 from src.shared.schemas.auth import AuthExchangeRequest, AuthExchangeResponse
+from tests.e2e.config import get_test_bedrock_model
 from tests.fixtures.factories import (
     create_department,
     create_org,
@@ -694,14 +695,12 @@ class TestLiveIAMAuth:
         response = await iam_signed_client.post(
             "/v1/messages",
             json={
-                "model": "global.anthropic.claude-sonnet-4-6",
+                "model": get_test_bedrock_model(),
                 "max_tokens": 10,
                 "messages": [{"role": "user", "content": "Say hello in one word."}],
             },
         )
-        # Should pass auth (200) or get a business-logic error (4xx), not an auth error
-        # 200 = success, 400 = bad request (model not found etc), but not 401/403
-        assert response.status_code != 401, f"IAM auth should not return 401: {response.text[:200]}"
+        assert response.status_code == 200, f"IAM model request failed: {response.text[:200]}"
 
     async def test_iam_signed_health_with_headers(self, iam_signed_client):
         """SigV4-signed /health includes expected response headers."""

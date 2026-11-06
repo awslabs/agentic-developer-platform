@@ -117,6 +117,50 @@ def test_owned_grant_create_and_uid_precondition_delete(grants):
     }
 
 
+@pytest.mark.parametrize("document", [0, 1])
+@pytest.mark.parametrize("fault", [None, "changed-policy", "replaced-during-delete"])
+def test_retirement_grant_cleanup_preserves_changed_or_replaced_objects(
+    grants, document, fault
+):
+    from superplane_bootstrap.retirement_fence import documents
+
+    backend, api, original = grants
+    spec = deepcopy(original)
+    spec["body"] = documents("owned-retirement", spec["generation"])[document]
+
+    def resolve(**arguments):
+        assert arguments == {
+            "api_version": "admissionregistration.k8s.io/v1",
+            "kind": "ValidatingAdmissionPolicy" + ("Binding" if document else ""),
+        }
+        return api
+
+    backend.client.resources.get = resolve
+    identity = backend.create(spec)
+    if fault == "changed-policy":
+        if document:
+            api.body["spec"]["policyName"] = "other-owner"
+        else:
+            api.body["spec"]["validations"][0]["expression"] = "false"
+        with pytest.raises(BootstrapRefused):
+            backend.delete(spec, identity)
+    elif fault == "replaced-during-delete":
+        api.before_delete = lambda body: body["metadata"].update(uid="successor")
+        with pytest.raises(ApiError) as refused:
+            backend.delete(spec, identity)
+        assert refused.value.status == 409
+    else:
+        backend.delete(spec, identity)
+        assert backend.observe(spec) is None
+        assert api.deletes[0][1]["preconditions"] == {
+            "uid": "original-uid",
+            "resourceVersion": "1",
+        }
+    if fault:
+        assert api.body is not None
+        assert not api.deletes
+
+
 @pytest.mark.parametrize("status", [401, 403, 429, 500])
 def test_unanswered_read_is_not_absence(grants, status):
     backend, api, spec = grants
@@ -222,3 +266,40 @@ def test_other_cluster_grant_refuses_before_provider_io(grants):
     with pytest.raises(BootstrapRefused, match="different cluster"):
         backend.create({**spec, "cluster_arn": "arn:other"})
     assert api.body is None
+
+
+def test_namespace_server_defaults_preserve_pinned_identity(grants):
+    backend, api, spec = grants
+    spec = deepcopy(spec)
+    spec["body"] = {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": spec["body"]["metadata"],
+    }
+    backend.client.resources.get = lambda **kwargs: api
+    create = api.create
+
+    def defaulted_create(body):
+        create(body)
+        api.body["spec"] = {"finalizers": ["kubernetes"]}
+        api.body["status"] = {"phase": "Active"}
+        return deepcopy(api.body)
+
+    api.create = defaulted_create
+    identity = backend.create(spec)
+    assert backend.observe(spec) == identity
+    backend.verify(spec, identity)
+    assert "spec" not in spec["body"]
+
+    api.body["spec"]["finalizers"].append("example.com/custom")
+    with pytest.raises(BootstrapRefused, match="different ownership or permissions"):
+        backend.verify(spec, backend.observe(spec))
+
+
+def test_namespace_empty_and_default_spec_have_same_digest():
+    from superplane_bootstrap.kube_grants import _digest
+
+    body = {"apiVersion": "v1", "kind": "Namespace", "metadata": {}}
+    assert _digest(body) == _digest({**body, "spec": {}})
+    assert _digest(body) == _digest({**body, "spec": {"finalizers": ["kubernetes"]}})
+    assert _digest(body) != _digest({**body, "spec": {"unexpected": True}})

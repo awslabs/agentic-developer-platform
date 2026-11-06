@@ -1,0 +1,373 @@
+{
+  "scenario": "SCN-02",
+  "fixed_clock": "2026-01-01T00:00:00Z",
+  "deadline_seconds": 3600,
+  "binding": {"binding_id":"binding-alpha","product_id":"product-alpha","tenant_id":"tenant-alpha","project_id":"project-alpha","generation":1,"state":"ready"},
+  "other_product": {"product_id":"product-beta","tenant_id":"tenant-beta","project_id":"project-beta"},
+  "assessments": [
+    {"run_id":"run-a","configuration_revision":7,"source_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshot_hash":"1111111111111111111111111111111111111111111111111111111111111111","attempt_id":"attempt-a"},
+    {"run_id":"run-b","configuration_revision":8,"source_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","snapshot_hash":"2222222222222222222222222222222222222222222222222222222222222222","attempt_id":"attempt-b"}
+  ],
+  "events": [
+    {"action":"admit","run_id":"run-a","product_id":"product-alpha","expected":"accepted"},
+    {"action":"dispatch","run_id":"run-a","expected":"submitted"},
+    {"action":"dispatch","run_id":"run-a","expected":"replayed"},
+    {"action":"source_update","source_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","expected":"recorded"},
+    {"action":"admit","run_id":"run-b","product_id":"product-alpha","expected":"accepted"},
+    {"action":"dispatch","run_id":"run-b","expected":"submitted"},
+    {"action":"revoke","expected":"suspended"},
+    {"action":"admit","run_id":"run-c","product_id":"product-alpha","expected":"denied"},
+    {"action":"admit","run_id":"run-c","product_id":"product-beta","expected":"denied"},
+    {"action":"publish","run_id":"run-a","fault":"consumer_timeout","expected":"retry_wait"},
+    {"action":"publish","run_id":"run-a","expected":"published"}
+  ],
+  "expected_readback": {"run-a":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","run-b":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","binding_state":"suspended","binding_generation":2,"provider_submissions":2,"publication_state":"published","publication_attempts":2}
+,
+  "devops": {
+    "owners": {
+      "configuration": "configuration_api",
+      "setup": "setup_worker",
+      "native_ingest": "native_event_ingress",
+      "native_observation": "monitoring_worker",
+      "retention": "lifecycle_api",
+      "publication": "publication_worker"
+    },
+    "transitions": [
+      {
+        "id": "save",
+        "lane": "configuration",
+        "from": "unconfigured",
+        "to": "draft",
+        "provider_submits": 0
+      },
+      {
+        "id": "setup_intent",
+        "lane": "setup",
+        "from": "draft",
+        "to": "accepted",
+        "provider_submits": 0
+      },
+      {
+        "id": "create_timeout",
+        "lane": "setup",
+        "from": "accepted",
+        "to": "outcome_unknown",
+        "provider_submits": 1,
+        "fault": "response_lost"
+      },
+      {
+        "id": "reconcile_readback",
+        "lane": "setup",
+        "from": "outcome_unknown",
+        "to": "succeeded",
+        "provider_submits": 0,
+        "readback": true
+      },
+      {
+        "id": "native_receipt",
+        "lane": "native_ingest",
+        "from": "unseen",
+        "to": "received",
+        "provider_submits": 0
+      },
+      {
+        "id": "native_timeout",
+        "lane": "native_observation",
+        "from": "received",
+        "to": "outcome_unknown",
+        "provider_submits": 0,
+        "fault": "poll_timeout"
+      },
+      {
+        "id": "native_readback",
+        "lane": "native_observation",
+        "from": "outcome_unknown",
+        "to": "succeeded",
+        "provider_submits": 0,
+        "readback": true
+      },
+      {
+        "id": "retain_adopted",
+        "lane": "retention",
+        "from": "active",
+        "to": "retained",
+        "provider_submits": 0
+      },
+      {
+        "id": "publish_timeout",
+        "lane": "publication",
+        "from": "pending",
+        "to": "retry_wait",
+        "provider_submits": 0,
+        "fault": "consumer_timeout"
+      },
+      {
+        "id": "publish_retry",
+        "lane": "publication",
+        "from": "retry_wait",
+        "to": "published",
+        "provider_submits": 0,
+        "readback": true
+      }
+    ],
+    "snapshots": [
+      {
+        "schema": "Operation",
+        "valid": true,
+        "value": {
+          "operation_id": "operation-example",
+          "action": "create",
+          "state": "outcome_unknown",
+          "revision": 1,
+          "gaps": [],
+          "service_id": "devops"
+        }
+      },
+      {
+        "schema": "Operation",
+        "valid": true,
+        "value": {
+          "operation_id": "operation-example",
+          "action": "create",
+          "state": "succeeded",
+          "revision": 1,
+          "gaps": [],
+          "service_id": "devops",
+          "readback_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "native_event",
+            "record_id": "native-event-1",
+            "record_revision": "event-1"
+          }
+        }
+      },
+      {
+        "schema": "Run",
+        "valid": true,
+        "value": {
+          "run_id": "run-example",
+          "scope": {
+            "tenant_id": "tenant-example",
+            "product_id": "product-example",
+            "project_id": "project-example",
+            "relationship_revision": "relationship-1",
+            "owner_id": "owner-example",
+            "visibility": "product_team"
+          },
+          "revision": 1,
+          "state": "outcome_unknown",
+          "provider_state": "unknown",
+          "deadline_at": "2026-01-01T01:00:00Z",
+          "service_id": "devops",
+          "origin": "native",
+          "native_event_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "native_event",
+            "record_id": "native-event-1",
+            "record_revision": "event-1"
+          },
+          "attribution": "unverified"
+        }
+      },
+      {
+        "schema": "Run",
+        "valid": true,
+        "value": {
+          "run_id": "run-example",
+          "scope": {
+            "tenant_id": "tenant-example",
+            "product_id": "product-example",
+            "project_id": "project-example",
+            "relationship_revision": "relationship-1",
+            "owner_id": "owner-example",
+            "visibility": "product_team"
+          },
+          "revision": 1,
+          "state": "succeeded",
+          "provider_state": "completed",
+          "deadline_at": "2026-01-01T01:00:00Z",
+          "service_id": "devops",
+          "origin": "native",
+          "native_event_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "native_event",
+            "record_id": "native-event-1",
+            "record_revision": "event-1"
+          },
+          "attribution": "observed",
+          "provider_readback_ref": {
+            "artifact_id": "readback-example",
+            "version": "revision-1",
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "application/json",
+            "bytes": 120
+          }
+        }
+      },
+      {
+        "schema": "Result",
+        "valid": true,
+        "value": {
+          "result_id": "result-example",
+          "run_id": "run-example",
+          "scope": {
+            "tenant_id": "tenant-example",
+            "product_id": "product-example",
+            "project_id": "project-example",
+            "relationship_revision": "relationship-1",
+            "owner_id": "owner-example",
+            "visibility": "product_team"
+          },
+          "revision": 1,
+          "native_job_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "native_event",
+            "record_id": "native-event-1",
+            "record_revision": "event-1"
+          },
+          "observed_at": "2026-01-01T00:05:00Z",
+          "coverage": "unknown",
+          "coverage_mode": "native_observation",
+          "costs": [
+            {
+              "kind": "unknown",
+              "currency": "USD"
+            }
+          ],
+          "service_id": "devops",
+          "origin": "native",
+          "native_event_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "native_event",
+            "record_id": "native-event-1",
+            "record_revision": "event-1"
+          },
+          "provider_outcome": "outcome_unknown"
+        }
+      },
+      {
+        "schema": "Result",
+        "valid": true,
+        "value": {
+          "result_id": "result-example",
+          "run_id": "run-example",
+          "scope": {
+            "tenant_id": "tenant-example",
+            "product_id": "product-example",
+            "project_id": "project-example",
+            "relationship_revision": "relationship-1",
+            "owner_id": "owner-example",
+            "visibility": "product_team"
+          },
+          "revision": 1,
+          "native_job_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "native_event",
+            "record_id": "native-event-1",
+            "record_revision": "event-1"
+          },
+          "observed_at": "2026-01-01T00:05:00Z",
+          "coverage": "complete",
+          "coverage_mode": "native_observation",
+          "costs": [
+            {
+              "kind": "unknown",
+              "currency": "USD"
+            }
+          ],
+          "service_id": "devops",
+          "origin": "native",
+          "native_event_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "native_event",
+            "record_id": "native-event-1",
+            "record_revision": "event-1"
+          },
+          "provider_outcome": "completed",
+          "evidence_ref": {
+            "artifact_id": "readback-example",
+            "version": "revision-1",
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "application/json",
+            "bytes": 120
+          }
+        }
+      },
+      {
+        "schema": "DevopsAsset",
+        "valid": true,
+        "value": {
+          "asset_id": "space-example",
+          "binding_id": "binding-example",
+          "scope": {
+            "tenant_id": "tenant-example",
+            "product_id": "product-example",
+            "project_id": "project-example",
+            "relationship_revision": "relationship-1",
+            "owner_id": "owner-example",
+            "visibility": "product_team"
+          },
+          "ownership": "adopted",
+          "state": "retained",
+          "native_resource_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "native_event",
+            "record_id": "native-event-1",
+            "record_revision": "event-1"
+          }
+        }
+      },
+      {
+        "schema": "DevopsAsset",
+        "valid": false,
+        "value": {
+          "asset_id": "space-example",
+          "binding_id": "binding-example",
+          "scope": {
+            "tenant_id": "tenant-example",
+            "product_id": "product-example",
+            "project_id": "project-example",
+            "relationship_revision": "relationship-1",
+            "owner_id": "owner-example",
+            "visibility": "product_team"
+          },
+          "ownership": "adopted",
+          "state": "removed",
+          "native_resource_ref": {
+            "tenant_id": "tenant-example",
+            "project_id": "project-example",
+            "source_connection_id": "connection-example",
+            "record_type": "native_event",
+            "record_id": "native-event-1",
+            "record_revision": "event-1"
+          }
+        }
+      }
+    ],
+    "expected_readback": {
+      "setup_state": "succeeded",
+      "native_state": "succeeded",
+      "adp_native_admissions": 0,
+      "setup_provider_submissions": 1,
+      "adopted_asset_state": "retained",
+      "publication_state": "published",
+      "publication_attempts": 2
+    }
+  }
+}

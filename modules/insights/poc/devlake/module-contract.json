@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module": "devlake-collector-worker",
+  "default_enabled": false,
+  "selection": "FEATURE_DEVLAKE_CONNECTORS_ENABLED=true and DEVLAKE_COLLECTION_ENABLED=true",
+  "runtime_job_owner": "S03",
+  "inputs": ["ADP-supplied authorized collection job"],
+  "outputs": ["cell-scoped observations"]
+}

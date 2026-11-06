@@ -55,6 +55,7 @@ async def select_for_dispatch(db, *, org_id: str, user_id: str, persona: str, di
         "principal_id": principal,
         "preference_revision": preference.revision if preference and direct_model is None else None,
         "compatibility_class": compatibility,
+        **({"harness_contract_revision": result.harness_contract_revision} if direct_model is not None else {}),
     }
 
 
@@ -78,7 +79,7 @@ async def apply_dispatch_selection(db, envelope: dict) -> dict:
     return result
 
 
-async def resolve_launch_configuration(db, *, org_id: str, user_id: str, persona: str) -> dict:
+async def resolve_launch_configuration(db, *, org_id: str, user_id: str, persona: str, direct_model: str | None = None) -> dict:
     """Resolve agent settings before admission/sealing, regardless of trigger.
 
     The flow engine supplies identity and persona only. This launch layer owns
@@ -90,5 +91,9 @@ async def resolve_launch_configuration(db, *, org_id: str, user_id: str, persona
         "persona": persona,
         "correlation": {"is_human_rooted": True, "root_human_id": user_id},
     }
-    configured = await apply_dispatch_selection(db, identity)
+    if direct_model is not None and not mapping_enabled():
+        # An explicit choice must never become a silently ignored worker default.
+        raise service.PreferenceRejectedError("mapping_disabled", "Explicit model selection is not enabled.")
+    envelope = {**identity, **({"model_requested": direct_model} if direct_model is not None else {})}
+    configured = await apply_dispatch_selection(db, envelope)
     return {key: value for key, value in configured.items() if key not in identity}

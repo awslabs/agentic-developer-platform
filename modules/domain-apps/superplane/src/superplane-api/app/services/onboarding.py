@@ -7,7 +7,7 @@ from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
 
-from workspace_provisioning.lifecycle_policy import LifecyclePolicy, policy_digest
+from workspace_provisioning.lifecycle_policy import policy_digest, select_policy
 from sqlalchemy import or_, select
 
 from app.adapters.operation_authority_source import (
@@ -35,7 +35,7 @@ def normalized_request(body):
     return body.model_copy(update=values)
 
 
-def policy_for(org_id):
+def policy_for(org_id, workspace_id=None):
     path = settings.superplane_lifecycle_config_file
     if not path:
         raise ProvisioningUnavailable(
@@ -53,7 +53,7 @@ def policy_for(org_id):
             raise ProvisioningRefused(
                 "no workspace targets are authorized for this organization"
             )
-        return LifecyclePolicy.model_validate(entry)
+        return select_policy(value, org_id, workspace_id)
     except ProvisioningRefused:
         raise
     except Exception:
@@ -76,7 +76,9 @@ def placement_document(body: CreateWorkspaceRequest, *, exclude):
 
 
 def request_document(body: CreateWorkspaceRequest):
-    return placement_document(body, exclude={"operation_id", "approval_id", "plan_revision"})
+    return placement_document(
+        body, exclude={"operation_id", "approval_id", "plan_revision"}
+    )
 
 
 async def preview(db, org_id, body: CreateWorkspaceRequest):
@@ -118,7 +120,7 @@ async def preview(db, org_id, body: CreateWorkspaceRequest):
     )
     if principal is None:
         raise ProvisioningRefused("workspace provisioning authority refused")
-    policy = policy_for(org_id)
+    policy = policy_for(org_id, workspace_id)
     runtime = validate_runtime_config(policy.runtime)
     if body.mode not in supported_runtime_modes(runtime):
         raise ProvisioningUnavailable(
@@ -220,8 +222,15 @@ async def preview(db, org_id, body: CreateWorkspaceRequest):
         raise ProvisioningUnavailable(
             "target lifecycle credential reference is not configured"
         )
-    if account_record is not None and reference.credential_id not in json.loads(
-        account_record.adp_credential_ids_json or "[]"
+    # Installation-owned handles are workspace-scoped by the protected provider
+    # owner. An account's personal-vault references cannot enumerate all of its
+    # regional workspace providers. Gateway still verifies the exact account,
+    # request, workspace, human, role policy and current enrollment before use.
+    if (
+        account_record is not None
+        and not reference.credential_id.startswith("spda1:")
+        and reference.credential_id
+        not in json.loads(account_record.adp_credential_ids_json or "[]")
     ):
         raise ProvisioningRefused(
             "lifecycle credential is not registered for the selected account"

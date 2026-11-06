@@ -119,6 +119,7 @@ class ChatLog(BaseModel):
 
     # Set only by the gateway completion path, never extracted from client JSON.
     pricing_decision: dict[str, Any] | None = Field(default=None, description="Server-produced durable pricing decision")
+    usage_recovery: dict[str, Any] | None = Field(default=None, description="Gateway-only usage and reservation attribution for settlement recovery")
 
     # Scrubbing info
     scrubbing: ScrubbingMetadata = Field(description="Information about scrubbing applied")

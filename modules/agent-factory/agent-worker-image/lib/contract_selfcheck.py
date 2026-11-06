@@ -39,9 +39,12 @@ What it checks, and why each is separable
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
+
+from pydantic import TypeAdapter
 
 
 def run() -> list[str]:
@@ -94,7 +97,11 @@ def run() -> list[str]:
         )
 
     directory = next(
-        (path for path in _contract_candidates() if os.path.isfile(os.path.join(path, "models.py"))),
+        (
+            path
+            for path in _contract_candidates()
+            if os.path.isfile(os.path.join(path, "models.py"))
+        ),
         None,
     )
     if directory is None:  # pragma: no cover - contract_models() already resolved one
@@ -132,6 +139,51 @@ def run() -> list[str]:
                 f"the shipped validator rejects the shipped fixture {key!r}: {exc!r}. "
                 "This image's producer and validator disagree."
             )
+
+    multi_directory = os.path.join(
+        os.path.dirname(os.path.dirname(directory)), "multi-repository-evaluation", "v1"
+    )
+    multi_source = os.path.join(multi_directory, "models.py")
+    multi_golden_path = os.path.join(multi_directory, "evaluation-receipt.golden.json")
+    if not os.path.isfile(multi_source) or not os.path.isfile(multi_golden_path):
+        failures.append(
+            "this image does not carry the complete multi-repository-evaluation/v1 contract"
+        )
+        return failures
+    try:
+        module_name = "_adp_worker_multi_repository_evaluation_v1"
+        source_spec = importlib.util.spec_from_file_location(module_name, multi_source)
+        multi_models = importlib.util.module_from_spec(source_spec)
+        sys.modules[module_name] = multi_models
+        source_spec.loader.exec_module(multi_models)
+        with open(multi_golden_path, encoding="utf-8") as handle:
+            multi_golden = json.load(handle)
+        multi_specification = multi_models.EvaluationSpecification.model_validate(
+            multi_golden["specification"]
+        )
+        multi_receipt = multi_models.EvaluationReceipt.model_validate(multi_golden["receipt"])
+        if (
+            multi_models.specification_digest(multi_specification)
+            != multi_golden["expected_specification_digest"]
+        ):
+            failures.append("multi-repository-evaluation specification digest drift")
+        if (
+            multi_models.input_set_digest(multi_specification, multi_receipt.sources)
+            != multi_golden["expected_input_set_digest"]
+        ):
+            failures.append("multi-repository-evaluation input set digest drift")
+        current_sources = TypeAdapter(list[multi_models.ResolvedInput]).validate_python(
+            multi_golden["sources"]
+        )
+        multi_models.verify_receipt(
+            multi_specification, multi_receipt, current_sources, now=multi_receipt.observed_at
+        )
+    except Exception as exc:
+        failures.append(
+            f"the shipped multi-repository-evaluation/v1 contract rejects its fixture: {exc!r}"
+        )
+    finally:
+        sys.modules.pop("_adp_worker_multi_repository_evaluation_v1", None)
 
     return failures
 

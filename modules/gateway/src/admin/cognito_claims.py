@@ -162,6 +162,16 @@ def sync_cognito_role_claims(
             client.admin_update_user_attributes(
                 UserPoolId=pool_id, Username=users[0]["Username"], UserAttributes=[{"Name": "custom:role", "Value": effective_role}]
             )
+            if previous_role in platform_roles and role not in platform_roles:
+                # Remove every global privilege source from future JWTs. The
+                # role-change transaction has already persisted a deny, so a
+                # partial IdP failure cannot restore effective authority.
+                for group in ("admins", "platform-admins"):
+                    try:
+                        client.admin_remove_user_from_group(UserPoolId=pool_id, Username=users[0]["Username"], GroupName=group)
+                    except Exception as exc:
+                        if getattr(exc, "response", {}).get("Error", {}).get("Code") != "ResourceNotFoundException":
+                            raise
             return True
         try:
             client.admin_update_user_attributes(

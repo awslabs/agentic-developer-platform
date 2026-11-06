@@ -1,0 +1,399 @@
+{
+  "epic": 8445,
+  "architecture_revision": "6bc8a8697a476435e77bedd9a44e8f7eb574bbe3",
+  "schema_revision": "c8c42938888bcec577965d517acaeb7ff86d4914",
+  "status": "design_with_registered_inert_parallel_replacement",
+  "stories": [
+    {
+      "issue": 8446,
+      "code_node": "atlassian-adapters-8445-parallel/epic-8445/w01-proof/story-8446",
+      "native_dependencies": [],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "completion": "Bootstrap build only; mandatory operations and machine stage proof follow."
+    },
+    {
+      "issue": 8447,
+      "code_node": "atlassian-adapters-8445-parallel/epic-8445/w03-foundation/story-8447",
+      "native_dependencies": [
+        8446
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "Bootstrap build only; mandatory operations and machine stage proof follow."
+    },
+    {
+      "issue": 8448,
+      "code_node": "atlassian-adapters-8445-parallel/epic-8445/w04-identity/story-8448",
+      "native_dependencies": [
+        8447
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "Reviewed merge, automatic deployment and runtime verification, then machine stage proof; final integration criteria remain open."
+    },
+    {
+      "issue": 8449,
+      "code_node": "atlassian-adapters-8445-parallel/epic-8445/w05-reads-ui/story-8449",
+      "native_dependencies": [
+        8448
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "AC-05"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "MOD-038-F001-S004",
+        "SCN-03",
+        "SCN-04",
+        "SCN-05"
+      ],
+      "completion": "Reviewed merge, automatic deployment and runtime verification, then machine stage proof; final integration criteria remain open."
+    },
+    {
+      "issue": 8451,
+      "code_node": "atlassian-adapters-8445-parallel/epic-8445/w05b-connections/story-8451",
+      "native_dependencies": [
+        8448
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "completion": "Reviewed merge, automatic deployment and runtime verification, then machine stage proof; final integration criteria remain open."
+    },
+    {
+      "issue": 8450,
+      "code_node": "atlassian-adapters-8445-parallel/epic-8445/w06-writes-clients/story-8450",
+      "native_dependencies": [
+        8449
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "MOD-038-F001-S002",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "Reviewed merge, automatic deployment and runtime verification, then machine stage proof; final integration criteria remain open."
+    },
+    {
+      "issue": 8452,
+      "code_node": "atlassian-adapters-8445-parallel/epic-8445/w06b-clients/story-8452",
+      "native_dependencies": [
+        8449,
+        8446
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "MOD-024-F002-S001",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "completion": "Reviewed merge, automatic deployment and runtime verification, then machine stage proof; final integration criteria remain open."
+    },
+    {
+      "issue": 8453,
+      "code_node": "atlassian-adapters-8445-parallel/epic-8445/w07-release-code/story-8453",
+      "native_dependencies": [
+        8452,
+        8451,
+        8450,
+        8449,
+        8448,
+        8447
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "MOD-045-F001-S001",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "Reviewed merge, automatic deployment and runtime verification, then machine stage proof; final integration criteria remain open."
+    },
+    {
+      "issue": 8454,
+      "code_node": "atlassian-adapters-8445-parallel/epic-8445/w08-harness/story-8454",
+      "native_dependencies": [
+        8453
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "AC-05",
+        "AC-06"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04",
+        "SCN-05",
+        "SCN-06"
+      ],
+      "completion": "Reviewed merge, automatic deployment and runtime verification, then machine stage proof; final integration criteria remain open."
+    }
+  ],
+  "operational_issue": 8453,
+  "live_harness_and_evidence_owner": 8454,
+  "live_case_groups": [
+    "release-six-components",
+    "adapter-four-routes",
+    "core-health-through-outage",
+    "role-site-owner-denials",
+    "consent-two-users-sites",
+    "identity-expiry-refresh",
+    "disconnect-revoke",
+    "catalogue-next-session",
+    "claude-schema-loading",
+    "codex-schema-loading",
+    "legacy-all-verbs",
+    "partial-routing-apply",
+    "controller-restart-stale-lease",
+    "group-rollback-redeploy",
+    "unknown-write-no-replay",
+    "report-recovery",
+    "runner-loss-resume",
+    "fixture-cleanup",
+    "legacy-8076",
+    "legacy-7266",
+    "unrelated-runtimes"
+  ],
+  "required_new_tool_cells": [
+    "claude:atlassian___search_jira",
+    "claude:atlassian___get_jira_issue",
+    "claude:atlassian___search_confluence",
+    "claude:atlassian___get_confluence_page",
+    "claude:atlassian___create_jira_issue",
+    "claude:atlassian___update_jira_issue",
+    "claude:atlassian___comment_jira_issue",
+    "claude:atlassian___transition_jira_issue",
+    "codex:atlassian___search_jira",
+    "codex:atlassian___get_jira_issue",
+    "codex:atlassian___search_confluence",
+    "codex:atlassian___get_confluence_page",
+    "codex:atlassian___create_jira_issue",
+    "codex:atlassian___update_jira_issue",
+    "codex:atlassian___comment_jira_issue",
+    "codex:atlassian___transition_jira_issue"
+  ],
+  "stage_criteria": {
+    "identity-proof": [
+      "8446.AC-01",
+      "8446.AC-02",
+      "8446.AC-03"
+    ],
+    "foundation": [
+      "8447.AC-01",
+      "8447.AC-02",
+      "8447.AC-03",
+      "8447.AC-04"
+    ],
+    "identity": [
+      "8448.AC-01",
+      "8448.AC-02",
+      "8448.AC-03",
+      "8448.AC-04"
+    ],
+    "reads-parity": [
+      "8449.AC-01",
+      "8449.AC-02",
+      "8449.AC-03",
+      "8449.AC-04",
+      "8449.AC-05"
+    ],
+    "connections": [
+      "8451.AC-01",
+      "8451.AC-02",
+      "8451.AC-03"
+    ],
+    "write-recovery": [
+      "8450.AC-01",
+      "8450.AC-02",
+      "8450.AC-03",
+      "8450.AC-04"
+    ],
+    "clients": [
+      "8452.AC-01",
+      "8452.AC-02",
+      "8452.AC-03"
+    ],
+    "release-automation": [
+      "8453.AC-01",
+      "8453.AC-02",
+      "8453.AC-03",
+      "8453.AC-04"
+    ],
+    "harness": [
+      "8454.AC-01",
+      "8454.AC-02",
+      "8454.AC-03",
+      "8454.AC-04",
+      "8454.AC-05",
+      "8454.AC-06"
+    ]
+  },
+  "required_final_criteria": [
+    "8446.AC-01",
+    "8446.AC-02",
+    "8446.AC-03",
+    "8447.AC-01",
+    "8447.AC-02",
+    "8447.AC-03",
+    "8447.AC-04",
+    "8448.AC-01",
+    "8448.AC-02",
+    "8448.AC-03",
+    "8448.AC-04",
+    "8449.AC-01",
+    "8449.AC-02",
+    "8449.AC-03",
+    "8449.AC-04",
+    "8449.AC-05",
+    "8451.AC-01",
+    "8451.AC-02",
+    "8451.AC-03",
+    "8450.AC-01",
+    "8450.AC-02",
+    "8450.AC-03",
+    "8450.AC-04",
+    "8452.AC-01",
+    "8452.AC-02",
+    "8452.AC-03",
+    "8453.AC-01",
+    "8453.AC-02",
+    "8453.AC-03",
+    "8453.AC-04",
+    "8454.AC-01",
+    "8454.AC-02",
+    "8454.AC-03",
+    "8454.AC-04",
+    "8454.AC-05",
+    "8454.AC-06",
+    "8445.EC-01",
+    "8445.EC-02",
+    "8445.EC-03",
+    "8445.EC-04",
+    "8445.EC-05",
+    "8445.EC-06"
+  ],
+  "autonomy": {
+    "routine_human_gates": 0,
+    "bootstrap_code_only_issues": [
+      8446,
+      8447
+    ],
+    "full_delivery_issues": [
+      8448,
+      8449,
+      8450,
+      8451,
+      8452,
+      8453,
+      8454
+    ]
+  },
+  "verification_strategy": {
+    "reference": "test-data-strategy.md",
+    "development_fixture_source": "agent_generated",
+    "live_fixture_availability": "unverified_not_required_for_independent_development",
+    "phase_evidence": {
+      "verification_level": "controlled_integration",
+      "fixture_source": "generated",
+      "provider_live_attestation": false,
+      "test_runtime_artifacts_match": true
+    },
+    "provider_activation": "actual_authenticated_contract_and_required_parity_before_handoff",
+    "final_acceptance": "all_original_live_clauses_and_cleanup",
+    "manual_dataset_preparation": false,
+    "owners": {
+      "discovery_and_probe": 8446,
+      "foundation_fixtures": 8447,
+      "feature_cases": "each_feature_story",
+      "activation_readiness": 8453,
+      "live_data_lifecycle": 8454
+    }
+  },
+  "parallelism": {
+    "max_concurrent_actions": 3,
+    "peak_independent_story_actions": 3,
+    "initial_fork": [
+      8449,
+      8451
+    ],
+    "reads_unlock": [
+      8450,
+      8452
+    ],
+    "reads_unlock_requires_ui": false,
+    "release_joins_verified_stories": [
+      8450,
+      8451,
+      8452
+    ],
+    "independent_phase_evaluators": [
+      "reads-parity",
+      "connections",
+      "write-recovery",
+      "clients"
+    ],
+    "shared_runtime_mutations": "serialized_with_exact_revision_readback",
+    "native_dependencies_changed": false,
+    "worker_capacity": "not_runtime_qualified"
+  }
+}

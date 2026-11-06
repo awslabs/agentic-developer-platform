@@ -22,6 +22,7 @@ import pytest
 ENV_VARS = {
     "GITHUB_CLIENT_ID": "test-client-id",
     "GITHUB_CLIENT_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456:secret:test",
+    "STATE_SIGNING_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456:secret:state-signing",
     "COGNITO_USER_POOL_ID": "us-east-1_TestPool",
     "COGNITO_CLIENT_ID": "test-cognito-client-id",
     "CALLBACK_URL": "https://example.com/api/auth/github/callback",
@@ -42,6 +43,9 @@ def env_setup(monkeypatch):
     # Reset cached secrets and module-level config between tests
     import handler as h
 
+    h.STATE_SIGNING_SECRET_ARN = ENV_VARS["STATE_SIGNING_SECRET_ARN"]
+    h.STATE_LEGACY_ACCEPT_UNTIL = int(time.time()) + 600
+    h._state_signing_key = ("independent-test-state-key-32-bytes-minimum", time.time())
     h._github_oauth_creds = None
     h._github_org_token = None
     h.ALLOWLIST_MODE = "org"
@@ -1442,8 +1446,8 @@ class TestAppStateBinding:
         import handler
 
         _seed_creds()
-        nonce, timestamp, app_state, signature = handler._generate_state("victim-nonce").split(".")
-        forged = f"{nonce}.{timestamp}.attacker-nonce.{signature}"
+        version, nonce, timestamp, app_state, signature = handler._generate_state("victim-nonce").split(".")
+        forged = f"{version}.{nonce}.{timestamp}.attacker-nonce.{signature}"
 
         assert handler._verify_state(forged) is False
 
@@ -1635,3 +1639,57 @@ class TestExchangeRejectsUnboundCodes:
         assert response["statusCode"] == 400
         assert json.loads(response["body"])["error"] == "state_mismatch"
         assert "cognito-access-token" not in response["body"]
+
+
+class TestDedicatedStateSigning:
+    def test_full_tag_and_separate_key(self, mock_secrets):
+        import handler
+
+        state = handler._generate_state("spa-nonce")
+        payload, tag = state.rsplit(".", 1)
+        assert state.startswith("v2.") and len(tag) == 64
+        assert tag == hmac_module.new(b"independent-test-state-key-32-bytes-minimum", payload.encode(), hashlib.sha256).hexdigest()
+        assert tag != hmac_module.new(b"test-secret-123", payload.encode(), hashlib.sha256).hexdigest()
+        assert handler._verify_state(state)
+        handler._github_oauth_creds = {"client_secret": "rotated-oauth-secret", "client_id": "test-client-id"}
+        assert handler._verify_state(state)
+
+    def test_missing_secret_fails_closed_without_oauth_fallback(self, mock_secrets):
+        import handler
+
+        handler.STATE_SIGNING_SECRET_ARN = ""
+        result = handler.handler({"rawPath": "/start"}, None)
+        assert result["statusCode"] == 503
+        assert "Set-Cookie" not in result["headers"]
+
+    def test_secret_loaded_only_from_its_dedicated_resource(self, mock_secrets):
+        import handler
+
+        handler._state_signing_key = None
+        mock_secrets.get_secret_value.return_value = {"SecretString": "separate-random-key-for-testing-32-bytes"}
+        state = handler._generate_state()
+        assert handler._verify_state(state)
+        mock_secrets.get_secret_value.assert_called_once_with(SecretId=ENV_VARS["STATE_SIGNING_SECRET_ARN"])
+
+    def test_expired_or_wrong_key_state_is_rejected(self, mock_secrets, monkeypatch):
+        import handler
+
+        state = handler._generate_state()
+        now = time.time()
+        monkeypatch.setattr(handler.time, "time", lambda: now + 601)
+        assert not handler._verify_state(state)
+        monkeypatch.setattr(handler.time, "time", lambda: now)
+        handler._state_signing_key = ("a-different-test-signing-key-32-bytes", now)
+        assert not handler._verify_state(state)
+
+    def test_legacy_acceptance_has_absolute_deadline(self, mock_secrets, monkeypatch):
+        import handler
+
+        now = int(time.time())
+        state = _make_valid_state()
+        handler.STATE_LEGACY_ACCEPT_UNTIL = now + 600
+        assert handler._verify_state(state)
+        monkeypatch.setattr(handler.time, "time", lambda: now + 600)
+        assert not handler._verify_state(state)
+        handler.STATE_LEGACY_ACCEPT_UNTIL = 0
+        assert not handler._verify_state(state)

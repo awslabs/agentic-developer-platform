@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -439,7 +440,19 @@ def test_codex_launch_pins_complete_provider_without_global_setup(installed):
         assert 'model_providers.adp-gateway.wire_api="responses"' in args
         assert 'model_providers.adp-gateway.env_key="ADP_GATEWAY_DUMMY"' in args
         assert args[-2:] == ["exec", "hello world"]
-        assert not (home / ".codex/config.toml").exists()
+        assert tomllib.loads((home / ".codex/config.toml").read_text()) == {
+            "mcp_servers": {
+                "adp-tools": {
+                    "command": str(prefix / "adp"),
+                    "args": ["--deployment", "dev", "mcp"],
+                    "env": {
+                        "BG_CONFIG_DIR": str(stores["dev"]),
+                        "ADP_DEPLOYMENT_ID": stores["dev"].name,
+                        "ADP_DEPLOYMENT_URL": "https://dev.example.test/api",
+                    },
+                }
+            }
+        }
     finally:
         identity_file = stores["dev"] / "runtime/proxy.json"
         if identity_file.exists():

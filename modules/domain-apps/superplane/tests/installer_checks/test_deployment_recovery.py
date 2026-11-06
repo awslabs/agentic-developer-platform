@@ -196,3 +196,18 @@ def test_recovery_input_is_exact_and_bounded(recovery, change):
         entry["spec_sha256"] = "bad"
     with pytest.raises(Refusal):
         validate(installer.env)
+
+
+def test_image_recovery_allows_new_nonconflicting_listener(recovery):
+    installer, desired, old = recovery
+    desired["spec"]["template"]["spec"]["containers"].append(
+        {
+            "name": "recovery-transport",
+            "image": "example.test/qualified@sha256:" + "b" * 64,
+        }
+    )
+    server = Server(old)
+    installer.commands = server
+    installer.apply([desired])
+    assert server.writes == 1
+    assert server.current["spec"] == desired["spec"]

@@ -96,7 +96,7 @@ async def test_human_merge_gate_refuses_unscopable_developer_token(graph_context
     assert messages(ctx) == []
 
 
-async def test_role_revocation_stops_replay_before_publication(graph_context, monkeypatch):
+async def test_membership_revocation_stops_replay_before_publication(graph_context, monkeypatch):
     ctx = graph_context
     await accept(ctx)
     await enroll(ctx)
@@ -114,11 +114,11 @@ async def test_role_revocation_stops_replay_before_publication(graph_context, mo
     assert messages(ctx) == []
     async with ctx.session_factory() as db:
         membership = await db.scalar(select(TenantMembership).where(TenantMembership.user_id == "human"))
-        membership.role = "member"
+        membership.revoked_at = datetime.now(UTC)
         await db.commit()
     monkeypatch.setattr(ctx.child.service, "_publish", original)
     response = await send(ctx)
     assert response.status_code == 409, response.text
-    assert "role_revoked" in response.text
+    assert "membership_revoked" in response.text
     assert messages(ctx) == []
     assert await node_state(ctx) == ("running", 1)

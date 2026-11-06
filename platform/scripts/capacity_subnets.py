@@ -97,20 +97,41 @@ def live_additions(state, live_subnet_ids):
 def as_zone_map(subnet_zones):
     """Zone-keyed map for additional_private_subnet_ids_by_az, or a refusal.
 
-    The variable is keyed by availability zone to make one-subnet-per-zone
-    structural. Two additions in one zone cannot be represented, and a zone that
-    cannot be resolved cannot be re-supplied -- either one, dropped silently, would
-    shrink the live subnet set, which is the failure this module prevents.
+    Preserve every subnet, including a second capacity addition in the same AZ.
+    A singleton remains a string for compatibility with existing configuration.
     """
     result = {}
     for subnet, zone in sorted(subnet_zones.items()):
         if not zone:
             raise Refused(f"Cannot resolve the availability zone of live cluster subnet {subnet}; "
                           "refusing rather than dropping it from the cluster's subnet set")
-        if result.setdefault(zone, subnet) != subnet:
-            raise Refused(f"Two additional cluster subnets share availability zone {zone} "
-                          f"({result[zone]}, {subnet}); this cannot be retained as a zone-keyed map")
+        result.setdefault(zone, []).append(subnet)
+    return _compact(result)
+
+
+def _zone_lists(value):
+    if not isinstance(value, dict):
+        raise Refused("Capacity subnets must be an object keyed by availability zone")
+    result = {}
+    owners = {}
+    for zone, entries in value.items():
+        subnets = [entries] if isinstance(entries, str) else entries
+        if not isinstance(zone, str) or not zone or not isinstance(subnets, list) or not subnets \
+                or not all(isinstance(subnet, str) and subnet for subnet in subnets):
+            raise Refused("Capacity subnet entries must be a subnet ID or a nonempty list of subnet IDs")
+        if len(subnets) != len(set(subnets)):
+            raise Refused("Capacity subnet configuration contains a repeated subnet")
+        for subnet in subnets:
+            if subnet in owners and owners[subnet] != zone:
+                raise Refused("Capacity subnet configuration names the same subnet under more than one availability zone")
+            owners[subnet] = zone
+        result[zone] = sorted(subnets)
     return result
+
+
+def _compact(value):
+    return {zone: entries[0] if len(entries) == 1 else sorted(entries)
+            for zone, entries in sorted(value.items())}
 
 
 def effective_additions(configured, retained, allow_removal=False):
@@ -120,14 +141,15 @@ def effective_additions(configured, retained, allow_removal=False):
     `retained` is what the live cluster already has. Returns the map to plan AND
     apply with -- the same value for both, so the reviewed plan is the applied one.
     """
-    configured, retained = dict(configured or {}), dict(retained or {})
+    configured, retained = _zone_lists(configured or {}), _zone_lists(retained or {})
     if not configured:
         # NOTHING CONFIGURED is not "remove everything". This is the whole point:
         # unset and blank are indistinguishable from a stale deployment that never
         # carried the account-specific ids, so they retain what the cluster has.
         # Narrowing to nothing requires an explicit authorised removal below.
-        return dict(retained) if not allow_removal else {}
-    dropped = sorted(s for s in retained.values() if s not in set(configured.values()))
+        return _compact(retained) if not allow_removal else {}
+    configured_ids = {subnet for entries in configured.values() for subnet in entries}
+    dropped = sorted(s for entries in retained.values() for s in entries if s not in configured_ids)
     if dropped and not allow_removal:
         raise Refused(
             "Configured additional capacity subnets omit subnet(s) the live cluster is using: "
@@ -135,22 +157,11 @@ def effective_additions(configured, retained, allow_removal=False):
             "and re-break pod IP assignment for every node launched afterwards. Add them to the "
             "configuration (they are retained automatically when it is unset), or authorise the "
             "removal deliberately if narrowing the set is genuinely intended.")
-    if dropped:
-        # Deliberate narrowing: the operator's configuration wins, as asked.
-        return dict(configured)
-    merged = dict(retained)
-    for zone, subnet in configured.items():
-        if merged.get(zone, subnet) != subnet:
-            raise Refused(
-                f"Configured additional subnet for {zone} ({subnet}) conflicts with the subnet the "
-                f"live cluster uses there ({merged[zone]}); one zone cannot hold two entries in a "
-                "zone-keyed map. Resolve which subnet that zone should use.")
-        merged[zone] = subnet
-    if len(set(merged.values())) != len(merged):
-        # The Terraform variable refuses this too, but failing here names the
-        # conflict instead of surfacing it as a late plan-time validation error.
-        duplicated = sorted({s for s in merged.values() if list(merged.values()).count(s) > 1})
-        raise Refused(f"Subnet(s) {', '.join(duplicated)} would be named under more than one "
-                      "availability zone; a subnet belongs to exactly one zone, so resolve which "
-                      "zone each is meant to serve.")
-    return merged
+    # Even deliberate removal cannot move an existing subnet to a different AZ.
+    retained_owners = {subnet: zone for zone, entries in retained.items() for subnet in entries}
+    for zone, entries in configured.items():
+        for subnet in entries:
+            if subnet in retained_owners and retained_owners[subnet] != zone:
+                raise Refused(f"Configured zone for {subnet} conflicts with the subnet the live cluster uses "
+                              f"in {retained_owners[subnet]}; a subnet cannot move availability zones")
+    return _compact(configured)

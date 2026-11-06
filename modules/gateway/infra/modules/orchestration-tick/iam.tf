@@ -10,6 +10,17 @@
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
+data "aws_partition" "current" {}
+
+locals {
+  # Delivery reconciliation reads tenant GitHub credentials even when the
+  # optional comment-command bridge has not been configured. Keep an explicit
+  # operator scope unchanged; otherwise grant only this environment's App keys.
+  effective_github_app_secret_arn_pattern = var.github_app_secret_arn_pattern != "" ? var.github_app_secret_arn_pattern : (
+    var.engine_enabled || var.agent_authority_enabled || var.shared_run_reporting_enabled ?
+    "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/${var.environment}/tenants/*/github-app-??????" : ""
+  )
+}
 
 resource "aws_iam_role" "tick" {
   permissions_boundary = var.automation_permissions_boundary_arn
@@ -238,11 +249,6 @@ resource "aws_iam_role_policy" "tick" {
           Resource = [var.webhook_events_kms_key_arn]
         }
       ] : [],
-      # Per-tenant GitHub App credentials, used ONLY to mint an installation token
-      # for the acknowledgement comment. Scoped to the environment's tenant prefix,
-      # so this cannot reach the platform's own secrets. Without it the tick still
-      # applies commands and reports `command_acks_failed`, which forces a
-      # non-success tick — visibly degraded rather than silently unacknowledged.
       var.run_report_key_parameter != "" ? [
         {
           Sid      = "ReadRunReportSigningMaterial"
@@ -251,14 +257,26 @@ resource "aws_iam_role_policy" "tick" {
           Resource = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${var.run_report_key_parameter}"]
         }
       ] : [],
-      var.github_app_secret_arn_pattern != "" ? [
+      # Read only review documents, never arbitrary worker transcripts or writes.
+      # merge_review.py additionally binds tenant/run namespace and SHA256 bytes.
+      var.agent_run_logs_bucket_name != "" ? [
+        {
+          Sid      = "ReadVerifiedReviewArtifacts"
+          Effect   = "Allow"
+          Action   = ["s3:GetObject"]
+          Resource = ["arn:${data.aws_partition.current.partition}:s3:::${var.agent_run_logs_bucket_name}/runs/*/*/attempt-*/review-result/*.json"]
+        }
+      ] : [],
+      # Shared by delivery reconciliation and command acknowledgements. Retain
+      # the statement ID for upgrade-state and maintenance policy preservation.
+      local.effective_github_app_secret_arn_pattern != "" ? [
         {
           Sid    = "EngineCommandAckCredentials"
           Effect = "Allow"
           Action = [
             "secretsmanager:GetSecretValue"
           ]
-          Resource = [var.github_app_secret_arn_pattern]
+          Resource = [local.effective_github_app_secret_arn_pattern]
         }
       ] : []
     )

@@ -4,6 +4,17 @@
 
 mock_provider "aws" {}
 
+override_data {
+  target = data.terraform_remote_state.platform
+  values = {
+    outputs = {
+      vpc_id             = "vpc-00000000000000000"
+      vpc_cidr_block     = "10.0.0.0/16"
+      private_subnet_ids = ["subnet-00000000000000001", "subnet-00000000000000002"]
+    }
+  }
+}
+
 variables {
   environment          = "dev"
   gitlab_domain        = "gitlab.dev.adp.internal"

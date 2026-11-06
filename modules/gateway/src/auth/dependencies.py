@@ -153,6 +153,8 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
         cognito_username=claims.username or "",
         is_admin=is_admin,
         expires_at=datetime.fromtimestamp(claims.exp, UTC),
+        token_scopes=claims.scope or "",
+        token_use=claims.token_use,
     )
 
 
@@ -281,6 +283,18 @@ async def get_current_user(
 
         token, tenant_lease = split_token(token)
 
+        # #9640: an owner session minted for a verified Dev Box host run authenticates
+        # like the owner's login (signature, expiry, revocation, current admin authority,
+        # delegation attribution). A workspace lease never rides on one.
+        from src.auth.owner_session import owner_session_delegation, validate_owner_session
+
+        if tenant_lease is None and owner_session_delegation(token) is not None:
+            context = await validate_owner_session(token)
+            # Public routes are outside the token middleware's enforced paths; the
+            # request log reads the principal and the delegation from this state.
+            request.state.token_context = context
+            return context
+
         # Get Cognito validator
         validator = _get_cognito_validator()
         if validator is None:
@@ -294,7 +308,10 @@ async def get_current_user(
             claims = validator.validate_token(token)
 
             # Convert claims to TokenContext
-            context = await apply_context(_cognito_claims_to_context(claims), tenant_lease)
+            from src.admin.platform_authority import apply_platform_admin_authority
+
+            context = await apply_platform_admin_authority(_cognito_claims_to_context(claims))
+            context = await apply_context(context, tenant_lease)
             # Workspace discovery/exchange must remain usable after removal from
             # the token's previous org. Each selection independently checks DB
             # membership; product requests cannot use stale Cognito claims.

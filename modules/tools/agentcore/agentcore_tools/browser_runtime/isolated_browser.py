@@ -36,15 +36,11 @@ def stop_session(session_id, *, native=False):
             region_name=os.environ.get("AWS_REGION", "us-east-1"),
             config=config,
         )
-    client.stop_browser_session(
-        browserIdentifier="aws.browser.v1", sessionId=session_id
-    )
-    return (
-        client.get_browser_session(
-            browserIdentifier="aws.browser.v1", sessionId=session_id
-        )["status"]
-        == "TERMINATED"
-    )
+    arguments = {"browserIdentifier": "aws.browser.v1", "sessionId": session_id}
+    if client.get_browser_session(**arguments)["status"] == "TERMINATED":
+        return True
+    client.stop_browser_session(**arguments)
+    return client.get_browser_session(**arguments)["status"] == "TERMINATED"
 
 
 class ProcessActor:
@@ -64,7 +60,13 @@ class ProcessActor:
         self.payload, self.on_exit, self.stop = payload, on_exit, stop
         self.ready = Future()
         self.ended = threading.Event()
-        self.deadline = time.monotonic() + LEASE_SECONDS
+        remaining = (LEASE_SECONDS if "deadline_at" not in payload else
+                     max(0, payload["deadline_at"] - time.time()))
+        self.deadline = time.monotonic() + min(LEASE_SECONDS, remaining)
+        if self.deadline <= time.monotonic():
+            from agentcore_tools.browser_runtime.investigation_browser import InvestigationError
+
+            raise InvestigationError("Browser authority expired", browser_start_unattempted=True)
         self.startup_seconds, self.action_seconds = startup_seconds, action_seconds
         self.session_id = None
         self.close_result = None
@@ -171,21 +173,17 @@ class ProcessActor:
                 if self.process.poll() is None:
                     self.process.kill()
             self.process.wait(timeout=2)
-            if (
-                not self.close_result
-                or self.close_result.get("cleanup_status") != "stopped"
-            ):
-                stopped = False
-                if self.session_id:
-                    try:
-                        stopped = self.stop(self.session_id)
-                    except Exception:
-                        pass
-                self.close_result = {
-                    "session_id": self.session_id,
-                    "session_open": False,
-                    "cleanup_status": "stopped" if stopped else "unknown",
-                }
+            stopped = False
+            if self.session_id:
+                try:
+                    stopped = self.stop(self.session_id)
+                except Exception:
+                    pass
+            self.close_result = {
+                "session_id": self.session_id,
+                "session_open": False,
+                "cleanup_status": "stopped" if stopped else "unknown",
+            }
             self.ended.set()
             with self.lock:
                 for future in self.pending.values():
@@ -233,7 +231,8 @@ class ProcessActor:
         from agentcore_tools.browser_runtime.investigation_browser import InvestigationError
 
         try:
-            return self.ready.result(timeout=self.startup_seconds)
+            return self.ready.result(timeout=max(0, min(
+                self.startup_seconds, self.deadline - time.monotonic())))
         except TimeoutError:
             self.abort()
             partial = self.partial_packet("start")
@@ -268,7 +267,12 @@ class ProcessActor:
                 self.pending[ident] = future
                 self._send({"id": ident, "payload": payload})
             try:
-                return future.result(timeout=self.action_seconds)
+                result = future.result(timeout=self.action_seconds)
+                if payload.get("action") == "close":
+                    if not self.ended.wait(timeout=self.action_seconds):
+                        self.abort()
+                    return self.close_result
+                return result
             except TimeoutError:
                 self.abort()
                 partial = self.partial_packet(ident)

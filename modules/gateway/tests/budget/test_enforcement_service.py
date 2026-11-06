@@ -14,7 +14,7 @@ from sqlalchemy.exc import OperationalError
 from src.budget.enforcement_service import BudgetEnforcementService
 from src.budget.pricing import PricingService
 from src.shared.schemas.auth import TokenContext
-from src.shared.schemas.budget import EnforcementMode, EntityType
+from src.shared.schemas.budget import DenyReason, EnforcementMode, EnforcementResult, EntityType
 
 
 @pytest.fixture
@@ -380,6 +380,52 @@ class TestBudgetEnforcementService:
 
         # Should return a non-zero cost
         assert cost > Decimal("0")
+
+
+class TestBudgetAvailability:
+    @pytest.fixture
+    def service(self, monkeypatch):
+        service = BudgetEnforcementService(db_session=MagicMock())
+        monkeypatch.setattr("src.budget.enforcement_service.budget_config.budget_check_enabled", True)
+        monkeypatch.setattr(service, "_resolve_run_scope", AsyncMock(return_value=None))
+        monkeypatch.setattr(service, "_check_entity_budget", AsyncMock(return_value=(EnforcementResult(allowed=True), None)))
+        monkeypatch.setattr(service, "_check_person_budget_contained", AsyncMock(return_value=None))
+        monkeypatch.setattr(service, "_note_check_succeeded", AsyncMock())
+        monkeypatch.setattr(service, "_handle_check_failure", AsyncMock())
+        monkeypatch.setattr(service, "_reserve_or_degrade", AsyncMock())
+        monkeypatch.setattr(service, "_observe_without_enforcement", AsyncMock(return_value=EnforcementResult(allowed=True)))
+        return service
+
+    @pytest.mark.asyncio
+    async def test_person_limit_still_excludes_unaffordable_discovery(self, service, token_context):
+        service._check_person_budget_contained.return_value = EnforcementResult(allowed=False, deny_reason=DenyReason.BUDGET_EXCEEDED)
+        result = await service.check_budget_hierarchy(token_context, Decimal("0.05"), reserve=False)
+        assert not result.allowed and result.deny_reason == DenyReason.BUDGET_EXCEEDED
+        service._check_entity_budget.assert_awaited()
+        service._check_person_budget_contained.assert_awaited_once()
+        service._note_check_succeeded.assert_not_awaited()
+        service._reserve_or_degrade.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_ledger_excludes_discovery_without_mutating_grace(self, service, token_context):
+        service._check_entity_budget.side_effect = ConnectionError("ledger unavailable")
+        result = await service.check_budget_hierarchy(token_context, Decimal("0.05"), reserve=False)
+        assert not result.allowed and result.deny_reason == DenyReason.CHECK_UNAVAILABLE
+        service._handle_check_failure.assert_not_awaited()
+        service._reserve_or_degrade.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_discovery_with_enforcement_off_does_not_record_unbounded_work(self, service, token_context):
+        token_context._budget_enforcement_enabled = False
+        result = await service.check_budget_hierarchy(token_context, Decimal("0.05"), reserve=False)
+        assert result.allowed
+        service._resolve_run_scope.assert_awaited_once()
+        service._check_entity_budget.assert_not_awaited()
+        service._observe_without_enforcement.assert_not_awaited()
+        service._reserve_or_degrade.assert_not_awaited()
+        paid = await service.check_budget_hierarchy(token_context, Decimal("0.05"), request_id="paid-call")
+        assert paid.allowed
+        service._observe_without_enforcement.assert_awaited_once()
 
 
 class TestBudgetEnforcementMiddleware:

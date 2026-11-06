@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { FlowGraph, GraphNode } from '@/types/orchestration';
 import { nodeDependencies, type WaveGroup } from '@/utils/flowLayout';
 import { countByDisplayState } from '@/utils/nodeState';
@@ -22,12 +23,20 @@ interface WaveCardProps {
    * exactly as before.
    */
   renderExecution?: (node: GraphNode) => React.ReactNode;
+  renderActivityStatus?: (node: GraphNode) => React.ReactNode;
+  interactive?: boolean;
+  /** Phases share their enclosing BOLT’s expand/collapse control. */
+  embedded?: boolean;
 }
 
-export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecution }: WaveCardProps) {
+export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecution, renderActivityStatus, interactive = true, embedded = false }: WaveCardProps) {
+  // Defer unopened waves, then retain mounted controls so collapsing a wave
+  // cannot discard a reviewer's draft feedback or an in-flight decision.
+  const [hasExpanded, setHasExpanded] = useState(expanded);
+  useEffect(() => { if (expanded) setHasExpanded(true); }, [expanded]);
   const dependencyLabel = (epic: string, ref: string) => graph.wave_metadata?.find((item) => item.epic_ref === epic && item.wave_ref === ref)?.title || waveLabel(ref);
   const counts = countByDisplayState(wave.nodes);
-  const stories = countStories(wave.nodes);
+  const stories = countStories(wave.nodes, Boolean(wave.phases));
   const gates = wave.nodes.filter((node) => node.kind === 'gate').length;
   const checkpoints = wave.nodes.filter((node) => node.kind === 'eval').length - stories.evaluation;
   const storyType = stories.implementation === 0 ? 'evaluation ' : stories.evaluation === 0 ? 'implementation ' : '';
@@ -40,33 +49,36 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
             : counts.complete ? 'Partly complete' : 'Not started';
   const bodyId = `wave-body-${encodeURIComponent(epicRef)}-${encodeURIComponent(wave.waveRef)}`;
   const headingId = `${bodyId}-heading`;
+  const Heading = embedded ? 'h4' : 'h3';
+  const Header = embedded ? 'span' : 'button';
   const renderNode = (node: GraphNode) => (
     <NodeChip
       key={node.id}
       node={node}
       dependencies={nodeDependencies(graph, node)}
       dependencyWaveTitle={(dependency) => dependencyLabel(dependency.epic_ref, dependency.wave_ref)}
-      controls={<GateControls node={node} flowId={graph.flow_id} />}
+      controls={interactive ? <GateControls node={node} flowId={graph.flow_id} /> : undefined}
       execution={renderExecution?.(node)}
+      activityStatus={renderActivityStatus?.(node)}
     />
   );
 
   return (
     <section
       data-testid={`wave-${epicRef}-${wave.waveRef}`}
-      data-container="wave"
+      data-container={embedded ? 'phase' : wave.phases ? 'bolt' : 'wave'}
       aria-labelledby={headingId}
-      className="min-w-0 overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900"
+      className={embedded ? 'min-w-0' : 'min-w-0 overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900'}
     >
-      <h3 id={headingId}>
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={bodyId}
-          onClick={onToggle}
-          className="flex w-full items-start gap-3 p-4 text-left hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-gray-800"
+      <Heading id={headingId}>
+        <Header
+          type={embedded ? undefined : 'button'}
+          aria-expanded={embedded ? undefined : expanded}
+          aria-controls={embedded ? undefined : bodyId}
+          onClick={embedded ? undefined : onToggle}
+          className={embedded ? 'flex w-full items-start gap-3 text-left' : 'flex w-full items-start gap-3 p-4 text-left hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-gray-800'}
         >
-          <span aria-hidden="true" className="mt-0.5 text-gray-500">{expanded ? '▾' : '▸'}</span>
+          {!embedded && <span aria-hidden="true" className="mt-0.5 text-gray-500">{expanded ? '▾' : '▸'}</span>}
           <span className="min-w-0 flex-1 space-y-1">
             <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span className="text-base font-semibold text-gray-900 dark:text-gray-100">{wave.title || waveLabel(wave.waveRef)}</span>
@@ -85,7 +97,10 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
                 {status}
               </span>
             </span>
-            {wave.description && <span className="block text-sm font-normal text-gray-600 dark:text-gray-300">{wave.description}</span>}
+            {!embedded && wave.description && <span className="block text-sm font-normal text-gray-600 dark:text-gray-300">{wave.description}</span>}
+            {wave.phases && <span className="block text-sm font-normal text-gray-600 dark:text-gray-300">
+              Build → Review/repair → Deploy → Verify → Human evidence review
+            </span>}
             <span className="block text-xs font-normal text-gray-500 dark:text-gray-400">
               {stories.total > 0 && <>{stories.complete} of {stories.total} stories complete · {stories.implementation} implementation · {stories.evaluation} evaluation · </>}
               {gates} approval {gates === 1 ? 'gate' : 'gates'}
@@ -97,10 +112,19 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
                 : 'No dependencies on other waves'}
             </span>
           </span>
-        </button>
-      </h3>
+        </Header>
+      </Heading>
 
-      <div id={bodyId} hidden={!expanded} className="border-t border-gray-200 p-4 dark:border-gray-700">
+      <div id={bodyId} hidden={!expanded} className={embedded ? 'pt-4' : 'border-t border-gray-200 p-4 dark:border-gray-700'}>
+        {(expanded || hasExpanded) && <>
+        {wave.phases ? <div className="space-y-6">
+          {wave.phases.map((phase) => <WaveCard
+            key={phase.waveRef} epicRef={epicRef}
+            wave={{ ...phase, title: phase.title?.replace(/^B\d+:\s*/i, '') }}
+            graph={graph} expanded onToggle={() => undefined} embedded
+            renderExecution={renderExecution} renderActivityStatus={renderActivityStatus} interactive={interactive}
+          />)}
+        </div> : <>
         <ol className="space-y-5">
           {wave.stages.map((stage, index) => (
             <li key={stage[0].id} data-testid={`stage-${epicRef}-${wave.waveRef}-${index}`}>
@@ -133,6 +157,8 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
             <ul className="space-y-3">{wave.unordered.map(renderNode)}</ul>
           </div>
         )}
+        </>}
+        </>}
       </div>
     </section>
   );

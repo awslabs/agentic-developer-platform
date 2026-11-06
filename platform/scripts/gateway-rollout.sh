@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 # Shared gateway rollout helpers. Source from deploy-all.sh.
 
+gateway_healthcheck() {
+  # Python ships in the gateway image; curl does not. Avoid injected telemetry
+  # site hooks/PYTHONPATH when starting this short, standard-library-only probe.
+  kubectl exec -n adp-gateway deploy/bedrockgateway -c bedrockgateway \
+    --request-timeout=30s -- python -I -S -c '
+import json
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=10) as response:
+    payload = json.load(response)
+    if response.status != 200 or not isinstance(payload, dict) or payload.get("status") != "healthy":
+        raise SystemExit("Gateway health endpoint did not report healthy")
+print(json.dumps(payload))
+' http://localhost:8080/health
+}
+
 # Keep the live desired count when rendering an upgrade manifest. Failing the
 # read must stop the upgrade rather than silently scaling a live service down.
 gateway_deployment_replicas() {

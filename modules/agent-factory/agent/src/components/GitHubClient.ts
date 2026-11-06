@@ -3,6 +3,7 @@ import { execSync } from 'child_process';
 import { TokenManager } from './TokenManager';
 import { Logger } from './Logger';
 import { S3Fallback } from '../services/S3Fallback';
+import { fetchApprovalComments, fetchApprovalPlan, postApprovalPlan } from '../services/posted-approval';
 
 export class GitHubClient {
   private tokenManager: TokenManager;
@@ -58,6 +59,26 @@ export class GitHubClient {
       }
       throw err;
     }
+  }
+
+  getRepository(): { owner: string; repo: string } {
+    return { owner: this.owner, repo: this.repo };
+  }
+
+  async getApprovalToken(): Promise<string> {
+    return this.tokenManager.getToken();
+  }
+
+  async postApprovalPlan(issueNumber: number, body: string) {
+    return postApprovalPlan(this.owner, this.repo, issueNumber, body, await this.getApprovalToken());
+  }
+
+  async getApprovalPlan(issueNumber: number, commentId: string) {
+    return fetchApprovalPlan(this.owner, this.repo, issueNumber, commentId, await this.getApprovalToken());
+  }
+
+  async getApprovalComments(issueNumber: number) {
+    return fetchApprovalComments(this.owner, this.repo, issueNumber, await this.getApprovalToken());
   }
 
   async updateComment(commentId: number, body: string): Promise<void> {

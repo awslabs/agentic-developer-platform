@@ -95,7 +95,6 @@ REQUIRED = (
     "gateway_url",
     "region",
     "platform_account",
-    "destination_account",
     "expected_revision",
     "vpc_id",
     "private_subnet_id",
@@ -231,11 +230,43 @@ def validate(config):
 
     result = {**DEFAULTS, **config}
 
+    lifecycle = result.get("dev_box_lifecycle")
+    if lifecycle is not None:
+        require(isinstance(lifecycle, dict), "dev_box_lifecycle must be an object")
+        if lifecycle.get("approved") is True:
+            require(
+                lifecycle.get("account") == result["platform_account"]
+                and lifecycle.get("region") == result["region"]
+                and all(
+                    isinstance(lifecycle.get(name), str)
+                    and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", lifecycle[name])
+                    for name in ("template", "profile")
+                )
+                and type(lifecycle.get("approved_budget_usd")) in (int, float)
+                and 0 < lifecycle["approved_budget_usd"] <= result["daily_budget_usd"],
+                "Dev Box live fixture requires exact target identity, template, profile and bounded budget",
+            )
+
+    if result.get("internal_invoke_url") is not None:
+        require(
+            isinstance(result["internal_invoke_url"], str)
+            and re.fullmatch(
+                rf"https://[a-z0-9]+\.execute-api\.{re.escape(result['region'])}\.amazonaws\.com/[A-Za-z0-9_-]+",
+                result["internal_invoke_url"],
+            ),
+            "Protected Product retirement must use a regional execute-api invoke URL",
+        )
     if result.get("gateway_deployment") is not None:
         require(
-            result["gateway_deployment"]
-            in ("dev", "pre-production", "customer-demo", "example-demo"),
-            "Unknown gateway_deployment binding",
+            isinstance(result["gateway_deployment"], str)
+            and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", result["gateway_deployment"]),
+            "gateway_deployment must be a lowercase catalog name of 1–63 characters",
+        )
+    if result.get("evaluation_target") is not None:
+        require(
+            isinstance(result["evaluation_target"], str)
+            and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", result["evaluation_target"]),
+            "evaluation_target must be a lowercase ownership tag",
         )
     url = str(result["gateway_url"]).rstrip("/")
     require(url.startswith("https://"), "gateway_url must be HTTPS")
@@ -249,7 +280,12 @@ def validate(config):
         validate_assistant_websocket_url(result["websocket_url"])
 
     require(REGION.match(str(result["region"])), "region is not a valid AWS region")
+    # Core/login journeys do not use a destination. Keep its absence explicit,
+    # including when this normalized config overlays the public example.
+    result.setdefault("destination_account", None)
     for key in ("platform_account", "destination_account"):
+        if key == "destination_account" and result[key] is None:
+            continue
         require(
             ACCOUNT.match(str(result[key])),
             f"{key} must be a 12-digit account ID string",
@@ -262,6 +298,13 @@ def validate(config):
         REVISION.match(str(result["expected_revision"])),
         "expected_revision must be a full 40-character commit SHA",
     )
+    if result.get("product_run_id"):
+        require(
+            re.fullmatch(
+                r"product-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}", result["product_run_id"]
+            ),
+            "product_run_id must identify one protected Product run",
+        )
 
     require(str(result["vpc_id"]).startswith("vpc-"), "vpc_id must be a VPC ID")
     require(
@@ -274,6 +317,10 @@ def validate(config):
     # blocked, not silently downgraded to a one-account approximation.
     second = result.get("second_destination_account")
     if second:
+        require(
+            result["destination_account"],
+            "second_destination_account requires destination_account",
+        )
         require(
             ACCOUNT.match(str(second)),
             "second_destination_account must be a 12-digit account ID string",
@@ -386,6 +433,9 @@ def validate(config):
     for key in ("destination_role_arn", "provisioner_role_arn"):
         value = result.get(key)
         if value:
+            require(
+                result["destination_account"], f"{key} requires destination_account"
+            )
             found = ROLE_ARN.match(str(value))
             require(found, f"{key} must be an IAM role ARN")
             require(
@@ -663,6 +713,7 @@ EXAMPLE_PATH = Path(__file__).resolve().parent / "config.example.json"
 # env var -> config key. A dotted key lands inside `github`.
 OVERLAY = {
     "CLI_UPLIFT_EVAL_INSTANCE_PROFILE": "instance_profile",
+    "CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL": "internal_invoke_url",
     "CLI_UPLIFT_EVAL_SECURITY_GROUP_ID": "instance_security_group_id",
     "CLI_UPLIFT_EVAL_EXPECTED_REVISION": "expected_revision",
     "CLI_UPLIFT_EVAL_GITHUB_ORG": "github.org",
@@ -670,6 +721,7 @@ OVERLAY = {
     "CLI_UPLIFT_EVAL_GITHUB_APP": "github.app_fixture",
     "CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT": "second_destination_account",
     "CLI_UPLIFT_EVAL_STATE_BUCKET": "state_bucket",
+    "CLI_UPLIFT_EVAL_PRODUCT_RUN_ID": "product_run_id",
     "CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID": "state_kms_key_id",
     "CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN": "destination_role_arn",
     "CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN": "provisioner_role_arn",
@@ -748,6 +800,7 @@ def from_environment(env, *, base=None):
             # Refused here as well as in validate(), so a credential in this file
             # fails before it is merged into the run config.
             no_secrets(bindings, "bindings")
+            document.pop("destination_account", None)
             document.update(bindings)
     raw_bindings = str(env.get("CLI_UPLIFT_EVAL_BINDINGS_JSON") or "").strip()
     if base is None and raw_bindings:
@@ -762,6 +815,7 @@ def from_environment(env, *, base=None):
             "CLI_UPLIFT_EVAL_BINDINGS_JSON must be a JSON object",
         )
         no_secrets(private_bindings, "bindings")
+        document.pop("destination_account", None)
         document.update(private_bindings)
     for name, key in OVERLAY.items():
         value = str(env.get(name) or "").strip()

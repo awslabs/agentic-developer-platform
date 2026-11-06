@@ -1,6 +1,14 @@
 # Shared platform workflow
 
 ## Adaptive Workflow Principle
+On a resumed story, keep its existing branch and task board. Hosted startup
+incorporates the current base without discarding story commits. Inspect the
+workspace status before work; resolve any pending base-merge conflicts and run
+affected checks before publication. Never reset story work to main or force-push
+over another writer. Exact-revision reviews keep their assigned head; integrate
+the base through an authorized repair. Report-only personas read the current
+default branch and do not create a story branch.
+
 For code delivery: implement and validate on the task branch, open a ready PR,
 then review. Do not create draft PRs or request reviews of incomplete slices.
 Use branch/commit links for progress. Existing drafts enter review only when
@@ -24,4 +32,3 @@ review, merge or live verification; generic phase/persona defaults below do not
 replace that contract. Separate pre-review checks from post-merge checks so a
 main-only evaluation does not prevent its enabling PR from being reviewed.
 This adds no approval gate and does not bypass existing deployment authority.
-

@@ -120,8 +120,14 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
         cells = [cell.strip().replace("**", "") for cell in line.strip("|").split("|")]
         if cells[0] == "Inference option":
             finish_table()
-            write_heading = "Input — cache write" if model_id in {"openai.gpt-6-sol", "openai.gpt-6-luna"} else "Input — 30m cache write"
-            if cells != ["Inference option", "Input", write_heading, "Input — cache read", "Output"]:
+            # AWS spells the 30-minute heading both "30m" and "30-minute"; the
+            # retention window is the same, so either is accepted.
+            if model_id in {"openai.gpt-6-sol", "openai.gpt-6-luna"}:
+                write_headings = {"Input — cache write"}
+            else:
+                write_headings = {"Input — 30m cache write", "Input — 30-minute cache write"}
+            fixed = [cells[i] for i in (0, 1, 3, 4)] if len(cells) == 5 else None
+            if fixed != ["Inference option", "Input", "Input — cache read", "Output"] or cells[2] not in write_headings:
                 raise SourceValidationError("unrecognized pricing table columns")
             header, separator, table_rows = True, False, 0
             tables += 1
@@ -136,6 +142,7 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
         geography_map = {
             "In-Region": ("in_region",),
             "Mantle in-Region": ("in_region",),
+            "In-Region (bedrock-mantle)": ("in_region",),
             "US Geo CRIS": ("geo_cris",),
             "Geo CRIS": ("geo_cris",),
             "Global CRIS": ("global_cris",),
@@ -152,7 +159,10 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
         if geographies is None:
             raise SourceValidationError(f"unrecognized inference option {cells[0]!r}")
         if scope == "govcloud":
-            if geographies != ("in_region",):
+            # GovCloud cards publish Mantle and Geo CRIS separately. The
+            # reviewed manifest has one GovCloud price per endpoint/context;
+            # _insert rejects the source if these rows disagree on any rate.
+            if geographies not in (("in_region",), ("geo_cris",)):
                 raise SourceValidationError("unrecognized GovCloud inference mode")
             geographies = ("govcloud",)
         input_rate, write, read, output = map(_money, cells[1:])

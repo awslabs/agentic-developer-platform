@@ -222,9 +222,12 @@ def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
         "bg-cognito-auth.sh",
         "bg-gateway-proxy.py",
         "adp_common.py",
+        "adp_native_test.py",
         # Issue #5413: `adp` resolves the selected deployment through this at
         # entry, so without it every command in an installed prefix fails.
         "adp_deployments.py",
+        "adp-mcp.py",
+        "adp_mcp_config.py",
         "adp-admin.py",
         "adp-bedrock.py",
         "adp-aws.py",
@@ -328,6 +331,8 @@ class MockGatewayHandler(BaseHTTPRequestHandler):
 
         self.send_response(response_config.get("status", 200))
         self.send_header("Content-Type", "application/json")
+        for name, value in response_config.get("headers", {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(json.dumps(response_config.get("body", {})).encode("utf-8"))
 
@@ -365,9 +370,9 @@ class MockGatewayServer:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def set_response(self, path: str, status: int, body: dict[str, Any]) -> None:
+    def set_response(self, path: str, status: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> None:
         """Configure mock response for a path."""
-        MockGatewayHandler.mock_responses[path] = {"status": status, "body": body}
+        MockGatewayHandler.mock_responses[path] = {"status": status, "body": body, "headers": headers or {}}
 
     @property
     def requests(self) -> list[dict[str, Any]]:

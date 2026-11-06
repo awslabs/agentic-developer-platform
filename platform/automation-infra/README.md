@@ -371,6 +371,14 @@ networking disabled, and only that project's declared artifact prefix is
 writable. The publishing dispatcher updates only the exact worker build-tag
 parameter; no Docker daemon is mounted into the protected ARC runner.
 
+L5 Transform image publication alone uses an isolated `ubuntu-24.04` hosted
+runner because ARC has no Docker daemon. The job still requires protected main,
+the selected deployment environment, OIDC authority and reviewed source checks.
+All other L5 publication, installation, diagnostics and qualification jobs stay
+on ARC. A hosted assignment failure reports the exact run/attempt and requires
+repairing the reported runner availability; it never attaches Docker to ARC or
+falls back to forwarding cloud credentials to a remote builder.
+
 The GitLab required PR check executes the real handler/helper unit contracts
 without live credentials. Deployed webhook-contract and fleet checks run on
 protected main with the checks identity. Configure their exact
@@ -430,6 +438,19 @@ Cognito pool, reads five dashboard parameters and filters two fixture log groups
 The lightweight smoke-check role retains its existing permissions. Neither
 browser checks nor build dispatch receives deployment or IAM mutation authority.
 
+The consolidated Product regression runs from the existing protected gateway
+deployment environment. Set `enable_product_regression_checks=true` alongside
+`enable_browser_checks=true` and put the same browser role ARN in that environment's
+`ADP_CHECKS_ROLE_ARN`. This explicitly adds only the repository's
+`adp-gateway-deploy-<environment>` subject to browser-role trust and permits a
+three-hour checks session for the two regression passes. Existing browser jobs
+continue requesting one hour. The Product workflows install Chromium, verify the
+named release's signed observations and maintained fixture pairing, use the
+checks role for live scenarios, and return to the deployment role to publish
+signed evidence. They share the existing live-evaluation concurrency group.
+This setup supplies no missing scenario adapter and does not create acceptance
+evidence until the live assertions and cleanup actually pass.
+
 Runtime image publication waits for the model-readiness job in
 `adp-model-checks-dev`. Its `ADP_CHECKS_ROLE_ARN` names
 `adp-dev-model-trusted-checks`; the role can inspect availability and invoke only
@@ -488,6 +509,60 @@ parameter's existing encryption key. Kubernetes RBAC names the worker templates 
 it grants neither cluster administration nor IAM mutation. Bootstrap this once
 per deployment target before enabling automatic releases.
 
+Keep this RBAC manifest current when upgrading the rollout script. Writer
+discovery requires namespace-wide `get`/`list` for Deployments, ReplicaSets and
+Pods in `adp-gateway`, so an unregistered process cannot escape inspection.
+Deployment `patch` remains restricted to `bedrockgateway` and the optional
+`chat-sandbox-gateway`. Existing Pod exec permissions are unchanged; no Secret,
+ServiceAccount, Role or cluster-wide permission is added.
+
+For each additional writer in the protected `ADP_GATEWAY_WRITER_INVENTORY`, an
+operator must install an explicit supplemental grant in the same namespace.
+Review the inventory's Deployment name and live UID first; replace the example
+name below with only the enrolled Deployment names. Kubernetes RBAC binds names;
+the rollout separately enforces the inventory's UID, container and entrypoint
+before changing trust. Do not grant wildcard Deployment mutation or grant the
+release identity permission to install its own RBAC. Save the target-specific
+manifest privately, review its server dry run and diff, and apply it using the
+operator's existing authorized identity:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: adp-worker-release-enrolled-writers
+  namespace: adp-gateway
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [operator-gateway]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: adp-worker-release-enrolled-writers
+  namespace: adp-gateway
+subjects:
+  - kind: Group
+    name: adp:worker-release
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: adp-worker-release-enrolled-writers
+```
+
+Before retrying, verify the release identity can read the namespace inventory,
+patch each exact enrolled writer and access only the existing authority
+ConfigMap. Verify unrelated Deployment patches and Secret reads remain denied.
+For exec, use `kubectl -n adp-gateway auth can-i create pods --subresource=exec`
+and the corresponding `get` check. `pods/exec` in this CLI is a Pod name, not
+the exec subresource; do not add Pod creation rights to satisfy that check.
+A denied check reports the missing verb, resource and namespace. Authentication
+or API connection failures are reported separately and must be resolved before
+changing RBAC. Save the prior Roles and bindings privately so an operator can
+restore their rules if needed; rolling back RBAC does not roll back image trust.
+
 Successful rollout records the source SHA and digest in
 `/adp/<environment>/webhook-ingress/deployed-worker-image`. Webhook CI reads that
 pin and the current trust list as its final Terraform overlay, preserving them
@@ -512,3 +587,62 @@ Existing inputs, default-off flags, protected OIDC subjects and permissions are
 unchanged. Retain the four `moved` blocks in `skypilot-deployment.tf` so existing
 states upgrade without replacing IAM roles or EKS access. No backend transfer or
 cloud mutation is performed by the source move.
+
+## Webhook code delivery
+
+Code-only webhook pushes use the dedicated `Webhook Code Deploy` reusable
+workflow through `Webhook Ingress Deploy`. Its main-only environment is
+`adp-webhook-code-<environment>`; set `ADP_WEBHOOK_CODE_ROLE_ARN` to the
+`webhook_code_role_arn` output after live admission passes. Full infrastructure,
+mixed releases and the old workflow's manual dispatch remain subject to the
+webhook infrastructure hold. To deliver code after separate operator preparation,
+dispatch **Webhook Code Deploy** from main. Each source revision permits one
+attempt; investigate its S3 receipt before choosing a new reviewed revision.
+
+Prepare the execution ceiling with the existing operator identity. Enable
+`enable_webhook_execution_boundary`, review a saved plan targeting only
+`aws_iam_policy.webhook_execution_boundary`, then apply that exact plan. In the
+webhook root, persist `webhook_execution_boundary_arn` in the environment overlay
+and review a saved plan targeting `aws_iam_role.lambda_execution`; it must change
+only the boundary attachment. The supplied ceiling preserves the existing
+non-VPC webhook data APIs and restricts secret creation/tagging to tenant App
+secrets. A VPC-attached webhook requires a separately reviewed ENI ceiling.
+
+After attachment, populate the exact function/role/archive manifest and the
+matching `webhook_code_lambda_targets`, `webhook_code_role_boundaries` and
+`webhook_code_archive_prefix` operator inputs. Review a saved plan targeting
+`aws_iam_role.webhook_code`, `aws_iam_role_policy.webhook_code_lambda` and
+`aws_iam_role_policy.webhook_code_ceiling`. Live admission verifies the actual
+function roles and attached ceiling before creating trust. Refuse unrelated
+changes; never use these recovery inputs for an unrestricted apply. Keep remote
+state locking enabled throughout, and retain the inputs for later deployments.
+
+The code identity cannot change IAM, Lambda configuration, aliases, other
+functions or Terraform state. Delivery uses immutable S3 archive versions,
+optimistic Lambda revisions and verified code hashes. The source-bound receipt
+is retained in S3, with CI evidence uploaded through the separate evidence role.
+
+
+### Chat release prerequisite reads and GitLab fixture binding
+
+Install `chat-release-read-rbac.yaml` and `chat-release-publish-rbac.yaml` with
+the existing platform operator when upgrading the Chat release identity. Its EKS
+access entry joins `adp:chat-release-read`, which can get only the named gateway
+Service and the reviewed admission/RBAC prerequisite objects, and
+`adp:chat-release-publish`, which can get/patch only `configmap/bedrockgateway-config`
+and get/patch/watch `deployment/bedrockgateway` in `adp-gateway` so
+`deploy-chat-scaledjob.sh` converges the gateway on the chat digests it just pinned
+(#8086; the IAM side is `ssm:PutParameter` on the three `chat-*-digests`
+parameters only). CI sets
+`ADP_CHAT_VERIFY_EXISTING_CONTROLS=true`: it compares the existing platform
+controls with the reviewed manifests and fails on drift, while normal platform
+setup retains ownership of applying them. Release writes remain confined to the
+existing agent namespace. Missing or changed controls require operator
+reconciliation; the release identity cannot rewrite cluster security.
+
+Bind `gitlab_checks_secret_arns`, `gitlab_checks_queue_arn`, and, for encrypted
+fixtures, `gitlab_checks_kms_key_arns` in the retained operator inputs. Apply the
+reviewed `aws_iam_role_policy.gitlab_checks` policy as part of preparing the
+existing checks role. Decryption is allowed only through Secrets Manager and
+only with the inventoried secret encryption contexts. Configuration resolution
+now stops on AWS read failures rather than turning them into skipped live tests.

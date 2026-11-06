@@ -89,7 +89,9 @@ def force_args(installer, doc, current):
     actual = {
         c["name"]: c["image"] for c in current["spec"]["template"]["spec"]["containers"]
     }
-    changed = {name for name in desired if desired[name] != actual.get(name)}
+    changed = {
+        name for name in desired.keys() & actual.keys() if desired[name] != actual[name]
+    }
     if not changed:
         # A prior fenced apply may have committed before its response was lost.
         # Ordinary apply still checks any remaining non-image ownership conflicts.

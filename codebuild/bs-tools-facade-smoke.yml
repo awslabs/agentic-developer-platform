@@ -1,0 +1,14 @@
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        [[ "${ADP_SOURCE_SHA:-}" =~ ^[a-f0-9]{40}$ ]]
+        test -f modules/tools/facade/Dockerfile
+        docker build --pull --file modules/tools/facade/Dockerfile --tag tools-facade:pr-smoke .
+        docker image inspect tools-facade:pr-smoke --format 'Façade smoke build: {{.Id}}'

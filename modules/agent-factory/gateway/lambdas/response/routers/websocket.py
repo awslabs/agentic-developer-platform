@@ -241,6 +241,8 @@ class WebSocketRouter:
             extra.update({field: metadata[field] for field in (
                 "terminal_delivery", "delivery_id", "session_id", "status", "retryable", "accounting_status",
             )})
+            if metadata.get("error_class") in ("executor_not_wired", "executor_down") and metadata.get("status") == "failed":
+                extra["error_class"] = metadata["error_class"]
 
         # Build the full frame to measure its size.
         frame: dict[str, Any] = {

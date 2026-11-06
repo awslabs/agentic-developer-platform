@@ -157,6 +157,8 @@ class _Ledger:
         self._budgets = budgets
         self._settled = settled or {}
         self.session = MagicMock()
+        self.session.get = AsyncMock(return_value=None)
+        self.session.commit = AsyncMock()
         self.session.execute = AsyncMock(side_effect=self._execute)
 
     async def _execute(self, statement):

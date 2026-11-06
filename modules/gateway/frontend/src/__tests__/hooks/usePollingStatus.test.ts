@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import { usePollingStatus } from '@/hooks/usePollingStatus';
 
 // Mock the knowledge service
@@ -218,8 +218,8 @@ describe('usePollingStatus', () => {
     expect(onStatusChange).toHaveBeenCalledTimes(2);
   });
 
-  it('does not start polling when enabled=false', async () => {
-    mockGetAssetStatus.mockResolvedValue(indexingStatus);
+  it.each([indexingStatus, completedStatus, failedStatus])('fetches $runStatus results once when polling is disabled', async (status) => {
+    mockGetAssetStatus.mockResolvedValue(status);
 
     const { result } = renderHook(() =>
       usePollingStatus({ assetId: 'asset-001', enabled: false }),
@@ -229,7 +229,31 @@ describe('usePollingStatus', () => {
 
     expect(result.current.isLoading).toBe(false);
     expect(result.current.isPolling).toBe(false);
-    expect(mockGetAssetStatus).not.toHaveBeenCalled();
+    expect(result.current.status).toEqual(status);
+    expect(mockGetAssetStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => { vi.advanceTimersByTime(30_000); });
+    expect(mockGetAssetStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a pending response from a previously selected asset', async () => {
+    let resolvePrevious!: (status: typeof indexingStatus) => void;
+    mockGetAssetStatus.mockImplementationOnce(() => new Promise((resolve) => { resolvePrevious = resolve; }));
+    const onStatusChange = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ assetId }) => usePollingStatus({ assetId, enabled: false, onStatusChange }),
+      { initialProps: { assetId: 'asset-001' } },
+    );
+
+    const nextStatus = { ...completedStatus, assetId: 'asset-002' };
+    mockGetAssetStatus.mockResolvedValue(nextStatus);
+    rerender({ assetId: 'asset-002' });
+    await act(async () => {});
+    await act(async () => { resolvePrevious(indexingStatus); });
+
+    expect(result.current.status).toEqual(nextStatus);
+    expect(onStatusChange).toHaveBeenCalledTimes(1);
+    expect(onStatusChange).toHaveBeenCalledWith(null, 'indexed');
   });
 
   it('handles fetch errors gracefully on initial load', async () => {

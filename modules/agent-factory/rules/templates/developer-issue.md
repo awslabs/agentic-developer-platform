@@ -20,6 +20,20 @@ Do not add agent mentions/trigger labels when filing. -->
 - **In scope:** <Capabilities delivered here.>
 - **Out of scope:** <Adjacent capabilities explicitly deferred, with links.>
 
+### Lineage (stories)
+
+| Field | Value |
+|---|---|
+| Kind | story |
+| Project reference | <Registered project ID; unresolved while drafting> |
+| Parent epic | <Full issue URL, or none for a standalone story> |
+| Module IDs | <Catalog IDs; unmapped while discovery is pending> |
+| Feature IDs | <Catalog IDs; unmapped while discovery is pending> |
+
+<Provider issue identity is assigned on filing. Establish the native parent link.
+These fields are source references, not permission grants. For non-story tasks,
+keep the applicable identity/parent context without claiming a story contract.>
+
 ## Impact analysis
 
 - **Users and surfaces affected:** <Callers, UI/CLI, tenants, billing or ops.>
@@ -78,9 +92,22 @@ with the developer. Do not present an unknown as a verified prerequisite.>
 
 | ID | Setup and action | Expected result / failure condition | Required evidence | Phase and owner |
 |---|---|---|---|---|
-| AC-01 | <Happy path; command or precise scenario> | <Observable assertion> | <Test/run/artifact> | <Before review / after deploy; owner> |
-| AC-02 | <Relevant failure or boundary case> | <Observable rejection/recovery> | <Test/run/artifact> | <Phase; owner> |
-| AC-03 | <Existing flow or rerun, when relevant> | <Compatibility/idempotence assertion> | <Test/run/artifact> | <Phase; owner> |
+| AC-01 | <Given: actor, fixture and state; When: exact action> | <Observable assertion> | <Test/run/artifact> | <Before review / after deploy; owner> |
+| AC-02 | <Given: failure/boundary state; When: exact action> | <Observable rejection/recovery> | <Test/run/artifact> | <Phase; owner> |
+| AC-03 | <Given: existing/rerun state; When: exact action> | <Compatibility/idempotence assertion> | <Test/run/artifact> | <Phase; owner> |
+
+### Scenario mapping
+
+| Scenario ID | Acceptance IDs | Case contract | Verification | Test reference | State |
+|---|---|---|---|---|---|
+| SCN-01 | AC-01 | <Given: ...; When: ...; Then: ...; Controls: fixture/clock/isolation/cleanup> | automatic-e2e | <Path::selector; mark new selectors planned> | planned |
+| SCN-02 | AC-02 | <Given: ...; When: ...; Then: ...; Controls: ...> | automatic-integration | <Path::selector> | planned |
+| SCN-03 | AC-03 | <Given: ...; When: ...; Then: ...; Controls: ...> | automatic-integration | <Path::selector> | planned |
+
+<Keep existing AC/scenario IDs on edits; retire without reuse. Catalog IDs take
+precedence over new issue-local SCN IDs. Expand relevant negative/boundary cases.
+Use manual + a versioned procedure for manual proof. Repeat a scenario row only
+for a distinct test mapping. Detailed procedures may use path@revision#anchor.>
 
 **Execution:** <Commands and check names, existing or proposed; required live
 fixtures and evidence source if applicable. Trace critical ACs through the real

@@ -145,7 +145,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
         check.runRecord.closeReport(result.summary);
         explanation(summary);
         metadata({ session_completed: true, usage: result.usage, num_turns: sequence, pr_url: result.prUrl });
-        live.transition(1, 'complete', reviewer ? 'Review completed' : 'Pull request published');
+        live.transition(1, 'complete', reviewer ? 'Review completed' : result.prUrl ? 'Pull request published' : 'Branch checkpoint published');
         await live.finalizeSuccess({ details: publicDeveloperText(summary), prUrl: result.prUrl,
           artifacts: Number(process.env.CHECK_RUN_ID) > 0
             ? [`[Full activity stream](https://github.com/${context.repository}/runs/${process.env.CHECK_RUN_ID})`] : [],

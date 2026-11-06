@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: crew-home-REPLACE_WITH_TRUSTED_OWNER_KEY
+  namespace: adp-gateway-agents
+  labels:
+    adp.io/owner-key: REPLACE_WITH_TRUSTED_OWNER_KEY
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: chat-crew-ebs-retain
+  resources:
+    requests:
+      storage: 20Gi

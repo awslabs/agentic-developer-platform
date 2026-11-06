@@ -23,10 +23,10 @@ import argparse
 import importlib
 import json
 import os
-from datetime import UTC, datetime
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from tests.e2e.orchestration.config import (
@@ -40,6 +40,7 @@ from tests.e2e.orchestration.config import (
 from tests.e2e.orchestration.fixtures import FixtureProvider, cleanup, resume
 from tests.e2e.orchestration.inventory import (
     CREATED,
+    PLANNED,
     RECONCILE_FAILED,
     Inventory,
     InventoryError,
@@ -99,7 +100,21 @@ def load_scenario_adapters(config: QualificationConfig) -> dict[str, Any]:
     if not isinstance(registry, dict):
         return {}
     if not config.scenarios:
-        return dict(registry)
+        if config.product_epic is not None:
+            adapter = registry.get("product-epic-delivery")
+            if adapter is None:
+                raise ConfigError(["Product epic qualification adapter is unavailable"])
+            return {"product-epic-delivery": adapter}
+        return {
+            name: adapter
+            for name, adapter in registry.items()
+            if name
+            not in {
+                "product-epic-delivery",
+                "product-epic-recovery",
+                "legacy-attribution",
+            }
+        }
     # A config naming a scenario the registry does not provide is an error, not
     # a silently smaller run.
     missing = [name for name in config.scenarios if name not in registry]
@@ -160,9 +175,25 @@ def verified_target(config: QualificationConfig) -> TargetVerification:
     really in?). Every mutating mode calls this first.
     """
     identity, identity_error = _caller_identity()
-    return verify_target(
-        config, identity, identity_error, load_connection_resolver(config)
-    )
+    resolver = load_connection_resolver(config)
+    target = verify_target(config, identity, identity_error, resolver)
+    return _verify_product_prerequisites(config, target, resolver)
+
+
+def _verify_product_prerequisites(config, target, resolver):
+    if config.product_epic is None or not target.verified:
+        return target
+    try:
+        if resolver is None or not callable(
+            getattr(resolver, "verify_product_epic", None)
+        ):
+            raise ValueError("Product and repository preflight verifier unavailable")
+        resolver.verify_product_epic()
+    except (ValueError, OSError, RuntimeError) as exc:
+        return replace(
+            target, verified=False, reason=f"Product epic prerequisite: {exc}"
+        )
+    return target
 
 
 def _refusal(
@@ -209,13 +240,24 @@ def preflight(config: QualificationConfig) -> Outcome:
     }
 
     identity, identity_error = _caller_identity()
-    target = verify_target(
-        config, identity, identity_error, load_connection_resolver(config)
+    resolver = load_connection_resolver(config)
+    target = _verify_product_prerequisites(
+        config, verify_target(config, identity, identity_error, resolver), resolver
     )
     report["caller_identity"] = identity
     report["target"] = target.to_json()
     if identity_error:
         report["authorization_error"] = identity_error
+
+    if config.product_epic is not None:
+        report["product_epic"] = {
+            "product_id": config.product_epic.product_id,
+            "planning_repository": config.product_epic.epic.repository,
+            "planning_issue_number": config.product_epic.epic_issue_number,
+            "story_repositories": [
+                target.repository for target in config.product_epic.stories
+            ],
+        }
 
     for name, adapter in sorted(adapters.items()):
         planner = getattr(adapter, "planned_fixtures", None)
@@ -247,6 +289,12 @@ def preflight(config: QualificationConfig) -> Outcome:
         )
         return Outcome(STATUS_INCOMPLETE, EXIT_NO_SCENARIOS, report)
 
+    if config.scenarios == ("product-epic-recovery",):
+        report["allowed_modes"] = ["resume", "cleanup"]
+        report["detail"] = (
+            "primary target verified; recovery selects resume/cleanup only, no new fixtures"
+        )
+        return Outcome(STATUS_READY, EXIT_OK, report)
     report["detail"] = "config and target verified; no mutation performed"
     return Outcome(STATUS_READY, EXIT_OK, report)
 
@@ -270,6 +318,12 @@ def _caller_identity() -> tuple[dict[str, str] | None, str | None]:
 
 def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
     """Execute the qualification. Refuses to report PASS if nothing ran."""
+    if config.scenarios == ("product-epic-recovery",):
+        raise ConfigError(
+            [
+                "product-epic-recovery is resume/cleanup-only; it cannot start new fixtures"
+            ]
+        )
     if evaluation_context is not None:
         from tests.e2e.orchestration.evaluation_receipt import validate_context
 
@@ -326,6 +380,7 @@ def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
             )
             break
         attempts += 1
+        inventory.start_attempt(name)
         try:
             if evaluation_context is not None and callable(
                 getattr(adapter, "execute_evaluation", None)
@@ -371,8 +426,14 @@ def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
         except Exception as exc:  # any adapter failure is data, not a crash
             # One scenario failing must not skip the others or abandon the
             # inventory: the run reports FAILED and the fixtures stay cleanable.
+            inventory.finish_attempt("failed")
             failures.append({"scenario": name, "error": str(exc)})
             continue
+        inventory.finish_attempt(
+            "incomplete"
+            if any(row["scenario"] == name for row in incomplete)
+            else "complete"
+        )
         executed.append({"scenario": name})
 
     report: dict[str, Any] = {
@@ -382,6 +443,7 @@ def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
         "target": target.to_json(),
         "inventory": str(inventory.path),
         "attempts": attempts,
+        "attempt_history": inventory.attempts,
         "scenarios_executed": len(executed),
         "scenarios_failed": len(failures),
         "failures": failures,
@@ -405,6 +467,9 @@ def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
                 )
             )
         except (ValueError, KeyError, OSError, TypeError):
+            if inventory.attempts and inventory.attempts[-1]["status"] == "complete":
+                inventory.finish_attempt("incomplete")
+                report["attempt_history"] = inventory.attempts
             report["detail"] = (
                 "evaluation evidence was incomplete or unverifiable; fixtures remain in the inventory"
             )
@@ -438,7 +503,26 @@ def resume_qualification(config: QualificationConfig, qualification_id: str) -> 
     inventory = Inventory.load(
         config.artifact_directory, qualification_id, config.environment
     )
-    unresolved = resume(inventory, load_providers(config))
+    providers = load_providers(config)
+    resume(inventory, providers)
+    if config.product_epic is not None:
+        from tests.e2e.orchestration.scenarios.providers import ensure_native_parent
+
+        issue_provider = providers.get("qualification-issue")
+        for record in list(inventory.in_state(CREATED)):
+            if record.kind != "qualification-issue" or record.native_parent_verified:
+                continue
+            if issue_provider is None:
+                inventory.mark_reconcile_failed(
+                    record.fixture_id,
+                    "issue provider unavailable for native parent reconciliation",
+                )
+                continue
+            try:
+                ensure_native_parent(inventory, config, issue_provider, record)
+            except Exception:
+                continue
+    unresolved = inventory.unresolved
     stuck = inventory.in_state(RECONCILE_FAILED)
 
     report = {
@@ -448,11 +532,28 @@ def resume_qualification(config: QualificationConfig, qualification_id: str) -> 
         "target": target.to_json(),
         "inventory": str(inventory.path),
         "reconciled": [r.fixture_id for r in inventory.in_state(CREATED)],
+        "attempt_history": inventory.attempts,
         "unresolved": [r.fixture_id for r in unresolved],
         "reconcile_failed": [
             {"fixture_id": r.fixture_id, "detail": r.detail} for r in stuck
         ],
+        "native_parent_verified": [
+            r.fixture_id
+            for r in inventory.in_state(CREATED)
+            if r.native_parent_verified
+        ],
     }
+    if (
+        config.product_epic is not None
+        and any(
+            r.kind == "qualification-issue" and r.state == PLANNED for r in unresolved
+        )
+        and not stuck
+    ):
+        report["detail"] = (
+            "story issue or native parent not verified; fixture intent retained"
+        )
+        return Outcome(STATUS_INCOMPLETE, EXIT_INCOMPLETE, report)
     if stuck:
         report["detail"] = (
             "some fixtures could not be reconciled and may be leaked; they are recorded as reconcile_failed and need a human"
@@ -477,7 +578,17 @@ def cleanup_qualification(
     inventory = Inventory.load(
         config.artifact_directory, qualification_id, config.environment
     )
-    outcome = cleanup(inventory, config, load_providers(config))
+    providers = load_providers(config)
+    awaiting_reconciliation = {
+        record.fixture_id for record in inventory.in_state(PLANNED, RECONCILE_FAILED)
+    }
+    resume(inventory, providers)
+    reconciled = [
+        record.fixture_id
+        for record in inventory.in_state(CREATED)
+        if record.fixture_id in awaiting_reconciliation
+    ]
+    outcome = cleanup(inventory, config, providers)
 
     report = {
         "mode": "cleanup",
@@ -487,6 +598,12 @@ def cleanup_qualification(
         "inventory": str(inventory.path),
         "deleted": list(outcome.deleted),
         "retained_audit": list(outcome.retained),
+        "reconciled": reconciled,
+        "attempt_history": inventory.attempts,
+        "unresolved_inventory": [
+            {"fixture_id": record.fixture_id, "state": record.state}
+            for record in inventory.unresolved
+        ],
         "refused": [{"fixture_id": f, "reason": r} for f, r in outcome.refused],
         "failed": [{"fixture_id": f, "error": e} for f, e in outcome.failed],
         # Evidence is retained after cleanup so a leak stays investigable.

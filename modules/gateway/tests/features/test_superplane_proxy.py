@@ -59,7 +59,12 @@ def test_all_public_routes_come_from_maintained_inventory():
     value = next(n.value for n in tree.body if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", None) == "DOMAIN_ROUTES")
     expected = {ast.literal_eval(k) for k in value.keys} - {("POST", "/auth/token")}
     actual = {tuple(x) for x in json.loads(Path(proxy.__file__).with_name("superplane_routes.json").read_text())}
-    assert actual == expected
+    # This existing Gateway-owned route resolves current installation authority;
+    # its validation work is intentionally not forwarded to the domain API.
+    gateway_owned = {("POST", "/provider-authorities/{credential_id}/validation")}
+    mounted = {(method, route.path.removeprefix("/superplane/v1")) for route in proxy.router.routes for method in route.methods or ()}
+    assert gateway_owned <= mounted
+    assert actual == expected | gateway_owned
 
 
 @pytest.mark.parametrize(
@@ -176,6 +181,104 @@ def test_missing_bearer_and_feature_off(client, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "fault,expected",
+    [
+        (None, 200),
+        ("different-tenant", 409),
+        ("forged", 401),
+        ("expired", 401),
+        ("different-subject", 401),
+        ("different-pool", 401),
+        ("revoked", 403),
+        ("invalid-cognito", 401),
+        ("malformed", 401),
+    ],
+)
+def test_tenant_envelope_never_loses_its_verified_scope(client, monkeypatch, fault, expected):
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    import jwt
+    from fastapi import HTTPException
+
+    from src.auth import middleware, tenant_context
+    from src.shared.schemas.auth import TokenContext
+
+    now = datetime.now(UTC)
+    signing_key = "synthetic-tenant-context-test-key-32-bytes"
+    context = TokenContext(
+        user_id="verified-human",
+        org_id="home-tenant",
+        team_id="",
+        department_id="",
+        account_type="human",
+        auth_source="jwt",
+        cognito_username="human-login",
+        expires_at=now + timedelta(minutes=10),
+    )
+    verified = []
+
+    async def cognito(authorization):
+        verified.append(authorization)
+        assert authorization == "Bearer original-cognito-token"
+        if fault == "invalid-cognito":
+            raise HTTPException(401, "invalid Cognito token")
+        return context
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    memberships = []
+
+    async def membership(db, caller, tenant, expected_membership):
+        memberships.append(tenant)
+        assert caller == context and expected_membership == "current-membership"
+        if fault == "revoked":
+            raise HTTPException(403, "membership revoked")
+        return SimpleNamespace(id="canonical-human"), "current-membership", None
+
+    monkeypatch.setattr(middleware, "validate_cognito_jwt", cognito)
+    monkeypatch.setattr(tenant_context, "get_settings", lambda: SimpleNamespace(token_secret_key=signing_key, cognito_user_pool_id="pool"))
+    monkeypatch.setattr(tenant_context, "get_session_factory", lambda: session)
+    monkeypatch.setattr(tenant_context, "membership", membership)
+    claims = {
+        "iss": tenant_context.ISSUER,
+        "aud": tenant_context.AUDIENCE,
+        "pool": "other-pool" if fault == "different-pool" else "pool",
+        "sub": "other-human" if fault == "different-subject" else "verified-human",
+        "tenant": "other-tenant" if fault == "different-tenant" else "home-tenant",
+        "user_id": "canonical-human",
+        "membership_id": "current-membership",
+        "iat": now - timedelta(minutes=1),
+        "exp": now + timedelta(minutes=-1 if fault == "expired" else 5),
+    }
+    lease = jwt.encode(claims, "untrusted-signing-key-32-bytes-long" if fault == "forged" else signing_key, algorithm="HS256")
+    envelope = f"adpctx1~{lease}~original-cognito-token"
+    if fault == "malformed":
+        envelope += "~extra"
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(200, json={"workspaces": []})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    response = client.get("/superplane/v1/workspaces", headers={"Authorization": "Bearer " + envelope, "X-Org-Id": "forged"})
+    assert response.status_code == expected
+    if fault:
+        assert calls == []
+    else:
+        assert len(calls) == 1 and verified == ["Bearer original-cognito-token"]
+        assert memberships == ["home-tenant"]
+        assert calls[0].headers["authorization"] == "Bearer original-cognito-token"
+        assert "x-org-id" not in calls[0].headers
+        assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
     "method,path",
     [
         ("GET", "api/v1/research/findings"),
@@ -279,6 +382,53 @@ def test_governed_onboarding_routes_forward_exact_body_and_preserve_denial(clien
     assert calls[0].url.path == "/" + path
     assert calls[0].method == method
     assert json.loads(calls[0].content) == body
+
+
+@pytest.mark.parametrize(
+    "action,body",
+    [
+        ("observe", {"expected_version": 6, "expected_fence": 11}),
+        ("review", {"expected_version": 3, "idempotency_key": "11111111-1111-1111-1111-111111111111", "max_runtime_seconds": 10800}),
+        ("decision", {"reauthorization_id": "22222222-2222-2222-2222-222222222222", "result": "allowed-once"}),
+        ("resume", {"reauthorization_id": "22222222-2222-2222-2222-222222222222"}),
+    ],
+)
+@pytest.mark.parametrize("upstream_status", [200, 403, 409])
+def test_settled_bootstrap_recovery_preserves_bearer_body_and_domain_result(client, monkeypatch, action, body, upstream_status):
+    calls = []
+    recovery = "bootstrap-recovery" if action == "observe" else "settled-bootstrap-recovery"
+    path = f"/workspaces/33333333-3333-3333-3333-333333333333/{recovery}/{action}"
+    public_path = "/superplane/v1" + path
+    content = json.dumps(body, indent=2).encode()
+    payload = {"result": "domain-result"}
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(upstream_status, json=payload)
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    assert client.post(public_path, json=body).status_code == 401
+    assert client.get(public_path, headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert calls == []
+    response = client.post(
+        public_path,
+        content=content,
+        headers={"Authorization": "Bearer user-token", "Content-Type": "application/json", "X-Org-Id": "spoofed", "X-Workspace-Id": "spoofed"},
+    )
+    assert response.status_code == upstream_status
+    assert response.json() == payload
+    assert response.headers["cache-control"] == "no-store"
+    assert len(calls) == 1
+    assert calls[0].method == "POST"
+    assert calls[0].url.path == path
+    assert calls[0].headers["authorization"] == "Bearer user-token"
+    assert calls[0].headers["content-type"] == "application/json"
+    assert "x-org-id" not in calls[0].headers and "x-workspace-id" not in calls[0].headers
+    assert calls[0].content == content
+    monkeypatch.setenv("FEATURE_SUPERPLANE_ENABLED", "false")
+    assert client.post(public_path, json=body, headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert len(calls) == 1
 
 
 def test_default_has_no_registration_and_no_network(monkeypatch):

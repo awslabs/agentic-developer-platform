@@ -11,6 +11,11 @@ from . import config
 
 def build_context(env, inputs, account):
     """Bind the real runner identity to the exact bounded, accepted inputs."""
+    # Reusable jobs inherit their caller's workflow identity and correlation.
+    # Only a direct CLI dispatch may issue this knowledge qualification receipt.
+    expected_workflow = f"{env['GITHUB_REPOSITORY']}/.github/workflows/eval-cli-uplift.yml@refs/heads/main"
+    if env.get("GITHUB_WORKFLOW_REF") != expected_workflow:
+        raise ValueError("Qualification requires the direct CLI workflow")
     # GitHub omits optional empty strings from the workflow inputs context.
     # Restore only this declared empty default before validating the exact scope.
     inputs = {"evaluation_id": "", **inputs}

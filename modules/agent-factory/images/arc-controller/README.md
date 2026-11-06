@@ -1,7 +1,7 @@
 # Maintained ARC controller security image
 
 Upstream controller0.14.2 still ships vulnerable Go1.26.3, x/crypto0.49 and
-x/net0.52. This recipe rebuilds its five original binaries with Go1.26.8 and
+x/net0.52. This recipe rebuilds its five original binaries with Go1.26.9 and
 exact compatible module fixes (x/crypto0.56, x/net0.57, x/text0.41 and required
 transitives). The source archive, Go toolchain and upstream runtime image are
 immutable. The original distroless config, non-root user, entrypoint, trust

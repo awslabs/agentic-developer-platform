@@ -1,10 +1,18 @@
 """Tests for FormatTranslator component."""
 
-from src.proxy.format_translator import FormatTranslator
+import json
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from src.proxy.format_translator import FormatTranslationError, FormatTranslator
 from src.proxy.schemas import (
+    AnthropicImageContent,
     AnthropicMessage,
     AnthropicMessagesRequest,
     AnthropicRole,
+    AnthropicTextContent,
     BedrockInvokeRequest,
     BedrockInvokeResponse,
     OpenAIChatCompletionRequest,
@@ -213,6 +221,88 @@ class TestBedrockToOpenAI:
 class TestAnthropicToBedrock:
     """Test Anthropic to Bedrock format conversion."""
 
+    def test_text_only_body_matches_prechange_fixture(self, format_translator: FormatTranslator) -> None:
+        request = AnthropicMessagesRequest(
+            model="claude-test",
+            messages=[AnthropicMessage(role=AnthropicRole.USER, content="Hello")],
+            max_tokens=128,
+            system="Be concise",
+            temperature=0.3,
+        )
+        result = format_translator.anthropic_to_bedrock(request)
+        fixture = Path(__file__).parent / "fixtures" / "anthropic_text_request_bedrock.json"
+
+        assert json.dumps(result.model_dump(exclude_none=True)).encode() == fixture.read_bytes().rstrip(b"\n")
+
+    def test_nested_tool_schema_survives_validation_and_translation(self, format_translator: FormatTranslator) -> None:
+        input_schema = {
+            "type": "object",
+            "$defs": {"item": {"type": "string", "enum": ["red", "blue"]}},
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {"color": {"$ref": "#/$defs/item"}}, "additionalProperties": False},
+                }
+            },
+            "additionalProperties": False,
+        }
+        request = AnthropicMessagesRequest.model_validate(
+            {
+                "model": "claude-test",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "Choose colors"}],
+                "tools": [{"name": "choose", "input_schema": input_schema}],
+            }
+        )
+
+        result = format_translator.anthropic_to_bedrock(request)
+        assert json.dumps(result.tools[0]["input_schema"], separators=(",", ":")) == json.dumps(input_schema, separators=(",", ":"))
+
+    def test_tool_schema_requires_object(self) -> None:
+        with pytest.raises(ValidationError, match="tool input_schema must have type: object"):
+            AnthropicMessagesRequest.model_validate(
+                {
+                    "model": "claude-test",
+                    "max_tokens": 128,
+                    "messages": [{"role": "user", "content": "Choose colors"}],
+                    "tools": [{"name": "choose", "input_schema": {"type": "array"}}],
+                }
+            )
+
+    def test_tool_request_preserves_bedrock_options(self, format_translator: FormatTranslator) -> None:
+        request = AnthropicMessagesRequest.model_validate(
+            {
+                "model": "claude-test",
+                "messages": [
+                    {"role": "user", "content": "Add 2 and 3"},
+                    {"role": "assistant", "content": [{"type": "tool_use", "id": "tool_1", "name": "add", "input": {"a": 2, "b": 3}}]},
+                    {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "tool_1", "content": [{"type": "text", "text": "5"}], "is_error": False}],
+                    },
+                ],
+                "max_tokens": 128,
+                "stream": True,
+                "tools": [
+                    {
+                        "name": "add",
+                        "description": "Add two numbers",
+                        "input_schema": {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]},
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                "tool_choice": {"type": "tool", "name": "add"},
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "high"},
+                "metadata": {"user_id": "example-user"},
+                "anthropic_beta": ["body-beta"],
+            }
+        )
+
+        result = format_translator.anthropic_to_bedrock(request, anthropic_beta=["header-beta", "body-beta"])
+        fixture = Path(__file__).parent / "fixtures" / "anthropic_tool_bedrock.json"
+        assert result.model_dump(exclude_none=True) == json.loads(fixture.read_text())
+
     def test_basic_conversion(
         self,
         format_translator: FormatTranslator,
@@ -286,6 +376,19 @@ class TestAnthropicToBedrock:
 class TestBedrockToAnthropic:
     """Test Bedrock to Anthropic format conversion."""
 
+    def test_text_only_response_matches_prechange_fixture(self, format_translator: FormatTranslator) -> None:
+        response = BedrockInvokeResponse(
+            id="msg_baseline",
+            model="provider-model",
+            content=[{"type": "text", "text": "Hello"}],
+            stop_reason="end_turn",
+            usage={"input_tokens": 4, "output_tokens": 2},
+        )
+        result = format_translator.bedrock_to_anthropic(response, "claude-test")
+        fixture = Path(__file__).parent / "fixtures" / "anthropic_text_response.json"
+
+        assert result.model_dump_json().encode() == fixture.read_bytes().rstrip(b"\n")
+
     def test_basic_conversion(
         self,
         format_translator: FormatTranslator,
@@ -308,8 +411,8 @@ class TestBedrockToAnthropic:
         result = format_translator.bedrock_to_anthropic(sample_bedrock_response, "claude-3-5-sonnet-20241022")
 
         assert len(result.content) > 0
-        assert result.content[0].type == "text"
-        assert "Hello" in result.content[0].text
+        assert result.content[0]["type"] == "text"
+        assert "Hello" in result.content[0]["text"]
 
     def test_usage_mapping(
         self,
@@ -425,3 +528,197 @@ class TestErrorHandling:
         result = format_translator.bedrock_to_openai(response, "claude-3.5-sonnet")
         # Empty content returns None per OpenAI convention
         assert result.choices[0].message.content is None
+
+
+class TestSystemRoleMessagesFoldIntoBedrockSystem:
+    """Claude Desktop's local agent and claude-cli 2.1 send `system`-role messages (#7424).
+
+    Only system-role messages that precede the first user/assistant turn fold into the system
+    prompt. Later ones stay in the conversation, attached to the adjacent user turn, so Claude
+    Code's trailing `cache_control` breakpoint still caches the whole history (#8223 cause 51).
+    """
+
+    def test_mid_conversation_system_role_messages_stay_in_conversation_order(self, format_translator: FormatTranslator) -> None:
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-5-5",
+            max_tokens=64,
+            system="Top-level instructions.",
+            messages=[
+                AnthropicMessage(role=AnthropicRole.USER, content="Hello"),
+                AnthropicMessage(role=AnthropicRole.SYSTEM, content="Mid-conversation instructions."),
+                AnthropicMessage(role=AnthropicRole.ASSISTANT, content="Hi"),
+                AnthropicMessage(
+                    role=AnthropicRole.SYSTEM,
+                    content=[AnthropicTextContent(type="text", text="Cached instructions.", cache_control={"type": "ephemeral"})],
+                ),
+                AnthropicMessage(role=AnthropicRole.USER, content="Continue"),
+            ],
+        )
+        result = format_translator.anthropic_to_bedrock(request)
+        assert result.system == "Top-level instructions.", "nothing after the first user turn folds into the system prompt"
+        assert [message.role for message in result.messages] == ["user", "assistant", "user"]
+        # After a user turn: appended to it. Before a user turn (after an assistant): prepended to the next one.
+        assert result.messages[0].content == [{"type": "text", "text": "Hello"}, {"type": "text", "text": "Mid-conversation instructions."}]
+        assert result.messages[2].content == [
+            {"type": "text", "text": "Cached instructions.", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "Continue"},
+        ]
+        assert json.dumps(result.model_dump(exclude_none=True)).count("cache_control") == 1
+
+    def test_trailing_marked_system_role_message_ends_the_last_user_turn(self, format_translator: FormatTranslator) -> None:
+        """Claude Code 2.1.296 (dev 2026-10-22): the final message is a system-role reminder carrying the
+        breakpoint that caches the whole conversation. It must be the last block of the last user turn,
+        not part of the system prompt."""
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-5-5",
+            max_tokens=64,
+            system=[{"type": "text", "text": "Top-level instructions.", "cache_control": {"type": "ephemeral"}}],
+            messages=[
+                AnthropicMessage(role=AnthropicRole.USER, content="Hello"),
+                AnthropicMessage(role=AnthropicRole.SYSTEM, content="<system-reminder>environment</system-reminder>"),
+                AnthropicMessage(role=AnthropicRole.ASSISTANT, content="Hi"),
+                AnthropicMessage(role=AnthropicRole.USER, content="Continue"),
+                AnthropicMessage(
+                    role=AnthropicRole.SYSTEM,
+                    content=[
+                        AnthropicTextContent(type="text", text="<system-reminder>budget</system-reminder>", cache_control={"type": "ephemeral"})
+                    ],
+                ),
+            ],
+        )
+        result = format_translator.anthropic_to_bedrock(request)
+        assert result.system == [{"type": "text", "text": "Top-level instructions.", "cache_control": {"type": "ephemeral"}}]
+        assert [message.role for message in result.messages] == ["user", "assistant", "user"]
+        assert result.messages[-1].content[-1] == {
+            "type": "text",
+            "text": "<system-reminder>budget</system-reminder>",
+            "cache_control": {"type": "ephemeral"},
+        }
+        assert result.messages[-1].content[0] == {"type": "text", "text": "Continue"}
+        assert json.dumps(result.model_dump(exclude_none=True)).count("cache_control") == 2
+
+    def test_trailing_system_role_message_after_an_assistant_turn_becomes_the_closing_user_turn(self, format_translator: FormatTranslator) -> None:
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-5-5",
+            max_tokens=64,
+            messages=[
+                AnthropicMessage(role=AnthropicRole.USER, content="Hello"),
+                AnthropicMessage(role=AnthropicRole.ASSISTANT, content="Hi"),
+                AnthropicMessage(
+                    role=AnthropicRole.SYSTEM,
+                    content=[AnthropicTextContent(type="text", text="Closing note.", cache_control={"type": "ephemeral"})],
+                ),
+            ],
+        )
+        result = format_translator.anthropic_to_bedrock(request)
+        assert result.system is None
+        assert [message.role for message in result.messages] == ["user", "assistant", "user"], "alternation kept; the last turn is user"
+        assert result.messages[-1].content == [{"type": "text", "text": "Closing note.", "cache_control": {"type": "ephemeral"}}]
+
+    def test_leading_system_role_messages_still_fold_in_order_after_the_top_level_system(self, format_translator: FormatTranslator) -> None:
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-5-5",
+            max_tokens=64,
+            system="Top-level instructions.",
+            messages=[
+                AnthropicMessage(role=AnthropicRole.SYSTEM, content="Leading one."),
+                AnthropicMessage(
+                    role=AnthropicRole.SYSTEM,
+                    content=[AnthropicTextContent(type="text", text="Leading two.", cache_control={"type": "ephemeral"})],
+                ),
+                AnthropicMessage(role=AnthropicRole.USER, content="Hello"),
+            ],
+        )
+        result = format_translator.anthropic_to_bedrock(request)
+        assert result.system == [
+            {"type": "text", "text": "Top-level instructions."},
+            {"type": "text", "text": "Leading one."},
+            {"type": "text", "text": "Leading two.", "cache_control": {"type": "ephemeral"}},
+        ]
+        assert [message.role for message in result.messages] == ["user"]
+        assert result.messages[0].content == [{"type": "text", "text": "Hello"}]
+
+    def test_system_role_message_without_a_top_level_system_becomes_the_system_prompt(self, format_translator: FormatTranslator) -> None:
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-5-5",
+            max_tokens=64,
+            messages=[
+                AnthropicMessage(role=AnthropicRole.SYSTEM, content="Only instructions."),
+                AnthropicMessage(role=AnthropicRole.USER, content="Hello"),
+            ],
+        )
+        result = format_translator.anthropic_to_bedrock(request)
+        assert result.system == [{"type": "text", "text": "Only instructions."}]
+        assert [message.role for message in result.messages] == ["user"]
+
+    def test_requests_without_system_role_messages_are_unchanged(
+        self, format_translator: FormatTranslator, sample_anthropic_request: AnthropicMessagesRequest
+    ) -> None:
+        result = format_translator.anthropic_to_bedrock(sample_anthropic_request)
+        assert result.system == sample_anthropic_request.system
+        assert len(result.messages) == len(sample_anthropic_request.messages)
+
+    def test_system_role_message_with_a_non_text_block_is_refused(self, format_translator: FormatTranslator) -> None:
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-5-5",
+            max_tokens=64,
+            messages=[
+                AnthropicMessage(
+                    role=AnthropicRole.SYSTEM,
+                    content=[AnthropicImageContent(type="image", source={"type": "base64", "media_type": "image/png", "data": "AAAA"})],
+                ),
+                AnthropicMessage(role=AnthropicRole.USER, content="Hello"),
+            ],
+        )
+        with pytest.raises(FormatTranslationError):
+            format_translator.anthropic_to_bedrock(request)
+
+
+class TestAnthropicThinkingBlocks:
+    """Clients with extended thinking replay prior `thinking` blocks in history (#7471)."""
+
+    _THINKING = {"type": "thinking", "thinking": "", "signature": "CAQSvQkKEggSEAEYAjgBQgh0aGlua2luZw=="}
+
+    def _request(self, *, thinking):
+        return AnthropicMessagesRequest(
+            model="claude-sonnet-5-5",
+            max_tokens=64,
+            thinking=thinking,
+            messages=[
+                AnthropicMessage(role=AnthropicRole.USER, content="Hello"),
+                AnthropicMessage.model_validate(
+                    {
+                        "role": "assistant",
+                        "content": [self._THINKING, {"type": "redacted_thinking", "data": "opaque"}, {"type": "text", "text": "Hi"}],
+                    }
+                ),
+                AnthropicMessage(role=AnthropicRole.USER, content="Continue"),
+            ],
+        )
+
+    def test_thinking_blocks_validate_and_pass_through_when_thinking_is_enabled(self, format_translator: FormatTranslator) -> None:
+        result = format_translator.anthropic_to_bedrock(self._request(thinking={"type": "enabled", "budget_tokens": 1024}))
+        assert result.messages[1].content == [self._THINKING, {"type": "redacted_thinking", "data": "opaque"}, {"type": "text", "text": "Hi"}]
+        assert result.thinking == {"type": "enabled", "budget_tokens": 1024}
+
+    @pytest.mark.parametrize("thinking", [None, {"type": "disabled"}])
+    def test_thinking_blocks_are_dropped_when_thinking_is_not_enabled(self, format_translator: FormatTranslator, thinking) -> None:
+        result = format_translator.anthropic_to_bedrock(self._request(thinking=thinking))
+        assert result.messages[1].content == [{"type": "text", "text": "Hi"}]
+
+    def test_a_turn_made_only_of_thinking_keeps_its_content_when_thinking_is_off(self, format_translator: FormatTranslator) -> None:
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-5-5",
+            max_tokens=64,
+            messages=[
+                AnthropicMessage(role=AnthropicRole.USER, content="Hello"),
+                AnthropicMessage.model_validate({"role": "assistant", "content": [self._THINKING]}),
+                AnthropicMessage(role=AnthropicRole.USER, content="Continue"),
+            ],
+        )
+        # Never emit an empty assistant turn; the provider refuses those outright.
+        assert format_translator.anthropic_to_bedrock(request).messages[1].content == [self._THINKING]
+
+    def test_unknown_block_types_are_still_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            AnthropicMessage.model_validate({"role": "assistant", "content": [{"type": "mystery", "value": 1}]})

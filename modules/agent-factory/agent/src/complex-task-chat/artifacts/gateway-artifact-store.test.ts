@@ -58,6 +58,41 @@ describe('gateway artifact port through the real transport', () => {
     await rm(outside, { recursive: true, force: true });
   });
 
+  describe('artifact store unconfigured on the gateway (#8028)', () => {
+    const unconfigured = () => json({ detail: { error: 'chat_artifacts_unconfigured' } }, 503);
+
+    it('still throws from the port, but marks itself degraded once and withdraws its tools', async () => {
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      fetchMock.mockImplementation(async () => unconfigured());
+      expect(store.toolsForTurn({ sessionId: 'session-a' }).map(tool => tool.name)).toEqual(['publish_artifact', 'fetch_artifact', 'list_artifacts']);
+      const failure = store.fetch(ARTIFACT_ID, 'result-copy.txt', 'session-a');
+      await expect(failure).rejects.toMatchObject({ code: 'unavailable', status: 503, detail: 'chat_artifacts_unconfigured' });
+      expect(store.unconfigured).toBe(false);
+      await failure.catch(error => {
+        expect(store.degradedBy(error)).toBe(true);
+        expect(store.degradedBy(error)).toBe(true);
+      });
+      expect(store.unconfigured).toBe(true);
+      expect(store.toolsForTurn({ sessionId: 'session-a' })).toEqual([]);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls[0][0]).toBe('[sandbox] artifact store unconfigured on this gateway; continuing without artifact tools');
+      await expect(readFile(path.join(workspace, 'result-copy.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it.each([
+      ['another 503', () => json({ detail: { error: 'chat_data_disabled' } }, 503)],
+      ['the memory store answer', () => json({ detail: { error: 'chat_memory_unconfigured' } }, 503)],
+      ['a refusal carrying the code', () => json({ detail: { error: 'chat_artifacts_unconfigured' } }, 403)],
+    ])('does not degrade on %s', async (_label, response) => {
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      fetchMock.mockImplementation(async () => response());
+      await store.listBySession('session-a').catch(error => expect(store.degradedBy(error)).toBe(false));
+      expect(store.unconfigured).toBe(false);
+      expect(store.toolsForTurn({ sessionId: 'session-a' })).toHaveLength(3);
+      expect(log).not.toHaveBeenCalled();
+    });
+  });
+
   it('publishes bounded bytes with server-derived ownership and stable retry identity', async () => {
     fetchMock.mockResolvedValueOnce(json(reference)).mockResolvedValueOnce(json(reference));
     const input = { sessionId: 'session-a', taskId: 'turn-a', localPath: 'result.txt', identity: { userId: 'victim', orgId: 'other' } };

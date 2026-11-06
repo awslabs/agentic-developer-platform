@@ -14,7 +14,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .amend import AmendmentContext, FlowNotFoundError, _reconcile_definitions, _supersede_absent_nodes
-from .compile import ApprovalContext, ProposalRejectedError, TenantMismatchError, address_of, plan_hash, upsert_edges, upsert_nodes
+from .compile import (
+    ApprovalContext,
+    ProposalRejectedError,
+    TenantMismatchError,
+    address_of,
+    is_legacy_acceptance,
+    plan_hash,
+    require_accessible_product,
+    upsert_edges,
+    upsert_nodes,
+)
 from .genesis import APPROVAL_DECISION_KINDS
 from .models import DecisionKind, OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationExecution, OrchestrationFlow, OrchestrationNode
 from .proposal import LoopProposal, validate_proposal
@@ -40,6 +50,16 @@ class DraftRevisionRequest(BaseModel):
 
 class SaveDraftRevisionRequest(DraftRevisionRequest):
     expected_proposal_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class BindDraftProductRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product_id: str = Field(min_length=1, max_length=36)
+    project_id: str | None = Field(default=None, min_length=1, max_length=255)
+    expected_plan_version: int = Field(ge=1)
+    expected_plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str | None = Field(default=None, max_length=2000)
 
 
 @dataclass
@@ -107,9 +127,11 @@ def _replacement(context: DraftContext, request: DraftRevisionRequest, actor: Ap
         raise TenantMismatchError("The proposal must belong to the authenticated tenant.")
     if proposal.flow_slug != context.flow.slug or proposal.intent_ref != context.proposal.intent_ref:
         raise ProposalRejectedError("A draft revision must retain the flow slug and originating intent.")
-    # Accept authored documents only. The same registration transform supplies the
-    # gate and demotes submitted bounds, so no caller can bypass the root gate.
-    effective, gate_address = transform_for_registration(proposal)
+    # A Product-only update can carry the stored document, including its gate.
+    # All graph edits remain authored documents: registration supplies their gate
+    # and demotes submitted bounds, so callers cannot bypass acceptance.
+    product_only = proposal.model_dump(exclude={"product_id"}) == context.proposal.model_dump(exclude={"product_id"})
+    effective, gate_address = (proposal, context.gate_address) if product_only else transform_for_registration(proposal)
     violations = validate_proposal(effective)
     if violations:
         raise ProposalRejectedError("Invalid draft revision.", violations=violations)
@@ -119,9 +141,10 @@ def _replacement(context: DraftContext, request: DraftRevisionRequest, actor: Ap
     new_gate = next(n for n in effective.nodes if n.address == context.gate_address)
     if old_gate != new_gate:
         _conflict("draft_gate_changed", "The existing acceptance gate definition must be preserved.")
-    # Mirroring registration, live evaluation specifications cannot be authored
-    # through an inert write. Bind implemented runners through human acceptance.
-    if any(n.evaluation is not None for n in effective.nodes):
+    # A Product-only repair preserves the registered execution contract, including
+    # inert machine specifications. Other runtime edits use evaluation acceptance.
+    product_only = effective.model_dump(exclude={"product_id"}) == context.proposal.model_dump(exclude={"product_id"})
+    if any(n.evaluation is not None for n in effective.nodes) and not product_only:
         raise ProposalRejectedError("Runtime evaluation specifications require the evaluation acceptance path.")
     # Do not silently discard existing proposed bounds during a graph edit.
     if context.proposal.proposed_execution_policy is not None and effective.proposed_execution_policy is None:
@@ -197,6 +220,8 @@ async def preview_draft_revision(session: AsyncSession, flow_id: str, request: D
     if not _base_matches(context, request):
         _conflict("stale_draft_revision", "The current draft changed; read its plan version and hash and preview again.")
     effective = _replacement(context, request, actor)
+    if effective.product_id is not None:
+        await require_accessible_product(session, product_id=effective.product_id, decision=actor)
     return {**_summary(context, effective), "wrote_nothing": True}
 
 
@@ -210,11 +235,17 @@ async def save_draft_revision(session: AsyncSession, flow_id: str, request: Save
         replay = _is_replay(context, request, actor, digest)
         if not _base_matches(context, request) and not replay:
             _conflict("stale_draft_revision", "The current draft changed; read its plan version and hash and preview again.")
+        if effective.product_id is not None:
+            await require_accessible_product(session, product_id=effective.product_id, decision=actor)
         summary = _summary(context, effective)
+        from src.products.work_scope import assign_flow_project
+
+        await assign_flow_project(session, flow=context.flow, product_id=effective.product_id, project_id=effective.project_id)
+        context.flow.product_id = effective.product_id
         if replay or draft_hash(context.proposal) == digest:
             return {**summary, "plan_version": context.plan.version, "plan_hash": context.plan.plan_hash, "already_revised": True}
         repo = OrchestrationRepository(session)
-        _reconcile_definitions(context.nodes, effective)
+        _reconcile_definitions(context.nodes, effective, base_document=context.plan.plan_document)
         _supersede_absent_nodes(
             context.nodes,
             proposed_addresses={n.address for n in effective.nodes},
@@ -256,3 +287,46 @@ async def save_draft_revision(session: AsyncSession, flow_id: str, request: Save
             accepted_by_decision_id=decision.id,
         )
         return {**summary, "plan_version": plan.version, "plan_hash": plan.plan_hash, "already_revised": False}
+
+
+async def bind_draft_product(session: AsyncSession, flow_id: str, request: BindDraftProductRequest, actor: ApprovalContext) -> dict:
+    """Change only the Product of a locked, unapproved draft; never accept it."""
+    async with session.begin_nested():
+        context = await _context(session, flow_id, actor, lock=True)
+        proposal = context.proposal.model_copy(update={"product_id": request.product_id, "project_id": request.project_id})
+        revision = DraftRevisionRequest(proposal=proposal, **request.model_dump(exclude={"product_id", "project_id"}))
+        effective = _replacement(context, revision, actor)
+        return await save_draft_revision(
+            session,
+            flow_id,
+            SaveDraftRevisionRequest(**revision.model_dump(), expected_proposal_hash=draft_hash(effective)),
+            actor,
+        )
+
+
+async def preview_product_binding(session: AsyncSession, flow_id: str, actor: ApprovalContext) -> dict:
+    """Expose the same Product prerequisite used by acceptance, before approval."""
+    plan = await OrchestrationRepository(session).get_accepted_plan(org_id=actor.org_id, flow_id=flow_id)
+    product_id = (plan.plan_document or {}).get("product_id") if plan else None
+    required = not await is_legacy_acceptance(session, plan)
+    problem = None
+    if product_id is not None:
+        try:
+            await require_accessible_product(session, product_id=product_id, decision=actor)
+        except ProposalRejectedError as exc:
+            problem = str(exc)
+    elif required:
+        problem = "Select a Product for this draft before approving execution."
+    try:
+        await _context(session, flow_id, actor, lock=False)
+        can_bind = True
+    except DraftRevisionConflictError:
+        can_bind = False
+    return {
+        "required": required,
+        "product_id": product_id,
+        "project_id": (plan.plan_document or {}).get("project_id") if plan else None,
+        "can_bind_draft": can_bind,
+        "ready": problem is None,
+        "problem": problem,
+    }

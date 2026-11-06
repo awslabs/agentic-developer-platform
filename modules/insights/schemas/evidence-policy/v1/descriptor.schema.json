@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.org/insights/evidence-policy/v1/descriptor.schema.json",
+  "title": "DevLake evidence policy descriptor 1.0",
+  "description": "Pins an observation and its sealed item hash to the current gateway-derived policy closure. A descriptor is not an admission grant; the sink must revalidate current authority at commit and readback.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": "evidence-policy/1.0"},
+    "observation_sha256": {"$ref": "#/$defs/digest"},
+    "item_sha256": {"$ref": "#/$defs/digest"},
+    "descriptor_sha256": {"$ref": "#/$defs/digest"},
+    "envelope": {
+      "type": "object",
+      "properties": {
+        "envelope_version": {"const": 1},
+        "identity": {"$ref": "#/$defs/identity"},
+        "realm_id": {"$ref": "#/$defs/id"},
+        "realm_revision": {"type": "integer", "minimum": 1},
+        "descriptor_digest": {"$ref": "#/$defs/digest"},
+        "required_policies": {
+          "type": "array", "minItems": 2,
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": {"$ref": "#/$defs/id"},
+              "revision": {"type": "integer", "minimum": 1},
+              "visibility": {"enum": ["shared", "private"]},
+              "audience_expression": {"$ref": "#/$defs/id"}
+            },
+            "required": ["ref", "revision", "visibility", "audience_expression"],
+            "additionalProperties": false
+          }
+        },
+        "dependency_identities": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/identity"}},
+        "dependency_versions": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "identity": {"$ref": "#/$defs/identity"},
+              "revision": {"type": "integer", "minimum": 1},
+              "metadata_digest": {"$ref": "#/$defs/digest"}
+            },
+            "required": ["identity", "revision", "metadata_digest"],
+            "additionalProperties": false
+          }
+        },
+        "audience": {"enum": ["shared", "private"]}
+      },
+      "required": ["envelope_version", "identity", "realm_id", "realm_revision", "descriptor_digest", "required_policies", "dependency_identities", "dependency_versions", "audience"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["schema_version", "observation_sha256", "item_sha256", "descriptor_sha256", "envelope"],
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {"type": "string", "minLength": 1},
+    "identity": {
+      "type": "object",
+      "properties": {
+        "tenant_id": {"$ref": "#/$defs/id"},
+        "project_id": {"$ref": "#/$defs/id"},
+        "source_connection_id": {"$ref": "#/$defs/id"},
+        "record_type": {"$ref": "#/$defs/id"},
+        "record_id": {"$ref": "#/$defs/id"},
+        "record_revision": {"$ref": "#/$defs/id"}
+      },
+      "required": ["tenant_id", "project_id", "source_connection_id", "record_type", "record_id", "record_revision"],
+      "additionalProperties": false
+    }
+  }
+}

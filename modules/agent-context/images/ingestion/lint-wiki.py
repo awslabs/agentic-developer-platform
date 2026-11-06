@@ -38,6 +38,7 @@ log = logging.getLogger("lint-wiki")
 # ---------------------------------------------------------------------------
 
 from config import settings
+from stored_code_index import load_code_index
 from s3_store import S3ContentStore
 
 STATE_DIR = settings.state_dir
@@ -292,14 +293,7 @@ def check_graph_contradictions(all_repos: list[str]) -> list[str]:
     # Sample a few repos and compare
     sample = random.sample(all_repos, min(5, len(all_repos)))
     for repo in sample:
-        ci_path = os.path.join(CODE_INDEX_DIR, f"{repo.replace('/', '-')}.json")
-        if not os.path.isfile(ci_path):
-            continue
-        try:
-            with open(ci_path) as f:
-                json.load(f)  # verify code-index parses for repos in the graph
-        except (json.JSONDecodeError, OSError):
-            continue
+        load_code_index(repo, bucket=settings.s3_bucket_name, directory=CODE_INDEX_DIR)
 
     return issues
 
@@ -313,8 +307,8 @@ def check_missing_graph_data(all_repos: list[str], repo_state: dict[str, Any]) -
     # Count repos that have code-index but no graph data
     # (Approximate — check if graph has nodes for this repo)
     for repo in all_repos:
-        ci_path = os.path.join(CODE_INDEX_DIR, f"{repo.replace('/', '-')}.json")
-        if os.path.isfile(ci_path):
+        ci = load_code_index(repo, bucket=settings.s3_bucket_name, directory=CODE_INDEX_DIR)
+        if ci:
             # Repo has code-index but may not be in graph
             # Full check would query Neptune, but we do a lightweight check here
             pass
@@ -332,9 +326,9 @@ def check_missing_learning_artifacts(all_repos: list[str]) -> list[str]:
     issues = []
     missing = []
     for repo in all_repos:
-        ci_path = os.path.join(CODE_INDEX_DIR, f"{repo.replace('/', '-')}.json")
+        ci = load_code_index(repo, bucket=settings.s3_bucket_name, directory=CODE_INDEX_DIR)
         cm_path = os.path.join(LEARNING_DIR, repo.replace("/", "-"), "concept-map.json")
-        if os.path.isfile(ci_path) and not os.path.isfile(cm_path):
+        if ci and not os.path.isfile(cm_path):
             missing.append(repo)
 
     if missing:
@@ -353,16 +347,14 @@ def check_stale_quiz_questions(all_repos: list[str]) -> list[str]:
 
     for repo in all_repos:
         quiz_path = os.path.join(LEARNING_DIR, repo.replace("/", "-"), "quiz-bank.json")
-        ci_path = os.path.join(CODE_INDEX_DIR, f"{repo.replace('/', '-')}.json")
+        ci = load_code_index(repo, bucket=settings.s3_bucket_name, directory=CODE_INDEX_DIR)
 
-        if not os.path.isfile(quiz_path) or not os.path.isfile(ci_path):
+        if not os.path.isfile(quiz_path) or not ci:
             continue
 
         try:
             with open(quiz_path) as f:
                 quiz = json.load(f)
-            with open(ci_path) as f:
-                ci = json.load(f)
 
             questions = quiz.get("questions", quiz) if isinstance(quiz, dict) else quiz
             files = {s.get("file", "") for s in ci.get("symbols", [])}

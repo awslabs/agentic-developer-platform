@@ -18,9 +18,7 @@
  */
 
 import { PersonalContextIdentity, getPersonalContextHeaders } from './personal-context-headers';
-import { validateBaseUrl } from '../lib/url-guard';
-import { getDoorBaseUrl, getDoorHeaders } from '../lib/doorAuth';
-import { isProtectedKnowledgeRun } from '../lib/knowledgeBridge';
+import { knowledgeBridgeUrl, isProtectedKnowledgeRun } from '../lib/knowledgeBridge';
 
 /**
  * Feature flag: enable recall-at-task-start. Default off until validated.
@@ -38,18 +36,6 @@ const RECALL_TOKEN_CAP = Number(process.env.PERSONAL_CONTEXT_RECALL_TOKEN_CAP ??
  * Timeout for the recall HTTP call (ms). Must be short — recall is best-effort.
  */
 const RECALL_TIMEOUT_MS = Number(process.env.PERSONAL_CONTEXT_RECALL_TIMEOUT_MS ?? 3000);
-
-/**
- * Context MCP Server URL. Internal K8s service address.
- * Canonical: context-mcp.agent-context.svc.cluster.local:5100
- */
-const CONTEXT_MCP_URL_RAW =
-  process.env.CONTEXT_MCP_SERVER_URL ??
-  'http://context-mcp.agent-context.svc.cluster.local:5100';
-
-// SSRF guard: validateBaseUrl returns the normalized origin, breaking semgrep's
-// taint path from the env-var source → fetch() (#3582, #3713)
-const CONTEXT_MCP_URL = validateBaseUrl(CONTEXT_MCP_URL_RAW, { allowHttp: true });
 
 /**
  * Maximum number of recall results to request.
@@ -158,7 +144,7 @@ export async function recallAtTaskStart(
  * @internal Exported for testing only.
  */
 export async function callRecall(
-  headers: { 'X-Owner-Sub': string; 'X-Tenant-Id': string },
+  _headers: { 'X-Owner-Sub': string; 'X-Tenant-Id': string },
   query: string,
   persona: string,
 ): Promise<RecalledLearning[]> {
@@ -166,21 +152,11 @@ export async function callRecall(
   const timeout = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
 
   try {
-    const url = isProtectedKnowledgeRun() ? `${getDoorBaseUrl(CONTEXT_MCP_URL)}/call` : `${CONTEXT_MCP_URL}/tools/call`;
-    // Both branches are fixed destinations with a static path: CONTEXT_MCP_URL is
-    // validated once via validateBaseUrl() at load (blocks metadata/link-local, rejects
-    // inline credentials), and the protected branch is the loopback bridge on a
-    // numeric-only port. redirect:'error' stops the Door or the bridge from relocating
-    // the call, which would forward the Door key and the X-Owner-Sub/X-Tenant-Id
-    // identity headers below to the redirect target (#5603).
-    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
+    const url = `${knowledgeBridgeUrl()}/call`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // Authenticate to the Door before it will honour the identity headers
-        // below (#4073 finding #8). Missing key => 401 => recall returns nothing.
-        ...getDoorHeaders(headers),
       },
       body: JSON.stringify({
         name: 'experience',

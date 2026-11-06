@@ -9,6 +9,11 @@ RUN apt-get update && apt-get -y upgrade \
 # Auth error classification imports prisma even when no database is configured.
 RUN pip install --no-cache-dir 'litellm[proxy]==1.102.1' 'prisma==0.15.0' && pip check
 
+# Bound paid requests even when the provider accepted a POST but its response
+# was lost. This pinned build-time patch includes an actual transport test.
+COPY single-attempt-http.py /opt/adp/single-attempt-http.py
+RUN python /opt/adp/single-attempt-http.py
+
 # 1.102.1 includes the embedding health fix; fail builds if it regresses.
 COPY validate-health.py /tmp/validate-health.py
 RUN python /tmp/validate-health.py && rm /tmp/validate-health.py

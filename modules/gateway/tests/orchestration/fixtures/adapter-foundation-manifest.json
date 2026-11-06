@@ -1,0 +1,236 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "metadata": {
+        "name": "tool-adapters",
+        "namespace": "adp-tools",
+        "labels": {
+          "app.kubernetes.io/name": "tool-adapters",
+          "app.kubernetes.io/part-of": "adp"
+        },
+        "annotations": {
+          "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/adp-dev-tool-adapters"
+        }
+      },
+      "automountServiceAccountToken": false
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "tool-adapters-contract",
+        "namespace": "adp-tools",
+        "labels": {
+          "app.kubernetes.io/name": "tool-adapters",
+          "app.kubernetes.io/part-of": "adp"
+        }
+      },
+      "data": {
+        "config.json": "{\"schema_version\":\"1.0\",\"mode\":\"foundation\",\"release\":{\"contract_version\":\"1.0\",\"source_revision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"image_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"group\":\"tool-connectors\",\"group_generation\":1,\"backend_generation\":1}}"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "tool-adapters",
+        "namespace": "adp-tools",
+        "labels": {
+          "app.kubernetes.io/name": "tool-adapters",
+          "app.kubernetes.io/part-of": "adp"
+        }
+      },
+      "spec": {
+        "replicas": 2,
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "tool-adapters",
+            "app.kubernetes.io/part-of": "adp"
+          }
+        },
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxUnavailable": 0,
+            "maxSurge": 1
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "tool-adapters",
+              "app.kubernetes.io/part-of": "adp"
+            },
+            "annotations": {
+              "checksum/adp-adapter-contract": "5039358cb6ae83dbc8502acd8f7993a93ecc3e026509b0b7dac9a29038c37958"
+            }
+          },
+          "spec": {
+            "serviceAccountName": "tool-adapters",
+            "automountServiceAccountToken": false,
+            "terminationGracePeriodSeconds": 30,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 65532,
+              "runAsGroup": 65532,
+              "fsGroup": 65532,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "topologySpreadConstraints": [
+              {
+                "maxSkew": 1,
+                "topologyKey": "kubernetes.io/hostname",
+                "whenUnsatisfiable": "ScheduleAnyway",
+                "labelSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "tool-adapters",
+                    "app.kubernetes.io/part-of": "adp"
+                  }
+                }
+              }
+            ],
+            "containers": [
+              {
+                "name": "tool-adapters",
+                "image": "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-tools-dev-adapters@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "imagePullPolicy": "IfNotPresent",
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "env": [
+                  {
+                    "name": "ADP_TOOL_ADAPTER_CONFIG",
+                    "value": "/etc/adp-adapters/config.json"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "100m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "1",
+                    "memory": "512Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": "http"
+                  },
+                  "periodSeconds": 2,
+                  "failureThreshold": 30
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": "http"
+                  },
+                  "periodSeconds": 10
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/readyz",
+                    "port": "http"
+                  },
+                  "periodSeconds": 5
+                },
+                "volumeMounts": [
+                  {
+                    "name": "configuration",
+                    "mountPath": "/etc/adp-adapters",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "scratch",
+                    "mountPath": "/tmp"
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "configuration",
+                "configMap": {
+                  "name": "tool-adapters-contract"
+                }
+              },
+              {
+                "name": "scratch",
+                "emptyDir": {
+                  "medium": "Memory",
+                  "sizeLimit": "16Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "tool-adapters",
+        "namespace": "adp-tools",
+        "labels": {
+          "app.kubernetes.io/name": "tool-adapters",
+          "app.kubernetes.io/part-of": "adp"
+        }
+      },
+      "spec": {
+        "type": "ClusterIP",
+        "selector": {
+          "app.kubernetes.io/name": "tool-adapters",
+          "app.kubernetes.io/part-of": "adp"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 80,
+            "targetPort": "http"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "policy/v1",
+      "kind": "PodDisruptionBudget",
+      "metadata": {
+        "name": "tool-adapters",
+        "namespace": "adp-tools",
+        "labels": {
+          "app.kubernetes.io/name": "tool-adapters",
+          "app.kubernetes.io/part-of": "adp"
+        }
+      },
+      "spec": {
+        "minAvailable": 1,
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "tool-adapters",
+            "app.kubernetes.io/part-of": "adp"
+          }
+        }
+      }
+    }
+  ]
+}

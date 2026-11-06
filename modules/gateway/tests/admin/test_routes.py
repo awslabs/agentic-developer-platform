@@ -111,6 +111,44 @@ def client(app, mock_admin_service, mock_access_control, platform_admin_user):
     return TestClient(app)
 
 
+def test_export_health_is_aggregated_and_requires_platform_admin(client, mock_access_control, platform_admin_user, monkeypatch):
+    monkeypatch.setattr("src.admin.routes.get_flow_read_health", lambda: {"flow_read_cache_hit": 7.0, "request_log_queue_enqueued": 12.0})
+    response = client.get("/admin/diagnostics/export-health")
+
+    assert response.status_code == 200
+    assert set(response.json()) == {
+        "emf_write_attempts",
+        "emf_write_failures",
+        "emf_last_success_timestamp_seconds",
+        "diagnostic_drops",
+        "diagnostic_failures",
+        "metering_write_failures",
+        "metering_unconfirmed_observations",
+        "audit_write_failures",
+        "flow_read_cache_hit",
+        "request_log_queue_enqueued",
+    }
+    assert all(isinstance(value, int | float) for value in response.json().values())
+    mock_access_control.require_platform_admin.assert_called_once_with(platform_admin_user)
+
+
+def test_export_health_does_not_allow_anonymous_access(app):
+    response = TestClient(app).get("/admin/diagnostics/export-health")
+
+    assert response.status_code in (401, 403)
+
+
+def test_export_health_denies_authenticated_non_admin(app, platform_admin_user):
+    async def non_admin():
+        return platform_admin_user.model_copy(update={"is_admin": False})
+
+    app.dependency_overrides[get_current_user] = non_admin
+    response = TestClient(app).get("/admin/diagnostics/export-health")
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "access_denied"
+
+
 class TestOrganizationEndpoints:
     """Tests for organization endpoints."""
 

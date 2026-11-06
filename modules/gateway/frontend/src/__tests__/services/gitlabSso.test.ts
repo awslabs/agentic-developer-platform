@@ -15,7 +15,6 @@ describe('GitLab configured handoff', () => {
   it.each([
     'https://gitlab.example.test/users/auth/jwt/callback?jwt=synthetic-sso-token',
     'https://adp.example.test/gitlab/users/auth/jwt/callback?jwt=synthetic-sso-token',
-    'http://gitlab.dev.adp.internal/users/auth/jwt/callback?jwt=synthetic-sso-token',
   ])('navigates directly to the server-authorized callback %s', async (redirect_url) => {
     const location = navigation();
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ redirect_url })));
@@ -38,7 +37,7 @@ describe('GitLab configured handoff', () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(body)));
     vi.stubGlobal('fetch', fetcher);
     startGitlabSso();
-    await vi.waitFor(() => expect(location.href).toBe('/gitlab/'));
+    await vi.waitFor(() => expect(location.href).toBe('/gitlab-launch'));
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it.each([401, 404, 503])('falls back on HTTP %s without retry', async (status) => {
@@ -46,7 +45,7 @@ describe('GitLab configured handoff', () => {
     const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status }));
     vi.stubGlobal('fetch', fetcher);
     startGitlabSso();
-    await vi.waitFor(() => expect(location.href).toBe('/gitlab/'));
+    await vi.waitFor(() => expect(location.href).toBe('/gitlab-launch'));
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it('does not retry a browser opaque redirect with automatic following', async () => {
@@ -56,7 +55,7 @@ describe('GitLab configured handoff', () => {
       .mockResolvedValueOnce({ redirected: true, url: 'https://attacker.test/' });
     vi.stubGlobal('fetch', fetcher);
     startGitlabSso();
-    await vi.waitFor(() => expect(location.href).toBe('/gitlab/'));
+    await vi.waitFor(() => expect(location.href).toBe('/gitlab-launch'));
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it('keeps un-tokened anchors local without a request', () => {
@@ -89,7 +88,7 @@ for (const origin of ['same-origin', 'cross-origin']) {
         receivedTokens.push(request.headers.authorization ?? '');
         if (status === 200) {
           response.writeHead(200, { 'content-type': 'application/json' });
-          response.end(JSON.stringify({ redirect_url: `http://127.0.0.1:${targetPort}/users/auth/jwt/callback?jwt=synthetic-sso-token` }));
+          response.end(JSON.stringify({ redirect_url: `https://gitlab.example.test/users/auth/jwt/callback?jwt=synthetic-sso-token` }));
           return;
         }
         response.writeHead(status, { location: origin === 'same-origin' ? '/destination' : `http://127.0.0.1:${targetPort}/destination` });
@@ -100,7 +99,7 @@ for (const origin of ['same-origin', 'cross-origin']) {
       vi.stubGlobal('fetch', (_input: RequestInfo | URL, init?: RequestInit) => nativeFetch(`http://127.0.0.1:${sourcePort}/api/auth/gitlab-sso`, init));
       try {
         startGitlabSso();
-        await vi.waitFor(() => expect(location.href).toBe(status === 200 ? `http://127.0.0.1:${targetPort}/users/auth/jwt/callback?jwt=synthetic-sso-token` : '/gitlab/'));
+        await vi.waitFor(() => expect(location.href).toBe(status === 200 ? `https://gitlab.example.test/users/auth/jwt/callback?jwt=synthetic-sso-token` : '/gitlab-launch'));
         expect(destinationRequests).toBe(0);
         expect(receivedTokens).toEqual(['Bearer synthetic-gateway-token']);
       } finally {

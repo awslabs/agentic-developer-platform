@@ -21,9 +21,11 @@ from src.admin.access_control import AdminRole
 from src.auth.dependencies import get_current_user
 from src.orchestration import controls, routes
 from src.orchestration.dispatch_pass import publish_pending, run_dispatch_pass
+from src.orchestration.gate_execution import prepare_gate_execution
 from src.orchestration.models import DecisionKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from src.orchestration.proposal import LoopProposal
 from src.orchestration.registration import register_draft_proposal
+from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.results import observe_results
 from src.orchestration.run_store import EngineRunStore
 from src.orchestration.stall import detect_stalls
@@ -119,7 +121,7 @@ async def api(session, access, monkeypatch):
     app = FastAPI()
     app.include_router(routes.router)
     app.include_router(controls.router)
-    context = token_context(ORG_A, user_id=HUMAN_USER_ID)
+    context = token_context(ORG_A, user_id=HUMAN_USER_ID).model_copy(update={"account_type": "human", "auth_source": "jwt"})
     app.dependency_overrides[get_current_user] = lambda: context
     app.dependency_overrides[get_db] = lambda: session
     app.dependency_overrides[routes.get_access_control] = lambda: access
@@ -128,7 +130,7 @@ async def api(session, access, monkeypatch):
         yield client
 
 
-async def setup_plan(session, registrar, proposal=None):
+async def setup_plan(session, registrar, proposal=None, *, legacy_accepted=True):
     await seed_org(session)
     await seed_principal(session, org_id=ORG_A, role=AdminRole.ORG_ADMIN.value)
     proposal = proposal or author_gated_proposal()
@@ -137,6 +139,16 @@ async def setup_plan(session, registrar, proposal=None):
         if node.kind == "eval":
             node.issue_ref = str(9000 + i)
     result, _ = await register_draft_proposal(session, proposal, registrar)
+    if legacy_accepted:
+        await OrchestrationRepository(session).append_decision(
+            org_id=ORG_A,
+            flow_id=result.flow_id,
+            kind=DecisionKind.PLAN_ACCEPTED.value,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind="human",
+            reason="Previously accepted legacy execution fixture",
+        )
     flow = await session.get(OrchestrationFlow, result.flow_id)
     assert flow.execution_paused is True
     flow.execution_paused = False  # This delivery harness explicitly enables its test flow.
@@ -151,6 +163,10 @@ async def graph(api, flow_id, *, by_id=False):
 
 
 async def approve(api, node):
+    if node["kind"] == "eval":
+        preview = await api.get(f"/orchestration/gates/{node['id']}/execution-preview")
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["ready"] is True
     response = await api.post(f"/orchestration/gates/{node['id']}/approve", json={"reason": "Reviewed fixture evidence"})
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "applied"
@@ -226,7 +242,21 @@ async def test_two_wave_flow_via_ui_controls(session, registrar, api):
     assert nodes["eval-w1"]["state"] == "awaiting_gate"
     assert nodes["eval-w1"]["run_id"] == evaluation["message_id"]
     assert nodes["eval-w1"]["issue_url"].endswith("/issues/9001")
+    waiting = await run_tick(session)
+    assert nodes["eval-w1"]["id"] not in waiting.blocked
+    gate = await session.get(OrchestrationNode, nodes["eval-w1"]["id"])
+    preview = await prepare_gate_execution(session, gate=gate, actor=None)
+    assert preview == {"required": False, "ready": True, "runs": [], "problems": []}
     assert await tick_dispatch(session, store) == []
+    preview = await api.get(f"/orchestration/gates/{nodes['eval-w1']['id']}/execution-preview")
+    assert preview.status_code == 200, preview.text
+    assert preview.json() == {
+        "required": False,
+        "ready": True,
+        "runs": [],
+        "problems": [],
+        "product": {"required": False, "product_id": None, "project_id": None, "can_bind_draft": False, "ready": True, "problem": None},
+    }
     await approve(api, nodes["eval-w1"])
     assert await tick_dispatch(session, store) == []
     nodes = await graph(api, flow_id)
@@ -457,7 +487,7 @@ async def accepted_document(api, flow_id):
 
 
 async def test_amendment_reconciles_executable_plan_and_runs_to_completion(session, registrar, api):
-    flow_id = await setup_plan(session, registrar)
+    flow_id = await setup_plan(session, registrar, legacy_accepted=True)
     original = await accepted_document(api, flow_id)
     amended = deepcopy(original)
     amended["spec_revision"] += "-amended"
@@ -512,7 +542,7 @@ async def test_amendment_reconciles_executable_plan_and_runs_to_completion(sessi
     ],
 )
 async def test_amendment_cannot_reinterpret_execution_history(session, registrar, api, state, attempts, change):
-    flow_id = await setup_plan(session, registrar)
+    flow_id = await setup_plan(session, registrar, legacy_accepted=True)
     original = await accepted_document(api, flow_id)
     amended = deepcopy(original)
     target = next(n for n in amended["nodes"] if n["address"].endswith("/my-gate"))

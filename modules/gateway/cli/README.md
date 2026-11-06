@@ -28,6 +28,7 @@ or Codex.
 | `adp-superplane-onboarding.py` | Workspace and provider onboarding — `adp superplane onboarding`: capability and readiness reporting, plan review, credential-reference binding, durable operation receipts |
 | `adp-task.py`, `adp_task_client.py` | Submit, monitor and abort work as a registered Task principal — `adp task` ([guide](../../../docs/adp-cli/tasks.md)) |
 | `adp-flow.py` | Follow and control AI-DLC delivery flows — `adp flow` ([guide](flow.md)) |
+| `adp-product.py` | Create, list, show, update, archive, restore and page scoped history — `adp product`; `show --revision N` reads a frozen revision. Discover, create, link, update and unlink governed Projects with `adp product project list\|bindings\|bind\|update\|unbind`. Binding uses `--input` with `{"mode":"create","name":"Scope name"}` or `{"mode":"select","project_id":"PROJECT_ID"}`; writes require `--idempotency-key`, update/lifecycle and Project mutations also require `--revision`, and unbind also requires `--yes`. Verify a saved source using `source-verify --binding ID`; use `source-operation --operation ID` and `source-bindings` to confirm verification before `source-session`, `source-discover --session ID --binding ID` and `source-apply --session ID --operation ID`. Mutations require the current `--revision` and a stable `--idempotency-key`; read the saved operation and Profile after uncertain outcomes. `source-discover` uses only the optional DevLake adapter, never native fallback; `source-apply` compares applied references with the saved Profile. |
 | `adp-doctor.py` | What this deployment offers you, and why a call failed — `adp capabilities`, `adp doctor` ([guide](doctor.md)). Read-only |
 | `command-manifest.json` | The checked list of commands, their mutation class and required capability. Held against the real dispatcher, install/update lists, download allowlist and server contract by `tests/cli/test_command_manifest.py` |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
@@ -61,8 +62,7 @@ curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh | sh -s -- \
     --gateway-url https://<CLOUDFRONT_DOMAIN>/api
 adp login          # approve once in the browser
 adp status         # confirm you are signed in
-adp claude setup   # or: adp codex setup
-claude             # or: adp codex
+adp claude         # or: adp codex — connects adp-tools automatically
 ```
 
 The installer puts `adp` and its helper siblings — the files listed in Contents
@@ -89,12 +89,56 @@ session files. Use `adp deployment add <name> --url <gateway>` to add that gatew
 once; both `setup` verbs only write config and never authenticate, so adding a
 second tool costs one command and no second sign-in.
 
-The `setup` verbs **merge** into `~/.claude/settings.json` and
-`~/.codex/config.toml` — your existing permissions, hooks, MCP servers and other
-providers survive — and re-running them changes nothing.
+`adp claude` supplies the MCP connection for its session; `adp codex` ensures its
+connection before launch. Run `adp claude setup` or `adp codex setup` only to
+configure the corresponding bare client command. Setup preserves unrelated
+permissions, hooks, MCP servers and model providers. ADP records ownership of its
+one `adp-tools` entry separately under `~/.adp/mcp-config/`, makes a private backup
+before each change and recovers an interrupted update on the next attempt. If an
+unowned or modified `adp-tools` entry already exists, ADP refuses to replace it:
+inspect and remove or rename that entry yourself, then retry. It does not delete
+another entry on logout.
+
+The default for the custom gateway is eager, named-tool discovery; neither
+client's native schema deferral is assumed. The bridge checks the complete
+serialized MCP descriptor array against a 128 KiB limit and reports an
+unsupported-capacity error instead of silently dropping tools. Descriptor bytes
+are **not** model-facing schema bytes or token counts; actual client/model
+context costs must be measured in each installed client before claiming deferral.
 
 > Prefer to read what you run? `curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh -o install.sh`,
 > read it, then `sh install.sh --gateway-url https://<CLOUDFRONT_DOMAIN>/api`.
+
+## FinOps inquiry waiting and recovery
+
+After `adp login`, select the Product, project and FinOps service explicitly.
+Keep the run ID returned by an accepted inquiry (HTTP 202 is not an answer).
+Waiting only reads that run; it does not start another provider turn or invoke
+`reconcile`. If the submission response was lost, list scoped runs and identify
+its existing receipt before waiting; if it cannot be identified, retain the
+unknown outcome rather than resubmitting. Replace the example IDs with those
+from your authorized Product:
+
+```bash
+adp service runs --product example-product --project example-project --service finops --json
+adp service wait --product example-product --project example-project --service finops --run-id RUN_ID --wait-seconds 30 --poll-seconds 5 --json
+adp service status --product example-product --project example-project --service finops --run-id RUN_ID --json
+adp service results --product example-product --project example-project --service finops --json
+adp service result show --product example-product --project example-project --service finops --result-id RESULT_ID --json
+```
+
+The explicit wait is 1–3600 seconds with a 1–60 second poll interval; each
+network read is limited to the remaining wait (and at most 10 seconds). Exit 0
+means the wait observed `succeeded` or a read was accepted, **not** that an
+accepted submit finished. Exit 2 is invalid input, 3 denied, 4 a conflict or
+uncertain mutation, 5 missing/unavailable data or invalid host response, 6 a
+terminal incomplete run (`partial`, `failed`, `blocked`, `cancelled`, `expired`),
+and 7 elapsed/interrupted wait with the durable run ID. Inspect `detail.state`
+and `detail.provider_state` even when the read itself exits 0; an
+`outcome_unknown` run can remain unknown after a wait expires. Read `results`
+then `result show` with the returned result ID to recover an answer without
+resubmission. A transient gateway failure exits 5; it does not authorize a
+new inquiry or silently change the original question.
 
 ## Several deployments at once
 
@@ -233,8 +277,11 @@ Follow and control AI-DLC delivery flows from the terminal, reusing the session
 `adp login` already established:
 
 ```bash
-adp flow list                    # your flows, worst news first
+adp flow list                    # live flows; archived flows are hidden by default
+adp flow list --include-archived # include archived history
 adp flow show FLOW_ID            # progress, blockers, gates, next eligible work
+adp flow archive FLOW_ID --reason "Plan superseded by a correction"
+adp flow unarchive FLOW_ID --reason "Resume review of this flow"
 adp flow watch FLOW_ID           # follow it; Ctrl-C detaches, it does NOT cancel
 adp flow plans FLOW_ID           # plan versions, and which revision is proposed
 adp flow draft preview --help    # preview a revision of an existing unapproved draft
@@ -254,6 +301,27 @@ returns to the same conversation. `create --file plan.json` reviews a prepared
 engine plan. Noninteractive acceptance requires both `--yes` and
 `--expect-plan-hash HASH`. See the [delivery flow guide](flow.md) for supported
 commands, deployment prerequisites and the remaining full-inception limitations.
+
+To add work to a plan that is already running, amend it rather than submitting a
+new one:
+
+```bash
+adp flow amendment propose FLOW_ID --request-text "add cleanup validation"
+adp flow amendment propose FLOW_ID --ref REF --kind eval --title T \
+    --placement insert_before --anchor FLOW/EPIC/WAVE/NODE \
+    --request-text "why this needs adding"
+adp flow amendment list FLOW_ID                   # what is waiting
+adp flow amendment preview FLOW_ID DRAFT_ID       # the whole graph change; applies nothing
+adp flow amendment accept FLOW_ID DRAFT_ID \
+    --expect-revision HASH --expect-base-version N --expect-base-hash HASH --yes
+```
+
+Placement resolves to explicit node addresses and edges — a wave number is not a
+placement — and never silently drops an existing dependency. Editing a draft makes
+a new revision and voids approval of the earlier one, so acceptance binds the
+revision and exact base plan version/hash you reviewed and exits nonzero, having
+changed nothing, when any has moved. Where the amendment API is not served, the commands
+report the capability gap; they never fall back to applying a plan.
 
 ## Using the scripts directly (no `adp`)
 
@@ -777,3 +845,5 @@ Authorized tenant selection and concurrent terminal isolation: [Tenant CLI](../.
 
 `adp access`, `adp admin access-request`, and `adp admin session revoke-user` are
 documented in [access and sessions](../../../docs/adp-cli/access-and-sessions.md).
+
+`adp onboard start --product PRODUCT_ID --project PROJECT_ID --revision N --idempotency-key KEY --json` starts or resumes the actor's saved session. `adp onboard resume --product PRODUCT_ID --project PROJECT_ID --session SESSION_ID --json` reads a known session without mutation; omit `--session` and pass `--revision` and `--idempotency-key` to find the active session. `adp onboard step --product PRODUCT_ID --project PROJECT_ID --session SESSION_ID --section financials --revision N --idempotency-key KEY --input FILE --json` saves a typed step update (`{"action":"later"}`, for example). Keep the same key, revision and input after an uncertain write. Use `adp onboard guide --product PRODUCT_ID --project PROJECT_ID --session SESSION_ID --revision N --idempotency-key KEY --input FILE --json` with a JSON guidance request such as `{"message":"What is missing?","mode":"deterministic"}`. Pass `--mode model` (or set `"mode":"model"` in the input file) to explicitly request one metered turn when a permitted model is configured; its suggestions are review-only, never applied. This returns at most two hints from the current authorized profile without changing its fields; `adp onboard step` and direct Product edits still work independently. All commands use the selected ADP deployment and existing sign-in.

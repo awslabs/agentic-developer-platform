@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Story (section 3.3)",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "type": "object",
+  "properties": {
+    "story_id": {"type": "string", "minLength": 1},
+    "title": {"type": "string"},
+    "size": {"oneOf": [{"type": "string"}, {"type": "number", "minimum": 0}]},
+    "assignee": {"type": "string"},
+    "status": {"type": "string"},
+    "risk_class": {"type": "string"},
+    "type": {"type": "string"},
+    "fixes_story_id": {"type": "string"}
+  },
+  "required": ["story_id"],
+  "unevaluatedProperties": false
+}

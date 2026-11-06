@@ -192,12 +192,15 @@ async def test_membership_removal_blocks_existing_worker(session, assignment):
     assert (await check(session, assignment)).reason is DenyReason.MEMBERSHIP_REVOKED
 
 
-async def test_role_demotion_blocks_existing_worker(session, assignment):
+async def test_role_demotion_preserves_workflow_rights_but_revocation_stops_worker(session, assignment):
     assert (await check(session, assignment)).permitted
     membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER))
     membership.role = "member"
     await session.flush()
-    assert (await check(session, assignment)).reason is DenyReason.ROLE_REVOKED
+    assert (await check(session, assignment)).permitted
+    membership.revoked_at = datetime.now(UTC)
+    await session.flush()
+    assert (await check(session, assignment)).reason is DenyReason.MEMBERSHIP_REVOKED
 
 
 async def test_token_lifetime_cannot_exceed_flow_deadline(session, assignment, monkeypatch):
@@ -303,10 +306,11 @@ async def broker_client(session, assignment, monkeypatch):
     session.add(ChannelTenantMap(provider="github", provider_scope_id="aws-e", org_id=ORG_A, installation_id=str(INSTALLATION_A)))
     await session.flush()
     caller = SimpleNamespace(tenant_id=ORG_A, invocation_id="worker", principal="worker#1")
+    journal = {}
     runtime = SimpleNamespace(
-        authenticate=lambda *_: (None, caller, None, assignment.grant),
+        authenticate=lambda *_: (SimpleNamespace(uid="worker-pod"), caller, None, assignment.grant),
         validate_flow=AsyncMock(),
-        store=SimpleNamespace(_read=lambda *_: assignment.execution),
+        store=SimpleNamespace(_read=lambda pk, sk: journal if pk == "PODTASK#worker-pod" and sk == "DELIVERY" else assignment.execution),
     )
 
     class SessionContext:
@@ -338,6 +342,7 @@ async def broker_client(session, assignment, monkeypatch):
             mint=mint,
             reviewer=reviewer,
             revoke=revoke,
+            journal=journal,
             body={"invocation_id": "worker", "installation_id": INSTALLATION_A, "repo_owner": "aws-e", "repo_name": "adp"},
         )
 
@@ -768,3 +773,71 @@ def test_codex_developer_uses_development_and_repair_authority(attempt, expected
     assert runtime_action(execution, SimpleNamespace(kind="eval", attempts=attempt)) is None
     execution.update(orchestration_continuation_receipt={"S": "receipt"}, orchestration_continuation_action={"S": "review"})
     assert runtime_action(execution, SimpleNamespace(kind="story", attempts=attempt)) is None
+
+
+async def _amend_preserving(session, assignment, *, change_definition=False):
+    """A human `plan_amended` hop from v1 to v2 that leaves (or edits) the node's definition."""
+    address = f"{assignment.flow.slug}/{assignment.node.epic_ref}/{assignment.node.wave_ref}/{assignment.node.node_ref}"
+    story = {"address": address, "kind": "story", "issue_ref": assignment.node.issue_ref, "criteria": ["done"]}
+    first = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == assignment.flow.id))
+    first.plan_document = {**first.plan_document, "nodes": [story], "edges": []}
+    first.superseded_at = datetime.now(UTC)
+    amended = OrchestrationDecision(
+        org_id=ORG_A,
+        flow_id=assignment.flow.id,
+        kind=DecisionKind.PLAN_AMENDED.value,
+        actor_id=APPROVER,
+        actor_role="org_admin",
+        actor_kind="human",
+        reason="re-pinned the wave evaluation",
+    )
+    session.add(amended)
+    await session.flush()
+    second = await _accept_policy(session, assignment.flow, _policy(limits=_limits(max_wall_clock_seconds=7200)), version=2)
+    after = {**story, "criteria": ["done", "and documented"]} if change_definition else dict(story)
+    second.plan_document = {**second.plan_document, "nodes": [after], "edges": []}
+    second.accepted_by_decision_id = amended.id
+    await session.flush()
+    return second
+
+
+async def test_preserving_amendment_keeps_authorizing_the_running_worker(session, assignment):
+    """An ordinary amendment that left this node untouched must not strand its worker (#7535).
+
+    The reviewer's installation-token mint ran through this check and was refused
+    with `stale_policy_version` after every re-pin of the wave evaluation, so each
+    review attempt died at bootstrap until the node exhausted its allowance.
+    """
+    await _amend_preserving(session, assignment)
+    result = await check(session, assignment)
+    assert result.permitted, result.reason
+    assert isinstance(result, WorkerCredentialDecision)
+    assert result.action is Action.DEVELOP
+    # The mediated path reports the version it bound: the policy now in force.
+    mediated = await check(session, assignment, "/internal/v1/agent/self/github-operation")
+    assert mediated.permitted and mediated.plan_version == 2
+
+
+async def test_amendment_that_changes_the_node_still_blocks_its_worker(session, assignment):
+    await _amend_preserving(session, assignment, change_definition=True)
+    assert (await check(session, assignment)).reason is DenyReason.STALE_POLICY_VERSION
+
+
+async def test_credential_check_reconciles_the_meter_before_reading_it(session, assignment, monkeypatch):
+    """An abandoned strict marker must be settled before the meter is read (#7451).
+
+    Review cycles and credential mints admit no new dispatch, so they were the
+    only readers of a meter that nothing else repaired: one expired marker made
+    every reviewer of the flow refuse with spend_unknown until an operator acted.
+    """
+    from decimal import Decimal
+
+    reconcile = AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("1.00"), has_pending=False))
+    read = AsyncMock(return_value=None)
+    monkeypatch.setattr("src.orchestration.flow_meter.reconcile_flow_meter", reconcile)
+    monkeypatch.setattr("src.orchestration.flow_meter.read_flow_meter", read)
+    result = await check(session, assignment)
+    assert result.permitted, result.reason
+    reconcile.assert_awaited_once()
+    assert reconcile.await_args.args[0] is session
+    read.assert_not_awaited()

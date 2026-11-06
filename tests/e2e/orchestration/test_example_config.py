@@ -79,7 +79,9 @@ class TestSchemaAgreesWithLoader:
         }
 
     def test_schema_environment_enum_matches_the_loader(self, schema):
-        assert tuple(schema["properties"]["environment"]["enum"]) == ALLOWED_ENVIRONMENTS
+        assert (
+            tuple(schema["properties"]["environment"]["enum"]) == ALLOWED_ENVIRONMENTS
+        )
 
     def test_schema_bound_ceilings_match_the_loader(self, schema):
         """A ceiling raised in code but not here would mislead a reader."""
@@ -99,3 +101,17 @@ class TestSchemaAgreesWithLoader:
     def test_schema_documents_that_the_loader_is_authoritative(self, schema):
         """The schema cannot express the secret scan, so it must say so."""
         assert "config.py" in schema["description"]
+
+    def test_product_epic_schema_requires_the_same_target_fields(self, schema):
+        product_epic = schema["properties"]["product_epic"]
+        assert set(product_epic["required"]) == {"product_id", "epic", "stories"}
+        assert product_epic["additionalProperties"] is False
+        assert product_epic["properties"]["stories"]["minItems"] == 2
+        assert product_epic["properties"]["stories"]["maxItems"] == 2
+        assert set(schema["$defs"]["repositoryTarget"]["required"]) == {
+            "repository",
+            "connection_ref",
+            "repository_id",
+            "installation_id",
+        }
+        assert schema["allOf"][0]["then"]["required"] == ["product_epic"]

@@ -61,7 +61,7 @@ async def gateway_http(client):
             listener.close()
 
 
-async def node_tools(url, now, *, driver=DRIVER, **operation):
+async def node_tools(url, now, *, driver=DRIVER, timeout=20, **operation):
     node = shutil.which("node")
     register = AGENT / "node_modules" / "ts-node" / "register" / "transpile-only.js"
     assert node and register.is_file(), "Install Node >=22 and run npm ci --include=dev in modules/agent-factory/agent"
@@ -78,7 +78,7 @@ async def node_tools(url, now, *, driver=DRIVER, **operation):
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=20)
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     finally:
         if process.returncode is None:
             process.kill()
@@ -153,7 +153,7 @@ async def test_user_wide_preference_tools_preserve_owner_isolation(
         "source_ref": {"repo": "chat/session-b"},
         "arrived_at": datetime.fromtimestamp(runtime[-1], UTC).isoformat(),
     }
-    provision_root(runtime[1].store, envelope, source="chat", human_id="other-human", now=datetime.fromtimestamp(runtime[-1], UTC))
+    provision_root(runtime[1].store, envelope, source="chat", human_id="other-human", team_id=team_id, now=datetime.fromtimestamp(runtime[-1], UTC))
     runtime[4]["uid"] = "other-chat-pod"
     response = await admit(client, runtime, run_id="run-b", envelope_digest=envelope_digest(envelope), pod_uid="other-chat-pod")
     assert response.status_code == 200, response.text

@@ -1,0 +1,19 @@
+environment         = "dev"
+aws_region          = "us-east-1"
+gitlab_private_zone = "example.test"
+
+platform_state = {
+  bucket = "example-platform-state"
+  key    = "dev/platform/terraform.tfstate"
+  region = "us-east-1"
+}
+
+groups = {
+  "42" = {
+    tenant_id        = "tenant-example"
+    path             = "tenant-6099d0819dbd827b77085dd3"
+    tags             = ["adp-group-42", "test-ci"]
+    access_level     = "ref_protected"
+    token_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/gitlab-runner/42-Ab12Cd"
+  }
+}

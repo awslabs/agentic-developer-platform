@@ -113,7 +113,7 @@ async def ensure_checkpoint_pr(session, *, node, report, execution, identity):
         proposed.state = "running"
         context = RunnerContext(identity, execution, datetime.now(UTC))
         for action in (Action.REVIEW, Action.REPAIR):
-            await authorize_shared_action(session, context, proposed, candidate, report.run_id, action, observation=True)
+            await authorize_shared_action(session, context, proposed, candidate, report.run_id, action, observation=True, provisional_checkpoint=True)
         await exited_run(report.run_id, node.org_id, report_exit_resolver(report))
         existing = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
         if existing is not None:

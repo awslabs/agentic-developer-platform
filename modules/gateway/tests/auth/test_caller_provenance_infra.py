@@ -75,13 +75,16 @@ class TestDynamicMachineClientRegistryWiring:
         assert AGENT_CLIENTS_PLACEHOLDER in deploy_all
 
     def test_gateway_role_can_read_the_registry_table(self):
-        main = GATEWAY_INFRA_MAIN.read_text()
-        policy_start = main.index('resource "aws_iam_role_policy" "gateway_identity_index"')
-        policy_end = main.index('\nresource "', policy_start + 1)
-        policy = main[policy_start:policy_end]
+        # The identity-index grants live in the consolidated identity managed
+        # policy, attached to the gateway service role (#7944).
+        source = (GATEWAY_INFRA_MAIN.parent / "gateway-role-policies.tf").read_text()
+        policy_start = source.index("gateway_role_identity_statements = concat(")
+        policy_end = source.index("gateway_role_data_statements = concat(", policy_start)
+        policy = source[policy_start:policy_end]
+        attachment = source[source.index('resource "aws_iam_role_policy_attachment" "gateway_role"') :]
 
         normalized_policy = re.sub(r"\s+", " ", policy)
-        assert "role = local.gateway_service_irsa_role_name" in normalized_policy
+        assert re.search(r"role\s+= local\.gateway_service_irsa_role_name", attachment[: attachment.index("\n}\n")])
         assert 'Sid = "AgentClientRegistryRead"' in normalized_policy
         assert 'Action = ["dynamodb:GetItem"]' in normalized_policy
         assert "Resource = [module.cognito.agent_clients_table_arn]" in normalized_policy
@@ -156,7 +159,7 @@ class TestEveryRouteMapsTheIdentityHeader:
         # method.request.header reference) would forward the client's value.
         match = re.search(rf'"{re.escape(CALLER_HEADER_PARAM)}"\s*=\s*"(.*?)"', tf)
         assert match is not None
-        blank_local = re.search(r"blank_caller_identity = \{(.*?)\}", tf, re.DOTALL)
+        blank_local = re.search(r"blank_caller_identity = \{(.*?)\n  \}", tf, re.DOTALL)
         assert blank_local is not None, "local.blank_caller_identity must exist"
         assert "\"''\"" in blank_local.group(1), "blanking must use API Gateway's static-literal syntax, not a header passthrough"
         assert "method.request.header" not in blank_local.group(1)
@@ -167,10 +170,10 @@ class TestEdgeProofIsNotLogged:
     def test_data_tracing_is_disabled_when_edge_proof_is_injected(self):
         tf = APIGW_MAIN_TF.read_text()
 
-        verified_mapping = re.search(r"verified_caller_identity = \{(.*?)\}", tf, re.DOTALL)
+        verified_mapping = re.search(r"verified_caller_identity = \{(.*?)\n  \}", tf, re.DOTALL)
         assert verified_mapping is not None
         assert PROVENANCE_HEADER_PARAM in verified_mapping.group(1)
-        assert "random_password.edge_provenance.result" in verified_mapping.group(1)
+        assert "var.edge_provenance_secret" in verified_mapping.group(1)
 
         settings_start = tf.index('resource "aws_api_gateway_method_settings" "all"')
         settings_end = tf.index('\nresource "', settings_start + 1)
@@ -363,14 +366,15 @@ class TestPentestClientDeploymentContract:
 
         deploy = DEPLOY_ALL.read_text()
         factory_start = deploy.index('step "Step 10/11: Deploy agent-factory"')
-        factory_apply = deploy.index("terraform apply -var-file=terraform.tfvars -auto-approve", factory_start)
-        client_output = deploy.index("terraform output -raw pentest_actor_client_id", factory_apply)
+        factory_apply = deploy.index("terraform apply -var-file=terraform.tfvars", factory_start)
+        retirement_verify = deploy.index('python3 "$SCRIPT_DIR/upgrade-chat.py" verify', factory_apply)
+        client_output = deploy.index("terraform output -raw pentest_actor_client_id", retirement_verify)
         configmap_patch = deploy.index("kubectl patch configmap bedrockgateway-config", client_output)
         rollout_restart = deploy.index("kubectl rollout restart deployment/bedrockgateway", configmap_patch)
         rollout_status = deploy.index("wait_for_gateway_rollout", rollout_restart)
         agent_gateway = deploy.index('step "Step 10b/11: Build and deploy agent gateway"', rollout_status)
 
-        assert factory_apply < client_output < configmap_patch < rollout_restart < rollout_status < agent_gateway
+        assert factory_apply < retirement_verify < client_output < configmap_patch < rollout_restart < rollout_status < agent_gateway
         reconciliation = deploy[factory_apply:agent_gateway]
         assert '[ "$DEPLOY_GATEWAY" = true ] && [ "$ENVIRONMENT" = "dev" ]' in reconciliation
         assert "BG_COGNITO_PENTEST_CLIENT_ID" in reconciliation
@@ -408,12 +412,12 @@ ok() { printf 'OK: %s\n' "$1"; }
 class TestEdgeProvenanceSecret:
     def test_iam_routes_set_identity_and_independent_proof(self):
         tf = APIGW_MAIN_TF.read_text()
-        verified_local = re.search(r"verified_caller_identity = \{(.*?)\}", tf, re.DOTALL)
+        verified_local = re.search(r"verified_caller_identity = \{(.*?)\n  \}", tf, re.DOTALL)
 
         assert verified_local is not None
         assert '"context.identity.userArn"' in verified_local.group(1)
         assert PROVENANCE_HEADER_PARAM in verified_local.group(1)
-        assert "random_password.edge_provenance.result" in verified_local.group(1)
+        assert "var.edge_provenance_secret" in verified_local.group(1)
 
     def test_proof_is_stored_as_secure_ssm_parameter(self):
         tf = APIGW_MAIN_TF.read_text()

@@ -8,6 +8,10 @@ on:
       - 'modules/domain-apps/superplane/infra/shared-operation-authority/**'
       - 'modules/domain-apps/cyber/releases/browser-runtime.json'
       - 'modules/agent-factory/webhook-ingress/**'
+      - 'modules/agent-factory/agent/src/**'
+      - 'modules/agent-factory/client-workflows/**'
+      - 'modules/agent-factory/rules/workflows/**'
+      - '.github/workflows/*.yml'
       - 'modules/domain-apps/superplane/infra/provider-authority/**'
       - 'environments/*/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-ci.yml'
@@ -216,6 +220,7 @@ jobs:
         run: |
           chmod +x scripts/package-lambdas.sh
           ./scripts/package-lambdas.sh
+          python3 scripts/check-comment-authority-package.py dist/github.zip
           echo "Package artifacts:"
           ls -lh dist/*.zip
 

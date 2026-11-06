@@ -8,6 +8,8 @@ import { MCPOnboardPlanningAgent } from './MCPOnboardPlanningAgent';
 import { CodeGenerationAgent } from './CodeGenerationAgent';
 import { WorkspaceManager } from './WorkspaceManager';
 import { ApprovalService } from '../services/ApprovalService';
+import { bindPostedApproval, type PostedApproval } from '../services/posted-approval';
+import { randomUUID } from 'crypto';
 import { ErrorRecoveryService } from '../services/ErrorRecoveryService';
 
 const MAX_PLAN_REVISIONS = 5;
@@ -24,6 +26,9 @@ export class AgentOrchestrator {
   private approvalService: ApprovalService;
   private errorRecovery: ErrorRecoveryService;
   private state: AgentState | null = null;
+  private readonly runId = randomUUID();
+  private readonly approvalIds = new Map<number, string>();
+  private pendingApproval: PostedApproval | null = null;
 
   constructor(
     logger: Logger,
@@ -200,10 +205,12 @@ export class AgentOrchestrator {
 
     await this.progressTracker.updateChecklistItem(0, true);
 
-    this.state!.planCommentId = await this.githubClient.createComment(
-      this.state!.issueContext.issueNumber,
-      planComment
-    );
+    const receipt = await this.githubClient.postApprovalPlan(this.state!.issueContext.issueNumber, planComment);
+    this.pendingApproval = bindPostedApproval(this.approvalRequestId(0), this.runId,
+      this.githubClient.getRepository().owner, this.githubClient.getRepository().repo,
+      this.state!.issueContext.issueNumber, planComment, receipt, 30 * 60_000);
+    if (!this.pendingApproval) throw new Error('The posted plan could not be verified');
+    this.state!.planCommentId = Number(receipt.id);
 
     this.state!.phase = 'awaiting_approval';
     await this.stateManager.saveState(this.state!);
@@ -225,10 +232,13 @@ export class AgentOrchestrator {
     const planComment =
       `## 🔄 Revised Implementation Plan\n\n` +
       this.planningAgent.formatPlanComment(revisedPlan, this.approvalRequestId(revision));
-    this.state!.planCommentId = await this.githubClient.createComment(
-      this.state!.issueContext.issueNumber,
-      planComment
-    );
+    if (this.pendingApproval) this.pendingApproval.state = 'invalidated';
+    const receipt = await this.githubClient.postApprovalPlan(this.state!.issueContext.issueNumber, planComment);
+    this.pendingApproval = bindPostedApproval(this.approvalRequestId(revision), this.runId,
+      this.githubClient.getRepository().owner, this.githubClient.getRepository().repo,
+      this.state!.issueContext.issueNumber, planComment, receipt, 30 * 60_000);
+    if (!this.pendingApproval) throw new Error('The revised plan could not be verified');
+    this.state!.planCommentId = Number(receipt.id);
 
     await this.stateManager.saveState(this.state!);
   }
@@ -239,16 +249,16 @@ export class AgentOrchestrator {
    * revision N+1 (issue #4181 — named, not positional).
    */
   private approvalRequestId(revision: number): string {
-    return `plan-${this.state!.issueContext.issueNumber}-r${revision}`;
+    if (!this.approvalIds.has(revision)) this.approvalIds.set(revision, randomUUID());
+    return this.approvalIds.get(revision)!;
   }
 
   private async waitForApproval(revision: number): Promise<ApprovalResult> {
     this.logger.info('Waiting for approval', { component: 'AgentOrchestrator', revision });
-    const result = await this.approvalService.pollForApproval(
-      this.state!.issueContext.issueNumber,
-      new Date(),
-      this.approvalRequestId(revision)
-    );
+    if (!this.pendingApproval || this.pendingApproval.requestId !== this.approvalRequestId(revision)) {
+      return { outcome: 'unavailable', feedback: 'No current posted approval request.' };
+    }
+    const result = await this.approvalService.pollForApproval(this.state!.issueContext.issueNumber, this.pendingApproval);
     if (result.outcome === 'allowed-once') {
       await this.progressTracker.updateChecklistItem(1, true);
     }

@@ -214,6 +214,11 @@ def resolve_allowed_principals(
     repo's content is stored but not readable — which is recoverable. The other
     direction silently publishes a private repo, which is not.
     """
+    from job_client import enabled, call, job
+    if enabled():
+        if org_repo != job()["source"]:
+            raise ValueError("Repository differs from ingestion admission")
+        return call("repo_acl")
     if token is None:
         token = os.environ.get("GITHUB_TOKEN") or _read_token_file(token_path)
 

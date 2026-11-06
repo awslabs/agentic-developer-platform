@@ -121,6 +121,7 @@ on:
       - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
       - '.github/security/cfn-nag-suppressions.yml'
       - 'codebuild/security_image_targets.py'
+      - 'codebuild/security-image-recipes.json'
       - 'codebuild/exact_image_disposition.py'
       - 'codebuild/exact_image_components.py'
       - 'modules/domain-apps/superplane/images/skypilot/cache-maintenance/**'
@@ -247,6 +248,7 @@ on:
       - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
       - '.github/security/cfn-nag-suppressions.yml'
       - 'codebuild/security_image_targets.py'
+      - 'codebuild/security-image-recipes.json'
       - 'codebuild/exact_image_disposition.py'
       - 'codebuild/exact_image_components.py'
       - 'modules/domain-apps/superplane/images/skypilot/cache-maintenance/**'
@@ -268,7 +270,7 @@ on:
       - main
 
 concurrency:
-  group: ${{ github.workflow }}-script-tests-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-script-tests-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.sha }}
   cancel-in-progress: true
 
 jobs:

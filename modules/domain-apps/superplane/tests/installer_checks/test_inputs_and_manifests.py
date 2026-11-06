@@ -617,3 +617,33 @@ def test_installer_pins_production_auth_and_reviewed_origin(environment, release
     )
     assert json.loads(variables["CORS_ORIGINS"]["value"]) == [environment["origin"]]
     assert "secretKeyRef" in variables["JWT_SECRET_KEY"]["valueFrom"]
+
+
+@pytest.mark.parametrize("distinct", [None, False, True])
+def test_approval_policy_is_rendered_for_all_installations(
+    environment, release, distinct
+):
+    if distinct is not None:
+        environment["require_distinct_approver"] = distinct
+    validate(environment, release)
+    deployment = next(
+        d
+        for d in render(environment, release)
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == "superplane-api"
+    )
+    values = {
+        v["name"]: v.get("value")
+        for v in deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert values["SUPERPLANE_REQUIRE_DISTINCT_APPROVER"] == (
+        "true" if distinct else "false"
+    )
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
+def test_approval_policy_rejects_ambiguous_installer_inputs(
+    environment, release, value
+):
+    environment["require_distinct_approver"] = value
+    with pytest.raises(Refusal, match="require_distinct_approver must be a boolean"):
+        validate(environment, release)

@@ -420,7 +420,7 @@ class TestObservationCannotBreakTheProxy:
         """
         with (
             patch("src.proxy.bedrock_routing.get_settings", return_value=SimpleNamespace(bedrock_routing_shadow_mode=True)),
-            patch("src.shared.database.get_session_factory", side_effect=RuntimeError("db is down")),
+            patch("src.shared.database.get_accounting_session_factory", side_effect=RuntimeError("db is down")),
         ):
             assert await resolve_shadow_target(_token_context()) is None
 
@@ -438,7 +438,7 @@ class TestObservationCannotBreakTheProxy:
 
         with (
             patch("src.proxy.bedrock_routing.get_settings", return_value=SimpleNamespace(bedrock_routing_shadow_mode=True)),
-            patch("src.shared.database.get_session_factory", return_value=MagicMock(return_value=session)),
+            patch("src.shared.database.get_accounting_session_factory", return_value=MagicMock(return_value=session)),
             patch(
                 "src.proxy.bedrock_routing.bedrock_routing_resolver.resolve",
                 AsyncMock(side_effect=KeyError("unexpected row shape")),
@@ -459,7 +459,7 @@ class TestObservationCannotBreakTheProxy:
 
         with (
             patch("src.proxy.bedrock_routing.get_settings", return_value=SimpleNamespace(bedrock_routing_shadow_mode=True)),
-            patch("src.shared.database.get_session_factory", side_effect=RuntimeError("db is down")),
+            patch("src.shared.database.get_accounting_session_factory", side_effect=RuntimeError("db is down")),
             caplog.at_level(logging.WARNING, logger="bedrockgateway.proxy.routing"),
         ):
             await resolve_shadow_target(_token_context())
@@ -494,7 +494,7 @@ class TestFlagIsARealOffSwitch:
         session_factory = MagicMock()
         with (
             patch("src.proxy.bedrock_routing.get_settings", return_value=SimpleNamespace(bedrock_routing_shadow_mode=False)),
-            patch("src.shared.database.get_session_factory", session_factory),
+            patch("src.shared.database.get_accounting_session_factory", session_factory),
         ):
             assert await resolve_shadow_target(_token_context()) is None
         session_factory.assert_not_called()
@@ -509,7 +509,8 @@ class TestFlagIsARealOffSwitch:
 
         with (
             patch("src.proxy.bedrock_routing.get_settings", return_value=SimpleNamespace(bedrock_routing_shadow_mode=True)),
-            patch("src.shared.database.get_session_factory", return_value=MagicMock(return_value=session)),
+            patch("src.shared.database.get_accounting_session_factory", return_value=MagicMock(return_value=session)),
+            patch("src.shared.database.get_session_factory", side_effect=AssertionError("request pool used for shadow read")),
             patch("src.proxy.bedrock_routing.bedrock_routing_resolver.resolve", resolve),
         ):
             target = await resolve_shadow_target(_token_context())

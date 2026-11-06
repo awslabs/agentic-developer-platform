@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tools-facade
+  namespace: adp-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tools-facade
+  template:
+    metadata:
+      labels:
+        app: tools-facade
+    spec:
+      serviceAccountName: tools-facade
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tools-facade
+          image: REPLACE_WITH_TOOLS_FACADE_IMAGE
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          envFrom:
+            - configMapRef:
+                name: adp-tool-adapter-runtime
+                optional: true
+          env:
+            - name: AWS_REGION
+              value: __AWS_REGION__
+            - name: ADP_TOOLS_FACADE_ROLE_ARN
+              value: __TOOLS_FACADE_IRSA_ROLE_ARN__
+            - name: ADP_TOOLS_INTERNAL_AUTH_URL
+              value: __TOOLS_INTERNAL_AUTH_URL__
+            - name: ADP_TOOLS_AGENTCORE_URL
+              value: __TOOLS_AGENTCORE_URL__
+            - name: ADP_TOOLS_ASSERTION_KEY_ARN
+              value: __TOOLS_ASSERTION_KEY_ARN__
+            - name: ADP_TOOLS_EXECUTION_TABLE
+              value: __TOOLS_EXECUTION_TABLE__
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi

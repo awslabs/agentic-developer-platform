@@ -79,7 +79,16 @@ from .test_pending_amendments import ORG_A, accepted_flow, base_proposal
 REPO = "acme/platform"
 ISSUE = 4529
 INSTALLATION = 88991122
+REPOSITORY_ID = 123456789
 ASKER = "cognito-sub-asker"
+
+
+@pytest.fixture(autouse=True)
+def verified_authoring_source(monkeypatch):
+    async def source(_session, *, org_id, flow_id):
+        return REPO, ISSUE, INSTALLATION, REPOSITORY_ID
+
+    monkeypatch.setattr("src.orchestration.engine_commands._authoring_source", source)
 
 
 @pytest.fixture
@@ -235,7 +244,7 @@ async def replan(
         flow_id=flow_id,
         context=token(org_id, user_id),
         access=access_control(),
-        source=(REPO, ISSUE, INSTALLATION) if source is ... else source,
+        source=(REPO, ISSUE, INSTALLATION, REPOSITORY_ID) if source is ... else source,
         publishes=report.pending_authoring,
         command_id=command_id or str(uuid4()),
     )
@@ -455,6 +464,7 @@ class TestOneHumanAskOneAuthor:
             repo=REPO,
             issue=ISSUE,
             installation_id=INSTALLATION,
+            repository_id=REPOSITORY_ID,
         )
 
         assert again is None
@@ -491,6 +501,7 @@ class TestOneHumanAskOneAuthor:
             repo=REPO,
             issue=ISSUE,
             installation_id=INSTALLATION,
+            repository_id=REPOSITORY_ID,
         )
 
         assert again is not None, "a queued assignment is still owed and must be re-publishable"
@@ -573,13 +584,14 @@ class TestPublishOutcomes:
         await replan(session, report, flow_id=flow_id)
         sqs = FakeSQS()
 
-        def exploding_factory():
+        async def exploding_marker(*args, **kwargs):
             raise RuntimeError("database unavailable")
 
+        monkeypatch.setattr("src.orchestration.authoring_dispatch.mark_request_dispatched", exploding_marker)
         monkeypatch.setattr("src.orchestration.authoring_dispatch._get_sqs_client", lambda _region: sqs)
         published = await publish_authoring(
             report.pending_authoring[0],
-            session_factory=exploding_factory,
+            session_factory=session.info["factory"],
             queue_url="https://sqs.test/authoring.fifo",
         )
 

@@ -483,3 +483,124 @@ run "a_targeted_plan_still_adds_the_checked_subnets_to_the_cluster" {
     error_message = "A targeted cluster plan must still widen the subnet set to the existing subnets plus the checked additions."
   }
 }
+
+
+run "second_expansion_preserves_all_subnets_in_the_same_az" {
+  command = plan
+  variables {
+    additional_private_subnet_ids_by_az = {
+      "us-east-1a" = ["subnet-0aaaaaaaaaaaaaaa1", "subnet-0aaaaaaaaaaaaaaa2"]
+      "us-east-1b" = "subnet-0bbbbbbbbbbbbbbb2"
+    }
+  }
+  override_data {
+    target = data.aws_subnet.additional_private["us-east-1a/subnet-0aaaaaaaaaaaaaaa2"]
+    values = {
+      id                         = "subnet-0aaaaaaaaaaaaaaa2"
+      vpc_id                     = "vpc-00000000000000000"
+      availability_zone          = "us-east-1a"
+      map_public_ip_on_launch    = false
+      available_ip_address_count = 4000
+    }
+  }
+  override_data {
+    target = data.aws_route_table.additional_private["us-east-1a/subnet-0aaaaaaaaaaaaaaa2"]
+    values = {
+      routes = [{ cidr_block = "0.0.0.0/0", nat_gateway_id = "nat-00000000000000001", gateway_id = "" }]
+    }
+  }
+  assert {
+    condition = aws_eks_cluster.main.vpc_config[0].subnet_ids == toset(concat(
+      var.private_subnet_ids, ["subnet-0aaaaaaaaaaaaaaa1", "subnet-0aaaaaaaaaaaaaaa2", "subnet-0bbbbbbbbbbbbbbb2"]
+    ))
+    error_message = "Another expansion must keep every original and earlier additional subnet."
+  }
+}
+
+run "second_subnet_in_wrong_az_is_refused" {
+  command = plan
+  variables {
+    additional_private_subnet_ids_by_az = {
+      "us-east-1a" = ["subnet-0aaaaaaaaaaaaaaa1", "subnet-0aaaaaaaaaaaaaaa2"]
+    }
+  }
+  override_data {
+    target = data.aws_subnet.additional_private["us-east-1a/subnet-0aaaaaaaaaaaaaaa2"]
+    values = {
+      id                         = "subnet-0aaaaaaaaaaaaaaa2"
+      vpc_id                     = "vpc-00000000000000000"
+      availability_zone          = "us-east-1b"
+      map_public_ip_on_launch    = false
+      available_ip_address_count = 4000
+    }
+  }
+  override_data {
+    target = data.aws_route_table.additional_private["us-east-1a/subnet-0aaaaaaaaaaaaaaa2"]
+    values = {
+      routes = [{ cidr_block = "0.0.0.0/0", nat_gateway_id = "nat-00000000000000001", gateway_id = "" }]
+    }
+  }
+  expect_failures = [data.aws_subnet.additional_private]
+}
+
+run "exhausted_subnet_is_retained_only_after_live_membership_read" {
+  command = plan
+  variables {
+    capacity_existing_cluster = "adp-dev-eks-cluster"
+    additional_private_subnet_ids_by_az = {
+      "us-east-1a" = "subnet-0aaaaaaaaaaaaaaa1"
+      "us-east-1b" = "subnet-0bbbbbbbbbbbbbbb2"
+    }
+  }
+  override_data {
+    target = data.aws_eks_cluster.capacity_existing[0]
+    values = {
+      vpc_config = [{ vpc_id = "vpc-00000000000000000", subnet_ids = ["subnet-00000000000000001", "subnet-00000000000000002", "subnet-0aaaaaaaaaaaaaaa1"] }]
+    }
+  }
+  override_data {
+    target = data.aws_subnet.additional_private["us-east-1a"]
+    values = {
+      id                         = "subnet-0aaaaaaaaaaaaaaa1"
+      vpc_id                     = "vpc-00000000000000000"
+      availability_zone          = "us-east-1a"
+      map_public_ip_on_launch    = false
+      available_ip_address_count = 0
+    }
+  }
+  assert {
+    condition     = length(aws_eks_cluster.main.vpc_config[0].subnet_ids) == 4
+    error_message = "An exhausted live subnet must remain while new capacity is added."
+  }
+}
+
+run "exhausted_new_subnet_is_refused_even_with_existing_cluster" {
+  command = plan
+  variables {
+    capacity_existing_cluster           = "adp-dev-eks-cluster"
+    additional_private_subnet_ids_by_az = { "us-east-1a" = "subnet-0aaaaaaaaaaaaaaa1" }
+  }
+  override_data {
+    target = data.aws_eks_cluster.capacity_existing[0]
+    values = {
+      vpc_config = [{ vpc_id = "vpc-00000000000000000", subnet_ids = ["subnet-00000000000000001", "subnet-00000000000000002"] }]
+    }
+  }
+  override_data {
+    target = data.aws_subnet.additional_private["us-east-1a"]
+    values = {
+      id                         = "subnet-0aaaaaaaaaaaaaaa1"
+      vpc_id                     = "vpc-00000000000000000"
+      availability_zone          = "us-east-1a"
+      map_public_ip_on_launch    = false
+      available_ip_address_count = 0
+    }
+  }
+  expect_failures = [data.aws_subnet.additional_private]
+}
+
+run "another_cluster_cannot_authorize_exhausted_subnet_retention" {
+  command = plan
+  variables { capacity_existing_cluster = "different-cluster" }
+  expect_failures = [var.capacity_existing_cluster]
+}

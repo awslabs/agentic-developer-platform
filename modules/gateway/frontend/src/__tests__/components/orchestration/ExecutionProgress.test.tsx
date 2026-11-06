@@ -129,6 +129,24 @@ describe('a typed block is routable on screen', () => {
     expect(block.textContent).toMatch(/approve the wave gate for story-a/);
   });
 
+  it('shows the attested reviewer startup cause beside the repair action', () => {
+    renderPanel({
+      execution: execution({
+        status: 'blocked',
+        block: {
+          ...blocked.block!,
+          code: 'review_bootstrap_failing',
+          required_input: 'Repair the reviewer startup, then resume the continuation',
+          detail: 'model_policy_snapshot: Gateway refused reviewer startup: model-policy snapshot missing',
+        },
+      }),
+    });
+    const block = screen.getByTestId(`execution-block-${NODE_REF}`);
+    expect(block.textContent).toMatch(/model_policy_snapshot/);
+    expect(block.textContent).toMatch(/snapshot missing/);
+    expect(block.textContent).toMatch(/resume the continuation/);
+  });
+
   it('lists the outstanding approvals', () => {
     renderPanel({ execution: blocked });
 

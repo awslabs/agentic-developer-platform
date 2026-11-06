@@ -9,7 +9,11 @@ from pathlib import Path
 
 def context(env, read):
     workflow = env["CONTEXT_WORKFLOW"]
-    if workflow not in {".github/workflows/gateway-deploy.yml", ".github/workflows/run-gateway-migrations.yml"}:
+    if workflow not in {
+        ".github/workflows/gateway-deploy.yml",
+        ".github/workflows/run-gateway-migrations.yml",
+        ".github/workflows/gateway-frontend-deploy.yml",
+    }:
         raise ValueError("unapproved context workflow")
     source, revision = env["CONTEXT_SOURCE"], env["CONTEXT_REVISION"]
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (source, revision)):
@@ -24,6 +28,12 @@ def context(env, read):
     if actual["name"] != cluster or actual["arn"].split(":")[3:] != [region, account, "cluster/" + cluster]:
         raise ValueError("deployment cluster identity differs from configuration")
     names = ["account_id", "customer_account_id", "customer_aws_label", "customer_user_id", "environment"]
+    if workflow.endswith("gateway-deploy.yml"):
+        names.extend(("product_cases", "proof_phase"))
+        if "INPUT_RELEASE_GROUP" in env:
+            names.append("release_group")
+    if workflow.endswith("gateway-frontend-deploy.yml"):
+        names = ["environment", "adp_approved_revision", "product_cases"]
     if workflow.endswith("run-gateway-migrations.yml"):
         names.extend(("expected_image", "expected_image_tag", "expected_image_digest"))
     return {

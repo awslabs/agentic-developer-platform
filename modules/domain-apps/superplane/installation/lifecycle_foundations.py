@@ -30,12 +30,13 @@ def validate(env):
         "Lifecycle policy must contain bounded UTF-8 JSON",
     )
     from .runtime_approval import decode_json
-    from workspace_provisioning.lifecycle_policy import LifecyclePolicy
+    from workspace_provisioning.lifecycle_policy import select_policy
 
     document = decode_json(raw.encode())
     require(
         isinstance(document, dict)
-        and set(document) == {"version", "tenants"}
+        and {"version", "tenants"} <= set(document)
+        and not set(document) - {"version", "tenants", "workspace_policies"}
         and type(document["version"]) is int
         and document["version"] == 1
         and isinstance(document["tenants"], dict)
@@ -43,7 +44,7 @@ def validate(env):
         "Lifecycle policy must name only this immutable domain organization",
     )
     try:
-        policy = LifecyclePolicy.model_validate(document["tenants"][env["org_id"]])
+        policy = select_policy(document, env["org_id"])
     except Exception:
         raise Refusal(
             "Lifecycle policy does not satisfy the maintained runtime schema"
@@ -63,6 +64,14 @@ def validate(env):
         and policy.operation_max_runtime_seconds <= worker["active_deadline_seconds"],
         "Lifecycle provider sessions need more than 900 seconds within the worker deadline",
     )
+    for workspace in document.get("workspace_policies", {}).get(env["org_id"], {}):
+        scoped = select_policy(document, env["org_id"], workspace)
+        require(
+            900
+            < scoped.operation_max_runtime_seconds
+            <= worker["active_deadline_seconds"],
+            "Workspace policy runtime exceeds the installed worker deadline",
+        )
     state = config["state"]
     require(
         isinstance(state, dict) and set(state) == {"storage_class", "capacity"},
@@ -279,6 +288,7 @@ def probe_job(installer, claim_uid):
                     "nodeSelector": copy.deepcopy(config["node_selector"]),
                     "securityContext": {
                         "fsGroup": 65532,
+                        "fsGroupChangePolicy": "OnRootMismatch",
                         "seccompProfile": {"type": "RuntimeDefault"},
                     },
                     "containers": [
@@ -361,7 +371,33 @@ def probe_account(installer, *, create):
     return {"uid": account["metadata"]["uid"]}
 
 
-def prepare(installer):
+def volume_read_request(installer):
+    """Record the bound namespace-owned claim before its exact PV read is granted."""
+    desired = next(
+        doc
+        for doc in documents(installer.env)
+        if doc["kind"] == "PersistentVolumeClaim"
+    )
+    actual = installer.existing(desired)
+    require(actual is not None, "Lifecycle state claim is missing")
+    same(installer, actual, desired)
+    volume = actual.get("spec", {}).get("volumeName")
+    require(
+        actual.get("status", {}).get("phase") == "Bound"
+        and isinstance(volume, str)
+        and re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", volume),
+        "Lifecycle state must be bound before selecting its exact PV read",
+    )
+    return {
+        "namespace": installer.env["namespace"],
+        "name": desired["metadata"]["name"],
+        "uid": actual["metadata"]["uid"],
+        "volume_name": volume,
+        "storage_class": installer.env[KEY]["state"]["storage_class"],
+    }
+
+
+def prepare(installer, *, verify_volume=True):
     if KEY not in installer.env:
         return
     desired = documents(installer.env)
@@ -409,9 +445,16 @@ def prepare(installer):
             "Existing state probe differs from the owned recipe",
         )
     installer.wait_job(job)
-    evidence.update(snapshot(installer))
+    if verify_volume:
+        evidence.update(snapshot(installer))
+        evidence["retained"] = True
+    else:
+        evidence.update(snapshot(installer, bound=False))
+        evidence["volume_read_request"] = volume_read_request(installer)
+        # A successful write probe and retained class do not prove the actual
+        # PV's ownership/retention. Normal execution must still read that PV.
+        evidence.pop("retained", None)
     evidence["writable_probe"] = job["metadata"]["name"]
-    evidence["retained"] = True
     installer.save()
 
 

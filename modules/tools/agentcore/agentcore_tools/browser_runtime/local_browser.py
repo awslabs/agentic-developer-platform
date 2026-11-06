@@ -82,6 +82,8 @@ def investigation_request(operation, payload):
         + (STARTUP_SECONDS if operation == "start" else ACTION_SECONDS)
         + 20
     )
+    if operation == "start" and "deadline_at" in payload:
+        deadline = min(deadline, time.monotonic() + max(0, payload["deadline_at"] - time.time()))
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         while True:
             try:
@@ -160,6 +162,9 @@ def serve(directory):
                     operation, payload = message["operation"], message["payload"]
                     try:
                         if operation == "start" and actor is None:
+                            from agentcore_tools.browser_runtime.investigation_browser import validate_start
+
+                            payload = validate_start(payload)
                             actor = ProcessActor(
                                 payload,
                                 None,
@@ -173,7 +178,7 @@ def serve(directory):
                                 ],
                             )
                             result = actor.initial()
-                            result["lease_seconds"] = LEASE_SECONDS
+                            result["lease_seconds"] = max(0, int(actor.deadline - time.monotonic()))
                         elif operation in {"step", "close"} and actor is not None:
                             result = actor.call(
                                 {

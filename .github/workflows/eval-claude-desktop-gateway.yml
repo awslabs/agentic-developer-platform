@@ -1,0 +1,149 @@
+name: Eval — Claude Desktop Gateway
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || format('Claude Desktop eval PR {0}', github.event.pull_request.number) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      adp_correlation:
+        description: Engine dispatch correlation
+        required: true
+        type: string
+      adp_source_revision:
+        description: Reviewed repository revision
+        required: true
+        type: string
+      adp_definition_revision:
+        description: Reviewed workflow definition revision
+        required: true
+        type: string
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/eval-claude-desktop-gateway.yml'
+      - 'platform/evals/claude-desktop-gateway/**'
+      - 'platform/evals/lib/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('desktop-eval-pr-{0}', github.event.pull_request.number) || 'desktop-eval-live-dev' }}
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.24'
+          cache: false
+      - name: Install shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck
+          fi
+      - name: Validate workflow and shell syntax
+        run: |
+          set -euo pipefail
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/eval-claude-desktop-gateway.yml
+          go install github.com/mikefarah/yq/v4@v4.47.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          bash -n platform/evals/claude-desktop-gateway/run-eval.sh
+          bash -n platform/evals/claude-desktop-gateway/tests/test-run-eval-dry-run.sh
+          shellcheck -x platform/evals/claude-desktop-gateway/run-eval.sh platform/evals/claude-desktop-gateway/tests/test-run-eval-dry-run.sh
+          python3 -m py_compile platform/evals/claude-desktop-gateway/conversation.py
+      - name: Dry-run tests only (no AWS or Kubernetes)
+        run: bash platform/evals/claude-desktop-gateway/tests/test-run-eval-dry-run.sh
+
+  eval:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    environment: adp-gateway-deploy-dev
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: dev
+      AWS_REGION: us-east-1
+      EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      EVAL_POD_NAMESPACE: adp-gateway-evals
+      ADP_DB_USER: ${{ vars.ADP_DB_USER }}
+      EXPECTED_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      EXPECTED_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the running workflow definition
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_DEFINITION_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_DEFINITION_REVISION"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_DEFINITION_REVISION"
+          git merge-base --is-ancestor "$EXPECTED_SOURCE_REVISION" HEAD
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          persist-credentials: false
+      - name: Verify the source under evaluation
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+      - name: Establish protected dev identity
+        id: trusted
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: us-east-1
+      - name: Bind evaluation to the reviewed workflow and dev account
+        env:
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          EVAL_EXPECTED_ACCOUNT="$(aws ssm get-parameter --name /adp/dev/platform/account-id --query Parameter.Value --output text)"
+          EVAL_CONTEXT_ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          export EVAL_EXPECTED_ACCOUNT EVAL_CONTEXT_ACCOUNT
+          python3 platform/evals/claude-desktop-gateway/context.py "$RUNNER_TEMP/desktop-eval-context/deployment-context.json"
+      - name: Upload engine dispatch context
+        uses: actions/upload-artifact@v6
+        with:
+          name: adp-deployment-context-eval-claude-desktop-gateway.yml-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-eval-context/deployment-context.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Configure Kubernetes access
+        run: aws eks update-kubeconfig --name adp-dev-eks-cluster --region "$AWS_REGION" >/dev/null
+      - name: Read existing smoke-user refresh token into runner scratch
+        env:
+          SMOKE_REFRESH_TOKEN_ARN: ${{ vars.ADP_SMOKE_REFRESH_TOKEN_ARN }}
+        run: |
+          set -euo pipefail
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          [[ "$SMOKE_REFRESH_TOKEN_ARN" =~ ^arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT}:secret:adp/dev/gateway/smoke-user-refresh-token-[A-Za-z0-9]{6}$ ]]
+          umask 077
+          aws secretsmanager get-secret-value --secret-id "$SMOKE_REFRESH_TOKEN_ARN" --query SecretString --output text > "$RUNNER_TEMP/desktop-smoke.refresh"
+          test -s "$RUNNER_TEMP/desktop-smoke.refresh"
+      - name: Run clean-room Desktop evaluation
+        env:
+          EVAL_WORKDIR: ${{ runner.temp }}/claude-desktop-gateway-eval
+          EVAL_REFRESH_TOKEN_FILE: ${{ runner.temp }}/desktop-smoke.refresh
+        run: bash platform/evals/claude-desktop-gateway/run-eval.sh --environment dev
+      - name: Sweep clean-room pods after interruption
+        if: ${{ always() && steps.trusted.outcome == 'success' }}
+        env:
+          EVAL_WORKDIR: ${{ runner.temp }}/claude-desktop-gateway-eval
+        run: |
+          set -euo pipefail
+          cleanup_status=0
+          bash platform/evals/claude-desktop-gateway/run-eval.sh --environment dev --cleanup-only || cleanup_status=$?
+          if [ -f "$RUNNER_TEMP/desktop-smoke.refresh" ]; then
+            shred -u "$RUNNER_TEMP/desktop-smoke.refresh"
+          fi
+          exit "$cleanup_status"

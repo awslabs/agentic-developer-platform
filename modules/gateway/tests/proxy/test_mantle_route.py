@@ -12,6 +12,8 @@ Covers:
 
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -21,7 +23,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.proxy.mantle_auth import MantleAuthError, SigV4MantleAuth, make_mantle_auth
-from src.proxy.mantle_service import MantlePassthroughService, MantleResponse
+from src.proxy.mantle_service import MantlePassthroughService, MantleResponse, MantleUpstreamError
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.routes import get_mantle_service, get_token_context, router, set_mantle_service, set_model_resolver
 from src.shared.schemas.auth import TokenContext
@@ -92,7 +94,7 @@ def make_service(handler, *, no_log: bool = True) -> MantlePassthroughService:
     svc = MantlePassthroughService(StubAuth(), "https://bedrock-mantle.us-east-1.api.aws", http_client=client)
     if no_log:
         # Metering hits the DB; silence it for pure-passthrough tests.
-        svc._log_usage = AsyncMock()  # type: ignore[method-assign]
+        svc._log_usage = AsyncMock(return_value=True)  # type: ignore[method-assign]
     return svc
 
 
@@ -183,7 +185,7 @@ class TestMantlePassthrough:
         auth = SigV4MantleAuth("us-east-1", session=_fake_session())
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         svc = MantlePassthroughService(auth, "https://bedrock-mantle.us-east-1.api.aws", http_client=client)
-        svc._log_usage = AsyncMock()  # type: ignore[method-assign]
+        svc._log_usage = AsyncMock(return_value=True)  # type: ignore[method-assign]
         await svc.create_response(body, token_context, stream=False, model="openai.gpt-5.5")
 
         assert captured["auth"].startswith("AWS4-HMAC-SHA256 ")
@@ -248,10 +250,11 @@ class TestMantlePassthrough:
         ]
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None, **kwargs):
             captured["usage"] = dict(usage)
             captured["model"] = model
             captured["status"] = status_code
+            return True
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, stream=httpx.ByteStream(b"".join(chunks)))
@@ -274,7 +277,8 @@ class TestMantlePassthrough:
         with caplog.at_level("DEBUG"):
             # Make get_session_factory blow up so the warning branch logs.
             with patch("src.proxy.mantle_service.get_session_factory", side_effect=RuntimeError("no db")):
-                await svc.create_response(b"{}", token_context, stream=False, model="openai.gpt-5.5")
+                with pytest.raises(MantleUpstreamError, match="mantle upstream error"):
+                    await svc.create_response(b"{}", token_context, stream=False, model="openai.gpt-5.5")
         assert SIGV4_SECRET_KEY not in caplog.text
 
     async def test_metering_records_openai_model(self, token_context):
@@ -388,6 +392,56 @@ class TestMantleRoute:
         assert resp.headers.get("x-request-id")
         # Body forwarded to service unchanged.
         assert b'"openai.gpt-5.5"' in stub.calls[0]["body"]
+
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_responses_route_finalizes_on_accounting_factory(self, token_context, monkeypatch, stream):
+        from src.proxy import mantle_service
+        from src.shared import database
+
+        assert mantle_service.get_session_factory is database.get_accounting_session_factory
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.__aexit__.return_value = False
+        accounting_factory = MagicMock(return_value=session)
+        accounting = MagicMock(return_value=accounting_factory)
+        request_factory = MagicMock(side_effect=AssertionError("request pool used for Responses settlement"))
+        usage_service = MagicMock(log_request=AsyncMock())
+        priced = SimpleNamespace(
+            usage={
+                "uncached_input_tokens": 2,
+                "output_tokens": 3,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "raw": {"cache_read_input_tokens": None, "cache_creation_input_tokens": None},
+            },
+            ledger_cost=Decimal("0.01"),
+        )
+        pricing = AsyncMock(return_value=priced)
+        monkeypatch.setattr(mantle_service, "get_session_factory", accounting)
+        monkeypatch.setattr(database, "get_session_factory", request_factory)
+        monkeypatch.setattr(mantle_service, "price_completed_usage", pricing)
+        monkeypatch.setattr(mantle_service, "UsageService", lambda _: usage_service)
+        monkeypatch.setattr(mantle_service, "reconcile_budget_reservation", AsyncMock())
+        monkeypatch.setattr(mantle_service, "ChatLoggingService", MagicMock())
+
+        payload = (
+            b'data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}\n\n'
+            if stream
+            else b'{"usage":{"input_tokens":2,"output_tokens":3}}'
+        )
+        service = make_service(lambda _: httpx.Response(200, content=payload), no_log=False)
+        service._trusted_usage = AsyncMock(return_value=SimpleNamespace(known=True))
+        app = build_app(service, self._resolver_allowing_openai(), token_context)
+        with TestClient(app) as client:
+            result = client.post("/openai/v1/responses", json={"model": "openai.gpt-5.5", "input": "x", "stream": stream})
+
+        assert result.status_code == 200
+        assert result.content == payload
+        pricing.assert_awaited_once()
+        assert pricing.await_args.kwargs["session_factory"] is accounting_factory
+        usage_service.log_request.assert_awaited_once()
+        accounting.assert_called()
+        request_factory.assert_not_called()
 
     def test_403_without_openai_allowlist(self, token_context):
         stub = StubMantleService(MantleResponse(status_code=200, content=b"{}"))

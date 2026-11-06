@@ -100,10 +100,27 @@ def test_a_review_only_assignment_cannot_reach_the_delivery_operations():
     """
     for permitted in (GitHubOperation.READ_REPOSITORY, GitHubOperation.PUBLISH_REVIEW):
         assert operation_permitted_for_action(Action.REVIEW, permitted)
-    for refused in (GitHubOperation.PUBLISH_COMMIT, GitHubOperation.UPSERT_PULL_REQUEST):
+    for refused in (GitHubOperation.PUBLISH_COMMIT, GitHubOperation.UPSERT_PULL_REQUEST, GitHubOperation.RECONCILE_WORK_BRANCH):
         assert not operation_permitted_for_action(Action.REVIEW, refused)
         assert not operation_permitted_for_action(Action.EVALUATE, refused)
     assert not operation_permitted_for_action(Action.EVALUATE, GitHubOperation.PUBLISH_REVIEW)
+
+
+def test_operations_story_can_publish_repairs_but_not_approve_reviews():
+    for permitted in (
+        GitHubOperation.READ_REPOSITORY,
+        GitHubOperation.FETCH_REPOSITORY_ARCHIVE,
+        GitHubOperation.VALIDATE_REPAIR_EDIT,
+        GitHubOperation.READ_REPAIR_TASKS,
+        GitHubOperation.RECORD_REPAIR_TASK,
+        GitHubOperation.PUBLISH_COMMIT,
+        GitHubOperation.UPSERT_PULL_REQUEST,
+    ):
+        assert operation_permitted_for_action(Action.OPERATE, permitted)
+    assert not operation_permitted_for_action(Action.OPERATE, GitHubOperation.PUBLISH_REVIEW)
+    for action in (Action.DEVELOP, Action.REPAIR, Action.REVIEW, Action.EVALUATE):
+        assert not operation_permitted_for_action(action, GitHubOperation.READ_REPAIR_TASKS)
+        assert not operation_permitted_for_action(action, GitHubOperation.RECORD_REPAIR_TASK)
 
 
 def test_an_unestablished_action_reaches_nothing():
@@ -136,6 +153,10 @@ def test_no_operation_forwards_an_arbitrary_request():
     assert set(GitHubOperation) == {
         GitHubOperation.READ_REPOSITORY,
         GitHubOperation.FETCH_REPOSITORY_ARCHIVE,
+        GitHubOperation.RECONCILE_WORK_BRANCH,
+        GitHubOperation.VALIDATE_REPAIR_EDIT,
+        GitHubOperation.READ_REPAIR_TASKS,
+        GitHubOperation.RECORD_REPAIR_TASK,
         GitHubOperation.PUBLISH_COMMIT,
         GitHubOperation.UPSERT_PULL_REQUEST,
         GitHubOperation.PUBLISH_REVIEW,
@@ -147,6 +168,9 @@ def test_no_operation_forwards_an_arbitrary_request():
     # `require_current_claim` entirely.
     assert GitHubOperation.READ_REPOSITORY not in MUTATING_OPERATIONS
     assert GitHubOperation.FETCH_REPOSITORY_ARCHIVE not in MUTATING_OPERATIONS
+    assert GitHubOperation.READ_REPAIR_TASKS not in MUTATING_OPERATIONS
+    assert GitHubOperation.RECORD_REPAIR_TASK in MUTATING_OPERATIONS
+    assert GitHubOperation.RECONCILE_WORK_BRANCH in MUTATING_OPERATIONS
     with pytest.raises(OperationRefusedError):
         operation_action("dispatch_workflow")  # type: ignore[arg-type]
 

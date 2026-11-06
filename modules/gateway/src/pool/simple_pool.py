@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import boto3
+from prometheus_client import Counter
 
 from src.shared.config import get_settings
 from src.shared.interfaces.pool import IPoolService
@@ -24,6 +26,11 @@ if TYPE_CHECKING:
     from src.proxy.bedrock_signing import DestinationCredentials
 
 logger = logging.getLogger(__name__)
+SDK_BEFORE_SEND = Counter(
+    "bedrock_gateway_sdk_before_send_total",
+    "SDK HTTP attempts before socket submission, not proof that the provider received a request",
+    ["operation", "client_class"],
+)
 
 
 class AsyncBedrockClient:
@@ -87,14 +94,91 @@ class AsyncBedrockClient:
         )
 
         creds = credentials or {}
+        self._disposable = credentials is not None
+        self._client_class = "routed_disposable" if self._disposable else "policy" if single_attempt else "ambient"
+        self._correlation_id = uuid.uuid4().hex
+        self._http_attempts = {"invoke": 0, "stream": 0}
+        self._closed = False
         self._invoke_client = boto3.client("bedrock-runtime", region_name=region, config=invoke_config, **creds)
-        self._streaming_client = boto3.client("bedrock-runtime", region_name=region, config=streaming_config, **creds)
+        try:
+            self._streaming_client = boto3.client("bedrock-runtime", region_name=region, config=streaming_config, **creds)
+        except BaseException:
+            self._invoke_client.close()
+            raise
+        self._invoke_client.meta.events.register("before-send.bedrock-runtime.InvokeModel", self._record_invoke_attempt)
+        self._streaming_client.meta.events.register("before-send.bedrock-runtime.InvokeModelWithResponseStream", self._record_stream_attempt)
 
-    async def invoke_model(self, **kwargs) -> dict:
+    def _record_invoke_attempt(self, **kwargs) -> None:
+        self._record_http_attempt("invoke")
+
+    def _record_stream_attempt(self, **kwargs) -> None:
+        self._record_http_attempt("stream")
+
+    def _record_http_attempt(self, operation: str) -> None:
+        client_class = self._client_class
+        if client_class != "routed_disposable":
+            client_class += "_cold" if self._http_attempts[operation] == 0 else "_reused"
+        self._http_attempts[operation] += 1
+        SDK_BEFORE_SEND.labels(operation=operation, client_class=client_class).inc()
+        logger.info(
+            "Bedrock SDK before-send attempt",
+            extra={
+                "operation": operation,
+                "client_class": client_class,
+                "client_correlation_id": self._correlation_id,
+                "attempt": self._http_attempts[operation],
+            },
+        )
+
+    async def aclose(self) -> None:
+        if not self._closed:
+            self._closed = True
+
+            def close_clients() -> None:
+                try:
+                    self._streaming_client.close()
+                finally:
+                    self._invoke_client.close()
+
+            await asyncio.to_thread(close_clients)
+
+    async def invoke_model(self, *, _native_test_before_submit=None, **kwargs) -> dict:
+        if _native_test_before_submit is not None:
+
+            def submit():
+                _native_test_before_submit()
+                return self._invoke_client.invoke_model(**kwargs)
+
+            return await asyncio.to_thread(submit)
         return await asyncio.to_thread(self._invoke_client.invoke_model, **kwargs)
 
-    async def invoke_model_with_response_stream(self, **kwargs) -> dict:
+    async def invoke_model_with_response_stream(self, *, _native_test_before_submit=None, _submission_guard=None, **kwargs) -> dict:
+        if _submission_guard is not None:
+
+            def check_submission() -> None:
+                if _submission_guard.is_set():
+                    raise RuntimeError("Bedrock stream submission revoked")
+
+        if _native_test_before_submit is not None:
+
+            def submit():
+                _native_test_before_submit()
+                if _submission_guard is not None:
+                    check_submission()
+                return self._streaming_client.invoke_model_with_response_stream(**kwargs)
+
+            return await asyncio.to_thread(submit)
+        if _submission_guard is not None:
+
+            def submit():
+                check_submission()
+                return self._streaming_client.invoke_model_with_response_stream(**kwargs)
+
+            return await asyncio.to_thread(submit)
         return await asyncio.to_thread(self._streaming_client.invoke_model_with_response_stream, **kwargs)
+
+    async def count_tokens(self, **kwargs) -> dict:
+        return await asyncio.to_thread(self._invoke_client.count_tokens, **kwargs)
 
 
 class SimplePoolService(IPoolService):
@@ -155,6 +239,13 @@ class SimplePoolService(IPoolService):
             self._client = AsyncBedrockClient(self._region)
             logger.info("Bedrock runtime client initialized", extra={"region": self._region})
         return self._client
+
+    async def aclose(self) -> None:
+        for client in (self._client, self._single_attempt_client):
+            if client is not None:
+                await client.aclose()
+        self._client = None
+        self._single_attempt_client = None
 
     async def report_error(self, account_id: str) -> None:
         logger.warning("Bedrock error reported", extra={"account_id": account_id})

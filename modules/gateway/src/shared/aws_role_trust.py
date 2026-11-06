@@ -15,6 +15,24 @@ class CustomerRoleValidationError(ValueError):
         self.status_code = status_code
 
 
+def platform_operator_role_arns(settings=None) -> frozenset[str]:
+    """Exact platform-account role ARNs the platform administrator arranged for engine operations.
+
+    Read from `BG_PLATFORM_OPERATOR_ROLE_ARNS` (comma-separated). Only well-formed
+    IAM role ARNs count; anything else is ignored rather than widening the match.
+    """
+    if settings is None:
+        from src.shared.config import get_settings
+
+        settings = get_settings()
+    raw = getattr(settings, "platform_operator_role_arns", "") or ""
+    return frozenset(
+        value
+        for value in (item.strip() for item in raw.split(","))
+        if re.fullmatch(r"arn:aws(?:-[a-z]+)*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}", value)
+    )
+
+
 def validate_customer_role(role_arn):
     from src.admin.agent_registry_schemas import is_reserved_role_arn
 
@@ -33,9 +51,11 @@ def validate_customer_role(role_arn):
         )
     from src.shared.config import get_settings
 
-    platform_bedrock = get_settings().platform_bedrock_account_id
+    settings = get_settings()
+    platform_bedrock = settings.platform_bedrock_account_id
     if platform_bedrock:
         accounts.add(platform_bedrock)
+    operator_roles = platform_operator_role_arns(settings)
     if not match:
         raise CustomerRoleValidationError(
             "invalid_role_arn",
@@ -43,7 +63,7 @@ def validate_customer_role(role_arn):
             "Copy the role ARN from AWS IAM, for example arn:aws:iam::123456789012:role/MyRole. "
             "Do not use an IAM user ARN or an STS assumed-role session ARN.",
         )
-    if match[2] in accounts:
+    if match[2] in accounts and role_arn not in operator_roles:
         raise CustomerRoleValidationError(
             "platform_account_not_allowed",
             "This AWS account is used by the ADP platform. Roles in this account cannot be added as personal connections "

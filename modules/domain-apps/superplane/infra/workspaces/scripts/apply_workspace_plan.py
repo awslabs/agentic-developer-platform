@@ -14,13 +14,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import check_workspace_plan as guard
-from workspace_ownership import WorkspaceOwnershipError
 from workspace_backend import verify_backend
 from workspace_kms import (
     verify_account_prerequisites,
-    verify_supplied_key,
+    verify_destroy_principal,
     verify_provisioning_principal,
+    verify_supplied_key,
 )
+from workspace_ownership import WorkspaceOwnershipError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--terraform-binary", default="terraform")
+    parser.add_argument(
+        "--destroy-only",
+        action="store_true",
+        help="Refuse a provisioning artifact at the teardown entrypoint",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -55,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
         # the caller's path after validation cannot replace the artifact passed to apply.
         artifact = args.plan_file.read_bytes()
         document = guard._load_authorization(args.authorization)
+        if args.destroy_only and document.get("operation") != "destroy":
+            raise WorkspaceOwnershipError(
+                "Teardown requires a reviewed destroy-only authorization"
+            )
         expected = document["plan_file_sha256"]
         if hashlib.sha256(artifact).hexdigest() != expected:
             raise WorkspaceOwnershipError(
@@ -127,23 +137,37 @@ def main(argv: list[str] | None = None) -> int:
                     "Authorization lacks the verified account prerequisites; prepare again"
                 )
             supplied = plan.get("variables", {}).get("kms_key_arn", {}).get("value", "")
-            if supplied and not isinstance(document.get("supplied_kms"), dict):
+            destroying = document.get("operation") == "destroy"
+            if (
+                not destroying
+                and supplied
+                and not isinstance(document.get("supplied_kms"), dict)
+            ):
                 raise WorkspaceOwnershipError(
                     "Supplied-key authorization lacks mandatory verified preflight evidence"
                 )
-            kms = verify_supplied_key(plan, approved=document.get("supplied_kms"))
+            kms = (
+                None
+                if destroying
+                else verify_supplied_key(plan, approved=document.get("supplied_kms"))
+            )
             if (
                 verify_backend(saved, plan, args.module_dir.resolve(), target)
                 != backend
             ):
                 raise WorkspaceOwnershipError("Backend changed during preflight")
-            if not isinstance(document.get("provisioning_principal"), dict):
+            principal_field = (
+                "destroy_principal" if destroying else "provisioning_principal"
+            )
+            if not isinstance(document.get(principal_field), dict):
                 raise WorkspaceOwnershipError(
                     "Authorization lacks verified provisioning principal; prepare again"
                 )
-            principal = verify_provisioning_principal(
-                plan, approved=document["provisioning_principal"]
-            )
+            principal = (
+                verify_destroy_principal
+                if destroying
+                else verify_provisioning_principal
+            )(plan, approved=document[principal_field])
             args.inventory.with_name("workspace-apply-preflight.json").write_text(
                 json.dumps(
                     {

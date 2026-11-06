@@ -1,21 +1,10 @@
-/**
- * Tests for Navigation component — Issues #3590, #3773.
- *
- * Verifies: GitLab link is feature-gated behind FEATURE_GITLAB_ENABLED
- * (fail-closed). When enabled, renders as a plain <a> tag (not NavLink),
- * with href="/gitlab/" (trailing slash — the CloudFront /gitlab/* behavior
- * does not match the bare /gitlab path).
- */
+/** Navigation visibility and permission gates. */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { Navigation } from '@/components/Navigation';
-
-// Mock auth service — getAccessToken returns null by default (no SSO redirect)
-vi.mock('@/services/auth', () => ({
-  getAccessToken: () => null,
-}));
+import { Permission } from '@/types';
 
 // Mock usePermissions — defaults to a basic authenticated user (no admin roles).
 // Individual tests override the role predicates via mockPermissions.
@@ -36,6 +25,7 @@ function permissions(overrides: Record<string, unknown> = {}) {
     canViewPool: () => false,
     canViewBudgets: () => false,
     canViewRateLimits: () => false,
+    hasPermission: () => false,
     ...overrides,
   };
 }
@@ -72,6 +62,14 @@ describe('Navigation', () => {
     });
   });
 
+  it('shows tool access only to a principal with the dedicated permission', () => {
+    renderNavigation();
+    expect(screen.queryByText('Tool access')).not.toBeInTheDocument();
+    mockUsePermissions.mockReturnValue(permissions({ hasPermission: (permission: Permission) => permission === Permission.TOOLS_MANAGE }));
+    renderNavigation();
+    expect(screen.getByText('Tool access').closest('a')).toHaveAttribute('href', '/admin/tools');
+  });
+
   describe('Agent Models link (feature-gated, Issue #5422)', () => {
     it('is absent until the strict rollout flag is enabled', () => {
       renderNavigation();
@@ -98,87 +96,15 @@ describe('Navigation', () => {
     });
   });
 
-  describe('GitLab link (feature-gated, Issue #3773)', () => {
-    it('does NOT render when features.gitlab is false (fail-closed default)', () => {
+  describe('Release navigation', () => {
+    it.each([false, true])('hides deferred destinations even with their flags set to %s', (enabled) => {
+      mockUseFeatures.mockReturnValue({ chat: enabled, gitlab: enabled, indexing: enabled, superplane: enabled });
+      mockUsePermissions.mockReturnValue(permissions({ isPlatformAdmin: () => true }));
       renderNavigation();
-
-      expect(screen.queryByText('GitLab')).not.toBeInTheDocument();
-    });
-
-    it('renders when features.gitlab is true', () => {
-      mockUseFeatures.mockReturnValue({
-        chat: true,
-        knowledge: true,
-        indexing: true,
-        connections: true,
-        credentials: true,
-        system_dashboard: true,
-        logs: true,
-        gitlab: true,
-      });
-
-      renderNavigation();
-
-      const gitlabLink = screen.getByText('GitLab');
-      expect(gitlabLink).toBeInTheDocument();
-    });
-
-    it('uses a plain <a> tag, not a NavLink (full page navigation)', () => {
-      mockUseFeatures.mockReturnValue({
-        chat: true,
-        knowledge: true,
-        indexing: true,
-        connections: true,
-        credentials: true,
-        system_dashboard: true,
-        logs: true,
-        gitlab: true,
-      });
-
-      renderNavigation();
-
-      const gitlabLink = screen.getByText('GitLab').closest('a');
-      expect(gitlabLink).not.toBeNull();
-      expect(gitlabLink!.tagName).toBe('A');
-      // NavLink renders with data-discover attribute; plain <a> does not
-      expect(gitlabLink!.getAttribute('data-discover')).toBeNull();
-    });
-
-    it('has href="/gitlab/" (trailing slash required by CloudFront /gitlab/* behavior)', () => {
-      mockUseFeatures.mockReturnValue({
-        chat: true,
-        knowledge: true,
-        indexing: true,
-        connections: true,
-        credentials: true,
-        system_dashboard: true,
-        logs: true,
-        gitlab: true,
-      });
-
-      renderNavigation();
-
-      const gitlabLink = screen.getByText('GitLab').closest('a');
-      expect(gitlabLink).toHaveAttribute('href', '/gitlab/');
-    });
-
-    it('displays the fox emoji icon when enabled', () => {
-      mockUseFeatures.mockReturnValue({
-        chat: true,
-        knowledge: true,
-        indexing: true,
-        connections: true,
-        credentials: true,
-        system_dashboard: true,
-        logs: true,
-        gitlab: true,
-      });
-
-      renderNavigation();
-
-      const gitlabLink = screen.getByText('GitLab').closest('a');
-      expect(gitlabLink).not.toBeNull();
-      expect(gitlabLink!.textContent).toContain('🦊');
+      for (const label of ['Agent Chat', 'My conversations', 'GitLab', 'Indexing Status', 'Superplane']) {
+        expect(screen.queryByRole('link', { name: label })).not.toBeInTheDocument();
+      }
+      expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument();
     });
   });
 
@@ -276,19 +202,18 @@ describe('Navigation', () => {
     });
   });
 
-  describe('CLI Setup link (Issue #4159)', () => {
-    it('is labelled "CLI Setup", not "Claude Code Setup"', () => {
-      // The page covers Codex too; the old label hid that from Codex users.
+  describe('Apps & CLI Setup link', () => {
+    it('names both apps and CLI tools', () => {
       renderNavigation();
 
-      expect(screen.getByText('CLI Setup')).toBeInTheDocument();
+      expect(screen.getByText('Apps & CLI Setup')).toBeInTheDocument();
       expect(screen.queryByText('Claude Code Setup')).not.toBeInTheDocument();
     });
 
     it('still points at /setup (rename must not break the link)', () => {
       renderNavigation();
 
-      expect(screen.getByText('CLI Setup').closest('a')).toHaveAttribute('href', '/setup');
+      expect(screen.getByText('Apps & CLI Setup').closest('a')).toHaveAttribute('href', '/setup');
     });
   });
 });
@@ -299,9 +224,23 @@ describe('optional menu entries', () => {
     mockUsePermissions.mockReturnValue(permissions({ isPlatformAdmin: () => true }));
     mockUseFeatures.mockReturnValue({ tenant_org_links: enabled, knowledge: enabled, indexing: enabled });
     renderNavigation();
-    for (const label of ['Tenant Org Links', 'Knowledge', 'Indexing Status']) {
+    for (const label of ['Tenant Org Links', 'Context']) {
       if (enabled) expect(screen.getByText(label)).toBeInTheDocument();
       else expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
+  });
+});
+
+
+describe('Dev Box is the single entry (#8864)', () => {
+  it.each([
+    { chat: true, origin: 'https://crew.example.test', assistant_ui: true, crew_dashboard: true },
+    { chat: false, origin: undefined, assistant_ui: false, crew_dashboard: true },
+  ])('never renders the retired Crew Dashboard link or Runtime item: %j', ({ chat, origin, assistant_ui, crew_dashboard }) => {
+    mockUseFeatures.mockReturnValue({ chat, crew_dashboard_origin: origin, assistant_ui, crew_dashboard });
+    renderNavigation();
+    expect(screen.queryByText('Crew Dashboard')).not.toBeInTheDocument();
+    expect(screen.queryByText('Runtime')).not.toBeInTheDocument();
+    expect(screen.getByText('Dev Box').closest('a')).toHaveAttribute('href', '/settings/dev-box');
   });
 });

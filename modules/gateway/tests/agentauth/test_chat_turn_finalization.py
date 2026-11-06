@@ -1,13 +1,16 @@
 """Trusted terminal reconciliation through real HTTP and transactional emulators."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from botocore.exceptions import EndpointConnectionError
 
 from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError
+from src.agentauth.chat_delivery import protected_delivery
 from src.agentauth.chat_model_journal import ChatModelJournal
+from src.agentauth.chat_terminal_delivery import prepare_terminal_delivery
 from tests.agentauth import test_chat_history_write as history
 from tests.agentauth import test_chat_turn_result as results
 from tests.agentauth.test_chat_sandbox_exit import supervisor
@@ -109,6 +112,20 @@ async def test_terminal_outcomes_are_durable_fenced_and_idempotent(client, runti
     assert (await results.commit(client, ready)).status_code == 404
     monkeypatch.setattr(runtime[1].workloads, "is_absent", lambda **kwargs: False)
     assert (await request(client, runtime)).json() == terminal
+
+
+@pytest.mark.parametrize("outcome,granularity", [("completed", "token"), ("completed", None), ("failed", "row")])
+async def test_finalizer_rejects_invalid_persisted_reply_granularity(client, runtime, ready, outcome, granularity):
+    message_id = (await history.append(client, ready)).json()["message_id"] if outcome == "completed" else None
+    assert (await results.commit(client, ready, outcome=outcome, message_id=message_id)).status_code == 200
+    runtime[2].update_item(
+        Key=results.TURN,
+        UpdateExpression="SET result_candidate.reply_granularity = :granularity",
+        ExpressionAttributeValues={":granularity": granularity},
+    )
+    response = await request(client, runtime)
+    assert response.status_code == 404, response.text
+    assert "terminal_result" not in results.turn(runtime)
 
 
 async def test_missing_teardown_never_seals_or_finalizes(client, runtime, capability, sts, monkeypatch):
@@ -325,3 +342,96 @@ async def test_corrupt_accounting_fails_closed_and_can_be_reconciled_after_seali
     model_operation(runtime)
     assert (await request(client, runtime)).json()["accounting_status"] == "unresolved"
     assert runtime[1].store._read(item["pk"]["S"], item["sk"]["S"])["document"] != item["document"]
+
+
+OWNER_LAUNCH = {"run_id": "run-write", "tenant_id": "tenant", "user_id": "human", "team_id": "team", "session_id": "session-a"}
+TERMINAL = {"outcome": "completed", "retryable": False, "accounting_status": "settled"}
+
+
+def registered_delivery(team_id="team"):
+    envelope = {
+        "message_id": "run-write",
+        "session_id": "session-a",
+        "tenant_id": "tenant",
+        "channel": "webchat",
+        "org_id": "tenant",
+        "team_id": "intake-team",
+        "user_id": "shadow-row",
+        "task_id": "task-a",
+        "thread_id": "thread-a",
+        "owner_principal": '["tenant","tenant","intake-team","shadow-row","webchat"]',
+        "session_generation": 1_700_000_000,
+    }
+    return {"chat_delivery": protected_delivery(envelope, "human", team_id)}
+
+
+@pytest.mark.parametrize(
+    ("changes", "named"),
+    [
+        ({"team_id": "intake-team"}, "team_id"),
+        ({"team_id": ""}, "team_id"),
+        ({"user_id": "other"}, "user_id"),
+        ({"run_id": "run-other", "user_id": "other"}, "run_id,user_id"),
+        ({"tenant_id": "elsewhere", "session_id": "session-b"}, "tenant_id,session_id"),
+    ],
+)
+def test_terminal_delivery_refusal_names_only_the_differing_owner_fields(changes, named):
+    launch = SimpleNamespace(**{**OWNER_LAUNCH, **changes})
+    with pytest.raises(ChatAuthorizationRefusedError, match=rf"^chat terminal delivery owner mismatch: {named}$"):
+        prepare_terminal_delivery(registered_delivery(), launch, TERMINAL, {"content": "Reply"})
+
+
+NAMED_REASON = "The assistant cannot run this turn: the model request was refused before it reached the provider (model_admission_refused)."
+
+
+@pytest.mark.parametrize(
+    ("reply", "content"),
+    [
+        (None, "The assistant could not complete this turn."),
+        ({"content": NAMED_REASON}, None),
+        ({"content": 7}, "The assistant could not complete this turn."),
+    ],
+)
+def test_failed_terminal_delivers_the_named_reason_or_the_generic_sentence(reply, content):
+    """#8048: finalization hands ``result_candidate.error_message`` to the delivery as the reply;
+    the delivered text is that sentence when present and the generic one otherwise."""
+    terminal = {**TERMINAL, "outcome": "failed", "accounting_status": "not_used"}
+    item = prepare_terminal_delivery(registered_delivery(), SimpleNamespace(**OWNER_LAUNCH), terminal, reply)
+    document = json.loads(item["document"]["S"])
+    assert document["content"] == (content or reply["content"])
+    assert document["terminal"] == terminal and "error_message" not in document
+
+
+def test_terminal_delivery_binds_the_registered_canonical_team_not_the_intake_team():
+    """The delivery registered with the canonical tenant team (``""`` here, as on
+    dev) is accepted by a launch admitted with that same team even though the
+    intake routing key names another team."""
+    item = prepare_terminal_delivery(registered_delivery(""), SimpleNamespace(**{**OWNER_LAUNCH, "team_id": ""}), TERMINAL, {"content": "Reply"})
+    delivery = json.loads(item["document"]["S"])["delivery"]
+    assert delivery["team_id"] == ""
+    assert delivery["owner_principal"] == '["tenant","tenant","intake-team","shadow-row","webchat"]'
+    with pytest.raises(ChatAuthorizationRefusedError, match="^chat terminal delivery owner mismatch$"):
+        prepare_terminal_delivery({"chat_delivery": {"S": "not json"}}, SimpleNamespace(**OWNER_LAUNCH), TERMINAL, {"content": "Reply"})
+
+
+async def test_completed_result_with_evidence_finalizes_and_a_tampered_record_is_refused(client, runtime, ready):
+    """#8113: finalization accepts the recorded evidence verbatim and refuses an altered candidate."""
+    message_id = (await history.append(client, ready)).json()["message_id"]
+    assert (await results.commit(client, ready, outcome="completed", message_id=message_id, evidence=results.EVIDENCE)).status_code == 200
+    response = await request(client, runtime)
+    assert response.status_code == 200, response.text
+    assert response.json()["outcome"] == "completed" and response.json()["message_id"] == message_id
+    assert "evidence" not in response.json()  # the terminal delivery contract (response Lambda) is unchanged
+    assert results.turn(runtime)["result_candidate"]["evidence"] == results.EVIDENCE
+
+
+async def test_tampered_evidence_on_the_candidate_refuses_finalization(client, runtime, ready):
+    message_id = (await history.append(client, ready)).json()["message_id"]
+    assert (await results.commit(client, ready, outcome="completed", message_id=message_id, evidence=results.EVIDENCE)).status_code == 200
+    runtime[2].update_item(
+        Key=results.TURN,
+        UpdateExpression="SET result_candidate.evidence.#status = :forged",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":forged": "invented"},
+    )
+    assert (await request(client, runtime)).status_code == 404

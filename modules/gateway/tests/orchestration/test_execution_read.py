@@ -38,6 +38,7 @@ operator read deliberately does not hold; what is under test here is the read.
 """
 
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 
 import pytest
 from sqlalchemy import event
@@ -54,9 +55,11 @@ from src.orchestration.execution_read import (
 from src.orchestration.execution_state import (
     ActionStatus,
     BlockCode,
+    ExecutionIdentity,
     ExecutionPhase,
     ExecutionStatus,
 )
+from src.orchestration.handoff import handoff_receipt_ref
 from src.orchestration.models import (
     NodeKind,
     OrchestrationAction,
@@ -744,6 +747,114 @@ async def test_a_hostile_stored_reference_is_dropped_from_the_response(session, 
     assert body["handoff_receipt_ref"] == "issue-comment/5142#c9"
     assert body["actions"][0]["artifact_ref"] is None
     assert body["actions"][0]["receipt_ref"] == "pr/PR_kwDOABCD1234"
+
+
+def canonical_handoff(execution):
+    return handoff_receipt_ref(
+        ExecutionIdentity(
+            org_id=execution.org_id,
+            node_id=execution.node_id,
+            cycle=execution.cycle,
+            accepted_plan_version=execution.accepted_plan_version,
+            claim_id=execution.claim_id,
+            claim_generation=execution.claim_generation,
+        ),
+        execution.id,
+    )
+
+
+@pytest.mark.parametrize("accepted_plan_version", [0, 4])
+@pytest.mark.parametrize("status", [ExecutionStatus.RUNNABLE, ExecutionStatus.CONCLUDED])
+async def test_canonical_handoff_is_visible_without_publishing_authority(session, app_with_router, accepted_plan_version, status):
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, node_ref="story-a")
+    execution = await seed_execution(session, flow, node, accepted_plan_version=accepted_plan_version, status=status)
+    raw = canonical_handoff(execution)
+    execution.handoff_receipt_ref = execution.notification_receipt_ref = raw
+    await seed_action(session, execution, operation_key="handoff-test", receipt_ref=raw)
+    await session.flush()
+    before = (execution.revision, execution.status, execution.claim_id, execution.claim_generation, execution.handoff_receipt_ref)
+
+    response = client_for(app_with_router).get(route(flow.id))
+    assert response.status_code == 200
+    body = response.json()["executions"][0]
+    public_ref = body["handoff_receipt_ref"]
+    assert public_ref == f"handoff/{sha256(raw.encode()).hexdigest()}"
+    assert client_for(app_with_router).get(route(flow.id)).json()["executions"][0]["handoff_receipt_ref"] == public_ref
+    assert _safe_ref(public_ref) == public_ref
+    assert raw not in response.text and CLAIM_ID not in response.text
+    assert all(key not in body for key in ("claim_id", "claim_generation", "accepted_plan_version"))
+    assert all(fragment not in response.text for fragment in (":claim=", ":generation=", ":plan="))
+    # This exception is confined to the execution's own handoff field.
+    assert body["notification_receipt_ref"] is None and body["actions"][0]["receipt_ref"] is None
+    await session.refresh(execution)
+    assert (execution.revision, execution.status, execution.claim_id, execution.claim_generation, execution.handoff_receipt_ref) == before
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "execution",
+        "cycle",
+        "plan",
+        "claim",
+        "generation",
+        "zero_cycle",
+        "negative_plan",
+        "padded_generation",
+        "path",
+        "credential",
+        "extra_field",
+        "leading_space",
+        "trailing_space",
+        "oversized",
+        "unsafe_scheme",
+    ],
+)
+async def test_malformed_or_foreign_handoff_stays_redacted(session, app_with_router, corruption):
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, node_ref="story-a")
+    execution = await seed_execution(session, flow, node)
+    raw = canonical_handoff(execution)
+    changes = {
+        "execution": raw.replace(f"execution={execution.id}", "execution=another-execution"),
+        "cycle": raw.replace(":cycle=1:", ":cycle=2:"),
+        "plan": raw.replace(":plan=4:", ":plan=5:"),
+        "claim": raw.replace(f":claim={CLAIM_ID}:", ":claim=another-claim:"),
+        "generation": raw.replace(":generation=7", ":generation=8"),
+        "zero_cycle": raw.replace(":cycle=1:", ":cycle=0:"),
+        "negative_plan": raw.replace(":plan=4:", ":plan=-1:"),
+        "padded_generation": raw.replace(":generation=7", ":generation=07"),
+        "path": raw.replace(f":claim={CLAIM_ID}:", ":claim=../private:"),
+        "credential": raw + "?token=private-secret",
+        "extra_field": raw + ":other=extra",
+        "leading_space": " " + raw,
+        "trailing_space": raw + " ",
+        "oversized": raw + "a" * 256,
+        "unsafe_scheme": "javascript:alert(1)",
+    }
+    execution.handoff_receipt_ref = changes[corruption]
+    await session.flush()
+
+    response = client_for(app_with_router).get(route(flow.id))
+    assert response.status_code == 200
+    assert response.json()["executions"][0]["handoff_receipt_ref"] is None
+    assert changes[corruption] not in response.text and CLAIM_ID not in response.text
+
+
+@pytest.mark.parametrize("field,value", [("cycle", 0), ("accepted_plan_version", -1), ("claim_generation", 0)])
+async def test_invalid_stored_handoff_identity_does_not_break_operator_read(session, app_with_router, field, value):
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, node_ref="story-a")
+    execution = await seed_execution(session, flow, node)
+    execution.handoff_receipt_ref = canonical_handoff(execution)
+    setattr(execution, field, value)
+    await session.flush()
+
+    response = client_for(app_with_router).get(route(flow.id))
+    assert response.status_code == 200
+    assert response.json()["executions"][0]["handoff_receipt_ref"] is None
+    assert CLAIM_ID not in response.text
 
 
 # ---------------------------------------------------------------------------

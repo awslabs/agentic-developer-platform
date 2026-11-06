@@ -1,0 +1,14 @@
+{
+  "scenario": "test_iam_renewal",
+  "scope": "offline-process-connections-only",
+  "controlled_age_seconds": 960,
+  "physical_connections": 2,
+  "receipt_reader_sha256": "78325f7bf527cde43ac47bcac67841a6b9e33c5312e8dca1a4ab97ed203b0fc9",
+  "migration_runner_sha256": "1b24e31c262fb6ad93623b1be8c1dda0a1436111a399df65a2410bfdd25992df",
+  "test_suite_sha256": "d8e00c16c704f410c8e261e03a37af0eb7bf825b7c5a23f64963e21441aaf5da",
+  "checks": [
+    "modules.insights.tests.devlake_poc.test_s02.MigrationReceiptTest.test_fresh_iam_and_full_tls_are_used_for_each_physical_readback",
+    "modules.insights.tests.devlake_poc.test_s02.MigrationReceiptTest.test_new_database_connections_renew_tokens_after_fifteen_minutes",
+    "modules.insights.tests.devlake_poc.test_s02.SchemaMigrationTest.test_migration_transaction_and_receipt_use_separate_fresh_tokens"
+  ]
+}

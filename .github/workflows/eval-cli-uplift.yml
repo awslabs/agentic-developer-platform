@@ -47,8 +47,16 @@ on:
         description: 'Engine accepted workflow revision'
         type: string
         default: ''
+      region:
+        description: AWS region for evaluator and recovery credentials
+        type: string
+        default: us-east-1
+      target_environment:
+        description: 'Protected GitHub target; leave unset for legacy environment selection'
+        required: false
+        type: environment
       environment:
-        description: 'Target environment (selects the protected GitHub environment)'
+        description: 'Resource/binding environment (normally dev); target_environment selects GitHub access'
         required: false
         type: string
         default: dev
@@ -81,7 +89,9 @@ on:
         description: 'Bounded fault injection, to prove the evaluation fails loudly'
         required: false
         type: choice
-        options: [none, wrong_account, missing_usage, cleanup_failure, expired_token, instance_loss]
+        options: [none, wrong_account, missing_usage, cleanup_failure, expired_token, instance_loss,
+                  assistant_duplicate_delivery, assistant_disconnect, assistant_worker_loss,
+                  assistant_queue_unavailable, assistant_supervisor_restart]
         default: none
   workflow_call:
     outputs:
@@ -92,6 +102,19 @@ on:
         description: 'The exact deployed revision pinned immediately before EC2 evaluation'
         value: ${{ jobs.evaluate.outputs.revision }}
     inputs:
+      region:
+        description: AWS region for evaluator and recovery credentials
+        type: string
+        default: us-east-1
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
+      smoke_target_digest:
+        description: Require the new-environment smoke target contract in evaluation and recovery
+        type: string
+        default: ''
       resolve_revision:
         description: 'Resolve the current deployment when this child starts (nightly only)'
         required: false
@@ -101,6 +124,11 @@ on:
         required: false
         type: string
         default: dev
+      product_run_id:
+        description: Bound Product workflow run ID for private installed CLI proof
+        required: false
+        type: string
+        default: ""
       expected_revision:
         required: true
         type: string
@@ -124,6 +152,9 @@ on:
     paths:
       - 'tests/e2e/cli_uplift/**'
       - 'tests/unit/test_cli_uplift.py'
+      - 'tests/unit/test_evaluator_setup.py'
+      - 'platform/scripts/setup-evaluator-credentials.py'
+      - 'platform/evaluator-infra/**'
       - 'tests/unit/test_cli_assistant_harness.py'
       - 'tests/unit/test_cli_workflow_context.py'
       - 'tests/unit/test_cli_tenant_scenarios.py'
@@ -152,8 +183,9 @@ on:
 # cancel-in-progress stays false — cancelling mid-journey is exactly the case
 # where resources leak, so a run is always allowed to reach its cleanup.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.environment || 'dev') }}
+  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.target_environment || inputs.environment || 'dev') }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -182,6 +214,14 @@ jobs:
         # unenforced in the one place that enforces them.
         run: pip install pytest pytest-timeout pytest-socket pyyaml ruff==0.9.6 boto3
 
+      - name: Check Product production release wiring
+        env:
+          AWS_EC2_METADATA_DISABLED: 'true'
+        run: |
+          pip install ./modules/gateway
+          python -m pytest tests/e2e/product_onboarding/test_product_native.py \
+            -q --timeout=60 --disable-socket --allow-unix-socket
+
       - name: Install assistant isolation test dependencies
         run: |
           set -euo pipefail
@@ -193,8 +233,8 @@ jobs:
       - name: Lint and format check
         run: |
           set -euo pipefail
-          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
-          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py platform/scripts/setup-evaluator-credentials.py tests/unit/test_evaluator_setup.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py platform/scripts/setup-evaluator-credentials.py tests/unit/test_evaluator_setup.py
 
       - name: Offline guards
         # --disable-socket is the load-bearing flag: it proves these guards
@@ -208,7 +248,26 @@ jobs:
         # make full acceptance non-successful.
         env:
           AWS_EC2_METADATA_DISABLED: 'true'
-        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket --allow-unix-socket
+        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py tests/unit/test_evaluator_setup.py -q --timeout=60 --disable-socket --allow-unix-socket
+
+      - name: Setup Terraform for evaluator policy tests
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+
+      - name: Validate evaluator infrastructure with mocked AWS
+        working-directory: platform/evaluator-infra
+        env:
+          AWS_EC2_METADATA_DISABLED: 'true'
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false -lockfile=readonly
+          terraform validate
+          terraform test
+          terraform -chdir=product-browser init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=product-browser validate
+          terraform -chdir=product-browser test
 
       - name: Assert the published result schema still matches the report builder
         # report.schema.json is a deliverable other tooling validates against, so
@@ -263,7 +322,7 @@ jobs:
     timeout-minutes: 200
     # This environment must have main-only protection and an explicit OIDC
     # role binding before rollout; selecting a name alone is not protection.
-    environment: ${{ inputs.environment || 'dev' }}
+    environment: ${{ inputs.target_environment || inputs.environment || 'dev' }}
     permissions:
       id-token: write
       contents: read
@@ -272,10 +331,9 @@ jobs:
       evaluation_id: ${{ steps.run.outputs.evaluation_id }}
       revision: ${{ steps.revision.outputs.revision || inputs.expected_revision }}
     env:
-      AWS_REGION: us-east-1
+      AWS_REGION: ${{ inputs.region || 'us-east-1' }}
       ENVIRONMENT: ${{ inputs.environment || 'dev' }}
       EVAL_STATE_DIR: /tmp/cli-uplift-eval/state
-      EVAL_OUT_DIR: /tmp/cli-uplift-eval/out
       EVAL_RUN_CONFIG: /tmp/cli-uplift-eval/run-config.json
       # The config overlay, read by `config.from_environment()`. Repository
       # Target identities come from protected secrets below. Existing VARIABLES
@@ -290,10 +348,12 @@ jobs:
       CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
       CLI_UPLIFT_EVAL_SECURITY_GROUP_ID: ${{ vars.CLI_UPLIFT_EVAL_SECURITY_GROUP_ID }}
       CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+      CLI_UPLIFT_EVAL_PRODUCT_RUN_ID: ${{ inputs.product_run_id }}
       CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL: ${{ vars.CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL }}
       CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE }}
       CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE }}
       CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION }}
@@ -314,9 +374,12 @@ jobs:
       # Public binding files contain fictional examples. Protected environment
       # secrets supply reviewed live identities; individual variable overrides
       # retain their existing precedence for operator configuration.
-      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json
+      CLI_UPLIFT_EVAL_BINDINGS: ${{ inputs.smoke_target_digest == '' && format('tests/e2e/cli_uplift/bindings.{0}.json', inputs.environment || 'dev') || '' }}
       CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
       CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
+      ENVIRONMENT_SMOKE_TARGET_JSON: ${{ secrets.ENVIRONMENT_SMOKE_TARGET_JSON }}
+      SMOKE_TARGET_DIGEST: ${{ inputs.smoke_target_digest }}
+      SMOKE_TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
 
     steps:
       - name: Refuse an untrusted ref
@@ -337,6 +400,9 @@ jobs:
 
       - name: Verify checked-out source is reviewed main history
         run: git merge-base --is-ancestor HEAD "$GITHUB_SHA"
+
+      - name: Select private evidence directory
+        run: echo "EVAL_OUT_DIR=$RUNNER_TEMP/cli-uplift-evidence" >> "$GITHUB_ENV"
 
       # Must precede the harness-pin fetch below: that step parses the pin with
       # `python`, and the ARC runner image provides only `python3` until
@@ -369,6 +435,10 @@ jobs:
       - name: Install runner dependencies
         run: pip install boto3 pytest pytest-timeout
 
+      - name: Install canonical Product runtime evidence reader
+        if: inputs.product_run_id != ''
+        run: pip install ./modules/gateway
+
       - name: Require private target configuration
         run: |
           set -euo pipefail
@@ -398,7 +468,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ inputs.region || 'us-east-1' }}
           unset-current-credentials: true
           force-skip-oidc: false
           role-chaining: false
@@ -406,6 +476,10 @@ jobs:
           role-skip-session-tagging: true
           role-duration-seconds: 10800
           role-session-name: cli-uplift-eval-${{ github.run_id }}
+
+      - name: Verify new-environment smoke target
+        if: inputs.smoke_target_digest != ''
+        run: python -m tests.regression.environment_smoke cli-guard
 
       - name: Pin the deployment for this EC2 suite
         id: revision
@@ -485,14 +559,16 @@ jobs:
           fi
 
       - name: Authenticate engine qualification context
-        if: inputs.adp_correlation != ''
+        # Reusable callers retain their own correlation and workflow identity.
+        # The knowledge qualification receipt belongs only to direct CLI runs.
+        if: inputs.adp_correlation != '' && github.workflow_ref == format('{0}/.github/workflows/eval-cli-uplift.yml@refs/heads/main', github.repository)
         env:
           ADP_WORKFLOW_INPUTS: ${{ toJSON(inputs) }}
           GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: python -m tests.e2e.cli_uplift.workflow_context
 
       - name: Publish engine qualification context
-        if: inputs.adp_correlation != ''
+        if: inputs.adp_correlation != '' && github.workflow_ref == format('{0}/.github/workflows/eval-cli-uplift.yml@refs/heads/main', github.repository)
         uses: actions/upload-artifact@v4
         with:
           name: adp-deployment-context-eval-cli-uplift.yml-${{ github.run_attempt }}
@@ -577,9 +653,11 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
+          TARGET="$(python -c 'import os; from tests.e2e.cli_uplift import config; print(config.load(os.environ["EVAL_RUN_CONFIG"]).get("evaluation_target", ""))')"
+          FILTERS=("Name=tag-key,Values=adp:cli-uplift-eval" "Name=instance-state-name,Values=pending,running,stopping,stopped")
+          if [ -n "$TARGET" ]; then FILTERS+=("Name=tag:adp:evaluator-target,Values=$TARGET"); fi
           LEAKED="$(aws ec2 describe-instances \
-            --filters "Name=tag-key,Values=adp:cli-uplift-eval" \
-                      "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --filters "${FILTERS[@]}" \
             --query 'Reservations[].Instances[].InstanceId' --output text)"
           if [ -n "$LEAKED" ]; then
             echo "::error::Evaluation instances still running after cleanup: $LEAKED"
@@ -587,27 +665,43 @@ jobs:
           fi
           echo "No evaluation instances outstanding."
 
-      - name: Upload sanitized evidence
-        # report.json and results.xml only. The run state and the cleanup
-        # manifest are NEVER uploaded: they hold disposable passwords, tokens and
-        # ExternalIds until cleanup completes, and they live 0600 in a 0700
-        # directory precisely so they cannot end up in an artifact.
+      - name: Retain private installed Product CLI proof
+        if: inputs.product_run_id != ''
+        env:
+          PRODUCT_RUN_ID: ${{ inputs.product_run_id }}
+          PRODUCT_SOURCE_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          python -m tests.e2e.cli_uplift.product_cli_handoff retain
+          --run-id "$PRODUCT_RUN_ID"
+          --report "$EVAL_OUT_DIR/product-profile-cli.private.json"
+          --source-revision "$PRODUCT_SOURCE_REVISION"
+          --workflow-revision "$GITHUB_SHA"
+
+      - name: Retain sanitized evidence in S3
+        # Use the workflow's publisher even when testing an older application source.
+        # Only these sanitized files are eligible; private state and credentials stay out.
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-uplift-eval-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            /tmp/cli-uplift-eval/out/report.json
-            /tmp/cli-uplift-eval/out/results.xml
-          if-no-files-found: warn
-          retention-days: 30
+        env:
+          CI_EVIDENCE_NAME: cli-uplift-eval-${{ github.run_id }}-${{ github.run_attempt }}
+          CI_EVIDENCE_PATH: |
+            ${{ runner.temp }}/cli-uplift-evidence/report.json
+            ${{ runner.temp }}/cli-uplift-evidence/results.xml
+            ${{ runner.temp }}/cli-uplift-evidence/assistant-latency-samples.jsonl
+          CI_EVIDENCE_RETENTION_DAYS: '90'
+          CI_EVIDENCE_IF_NO_FILES_FOUND: error
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags --depth=1 origin "$GITHUB_WORKFLOW_SHA"
+          git show "$GITHUB_WORKFLOW_SHA:.github/scripts/upload_ci_evidence_s3.py" > "$RUNNER_TEMP/upload_ci_evidence_s3.py"
+          python3 "$RUNNER_TEMP/upload_ci_evidence_s3.py"
 
       - name: Publish engine qualification result
-        if: always() && inputs.adp_correlation != ''
+        if: always() && inputs.adp_correlation != '' && github.workflow_ref == format('{0}/.github/workflows/eval-cli-uplift.yml@refs/heads/main', github.repository)
         uses: actions/upload-artifact@v4
         with:
           name: e32-qualification-result
-          path: /tmp/cli-uplift-eval/out/report.json
+          path: ${{ runner.temp }}/cli-uplift-evidence/report.json
           if-no-files-found: error
           retention-days: 30
 
@@ -629,7 +723,7 @@ jobs:
     needs: [evaluate]
     runs-on: arc-runner-org
     timeout-minutes: 20
-    environment: ${{ inputs.environment || 'dev' }}
+    environment: ${{ inputs.target_environment || inputs.environment || 'dev' }}
     permissions:
       id-token: write
       contents: read
@@ -637,6 +731,8 @@ jobs:
       # The evaluation ID this run created resources under, when `evaluate` got
       # far enough to emit it. Empty means fall back to age alone.
       RUN_EVALUATION_ID: ${{ needs.evaluate.outputs.evaluation_id }}
+      AWS_REGION: ${{ inputs.region || 'us-east-1' }}
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
       EVAL_STATE_DIR: /tmp/cli-uplift-recover/state
       EVAL_RUN_CONFIG: /tmp/cli-uplift-recover/run-config.json
       # R5: the SAME overlay the evaluate job declares. Without it this job could
@@ -653,10 +749,12 @@ jobs:
       CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
       CLI_UPLIFT_EVAL_SECURITY_GROUP_ID: ${{ vars.CLI_UPLIFT_EVAL_SECURITY_GROUP_ID }}
       CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+      CLI_UPLIFT_EVAL_PRODUCT_RUN_ID: ${{ inputs.product_run_id }}
       CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL: ${{ vars.CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL }}
       CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE }}
       CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE }}
       CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION }}
@@ -677,9 +775,12 @@ jobs:
       # Public binding files contain fictional examples. Protected environment
       # secrets supply reviewed live identities; individual variable overrides
       # retain their existing precedence for operator configuration.
-      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json
+      CLI_UPLIFT_EVAL_BINDINGS: ${{ inputs.smoke_target_digest == '' && format('tests/e2e/cli_uplift/bindings.{0}.json', inputs.environment || 'dev') || '' }}
       CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
       CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
+      ENVIRONMENT_SMOKE_TARGET_JSON: ${{ secrets.ENVIRONMENT_SMOKE_TARGET_JSON }}
+      SMOKE_TARGET_DIGEST: ${{ inputs.smoke_target_digest }}
+      SMOKE_TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
     steps:
       - name: Refuse an untrusted ref
         # Identical to the evaluate job's gate, and deliberately BEFORE checkout:
@@ -743,13 +844,17 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ inputs.region || 'us-east-1' }}
           unset-current-credentials: true
           force-skip-oidc: false
           role-chaining: false
           # OIDC identifies the run directly; no shared-runner role assumption.
           role-skip-session-tagging: true
           role-session-name: cli-uplift-recover-${{ github.run_id }}
+
+      - name: Verify new-environment smoke target
+        if: inputs.smoke_target_digest != ''
+        run: python -m tests.regression.environment_smoke cli-guard
 
       - name: Assert the role resolved to the approved platform account
         # Same guard as evaluate, for the same reason: this job terminates
@@ -809,9 +914,12 @@ jobs:
               # cancelled during setup. Age is then the only authority we have.
               print(f"No evaluation ID from evaluate; falling back to age past {ttl}m only.")
 
+          filters = [f"Name=tag-key,Values={cleanup.OWNER_TAG}"]
+          if resolved.get("evaluation_target"):
+              filters.append("Name=tag:adp:evaluator-target,Values=" + resolved["evaluation_target"])
           raw = subprocess.run(
               ["aws", "ec2", "describe-instances",
-               "--filters", f"Name=tag-key,Values={cleanup.OWNER_TAG}",
+               "--filters", *filters,
                "--query", "Reservations[].Instances[].{InstanceId:InstanceId,State:State,LaunchTime:LaunchTime,Tags:Tags}",
                "--output", "json"],
               capture_output=True, text=True, check=True,
@@ -824,7 +932,8 @@ jobs:
               instance["LaunchTime"] = cleanup.launch_epoch(instance.get("LaunchTime"))
 
           targets = cleanup.recoverable_instances(
-              instances, now=time.time(), ttl_minutes=ttl, prefix=prefix
+              instances, now=time.time(), ttl_minutes=ttl, prefix=prefix,
+              target=resolved.get("evaluation_target"),
           )
           # Deliberately NOT check=True. AWS refuses a termination-protected
           # instance with a NON-ZERO exit (OperationNotPermitted), so raising here

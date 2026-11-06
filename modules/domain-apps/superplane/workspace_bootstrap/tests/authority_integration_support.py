@@ -72,8 +72,10 @@ def compose_authority(cluster, path, arguments):
             if body.get("kind") in {"SelfSubjectAccessReview", "SubjectAccessReview"}:
                 spec = body["spec"]
                 attrs = spec["resourceAttributes"]
-                resource = attrs["resource"] + (
-                    "." + attrs["group"] if attrs.get("group") else ""
+                resource = (
+                    attrs["resource"]
+                    + ("/" + attrs["subresource"] if attrs.get("subresource") else "")
+                    + ("." + attrs["group"] if attrs.get("group") else "")
                 )
                 existing = json.loads(result.stdout)["status"]["allowed"]
                 if body["kind"] == "SubjectAccessReview" and spec.get(

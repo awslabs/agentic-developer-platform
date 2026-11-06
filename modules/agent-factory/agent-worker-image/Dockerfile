@@ -1,11 +1,13 @@
 # Keep Terraform1.15.7 behavior while rebuilding its exact dependency graph.
 # Authenticated curl packages and licenses, built and tested in #6540.
 # This immutable artifact is a build input, not a deployable worker image.
+ARG GO_SECURITY_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:5a51c41fe984154d7618ccce424e4bd5a5aff50b7e98c5a95f55da1475ed4c0b
 ARG CURL_SECURITY_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b
-ARG PYTHON314_EXPAT_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:9e6dd602c215e93c5e3cd489d4dbbd070d69ac7944caee65b0e46965bc49b881
+ARG PYTHON314_EXPAT_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:ed2730994a24bfb93595af2b67b769cec5305e497f6a7bbfffda06443527d79c
+FROM ${GO_SECURITY_IMAGE} AS go-security
 FROM ${CURL_SECURITY_IMAGE} AS curl-security
 
-FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS terraform-security
+FROM public.ecr.aws/docker/library/golang:1.26.9-trixie@sha256:f06b7122f888680048afb247c4e5f49c0069eb6c4c1ccae0f3f4834527a8d22c AS terraform-security
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 WORKDIR /src
 ADD --checksum=sha256:a81fbc916714d01effa519b8fe602d41a2b06bc9cdf898d809891fb57a7427ff https://codeload.github.com/hashicorp/terraform/tar.gz/214239d0a88cefc3919e79805c5ddd42b922af56 /tmp/terraform.tar.gz
@@ -27,7 +29,7 @@ RUN git apply --check /tmp/security.patch && git apply /tmp/security.patch \
 FROM scratch AS terraform-security-artifact
 COPY --from=terraform-security /out/terraform /terraform
 
-# Exact CPython3.14.7 adapters with statically linked Expat2.8.5.
+# Exact CPython3.14.8 adapters with statically linked Expat2.8.5.
 # Build-only artifact, source and normal XML checks are committed in
 # platform/arc-runner/security/high-tools/Dockerfile.python314-expat.
 FROM ${PYTHON314_EXPAT_IMAGE} AS python314-expat
@@ -35,10 +37,10 @@ FROM ${PYTHON314_EXPAT_IMAGE} AS python314-expat
 # AWS CLI's official 2.37.4 bundle embeds vulnerable Python 3.14.6.
 # Build the maintained portable-exe source distribution with fixed Python.
 # This executable is ADP-built; the AWS release ZIP signature does not cover it.
-FROM public.ecr.aws/docker/library/python:3.14.7-slim-trixie@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS awscli-security
+FROM public.ecr.aws/docker/library/python:3.14.8-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS awscli-security
 ARG TARGETARCH=amd64
 RUN test "$TARGETARCH" = amd64 && \
-    python -c 'import sys; assert sys.version_info[:3] == (3, 14, 7)' && \
+    python -c 'import sys; assert sys.version_info[:3] == (3, 14, 8)' && \
     apt-get update && apt-get install -y --no-install-recommends build-essential binutils && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /src/awscli
@@ -53,7 +55,7 @@ COPY --from=python314-expat /modules/ /opt/awscli-adp/lib/aws-cli/python3.14/lib
 COPY --from=python314-expat /manifest.json /opt/awscli-adp/python314-expat-manifest.json
 COPY --from=python314-expat /licenses/ /opt/awscli-adp/XML-LICENSES/
 RUN PYTHONPATH=/opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload python -c 'import pyexpat, _elementtree; import xml.etree.ElementTree as E; assert pyexpat.EXPAT_VERSION == "expat_2.8.5"; assert E.fromstring("<root>valid</root>").text == "valid"'
-RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
+RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.8'
 
 # =============================================================================
 # adp-agent worker image
@@ -208,20 +210,20 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yq (YAML processor). Pinned to avoid inheriting Go stdlib CVEs
-# from an unpredictable "latest" binary (Go 1.25+ clears all 6 C3 CVEs).
-ARG YQ_VERSION=4.53.6
-RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
-    -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
+# Rebuild the retained yq release with patched Go dependencies.
+COPY --from=go-security /bin/yq /usr/local/bin/yq
+COPY --from=go-security /licenses/yq/ /usr/local/share/licenses/yq/
+RUN yq --version
 
 # Install fzf from official tarball (not apt) to avoid inheriting
 # Debian bookworm's Go 1.19 toolchain CVEs (6 critical Go stdlib CVEs:
 # CVE-2023-24531, CVE-2023-24540, CVE-2023-29402, CVE-2023-29404,
 # CVE-2023-29405, CVE-2024-24790). The apt package is built with
 # golang-1.19; the official release is compiled with Go 1.23+.
-ARG FZF_VERSION=0.74.4
+ARG FZF_VERSION=0.74.5
 RUN curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_amd64.tar.gz" \
       -o /tmp/fzf.tar.gz && \
+    echo "d47d7f882972c7d674dbbba998ffa4116e68379616ffac7695d0671e9a722c5f  /tmp/fzf.tar.gz" | sha256sum -c - && \
     tar xzf /tmp/fzf.tar.gz -C /usr/local/bin fzf && \
     chmod +x /usr/local/bin/fzf && \
     rm /tmp/fzf.tar.gz && \
@@ -229,9 +231,24 @@ RUN curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION
 
 # Pin the official Node24 release and replace its bundled npm with the fixed
 # npm11 graph. This also removes the unpinned NodeSource setup script/repository.
-ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz /tmp/node.tar.xz
-RUN tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm /tmp/node.tar.xz \
-    && test "$(node --version)" = v24.21.0
+# Remote ADD can wait indefinitely on a stalled CDN transfer. Bound each source
+# and require the same reviewed checksum before extracting either download.
+RUN set -eu; \
+    node_archive=/tmp/node.tar.xz; \
+    node_sha256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6; \
+    for node_url in \
+      https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz \
+      https://registry.npmmirror.com/-/binary/node/v24.21.0/node-v24.21.0-linux-x64.tar.xz; do \
+      if curl --proto '=https' --proto-redir '=https' -fsSL \
+          --connect-timeout 10 --max-time 90 "$node_url" -o "$node_archive" \
+          && printf '%s  %s\n' "$node_sha256" "$node_archive" | sha256sum -c -; then \
+        break; \
+      fi; \
+    done; \
+    printf '%s  %s\n' "$node_sha256" "$node_archive" | sha256sum -c -; \
+    tar -xJf "$node_archive" -C /usr/local --strip-components=1; \
+    rm "$node_archive"; \
+    test "$(node --version)" = v24.21.0
 ADD --checksum=sha256:d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483 https://registry.npmjs.org/npm/-/npm-11.20.0.tgz /tmp/npm.tgz
 RUN rm -rf /usr/local/lib/node_modules/npm && mkdir -p /usr/local/lib/node_modules/npm \
     && tar -xzf /tmp/npm.tgz --strip-components=1 -C /usr/local/lib/node_modules/npm \
@@ -254,25 +271,20 @@ ARG CODEX_VERSION=0.157.0
 RUN npm install -g "@openai/codex@${CODEX_VERSION}" && \
     codex --version
 
-# Install GitHub CLI from official tarball (not apt) to avoid inheriting
-# Debian's Go 1.19 toolchain CVEs. Pinned to latest stable release.
-ARG GH_VERSION=2.101.0
-RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
-      -o /tmp/gh.tar.gz && \
-    tar xzf /tmp/gh.tar.gz -C /tmp && \
-    mv /tmp/gh_${GH_VERSION}_linux_amd64/bin/gh /usr/local/bin/gh && \
-    chmod +x /usr/local/bin/gh && \
-    rm -rf /tmp/gh.tar.gz /tmp/gh_${GH_VERSION}_linux_amd64 && \
-    gh --version
+# Retain the reviewed GitHub CLI release, rebuilt with the patched Go toolchain.
+COPY --from=go-security /bin/gh /usr/local/bin/gh
+COPY --from=go-security /licenses/gh/ /usr/local/share/licenses/gh/
+RUN gh --version
 
 # Reuse the reviewed source-built portable AWS CLI, including provenance.
 COPY --from=awscli-security /opt/awscli-adp /opt/awscli-adp
 RUN ln -s /opt/awscli-adp/bin/aws /usr/local/bin/aws \
     && aws --version
 
-# Install kubectl
-RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
-    -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
+# Keep kubectl on the reviewed Kubernetes minor, with patched Go dependencies.
+COPY --from=go-security /bin/kubectl /usr/local/bin/kubectl
+COPY --from=go-security /licenses/kubectl/ /usr/local/share/licenses/kubectl/
+RUN kubectl version --client
 
 # Preserve the installed Terraform version; use the verified fixed Go rebuild.
 COPY --from=terraform-security /out/terraform /usr/local/bin/terraform
@@ -292,7 +304,12 @@ RUN curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERS
 
 # Install pip-based Python tools (uv, poetry, ruff — the pre-submit table in
 # agent-worker.ts tells agents to run `ruff check`; it must exist in the image).
-RUN pip3 install --no-cache-dir --break-system-packages uv poetry ruff
+# The Python base retains an affected certifi copy inside pip. Upgrade it from
+# checksum-pinned bytes before resolving tools, and enforce both trust/tool floors.
+ADD --checksum=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70 https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl /tmp/pip-26.2.2-py3-none-any.whl
+RUN --network=none python -m pip install --no-index --no-deps --no-cache-dir /tmp/pip-26.2.2-py3-none-any.whl \
+    && rm /tmp/pip-26.2.2-py3-none-any.whl
+RUN pip3 install --no-cache-dir --break-system-packages 'uv>=0.13.4' poetry ruff 'certifi>=2026.10.19'
 
 # Python runtime deps for entrypoint.py + lib/ and bundled skills.
 #   boto3             — Secrets Manager, STS, DynamoDB clients (vault_client, sts_assume)
@@ -366,8 +383,10 @@ COPY --chown=agent:agent modules/tools/agentcore/agentcore_tools/ /app/agentcore
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/
 # Ship the same issue contract for hosted workers outside the ADP repository.
 COPY --chown=agent:agent modules/agent-factory/rules/agents/issue-authoring.md /app/rules/agents/issue-authoring.md
+COPY --chown=agent:agent modules/agent-factory/rules/agents/issue-delivery-review.md /app/rules/agents/issue-delivery-review.md
 COPY --chown=agent:agent modules/agent-factory/rules/coding-guidelines.md /app/rules/coding-guidelines.md
 COPY --chown=agent:agent modules/agent-factory/rules/templates/developer-issue.md /app/rules/templates/developer-issue.md
+COPY --chown=agent:agent modules/agent-factory/rules/templates/epic-issue.md /app/rules/templates/epic-issue.md
 COPY --from=stager --chown=agent:agent /stage/skills/ /app/skills/
 
 # Codex CLI config (issue #2704). Codex reads $HOME/.codex/config.toml; the
@@ -443,6 +462,11 @@ ENV NODE_ENV=production
 ENV HOME=/home/agent
 ENV PATH="/app/node_modules/.bin:${PATH}"
 ENV PYTHONPATH="/app:${PYTHONPATH}"
+
+# Exercise the installed filter as the runtime user on every image build.
+# Bind-mounted tests and temporary compiled probes stay out of the image.
+RUN --mount=type=bind,source=modules/agent-factory/agent-worker-image/tests,target=/app/tests,readonly \
+    python3 -B -m unittest discover -s /app/tests -p test_task_network_exec.py -v
 
 # Codex v2 gateway cutover (#2713): the custom `adp-gateway` provider in
 # codex-config.toml declares env_key=ADP_GATEWAY_PLACEHOLDER_KEY. Codex 0.142.5

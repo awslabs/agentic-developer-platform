@@ -291,3 +291,37 @@ async def test_task_run_usage_uses_real_activity_adapter_and_policy(db_session, 
         assert body["items"][0]["root_human_id"] == "user-001"
         assert body["scope"]["coverage"] == "selected_run"
         caller.assert_awaited_once()
+
+
+async def test_crew_usage_read_derives_human_root_from_recorded_run(db_session, org_user_context, monkeypatch):
+    import boto3
+    from moto import mock_aws
+
+    from src.agentauth.chat_crew_run import CrewRunStore
+
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", "crew-run-usage")
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="crew-run-usage",
+            BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+        )
+        start = int(START.timestamp())
+        run_id = CrewRunStore(table).mint(
+            tenant_id="org-001",
+            user_id="user-001",
+            session_id="session-a",
+            lease_generation=1,
+            lease_expires_at=start + 300,
+            target_kind="eks-pod",
+            target_ref="chat-pod",
+            now=start,
+        )
+        db_session.add(record("crew-usage", user="worker-service", run=run_id, timestamp=START + timedelta(minutes=1)))
+        await db_session.commit()
+        result = await read(db_session, org_user_context, run_id=run_id, limit=100)
+        assert [item.id for item in result.items] == ["crew-usage"]
+        assert result.items[0].root_human_id == "user-001"
+        assert result.items[0].invocation_id == run_id
+        assert result.scope["coverage"] == "selected_run"

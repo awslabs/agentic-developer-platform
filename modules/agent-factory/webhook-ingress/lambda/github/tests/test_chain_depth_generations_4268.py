@@ -39,6 +39,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -114,9 +116,7 @@ def _ingest_depth(chain_depth: int, *, pointer=None, marker_text=None) -> int:
 
 def _make_webhook_event(event_type: str, payload: dict) -> dict:
     body = json.dumps(payload)
-    sig = hmac.new(
-        WEBHOOK_SECRET.encode("utf-8"), body.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    sig = hmac.new(WEBHOOK_SECRET.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
     return {
         "headers": {
             "x-github-event": event_type,
@@ -266,9 +266,7 @@ class TestDiscardedEventsDoNotAdvanceDepth:
         assert result["statusCode"] == 200
         kwargs = mock_capture.call_args.kwargs
         assert kwargs["status"] == "no_op"
-        assert kwargs["chain_depth"] == 2, (
-            "a discarded event advanced the recursion counter"
-        )
+        assert kwargs["chain_depth"] == 2, "a discarded event advanced the recursion counter"
 
     def test_bot_comment_edit_does_not_increment(self):
         """The 679-row case, via the evidence table's representative row.
@@ -589,34 +587,14 @@ class TestDepthCannotBeResetOrForged:
         depth = _ingest_depth(9, pointer=_pointer(chain_depth=0))
         assert depth == 9
 
-    def test_agent_trigger_rejects_absent_depth(self):
-        """``/agent/trigger`` still 422s rather than resetting to 0."""
-        from agent_trigger import _resolve_chain_depth
+    @pytest.mark.parametrize("depth", [None, "malformed", -5])
+    def test_retired_agent_trigger_rejects_every_depth(self, depth):
+        from agent_trigger import handle_agent_trigger
 
-        record = _chain_row(0)
-        del record["chain_depth"]
-        depth, error = _resolve_chain_depth(record, None, "corr-orchestration")
-
-        assert error is not None
-        assert error["statusCode"] == 422
-        assert json.loads(error["body"])["error"] == "invalid_chain_depth"
-
-    def test_agent_trigger_rejects_malformed_depth(self):
-        from agent_trigger import _resolve_chain_depth
-
-        _, error = _resolve_chain_depth(
-            _chain_row("not-a-number"), None, "corr-orchestration"
-        )
-        assert error is not None
-        assert error["statusCode"] == 422
-
-    def test_agent_trigger_rejects_negative_depth(self):
-        """A negative depth would buy extra hops under the cap."""
-        from agent_trigger import _resolve_chain_depth
-
-        _, error = _resolve_chain_depth(_chain_row(-5), None, "corr-orchestration")
-        assert error is not None
-        assert error["statusCode"] == 422
+        with patch("common.spawn_persona.spawn_persona") as spawn:
+            response = handle_agent_trigger({"body": json.dumps({"chain_depth": depth})}, None)
+        assert response["statusCode"] == 410
+        spawn.assert_not_called()
 
     def test_caller_cannot_present_a_continuation_as_a_fresh_root(self):
         """``is_new_chain`` is server-decided, so depth 0 is not caller-reachable.

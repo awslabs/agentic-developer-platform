@@ -134,7 +134,7 @@ def issue_task_session(*, invocation_id: str, not_after: datetime, targets: list
     if sts.get_caller_identity()["Account"] != account:
         raise ValueError("task source identity is outside the platform account")
     verify_source_role_isolation(boto3.client("eks", region_name=region), cluster=cluster, role_arn=role_arn, account=account)
-    seconds = min(3600, int((not_after - datetime.now(UTC)).total_seconds()) - 30)
+    seconds = min(900, int((not_after - datetime.now(UTC)).total_seconds()) - 30)
     if seconds < 900:
         raise ValueError("task source authorization is shorter than the STS minimum")
     policy = json.dumps(task_session_policy(partition, account, targets), separators=(",", ":"))

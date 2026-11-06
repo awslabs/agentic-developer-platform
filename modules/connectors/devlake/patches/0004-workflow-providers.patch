@@ -1,0 +1,99 @@
+diff --git a/backend/plugins/gitlab/api/remote_api.go b/backend/plugins/gitlab/api/remote_api.go
+index f7e7c21..cb732b4 100644
+--- a/backend/plugins/gitlab/api/remote_api.go
++++ b/backend/plugins/gitlab/api/remote_api.go
+@@ -92 +92,17 @@ func listGitlabRemoteScopes(
+-func listGitlabRemoteGroups(
++// ADPListRemoteGroups returns one native group page without the synthetic user
++// scope. Personal namespaces are selected explicitly from registered identity.
++func ADPListRemoteGroups(client plugin.ApiClient, group string, page GitlabRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.GitlabProject], *GitlabRemotePagination, errors.Error) {
++	return listGitlabRemoteGroupsPage(nil, client, group, page, false)
++}
++
++// ADPListRemoteProjects returns one native project page, independently of group
++// pagination. Its caller resets the native page when changing stages.
++func ADPListRemoteProjects(client plugin.ApiClient, group string, page GitlabRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.GitlabProject], *GitlabRemotePagination, errors.Error) {
++	return listGitlabRemoteProjectsPage(nil, client, group, page, true)
++}
++
++func listGitlabRemoteGroups(connection *models.GitlabConnection, apiClient plugin.ApiClient, groupId string, page GitlabRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.GitlabProject], *GitlabRemotePagination, errors.Error) {
++	return listGitlabRemoteGroupsPage(connection, apiClient, groupId, page, true)
++}
++
++func listGitlabRemoteGroupsPage(
+@@ -96,0 +113 @@ func listGitlabRemoteGroups(
++	includePersonal bool,
+@@ -105 +122 @@ func listGitlabRemoteGroups(
+-	if groupId == "" && page.Page == 1 {
++	if includePersonal && groupId == "" && page.Page == 1 {
+@@ -122,0 +140,3 @@ func listGitlabRemoteGroups(
++	if err != nil {
++		return nil, nil, err
++	}
+@@ -124 +144,3 @@ func listGitlabRemoteGroups(
+-	errors.Must(api.UnmarshalResponse(res, &resGroups))
++	if err = api.UnmarshalResponse(res, &resGroups); err != nil {
++		return nil, nil, err
++	}
+@@ -138 +160,5 @@ func listGitlabRemoteGroups(
+-func listGitlabRemoteProjects(
++func listGitlabRemoteProjects(connection *models.GitlabConnection, apiClient plugin.ApiClient, groupId string, page GitlabRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.GitlabProject], *GitlabRemotePagination, errors.Error) {
++	return listGitlabRemoteProjectsPage(connection, apiClient, groupId, page, false)
++}
++
++func listGitlabRemoteProjectsPage(
+@@ -142,0 +169 @@ func listGitlabRemoteProjects(
++	directNamespace bool,
+@@ -151,0 +179,4 @@ func listGitlabRemoteProjects(
++	if directNamespace && !strings.HasPrefix(groupId, USERS_PREFIX) {
++		query.Set("with_shared", "false")
++		query.Set("include_subgroups", "false")
++	}
+@@ -163 +194,3 @@ func listGitlabRemoteProjects(
+-	errors.Must(api.UnmarshalResponse(res, &resProjects))
++	if err = api.UnmarshalResponse(res, &resProjects); err != nil {
++		return nil, nil, err
++	}
+diff --git a/backend/plugins/linear/api/remote_api.go b/backend/plugins/linear/api/remote_api.go
+index fd160e2..2e0136d 100644
+--- a/backend/plugins/linear/api/remote_api.go
++++ b/backend/plugins/linear/api/remote_api.go
+@@ -33,0 +34 @@ type LinearRemotePagination struct {
++	Limit  int    `json:"limit,omitempty"`
+@@ -58,0 +60,5 @@ const remoteScopesPageSize = 100
++// ADPListRemoteScopes uses the existing read-only teams query and mapping.
++func ADPListRemoteScopes(client plugin.ApiClient, page LinearRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.LinearTeam], *LinearRemotePagination, errors.Error) {
++	return listLinearRemoteScopes(nil, client, "", page)
++}
++
+@@ -70,0 +77,7 @@ func listLinearRemoteScopes(
++	pageSize := page.Limit
++	if pageSize == 0 {
++		pageSize = remoteScopesPageSize
++	}
++	if pageSize < 1 || pageSize > remoteScopesPageSize {
++		return nil, nil, errors.BadInput.New("invalid Linear page size")
++	}
+@@ -77 +90 @@ func listLinearRemoteScopes(
+-		remoteScopesPageSize, after,
++		pageSize, after,
+diff --git a/backend/plugins/pagerduty/api/remote_api.go b/backend/plugins/pagerduty/api/remote_api.go
+index 31b2ab3..c3157ed 100644
+--- a/backend/plugins/pagerduty/api/remote_api.go
++++ b/backend/plugins/pagerduty/api/remote_api.go
+@@ -105,0 +106,5 @@ func queryPagerdutyRemoteScopes(
++// ADPListRemoteScopes reuses the native services helper with caller-owned transport.
++func ADPListRemoteScopes(client plugin.ApiClient, page PagerdutyRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.Service], *PagerdutyRemotePagination, errors.Error) {
++	return queryPagerdutyRemoteScopes(client, "", page, "")
++}
++
+diff --git a/backend/plugins/slack/api/remote_api.go b/backend/plugins/slack/api/remote_api.go
+index 378d418..1f2f4f0 100644
+--- a/backend/plugins/slack/api/remote_api.go
++++ b/backend/plugins/slack/api/remote_api.go
+@@ -48,0 +49,5 @@ type slackConvListResp struct {
++// ADPListRemoteScopes reuses native channel mapping with caller-owned transport.
++func ADPListRemoteScopes(client plugin.ApiClient, page SlackRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.SlackChannel], *SlackRemotePagination, errors.Error) {
++	return listSlackRemoteScopes(nil, client, "", page)
++}
++

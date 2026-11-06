@@ -407,7 +407,7 @@ PRODUCTION_PORTS: tuple[PortContract, ...] = (
     PortContract(
         name="credential_evidence",
         owner=PortOwner.GATEWAY_VAULT,
-        declared_at="src/superplane-api/app/services/credential_evidence.py:26",
+        declared_at="src/superplane-api/app/services/credential_evidence.py:28",
         purpose=(
             "Report current vault metadata plus an independently verified binding "
             "between a validation report and this exact credential and workspace."

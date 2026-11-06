@@ -90,8 +90,15 @@ def validate_fixture(name, value):
             "Assistant requires A1/A2 in tenant A and B1 in tenant B",
         )
         for label, user in value.items():
+            identity_keys = IDENTITY | {"fixture_name"}
+            membership_keys = {"membership_id", "membership_run_owned"}
             require(
-                isinstance(user, dict) and set(user) == IDENTITY | {"fixture_name"},
+                isinstance(user, dict)
+                and (
+                    set(user) == identity_keys
+                    or label == "a2"
+                    and set(user) == identity_keys | membership_keys
+                ),
                 f"assistant_users.{label} requires exact identity and fixture reference",
             )
             no_secrets(user, f"assistant_users.{label}")
@@ -99,7 +106,12 @@ def validate_fixture(name, value):
                 all(
                     isinstance(item, str)
                     and re.fullmatch(r"[A-Za-z0-9/_.:@+=-]{1,128}", item)
-                    for item in user.values()
+                    for key, item in user.items()
+                    if key != "membership_run_owned"
+                )
+                and (
+                    "membership_run_owned" not in user
+                    or user["membership_run_owned"] is True
                 ),
                 f"assistant_users.{label} has an invalid identifier",
             )

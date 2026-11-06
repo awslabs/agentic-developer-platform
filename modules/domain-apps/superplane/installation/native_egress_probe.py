@@ -13,7 +13,11 @@ import ipaddress,json,os,socket,ssl
 v=json.loads(os.environ['ADP_NATIVE_NETWORK_PROBE'])
 for host in v['https']:
     addresses=socket.getaddrinfo(host,443,family=socket.AF_INET,type=socket.SOCK_STREAM)
-    assert addresses and all(ipaddress.ip_address(item[4][0]).is_global for item in addresses), 'public service DNS resolved outside allowed public IPv4'
+    expected=v.get('private_https',{}).get(host)
+    if expected is not None:
+        assert addresses and {item[4][0] for item in addresses}==set(expected), 'private service DNS differs from reviewed endpoint interfaces'
+    else:
+        assert addresses and all(ipaddress.ip_address(item[4][0]).is_global for item in addresses), 'public service DNS resolved outside allowed public IPv4'
     with socket.create_connection(addresses[0][4],timeout=10) as transport:
         with ssl.create_default_context().wrap_socket(transport,server_hostname=host):
             pass
@@ -26,12 +30,86 @@ print(json.dumps({'version':1,'reachable':True,'recipe_sha256':v['recipe_sha256'
 """
 
 
+def verified_private_hosts(installer):
+    env = installer.env
+    endpoints = env["paid_worker"]["egress"].get("interface_endpoints", {})
+    if "interface_endpoints" not in env["paid_worker"]["egress"]:
+        return {}
+    native_egress.validate_interface_endpoints(endpoints)
+    cluster = installer.json(
+        installer.aws("eks", "describe-cluster", "--name", env["cluster"])
+    )["cluster"]
+    require(
+        cluster.get("arn")
+        == f"arn:aws:eks:{env['region']}:{env['account_id']}:cluster/{env['cluster']}"
+        and cluster.get("status") == "ACTIVE",
+        "Endpoint verification cluster differs",
+    )
+    vpc_id = cluster["resourcesVpcConfig"]["vpcId"]
+    hosts = {}
+    for service, selected in endpoints.items():
+        require(selected["vpc_id"] == vpc_id, "Endpoint is outside the management VPC")
+        result = installer.json(
+            installer.aws(
+                "ec2", "describe-vpc-endpoints", "--vpc-endpoint-ids", selected["id"]
+            )
+        )
+        observed = result.get("VpcEndpoints", [])
+        require(len(observed) == 1, "Endpoint identity is ambiguous")
+        endpoint = observed[0]
+        require(
+            endpoint.get("VpcEndpointId") == selected["id"]
+            and endpoint.get("VpcId") == vpc_id
+            and endpoint.get("OwnerId") == env["account_id"]
+            and endpoint.get("State") == "available"
+            and endpoint.get("VpcEndpointType") == "Interface"
+            and endpoint.get("PrivateDnsEnabled") is True
+            and endpoint.get("ServiceName")
+            == f"com.amazonaws.{env['region']}.{service}"
+            and sorted(endpoint.get("NetworkInterfaceIds", []))
+            == sorted(selected["network_interface_ids"]),
+            "Live interface endpoint differs from reviewed identity",
+        )
+        result = installer.json(
+            installer.aws(
+                "ec2",
+                "describe-network-interfaces",
+                "--network-interface-ids",
+                *selected["network_interface_ids"],
+            )
+        )
+        interfaces = result.get("NetworkInterfaces", [])
+        require(
+            len(interfaces) == len(selected["network_interface_ids"])
+            and {item.get("NetworkInterfaceId") for item in interfaces}
+            == set(selected["network_interface_ids"]),
+            "Endpoint interface set changed",
+        )
+        require(
+            all(
+                item.get("VpcId") == vpc_id
+                and item.get("OwnerId") == env["account_id"]
+                and item.get("Status") == "in-use"
+                and item.get("InterfaceType") == "vpc_endpoint"
+                for item in interfaces
+            )
+            and {item.get("PrivateIpAddress") for item in interfaces}
+            == set(selected["ipv4_addresses"]),
+            "Endpoint interface ownership or addresses changed",
+        )
+        hosts[f"{service}.{env['region']}.amazonaws.com"] = sorted(
+            selected["ipv4_addresses"]
+        )
+    return hosts
+
+
 def verify_network(installer):
     env = installer.env
     if not native_egress.enabled(env):
         return None
     worker = env["paid_worker"]
     rule_set = native_egress.rules(env)
+    private_hosts = verified_private_hosts(installer)
     response = installer.json(
         installer.aws(
             "rds",
@@ -85,6 +163,8 @@ def verify_network(installer):
         "database_ip": worker["egress"]["database"]["cidr"].split("/")[0],
         "recipe_sha256": digest(rule_set),
     }
+    if private_hosts:
+        targets["private_https"] = private_hosts
     name = "superplane-network-probe-" + uuid4().hex[:12]
     labels = {
         LABEL: installer.owner,

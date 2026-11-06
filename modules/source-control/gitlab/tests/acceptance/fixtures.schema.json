@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private run-owned GitLab runner qualification scope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_owned", "run_id", "source_revision", "account_id", "group_a", "group_b", "project_namespace_a", "project_namespace_b", "project_a", "project_b", "runner_a", "vpc_id", "private_subnet_ids", "job_security_group_ids", "ami_id", "asg_names", "identity_role_arns", "network_targets"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_owned": {"const": true},
+    "run_id": {"type": "string", "format": "uuid"},
+    "workflow_sources": {"type": "object", "additionalProperties": false, "required": ["gitlab-infra-apply.yml", "gitlab-runners-apply.yml"], "properties": {"gitlab-infra-apply.yml": {"$ref": "#/$defs/native_workflow_source"}, "gitlab-runners-apply.yml": {"$ref": "#/$defs/native_workflow_source"}}},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "account_id": {"type": "string", "pattern": "^[0-9]{12}$"},
+    "group_a": {"type": "integer", "minimum": 1},
+    "group_b": {"type": "integer", "minimum": 1},
+    "project_namespace_a": {"type": "integer", "minimum": 1},
+    "project_namespace_b": {"type": "integer", "minimum": 1},
+    "project_a": {"type": "integer", "minimum": 1},
+    "project_b": {"type": "integer", "minimum": 1},
+    "runner_a": {"type": "integer", "minimum": 1},
+    "vpc_id": {"type": "string", "pattern": "^vpc-[0-9a-f]+$"},
+    "private_subnet_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^subnet-[0-9a-f]+$"}},
+    "job_security_group_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^sg-[0-9a-f]+$"}},
+    "ami_id": {"type": "string", "pattern": "^ami-[0-9a-f]+$"},
+    "asg_names": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "network_targets": {"type": "array", "minItems": 15, "maxItems": 15, "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "address", "port", "kind", "expected"],
+      "properties": {"name": {"type": "string"}, "address": {"type": "string"}, "port": {"type": "integer", "minimum": 1, "maximum": 65535}, "kind": {"enum": ["tcp", "https", "dns"]}, "expected": {"enum": ["allowed", "blocked", "disabled_by_provider"]}, "hostname": {"type": "string", "pattern": "^[A-Za-z0-9.-]+$"}, "path": {"type": "string", "pattern": "^/"}, "expected_status": {"type": "integer", "minimum": 100, "maximum": 599}},
+      "allOf": [{"if": {"properties": {"kind": {"const": "https"}}}, "then": {"required": ["hostname", "expected_status"]}},
+        {"if": {"properties": {"expected": {"const": "disabled_by_provider"}}}, "then": {"properties": {"name": {"const": "metadata_ipv6"}, "address": {"const": "fd00:ec2::254"}, "port": {"const": 80}, "kind": {"const": "tcp"}}}}]
+    }},
+    "identity_role_arns": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$"}, "required": ["manager_ca", "manager_own_token", "gateway_ca", "agent_ca", "manager_other_token", "exporter_admin", "exporter_group_token"]}
+  },
+  "$defs": {
+    "native_workflow_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "run_attempt",
+        "repository_id",
+        "source_revision",
+        "workflow_revision",
+        "correlation",
+        "contract_digest",
+        "context_sha256",
+        "context_reference",
+        "region"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "workflow_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "contract_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "context_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "correlation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "context_reference": {
+          "type": "string",
+          "pattern": "^s3://adp-dev-deployment-evidence-[0-9]{12}/deployment-evidence/v1/[0-9]+/[0-9]+/[0-9]+/context/gitlab-(infra|runners)-apply[.]yml[.]json[?]versionId=[A-Za-z0-9_.~%-]+$"
+        },
+        "region": {
+          "type": "string",
+          "pattern": "^[a-z]{2}-[a-z]+-[0-9]$"
+        }
+      }
+    }
+  }
+}

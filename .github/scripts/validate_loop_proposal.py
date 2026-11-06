@@ -9,7 +9,8 @@ what is wrong, exit non-zero if anything is.
 All rules live in `modules/gateway/src/orchestration/proposal.py`, which is the
 same module `compile_proposal` imports. That is the point — this script holds no
 validation logic of its own, so it cannot drift from the authoritative check.
-Adding a rule here instead of there would create exactly the gap the double
+This includes node lineage and label validation: neither their vocabulary nor
+their limits are duplicated here. Adding a rule here instead of there would create exactly the gap the double
 validation exists to close: a document this script blesses that the engine then
 refuses, or worse, one it blesses that the engine accepts for different reasons.
 
@@ -124,7 +125,9 @@ def _report(path: Path, proposal: LoopProposal) -> int:
     violations = validate_proposal(proposal)
 
     if not violations:
-        print(f"OK   {path} — {len(proposal.nodes)} node(s), {len(proposal.edges)} edge(s), spec revision {proposal.spec_revision}")
+        annotated = sum(node.lineage is not None or bool(node.labels) for node in proposal.nodes)
+        suffix = f", {annotated} annotated node(s)" if annotated else ""
+        print(f"OK   {path} — {len(proposal.nodes)} node(s), {len(proposal.edges)} edge(s), spec revision {proposal.spec_revision}{suffix}")
         return 0
 
     print(f"FAIL {path} — {len(violations)} violation(s):")

@@ -135,6 +135,70 @@ def test_end_route_is_owner_scoped_and_reports_durable_cleanup_status(api, row, 
         assert client.post(path).status_code == 404
 
 
+def test_session_executor_is_a_validated_server_side_property_of_the_mode(api, monkeypatch):
+    """#8115: PUT /mode stores the executor with the mode, checks it against the Crew policy,
+    reports it on GET, refuses to swap it under a live persistent pod and clears it on ephemeral."""
+    client, _ = api
+
+    async def membership(*_):
+        return True
+
+    targets = {"allowed": frozenset({"ec2-instance"})}
+
+    async def allowed_targets(owner, _db):
+        assert (owner.tenant_id, owner.user_id) == ("tenant", "user")
+        return targets["allowed"]
+
+    monkeypatch.setattr(chat, "current_chat_member", membership)
+    monkeypatch.setattr("src.crew.proxy.crew_allowed_targets", allowed_targets)
+    with mock_aws():
+        context = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="executor-mode-context",
+            BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}, {"AttributeName": "SK", "AttributeType": "S"}],
+        )
+        client.app.dependency_overrides[chat.mode_store] = lambda: ChatSessionMailbox(context)
+        path = "/chat/sessions/sess-123/mode"
+        key = {"PK": "session#sess-123", "SK": "header"}
+        assert client.get(path).json() == {"mode": "ephemeral", "sequence": 0, "health": "idle"}
+        # An ephemeral session cannot name a harness; unknown executors are refused by the contract.
+        assert client.put(path, json={"mode": "ephemeral", "executor": "claude-code"}).status_code == 422
+        assert client.put(path, json={"mode": "persistent", "executor": "bogus"}).status_code == 422
+        assert "Item" not in context.get_item(Key=key)
+        selected = client.put(path, json={"mode": "persistent", "executor": "claude-code"})
+        assert selected.status_code == 200, selected.text
+        assert selected.json() == {"mode": "persistent", "sequence": 0, "health": "idle", "executor": "claude-code"}
+        assert context.get_item(Key=key)["Item"]["sessionExecutor"] == "claude-code"
+        assert client.get(path).json()["executor"] == "claude-code"
+        # Re-selecting the mode without an executor keeps the stored choice.
+        assert client.put(path, json={"mode": "persistent"}).json()["executor"] == "claude-code"
+        # Kiro Crew follows the tenant's Crew target policy; a denial leaves the session untouched.
+        denied = client.put(path, json={"mode": "persistent", "executor": "kirocrew"})
+        assert denied.status_code == 403 and denied.json()["detail"] == {"error": "executor_not_permitted"}
+        assert client.get(path).json()["executor"] == "claude-code"
+        targets["allowed"] = frozenset({"eks-pod"})
+        assert client.put(path, json={"mode": "persistent", "executor": "kirocrew"}).json()["executor"] == "kirocrew"
+        # A live persistent pod runs the executor it was created with: no silent swap underneath it.
+        context.update_item(
+            Key=key,
+            UpdateExpression="SET chatLease = :lease, sessionState = :active",
+            ExpressionAttributeValues={
+                ":lease": {"run_id": "run-1", "sandbox_uid": "uid-1", "generation": 1, "expires_at": int(time.time()) + 300},
+                ":active": "active",
+            },
+        )
+        locked = client.put(path, json={"mode": "persistent", "executor": "claude-code"})
+        assert locked.status_code == 409 and locked.json()["detail"] == {"error": "session_executor_locked"}
+        assert client.get(path).json()["executor"] == "kirocrew"
+        context.update_item(Key=key, UpdateExpression="REMOVE chatLease SET sessionState = :idle", ExpressionAttributeValues={":idle": "idle"})
+        # Back to ephemeral clears the choice: quick answers always run the sandbox loop.
+        back = client.put(path, json={"mode": "ephemeral"})
+        assert back.status_code == 200, back.text
+        assert back.json() == {"mode": "ephemeral", "sequence": 0, "health": "idle"}
+        assert "sessionExecutor" not in context.get_item(Key=key)["Item"]
+
+
 def test_ephemeral_mode_promotes_only_after_bound_teardown_and_terminal(api, monkeypatch):
     client, _ = api
 

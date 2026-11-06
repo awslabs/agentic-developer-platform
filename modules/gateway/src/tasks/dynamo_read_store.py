@@ -199,6 +199,8 @@ class DynamoTaskReadStore:
                 execution_health=row.get("execution_health", "unknown"),
                 recovery_required=bool(row.get("recovery_required", False)),
                 external_reference=row.get("input_payload", {}).get("external_reference"),
+                product_id=row.get("product_id"),
+                project_id=row.get("project_id"),
                 result=_json(row.get("result")),
                 error=_json(row.get("error")),
                 input_request=_json(row.get("input_request")),

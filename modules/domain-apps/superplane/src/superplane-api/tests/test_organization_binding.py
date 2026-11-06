@@ -63,10 +63,10 @@ async def test_uuid_shaped_binding_cannot_select_a_different_legacy_tenant():
 
 async def test_bound_adp_request_uses_server_grant_and_rejects_uuid_bypass(client, monkeypatch):
     from app import auth
+    from app.current_identity import CurrentIdentity
     from app.main import app
     from app.models.workspace import Workspace
     from app.models.workspace_grant import WorkspaceGrantRecord
-    from app.current_identity import CurrentIdentity
     from superplane_auth.policy import DomainTokenPolicy
 
     org, workspace = uuid.uuid4(), uuid.uuid4()
@@ -85,8 +85,7 @@ async def test_bound_adp_request_uses_server_grant_and_rejects_uuid_bypass(clien
 
     monkeypatch.delattr(app.state, "current_identity_reader", raising=False)
     monkeypatch.setattr(settings, "current_identity_enforced", False)
-    # Upgrade compatibility: the existing signed-token/live-grant path still works.
-    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 200
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 503
     monkeypatch.setattr(settings, "current_identity_enforced", True)
     assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 503
 
@@ -104,6 +103,142 @@ async def test_bound_adp_request_uses_server_grant_and_rejects_uuid_bypass(clien
     assert (await client.get(f"/workspaces/{uuid.uuid4()}", headers=headers)).status_code == 403
     claims["custom:org_id"] = str(org)
     assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 403
+
+
+async def test_selected_membership_is_mandatory_without_optional_flag(client, monkeypatch):
+    from app import auth, domain_guard
+    from app.config import settings
+    from app.current_identity import CurrentIdentity
+    from app.main import app
+    from app.models.workspace import Workspace
+    from app.models.workspace_grant import WorkspaceGrantRecord
+    from superplane_auth.policy import DomainTokenPolicy
+
+    first, second, workspace = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with async_session_test() as db:
+        db.add_all([
+            Organization(id=first, name="member-first", adp_org_id="first"),
+            Organization(id=second, name="member-second", adp_org_id="second"),
+        ])
+        await db.flush()
+        db.add(Workspace(
+            id=workspace, org_id=second, name="member-workspace",
+            isolation_mode="shared", status="Ready",
+        ))
+        db.add(WorkspaceGrantRecord(
+            workspace_id=workspace, org_id=second, principal="alice",
+            principal_type="human", permissions="workspace:read",
+        ))
+        await db.commit()
+
+    monkeypatch.setattr(app.state, "domain_policy", DomainTokenPolicy(
+        allowed_client_ids=["client"], expected_issuer="https://issuer.example",
+    ), raising=False)
+    monkeypatch.setattr(settings, "current_identity_enforced", False)
+    selected = {"org": "second"}
+    monkeypatch.setattr(auth, "verify_access_token", lambda token: {
+        "sub": "alice", "custom:org_id": selected["org"],
+        "custom:account_type": "human", "token_use": "access",
+        "iss": "https://issuer.example", "client_id": "client",
+    })
+    headers = {"Authorization": "Bearer signed"}
+
+    class Reader:
+        def __init__(self):
+            self.identity = CurrentIdentity("alice", "human", "second", "member-2", True, True)
+            self.calls = []
+
+        async def read(self, *, subject, principal_type, adp_org_id):
+            self.calls.append((subject, principal_type, adp_org_id))
+            return self.identity
+
+    monkeypatch.delattr(app.state, "current_identity_reader", raising=False)
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 503
+    reader = Reader()
+    monkeypatch.setattr(app.state, "current_identity_reader", reader, raising=False)
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 200
+    assert reader.calls == [("alice", "human", "second")]
+    original_read = reader.read
+
+    async def unavailable(**kwargs):
+        raise RuntimeError("offline identity reader unavailable")
+
+    monkeypatch.setattr(reader, "read", unavailable)
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 503
+    monkeypatch.setattr(reader, "read", original_read)
+    original_principal = domain_guard.DomainPrincipal
+
+    def reject_principal(*args, **kwargs):
+        raise AssertionError("a refused membership must not construct a domain principal")
+
+    monkeypatch.setattr(domain_guard, "DomainPrincipal", reject_principal)
+    reader.identity = CurrentIdentity("alice", "human", "first", "member-1", True, True)
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 403
+    reader.identity = CurrentIdentity("alice", "human", "second", "member-2", False, True)
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 403
+    monkeypatch.setattr(domain_guard, "DomainPrincipal", original_principal)
+    reader.identity = CurrentIdentity("alice", "human", "second", "member-2", True, True)
+    selected["org"] = "first"
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 403
+    assert reader.calls[-1] == ("alice", "human", "first")
+
+
+async def test_unbound_uuid_requires_active_local_subject_membership(client, monkeypatch):
+    from app import auth
+    from app.config import settings
+    from app.main import app
+    from app.models.user import USER_STATUS_ACTIVE, USER_STATUS_DISABLED, User
+    from app.models.workspace import Workspace
+    from app.models.workspace_grant import WorkspaceGrantRecord
+    from superplane_auth.policy import DomainTokenPolicy
+
+    org_id, workspace_id = uuid.uuid4(), uuid.uuid4()
+    async with async_session_test() as db:
+        db.add(Organization(id=org_id, name="legacy-member"))
+        await db.flush()
+        db.add(Workspace(
+            id=workspace_id, org_id=org_id, name="legacy-workspace",
+            isolation_mode="shared", status="Ready",
+        ))
+        db.add(WorkspaceGrantRecord(
+            workspace_id=workspace_id, org_id=org_id, principal="alice",
+            principal_type="human", permissions="workspace:read",
+        ))
+        await db.commit()
+
+    monkeypatch.setattr(app.state, "domain_policy", DomainTokenPolicy(
+        allowed_client_ids=["client"], expected_issuer="https://issuer.example",
+    ), raising=False)
+    monkeypatch.setattr(settings, "current_identity_enforced", False)
+    monkeypatch.delattr(app.state, "current_identity_reader", raising=False)
+    monkeypatch.setattr(auth, "verify_access_token", lambda token: {
+        "sub": token, "custom:org_id": str(org_id),
+        "custom:account_type": "human", "token_use": "access",
+        "iss": "https://issuer.example", "client_id": "client",
+    })
+
+    async def status_for(subject):
+        response = await client.get(
+            f"/workspaces/{workspace_id}", headers={"Authorization": f"Bearer {subject}"}
+        )
+        return response.status_code
+
+    assert await status_for("alice") == 403
+    async with async_session_test() as db:
+        member = User(
+            org_id=org_id, email="alice@example.test", cognito_sub="alice",
+            status=USER_STATUS_ACTIVE,
+        )
+        db.add(member)
+        await db.commit()
+        member_id = member.id
+    assert await status_for("alice") == 200
+    assert await status_for("bob") == 403
+    async with async_session_test() as db:
+        member = await db.get(User, member_id)
+        member.status = USER_STATUS_DISABLED
+        await db.commit()
+    assert await status_for("alice") == 403
 
 
 async def test_current_identity_enforcement_never_falls_back_without_domain_policy(client, monkeypatch):

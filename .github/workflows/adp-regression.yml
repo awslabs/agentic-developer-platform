@@ -5,6 +5,15 @@ name: ADP Regression
   - cron: 17 2 * * 0
   workflow_dispatch:
     inputs:
+      target_environment:
+        description: Protected regression target (AWS resource environment stays dev)
+        type: environment
+        default: dev
+      expected_revision:
+        description: Optional full deployed release SHA; verified before live tests
+        type: string
+        required: false
+        default: ''
       profile:
         description: Weekly includes daily and owned lifecycle diagnostics; missing fixtures remain blocked
         type: choice
@@ -20,7 +29,7 @@ name: ADP Regression
 permissions:
   contents: read
 concurrency:
-  group: adp-regression-dev
+  group: adp-regression-${{ inputs.target_environment || 'dev' }}
   cancel-in-progress: false
 jobs:
   before:
@@ -31,6 +40,9 @@ jobs:
       id-token: write
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.profile.result == 'success' }}
     needs: profile
+    with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
+      expected_revision: ${{ inputs.expected_revision }}
   after:
     uses: ./.github/workflows/_regression-snapshot.yml
     secrets: inherit
@@ -52,6 +64,9 @@ jobs:
     - module-onboarding
     - module-budgets
     - module-cli
+    with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
+      expected_revision: ${{ needs.before.outputs.revision }}
   profile:
     if: github.ref == 'refs/heads/main'
     runs-on: arc-runner-org
@@ -64,6 +79,15 @@ jobs:
       module_cli_scope: ${{ steps.modules.outputs.cli_scope }}
     steps:
     - uses: actions/checkout@v7
+    - name: Validate regression target
+      env:
+        TARGET: ${{ inputs.target_environment || 'dev' }}
+        EXPECTED_REVISION: ${{ inputs.expected_revision }}
+      run: |
+        [[ "$TARGET" =~ ^[a-z][a-z0-9-]{0,62}$ ]]
+        if [ -n "$EXPECTED_REVISION" ]; then
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+        fi
     - id: profile
       env:
         REGRESSION_SCHEDULE: ${{ github.event.schedule }}
@@ -73,7 +97,7 @@ jobs:
       env:
         REGRESSION_MODULES: ${{ inputs.modules }}
       run: python3 .github/scripts/regression_modules.py
-    - uses: actions/upload-artifact@v7
+    - uses: ./.github/actions/upload-ci-evidence-s3
       if: ${{ always() && inputs.modules != '' }}
       with:
         name: module-test-plan
@@ -92,65 +116,78 @@ jobs:
     if: ${{ !cancelled() && needs.profile.result == 'success' && needs.before.result == 'success' }}
     uses: ./.github/workflows/gateway-smoke.yml
     with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
       require_token: true
     permissions:
       contents: read
       id-token: write
   chat:
     needs:
+    - before
     - profile
     - smoke
-    if: ${{ (!cancelled() && needs.profile.result == 'success') && (inputs.modules == '' || contains(fromJSON(needs.profile.outputs.lanes
+    if: ${{ (!cancelled() && needs.before.result == 'success' && needs.profile.result == 'success') && (inputs.modules == '' || contains(fromJSON(needs.profile.outputs.lanes
       || '[]'), 'chat')) }}
     uses: ./.github/workflows/e2e-chat-playwright.yml
     permissions:
       contents: read
       id-token: write
     with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
       require_interactions: true
       modules: ${{ needs.profile.outputs.modules }}
   browser:
     needs:
+    - before
     - profile
     - chat
-    if: ${{ (!cancelled() && needs.profile.result == 'success') && (inputs.modules == '' || contains(fromJSON(needs.profile.outputs.lanes
+    if: ${{ (!cancelled() && needs.before.result == 'success' && needs.profile.result == 'success') && (inputs.modules == '' || contains(fromJSON(needs.profile.outputs.lanes
       || '[]'), 'browser')) }}
     uses: ./.github/workflows/e2e-new-ui-playwright.yml
     permissions:
       contents: read
       id-token: write
     with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
       modules: ${{ needs.profile.outputs.modules }}
   gateway:
     needs:
+    - before
     - profile
     - browser
-    if: ${{ (!cancelled() && needs.profile.result == 'success') && inputs.modules == '' }}
+    if: ${{ (!cancelled() && needs.before.result == 'success' && needs.profile.result == 'success') && inputs.modules == '' }}
     uses: ./.github/workflows/gateway-live-tests.yml
     permissions:
       contents: read
       id-token: write
+    with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
   credentials:
     needs:
+    - before
     - profile
     - integrations
-    if: ${{ (!cancelled() && needs.profile.result == 'success' && needs.integrations.outputs.cleanup_ok == 'true') && inputs.modules
+    if: ${{ (!cancelled() && needs.before.result == 'success' && needs.profile.result == 'success' && needs.integrations.outputs.cleanup_ok == 'true') && inputs.modules
       == '' }}
     uses: ./.github/workflows/credential-binding-adversarial-e2e.yml
     permissions:
       contents: read
       id-token: write
+    with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
   cli:
     needs:
+    - before
     - profile
     - gateway
-    if: ${{ (!cancelled() && needs.profile.result == 'success' && needs.gateway.outputs.cleanup_ok == 'true') && inputs.modules
+    if: ${{ (!cancelled() && needs.before.result == 'success' && needs.profile.result == 'success' && needs.gateway.outputs.cleanup_ok == 'true') && inputs.modules
       == '' }}
     uses: ./.github/workflows/nightly-cli-regression.yml
     permissions:
       contents: read
       id-token: write
     with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
       ec2_scope: ${{ needs.profile.outputs.cli_scope }}
     secrets: inherit
   summary:
@@ -187,12 +224,15 @@ jobs:
         cli before after integrations
   integrations:
     needs:
+    - before
     - cli
-    if: ${{ (!cancelled() && needs.cli.outputs.cleanup_ok == 'true') && inputs.modules == '' }}
+    if: ${{ (!cancelled() && needs.before.result == 'success' && needs.cli.outputs.cleanup_ok == 'true') && inputs.modules == '' }}
     uses: ./.github/workflows/gitlab-integration-tests.yml
     permissions:
       contents: read
       id-token: write
+    with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
   module-onboarding:
     needs:
     - profile
@@ -206,6 +246,7 @@ jobs:
       contents: read
       id-token: write
     with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
       environment: dev
   module-budgets:
     needs:
@@ -221,6 +262,7 @@ jobs:
       contents: read
       id-token: write
     with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
       environment: dev
   module-cli:
     needs:
@@ -238,6 +280,7 @@ jobs:
       contents: read
       id-token: write
     with:
+      target_environment: ${{ inputs.target_environment || 'dev' }}
       environment: dev
       expected_revision: ${{ needs.before.outputs.revision }}
       resolve_revision: true

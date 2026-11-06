@@ -48,6 +48,11 @@ halted; the engine becomes the thing that breaks the loop" is one of this story'
 own listed bug classes, and a conservative threshold is how that is avoided — a
 6 h pod that is legitimately working for 3 h must not be declared stalled.
 
+Elapsed time alone is not a stall for an acknowledged, current worker with a
+renewed work lease. Its identity-bound heartbeat and live execution record take
+precedence over this legacy clock. Kubernetes and the model/policy budgets still
+bound its runtime; when contact stops, the existing expired-lease fence applies.
+
 --------------------------------------------------------------------------------
 The cycle bound must sit strictly BELOW MAX_CHAIN_DEPTH
 --------------------------------------------------------------------------------
@@ -108,15 +113,18 @@ org — a stall in one org never notifies another.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from botocore.exceptions import BotoCoreError, ClientError
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import DecisionKind, OrchestrationDecision, OrchestrationNode
+from .models import DecisionKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from .notify import Notification, NotificationError, NotifyConfig, notify
 from .state import TERMINAL_STATES, ActorKind, NodeState
 from .tick import _ITEM_BACKSTOP, _PAGE_SIZE, apply_guarded_transition
@@ -157,6 +165,7 @@ DEFECT_CYCLE_BOUND_ENV = "ORCH_DEFECT_CYCLE_BOUND"
 # construction, which is what makes the R-O4a invariant hold for *any* deadline
 # rather than for one particular pair of numbers. 0.9 of 6 h is 5.4 h.
 DEFAULT_THRESHOLD_FRACTION = 0.9
+NEVER_ACKNOWLEDGED_ENV = "ORCH_NEVER_ACKNOWLEDGED_SECONDS"
 
 # The actor this module transitions as. SERVICE, never HUMAN — which is precisely
 # what makes the `halted -> ready` edge in `state.py` unreachable from here.
@@ -175,6 +184,305 @@ STALLABLE_STATES: frozenset[NodeState] = frozenset({NodeState.RUNNING})
 # that cycled its bound and is now parked at a gate has still exhausted its budget,
 # and `state.py` permits the edge for a service actor.
 HALTABLE_STATES: frozenset[NodeState] = frozenset({NodeState.RUNNING, NodeState.AWAITING_GATE})
+
+
+async def _read_unacknowledged_exec(store, candidate, run_id):
+    from .developer_personas import DEVELOPER_PERSONAS
+
+    pk, sk = f"TENANT#{candidate.org_id}", f"EXEC#{run_id}"
+    raw = await asyncio.to_thread(store._read, pk, sk)
+    expected = {
+        "tenant_id": {"S": candidate.org_id},
+        "invocation_id": {"S": run_id},
+        "flow_id": {"S": candidate.flow_id},
+        "orchestration_node_id": {"S": candidate.node_id},
+        "orchestration_node_attempt": {"N": str(candidate.attempts)},
+    }
+    if (
+        not raw
+        or any(raw.get(key) != value for key, value in expected.items())
+        or raw.get("persona", {}).get("S") not in DEVELOPER_PERSONAS
+        or raw.get("status") not in ({"S": "pending"}, {"S": "cancelled"})
+        or not raw.get("arrived_at")
+        or not raw.get("current_attempt", {}).get("N", "").isdecimal()
+        or not 1 <= int(raw["current_attempt"]["N"]) <= 8
+        or (raw.get("status") == {"S": "cancelled"} and raw.get("work_claim_cancellation") != {"S": "unacknowledged_stall"})
+        or any(key in raw for key in ("workload_binding", "bootstrap_authority_issued_at", "terminal_outcome", "bootstrap_failure_reason"))
+    ):
+        return None
+    return raw, expected
+
+
+async def _fence_lapsed_lease_assignment(session, candidate, *, now, store=None):
+    """Release the claim of a stalled, acknowledged worker whose lease lapsed a full period ago.
+
+    A worker that hangs after acknowledging its start keeps a `held` claim forever:
+    it never heartbeats again, never writes a terminal record, and (as #7742 showed)
+    may ignore SIGTERM, so no `abandoned` release is ever written. Lease expiry alone
+    never authorises a takeover — lost contact is not exit — so this fence requires
+    three independent facts before it releases anything: the stall detector has
+    already judged the attempt dead on the engine's clock; the claim's lease has been
+    expired for at least one further full lease period with no heartbeat; and the
+    worker's own protected execution record shows no terminal outcome and no status
+    change since the lease lapsed. Together these are the positive evidence the
+    design asks for: nothing has spoken for this run in two lease periods and the run
+    itself recorded no exit. The execution is concluded against the run and the claim
+    released `abandoned`, so the next admission starts a fresh attempt instead of
+    re-entering the dead execution.
+    """
+    from .dispatch_pass import attempt_run_id
+    from .execution_state import ExecutionIdentity, ExecutionPhase, ExecutionStatus, OutcomeKind, PhaseAdvance
+    from .execution_store import advance_execution
+    from .models import OrchestrationExecution, OrchestrationWorkClaim
+    from .work_claims import DEFAULT_LEASE_SECONDS, Disposition, ReleaseReason, release_work
+
+    run_id = attempt_run_id(candidate.node_id, candidate.attempts)
+    execution = await session.scalar(
+        select(OrchestrationExecution)
+        .where(
+            OrchestrationExecution.org_id == candidate.org_id,
+            OrchestrationExecution.flow_id == candidate.flow_id,
+            OrchestrationExecution.node_id == candidate.node_id,
+            OrchestrationExecution.cycle == candidate.attempts,
+            OrchestrationExecution.status.not_in({"concluded", "superseded"}),
+        )
+        .with_for_update()
+    )
+    if execution is None or execution.pending_action_key or execution.handoff_receipt_ref:
+        return None
+    claim = await session.scalar(
+        select(OrchestrationWorkClaim)
+        .where(OrchestrationWorkClaim.id == execution.claim_id, OrchestrationWorkClaim.org_id == candidate.org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        claim is None
+        or claim.state != "held"
+        or claim.generation != execution.claim_generation
+        or claim.owner_kind != "engine_flow"
+        or claim.owner_ref != candidate.flow_id
+        or claim.claim_event_id != run_id
+        or claim.active_run_id != run_id
+        or claim.lease_expires_at is None
+    ):
+        return None
+    expiry = claim.lease_expires_at if claim.lease_expires_at.tzinfo else claim.lease_expires_at.replace(tzinfo=UTC)
+    heartbeat = claim.heartbeat_at if claim.heartbeat_at is None or claim.heartbeat_at.tzinfo else claim.heartbeat_at.replace(tzinfo=UTC)
+    if (now - expiry).total_seconds() < DEFAULT_LEASE_SECONDS or (heartbeat is not None and heartbeat > expiry):
+        return None
+    if store is None:
+        from src.agentauth.engine import get_engine_authority_writer
+
+        store = get_engine_authority_writer().store
+    raw = await asyncio.to_thread(store._read, f"TENANT#{candidate.org_id}", f"EXEC#{run_id}")
+    expected = {
+        "tenant_id": {"S": candidate.org_id},
+        "invocation_id": {"S": run_id},
+        "flow_id": {"S": candidate.flow_id},
+        "orchestration_node_id": {"S": candidate.node_id},
+        "orchestration_node_attempt": {"N": str(candidate.attempts)},
+    }
+    if (
+        not raw
+        or any(raw.get(key) != value for key, value in expected.items())
+        or raw.get("status") not in ({"S": "active"}, {"S": "pending"})
+        or any(key in raw for key in ("terminal_outcome", "work_claim_cancellation"))
+    ):
+        return None
+    updated = raw.get("status_updated_at", {}).get("S")
+    if isinstance(updated, str):
+        try:
+            moment = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if (moment if moment.tzinfo else moment.replace(tzinfo=UTC)) > expiry:
+            return None
+    ended = await advance_execution(
+        session,
+        identity=ExecutionIdentity(
+            candidate.org_id, candidate.node_id, candidate.attempts, execution.accepted_plan_version, claim.id, claim.generation
+        ),
+        advance=PhaseAdvance(
+            phase=ExecutionPhase.CONCLUDED,
+            status=ExecutionStatus.CONCLUDED,
+            expected_revision=execution.revision,
+            progress_note="Stalled worker's lease lapsed a full period ago with no exit record; claim abandoned.",
+        ),
+    )
+    if ended.kind is not OutcomeKind.APPLIED:
+        raise ValueError("stalled execution changed before its lapsed lease was fenced")
+    released = await release_work(
+        session,
+        org_id=candidate.org_id,
+        claim_id=claim.id,
+        generation=claim.generation,
+        reason=ReleaseReason.ABANDONED,
+        terminal_evidence=f"stall lease lapsed:{run_id}",
+    )
+    if released.disposition != Disposition.ADMITTED:
+        raise ValueError("stalled claim changed before its lapsed lease was fenced")
+    return {
+        "run_id": run_id,
+        "attempt": candidate.attempts,
+        "failed_execution_id": execution.id,
+        "claim_id": claim.id,
+        "claim_generation": claim.generation,
+        "fence": "lease_lapsed_stall",
+    }
+
+
+async def _fence_unacknowledged_assignment(session, candidate, *, store=None):
+    """Fence the exact pending protected run before releasing its SQL owner."""
+    from .dispatch_pass import attempt_run_id
+    from .execution_state import ExecutionIdentity, ExecutionPhase, ExecutionStatus, OutcomeKind, PhaseAdvance
+    from .execution_store import advance_execution
+    from .models import OrchestrationExecution, OrchestrationPullRequestBinding, OrchestrationWorkClaim
+    from .run_reports import OrchestrationRunReport
+    from .work_claims import Disposition, ReleaseReason, release_work
+
+    run_id = attempt_run_id(candidate.node_id, candidate.attempts)
+    report = await session.get(OrchestrationRunReport, run_id)
+    if report is not None and (
+        report.org_id != candidate.org_id
+        or report.flow_id != candidate.flow_id
+        or report.node_id != candidate.node_id
+        or report.attempt != candidate.attempts
+        or report.worker_receipt
+        or report.terminal_receipt
+    ):
+        return None
+    execution = await session.scalar(
+        select(OrchestrationExecution)
+        .where(
+            OrchestrationExecution.org_id == candidate.org_id,
+            OrchestrationExecution.flow_id == candidate.flow_id,
+            OrchestrationExecution.node_id == candidate.node_id,
+            OrchestrationExecution.cycle == candidate.attempts,
+            OrchestrationExecution.status.not_in({"concluded", "superseded"}),
+        )
+        .with_for_update()
+    )
+    if execution is None or execution.pending_action_key or execution.handoff_receipt_ref:
+        return None
+    if await session.scalar(
+        select(OrchestrationPullRequestBinding.id)
+        .where(
+            OrchestrationPullRequestBinding.org_id == candidate.org_id,
+            OrchestrationPullRequestBinding.node_id == candidate.node_id,
+            OrchestrationPullRequestBinding.attempt == candidate.attempts,
+            OrchestrationPullRequestBinding.state == "active",
+        )
+        .limit(1)
+    ):
+        return None
+    claim = await session.scalar(
+        select(OrchestrationWorkClaim)
+        .where(OrchestrationWorkClaim.id == execution.claim_id, OrchestrationWorkClaim.org_id == candidate.org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        claim is None
+        or claim.state != "held"
+        or claim.generation != execution.claim_generation
+        or claim.owner_kind != "engine_flow"
+        or claim.owner_ref != candidate.flow_id
+        or claim.claim_event_id != run_id
+        or claim.active_run_id != run_id
+    ):
+        return None
+    if store is None:
+        from src.agentauth.engine import get_engine_authority_writer
+
+        store = get_engine_authority_writer().store
+    proof = await _read_unacknowledged_exec(store, candidate, run_id)
+    if proof is None:
+        return None
+    raw, expected = proof
+    pk = f"TENANT#{candidate.org_id}"
+    values = {f":{key}": value for key, value in expected.items()}
+    values = {
+        **values,
+        ":current_attempt": raw["current_attempt"],
+        ":pending": {"S": "pending"},
+        ":cancelled": {"S": "cancelled"},
+        ":reason": {"S": "unacknowledged_stall"},
+        ":arrived": raw["arrived_at"],
+    }
+    try:
+        if raw["status"] == {"S": "cancelled"}:
+            for attempt in range(1, int(raw["current_attempt"]["N"]) + 1):
+                if await asyncio.to_thread(store._read, pk, f"REG#{run_id}#{attempt}"):
+                    return None
+        else:
+            await asyncio.to_thread(
+                store.client.transact_write_items,
+                TransactItems=[
+                    {
+                        "Update": {
+                            "TableName": store.table,
+                            "Key": {"pk": raw["pk"], "sk": raw["sk"]},
+                            "UpdateExpression": "SET #status = :cancelled, work_claim_cancellation = :reason",
+                            "ConditionExpression": (
+                                "#status = :pending AND arrived_at = :arrived AND "
+                                "tenant_id = :tenant_id AND invocation_id = :invocation_id AND flow_id = :flow_id AND "
+                                "orchestration_node_id = :orchestration_node_id AND "
+                                "orchestration_node_attempt = :orchestration_node_attempt AND current_attempt = :current_attempt AND "
+                                "attribute_not_exists(workload_binding) AND attribute_not_exists(bootstrap_authority_issued_at) "
+                                "AND attribute_not_exists(terminal_outcome) AND attribute_not_exists(bootstrap_failure_reason)"
+                            ),
+                            "ExpressionAttributeNames": {"#status": "status"},
+                            "ExpressionAttributeValues": values,
+                        }
+                    },
+                    *(
+                        {
+                            "ConditionCheck": {
+                                "TableName": store.table,
+                                "Key": {"pk": raw["pk"], "sk": {"S": f"REG#{run_id}#{attempt}"}},
+                                "ConditionExpression": "attribute_not_exists(pk)",
+                            }
+                        }
+                        for attempt in range(1, int(raw["current_attempt"]["N"]) + 1)
+                    ),
+                ],
+            )
+    except (ClientError, BotoCoreError):
+        return None
+    ended = await advance_execution(
+        session,
+        identity=ExecutionIdentity(
+            candidate.org_id, candidate.node_id, candidate.attempts, execution.accepted_plan_version, claim.id, claim.generation
+        ),
+        advance=PhaseAdvance(
+            phase=ExecutionPhase.CONCLUDED,
+            status=ExecutionStatus.CONCLUDED,
+            expected_revision=execution.revision,
+            progress_note="Protected assignment fenced before bootstrap.",
+        ),
+        released_failure_run_id=run_id,
+    )
+    if ended.kind is not OutcomeKind.APPLIED:
+        raise ValueError("unacknowledged execution changed after protected fence")
+    released = await release_work(
+        session,
+        org_id=candidate.org_id,
+        claim_id=claim.id,
+        generation=claim.generation,
+        reason=ReleaseReason.FAILED,
+        terminal_evidence=f"protected unacknowledged fence:{run_id}",
+    )
+    if released.disposition != Disposition.ADMITTED:
+        raise ValueError("unacknowledged claim changed after protected fence")
+    return {
+        "run_id": run_id,
+        "attempt": candidate.attempts,
+        "failed_execution_id": execution.id,
+        "claim_id": claim.id,
+        "claim_generation": claim.generation,
+        "fence": "unacknowledged_stall",
+    }
 
 
 class StallConfigError(ValueError):
@@ -212,8 +520,12 @@ class StallConfig:
     threshold_fraction: float = DEFAULT_THRESHOLD_FRACTION
     threshold_seconds: int | None = None
     defect_cycle_bound: int = DEFAULT_DEFECT_CYCLE_BOUND
+    never_acknowledged_seconds: int | None = None
 
     def __post_init__(self) -> None:
+        early = self.never_acknowledged_seconds
+        if early is not None and (type(early) is not int or not 0 < early < self.stall_threshold_seconds):
+            raise StallConfigError("never_acknowledged_seconds must be a positive integer below the normal stall threshold")
         if self.pod_deadline_seconds <= 0:
             raise StallConfigError(f"pod_deadline_seconds must be positive; got {self.pod_deadline_seconds}")
 
@@ -257,12 +569,14 @@ class StallConfig:
     def from_env(cls) -> StallConfig:
         """Build from the process environment, falling back to the defaults (#4403).
 
-        Only `defect_cycle_bound` is env-tunable. The threshold is deliberately not:
+        The unacknowledged deadline is independently configured and must remain
+        below the derived long-running stall threshold. The latter is deliberately not:
         it is *derived* from the pod deadline precisely so the two cannot be set
         independently of each other, and an env knob would reintroduce the drift the
         derivation removes.
 
-        **Never raises.** This runs on the tick path, where the alternative to a
+        An invalid unacknowledged deadline raises rather than silently disabling it.
+        The legacy cycle-bound override retains its safe fallback: this runs on the tick path, where the alternative to a
         usable config is no detection pass at all — so a bad value degrades to the
         default rather than taking the tick down. Two ways it can be bad, both
         handled the same way and both logged loudly:
@@ -277,11 +591,14 @@ class StallConfig:
         chain-depth guard trip first.
         """
         raw = (os.environ.get(DEFECT_CYCLE_BOUND_ENV) or "").strip()
+        early = os.environ.get(NEVER_ACKNOWLEDGED_ENV, "1200")
+        if not early.isascii() or not early.isdecimal():
+            raise StallConfigError("ORCH_NEVER_ACKNOWLEDGED_SECONDS must be a positive integer")
         if not raw:
-            return cls()
+            return cls(never_acknowledged_seconds=int(early))
 
         try:
-            return cls(defect_cycle_bound=int(raw))
+            return cls(defect_cycle_bound=int(raw), never_acknowledged_seconds=int(early))
         except (ValueError, StallConfigError) as exc:
             logger.warning(
                 "orchestration stall: %s=%r is not a usable defect cycle bound (%s); using default %d",
@@ -290,7 +607,7 @@ class StallConfig:
                 exc,
                 DEFAULT_DEFECT_CYCLE_BOUND,
             )
-            return cls()
+            return cls(never_acknowledged_seconds=int(early))
 
 
 @dataclass
@@ -398,15 +715,19 @@ async def _fetch_candidate_page(session: AsyncSession, *, after_id: str | None, 
     """
     watched = sorted({state.value for state in STALLABLE_STATES | HALTABLE_STATES})
 
-    stmt = select(
-        OrchestrationNode.id,
-        OrchestrationNode.org_id,
-        OrchestrationNode.flow_id,
-        OrchestrationNode.state,
-        OrchestrationNode.attempts,
-        OrchestrationNode.updated_at,
-        OrchestrationNode.created_at,
-    ).where(OrchestrationNode.state.in_(watched))
+    stmt = (
+        select(
+            OrchestrationNode.id,
+            OrchestrationNode.org_id,
+            OrchestrationNode.flow_id,
+            OrchestrationNode.state,
+            OrchestrationNode.attempts,
+            OrchestrationNode.updated_at,
+            OrchestrationNode.created_at,
+        )
+        .join(OrchestrationFlow, (OrchestrationFlow.id == OrchestrationNode.flow_id) & (OrchestrationFlow.org_id == OrchestrationNode.org_id))
+        .where(OrchestrationNode.state.in_(watched), OrchestrationFlow.archived_at.is_(None))
+    )
 
     if after_id is not None:
         stmt = stmt.where(OrchestrationNode.id > after_id)
@@ -440,6 +761,7 @@ def _record_decision(
     kind: DecisionKind,
     reason: str,
     to_state: NodeState,
+    fence: dict | None = None,
 ) -> None:
     """Append the decision row that makes a stall or a halt diagnosable.
 
@@ -456,7 +778,7 @@ def _record_decision(
             actor_id=_STALL_ACTOR_ID,
             actor_role=_STALL_ACTOR_ROLE,
             actor_kind=_STALL_ACTOR.value,
-            reason=reason,
+            reason=json.dumps({**fence, "reason": reason}) if fence else reason,
             from_state=candidate.observed_state,
             to_state=to_state.value,
         )
@@ -503,6 +825,8 @@ async def _propose(
     detail: dict[str, str | int | float | None],
     detected_counter: str,
     notify_config: NotifyConfig | None,
+    fence: dict | None = None,
+    now: datetime | None = None,
 ) -> None:
     """Propose one transition, record it, and notify exactly once if it took.
 
@@ -511,6 +835,38 @@ async def _propose(
     moved this node matches zero rows and notifies nobody, so overlapping ticks
     produce one notification between them rather than one each.
     """
+    flow = await session.scalar(
+        select(OrchestrationFlow)
+        .where(OrchestrationFlow.org_id == candidate.org_id, OrchestrationFlow.id == candidate.flow_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if flow is None or flow.archived_at is not None:
+        return
+
+    if kind is DecisionKind.NODE_STALLED and candidate.observed_state == NodeState.RUNNING.value and fence is None:
+        node = await session.scalar(
+            select(OrchestrationNode)
+            .where(
+                OrchestrationNode.org_id == candidate.org_id,
+                OrchestrationNode.flow_id == candidate.flow_id,
+                OrchestrationNode.id == candidate.node_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        since = (node.updated_at or node.created_at) if node is not None else None
+        if since is None or (since if since.tzinfo else since.replace(tzinfo=UTC)) != candidate.since:
+            # Recovery may refresh the same running state after the scan. Its
+            # new clock invalidates the earlier timeout observation.
+            report.record(candidate.org_id, "lost_races")
+            return
+        managed, worker_since = await _continuation_clock(session, candidate, now=max(now or datetime.now(UTC), datetime.now(UTC)))
+        if managed and worker_since is None:
+            # Recheck under the flow lock: the assignment may have completed or
+            # renewed its live lease after the earlier clock read.
+            return
+
     rows, allowed = await apply_guarded_transition(
         session,
         node_id=candidate.node_id,
@@ -535,7 +891,7 @@ async def _propose(
         logger.info("orchestration stall: node %s already moved by a concurrent pass; no-op", candidate.node_id)
         return
 
-    _record_decision(session, candidate, kind=kind, reason=reason, to_state=to_state)
+    _record_decision(session, candidate, kind=kind, reason=reason, to_state=to_state, fence=fence)
     await session.flush()
     report.record(candidate.org_id, detected_counter)
 
@@ -656,16 +1012,105 @@ async def _examine(
         )
         return
 
+    managed = False
+    worker_since = None
     if state is NodeState.RUNNING:
-        managed, worker_since = await _continuation_clock(session, candidate)
+        managed, worker_since = await _continuation_clock(session, candidate, now=now if elapsed > config.stall_threshold_seconds else None)
         if managed:
-            # The execution runner owns a completed worker's next phase. Applying
-            # the initial developer's pod deadline here kills review/merge work.
+            # The runner owns completed phases; a verified live worker owns its
+            # lease clock. Neither should expire on the legacy pod-start clock.
             if worker_since is None:
                 return
             elapsed = int((now - max(since, worker_since)).total_seconds())
 
-    if state in STALLABLE_STATES and elapsed > config.stall_threshold_seconds:
+    early_due = False
+    if state is NodeState.RUNNING and config.never_acknowledged_seconds is not None and (not managed or worker_since is not None):
+        from .dispatch_pass import attempt_run_id
+
+        resumed = await session.scalar(
+            select(OrchestrationDecision.created_at)
+            .where(
+                OrchestrationDecision.org_id == candidate.org_id,
+                OrchestrationDecision.flow_id == candidate.flow_id,
+                OrchestrationDecision.kind == "flow_resumed",
+            )
+            .order_by(OrchestrationDecision.created_at.desc())
+            .limit(1)
+        )
+        dispatch = await session.scalar(
+            select(OrchestrationDecision)
+            .where(
+                OrchestrationDecision.org_id == candidate.org_id,
+                OrchestrationDecision.flow_id == candidate.flow_id,
+                OrchestrationDecision.node_id == candidate.node_id,
+                OrchestrationDecision.kind == "node_dispatched",
+                OrchestrationDecision.actor_id == "system:orchestration-dispatch",
+            )
+            .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+            .limit(1)
+        )
+        if dispatch is not None:
+            try:
+                assigned = json.loads(dispatch.reason or "{}")
+            except (TypeError, ValueError):
+                assigned = {}
+            if assigned.get("attempt") == candidate.attempts and assigned.get("run_id") == attempt_run_id(candidate.node_id, candidate.attempts):
+                paused = await flow_is_paused(session, org_id=candidate.org_id, flow_id=candidate.flow_id)
+                start = dispatch.created_at.replace(tzinfo=UTC) if dispatch.created_at.tzinfo is None else dispatch.created_at
+                resume_at = resumed.replace(tzinfo=UTC) if resumed is not None and resumed.tzinfo is None else resumed
+                early_due = not paused and (now - max(start, resume_at or start)).total_seconds() >= config.never_acknowledged_seconds
+                if (
+                    (paused or (resume_at is not None and resume_at > start))
+                    and assignment is None
+                    and elapsed > config.stall_threshold_seconds
+                    and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+                ):
+                    from src.agentauth.engine import get_engine_authority_writer
+
+                    store = get_engine_authority_writer().store
+                    proof = await _read_unacknowledged_exec(store, candidate, assigned["run_id"])
+                    if proof is not None:
+                        raw, _ = proof
+                        if raw["status"] == {"S": "pending"}:
+                            for attempt in range(1, int(raw["current_attempt"]["N"]) + 1):
+                                if await asyncio.to_thread(store._read, f"TENANT#{candidate.org_id}", f"REG#{assigned['run_id']}#{attempt}"):
+                                    break
+                            else:
+                                if paused:
+                                    return
+                                elapsed = int((now - max(since, start, resume_at)).total_seconds())
+
+    if state in STALLABLE_STATES and (elapsed > config.stall_threshold_seconds or early_due):
+        fence = None
+        if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+            from .dispatch_pass import attempt_run_id
+
+            dispatch = await session.scalar(
+                select(OrchestrationDecision)
+                .where(
+                    OrchestrationDecision.org_id == candidate.org_id,
+                    OrchestrationDecision.flow_id == candidate.flow_id,
+                    OrchestrationDecision.node_id == candidate.node_id,
+                    OrchestrationDecision.kind == "node_dispatched",
+                    OrchestrationDecision.actor_id == "system:orchestration-dispatch",
+                )
+                .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+                .limit(1)
+            )
+            if dispatch is not None:
+                try:
+                    assignment = json.loads(dispatch.reason or "{}")
+                except (TypeError, ValueError):
+                    assignment = {}
+                if assignment.get("attempt") == candidate.attempts and assignment.get("run_id") == attempt_run_id(
+                    candidate.node_id, candidate.attempts
+                ):
+                    fence = await _fence_unacknowledged_assignment(session, candidate)
+        if early_due and fence is None and elapsed <= config.stall_threshold_seconds:
+            return
+        if fence is None and state == NodeState.RUNNING.value and elapsed > config.stall_threshold_seconds:
+            if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+                fence = await _fence_lapsed_lease_assignment(session, candidate, now=now)
         await _propose(
             session,
             candidate,
@@ -674,7 +1119,8 @@ async def _examine(
             kind=DecisionKind.NODE_STALLED,
             reason=(
                 f"stalled: {elapsed}s in '{candidate.observed_state}' exceeds the "
-                f"{config.stall_threshold_seconds}s threshold (agent pod deadline {config.pod_deadline_seconds}s)"
+                f"{config.never_acknowledged_seconds if early_due and fence else config.stall_threshold_seconds}s threshold "
+                f"(agent pod deadline {config.pod_deadline_seconds}s)"
             ),
             detail={
                 "elapsed_seconds": elapsed,
@@ -684,11 +1130,60 @@ async def _examine(
             },
             detected_counter="stalls_detected",
             notify_config=notify_config,
+            fence=fence,
+            now=now,
         )
 
 
-async def _continuation_clock(session, candidate):
-    """Measure the current assigned worker, never a previous worker's start."""
+async def _assigned_worker_clock(claim, candidate, since, *, now, report=None):
+    """Use the legacy clock unless this exact assignment proves it is still live.
+
+    Called only after the execution, claim generation, plan lineage, and current
+    dispatch/report have been matched by ``_continuation_clock``. A held claim or
+    an unexpired admission lease alone is not a worker acknowledgement.
+    """
+    from .work_claims import DEFAULT_LEASE_SECONDS
+
+    since = since.replace(tzinfo=UTC) if since.tzinfo is None else since
+    fallback = (True, since)
+    if now is None or claim.claim_event_id != claim.active_run_id or not claim.active_run_id:
+        return fallback
+    heartbeat, expiry = claim.heartbeat_at, claim.lease_expires_at
+    if heartbeat is None or expiry is None:
+        return fallback
+    heartbeat = heartbeat.replace(tzinfo=UTC) if heartbeat.tzinfo is None else heartbeat
+    expiry = expiry.replace(tzinfo=UTC) if expiry.tzinfo is None else expiry
+    if not since <= heartbeat <= now < expiry or not 0 < (expiry - heartbeat).total_seconds() <= DEFAULT_LEASE_SECONDS:
+        return fallback
+    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+        from src.agentauth.engine import get_engine_authority_writer
+
+        store = get_engine_authority_writer().store
+        raw = await asyncio.to_thread(store._read, f"TENANT#{candidate.org_id}", f"EXEC#{claim.active_run_id}")
+        expected = {
+            "tenant_id": {"S": candidate.org_id},
+            "invocation_id": {"S": claim.active_run_id},
+            "flow_id": {"S": candidate.flow_id},
+            "orchestration_node_id": {"S": candidate.node_id},
+            "orchestration_node_attempt": {"N": str(candidate.attempts)},
+            "status": {"S": "active"},
+        }
+        if (
+            not raw
+            or any(raw.get(key) != value for key, value in expected.items())
+            or not raw.get("workload_binding", {}).get("S")
+            or any(key in raw for key in ("terminal_outcome", "work_claim_cancellation", "bootstrap_failure_reason"))
+        ):
+            return fallback
+    elif report is None or not report.worker_receipt or report.terminal_receipt:
+        return fallback
+    # No legacy timeout is due while the exact acknowledged worker renews its
+    # lease. This does not extend any pod deadline, credential, or policy budget.
+    return True, None
+
+
+async def _continuation_clock(session, candidate, *, now=None):
+    """Measure the current assignment, or defer to its live lease/runner phase."""
     from .models import OrchestrationAcceptedPlan, OrchestrationAction, OrchestrationExecution, OrchestrationWorkClaim
     from .run_reports import OrchestrationRunReport
 
@@ -701,7 +1196,18 @@ async def _continuation_clock(session, candidate):
                 OrchestrationWorkClaim.org_id == candidate.org_id,
                 OrchestrationWorkClaim.owner_kind == "engine_flow",
                 OrchestrationWorkClaim.owner_ref == candidate.flow_id,
-                OrchestrationWorkClaim.state == "held",
+                or_(
+                    OrchestrationWorkClaim.state == "held",
+                    and_(
+                        OrchestrationWorkClaim.state == "released",
+                        OrchestrationWorkClaim.release_reason == "completed",
+                        OrchestrationWorkClaim.released_at.is_not(None),
+                        OrchestrationWorkClaim.active_run_id.is_(None),
+                        OrchestrationExecution.phase == "merge_ready",
+                        OrchestrationExecution.status == "runnable",
+                        OrchestrationExecution.pending_action_key.is_(None),
+                    ),
+                ),
                 OrchestrationWorkClaim.generation == OrchestrationExecution.claim_generation,
                 OrchestrationExecution.org_id == candidate.org_id,
                 OrchestrationExecution.flow_id == candidate.flow_id,
@@ -711,6 +1217,7 @@ async def _continuation_clock(session, candidate):
                 OrchestrationAcceptedPlan.org_id == candidate.org_id,
                 OrchestrationAcceptedPlan.superseded_at.is_(None),
             )
+            .execution_options(populate_existing=True)
         )
     ).one_or_none()
     if row is None:
@@ -720,11 +1227,71 @@ async def _continuation_clock(session, candidate):
 
     if await ancestor_plan(session, plan, execution.accepted_plan_version, node_id=candidate.node_id) is None:
         return False, None
+    if claim.state == "released":
+        from .review_cycle_dispatch import continuation_run_id
+
+        dispatch = await session.scalar(
+            select(OrchestrationAction)
+            .where(
+                OrchestrationAction.org_id == candidate.org_id,
+                OrchestrationAction.execution_id == execution.id,
+                OrchestrationAction.kind == "review_cycle_dispatch",
+            )
+            .order_by(OrchestrationAction.created_at.desc(), OrchestrationAction.id.desc())
+            .limit(1)
+            .execution_options(populate_existing=True)
+        )
+        return (
+            dispatch is not None
+            and dispatch.status == "succeeded"
+            and continuation_run_id(dispatch.operation_key) == claim.claim_event_id
+            and dispatch.created_at <= claim.released_at,
+            None,
+        )
+    if execution.status == "blocked":
+        # A blocked execution has no worker in flight: the runner is waiting on the
+        # input its block names (a human, the budget meter, a provider), not on a
+        # pod. Measuring that wait against the pod deadline failed stories whose
+        # reviewer had exited hours earlier while the engine's own meter was
+        # unreadable (#7467). The runner re-evaluates a block on its own schedule;
+        # a worker that is actually running keeps its clock below.
+        return True, None
+    if (execution.handoff_receipt_ref or "").startswith("operations-continuation:"):
+        from .dispatch_pass import attempt_run_id
+        from .operations_continuation_authority import transfer
+
+        node = await session.get(OrchestrationNode, candidate.node_id)
+        source = await session.get(OrchestrationRunReport, attempt_run_id(candidate.node_id, candidate.attempts))
+        if node is not None and source is not None and await transfer(session, node=node, execution=execution, report=source) is not None:
+            return True, None
     row = await session.get(OrchestrationRunReport, claim.active_run_id)
     if row is None:
         # Protected workers have no SQL run report. Their committed dispatch
         # starts the current pod's clock, not the original developer's clock.
+        from .dispatch_pass import attempt_run_id
         from .review_cycle_dispatch import continuation_run_id
+
+        if claim.active_run_id == attempt_run_id(candidate.node_id, candidate.attempts):
+            dispatch = await session.scalar(
+                select(OrchestrationDecision)
+                .where(
+                    OrchestrationDecision.org_id == candidate.org_id,
+                    OrchestrationDecision.flow_id == candidate.flow_id,
+                    OrchestrationDecision.node_id == candidate.node_id,
+                    OrchestrationDecision.kind == "node_dispatched",
+                    OrchestrationDecision.actor_id == "system:orchestration-dispatch",
+                    OrchestrationDecision.actor_kind == "service",
+                )
+                .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+                .limit(1)
+            )
+            try:
+                assignment = json.loads(dispatch.reason or "{}") if dispatch is not None else {}
+            except (TypeError, ValueError):
+                return False, None
+            if not isinstance(assignment, dict) or assignment.get("run_id") != claim.active_run_id or assignment.get("attempt") != candidate.attempts:
+                return False, None
+            return await _assigned_worker_clock(claim, candidate, dispatch.created_at, now=now)
 
         dispatch = await session.scalar(
             select(OrchestrationAction)
@@ -739,8 +1306,14 @@ async def _continuation_clock(session, candidate):
         )
         if dispatch is None or continuation_run_id(dispatch.operation_key) != claim.active_run_id:
             return False, None
+        if now is not None and await _protected_review_finished(claim, candidate, dispatch):
+            # As with SQL terminal receipts below, the runner owns this handoff.
+            # The action may have waited hours for budget before the worker
+            # started. Falling back to that clock after its exit fails the outer
+            # node before the runner can apply the existing bounded review retry.
+            return True, None
         since = dispatch.created_at
-        return True, since.replace(tzinfo=UTC) if since.tzinfo is None else since
+        return await _assigned_worker_clock(claim, candidate, since, now=now)
     if (row.org_id, row.flow_id, row.node_id, row.attempt) != (candidate.org_id, candidate.flow_id, candidate.node_id, candidate.attempts):
         return False, None
     if (row.terminal_receipt or {}).get("outcome") in {"complete", "failed"}:
@@ -759,7 +1332,47 @@ async def _continuation_clock(session, candidate):
             return False, None
     if since.tzinfo is None:
         since = since.replace(tzinfo=UTC)
-    return True, since
+    return await _assigned_worker_clock(claim, candidate, since, now=now, report=row)
+
+
+async def _protected_review_finished(claim, candidate, dispatch):
+    """Recognize only the terminal reviewer bound to this committed continuation.
+
+    This proves an exit, not success or retry admission. The runner still checks
+    review evidence, authority, cancellation, attempts and budget before acting.
+    An exited worker need not keep renewing a lease to reach that runner.
+    """
+    if (
+        os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true"
+        or not claim.active_run_id
+        or claim.claim_event_id != claim.active_run_id
+        or dispatch.detail.get("action") not in {"review", "repair"}
+    ):
+        return False
+    from src.agentauth.engine import get_engine_authority_writer
+
+    from .review_cycle_dispatch import receipt_id
+
+    store = get_engine_authority_writer().store
+    raw = await asyncio.to_thread(store._read, f"TENANT#{candidate.org_id}", f"EXEC#{claim.active_run_id}")
+    expected = {
+        "tenant_id": {"S": candidate.org_id},
+        "invocation_id": {"S": claim.active_run_id},
+        "flow_id": {"S": candidate.flow_id},
+        "orchestration_node_id": {"S": candidate.node_id},
+        "orchestration_node_attempt": {"N": str(candidate.attempts)},
+        "persona": {"S": "agent-codex-reviewer"},
+        "orchestration_continuation_action": {"S": dispatch.detail["action"]},
+        "orchestration_continuation_receipt": {"S": receipt_id(dispatch.operation_key)},
+        "status": {"S": "completed"},
+    }
+    return bool(
+        raw
+        and all(raw.get(key) == value for key, value in expected.items())
+        and raw.get("workload_binding", {}).get("S")
+        and raw.get("terminal_outcome", {}).get("S") in {"complete", "failed", "budget_stopped"}
+        and not any(key in raw for key in ("work_claim_cancellation", "bootstrap_failure_reason"))
+    )
 
 
 async def detect_stalls(
@@ -792,7 +1405,7 @@ async def detect_stalls(
     bad node cannot stop every other flow from being diagnosed. The failure still
     surfaces via `success` and the error count (R-NF3).
     """
-    config = config or StallConfig()
+    config = config or StallConfig.from_env()
     now = now or datetime.now(UTC)
     report = StallReport()
     after_id: str | None = None
@@ -800,7 +1413,8 @@ async def detect_stalls(
     while report.nodes_examined < _ITEM_BACKSTOP:
         remaining = _ITEM_BACKSTOP - report.nodes_examined
         try:
-            page = await _fetch_candidate_page(session, after_id=after_id, limit=min(_PAGE_SIZE, remaining))
+            async with session.begin_nested():
+                page = await _fetch_candidate_page(session, after_id=after_id, limit=min(_PAGE_SIZE, remaining))
         except Exception:
             # A page we cannot read is a real failure, not an empty page. Reporting
             # success here would be the silent stall this module exists to end.
@@ -815,8 +1429,13 @@ async def detect_stalls(
 
         for candidate in page:
             report.record(candidate.org_id, "nodes_examined")
+            node_report = StallReport()
             try:
-                await _examine(session, candidate, report, now=now, config=config, notify_config=notify_config)
+                # Catching a PostgreSQL error does not restore its transaction.
+                # Isolate each check so a deadlock cannot discard prior delivery
+                # observations or poison every later node in this engine pass.
+                async with session.begin_nested():
+                    await _examine(session, candidate, node_report, now=now, config=config, notify_config=notify_config)
             except Exception:
                 # Per-node containment: log, count, force non-success, keep going.
                 logger.exception(
@@ -825,6 +1444,10 @@ async def detect_stalls(
                     candidate.org_id,
                 )
                 report.record(candidate.org_id, "errors")
+            else:
+                for org_id, counts in node_report.per_org.items():
+                    for key, amount in counts.items():
+                        report.record(org_id, key, amount)
 
         after_id = page[-1].node_id
 

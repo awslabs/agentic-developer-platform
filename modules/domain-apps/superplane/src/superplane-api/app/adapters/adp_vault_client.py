@@ -158,6 +158,7 @@ class AdpVaultClient:
             org_id=org_id,
             workspace_id=workspace_id,
             reference=reference,
+            principal=principal,
             report_digest=report_digest,
         )
 
@@ -168,6 +169,7 @@ class AdpVaultClient:
         org_id: str,
         workspace_id: str,
         reference: CredentialReference,
+        principal: str,
         report_digest: str | None,
     ) -> VerifiedCredentialEvidence | None:
         """Map a vault response onto the contract type, or ``None``.
@@ -210,6 +212,18 @@ class AdpVaultClient:
         except Exception:
             return None
 
+        authenticated_subject = body.get("authenticated_subject")
+        authenticated_owner = body.get("authenticated_owner_principal")
+        if (authenticated_subject is None) != (authenticated_owner is None):
+            return None
+        if authenticated_subject is not None and (
+            authenticated_subject != principal
+            or not isinstance(authenticated_owner, str)
+            or not authenticated_owner.startswith("user:")
+            or not authenticated_owner[5:]
+        ):
+            return None
+
         expires_at = self._expiry(
             body.get("expires_at"), credential_id=reference.credential_id
         )
@@ -230,6 +244,8 @@ class AdpVaultClient:
                 reference=reference,
                 ownership=ownership,
                 expires_at=expires_at,
+                authenticated_subject=authenticated_subject,
+                authenticated_owner_principal=authenticated_owner,
                 attested_report_digest=attested if report_digest is not None else None,
                 report_checked_at=checked_at if report_digest is not None else None,
             )

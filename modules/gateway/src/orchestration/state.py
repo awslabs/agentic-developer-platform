@@ -122,6 +122,7 @@ LEGAL_TRANSITIONS: dict[NodeState, dict[NodeState, frozenset[ActorKind]]] = {
         NodeState.READY: _HUMAN_ONLY,  # Human re-open only
     },
     NodeState.FAILED: {
+        NodeState.SUPERSEDED: _HUMAN_ONLY,  # Explicit scope replacement retains failed attempts and history
         NodeState.READY: _HUMAN_ONLY,  # Resume/retry (R-O4b); increments attempts
         NodeState.RUNNING: _HUMAN_ONLY,  # Resume the same verified continuation after an outer timeout
     },
@@ -175,6 +176,8 @@ def transition(
     reason: str,
     stalled_review_authorized: bool = False,
     developer_retry_authorized: bool = False,
+    operations_retry_authorized: bool = False,
+    external_completion_authorized: bool = False,
 ) -> TransitionResult:
     """Guard one node state change. Every engine state change goes through here.
 
@@ -189,6 +192,8 @@ def transition(
 
         developer_retry_authorized: Internal proof from settled developer recovery;
             permits FAILED -> READY within the accepted repair allowance only.
+        operations_retry_authorized: Internal proof from an authenticated completed
+            operations report with an unverified runtime and a settled claim.
 
     Returns:
         A `TransitionResult`. On success `allowed` is True and `new_state` is
@@ -207,6 +212,17 @@ def transition(
 
     permitted_actors = LEGAL_TRANSITIONS[from_state].get(to_state)
 
+    # An owner may accept separately verified work after the assigned worker has
+    # exited. Only the snapshot-checked external-completion control supplies this
+    # proof; ordinary resume, service callers and human gates keep their rules.
+    if (
+        external_completion_authorized
+        and actor_kind is ActorKind.HUMAN
+        and from_state in {NodeState.READY, NodeState.FAILED}
+        and to_state is NodeState.PASSED
+    ):
+        permitted_actors = _HUMAN_ONLY
+
     if permitted_actors is None:
         return TransitionResult(
             allowed=False,
@@ -224,7 +240,12 @@ def transition(
 
     # Only the settled-failure recovery pass supplies this proof. Halt, gate,
     # success and ordinary service-driven resume remain forbidden.
-    if developer_retry_authorized and actor_kind is ActorKind.SERVICE and from_state is NodeState.FAILED and to_state is NodeState.READY:
+    if (
+        (developer_retry_authorized or operations_retry_authorized)
+        and actor_kind is ActorKind.SERVICE
+        and from_state is NodeState.FAILED
+        and to_state is NodeState.READY
+    ):
         permitted_actors = _ENGINE_OR_HUMAN
 
     if actor_kind not in permitted_actors:

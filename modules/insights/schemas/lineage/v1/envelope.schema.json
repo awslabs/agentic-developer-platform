@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Lineage v1 standard fields (section 3.0)",
+  "type": "object",
+  "properties": {
+    "tenant_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "source_connection_id": {"type": "string", "minLength": 1},
+    "source_system": {"type": "string", "minLength": 1},
+    "source_event_id": {"type": "string", "minLength": 1},
+    "event_time": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "ingested_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "schema_version": {"const": "1.0"},
+    "team_id": {"type": "string"},
+    "cohort": {"type": "string"}
+  },
+  "required": ["tenant_id", "project_id", "source_connection_id", "source_system", "source_event_id", "event_time", "ingested_at", "schema_version"]
+}

@@ -1,0 +1,52 @@
+{
+  "status": "registered_inert_replacement",
+  "design_revision": "f44e711b3a18b75fb24a68856180e4d10913a96e",
+  "plan_version": 1,
+  "registered_nodes": 33,
+  "registered_edges": 61,
+  "initial_acceptance_gates": 1,
+  "later_human_gates": 0,
+  "machine_evaluations": 14,
+  "execution_accepted": false,
+  "executions_observed": 0,
+  "private_identifiers_omitted": true,
+  "private_receipts": "Owner-protected ADP registration evidence; use the signed-in Delivery Flows page for the exact plan, gate and revision.",
+  "binding_notes": [
+    "Verified the dev connection already used by the existing tools flow through ADP",
+    "Bound proposed credential/role and existing manifest entry references privately",
+    "New adapter target is explicitly a foundation deliverable, not a verified existing runtime",
+    "Retained generated-data development gates and full provider-live completion requirements"
+  ],
+  "proposed_bounds": {
+    "max_spend_usd": "10000",
+    "max_attempts_per_node": 6,
+    "max_concurrent_actions": 3,
+    "max_wall_clock_seconds": 604800
+  },
+  "verification": [
+    "Server creation preview passed with no violations",
+    "Registration hash matched the preview",
+    "Readback confirmed all 14 evaluation definitions exactly match the authored private proposal",
+    "Readback confirmed three-action proposed limit, one initial gate, no active execution policy and only a plan_drafted decision",
+    "Execution ledger contained zero executions",
+    "Obsolete draft initial acceptance rejected as superseded; archived with history retained"
+  ],
+  "scope": "Creation and verification of the delivery plan only; no acceptance, worker dispatch, infrastructure deployment or provider test.",
+  "readback_at_utc": "2026-10-21T21:22:22.936016+00:00",
+  "previous_registration": {
+    "plan_version": 1,
+    "registered_nodes": 31,
+    "registered_edges": 59,
+    "machine_evaluations": 12,
+    "proposed_bounds": {
+      "max_spend_usd": "10000",
+      "max_attempts_per_node": 6,
+      "max_concurrent_actions": 2,
+      "max_wall_clock_seconds": 604800
+    },
+    "status": "archived_unstarted",
+    "acceptance": "rejected_as_superseded",
+    "history_preserved": true
+  },
+  "submission_method": "Supported creation API under a replacement flow slug; exact full evaluation definitions retained. Existing edit API rejects runtime evaluation definitions."
+}

@@ -187,6 +187,10 @@ class GitHubConnectionItem(BaseModel):
     account_type: str = Field(..., description="'Organization' or 'User'")
     repository_selection: str = Field(..., description="'all' or 'selected'")
     repository_count: int = Field(default=0)
+    repository_details: list[dict[str, str | int]] = Field(
+        default_factory=list,
+        description="Live installation repository names and immutable repository_id values; empty if unavailable.",
+    )
     repositories: list[str] = Field(
         default_factory=list,
         description="Accessible repo full names (owner/repo); fetched live from GitHub with 60s cache.",

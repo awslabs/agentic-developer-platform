@@ -68,6 +68,15 @@ resource "kubernetes_secret" "arc_runner" {
 }
 
 # ARC Runner Scale Set (org-level)
+#
+# Two pools share this controller, namespace, secret and service account:
+#   * arc-runner-org    (this release)  — CI shards, security scans, agent runs,
+#                                          and anything not listed below;
+#   * arc-runner-deploy (modules/deploy-runner-pool) — deploy/apply workflows
+#                                          only, so a rollout tail never queues
+#                                          behind test shards (2026-10-20).
+# Both run under the same IRSA identity; the trusted `arc-runner-deployment`
+# design in platform/automation-infra remains the long-term split.
 resource "helm_release" "arc_runner_set" {
   name       = "arc-runner-org"
   namespace  = kubernetes_namespace.arc_runners.metadata[0].name
@@ -94,15 +103,35 @@ resource "helm_release" "arc_runner_set" {
       # runners, so the ceiling has to move with it or the extra shards just
       # convert test time into queue time.
       #
-      # Cost: minRunners = 0, so idle capacity is free and this only bills during
-      # bursts. But combined with the cpu=4 request below, a full burst now
-      # provisions up to 40 x 4 = 160 vCPU where it previously asked for 40. That
-      # is the deliberate trade -- compute during bursts instead of every
-      # developer waiting in a queue. Raise deliberately, not reflexively: past
-      # ~40 the per-shard overhead floor (~46s of checkout + pip install) means
-      # more runners stop buying wall clock.
-      maxRunners = 40
-      minRunners = 0
+      # Cost: one runner pod stays warm (minRunners = 1); everything above it
+      # only bills during bursts. Combined with the cpu=4 request below, a full
+      # burst provisions up to 40 x 4 = 160 vCPU where it previously asked for
+      # 40. That is the deliberate trade -- compute during bursts instead of
+      # every developer waiting in a queue. Raise deliberately, not reflexively:
+      # past ~40 the per-shard overhead floor (~46s of checkout + pip install)
+      # means more runners stop buying wall clock.
+      #
+      # minRunners 0 -> 1 (2026-10-20): with no idle runner, every deploy job
+      # first waited for ARC to schedule a pod and for that pod to register --
+      # 80 s between the change-detection job finishing and the backend deploy
+      # starting on gateway-deploy run 39371211069. A single warm runner
+      # (one runner's requested resources while idle) removes that wait from the
+      # first job of every workflow; later jobs still scale up as before.
+      # maxRunners 40 -> 60 (2026-10-20): the pool is shared by CI shards and
+      # every deploy workflow. At 40 Running runners (all CI shards) the tail
+      # jobs of gateway-deploy run 39393596812 sat "queued" with no runner for
+      # 20+ min after the backend had already rolled out. Karpenter's
+      # general-purpose pool has no cpu limit, so the ceiling, not capacity,
+      # was the constraint. A dedicated deployment pool is the structural fix
+      # (platform/automation-infra/runner-values.yaml); until it is live the
+      # headroom keeps deploys from starving behind test shards.
+      # Shared CI can fill all 60 runners and leave short release guards queued.
+      # Allow more burst capacity while retaining one warm runner below.
+      # A busy shared pool can fill all 80 runners while the next CI stage is
+      # queued. Allow headroom for overlapping shard fan-outs; minRunners
+      # and each runner's reserved CPU/memory remain unchanged.
+      maxRunners = 128
+      minRunners = 1
       # Pod template. Always supply the full container spec (image, command,
       # resources) — the chart has no image-only override and overriding
       # `containers` without setting `command` would make pods run the
@@ -165,8 +194,12 @@ resource "helm_release" "arc_runner_set" {
         #    a quiet-cluster measurement will show no difference and will
         #    mislead you.
         #
-        # Memory is unchanged: revision 2 measured a peak of 2.7Gi against the
-        # 4Gi request, so that one is already honest. Limits stay 4 CPU / 8Gi.
+        # 4) 2026-10-22: Gateway CI shard 7 on PR #8577 was OOMKilled at
+        #    its 8Gi container limit (exit 137), after the other shards passed.
+        #    Reserve 16Gi and use the same limit so the scheduler accounts for
+        #    the full allocation rather than packing memory bursts together.
+        #    CPU and runner concurrency remain unchanged; the complete test
+        #    suite and its existing parallelism still run.
         spec = {
           serviceAccountName = kubernetes_service_account.runner.metadata[0].name
           containers = [
@@ -181,8 +214,8 @@ resource "helm_release" "arc_runner_set" {
                 { name = "GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT", value = "120" }
               ]
               resources = {
-                requests = { cpu = "4", memory = "4Gi" }
-                limits   = { cpu = "4", memory = "8Gi" }
+                requests = { cpu = "4", memory = "16Gi" }
+                limits   = { cpu = "4", memory = "16Gi" }
               }
             }
           ]

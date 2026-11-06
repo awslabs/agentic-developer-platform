@@ -135,6 +135,8 @@ resource "aws_cloudfront_function" "strip_api_prefix" {
       // Authorization header (the viewer's bearer token) is intentionally left
       // intact, as are x-api-key and the anthropic-* client headers.
       var h = request.headers;
+      delete h['x-adp-client-provenance'];
+      h['x-adp-client-ip'] = { value: event.viewer.ip };
       delete h['x-caller-identity'];
       delete h['x-amzn-iam-user-arn'];
       delete h['x-amzn-requestcontext'];
@@ -265,6 +267,11 @@ resource "aws_cloudfront_distribution" "frontend" {
       domain_name = var.alb_domain_name
       origin_id   = local.alb_origin_id
 
+      custom_header {
+        name  = "X-Adp-Client-Provenance"
+        value = var.client_provenance_secret != "" ? var.client_provenance_secret : "unconfigured"
+      }
+
       custom_origin_config {
         http_port              = 80
         https_port             = 443
@@ -287,6 +294,11 @@ resource "aws_cloudfront_distribution" "frontend" {
     content {
       domain_name = var.internal_alb_dns
       origin_id   = local.vpc_origin_id
+
+      custom_header {
+        name  = "X-Adp-Client-Provenance"
+        value = var.client_provenance_secret != "" ? var.client_provenance_secret : "unconfigured"
+      }
 
       # VPC Origin specific configuration
       vpc_origin_config {

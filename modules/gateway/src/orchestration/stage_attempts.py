@@ -24,6 +24,9 @@ def stage_expression():
     # Existing deployed effects predate attempt_stage. Evidence/notification rows
     # deliberately have no stage: recording an observation is not an attempt.
     return case(
+        # The controller reserved its deployment before provider I/O. Its later
+        # signed workflow observation is evidence, not a second deployment.
+        (and_(OrchestrationAction.kind == "deployment_workflow", OrchestrationAction.detail["controller_observation"].as_boolean().is_(True)), None),
         (OrchestrationAction.kind == "review_cycle_dispatch", func.coalesce(OrchestrationAction.detail["action"].as_string(), Action.REVIEW.value)),
         else_=func.coalesce(OrchestrationAction.detail["attempt_stage"].as_string(), case(LEGACY_STAGES, value=OrchestrationAction.kind)),
     )
@@ -34,6 +37,20 @@ def _actions(org_id, node_ids):
         select(OrchestrationExecution.node_id, stage_expression().label("stage"), func.count())
         .join(OrchestrationAction, OrchestrationExecution.id == OrchestrationAction.execution_id)
         .where(OrchestrationAction.org_id == org_id, OrchestrationExecution.org_id == org_id, OrchestrationExecution.node_id.in_(node_ids))
+        .where(
+            not_(
+                and_(
+                    OrchestrationAction.kind == "review_cycle_dispatch",
+                    OrchestrationAction.status == "succeeded",
+                    OrchestrationAction.detail["action"].as_string() == Action.REVIEW.value,
+                    func.coalesce(OrchestrationAction.detail["startup_classification"]["version"].as_string(), "") == "1",
+                    func.coalesce(OrchestrationAction.detail["startup_classification"]["exemption_status"].as_string(), "") == "bootstrap_exempt",
+                    func.coalesce(OrchestrationAction.detail["startup_classification"]["failure_category"].as_string(), "").in_(
+                        ["gateway_model_policy_refusal", "fenced_startup_deadline"]
+                    ),
+                )
+            )
+        )
     )
 
 

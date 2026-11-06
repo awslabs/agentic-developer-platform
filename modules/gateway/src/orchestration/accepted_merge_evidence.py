@@ -79,4 +79,5 @@ async def accepted_merge_source(session, *, parent, plan, binding, decision_id):
         merge_sha=data["merge_sha"],
         provider_pr_node_id=binding.provider_pr_node_id,
         accepted_merge_decision_id=decision.id,
+        accepted_merge_at=decision.created_at.isoformat(),
     )

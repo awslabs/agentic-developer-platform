@@ -8,6 +8,7 @@ subsystem and is intended to be actionable — replace illustrative identities u
 | Runbook | Subsystem | When to use |
 |---|---|---|
 | [Regression testing](../regression-testing/README.md) | CLI Uplift and combined nightly regression | Choosing coverage, configuring targets, dispatching evaluations, interpreting results, and cleanup |
+| [Gateway Metric Delivery](./gateway-metric-export-verification.md) | Gateway / observability | Attributing EMF or direct-API metric delivery, checking scoped namespace access and reverting optional diagnostics without losing accounting |
 | [Gateway Migrations](./gateway-migrations.md) | Gateway / Postgres | Applying pending Alembic migrations, diagnosing migration state, partial-apply recovery |
 | [GitHub Auth Allowlist Remediation](./github-auth-allowlist-remediation.md) | Gateway / GitHub auth broker | Rolling out the fail-closed allowlist, auditing users provisioned under the old open default, configuring the org-check token |
 | [Live Run-Control Evaluation](./agent-control-evaluation.md) | Agent live control | Running the Wave 1 control evaluation: fixture config contract, artifact requirements, exit codes, bounded cleanup |

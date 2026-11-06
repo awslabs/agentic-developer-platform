@@ -224,3 +224,36 @@ async def test_shared_progress_metadata_is_forwarded_without_extra_fields(monkey
     assert b'"started_at"' in chunks
     assert b"PRIVATE" not in chunks
     await client.aclose()
+
+
+async def test_project_reader_keeps_actual_session_and_protected_target_owner(monkeypatch):
+    async def source():
+        yield event(1)
+        await asyncio.sleep(60)
+
+    control, session, client = setup(monkeypatch, source)
+    session.user_id = "teammate"
+    reauth = AsyncMock()
+    response = await stream.open_explanation_stream(control, "run", session=session, reauthorize=reauth, target_owner_id="owner")
+    assert session.user_id == "teammate"
+    assert stream.require_canonical_protected_human_owner.await_args.kwargs["user_id"] == "owner"
+    iterator = response.body_iterator
+    assert b"marker" in await anext(iterator)
+    reauth.side_effect = ControlError(404, "project membership revoked")
+    assert b"unavailable" in await asyncio.wait_for(anext(iterator), 3)
+    await iterator.aclose()
+    await client.aclose()
+    assert not stream._connections
+
+
+async def test_project_reader_cannot_override_protected_owner(monkeypatch):
+    async def source():
+        yield event(1)
+
+    control, session, client = setup(monkeypatch, source)
+    session.user_id = "teammate"
+    stream.require_canonical_protected_human_owner.side_effect = ControlError(404, "wrong protected owner")
+    with pytest.raises(ControlError):
+        await stream.open_explanation_stream(control, "run", session=session, reauthorize=AsyncMock(), target_owner_id="owner")
+    await client.aclose()
+    assert not stream._connections

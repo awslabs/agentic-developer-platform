@@ -125,7 +125,13 @@ async def test_story_activity_uses_only_current_committed_dispatch(session, app_
         assert card["execution_history"]["history_complete"] is True
         assert card["execution_history"]["runs"][0]["invocation_id"] == "review-1"
         if state in ("running", "awaiting_merge"):
-            assert card["activity"] == {"invocation_id": "review-1", "persona": persona, "status": "in_progress", "liveness": "live"}
+            assert card["activity"] == {
+                "invocation_id": "review-1",
+                "persona": persona,
+                "status": "in_progress",
+                "liveness": "live",
+                "runtime_budget_wait": None,
+            }
         else:
             assert card["activity"] is None
     else:
@@ -914,6 +920,117 @@ class TestNoApprovalRecordLeak:
 
         assert "secret_plan_key" not in response.text
         assert "plan_document" not in response.text
+
+
+async def seed_executor_plan(session, flow, node, *, persona="operations", role="operate", kind="story", accepted=True):
+    return await OrchestrationRepository(session).record_accepted_plan(
+        org_id=flow.org_id,
+        flow_id=flow.id,
+        plan_document={
+            "private_plan_field": "private-plan-value",
+            "nodes": [
+                {
+                    "address": address_of(node, slug=flow.slug),
+                    "kind": kind,
+                    "executor": {"role": role, "persona": persona, "private_assignment_field": "private-assignment-value"},
+                }
+            ],
+        },
+        plan_hash="private-plan-hash",
+        accepted_by_decision_id="private-approval-id" if accepted else None,
+    )
+
+
+class TestOperationsExecutorSummary:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("persona", ["operations", "agent-codex-operations"])
+    async def test_progress_read_shows_only_executor_labels(self, session, app_with_router, persona):
+        flow = await seed_flow(session)
+        node = await seed_node(session, flow, node_ref="story-a")
+        plan = await seed_executor_plan(session, flow, node, persona=persona)
+
+        response = client_for(app_with_router).get(route(flow.id))
+
+        assert response.status_code == 200, response.text
+        assert node_by_ref(response.json(), "story-a")["executor"] == {"role": "operate", "persona": persona}
+        for forbidden in (
+            plan.id,
+            "private-plan-hash",
+            "private-approval-id",
+            "private_plan_field",
+            "private-plan-value",
+            "private_assignment_field",
+            "private-assignment-value",
+            "accepted_by_decision_id",
+            "plan_document",
+        ):
+            assert forbidden not in response.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("accepted", [False, True])
+    async def test_only_current_accepted_assignment_is_displayed(self, session, app_with_router, accepted):
+        flow = await seed_flow(session)
+        node = await seed_node(session, flow, node_ref="story-a")
+        await seed_executor_plan(session, flow, node, persona="operations")
+        await seed_executor_plan(session, flow, node, persona="agent-codex-operations", accepted=accepted)
+
+        response = client_for(app_with_router).get(route(flow.id))
+
+        assert response.status_code == 200, response.text
+        expected = {"role": "operate", "persona": "agent-codex-operations"} if accepted else None
+        assert node_by_ref(response.json(), "story-a")["executor"] == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "role", "persona"),
+        [
+            ("evaluation", "operate", "operations"),
+            ("gate", "operate", "operations"),
+            ("story", "develop", "developer"),
+            ("story", "develop", "operations"),
+            ("story", "operate", "reviewer"),
+        ],
+    )
+    async def test_non_operations_assignments_are_not_projected(self, session, app_with_router, kind, role, persona):
+        flow = await seed_flow(session)
+        node = await seed_node(session, flow, node_ref="story-a")
+        await seed_executor_plan(session, flow, node, kind=kind, role=role, persona=persona)
+
+        response = client_for(app_with_router).get(route(flow.id))
+
+        assert response.status_code == 200, response.text
+        assert node_by_ref(response.json(), "story-a")["executor"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org_id", [ORG_A, ORG_B])
+    async def test_other_flows_cannot_supply_executor_labels(self, session, app_with_router, org_id):
+        flow = await seed_flow(session)
+        node = await seed_node(session, flow, node_ref="story-a")
+        other_flow = await seed_flow(session, org_id=org_id, slug="other-flow")
+        await OrchestrationRepository(session).record_accepted_plan(
+            org_id=org_id,
+            flow_id=other_flow.id,
+            plan_document={"nodes": [{"address": address_of(node), "kind": "story", "executor": {"role": "operate", "persona": "operations"}}]},
+            plan_hash="other-plan-hash",
+            accepted_by_decision_id="other-approval-id",
+        )
+
+        response = client_for(app_with_router).get(route(flow.id))
+
+        assert response.status_code == 200, response.text
+        assert node_by_ref(response.json(), "story-a")["executor"] is None
+
+    @pytest.mark.asyncio
+    async def test_executor_projection_filters_the_tenant_even_with_a_known_flow(self, session):
+        from src.orchestration.executor_read import load_operations_executor_summaries
+
+        flow = await seed_flow(session)
+        node = await seed_node(session, flow, node_ref="story-a")
+        await seed_executor_plan(session, flow, node)
+
+        summaries = await load_operations_executor_summaries(session, org_id=ORG_A, flow_id=flow.id)
+        assert summaries[address_of(node)].model_dump() == {"role": "operate", "persona": "operations"}
+        assert await load_operations_executor_summaries(session, org_id=ORG_B, flow_id=flow.id) == {}
 
 
 class TestExecutionPolicySummary:

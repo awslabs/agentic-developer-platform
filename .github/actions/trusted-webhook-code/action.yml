@@ -18,7 +18,10 @@ runs:
         set -euo pipefail
         test "$GITHUB_REF" = refs/heads/main
         test "$GITHUB_RUN_ATTEMPT" = 1
-        test "$GITHUB_EVENT_NAME" = workflow_dispatch -o "$GITHUB_EVENT_NAME" = workflow_call
+        case "$GITHUB_EVENT_NAME" in
+          workflow_dispatch|workflow_call|push) ;;
+          *) exit 1 ;;
+        esac
         [[ "$WEBHOOK_CODE_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/adp-[a-z0-9-]+-trusted-webhook-code$ ]]
         test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
         test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"

@@ -1,0 +1,884 @@
+{
+  "version": 1,
+  "cluster": "adp-dev-eks-cluster",
+  "namespace": "superplane",
+  "pod_name": "superplane-paid-worker-4wslg-72lfx",
+  "pod_uid": "48c9ffb5-b2a9-49ba-b354-59cdd0fe4a98",
+  "image": "608380991969.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-paid-worker@sha256:12be55191d1a95e3d116e54c3651638b1c4132ddea2c98e745505053a2e58bf9",
+  "container_sha256": "fdbe4448dc3242dad138645446511b1257c9467faec07d93e6e82e89fb5d19ef",
+  "pod_volumes_sha256": "391980ca5ba33b831b4dc2efa8169e8e8f1c6f3ea41b5be53c2bdfaa262f0d1c",
+  "creation_event_id": "40003484250951255893120933923800513432418804698345308177",
+  "terminal_event_ids": [
+    "40003598840186053469735135056364197537091002703683256329"
+  ],
+  "protected_event_hashes": {
+    "40003484247873753055723707931547925557154231643080359953": "add299597953f586e419982b1c884e48c2449247db1312165a09a9e19a2951d1",
+    "40003484250951255893120933923800513432418804698345308177": "250827ee162fb84b45f40098e02419259d8a5a57450745d6e148a8356fb0e31f",
+    "40003484251040458873915056416366656305509398144369229851": "98de9801db67419d759c983cb70bad0d6c92f34dcf88d317f2e04ad7beb593cc",
+    "40003484564254425187277658457650405952931546696117125134": "2e27fc1a434e48c4ee8540ed93eb03263855fe4da0c1948aae3db4ec28d52e63",
+    "40003498470129401928231555969121539912304228426962239527": "3b6eb9d0b66daa8151dd87bca0e25dea6b45c5afb65ebbd9cce0de45756e4d76",
+    "40003498486877261572328053948414864335063147917953531954": "7540d510e5f777ed0584864a114063af6f3ab41a216c17bf5592f2e8c159393a",
+    "40003514038681038436033123136330123882798750170556530723": "4996ca3a4043484b8ece27e278835de762043ec3520d2a12084379f192f6a97e",
+    "40003514089013820349116739566776240024166102089554329667": "4c5af64844d23f9859655737b1c7acb2f1bf64c0437203b1d88a9d67bfff1c61",
+    "40003515439636152552925399585781233070636463991421665326": "735d56e446ea13ae5e1757e47f2906b1c8e325455fe27335be57c833fc535c3a",
+    "40003515506694493364906983378451104313837807132647424004": "3c637774ff9a70b7be029f7483a2fb923eaf106a3eba4249cf55b0abcdf124c9",
+    "40003516233988696524586195930343732058693276309539520555": "e7d2bda1d4c97f9edf213ddde021a10b8903687f0198458b1c9aadf359791c58",
+    "40003516289450649833331855683343063402769751374912815183": "48601885dbf8fae53b4542087d38488257f2d06ed16231f2190c4c58575b7af1",
+    "40003518118669274742806218967262611878908626148518461534": "3b49fae744a87dacc2664edc09a380afab440f9a44e75470efcd65ffb8ba264a",
+    "40003518169002056655889835403835940425441344934586875933": "15606b1c357052902eb49ef06e8827ee40dab22b4f2d54faf41c7d6f58b5d438",
+    "40003519836339572169230405296030120138731745698628370444": "dc4cc62470d0bcdc8ca9ea2a5565792151d8a65671cb9941ace05043b632ae90",
+    "40003519914815894522859668131094312740181329838173454430": "050927e669a3f2ac84e0cc12f65b159915671d2e4ccc7cbdaab834134c628930",
+    "40003523311509297946654470873480126145557653935160623136": "073c394b37fd7eeadff9025bee498abd936a05b6c8462894e53d943f68952833",
+    "40003523367528769885363396211088852523157955862157328396": "bed2845d68bcf6b53348764f77385b3a561a3ac7ca467c8f4f7b5de4d605ff11",
+    "40003524726536182283819570525712614347225461380599382063": "3358ac356bf3c71572704e1e1ecbfaf367cdc87b92c68314c04e29407599d2f2",
+    "40003524877623731003864542321774161504419303047296450564": "4bd8c553a4a35792f976fc4b8e25f5d81d1ccd449add76c709c3929f1295a57d",
+    "40003527483666514158954632154581834463063367383495802961": "54aeb5e47dbc8a236b1f28a472841177169089c6783eb7f3a0084a18aab04930",
+    "40003527545149668671303560161873264973257640208586178609": "69b5e40b4e133245f19fea4bc89c180b7c9f75a1146edd4975174116b7ef911b",
+    "40003530151080948100400996884756732221597482672906633271": "deeb45f2948e1374557a5afe83697ec5686d6dde8709ad199dc1381857826845",
+    "40003530223781377447610828332242881230449271540757757964": "a686a1643b6c0de32a0c1ccdf414010f4e69bbaaf51ab22444584c1d42fa67e3",
+    "40003537145687378874332414983157173612190534066060591136": "0d7c49ed62578e67844581be34f327ff5abc4a4dacbd80b3b611d5e2795a317c",
+    "40003537196042461532614562036744825471830534346564370497": "a147bac518a306a9d3b40cf4905f88062883ce05836becfc9e69c48cec3e5b28",
+    "40003543293244604772475174249195731526757132997241995338": "92badc6c1e82fd9ddfc544a2d1c1a99e03c2f7f0e9a4c6efb8ae5c0a51fb352c",
+    "40003543354683157794427041010198384753602145105138155533": "7d18abf715267c48956ab2c7a29ba98d006653343b0006d165806f7e5dd65ec2",
+    "40003557976233649446625696421944967455946076515638247425": "257c38da842664903a35fe65a55ef3d4ee6d04db51f086e9c76d467c8535fb89",
+    "40003558043470396220195525193675158047980886456169201703": "2bb36f2400bce067a94caf017337a32e001b7e051042608d248b5e15ad7f4439",
+    "40003586656909838844080691578834106853586715280764567622": "9bd47985977fb5079c24aed3e25e21a6f2362e039504aee9179fedf99ffeb77f",
+    "40003586724302690834040234718632157467795145191699709970": "bd95eb0d1565295fb3464d55a03e6dcc1ea14a976f26c216b9f33b4f35336c36",
+    "40003592780649868870192745330558047550743996123876098080": "1a1540714f297475633a77b17c90acccc121db0b2c7ad8e7c4edefe70ab90335",
+    "40003592843381865113659388233766750616563236530531139586": "02b7a07b3faef292442188d572ed35285c56152429df060d75b272c67818d541",
+    "40003594900268797754932883180775430858947033736364556306": "769f693e3fa80f0ddaa1c6b9d09ab0507ed2bea9e0303601256ea0936332be39",
+    "40003595129832668828607117811890027070107298835484966938": "a62dc80198e2c5f4df012f8bf135cef39074b55287a7a6e78bf1a500cccf45bd",
+    "40003597836942429223437991733415999073068968140376440843": "e70c7df717439c8f91edb750a7fa78a9eaca37c42c460033104dc4afb29ac933",
+    "40003597892783495200558672079821437627780465351351402541": "e6a822a740c0d94c3b5dec9220dca8fcb1a6d47f7af3a5caa3146f827d38bfeb",
+    "40003598795406157111085643782088112896639747034779222051": "448c3e2889294d07fdb1be8d7ff6146ccd811285969d561344d08468c68562de",
+    "40003598828968778634874231610099368896975531101279748155": "7607414d448cb66660d43b79656ef351d322fdab410988a5e285074289a7caca",
+    "40003598840186053469735135056364197537091002703683256329": "436bf7bb247c95ac661e8e1f183e7f403a3350370c73e2203045eaf8bedfda6a"
+  },
+  "execs": [
+    {
+      "audit_id": "7b55935e-7cce-4be2-8bbe-0285d7c4fa1e",
+      "time": "2026-11-04T19:01:51.063134Z",
+      "uri_sha256": "3e517ae8763ba9403675dc66ca9c10fff0456e743c405f90daac5a2ee9bab5fc",
+      "program_sha256": "63e93c3282b198e575d7e555d97aa25736df6e64417ca7812492719ae37b980f",
+      "command_prefix": [
+        "python",
+        "-I",
+        "-S",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "20s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003498470129401928231555969121539912304228426962239527",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:01:51.076551Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003498486877261572328053948414864335063147917953531954",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:01:51.650490Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "28c4f0b2-dbc0-470b-914a-3ba74c0c04bd",
+      "time": "2026-11-04T19:13:28.904352Z",
+      "uri_sha256": "725745f82526294de331b2215d14276dcd01ab0e644c0bd5867926619ef01d24",
+      "program_sha256": "596f855db33d6871435ee51d57cdd6ea939f82ea639c2604e165b43e0ee08da3",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003514038681038436033123136330123882798750170556530723",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:13:28.914101Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003514089013820349116739566776240024166102089554329667",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:13:31.398762Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "9d4beb86-f567-48dc-99d5-33b03094a6b8",
+      "time": "2026-11-04T19:14:32.015374Z",
+      "uri_sha256": "7206f4552aa579bc59ade8fe367d54c55fbc42a7ede21d150d23337ae6334bc5",
+      "program_sha256": "6f470cfd935cff53711359f543df721c43599b1d78314c9fa910efd07a98a9fb",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003515439636152552925399585781233070636463991421665326",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:14:32.042258Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003515506694493364906983378451104313837807132647424004",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:14:34.694511Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "2129cec6-4afa-451f-a5d0-c6c4efb0064e",
+      "time": "2026-11-04T19:15:07.447389Z",
+      "uri_sha256": "ea36a598f212e32c7b225c8306f95715e7899048e7e4bdac5e15f8b44a449e5a",
+      "program_sha256": "317419356a31ae28bf1ef6587cf0b13ce42c11470fd8b366d7370a148c740326",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003516233988696524586195930343732058693276309539520555",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:15:07.466641Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003516289450649833331855683343063402769751374912815183",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:15:10.094853Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "cae4da6f-8b35-4c18-b15c-b2b8c1cca132",
+      "time": "2026-11-04T19:16:31.977170Z",
+      "uri_sha256": "ea36a598f212e32c7b225c8306f95715e7899048e7e4bdac5e15f8b44a449e5a",
+      "program_sha256": "317419356a31ae28bf1ef6587cf0b13ce42c11470fd8b366d7370a148c740326",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003518118669274742806218967262611878908626148518461534",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:16:31.992469Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003518169002056655889835403835940425441344934586875933",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:16:34.443928Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "a5aea657-4005-4e21-903e-cf48cdcedbcc",
+      "time": "2026-11-04T19:17:48.914582Z",
+      "uri_sha256": "ea36a598f212e32c7b225c8306f95715e7899048e7e4bdac5e15f8b44a449e5a",
+      "program_sha256": "317419356a31ae28bf1ef6587cf0b13ce42c11470fd8b366d7370a148c740326",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003519836339572169230405296030120138731745698628370444",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:17:48.930907Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003519914815894522859668131094312740181329838173454430",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:17:52.495368Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "89ebfcd0-fac9-4e15-9a34-51acec65db34",
+      "time": "2026-11-04T19:20:25.020207Z",
+      "uri_sha256": "ea36a598f212e32c7b225c8306f95715e7899048e7e4bdac5e15f8b44a449e5a",
+      "program_sha256": "317419356a31ae28bf1ef6587cf0b13ce42c11470fd8b366d7370a148c740326",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003523311509297946654470873480126145557653935160623136",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:20:25.037848Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003523367528769885363396211088852523157955862157328396",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:20:27.594243Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "b88ac193-fdd5-4287-a128-f7689bedaca3",
+      "time": "2026-11-04T19:21:28.292008Z",
+      "uri_sha256": "ea36a598f212e32c7b225c8306f95715e7899048e7e4bdac5e15f8b44a449e5a",
+      "program_sha256": "317419356a31ae28bf1ef6587cf0b13ce42c11470fd8b366d7370a148c740326",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003524726536182283819570525712614347225461380599382063",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:21:28.308429Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003524877623731003864542321774161504419303047296450564",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:21:35.142828Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "a02cd70d-0618-4868-8966-25b03bfd9420",
+      "time": "2026-11-04T19:23:31.822955Z",
+      "uri_sha256": "ea36a598f212e32c7b225c8306f95715e7899048e7e4bdac5e15f8b44a449e5a",
+      "program_sha256": "317419356a31ae28bf1ef6587cf0b13ce42c11470fd8b366d7370a148c740326",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003527483666514158954632154581834463063367383495802961",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:23:31.867467Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003527545149668671303560161873264973257640208586178609",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:23:34.642364Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "078fa069-083b-45f8-9e83-dc04f6b4317d",
+      "time": "2026-11-04T19:25:31.613568Z",
+      "uri_sha256": "5c734b0a33624f93f65e62f66c683e7feb65f7c17de5056d39d0b0170ab27838",
+      "program_sha256": "c72845d01fccf8d423b8d3cd3d6462236af42b10f4c92066c72505ad73efe083",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003530151080948100400996884756732221597482672906633271",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:25:31.681715Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003530223781377447610828332242881230449271540757757964",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:25:34.944691Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "be23c5ea-eb3e-45a1-8cfa-d8ba842d1c59",
+      "time": "2026-11-04T19:30:45.194052Z",
+      "uri_sha256": "5c734b0a33624f93f65e62f66c683e7feb65f7c17de5056d39d0b0170ab27838",
+      "program_sha256": "c72845d01fccf8d423b8d3cd3d6462236af42b10f4c92066c72505ad73efe083",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003537145687378874332414983157173612190534066060591136",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:30:45.209890Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003537196042461532614562036744825471830534346564370497",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:30:47.444937Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "c8c581ad-a06b-46d7-bceb-cb2a1c8b070a",
+      "time": "2026-11-04T19:35:20.814743Z",
+      "uri_sha256": "5c734b0a33624f93f65e62f66c683e7feb65f7c17de5056d39d0b0170ab27838",
+      "program_sha256": "c72845d01fccf8d423b8d3cd3d6462236af42b10f4c92066c72505ad73efe083",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003543293244604772475174249195731526757132997241995338",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:35:20.836121Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003543354683157794427041010198384753602145105138155533",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:35:23.498412Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "f8203811-55f8-4d9f-a9c9-7069d008169c",
+      "time": "2026-11-04T19:46:19.256476Z",
+      "uri_sha256": "5c734b0a33624f93f65e62f66c683e7feb65f7c17de5056d39d0b0170ab27838",
+      "program_sha256": "c72845d01fccf8d423b8d3cd3d6462236af42b10f4c92066c72505ad73efe083",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "4e88678bdc39c168f27ae107866f9e8e460b87489300bc0d16025dc3454a99da",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003557976233649446625696421944967455946076515638247425",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T19:46:19.274987Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003558043470396220195525193675158047980886456169201703",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T19:46:22.444098Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "6ae910e9-85b6-4aef-baae-6756d7bdac67",
+      "time": "2026-11-04T20:07:45.474091Z",
+      "uri_sha256": "5c734b0a33624f93f65e62f66c683e7feb65f7c17de5056d39d0b0170ab27838",
+      "program_sha256": "c72845d01fccf8d423b8d3cd3d6462236af42b10f4c92066c72505ad73efe083",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "b9506e78573519fe1f8408b6dba37c0dc4287ddf77fcd5ddb816fdde5cbe2e5a",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003586656909838844080691578834106853586715280764567622",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T20:07:45.496088Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003586724302690834040234718632157467795145191699709970",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T20:07:48.444080Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "9484ec94-1215-4568-b6d3-4409de1e853b",
+      "time": "2026-11-04T20:12:20.149498Z",
+      "uri_sha256": "5c734b0a33624f93f65e62f66c683e7feb65f7c17de5056d39d0b0170ab27838",
+      "program_sha256": "c72845d01fccf8d423b8d3cd3d6462236af42b10f4c92066c72505ad73efe083",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "b9506e78573519fe1f8408b6dba37c0dc4287ddf77fcd5ddb816fdde5cbe2e5a",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003592780649868870192745330558047550743996123876098080",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T20:12:20.164837Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003592843381865113659388233766750616563236530531139586",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T20:12:22.744706Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "57ae3695-cebc-4184-a994-9f588602715d",
+      "time": "2026-11-04T20:13:54.993899Z",
+      "uri_sha256": "dd53698d2fd60407c4ba7dcebb29253f4cb39b6aee4f6d224ee1e42cff26ea9d",
+      "program_sha256": "bdf43c94add2e86233918214e67754242cd42f0fd8536a2d22a7c7b18ec5808a",
+      "command_prefix": [
+        "python",
+        "-I",
+        "-S",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "b9506e78573519fe1f8408b6dba37c0dc4287ddf77fcd5ddb816fdde5cbe2e5a",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003594900268797754932883180775430858947033736364556306",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T20:13:55.009301Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003595129832668828607117811890027070107298835484966938",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T20:14:05.507006Z",
+          "response_code": 101
+        }
+      ]
+    },
+    {
+      "audit_id": "37b2fe8d-7394-41bf-941c-12a6c6c558ec",
+      "time": "2026-11-04T20:16:06.736721Z",
+      "uri_sha256": "5c734b0a33624f93f65e62f66c683e7feb65f7c17de5056d39d0b0170ab27838",
+      "program_sha256": "c72845d01fccf8d423b8d3cd3d6462236af42b10f4c92066c72505ad73efe083",
+      "command_prefix": [
+        "python",
+        "-B",
+        "-c"
+      ],
+      "query_without_command": {
+        "container": [
+          "paid-worker"
+        ],
+        "stderr": [
+          "true"
+        ],
+        "stdin": [
+          "true"
+        ],
+        "stdout": [
+          "true"
+        ],
+        "timeout": [
+          "30s"
+        ]
+      },
+      "actor_sha256": "b9506e78573519fe1f8408b6dba37c0dc4287ddf77fcd5ddb816fdde5cbe2e5a",
+      "source_ips": [
+        "52.22.137.37"
+      ],
+      "user_agent": "kubectl/v1.35.8 (linux/amd64) kubernetes/1c2e10a",
+      "stages": [
+        {
+          "event_id": "40003597836942429223437991733415999073068968140376440843",
+          "stage": "ResponseStarted",
+          "stage_timestamp": "2026-11-04T20:16:06.751541Z",
+          "response_code": 101
+        },
+        {
+          "event_id": "40003597892783495200558672079821437627780465351351402541",
+          "stage": "ResponseComplete",
+          "stage_timestamp": "2026-11-04T20:16:09.043813Z",
+          "response_code": 101
+        }
+      ]
+    }
+  ],
+  "mutations": {
+    "40003484247873753055723707931547925557154231643080359953": "38e9d8caa4d6a1285912e72aaf93cf73de2a090a3c74d2a9eae037bc7a828e29",
+    "40003484250951255893120933923800513432418804698345308177": "22f6b8ab48c5f3881124ab3021a55c9f9713c06dcd74437c94e8a6ed01a0f48b",
+    "40003484251040458873915056416366656305509398144369229851": "39d7c171fdfd0e0f276c82a48a73daf38bccc6e3c861f459319f59e2ba06eda0",
+    "40003484564254425187277658457650405952931546696117125134": "caf7f1eb5d9b9316c57ee343d3c15356f15761c53447006c25db838a5bb9be29",
+    "40003598795406157111085643782088112896639747034779222051": "3f48472d8a65b549c1d080d208126a216d622c82f8f877ac7c1f694ced04ef41",
+    "40003598828968778634874231610099368896975531101279748155": "d4ed38750b0221c18d98b9e06bd96884bf21c8f9d8c2d88514ad193888220c6a",
+    "40003598840186053469735135056364197537091002703683256329": "bde14c5c873a14bb5512cf1bae93027b81edcee42cc6c0d880d2783bd4e2c87e"
+  },
+  "sources": {
+    "63e93c3282b198e575d7e555d97aa25736df6e64417ca7812492719ae37b980f": "63e93c3282b198e575d7e555d97aa25736df6e64417ca7812492719ae37b980f.txt",
+    "596f855db33d6871435ee51d57cdd6ea939f82ea639c2604e165b43e0ee08da3": "596f855db33d6871435ee51d57cdd6ea939f82ea639c2604e165b43e0ee08da3.txt",
+    "6f470cfd935cff53711359f543df721c43599b1d78314c9fa910efd07a98a9fb": "6f470cfd935cff53711359f543df721c43599b1d78314c9fa910efd07a98a9fb.txt",
+    "317419356a31ae28bf1ef6587cf0b13ce42c11470fd8b366d7370a148c740326": "317419356a31ae28bf1ef6587cf0b13ce42c11470fd8b366d7370a148c740326.txt",
+    "c72845d01fccf8d423b8d3cd3d6462236af42b10f4c92066c72505ad73efe083": "c72845d01fccf8d423b8d3cd3d6462236af42b10f4c92066c72505ad73efe083.txt",
+    "bdf43c94add2e86233918214e67754242cd42f0fd8536a2d22a7c7b18ec5808a": "bdf43c94add2e86233918214e67754242cd42f0fd8536a2d22a7c7b18ec5808a.txt"
+  },
+  "environment_configmap": {
+    "namespace": "superplane",
+    "name": "superplane-paid-worker-config",
+    "uid": "1fd8afe4-0681-46d8-9c60-d220adc0ef2a",
+    "resource_version": "11651403",
+    "data_sha256": "b4045f1f2fefe667974e762ead33b03a0e476302f615bcf1a26ca695d7ffebaa"
+  },
+  "source_review": "Six exact protected python -c programs: process/cgroup metadata, own SQL SELECT diagnostics, fixed lifecycle JSON and filesystem metadata reads. No mutation request, shell, eval/exec, code from stdin, credential export or runtime override. Input JSON supplies source-name/hash assertions; it is not executed as code. Protected stream evidence binds program bytes and actor; it does not prove returned output or successful execution. Original ancestor two-stdin-program assumption remains distinct and unchanged."
+}

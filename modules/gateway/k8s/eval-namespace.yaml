@@ -1,3 +1,7 @@
+# Reference only. This namespace is owned by Terraform in
+# modules/agent-factory/infra/runner-rbac.tf (kubernetes_namespace.gateway_evals);
+# gateway-deploy.yml skips cluster-scoped manifests, so applying this file is a
+# manual bootstrap step, never the pipeline path.
 apiVersion: v1
 kind: Namespace
 metadata:

@@ -1,0 +1,174 @@
+{
+  "12.2.0-cp310": {
+    "native_dependencies": {
+      "brotli": "1.2.1",
+      "bzip2": "1.0.8",
+      "freetype": "2.14.3",
+      "fribidi": "1.0.17",
+      "harfbuzz": "14.5.0",
+      "jpegturbo": "3.2.0",
+      "lcms2": "2.19.1",
+      "libavif": "1.4.2",
+      "libimagequant": "4.4.1",
+      "libpng": "1.6.58",
+      "libwebp": "1.6.0",
+      "libxcb": "1.17.0",
+      "openjpeg": "2.5.4",
+      "tiff": "4.7.2",
+      "xz": "5.8.4",
+      "zlib-ng": "2.3.3",
+      "zstd": "1.5.7"
+    },
+    "before_sha256": {
+      "src/libImaging/TiffDecode.c": "351d45d28bf3349055b98974e464844ed7bb47a9e45cfbcf82ce1d6ae47a0afb",
+      "src/libImaging/JpegDecode.c": "895fc76b3f04e93fbc8a31f952e168432ecd140ae38fc1bba3c70d5803ed4682",
+      "src/PIL/EpsImagePlugin.py": "2185ffa488e31df29675e3abfa78a99022ff2d8d385e6240e8dc71bb05009972",
+      "src/PIL/Image.py": "1a3d2ef3dbcbd056fbb4de3415302873348c60e90129a9a107b8829395ea47ea",
+      "src/PIL/JpegImagePlugin.py": "27ebe8f59a7a12e40277f8f84ce4637c300145e181fb5bd05ad894b89c391bb1",
+      "src/PIL/DcxImagePlugin.py": "3a50afeb20c8d0b2d935bb9423bb3af452350ee02b3f21b1a37602cd0d67f078",
+      "src/PIL/MicImagePlugin.py": "8fdd548b3bcbfb381766039cabfe285816d25fa2cfab527d90d1e47484ccd50c",
+      "src/PIL/MpoImagePlugin.py": "094f1478f9f46ec9b4abb10f5cd1772c7288e487b707912eaaebc964e46e4c10",
+      "src/PIL/PsdImagePlugin.py": "c208b23f07fb167575bceea15514810e8a11518f123ea8b0c086cc43bc361a0e"
+    },
+    "patched_sha256": {
+      "src/libImaging/TiffDecode.c": "2dc06a7afeb65d9c5cf8b262bf3cccdf09f2f8ec7c19e7550ea28bfa3467bc97",
+      "src/libImaging/JpegDecode.c": "e67766218b374651bf1378209066cf8099d539a4bf5b0c47f2ce60ebd31a659c",
+      "src/PIL/EpsImagePlugin.py": "9fb016f61a96b361fc496bdbc23ec0bce5065e2bb86d8396c5fe4f43884af56c",
+      "src/PIL/Image.py": "308c0b4bbd5dff1fcb8d14bf3916d9e13928c46f4e5a4ed3eeffa4dde4b61d64",
+      "src/PIL/JpegImagePlugin.py": "b21ea55010070cff982bb2f80d3aff0132383fb8214c25f9aedaf204e1ac3d6c",
+      "src/PIL/DcxImagePlugin.py": "f969cce3b3ac2e091c80f7e1e2378102bc6137af1628987cdd6ca5bc0a0b4b56",
+      "src/PIL/MicImagePlugin.py": "0f2e50cb0e5077bb030f7f8fb7582fdd3af1cf13c588d9b7702b08be57c0a76e",
+      "src/PIL/MpoImagePlugin.py": "47bb96e01c79a3f695b8529c68209d08a6c30b08bf1b4cea405c02736d8f00ee",
+      "src/PIL/PsdImagePlugin.py": "1d4b5a669ae5a624438fd35426cc89dce4e7ced6688031fb3835b38ccd8c7a28"
+    }
+  },
+  "12.3.0-cp310": {
+    "native_dependencies": {
+      "brotli": "1.2.1",
+      "bzip2": "1.0.8",
+      "freetype": "2.14.3",
+      "fribidi": "1.0.17",
+      "harfbuzz": "14.5.0",
+      "jpegturbo": "3.2.0",
+      "lcms2": "2.19.1",
+      "libavif": "1.4.2",
+      "libimagequant": "4.4.1",
+      "libpng": "1.6.58",
+      "libwebp": "1.6.0",
+      "libxcb": "1.17.0",
+      "openjpeg": "2.5.4",
+      "tiff": "4.7.2",
+      "xz": "5.8.4",
+      "zlib-ng": "2.3.3",
+      "zstd": "1.5.7"
+    },
+    "before_sha256": {
+      "src/libImaging/TiffDecode.c": "351d45d28bf3349055b98974e464844ed7bb47a9e45cfbcf82ce1d6ae47a0afb",
+      "src/libImaging/JpegDecode.c": "895fc76b3f04e93fbc8a31f952e168432ecd140ae38fc1bba3c70d5803ed4682",
+      "src/PIL/EpsImagePlugin.py": "94cb1da75871ec97ac6cb07bff57e5809929810ec9d5140fbed555e815adbc81",
+      "src/PIL/Image.py": "04af3f2db7ffdd61e829fa7aa8f5481d394a0a4129a8fd8aa5b13908928fcd6d",
+      "src/PIL/JpegImagePlugin.py": "27ebe8f59a7a12e40277f8f84ce4637c300145e181fb5bd05ad894b89c391bb1",
+      "src/PIL/DcxImagePlugin.py": "3a50afeb20c8d0b2d935bb9423bb3af452350ee02b3f21b1a37602cd0d67f078",
+      "src/PIL/MicImagePlugin.py": "8fdd548b3bcbfb381766039cabfe285816d25fa2cfab527d90d1e47484ccd50c",
+      "src/PIL/MpoImagePlugin.py": "094f1478f9f46ec9b4abb10f5cd1772c7288e487b707912eaaebc964e46e4c10",
+      "src/PIL/PsdImagePlugin.py": "255df65089c00df5c8e70001790ca279200a8f723b420f3e2d66c8336a3fd594"
+    },
+    "patched_sha256": {
+      "src/libImaging/TiffDecode.c": "2dc06a7afeb65d9c5cf8b262bf3cccdf09f2f8ec7c19e7550ea28bfa3467bc97",
+      "src/libImaging/JpegDecode.c": "e67766218b374651bf1378209066cf8099d539a4bf5b0c47f2ce60ebd31a659c",
+      "src/PIL/EpsImagePlugin.py": "963d78daac05bc493a9a8e2154a7cdd813204a1190115a66f1cf07094113fc0e",
+      "src/PIL/Image.py": "76e9fbbf4ce74ea6baf25011fec79801aa8350fcbf68a3a7169ee619f5130d47",
+      "src/PIL/JpegImagePlugin.py": "b21ea55010070cff982bb2f80d3aff0132383fb8214c25f9aedaf204e1ac3d6c",
+      "src/PIL/DcxImagePlugin.py": "f969cce3b3ac2e091c80f7e1e2378102bc6137af1628987cdd6ca5bc0a0b4b56",
+      "src/PIL/MicImagePlugin.py": "0f2e50cb0e5077bb030f7f8fb7582fdd3af1cf13c588d9b7702b08be57c0a76e",
+      "src/PIL/MpoImagePlugin.py": "47bb96e01c79a3f695b8529c68209d08a6c30b08bf1b4cea405c02736d8f00ee",
+      "src/PIL/PsdImagePlugin.py": "e4ae2cf9d991fb896823b35a4f69837c4062c2fd2a72425bf347d4ae06b11ec5"
+    }
+  },
+  "13.0.0-cp311": {
+    "native_dependencies": {
+      "brotli": "1.2.1",
+      "bzip2": "1.0.8",
+      "freetype": "2.14.3",
+      "fribidi": "1.0.17",
+      "harfbuzz": "14.5.0",
+      "jpegturbo": "3.2.0",
+      "lcms2": "2.19.1",
+      "libavif": "1.4.2",
+      "libimagequant": "4.4.1",
+      "libpng": "1.6.58",
+      "libwebp": "1.6.0",
+      "libxcb": "1.17.0",
+      "openjpeg": "2.5.4",
+      "tiff": "4.7.2",
+      "xz": "5.8.4",
+      "zlib-ng": "2.3.3",
+      "zstd": "1.5.7"
+    },
+    "before_sha256": {
+      "src/libImaging/TiffDecode.c": "e550202346f762539f2c14c9afb5a4e2f710b93855c774e8f35ea9704195b87b",
+      "src/libImaging/JpegDecode.c": "9c575a6e9e1247f06635047862cca39873e9d888a51b5d592ee0f57965f4c5df",
+      "src/PIL/EpsImagePlugin.py": "a6f288068186c0a0cf3ca3709552df4e7c7b332069d8907fd7618c7a43a04460",
+      "src/PIL/Image.py": "04050c2d4dd67931ce8c3cfdbc49ac4a6944d379d037c8f1d5eeeb67fba29a10",
+      "src/PIL/JpegImagePlugin.py": "43ede4e4c76826e9c4ce9b7dbcfbae61abb09b9955816a88a0d775de28220bba",
+      "src/PIL/DcxImagePlugin.py": "1b5cf45c25491a78e417ddf8c67b7e56de97885c2b5bfa69868790b226078e3d",
+      "src/PIL/MicImagePlugin.py": "63a00f44c8a639fe4a937f851d59e6618db4c0cf70c867a3a255e804b40e4c65",
+      "src/PIL/MpoImagePlugin.py": "73480afd2311cc30d20fce9ee0d6eba750de90876d4b1f4520ed0f0b5c7c6dfa",
+      "src/PIL/PsdImagePlugin.py": "7154b3a26d27236e33d318e68663c6dd763ae4a00b143c4f63bcab2108e12969"
+    },
+    "patched_sha256": {
+      "src/libImaging/TiffDecode.c": "e550202346f762539f2c14c9afb5a4e2f710b93855c774e8f35ea9704195b87b",
+      "src/libImaging/JpegDecode.c": "9c575a6e9e1247f06635047862cca39873e9d888a51b5d592ee0f57965f4c5df",
+      "src/PIL/EpsImagePlugin.py": "a6f288068186c0a0cf3ca3709552df4e7c7b332069d8907fd7618c7a43a04460",
+      "src/PIL/Image.py": "04050c2d4dd67931ce8c3cfdbc49ac4a6944d379d037c8f1d5eeeb67fba29a10",
+      "src/PIL/JpegImagePlugin.py": "43ede4e4c76826e9c4ce9b7dbcfbae61abb09b9955816a88a0d775de28220bba",
+      "src/PIL/DcxImagePlugin.py": "1b5cf45c25491a78e417ddf8c67b7e56de97885c2b5bfa69868790b226078e3d",
+      "src/PIL/MicImagePlugin.py": "63a00f44c8a639fe4a937f851d59e6618db4c0cf70c867a3a255e804b40e4c65",
+      "src/PIL/MpoImagePlugin.py": "73480afd2311cc30d20fce9ee0d6eba750de90876d4b1f4520ed0f0b5c7c6dfa",
+      "src/PIL/PsdImagePlugin.py": "7154b3a26d27236e33d318e68663c6dd763ae4a00b143c4f63bcab2108e12969"
+    }
+  },
+  "13.0.0-cp313": {
+    "native_dependencies": {
+      "brotli": "1.2.1",
+      "bzip2": "1.0.8",
+      "freetype": "2.14.3",
+      "fribidi": "1.0.17",
+      "harfbuzz": "14.5.0",
+      "jpegturbo": "3.2.0",
+      "lcms2": "2.19.1",
+      "libavif": "1.4.2",
+      "libimagequant": "4.4.1",
+      "libpng": "1.6.58",
+      "libwebp": "1.6.0",
+      "libxcb": "1.17.0",
+      "openjpeg": "2.5.4",
+      "tiff": "4.7.2",
+      "xz": "5.8.4",
+      "zlib-ng": "2.3.3",
+      "zstd": "1.5.7"
+    },
+    "before_sha256": {
+      "src/libImaging/TiffDecode.c": "e550202346f762539f2c14c9afb5a4e2f710b93855c774e8f35ea9704195b87b",
+      "src/libImaging/JpegDecode.c": "9c575a6e9e1247f06635047862cca39873e9d888a51b5d592ee0f57965f4c5df",
+      "src/PIL/EpsImagePlugin.py": "a6f288068186c0a0cf3ca3709552df4e7c7b332069d8907fd7618c7a43a04460",
+      "src/PIL/Image.py": "04050c2d4dd67931ce8c3cfdbc49ac4a6944d379d037c8f1d5eeeb67fba29a10",
+      "src/PIL/JpegImagePlugin.py": "43ede4e4c76826e9c4ce9b7dbcfbae61abb09b9955816a88a0d775de28220bba",
+      "src/PIL/DcxImagePlugin.py": "1b5cf45c25491a78e417ddf8c67b7e56de97885c2b5bfa69868790b226078e3d",
+      "src/PIL/MicImagePlugin.py": "63a00f44c8a639fe4a937f851d59e6618db4c0cf70c867a3a255e804b40e4c65",
+      "src/PIL/MpoImagePlugin.py": "73480afd2311cc30d20fce9ee0d6eba750de90876d4b1f4520ed0f0b5c7c6dfa",
+      "src/PIL/PsdImagePlugin.py": "7154b3a26d27236e33d318e68663c6dd763ae4a00b143c4f63bcab2108e12969"
+    },
+    "patched_sha256": {
+      "src/libImaging/TiffDecode.c": "e550202346f762539f2c14c9afb5a4e2f710b93855c774e8f35ea9704195b87b",
+      "src/libImaging/JpegDecode.c": "9c575a6e9e1247f06635047862cca39873e9d888a51b5d592ee0f57965f4c5df",
+      "src/PIL/EpsImagePlugin.py": "a6f288068186c0a0cf3ca3709552df4e7c7b332069d8907fd7618c7a43a04460",
+      "src/PIL/Image.py": "04050c2d4dd67931ce8c3cfdbc49ac4a6944d379d037c8f1d5eeeb67fba29a10",
+      "src/PIL/JpegImagePlugin.py": "43ede4e4c76826e9c4ce9b7dbcfbae61abb09b9955816a88a0d775de28220bba",
+      "src/PIL/DcxImagePlugin.py": "1b5cf45c25491a78e417ddf8c67b7e56de97885c2b5bfa69868790b226078e3d",
+      "src/PIL/MicImagePlugin.py": "63a00f44c8a639fe4a937f851d59e6618db4c0cf70c867a3a255e804b40e4c65",
+      "src/PIL/MpoImagePlugin.py": "73480afd2311cc30d20fce9ee0d6eba750de90876d4b1f4520ed0f0b5c7c6dfa",
+      "src/PIL/PsdImagePlugin.py": "7154b3a26d27236e33d318e68663c6dd763ae4a00b143c4f63bcab2108e12969"
+    }
+  }
+}

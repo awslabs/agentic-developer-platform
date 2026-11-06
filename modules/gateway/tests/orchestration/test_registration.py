@@ -104,6 +104,8 @@ from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
 from src.shared.schemas.auth import TokenContext
+from tests.orchestration.legacy_plan import persist_legacy_plan
+from tests.orchestration.product_fixture import seed_product
 
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
@@ -298,13 +300,13 @@ def dispatch_config() -> DispatchPassConfig:
     )
 
 
-def token_context(org_id: str, *, user_id: str = AGENT_USER_ID) -> TokenContext:
+def token_context(org_id: str, *, user_id: str = AGENT_USER_ID, account_type: str = "service") -> TokenContext:
     return TokenContext(
         user_id=user_id,
         org_id=org_id,
         team_id="",
         department_id="",
-        account_type="service",
+        account_type=account_type,
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
 
@@ -536,13 +538,15 @@ class TestRegistrationWritesADraft:
         properties compose here — the retry is allowed through, and `initial_states`
         is why being allowed through is harmless.
         """
-        await seed_principal(session, org_id=ORG_A, role=AdminRole.ORG_ADMIN.value)
-        _, gate_address = await register_draft_proposal(session, gateless_proposal(), registrar)
+        user_id = await seed_principal(session, org_id=ORG_A, role=AdminRole.ORG_ADMIN.value)
+        await seed_product(session, org_id=ORG_A, actor_id=HUMAN_USER_ID, user_id=user_id)
+        proposal = gateless_proposal(product_id=f"product-{ORG_A}")
+        _, gate_address = await register_draft_proposal(session, proposal, registrar)
         gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
 
         outcome = await apply_gate_answer_for_context(
             session,
-            context=token_context(ORG_A, user_id=HUMAN_USER_ID),
+            context=token_context(ORG_A, user_id=HUMAN_USER_ID, account_type="human"),
             node_id=gate.id,
             approve=True,
             reason="Reviewed the wave map.",
@@ -553,7 +557,7 @@ class TestRegistrationWritesADraft:
 
         # The identical document — the retry a fail-soft caller actually makes.
         # Permitted (it writes nothing), and it must not touch the answered gate.
-        await register_draft_proposal(session, gateless_proposal(), registrar)
+        await register_draft_proposal(session, proposal, registrar)
 
         await session.refresh(gate)
         assert gate.state == NodeState.PASSED.value
@@ -665,13 +669,14 @@ class TestAcceptanceReleasesTheDraft:
         permission check would assert that something was called, not that an
         authorized human is what unlocks the plan.
         """
-        await seed_principal(session, org_id=ORG_A, role=AdminRole.ORG_ADMIN.value)
-        await register_draft_proposal(session, gateless_proposal(), registrar)
+        user_id = await seed_principal(session, org_id=ORG_A, role=AdminRole.ORG_ADMIN.value)
+        await seed_product(session, org_id=ORG_A, actor_id=HUMAN_USER_ID, user_id=user_id)
+        await register_draft_proposal(session, gateless_proposal(product_id=f"product-{ORG_A}"), registrar)
         gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
 
         outcome = await apply_gate_answer_for_context(
             session,
-            context=token_context(ORG_A, user_id=HUMAN_USER_ID),
+            context=token_context(ORG_A, user_id=HUMAN_USER_ID, account_type="human"),
             node_id=gate.id,
             approve=True,
             reason="Reviewed the wave map; start it.",
@@ -696,8 +701,9 @@ class TestAcceptanceReleasesTheDraft:
         """
         monkeypatch.setenv(AUTONOMY_FLAG_ENV, "1")
         await seed_org(session)
-        await seed_principal(session, org_id=ORG_A, role=AdminRole.ORG_ADMIN.value)
-        await register_draft_proposal(session, gateless_proposal(), registrar)
+        user_id = await seed_principal(session, org_id=ORG_A, role=AdminRole.ORG_ADMIN.value)
+        await seed_product(session, org_id=ORG_A, actor_id=HUMAN_USER_ID, user_id=user_id)
+        await register_draft_proposal(session, gateless_proposal(product_id=f"product-{ORG_A}"), registrar)
 
         await run_tick(session)
         assert (await nodes_by_ref(session))["story-a"].state == NodeState.PENDING.value
@@ -705,7 +711,7 @@ class TestAcceptanceReleasesTheDraft:
         gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
         await apply_gate_answer_for_context(
             session,
-            context=token_context(ORG_A, user_id=HUMAN_USER_ID),
+            context=token_context(ORG_A, user_id=HUMAN_USER_ID, account_type="human"),
             node_id=gate.id,
             approve=True,
             reason="accept",
@@ -861,11 +867,20 @@ class TestRegistrationCannotExtendAnApprovedFlow:
         await seed_org(session)
         await seed_principal(session, org_id=ORG_A, role=AdminRole.ORG_ADMIN.value)
         result, _ = await register_draft_proposal(session, gateless_proposal(), registrar)
+        await OrchestrationRepository(session).append_decision(
+            org_id=ORG_A,
+            flow_id=result.flow_id,
+            kind=DecisionKind.PLAN_ACCEPTED.value,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind="human",
+            reason="Previously accepted legacy execution fixture",
+        )
 
         gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
         outcome = await apply_gate_answer_for_context(
             session,
-            context=token_context(ORG_A, user_id=HUMAN_USER_ID),
+            context=token_context(ORG_A, user_id=HUMAN_USER_ID, account_type="human"),
             node_id=gate.id,
             approve=True,
             reason="Reviewed and accepted.",
@@ -1119,7 +1134,7 @@ class TestGateArming:
 
     async def test_author_gate_is_presented_after_all_predecessors_pass(self, session, registrar):
         await seed_org(session)
-        await compile_proposal(session, author_gated_proposal(), registrar)
+        await persist_legacy_plan(session, author_gated_proposal(), registrar)
 
         nodes = await nodes_by_ref(session)
         for ref in ("story-a", "eval-w1"):
@@ -1173,10 +1188,19 @@ class TestOnlyAnApprovalRewritesThePlanOfRecord:
         await seed_org(session)
         await seed_principal(session, org_id=ORG_A, role=AdminRole.ORG_ADMIN.value)
         result, _ = await register_draft_proposal(session, gateless_proposal(), registrar)
+        await OrchestrationRepository(session).append_decision(
+            org_id=ORG_A,
+            flow_id=result.flow_id,
+            kind=DecisionKind.PLAN_ACCEPTED.value,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind="human",
+            reason="Previously accepted legacy execution fixture",
+        )
         gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
         outcome = await apply_gate_answer_for_context(
             session,
-            context=token_context(ORG_A, user_id=HUMAN_USER_ID),
+            context=token_context(ORG_A, user_id=HUMAN_USER_ID, account_type="human"),
             node_id=gate.id,
             approve=True,
             reason="Reviewed and accepted.",
@@ -1274,8 +1298,10 @@ class TestOnlyAnApprovalRewritesThePlanOfRecord:
         """
         await self.approved_flow(session, registrar, access)
 
-        amended = gateless_proposal().model_copy(update={"title": "Amended by a human approver"})
-        result = await compile_proposal(session, amended, registrar, decision_kind=DecisionKind.PLAN_AMENDED)
+        await seed_product(session, org_id=ORG_A, actor_id=HUMAN_USER_ID, user_id=f"user-{HUMAN_USER_ID}")
+        amended = gateless_proposal().model_copy(update={"title": "Amended by a human approver", "product_id": f"product-{ORG_A}"})
+        human = ApprovalContext(org_id=ORG_A, actor_id=HUMAN_USER_ID, actor_role="org_admin", actor_kind=ActorKind.HUMAN)
+        result = await compile_proposal(session, amended, human, decision_kind=DecisionKind.PLAN_AMENDED)
 
         assert result.plan_version == 2
         plans = (await session.execute(sa.select(OrchestrationAcceptedPlan).order_by(OrchestrationAcceptedPlan.version))).scalars().all()

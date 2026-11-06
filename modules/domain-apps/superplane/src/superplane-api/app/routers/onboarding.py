@@ -247,6 +247,7 @@ async def operation_response(request, db, org_id, identity, *, by_request):
                 "provisioning_operation_id": row["operation_id"],
                 "workspace_id": str(workspace.id) if workspace is not None else None,
                 "state": row["state"],
+                "version": row["version"],
                 "phase": "execution"
                 if workspace is not None
                 else "workspace_registration",

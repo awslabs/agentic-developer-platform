@@ -1,0 +1,17 @@
+{
+  "state": "ready",
+  "display_state": "stalled",
+  "delivery_progress": {
+    "stage": "evidence_wait",
+    "actor": "flow-owner",
+    "blocker": "repository_evaluation_harness_changed",
+    "blockers": ["repository_evaluation_harness_changed"],
+    "detail": "The accepted evaluation harness differs from the installed verifier.",
+    "required_input": "An accepted specification pinned to the reviewed installed harness.",
+    "next_action": "Review and accept the current evaluation specification, then recheck evidence.",
+    "automation": "blocked",
+    "observed_at": "2026-10-01T12:00:00+00:00",
+    "scheduled_action": null,
+    "next_check_at": null
+  }
+}

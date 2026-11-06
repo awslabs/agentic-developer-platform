@@ -12,15 +12,19 @@ Endpoints:
 import logging
 import os
 import re
+from datetime import date
 from typing import Annotated, Literal
 
 import boto3
 import httpx
-from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
+from src.activity.budget_usage import enrich_budget_usage
+from src.activity.campaign_recovery_routes import router as campaign_recovery_router
 from src.activity.control_schemas import (
     ControlCommandResponse,
     ControlPingResponse,
@@ -28,6 +32,8 @@ from src.activity.control_schemas import (
 )
 from src.activity.control_service import ControlError, ControlService, validate_command_body
 from src.activity.cost_service import get_cost_by_date_range, get_cost_by_run_ids
+from src.activity.exit_recovery_routes import router as exit_recovery_router
+from src.activity.project_routes import router as project_activity_router
 from src.activity.schemas import (
     ChainListResponse,
     InvocationChainItem,
@@ -48,6 +54,9 @@ from src.shared.schemas.auth import TokenContext
 logger = logging.getLogger("bedrockgateway.activity")
 
 router = APIRouter(tags=["activity"])
+router.include_router(project_activity_router)
+router.include_router(exit_recovery_router)
+router.include_router(campaign_recovery_router)
 
 
 def get_activity_service() -> ActivityService:
@@ -201,7 +210,7 @@ async def _enrich_stats_with_cost(
     return result
 
 
-async def _enrich_with_cost(db: AsyncSession, response: InvocationListResponse) -> InvocationListResponse:
+async def _enrich_with_cost(db: AsyncSession, response: InvocationListResponse, *, tenant_id: str | None = None) -> InvocationListResponse:
     """Enrich invocation items with per-run cost data from Postgres.
 
     Issue #1616: Batched Postgres query to avoid N+1. Uses invocation_id as the
@@ -212,10 +221,12 @@ async def _enrich_with_cost(db: AsyncSession, response: InvocationListResponse) 
         return response
 
     # Collect invocation IDs for batch query
-    run_ids = [item.invocation_id for item in response.items]
+    run_ids = [item.invocation_id for item in response.items if item.channel != "tool"]
+    if not run_ids:
+        return response
 
     try:
-        cost_map = await get_cost_by_run_ids(db, run_ids)
+        cost_map = await get_cost_by_run_ids(db, run_ids, **({"tenant_id": tenant_id} if tenant_id is not None else {}))
     except Exception as exc:
         logger.warning(
             "Failed to enrich activity with cost data — returning items without cost",
@@ -247,7 +258,8 @@ async def _enrich_chains_with_cost(db: AsyncSession, response: ChainListResponse
     # Collect ALL run_ids across all chains (root + descendants)
     all_run_ids: list[str] = []
     for chain in response.chains:
-        all_run_ids.append(chain.root.invocation_id)
+        if chain.root.channel != "tool":
+            all_run_ids.append(chain.root.invocation_id)
         for desc in chain.descendants:
             all_run_ids.append(desc.invocation_id)
 
@@ -266,7 +278,7 @@ async def _enrich_chains_with_cost(db: AsyncSession, response: ChainListResponse
     # Apply cost to each chain
     for chain in response.chains:
         # Enrich root
-        root_cost = cost_map.get(chain.root.invocation_id)
+        root_cost = cost_map.get(chain.root.invocation_id) if chain.root.channel != "tool" else None
         if root_cost:
             chain.root.total_cost_usd = root_cost["total_cost_usd"]
             chain.root.total_tokens = root_cost["total_tokens"]
@@ -313,7 +325,7 @@ def _apply_cost_to_tree(nodes: list[InvocationChainItem], cost_map: dict) -> Non
             _apply_cost_to_tree(node.children, cost_map)
 
 
-async def _enrich_chain_with_cost(db: AsyncSession, chain: InvocationChainResponse) -> InvocationChainResponse:
+async def _enrich_chain_with_cost(db: AsyncSession, chain: InvocationChainResponse, *, tenant_id: str | None = None) -> InvocationChainResponse:
     """Enrich chain nodes with per-node cost and compute chain totals.
 
     Issue #1653: Single batched get_cost_by_run_ids over all chain invocation_ids
@@ -325,7 +337,7 @@ async def _enrich_chain_with_cost(db: AsyncSession, chain: InvocationChainRespon
         return chain
 
     try:
-        cost_map = await get_cost_by_run_ids(db, all_ids)
+        cost_map = await get_cost_by_run_ids(db, all_ids, **({"tenant_id": tenant_id} if tenant_id is not None else {}))
     except Exception as exc:
         logger.warning(
             "Failed to enrich chain with cost data — returning chain without cost",
@@ -425,6 +437,40 @@ async def get_my_invocations(
 # ---------------------------------------------------------------------------
 # GET /admin/agent-invocations — tenant-scoped, admin only
 # ---------------------------------------------------------------------------
+
+
+@router.get("/admin/tool-calls/export")
+async def export_tool_calls(
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    service: Annotated[ActivityService, Depends(get_activity_service)],
+    since: Annotated[date, Query()],
+    until: Annotated[date, Query()],
+    format: Annotated[Literal["csv", "parquet"], Query()] = "csv",
+    tenant_id: Annotated[str | None, Query()] = None,
+) -> Response:
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(403, "An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
+    if until < since:
+        raise HTTPException(400, "end date precedes start date")
+    try:
+        payload = await run_in_threadpool(
+            service.export_tool_calls,
+            tenant_id=effective_tenant_id,
+            since=since,
+            until=until,
+            format=format,
+        )
+    except (ClientError, BotoCoreError):
+        raise HTTPException(503, "tool export unavailable") from None
+    filename = f"tool-calls-{since.isoformat()}-{until.isoformat()}.{format}"
+    return Response(
+        content=payload,
+        media_type="text/csv" if format == "csv" else "application/vnd.apache.parquet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/admin/agent-invocations", response_model=InvocationListResponse)
@@ -587,7 +633,7 @@ async def get_my_invocation_detail(
             extra={"invocation_id": invocation_id, "error": str(exc)},
         )
 
-    return item
+    return await enrich_budget_usage(db, item, tenant_id=current_user.org_id)
 
 
 # ---------------------------------------------------------------------------
@@ -669,7 +715,7 @@ async def get_admin_invocation_detail(
             extra={"invocation_id": invocation_id, "error": str(exc)},
         )
 
-    return item
+    return await enrich_budget_usage(db, item, tenant_id=effective_tenant_id)
 
 
 # ---------------------------------------------------------------------------

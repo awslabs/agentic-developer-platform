@@ -5,6 +5,7 @@ export const capabilitySchema = z.enum([
   "repository.read", "repository.write", "branch.push", "change.create",
   "change.update", "review.submit", "change.merge", "story.create", "tests.run",
   "artifacts.publish", "agents.delegate", "aws.assume", "aws.mutate",
+  "actions.read", "actions.write",
 ]);
 export type Capability = z.infer<typeof capabilitySchema>;
 export const surfaceSchema = z.enum(["github", "gitlab", "task-api", "delegation"]);

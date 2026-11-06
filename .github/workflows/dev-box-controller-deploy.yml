@@ -1,0 +1,85 @@
+name: Dev Box controller refresh
+
+# Keeps the running dev-box-controller on main's controller code (#8208 follow-up).
+#
+# dev-box-ci.yml tests controller changes; dev-box-deploy.yml is the engine-contract
+# foundation deploy and is dispatch-only. Neither re-applies the controller code
+# ConfigMap, so a merged controller fix never reached a live environment unless an
+# operator re-ran deploy-dev-box.sh. This workflow closes that gap for dev: on every
+# push to main that changes controller code it refreshes the ConfigMap and restarts
+# the controller on the gateway image the environment already runs. It is a no-op
+# where Dev Box is not deployed. Image drift is handled separately by the matching
+# step in gateway-deploy.yml; both call modules/user-services/dev-box/scripts/
+# refresh-controller.sh so there is one implementation.
+#
+# Only the dev environment refreshes on push. Other environments are dispatch-only.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/user-services/dev-box/controller/**'
+      - 'modules/user-services/dev-box/scripts/refresh-controller.sh'
+      - '.github/workflows/dev-box-controller-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev]
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: dev-box-controller-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh dev-box-controller
+    # The controller is a gateway-namespace workload on the gateway image, so it is
+    # released under the gateway deployment identity (vars live on that environment).
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-deploy
+    environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          environment: ${{ inputs.environment || 'dev' }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Refresh the controller on the gateway image the environment runs
+        run: |
+          set -euo pipefail
+          export KUBECONFIG="${RUNNER_TEMP}/dev-box-controller-kubeconfig"
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG"
+          bash modules/user-services/dev-box/scripts/refresh-controller.sh \
+            --namespace "${NAMESPACE:-adp-gateway}" --source-revision "$GITHUB_SHA"

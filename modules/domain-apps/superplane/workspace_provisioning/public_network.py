@@ -45,7 +45,15 @@ def validate_public_management(config):
         return
     if (
         not isinstance(recipe, dict)
-        or set(recipe) != {"vpc_id", "nat_gateway_ids"}
+        or not {"vpc_id", "nat_gateway_ids"} <= set(recipe)
+        or set(recipe) - {"vpc_id", "nat_gateway_ids", "region"}
+        or (
+            "region" in recipe
+            and (
+                not isinstance(recipe["region"], str)
+                or not re.fullmatch(r"[a-z]{2}(-[a-z]+)+-[0-9]+", recipe["region"])
+            )
+        )
         or not isinstance(recipe["vpc_id"], str)
         or not re.fullmatch(r"vpc-[a-f0-9]{8,17}", recipe["vpc_id"])
         or not isinstance(recipe["nat_gateway_ids"], list)

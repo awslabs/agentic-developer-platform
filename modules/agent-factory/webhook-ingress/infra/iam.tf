@@ -6,7 +6,8 @@
 # =============================================================================
 
 resource "aws_iam_role" "lambda_execution" {
-  name = "${local.name_prefix}-webhook-lambda-role"
+  name                 = "${local.name_prefix}-webhook-lambda-role"
+  permissions_boundary = var.webhook_execution_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -404,13 +405,17 @@ resource "aws_iam_role_policy" "gateway_agent_authority" {
         Resource = [aws_dynamodb_table.agent_authority.arn]
       },
       {
+        # CHAT-MODEL#<run_id>: the chat model journal (chat_model_journal.py) and the
+        # turn finalizer's accounting read (chat_turn_finalization._accounting) query
+        # the per-run operation items; without it every delegated finalize fails
+        # "chat final accounting unavailable" and the turn never reaches the user.
         Sid      = "TaskActivityDiscovery"
         Effect   = "Allow"
         Action   = ["dynamodb:Query"]
         Resource = [aws_dynamodb_table.agent_authority.arn]
         Condition = {
           "ForAllValues:StringLike" = {
-            "dynamodb:LeadingKeys" = ["TENANT#*"]
+            "dynamodb:LeadingKeys" = ["TENANT#*", "CHAT-MODEL#*"]
           }
           "Null" = {
             "dynamodb:LeadingKeys" = "false"

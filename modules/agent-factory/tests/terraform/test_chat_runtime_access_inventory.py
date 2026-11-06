@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[4]
-INVENTORY = ROOT / "docs/architecture/assistant-runtime-access-inventory.md"
+INVENTORY = ROOT / "docs/chief-of-staff/architecture.md"
 ROLE = ROOT / "modules/agent-factory/infra/chat-worker-iam.tf"
 SERVICE_ACCOUNT = ROOT / "modules/agent-factory/infra/gateway-main.tf"
 JOB = ROOT / "modules/agent-factory/agent/k8s/chat-scaledjob.yaml"

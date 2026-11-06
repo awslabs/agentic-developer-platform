@@ -43,6 +43,7 @@ behaviour instead.
 from __future__ import annotations
 
 import inspect
+import os
 import re
 import uuid
 from pathlib import Path
@@ -62,6 +63,13 @@ APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 
 class TestTheSettingsDefaultCarriesNoKey:
     """The value-level half: there is nothing to leak from the source file."""
+
+    @pytest.fixture(autouse=True)
+    def no_environment_key(self, monkeypatch):
+        # _env_file=None ignores dotenv files, not process environment overrides.
+        for name in tuple(os.environ):
+            if name.lower() == "jwt_secret_key":
+                monkeypatch.delenv(name)
 
     def test_the_shipped_default_is_unset(self) -> None:
         """A fresh Settings built with no env override has no signing key.
@@ -119,9 +127,7 @@ class TestAnUnsetKeyIsRefused:
         with pytest.raises(JWTSecretKeyMissing):
             require_jwt_secret_key()
 
-    def test_signing_raises_instead_of_minting_a_forgeable_token(
-        self, no_key
-    ) -> None:
+    def test_signing_raises_instead_of_minting_a_forgeable_token(self, no_key) -> None:
         """The consequence that matters: no token is produced at all.
 
         Before the fix this call returned a perfectly valid token signed with the

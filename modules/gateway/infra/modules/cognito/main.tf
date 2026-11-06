@@ -306,7 +306,9 @@ resource "aws_cognito_user_pool_client" "main" {
   # Use only authorization code flow for security (PKCE for SPA)
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_flows_user_pool_client = true
-  allowed_oauth_scopes                 = ["openid", "email", "profile"]
+  # GetUser verifies that the browser's own session remains active before each
+  # private native credential approval. This grants no administrative IAM API.
+  allowed_oauth_scopes = ["openid", "email", "profile", "aws.cognito.signin.user.admin"]
 
   # Prevent token revocation on refresh
   enable_token_revocation = true
@@ -835,7 +837,7 @@ resource "null_resource" "test_user_permanent_password" {
   }
 
   provisioner "local-exec" {
-    command     = "aws cognito-idp admin-set-user-password --user-pool-id \"$POOL_ID\" --username \"$USERNAME\" --password \"$PASSWORD\" --permanent --region \"$REGION\""
+    command     = "aws cognito-idp admin-set-user-password --user-pool-id \"$POOL_ID\" --username \"$USERNAME\" --password=\"$PASSWORD\" --permanent --region \"$REGION\""
     interpreter = ["/bin/sh", "-c"]
 
     environment = {
@@ -859,7 +861,7 @@ resource "null_resource" "test_admin_permanent_password" {
   }
 
   provisioner "local-exec" {
-    command     = "aws cognito-idp admin-set-user-password --user-pool-id \"$POOL_ID\" --username \"$USERNAME\" --password \"$PASSWORD\" --permanent --region \"$REGION\""
+    command     = "aws cognito-idp admin-set-user-password --user-pool-id \"$POOL_ID\" --username \"$USERNAME\" --password=\"$PASSWORD\" --permanent --region \"$REGION\""
     interpreter = ["/bin/sh", "-c"]
 
     environment = {

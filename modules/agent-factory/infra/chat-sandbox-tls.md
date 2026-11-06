@@ -47,9 +47,22 @@ qualification before activation.
    The ordinary gateway serving supervisor admission/exit also needs
    `ADP_CHAT_SANDBOX_CA_CONFIGMAP` set to that same name and `ADP_CHAT_DATA_URL`
    set to the sandbox endpoint above for its workload checks. These are public
-   configuration values, not credentials. Keep the supervisor's own
-   `GATEWAY_HTTPS_ORIGIN` pointed at the ordinary internal gateway, not this
-   restricted listener. The TLS renderer sets the two workload-check values
+   configuration values, not credentials. Point the supervisor's own
+   `GATEWAY_HTTPS_ORIGIN` at the gateway API Gateway stage URL
+   (`https://<id>.execute-api.<region>.amazonaws.com/<stage>`, SSM
+   `/adp/<env>/gateway/apigw-invoke-url`): its AWS_IAM `/internal/{proxy+}`
+   method forwards `/internal/v1/agent/chat/*` to the gateway's internal-plane
+   ALB, and the supervisor SigV4-signs every request for `execute-api` with its
+   IRSA role next to the producer proof. Not the CloudFront frontend origin (it
+   only forwards `/api/*`; `/internal/*` is an S3 403) and not this restricted
+   listener. For `chat-agent-deploy.yml`, configure the `GATEWAY_HTTPS_ORIGIN`
+   variable in the protected `adp-chat-deploy-dev` environment; `deploy-all.sh
+   --chat delegated` derives it from the SSM parameter. Direct script callers
+   must export the same value. The rollout requires an explicit value, and the
+   supervisor renderer accepts only an https origin or a stage URL in the
+   supervisor's region (one path segment, no port), rejecting non-HTTPS URLs,
+   other paths, and the restricted sandbox listener hostname; it does not fall
+   back to the sandbox endpoint. The TLS renderer sets the two workload-check values
    in its new gateway Deployment but does not modify the ordinary gateway.
    Launch preflight validates `immutable=true`, the certificate hash, validity,
    CA identity and exact public key name. Never mount

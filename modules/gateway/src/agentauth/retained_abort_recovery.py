@@ -75,6 +75,17 @@ def _recover_interrupted_acceptance(store, *, raw, tenant, invocation, events_ta
     failed execution instead. A concurrent marker or normal terminal report makes
     the entire transaction fail; discovery retries from fresh protected state.
     """
+    transaction = unreported_exit_transaction(store, raw=raw, tenant=tenant, invocation=invocation, events_table=events_table, source=source)
+    if transaction:
+        store.client.transact_write_items(TransactItems=transaction)
+
+
+def unreported_exit_transaction(store, *, raw, tenant, invocation, events_table, source):
+    """Build the existing atomic report/authority repair after caller-verified exit.
+
+    Evidence verification is the caller's responsibility. Returning the transaction
+    lets supported recovery add identity fences and a receipt atomically.
+    """
     if not events_table or not raw.get("arrived_at"):
         raise AuthorityStoreError("event row key unavailable")
     key = {"event_id": {"S": invocation}, "arrived_at": raw["arrived_at"]}
@@ -86,7 +97,7 @@ def _recover_interrupted_acceptance(store, *, raw, tenant, invocation, events_ta
     if raw.get("status") != {"S": "active"}:
         if raw.get("status", {}).get("S") not in {"completed", "cancelled", "revoked"} or not terminal:
             raise AuthorityStoreError("terminal reporting remains unresolved")
-        return
+        return []
     outcome = prior if terminal else {"S": "failed"}
     values = {":tenant": {"S": tenant}}
     condition = "tenant_id = :tenant AND "
@@ -105,41 +116,39 @@ def _recover_interrupted_acceptance(store, *, raw, tenant, invocation, events_ta
             }
         )
         update = "SET #s = :failed, status_updated_at = :now, stop_reason = :reason " + update
-    store.client.transact_write_items(
-        TransactItems=[
-            {
-                "Update": {
-                    "TableName": events_table,
-                    "Key": key,
-                    "ConditionExpression": condition,
-                    "UpdateExpression": update,
-                    "ExpressionAttributeNames": {"#s": "status"},
-                    "ExpressionAttributeValues": values,
-                }
-            },
-            {
-                "Update": {
-                    "TableName": store.table,
-                    "Key": {"pk": {"S": f"TENANT#{tenant}"}, "sk": {"S": f"EXEC#{invocation}"}},
-                    "ConditionExpression": (
-                        "#s = :active AND tenant_id = :tenant AND workload_binding = :uid "
-                        "AND current_attempt = :attempt AND attribute_not_exists(abort_command_id)"
-                    ),
-                    "UpdateExpression": "SET #s = :complete, terminal_outcome = :outcome, terminal_reconciled_by = :source",
-                    "ExpressionAttributeNames": {"#s": "status"},
-                    "ExpressionAttributeValues": {
-                        ":active": {"S": "active"},
-                        ":complete": {"S": "completed"},
-                        ":tenant": {"S": tenant},
-                        ":uid": raw["workload_binding"],
-                        ":attempt": raw["current_attempt"],
-                        ":outcome": outcome,
-                        ":source": {"S": source},
-                    },
-                }
-            },
-        ]
-    )
+    return [
+        {
+            "Update": {
+                "TableName": events_table,
+                "Key": key,
+                "ConditionExpression": condition,
+                "UpdateExpression": update,
+                "ExpressionAttributeNames": {"#s": "status"},
+                "ExpressionAttributeValues": values,
+            }
+        },
+        {
+            "Update": {
+                "TableName": store.table,
+                "Key": {"pk": {"S": f"TENANT#{tenant}"}, "sk": {"S": f"EXEC#{invocation}"}},
+                "ConditionExpression": (
+                    "#s = :active AND tenant_id = :tenant AND workload_binding = :uid "
+                    "AND current_attempt = :attempt AND attribute_not_exists(abort_command_id)"
+                ),
+                "UpdateExpression": "SET #s = :complete, terminal_outcome = :outcome, terminal_reconciled_by = :source",
+                "ExpressionAttributeNames": {"#s": "status"},
+                "ExpressionAttributeValues": {
+                    ":active": {"S": "active"},
+                    ":complete": {"S": "completed"},
+                    ":tenant": {"S": tenant},
+                    ":uid": raw["workload_binding"],
+                    ":attempt": raw["current_attempt"],
+                    ":outcome": outcome,
+                    ":source": {"S": source},
+                },
+            }
+        },
+    ]
 
 
 def recover_retained_abort_pods(*, store, workloads, events_table: str, cursor: str = "") -> tuple[int, str]:

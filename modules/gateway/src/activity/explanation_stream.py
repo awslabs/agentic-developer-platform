@@ -48,14 +48,18 @@ def frame(kind: str, data: dict, cursor: str | None = None) -> bytes:
     return (prefix + f"event: {kind}\ndata: " + json.dumps(data, ensure_ascii=False) + "\n\n").encode()
 
 
-async def open_explanation_stream(control, run_id: str, *, session, reauthorize, cursor: str | None = None):
+async def open_explanation_stream(control, run_id: str, *, session, reauthorize, cursor: str | None = None, target_owner_id: str | None = None):
     """Open before returning HTTP 200; periodically recheck current authority.
 
     reauthorize reads the current human membership in a fresh database session.
     No browser-provided destination or worker credential is accepted.
     """
+    # A Project reader has separate, continuously revalidated read authority.
+    # Target ownership remains checked against protected launch authority. This
+    # parameter is used only by the Project read route, never command dispatch.
+    owner_id = target_owner_id or session.user_id
     config = os.environ if control._env is None else control._env
-    target = await run_in_threadpool(control.resolve_target, run_id, user_id=session.user_id, tenant_id=session.tenant_id)
+    target = await run_in_threadpool(control.resolve_target, run_id, user_id=owner_id, tenant_id=session.tenant_id)
     if config.get("FEATURE_AGENT_EXPLANATIONS_ENABLED") != "true":
         raise ControlError(503, "live explanations are disabled")
     if cursor is not None and (len(cursor) > 256 or any(c in cursor for c in "\r\n")):
@@ -77,14 +81,14 @@ async def open_explanation_stream(control, run_id: str, *, session, reauthorize,
         if session.expires_at <= datetime.now(UTC) or config.get("FEATURE_AGENT_EXPLANATIONS_ENABLED") != "true":
             raise ControlError(404, "run not found")
         await reauthorize()
-        current = await run_in_threadpool(control.resolve_target, run_id, user_id=session.user_id, tenant_id=session.tenant_id)
+        current = await run_in_threadpool(control.resolve_target, run_id, user_id=owner_id, tenant_id=session.tenant_id)
         if current.is_terminal:
             return False
         if current != target or control.unavailable_reason(current):
             raise ControlError(409, "run registration changed")
         await require_canonical_protected_human_owner(
             control._authority_store,
-            user_id=session.user_id,
+            user_id=owner_id,
             tenant_id=session.tenant_id,
             run_id=run_id,
             generation=target.generation,

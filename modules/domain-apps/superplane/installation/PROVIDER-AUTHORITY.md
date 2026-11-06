@@ -102,8 +102,9 @@ document; differing records are refused rather than adopted.
 generation change. It remains usable when the provider or installation has
 broken, because withdrawal requires the protected owner and existing record,
 not healthy runtime dependencies. Revocation is idempotent and irreversible
-through this command. Rotation/re-enrollment of an existing handle is deliberately
-unsupported; it requires a separate reviewed lifecycle design.
+through this command. General rotation/re-enrollment of an existing handle remains unsupported. The
+restricted owner binding-update procedure below supports reviewed runtime upgrades
+without changing the beneficiary, provider scope or lifetime.
 
 Tests use fake transports and Terraform mocks. They cover real API account-schema
 and credential-evidence consumers, exact workspace delegation, current identity
@@ -139,7 +140,7 @@ steps needed by this lifecycle path.
    and conditionally enroll the authority using the original draft operation ID
    and its derived workspace ID. Complete the owner checks described above.
 4. In the beneficiary's genuine authenticated session, call
-   `POST /superplane/v1/accounts` with `name`, `account_id` and
+   `POST /superplane/v1/accounts` with `name`, `provider: "aws"`, `account_id` and
    `adp_credential_id` equal to the enrolled opaque handle. The Gateway establishes
    current Cognito and organization membership against the enrolled beneficiary,
    checks the installation and provider generations, and constructs the domain
@@ -159,3 +160,157 @@ steps needed by this lifecycle path.
    **Create this workspace**, follow its durable operation and lifecycle proposal
    approvals, and verify live readiness. Enrollment, registration, successful
    preview and validation alone do not prove workspace creation or demo success.
+
+
+## Restricted owner binding update
+
+A reviewed runtime upgrade can change the installed binding digest, including its
+qualified worker image allowlist. The protected owner may advance an existing
+active authority using `--rotate-binding-from PREVIOUS_DOCUMENT` with the exact
+new `--document`. Default invocation is read-only; `--write` is the final step
+following review of both documents and the separate shared-owner deployment plan.
+
+The new authority must preserve every field except `binding_sha256` and a
+single-step `generation` increment. Both documents must select the same operator,
+cluster, registry and namespace. Identity selectors, original request/workspace,
+role and policy generations, secret version, validation profile and expiry cannot
+change. Expired, revoked, absent or mismatched predecessors are refused. This is
+not account re-enrollment, restoration, expiry extension or workspace approval.
+
+Use the maintained installation flow to quiesce execution, deploy and verify the
+reviewed runtime before this command. The owner command independently repeats its
+normal live role/policy/secret, enabled installation route, exact current binding
+and protected registry checks. It does not claim worker readiness or quiescence.
+Gateway still establishes those runtime and human facts at consumption.
+
+The write condition pins the complete previous authority revision. Concurrent
+revocation or rotation fails instead of overwriting another record. If a response
+is lost, replay the same old/new document pair; an exact committed successor is a
+verified no-op. Preserve both private documents and review/readback evidence in
+the existing versioned artifact store. Use the successor document for subsequent
+revocation; revocation advances that actual generation and remains irreversible.
+Generation changes invalidate prior provider validation evidence; the genuine
+beneficiary must refresh it. Already-issued STS sessions retain their existing
+maximum 900-second lifetime; the update does not revoke those credentials.
+
+```bash
+PYTHONPATH=modules/domain-apps/superplane python -m installation.provider_authority \
+  --document "$NEW_PROVIDER_AUTHORITY_DOCUMENT" \
+  --rotate-binding-from "$PREVIOUS_PROVIDER_AUTHORITY_DOCUMENT"
+# After review, repeat the exact command with --write.
+```
+
+
+## Restricted session-tag trust repair
+
+AWS supports `sts:ExternalId` for `sts:AssumeRole`, but not `sts:TagSession`
+([AWS STS authorization reference](https://servicereference.us-east-1.amazonaws.com/v1/sts/sts.json)).
+The provider Terraform root uses separate statements. Both keep the same exact
+Gateway principal, beneficiary and required operation/validator session tags;
+only AssumeRole carries the unchanged ExternalId requirement.
+
+For an already enrolled provider with the original combined statement, capture
+the original private policy identity snapshot before applying a separately
+reviewed saved plan through the existing app-owned provider state. The snapshot
+has exactly `trust` (the role trust document) and `managed` (each of the four
+policy ARNs mapped to its `version` and `document`), as hashed by `policy_identity`.
+**It contains the ExternalId: mode 0600, never commit, print or archive it.**
+Preserve all existing authority documents and immutable deployment inputs.
+
+Prepare a successor authority changing only `policy_sha256` and incrementing
+`generation` once. The reviewed plan must only split the original trust, with no
+role replacement, grant/attachment/boundary/secret changes. During the gap between
+trust apply and enrollment advancement, Gateway rejects the old policy digest.
+This procedure does not claim to revoke already-issued sessions (maximum 900s).
+
+After Terraform apply, run the maintained owner command read-only:
+
+```bash
+PYTHONPATH=modules/domain-apps/superplane python -m installation.provider_authority \
+  --document "$SUCCESSOR_AUTHORITY_DOCUMENT" \
+  --repair-session-tag-trust-from "$PREVIOUS_AUTHORITY_DOCUMENT" \
+  --previous-policy-document "$PRIVATE_ORIGINAL_POLICY_SNAPSHOT"
+# Following review, repeat the exact command with --write.
+```
+
+The predecessor's enrolled hash authenticates the full original snapshot. The
+command only accepts the original closed trust recipe and computes its exact
+split, preserving all tag restrictions, principal and managed policy versions.
+Its successor digest must match the live provider. All ordinary operator,
+installation, registry, secret, binding and boundary checks still apply. The
+conditional write refuses absent, revoked, expired or concurrently changed
+predecessors; lost responses reconcile only the exact successor. General policy
+rotation, re-enrollment and expiry extension remain unsupported. The genuine
+beneficiary must refresh provider validation after advancement. This repair
+creates no human approval, workspace or operation authority.
+
+
+## Restricted beneficiary-tag repair
+
+Set Terraform `beneficiary_user_id` to the Gateway internal user ID returned by
+the authenticated identity, not the Cognito login subject. Gateway tags provider
+sessions with that enrolled internal `user_id`. A provider
+role mistakenly provisioned with that same beneficiary's login `subject` can be
+corrected through `--repair-beneficiary-tag-from PREVIOUS_DOCUMENT`, together
+with `--document SUCCESSOR_DOCUMENT` and `--previous-policy-document SNAPSHOT`.
+The snapshot has the same private format and handling requirements as the trust
+repair above. Capture it before applying the separately reviewed saved Terraform
+plan through the existing provider state, while execution is quiesced.
+
+The plan must change only `aws:RequestTag/adp:user_id` in the existing AssumeRole
+and TagSession statements, from the enrolled subject to the enrolled internal
+user ID. The owner command authenticates the complete previous policy snapshot,
+requires the exact split trust recipe, and verifies the resulting live digest.
+It preserves the principal, ExternalId, other tags, grants, role ID, secret,
+boundary, beneficiary identity, request, workspace and expiry. The successor
+changes only `policy_sha256` and increments `generation` once.
+
+Run the command read-only first, review the result, then repeat with `--write`.
+The same conditional predecessor and idempotent retry checks apply. This is not
+a general policy update or a change of beneficiary. Refresh normal authenticated
+provider validation after advancement; the repair grants no workspace approval.
+
+## Restricted native network read repair
+
+The pinned Terraform AWS provider reads EIP address attributes and EC2 prefix
+lists while reading newly created EIPs and interface endpoints. Existing enrolled
+providers missing those reads can use `--repair-network-reads-from
+PREVIOUS_DOCUMENT`, with `--previous-policy-document PRIVATE_SNAPSHOT`,
+`--repaired-policy-version VERSION` and `--document SUCCESSOR_DOCUMENT`.
+
+Capture the complete enrolled policy snapshot privately before applying a reviewed
+saved Terraform plan to the existing provider state under installation maintenance.
+That plan must add only `ec2:DescribeAddressesAttribute` and
+`ec2:DescribePrefixLists` to the existing region-scoped read statement in the
+`state-validation` shard. Record its actual new managed-policy version. Keep the
+role trust, other shards and child boundary unchanged.
+
+The owner entrypoint authenticates the old snapshot, derives this exact change,
+and verifies the complete live policy digest. The successor increments the
+generation and changes only `policy_sha256`. All ordinary operator, installation,
+identity, secret, expiry, binding and conditional-write checks remain required.
+Review the read-only result before repeating with `--write`. This does not resume
+any operation or approve a replacement workspace plan.
+
+## Restricted EKS nodegroup service-role read repair
+
+`CreateNodegroup` checks whether the account's existing
+`AWSServiceRoleForAmazonEKSNodegroup` is present. The native provider must be able
+to `iam:GetRole` on its exact `eks-nodegroup.amazonaws.com` service-role ARN.
+This grants no service-role creation, modification or deletion.
+
+For an enrolled provider missing that read, capture its complete pinned policy
+snapshot before applying the reviewed Terraform plan. The plan must append only
+that exact allow statement to the `identity` shard, preserving the role trust,
+other shards and child boundary. Use `--repair-nodegroup-role-read-from
+PREVIOUS_DOCUMENT`, `--previous-policy-document PRIVATE_SNAPSHOT`,
+`--repaired-policy-version VERSION` and `--document SUCCESSOR_DOCUMENT`.
+The owner validates the previous digest and derives the exact successor policy;
+only its digest and generation may advance. Review before repeating with `--write`.
+
+Refresh normal authenticated provider validation after advancement. Existing
+validation evidence is generation-bound. An uncertain apply still requires the
+maintained partial-apply inspection, new repair plan and exact-plan approval;
+this policy repair grants no permission to replay a failed saved plan.
+
+`--repair-inventory-read-from PREVIOUS_DOCUMENT` with the authenticated `--previous-policy-document` and exact `--repaired-policy-version` permits only regional `tag:GetResources` on the existing read statement. Preserve all other fields and revalidate the new provider generation before execution resumes.

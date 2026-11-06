@@ -1,0 +1,31 @@
+{
+  "record_type": "sanitized-publication-summary",
+  "review_date": "2026-10-25",
+  "source_revision": "d6d040f86c1580959954ec4398d73cb9f0f858fb",
+  "source_recipe": "modules/domain-apps/superplane/images/system-ca-maintenance/Dockerfile",
+  "recipe_sha256": "6f2630e3ddd6aa9234fc810d627cdb40b439a6e7a86b7134ac4e1d54fea024d2",
+  "repair_script_sha256": "29c93ada291b832bfd3646ca8b4ef4e2d0c6994d33f3ffeebc62750043c3ce90",
+  "repository": "adp-superplane-skypilot",
+  "status": "published",
+  "tag": "system-ca-skypilot-d6d040f86c15",
+  "digest": "sha256:398c9bf405f449c9fcc51a2752e830c329e02c211cbc8bdf114b67c76a100851",
+  "platform_digest": "sha256:4084403de39a3d9835da36638108a0d7168c5b432d06ffe73850d34fc114570c",
+  "config_digest": "sha256:3dd4e4a2786f6f1a71a304b0843bb424a3bdbf06c49e67b78da6c77764b1b37c",
+  "tested_image_id": "sha256:398c9bf405f449c9fcc51a2752e830c329e02c211cbc8bdf114b67c76a100851",
+  "base_digest": "sha256:d2b7faa6aec4e30aa206aca801d02ab0ba0657c0cca0df5ca36ba90a8b823e32",
+  "registry_manifest_verified": true,
+  "manifest_byte_identity_verified": true,
+  "matches_scanned_local_root": true,
+  "base_layers_preserved": true,
+  "application_files_preserved": 125240,
+  "validation": {
+    "tls": true,
+    "pip-check": true,
+    "system-roots": true
+  },
+  "raw_critical_matches": 8,
+  "raw_high_matches": 160,
+  "critical_assessment": "Five Pillow version matches retain verified source backports; three OpenSSH matches retain exact reviewed binaries. This is not a whole-image cleanliness claim.",
+  "reference": "registry.example.invalid/adp-superplane-skypilot@sha256:398c9bf405f449c9fcc51a2752e830c329e02c211cbc8bdf114b67c76a100851",
+  "scope": "Artifact publication and exact-image validation. Operational registry identity and deployment receipts remain private."
+}

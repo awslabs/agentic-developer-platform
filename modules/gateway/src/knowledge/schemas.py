@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Request schemas
@@ -25,7 +25,23 @@ class AssetCreateRequest(BaseModel):
     display_name: str | None = Field(None, max_length=512)
     tags: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    scope: str = Field("personal", pattern=r"^(personal|tenant)$")
+    scope: str = Field("personal", pattern=r"^(personal|tenant|product)$")
+    product_id: str | None = Field(None, min_length=1, max_length=36, pattern=r"^[A-Za-z0-9-]+$")
+    source_binding_id: str | None = Field(None, min_length=1, max_length=36, pattern=r"^[A-Za-z0-9-]+$")
+    keep_updated: bool = False
+    source_upload_id: str | None = Field(None, min_length=36, max_length=36)
+
+    @model_validator(mode="after")
+    def validate_product_scope(self):
+        if (self.scope == "product") != bool(self.product_id):
+            raise ValueError("product_id is required only for Product scope")
+        if self.source_binding_id and (self.scope != "product" or self.asset_type != "repo"):
+            raise ValueError("A saved source binding requires a Product repository")
+        if self.keep_updated and not self.source_binding_id:
+            raise ValueError("Automatic refresh requires a saved Product source")
+        if self.source_upload_id and (self.scope != "product" or self.asset_type != "doc"):
+            raise ValueError("A document upload requires Product scope")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +61,9 @@ class AssetResponse(BaseModel):
     tenant_id: str | None = None
     owner_sub: str | None = None
     project_id: str | None = None
+    product_id: str | None = None
+    can_manage: bool = False
+    can_download: bool = False
     status: str
     last_error: str | None = None
     retry_count: int = 0
@@ -142,7 +161,14 @@ class BulkCommitRequest(BaseModel):
     """POST /api/agent-context/assets/bulk/commit — commit request."""
 
     items: list[BulkCommitItem]
-    scope: str = Field("tenant", pattern=r"^(personal|tenant)$")
+    scope: str = Field("tenant", pattern=r"^(personal|tenant|product)$")
+    product_id: str | None = Field(None, min_length=1, max_length=36, pattern=r"^[A-Za-z0-9-]+$")
+
+    @model_validator(mode="after")
+    def validate_product_scope(self):
+        if (self.scope == "product") != bool(self.product_id):
+            raise ValueError("product_id is required only for Product scope")
+        return self
 
 
 class BulkCommitResponse(BaseModel):

@@ -20,11 +20,15 @@ spec:
     - expression: >-
         object.spec.serviceAccountName == 'adp-chat-sandbox' &&
         has(object.metadata.labels) && object.metadata.labels['adp.io/chat-sandbox'] == 'true' &&
-        'adp.io/run-hash' in object.metadata.labels &&
-        object.metadata.labels['adp.io/run-hash'].matches('^[a-f0-9]{64}$') &&
+        !('adp.io/crew-pod' in object.metadata.labels) &&
+        !('adp.io/run-hash' in object.metadata.labels) &&
+        !('adp.io/session-hash' in object.metadata.labels) &&
+        has(object.metadata.annotations) &&
+        'adp.io/run-hash' in object.metadata.annotations &&
+        object.metadata.annotations['adp.io/run-hash'].matches('^[a-f0-9]{64}$') &&
         has(object.metadata.generateName) &&
-        object.metadata.generateName.matches('^chat-turn-[a-f0-9]{12}-$')
-      message: Chat sandbox identity and run label must match the trusted template
+        object.metadata.generateName == 'chat-turn-' + object.metadata.annotations['adp.io/run-hash'].substring(0, 12) + '-'
+      message: Chat sandbox identity and run digest annotation must match the trusted template
     - expression: >-
         object.spec.automountServiceAccountToken == false &&
         object.spec.enableServiceLinks == false &&
@@ -42,13 +46,18 @@ spec:
         object.spec.securityContext.fsGroup == 10001 &&
         object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
       message: Chat sandbox pod security context must be restricted
+    # resource.Quantity has no CEL type in the apiserver's Pod schema (OpenAPI oneOf
+    # string|number), so the type checker drops those fields and a direct reference is
+    # reported in status.typeChecking as "undefined field". Read them through dyn() and
+    # compare as quantities (Kubernetes CEL quantity library).
     - expression: >-
         size(object.spec.volumes) == 3 &&
         object.spec.volumes.exists_one(volume, volume.name == 'gateway-ca' && has(volume.configMap) &&
           volume.configMap.name.matches('^chat-sandbox-gateway-ca-[a-f0-9]{16}$') &&
           volume.configMap.defaultMode == 292 &&
           size(volume.configMap.items) == 1 && volume.configMap.items[0].key == 'ca.crt' && volume.configMap.items[0].path == 'ca.crt') &&
-        object.spec.volumes.exists_one(v, v.name == 'scratch' && has(v.emptyDir) && v.emptyDir.sizeLimit == '512Mi') &&
+        object.spec.volumes.exists_one(v, v.name == 'scratch' && has(v.emptyDir) && has(dyn(v.emptyDir).sizeLimit) &&
+          quantity(dyn(v.emptyDir).sizeLimit) == quantity('512Mi')) &&
         object.spec.volumes.exists_one(v, v.name == 'sandbox-identity' && has(v.projected) &&
           v.projected.defaultMode == 292 &&
           size(v.projected.sources) == 1 && has(v.projected.sources[0].serviceAccountToken) &&

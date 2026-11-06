@@ -8,6 +8,7 @@ import type { ToolUseInfo } from '@/types/chat';
 
 interface TypingIndicatorProps {
   toolUse?: ToolUseInfo | null;
+  ariaLabel?: string;
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -20,13 +21,13 @@ const TOOL_LABELS: Record<string, string> = {
   Glob: 'Finding files...',
 };
 
-export function TypingIndicator({ toolUse }: TypingIndicatorProps) {
+export function TypingIndicator({ toolUse, ariaLabel = 'Agent is typing' }: TypingIndicatorProps) {
   const toolLabel = toolUse
     ? TOOL_LABELS[toolUse.tool_name] || `Using ${toolUse.tool_name}...`
     : null;
 
   return (
-    <div className="flex flex-col gap-1" aria-label="Agent is typing" role="status">
+    <div className="flex flex-col gap-1" aria-label={ariaLabel} role="status">
       {/* Animated dots */}
       <div className="flex items-center gap-1 px-4 py-2">
         <span className="w-2 h-2 rounded-full bg-gray-400 dark:bg-gray-500 animate-bounce [animation-delay:0ms]" />

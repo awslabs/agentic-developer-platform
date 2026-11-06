@@ -648,3 +648,65 @@ async def test_review_startup_failure_keeps_claim_for_stage_retry(session):
     )
     assert (await recover_exited_claims(session, store=store, workloads=None)).released == 0
     assert (await session.get(OrchestrationWorkClaim, receipt["claim_id"])).state == ClaimState.HELD.value
+
+
+@pytest.mark.parametrize(("outcome", "expected"), [("complete", "completed"), ("failed", "failed")])
+async def test_recovery_release_reason_follows_the_recorded_terminal_outcome(session, monkeypatch, outcome, expected):
+    """EXEC.terminal_outcome holds the worker's posted literal, "complete" (#7764).
+
+    Comparing it against "completed" released every clean run as `failed`, which the
+    results pass then read as a worker failure.
+    """
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    receipt = await start(session, run="reported-outcome")
+    store = SimpleNamespace(_read=Mock(return_value={"tenant_id": {"S": ORG}, "status": {"S": "completed"}, "terminal_outcome": {"S": outcome}}))
+
+    assert (await recover_exited_claims(session, store=store, workloads=None)).released == 1
+
+    claim = await session.get(OrchestrationWorkClaim, receipt["claim_id"])
+    assert claim.state == ClaimState.RELEASED.value and claim.release_reason == expected
+
+
+@pytest.mark.parametrize(
+    ("silent_for", "absent", "expect_released", "why"),
+    [
+        (3600, True, True, "pod gone and silent for the grace period: abandoned"),
+        (30, True, False, "pod gone but heartbeat still fresh: hold"),
+        (3600, False, False, "pod present or API error: hold"),
+        (3600, None, False, "verifier without is_absent (legacy fakes): hold"),
+    ],
+)
+async def test_vanished_pod_releases_a_silent_claim_as_abandoned(session, silent_for, absent, expect_released, why):
+    """A bound pod that the API positively reports NotFound is exit evidence once its claim is silent (#7783).
+
+    Job garbage collection, operator deletion or node loss remove the pod object before the
+    sweep reads it; `has_exited` alone then holds the claim until the stall fence hours later.
+    """
+    from datetime import timedelta
+
+    receipt = await start(session, run="vanished")
+    claim = await session.get(OrchestrationWorkClaim, receipt["claim_id"])
+    claim.heartbeat_at = datetime.now(UTC) - timedelta(seconds=silent_for)
+    await session.flush()
+    store = SimpleNamespace(
+        _read=Mock(
+            return_value={
+                "tenant_id": {"S": ORG},
+                "status": {"S": "active"},
+                "pod_name": {"S": "worker-v"},
+                "workload_binding": {"S": "uid-v"},
+            }
+        )
+    )
+    workloads = SimpleNamespace(has_exited=Mock(return_value=False))
+    if absent is not None:
+        workloads.is_absent = Mock(return_value=absent)
+
+    report = await recover_exited_claims(session, store=store, workloads=workloads)
+
+    assert report.released == int(expect_released), why
+    row = await session.get(OrchestrationWorkClaim, receipt["claim_id"])
+    assert row.state == (ClaimState.RELEASED.value if expect_released else ClaimState.HELD.value), why
+    if expect_released:
+        assert row.release_reason == "abandoned"
+        workloads.is_absent.assert_called_once_with(name="worker-v")

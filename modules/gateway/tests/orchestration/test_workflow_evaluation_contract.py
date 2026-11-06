@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from src.orchestration.deployment_workflow_provider import WorkflowDefinition
 from src.orchestration.repository_producer import RepositoryScanProvider
@@ -51,6 +52,10 @@ def contract():
                     suites="knowledge",
                     evaluation_id="",
                     inject_fault="none",
+                    # #7187 added a protected-target selector to the live lanes; an accepted
+                    # contract must pin it (empty = the lane's own default) or preflight
+                    # refuses with producer_unaccepted_default_inputs, by design.
+                    target_environment="",
                 ),
                 receipt_artifact="e32-qualification-result",
                 receipt_path="report.json",
@@ -94,3 +99,69 @@ def test_contract_refuses_wider_or_unverifiable_qualification(contract, change):
         raw["producer"]["inputs"]["extra"] = "ignored"
     with pytest.raises(ValueError):
         WorkflowEvaluationSpecification.model_validate(raw)
+
+
+@pytest.mark.parametrize("value, accepted", [("", True), ("dev", True), ("prod", False), ("staging", False)])
+def test_target_environment_input_must_stay_on_the_accepted_environment(contract, value, accepted):
+    """#7187 added a protected-target selector; a contract may pin only the lane default or its own environment."""
+    raw = contract.model_dump(mode="json")
+    raw["producer"]["inputs"]["target_environment"] = value
+    if accepted:
+        assert WorkflowEvaluationSpecification.model_validate(raw).producer.inputs["target_environment"] == value
+    else:
+        with pytest.raises(ValidationError, match="accepted environment"):
+            WorkflowEvaluationSpecification.model_validate(raw)
+
+
+def test_specification_without_target_environment_still_validates(contract):
+    """Pre-#7187 specifications load; preflight (not the model) refuses to dispatch them until amended."""
+    raw = contract.model_dump(mode="json")
+    raw["producer"]["inputs"].pop("target_environment")
+    assert "target_environment" not in WorkflowEvaluationSpecification.model_validate(raw).producer.inputs
+
+
+@pytest.mark.parametrize(
+    "name, value, accepted",
+    [("region", "us-east-1", True), ("region", "eu-west-1", False), ("smoke_target_digest", "", True), ("smoke_target_digest", "a" * 64, False)],
+)
+def test_new_lane_inputs_stay_bounded_to_the_accepted_target(contract, name, value, accepted):
+    """#7695 added `region` and `smoke_target_digest`; a contract may pin only the accepted
+    target's region and the lane's regular bindings (empty digest)."""
+    raw = contract.model_dump(mode="json")
+    raw["producer"]["inputs"][name] = value
+    if accepted:
+        assert WorkflowEvaluationSpecification.model_validate(raw).producer.inputs[name] == value
+    else:
+        with pytest.raises(ValueError):
+            WorkflowEvaluationSpecification.model_validate(raw)
+
+
+@pytest.mark.parametrize("change", ["region_default", "unknown_input", "missing_required"])
+async def test_preflight_accepts_only_implied_lane_defaults_for_unpinned_inputs(contract, change):
+    """A contract accepted before a lane input existed keeps dispatching while the workflow
+    default equals the only value the contract could have pinned; any other default, an
+    unknown input, or a pinned input the workflow no longer has, refuses."""
+
+    async def blob(binding, path, revision):
+        return "c" * 40, (ROOT / path).read_bytes()
+
+    provider = RepositoryScanProvider(evidence=SimpleNamespace(verify_sources=AsyncMock(return_value=([], {})), definition_blob=blob))
+    document = yaml.safe_load((ROOT / contract.workflows[0].path).read_text())
+    defaults = {name: str(field.get("default", "")) for name, field in document[True]["workflow_dispatch"]["inputs"].items()}
+    # `region` is the lane input #7695 added to workflow_dispatch; everything else the
+    # workflow exposes is either pinned by the fixture or engine-owned transport.
+    assert "region" in defaults
+    assert set(defaults) - set(contract.producer.inputs) - set(contract.producer.implied_inputs()) <= {
+        "adp_correlation",
+        "adp_source_revision",
+        "adp_definition_revision",
+    }
+    if change == "region_default":
+        defaults["region"] = "eu-west-1"
+    elif change == "unknown_input":
+        defaults["new_lane_knob"] = ""
+    else:
+        defaults.pop("suites")
+    provider.definition = AsyncMock(return_value=WorkflowDefinition("b" * 40, "b" * 40, "c" * 40, defaults, True, "main", "b" * 40))
+    with pytest.raises(CycleBlockedError, match="producer_unaccepted_default_inputs"):
+        await provider.preflight(SimpleNamespace(repo="o/r"), contract, [])

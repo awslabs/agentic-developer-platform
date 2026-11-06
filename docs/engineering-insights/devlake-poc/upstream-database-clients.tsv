@@ -1,0 +1,60 @@
+path	signal_line	git_blob	component	disposition	reason
+.github/workflows/test-e2e.yml	74	8b0b4ea589afc81ad075301a71bc3250d2da4445	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/core/config/config_viper_test.go	30	a6806ee79354ae0a4112a39f6ce8a837be4d4f2e	upstream-core	evaluate	extraction/DAL/model dependency; not wholesale reuse
+backend/core/models/migrationscripts/20240116_modify_fileds_sort.go	30	f81b07ac09d923df9bcae22afa1b6d5b1e796bfd	upstream-core	evaluate	extraction/DAL/model dependency; not wholesale reuse
+backend/core/models/migrationscripts/20240129_add_original_environment.go	56	fb6c07eca88ad502d31c6ed7c083457e340b1fb2	upstream-core	evaluate	extraction/DAL/model dependency; not wholesale reuse
+backend/core/models/migrationscripts/20240603_add_pull_request_id_index_for_pr_commits_table.go	30	1672970ab228464a0e515d0c36125046dbb7b832	upstream-core	evaluate	extraction/DAL/model dependency; not wholesale reuse
+backend/core/runner/basic_res.go	48	bc88223b2fab6ea965ab98a591cd4e71de35a232	upstream-core	evaluate	extraction/DAL/model dependency; not wholesale reuse
+backend/core/runner/db.go	43	01081a4f974e43e2e9b4b07343d80f85ae741702	upstream-core	evaluate	extraction/DAL/model dependency; not wholesale reuse
+backend/helpers/e2ehelper/data_flow_tester.go	108	3c0697b0c8d2f80f2864f9db331f0a44993c399c	upstream-core	evaluate	extraction/DAL/model dependency; not wholesale reuse
+backend/helpers/e2ehelper/migration_db.go	35	d091c4e9853c2a234132bab5498a9849d197ee3a	upstream-core	evaluate	extraction/DAL/model dependency; not wholesale reuse
+backend/helpers/migrationhelper/migrationhelper.go	130	9e98c9f9a391317450b3f74d3b0c662289c418d0	upstream-core	evaluate	extraction/DAL/model dependency; not wholesale reuse
+backend/plugins/cursor/e2e/extractors_test.go	36	0430705846777a193a7dd9a4731d10c3dae91ca2	other-provider	exclude	outside selected two-tool pilot
+backend/plugins/gh-copilot/e2e/metrics_test.go	36	4d0d1e4102c1b91b1ca090ddc9674080690c3790	other-provider	exclude	outside selected two-tool pilot
+backend/plugins/github/models/migrationscripts/20240821_add_index_to_tool_github_jobs.go	33	6c8b7949db87e69501ea1898e10361fe3aa87861	selected-provider	evaluate	actual Go provider code and native fixtures
+backend/plugins/jira/e2e/migration_schema_test.go	61	a7f033833c4f33915d5b71526b42954d3099c7f2	selected-provider	evaluate	actual Go provider code and native fixtures
+backend/plugins/schema_e2e/migration_schema_test.go	23	af33d0482a1dbb5aa5a16958c934d6798f675135	other-provider	exclude	outside selected two-tool pilot
+backend/plugins/sonarqube/models/migrationscripts/20230927_modify_file_metrics_key_length.go	44	fb85c1a61ed92aafff8299f0026f7513037c761e	other-provider	exclude	outside selected two-tool pilot
+backend/plugins/starrocks/tasks/tasks.go	91	e7c76d7e914bee2b3568aecaa6f8ba2166ac809b	other-provider	exclude	outside selected two-tool pilot
+backend/plugins/tapd/tapd.go	55	a05e31eae9fb0b1044371c0da2636e35acfacf27	other-provider	exclude	outside selected two-tool pilot
+backend/plugins/zentao/e2e/changelog_test.go	56	01897099b10dffec67c58ff30f67819f3c2d1c2e	other-provider	exclude	outside selected two-tool pilot
+backend/plugins/zentao/e2e/check_connection_test.go	30	7fbdb9b308fce052ee16c5baf293ab6f3607bec3	other-provider	exclude	outside selected two-tool pilot
+backend/plugins/zentao/impl/impl.go	222	791472ff138b8031aa989ccfc910cad225a0ad94	other-provider	exclude	outside selected two-tool pilot
+backend/python/pydevlake/pydevlake/ipc.py	117	135d41cc1ad3b1753ad9cc65b1bce05069188c49	excluded-runtime	exclude	not deployed; separate DB-client qualification if added
+backend/python/pydevlake/pydevlake/testing/testing.py	59	3b1ec96170671890523e30b810b30a9597c4919f	excluded-runtime	exclude	not deployed; separate DB-client qualification if added
+backend/python/pydevlake/pyproject.toml	35	0387d002a5eadabe9208898cc23b178a499d289d	excluded-runtime	exclude	not deployed; separate DB-client qualification if added
+backend/python/pydevlake/tests/stream_test.py	63	f4f48f883cfa5a7bf34f485680a683d6da3b7f20	excluded-runtime	exclude	not deployed; separate DB-client qualification if added
+backend/server/services/remote/plugin/plugin_impl.go	52	fe8e429709abb0ef6da852d3f3cae6c00de6c37b	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/e2e/manual/argocd/argocd_test.go	45	4de6e41dee3ac804dcac996ac258cfb1782c67e4	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/e2e/manual/azuredevops/azure_test.go	45	d3cc2b1d292d2812d8f9acd8479240f363ca17f4	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/e2e/manual/gitlab/gitlab_test.go	59	08178799b28ffb384561f0f926214fc77e3d13ee	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/e2e/manual/pagerduty/pagerduty_test.go	42	a30318c819451ae1fe8286b6228091fc2d32e9be	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/e2e/manual/testmo/testmo_test.go	45	a0cd7fac09af8461b84c7a8271480d155ca97d75	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/e2e/remote/docker-compose.test.yml	45	e79ab88edd83dda67fe6dae4f1338348d578ed8e	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/helper/bootstrap.go	32	39777ae44bfb1d454a37fc97b33655037e5090c3	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/helper/client.go	114	750b453b635c33dfaa5b726b58769e28689be6d7	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/helper/client_factory.go	30	ae140a385725942ed8c17779d1e469db25f65d3a	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/helper/db_selector.go	30	9c55f22e08d37ea26dbb8d1af3bbf1692cf1afc0	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+backend/test/init.go	26	5003dd3ca191903cc4374c07ce804782faca402e	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/deployment/k8s/k8s-deploy.yaml	40	6e1c6b4d060ba6a04de1bc27958b4b90a456ff86	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.10.0-beta1/env.example	25	20d6961cc781e43f2447ea32cc7309b1a3f6ae00	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.10.0/env.example	25	20d6961cc781e43f2447ea32cc7309b1a3f6ae00	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.10.1/env.example	25	20d6961cc781e43f2447ea32cc7309b1a3f6ae00	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.11.0/env.example	25	666c7f1b5c1f45ff4dbd4263865fc3641647d3f0	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.12.0/env.example	25	5d05aed9c463fd12cfb7b59d1c4e9e21576eaa01	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.13.0/env.example	25	ac622eb5a7756cca82bc0f3b37e982ec3863bc13	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.14.0/env.example	25	da937f86dd61fe12048f6eb52c4b7be4cf0e8505	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.15.0/env.example	25	e964a894781cf4ad7839dfab5c5617921de347da	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.16.0/env.example	25	700a3a47afc7d9967bb275cca64bd061e3d61f05	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.17.0/env.example	25	700a3a47afc7d9967bb275cca64bd061e3d61f05	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.18.0/env.example	25	d04cb239910f6302a7fbb39d69f352caa65081df	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.19.0/env.example	25	d04cb239910f6302a7fbb39d69f352caa65081df	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.20.0/env.example	25	0398ef210a367a7bfc5cde535dbc3454fe9d18d3	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.21.0/env.example	25	2a70069055c2a6101fb1c5f759f867c0f5d70640	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.7.0/env.example	25	e241cf7e3fe651b2875a8d7d7e2e50c4b7e5dc20	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.8.0/env.example	25	e241cf7e3fe651b2875a8d7d7e2e50c4b7e5dc20	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+devops/releases/lake-v0.9.0/env.example	25	ae2956f6474ff033d4c3364c28ac5cc980ac85a0	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+docker-compose-dev-mysql.yml	75	a82c3560b4ded99857c2d1616ae00aa7c31d99d8	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+docker-compose-dev-postgresql.yml	29	154dc1ad757929b9c17f84eba210c6cc7e7be4db	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+env.example	35	292f127983c120d00b56f26fcd2f89297d7820b4	upstream-build-and-reference	audit	source/build closure or reference; not deployment authority
+grafana/scripts/entrypoint.sh	37	6b0493d41e6a6415be43d6125d756f3c98b885d3	excluded-runtime	exclude	not deployed; separate DB-client qualification if added

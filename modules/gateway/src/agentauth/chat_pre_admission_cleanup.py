@@ -13,23 +13,62 @@ from src.agentauth.chat_teardown import ChatTeardown
 from src.agentauth.chat_terminal_delivery import terminal_delivery_digest
 from src.agentauth.model_policy import canonical_json
 
+_UID = re.compile(r"[a-z0-9-]{8,128}")
 
-def recover_bound_cleanup(authority, delivery, pointer, execution, *, removed, now, creation=None):
+
+def never_started_uid(creation):
+    """Stable stand-in for the uid of a reserved pod the supervisor no longer knows (#8061).
+
+    Derived from the creation binding only, so every redelivery of the same run derives the
+    same value and the ``POD#<uid>`` cleanup binding stays idempotent. The prefix keeps it
+    distinguishable from any uid the API server would mint.
+    """
+    return f"never-started-{hashlib.sha256(canonical_json(creation['binding'])).hexdigest()[:48]}"
+
+
+def _never_admitted_and_absent(authority, run_id, name):
+    """Pod absence counts as cleanup evidence only while the run was never admitted (#8061).
+
+    Admission writes ``CHAT-LAUNCH#<run>/LAUNCH``, the ``POD#<uid>/BINDING`` and the execution's
+    ``workload_binding`` in one transaction, so no ``POD#*`` binding can name this run while
+    LAUNCH is absent and the execution carries no ``workload_binding`` (the ``adopted``
+    precondition). Both are re-checked by the commit below (``attribute_not_exists`` on LAUNCH
+    and on ``workload_binding``), which is why no table scan over ``POD#*`` is needed. Before
+    admission no capability or credential was ever issued to the pod, so a pod that never
+    reached Running and has since been garbage-collected leaves nothing to observe and nothing
+    to revoke; once admitted, positive exit evidence stays mandatory.
+    """
+    if authority.store._read(f"CHAT-LAUNCH#{run_id}", "LAUNCH") is not None:
+        return False
+    return authority.workloads.is_absent(name=name)
+
+
+def recover_bound_cleanup(authority, delivery, pointer, execution, *, removed, now, creation=None, pod_uid=None):
     store = authority.store
     evidence = ChatTeardown(authority, None)
     run_id = delivery.run_id
     run_hash = hashlib.sha256(run_id.encode()).hexdigest()
     original = execution
     adopted = creation is not None and "workload_binding" not in execution
+    exit_evidence = None
     if adopted:
         if removed or execution.get("status") != {"S": "pending"} or "chat_pre_admission_cleanup" in execution:
             raise ChatAuthorizationRefusedError("chat creation recovery fenced")
+        if pod_uid is not None and not _UID.fullmatch(pod_uid):
+            raise ChatAuthorizationRefusedError("chat cleanup pod refused")
         identity = creation["binding"]["M"]
         observed_uid = authority.workloads.find_exited_sandbox(
             name=identity["pod_name"]["S"], run_hash=run_hash, image_digest=identity["image_digest"]["S"]
         )
         if observed_uid is None:
-            raise ChatHistoryConflictError("chat reserved pod exit not confirmed")
+            # A reserved pod that never reached Running has no container exit to observe, and once
+            # garbage-collected nothing at all; it still has to be reconciled or the turn loops to
+            # the DLQ (#8061). The supervisor's uid (from the 201 create) is preferred; a redelivery
+            # that no longer knows it records the stable sentinel instead.
+            if not _never_admitted_and_absent(authority, run_id, identity["pod_name"]["S"]):
+                raise ChatHistoryConflictError("chat reserved pod exit not confirmed")
+            observed_uid = pod_uid or never_started_uid(creation)
+            exit_evidence = "pre_admission_absence"
         execution = {**execution, "status": {"S": "active"}, "workload_binding": {"S": observed_uid}}
     name = execution.get("pod_name", {}).get("S", "")
     uid = execution.get("workload_binding", {}).get("S", "")
@@ -56,7 +95,9 @@ def recover_bound_cleanup(authority, delivery, pointer, execution, *, removed, n
     if (previous is None) != (marker is None) or (removed and previous is None):
         raise ChatAuthorizationRefusedError("chat pre-admission exit evidence required")
     image = previous.get("binding", {}).get("M", {}).get("image_digest", {}).get("S", "") if previous else None
-    if previous is None:
+    if previous is None and exit_evidence == "pre_admission_absence":
+        image = creation["binding"]["M"]["image_digest"]["S"]
+    elif previous is None:
         image = authority.workloads.exited_sandbox_image(name=name, uid=uid, run_hash=run_hash)
         if image is None:
             raise ChatHistoryConflictError("chat original pod exit not confirmed")
@@ -93,7 +134,16 @@ def recover_bound_cleanup(authority, delivery, pointer, execution, *, removed, n
         )
     ):
         raise ChatAuthorizationRefusedError("chat pre-admission evidence changed")
-    receipt = dict(previous) if previous else {**key, "binding": {"M": binding}, "exited_at": {"N": str(now)}}
+    receipt = (
+        dict(previous)
+        if previous
+        else {
+            **key,
+            "binding": {"M": binding},
+            "exited_at": {"N": str(now)},
+            **({"exit_evidence": {"S": exit_evidence}} if exit_evidence else {}),
+        }
+    )
     if removed and "removed_at" not in receipt and authority.workloads.is_absent(name=name):
         receipt["removed_at"] = {"N": str(now)}
     snapshot = evidence._unchanged(original)

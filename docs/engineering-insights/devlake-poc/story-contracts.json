@@ -1,0 +1,324 @@
+{
+  "adp_revision": "aeba89070ec685b41a4902a4441bfe47449e48ba",
+  "upstream_revision": "6502e549f58eb40c40ccbcd39aab9bc8eea6616f",
+  "stories": [
+    {
+      "alias": "S01",
+      "issue": 8888,
+      "design": "stories/s01.md",
+      "dependencies": [],
+      "epic_criteria": [
+        "EC-01"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "original_body_sha256": "ffedd04d7c939561dca309cccd5e5a568370623bd5fe955add848a1a242f98b6"
+    },
+    {
+      "alias": "S02",
+      "issue": 8889,
+      "design": "stories/s02.md",
+      "dependencies": [
+        8888,
+        8901,
+        8919
+      ],
+      "epic_criteria": [
+        "EC-02",
+        "EC-10"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "AC-05"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04",
+        "SCN-05"
+      ],
+      "original_body_sha256": "3d92e675b3382bec4ac897f1faae33970118d648cd37fbf559b6acd45814c94d"
+    },
+    {
+      "alias": "S03",
+      "issue": 8890,
+      "design": "stories/s03.md",
+      "dependencies": [
+        8888,
+        8889,
+        8903
+      ],
+      "epic_criteria": [
+        "EC-02"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "original_body_sha256": "0192c69718cd7271da04b7ec92285cfb6033f64f6d3b8b38aa2c5c6801ff8346"
+    },
+    {
+      "alias": "S04",
+      "issue": 8891,
+      "design": "stories/s04.md",
+      "dependencies": [
+        8374,
+        8375,
+        8888,
+        8890
+      ],
+      "epic_criteria": [
+        "EC-03"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "original_body_sha256": "d4a3396545ea68b948d0e67d09c66875cc6cefbeaa35f916eb99755201454610"
+    },
+    {
+      "alias": "S05",
+      "issue": 8892,
+      "design": "stories/s05.md",
+      "dependencies": [
+        8891
+      ],
+      "epic_criteria": [
+        "EC-04"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "original_body_sha256": "9b1298a5685a424c0575c82812438f58cb00716265d25db0bac8f4113a13f731"
+    },
+    {
+      "alias": "S06",
+      "issue": 8893,
+      "design": "stories/s06.md",
+      "dependencies": [
+        8374,
+        8375,
+        8891,
+        8920
+      ],
+      "epic_criteria": [
+        "EC-05"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "original_body_sha256": "d728d65d1689f27748969d72fdc7add74d6caa55bf658868b9afc2fcec0166f2"
+    },
+    {
+      "alias": "S07",
+      "issue": 8894,
+      "design": "stories/s07.md",
+      "dependencies": [
+        8889,
+        8890,
+        8892,
+        8893
+      ],
+      "epic_criteria": [
+        "EC-06",
+        "EC-10"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "original_body_sha256": "f92261be43826ddd63a7a852d7d0fbe60bd9b210f6e2cec3260722d5a3200135"
+    },
+    {
+      "alias": "S08",
+      "issue": 8895,
+      "design": "stories/s08.md",
+      "dependencies": [
+        8894
+      ],
+      "epic_criteria": [
+        "EC-07"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "original_body_sha256": "ab3e5aa0e3c8a5fef098795c6888bf4e3ac1809dcd456769e7458fd9014265aa"
+    },
+    {
+      "alias": "S09",
+      "issue": 8901,
+      "design": "stories/s09.md",
+      "dependencies": [
+        8888
+      ],
+      "epic_criteria": [
+        "EC-02"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "original_body_sha256": "bf53a3d3a953e193ec979a9499e7f68643f45e18c6c4b03158613e4d43167358"
+    },
+    {
+      "alias": "S10",
+      "issue": 8902,
+      "design": "stories/s10.md",
+      "dependencies": [
+        8888,
+        8889,
+        8901
+      ],
+      "epic_criteria": [
+        "EC-08"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "original_body_sha256": "590286e458174374cbfe9d9402f3754e58110299638fa858feec4897ab05b94d"
+    },
+    {
+      "alias": "S11",
+      "issue": 8903,
+      "design": "stories/s11.md",
+      "dependencies": [
+        8902
+      ],
+      "epic_criteria": [
+        "EC-09"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "original_body_sha256": "255a8da62aa3dae229b3431875807db311e6dd5319fbac7f7abadf05bc2e14de"
+    },
+    {
+      "alias": "S12",
+      "issue": 8919,
+      "design": "stories/s12.md",
+      "dependencies": [
+        8888
+      ],
+      "epic_criteria": [
+        "EC-10"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "original_body_sha256": "337a538778b9f8f2b5619b53712e794cb321317eea48f84dd45e944fc15e091a"
+    },
+    {
+      "alias": "S13",
+      "issue": 8920,
+      "design": "stories/s13.md",
+      "dependencies": [
+        8374,
+        8375,
+        8891,
+        8919
+      ],
+      "epic_criteria": [
+        "EC-10"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ],
+      "original_body_sha256": "a30016b9e0771cfeea847c483a07ab2b60341ccd91bc29143da18471b4161d25"
+    }
+  ],
+  "amendment_record": "review-amendments.md",
+  "original_body_hash_scope": "Historical pre-architecture issue baseline; these hashes are not current amended issue-body hashes.",
+  "optional_deployment_amendment": "optional-deployment.md",
+  "unattended_execution_amendment": "architecture.md#82-unattended-execution"
+}

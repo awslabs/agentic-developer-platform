@@ -86,6 +86,9 @@ class BudgetHelperService:
         budget_config_id = str(uuid.uuid4())
 
         async with self._get_session() as session:
+            from src.budget.metering_policy_gates import lock_policy_mutation
+
+            await lock_policy_mutation(session, tenant_id=org_id, scope_kind="agent", identity=agent_id)
             budget_config = BudgetConfig(
                 id=budget_config_id,
                 org_id=org_id,
@@ -115,6 +118,17 @@ class BudgetHelperService:
             bool: True if deleted, False if not found
         """
         async with self._get_session() as session:
+            from src.budget.metering_policy_gates import lock_policy_mutation
+
+            await lock_policy_mutation(session, tenant_id=org_id)
+            budget = await session.scalar(select(BudgetConfig).where(BudgetConfig.id == budget_config_id, BudgetConfig.org_id == org_id))
+            if budget is not None:
+                await lock_policy_mutation(
+                    session,
+                    tenant_id=org_id,
+                    scope_kind="user" if budget.entity_type == "service_account" else budget.entity_type,
+                    identity=budget.entity_id,
+                )
             result = await session.execute(delete(BudgetConfig).where(BudgetConfig.id == budget_config_id, BudgetConfig.org_id == org_id))
             await session.commit()
 

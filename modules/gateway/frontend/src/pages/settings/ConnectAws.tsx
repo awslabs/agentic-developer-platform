@@ -16,15 +16,20 @@ import { useNavigate } from 'react-router-dom';
 import { ConnectAwsForm } from '@/components/aws/ConnectAwsForm';
 import { startAwsConnect, verifyAwsConnect } from '@/services/credentials';
 
-export default function ConnectAws() {
+export default function ConnectAws({ embedded = false, onConnected }: { embedded?: boolean; onConnected?: () => void } = {}) {
   const navigate = useNavigate();
 
   return (
-    <div className="max-w-2xl mx-auto p-6">
-      <h1 className="text-2xl font-bold mb-6">Connect an AWS Account</h1>
+    <div className={embedded ? 'space-y-4' : 'max-w-2xl mx-auto p-6'}>
+      {!embedded && <h1 className="text-2xl font-bold mb-6">Connect an AWS Account</h1>}
       <p className="text-sm text-gray-700 mb-4">
         Personal connections are for AWS accounts separate from the accounts used by the ADP platform.
         If your agents need access to platform resources, ask your ADP platform administrator to arrange scoped access for the task.
+      </p>
+
+      <p className="text-sm text-gray-700 mb-4">
+        Connecting makes this account available to you and agents on your Dev Box, within the AWS role’s permissions.
+        You can turn off agent access in the connection settings.
       </p>
 
       <ConnectAwsForm
@@ -39,7 +44,7 @@ export default function ConnectAws() {
         }}
         // The page's own behaviour, not the flow's: the routing panel closes a modal and
         // refetches its destinations instead.
-        onVerified={() => setTimeout(() => navigate('/settings/credentials'), 1500)}
+        onVerified={() => onConnected ? onConnected() : setTimeout(() => navigate('/settings/credentials'), 1500)}
       />
     </div>
   );

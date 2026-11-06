@@ -69,6 +69,8 @@ SUITES = (
     "github",
     "parity",
     "harness",
+    "product-profile",
+    "product-scopes",
     # #5413. One installed CLI serving three deployments at once, which no other
     # suite can express: every suite above runs a single deployment, so a crossed
     # endpoint, token or proxy is invisible to all of them.
@@ -153,6 +155,7 @@ SUPERPLANE_DOMAIN = "superplane_domain"
 TENANT_ISOLATION = "tenant_isolation"
 ASSISTANT_USERS = "assistant_users"
 ASSISTANT_LEDGER = "assistant_installation_ledger"
+DEV_BOX_LIFECYCLE = "dev_box_lifecycle"
 
 CASES = (
     Case(
@@ -505,6 +508,13 @@ CASES = (
         "Supported authenticated WebSocket baseline with server-owned session and correlated final response",
         (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
     ),
+    Case(
+        "E51",
+        "#7370 COS-DB03-LIVE",
+        "assistant",
+        "Two-owner Dev Box setup, persistent workspace, replacement and explicit verified release",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS, DEV_BOX_LIFECYCLE),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance
@@ -558,6 +568,83 @@ DIAGNOSTICS = (
         "vault-lifecycle",
         "Owned synthetic credential and unverified identity lifecycle with cleanup",
         (EC2, PLATFORM, COGNITO, VAULT_LIFECYCLE),
+    ),
+    Case(
+        "PR04-C02",
+        "#8250",
+        "product-scopes",
+        "SCN-02: installed editor and foreign sessions exercise scoped route denial without changing Product state",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "PR04-C01",
+        "#8250",
+        "product-scopes",
+        "SCN-01: installed Product CLI reads two run-owned scopes with independent API binding and profile readback",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "PR04-C03",
+        "#8250",
+        "product-scopes",
+        "SCN-03: installed Product CLI unbinds and rebinds a dated run-owned Project with independent API history readback",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "PR03-C01",
+        "#8247",
+        "product-profile",
+        "SCN-01: installed Product create/update/show/list/archive/restore with independent API readback",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "PR03-C02",
+        "#8247",
+        "product-profile",
+        "SCN-02: installed Product stale revision, foreign-scope denial and dropped-response retry",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "PR03-C03",
+        "#8247",
+        "product-profile",
+        "SCN-03: recover run-owned Product fixtures and prove absence without removing shared connections",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "PR01",
+        "#8242",
+        "product-profile",
+        "Pinned Product API, schema and installed CLI agree with the deployed release; unavailable cases cannot pass",
+        (EC2, PLATFORM),
+    ),
+    Case(
+        "PR01-C01",
+        "#8242",
+        "product-profile",
+        "SCN-01 deploy_core_receipt: selected API/CLI/schema evidence agrees with the release",
+        (EC2, PLATFORM),
+    ),
+    Case(
+        "PR01-C02",
+        "#8242",
+        "product-profile",
+        "SCN-02 reject_false_green: missing, stale or mismatched release evidence cannot pass",
+        (EC2, PLATFORM),
+    ),
+    Case(
+        "PR01-C03",
+        "#8242",
+        "product-profile",
+        "SCN-03 rollout_recovery: owned Product history survives disabled admissions and compatible rollback",
+        (EC2, PLATFORM),
+    ),
+    Case(
+        "PR01-C04",
+        "#8242",
+        "product-profile",
+        "SCN-04 automatic_release_handoff: eligible automatic Gateway run binds its runtime receipt to the accepted release",
+        (EC2, PLATFORM),
     ),
 )
 BY_ID = {case.id: case for case in (*CASES, LOGIN_CHECKPOINT, *DIAGNOSTICS)}
@@ -735,6 +822,12 @@ def accept(matrix, names, *, cleanup_ok=True, stages=None):
         )
         if offenders:
             reasons.append(f"{label}: " + ", ".join(offenders))
+
+    reservation = (matrix.get("E46") or {}).get("detail") or {}
+    if "reservation_limitation" in reservation:
+        reasons.append(
+            "known limitation: QUAL03 creation reservation has no observed pod"
+        )
 
     if not cleanup_ok:
         reasons.append("cleanup did not complete")

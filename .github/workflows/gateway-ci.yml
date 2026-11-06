@@ -10,18 +10,45 @@ on:
   # Reviewed source can be validated without removing [skip ci] from commits.
   # This runs the existing tests and no-push smoke build, never a deployment.
   workflow_dispatch:
+    inputs:
+      coverage:
+        description: Exercise the main-branch coverage configuration on this revision
+        required: false
+        type: boolean
+        default: false
+      flow_read_browser:
+        description: Run mocked Delivery Flow browser checks (not live latency acceptance)
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - '.github/actions/upload-ci-evidence-s3/**'
+      - '.github/actions/setup-gateway-python/**'
       - '.github/scripts/upload_ci_evidence_s3.py'
       - 'platform/scripts/adversarial-test-assert.py'
       - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
+      - 'modules/L5-services/src/**'
+      - 'modules/L5-services/tests/**'
+      - 'modules/L5-services/infra/**'
+      - 'modules/L5-services/scripts/**'
+      - 'modules/L5-services/pyproject.toml'
+      - 'modules/L5-services/requirements-security.lock'
       - 'modules/gateway/deployment_evidence/**'
       - 'modules/gateway/scripts/publish-deployment-evidence.py'
       # Gateway stages the canonical harness decoder into its image.
       - 'modules/harness/jobs/harness_jobs/identity.py'
+      - 'modules/insights/projection.py'
+      - 'modules/insights/results.py'
+      - 'modules/insights/tests/**'
+      - 'tests/e2e/product_onboarding/**'
+      - 'tests/e2e/new_ui/test_product_*'
+      - 'tests/e2e/new_ui/product_*'
+      - '.github/workflows/product-profile-*.yml'
       - 'modules/gateway/scripts/stage-contracts.sh'
+      - 'modules/gateway/scripts/stage-l5-wheel.sh'
+      - 'modules/gateway/scripts/stage-common-wheel.sh'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/scripts/migrate-before-rollout.py'
       # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
@@ -40,7 +67,16 @@ on:
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - '.github/workflows/pricing-finalize.yml'
       - '.github/workflows/run-gateway-migrations.yml'
+      # The evaluation preflight reads these live-lane definitions verbatim
+      # (tests/orchestration/test_workflow_evaluation_contract.py): a new dispatch
+      # input must be pinned by the accepted contract, so an input change here has to
+      # run this suite or main goes red unobserved (#7187 added target_environment).
+      - '.github/workflows/eval-cli-uplift.yml'
+      - '.github/workflows/gateway-live-tests.yml'
+      - '.github/workflows/gateway-smoke.yml'
       - 'modules/gateway/tests/**'
+      - 'tests/e2e/new_ui/product_fixture_provider.py'
+      - 'tests/unit/test_product_browser_provider.py'
       # Issue #4145: tests/cli/ exercises the shell helpers in cli/, but a CLI-only
       # edit used to trigger no workflow at all — so bg-cognito-auth.sh changes
       # shipped untested. Keep cli/ in lockstep with the suite that covers it.
@@ -63,6 +99,7 @@ on:
       - 'modules/gateway/alembic/versions/**'
       - 'modules/gateway/infra/modules/budget-lambda/**'
       - 'modules/gateway/pyproject.toml'
+      - 'modules/gateway/.test_durations'
       - 'modules/gateway/Dockerfile'
       - 'modules/gateway/frontend/src/**'
       - 'modules/gateway/frontend/package*.json'
@@ -97,14 +134,20 @@ on:
       - 'docs/runbooks/engine-command-signing-key-rotation.md'
       - 'platform/scripts/smoke_assertions.py'
       - 'platform/scripts/tests/test_smoke_assertions.py'
+      - 'platform/scripts/product_authenticated_smoke.py'
+      - 'platform/scripts/tests/test_product_authenticated_smoke.py'
       # Loop-proposal validator + its fixtures (#4199). The advisory CLI imports
       # the shared model from src/orchestration/proposal.py, so the Lint job's
       # validation step is the only CI signal either one gets — without these
       # paths, editing the script or a fixture triggers no workflow at all and a
       # broken validator ships unnoticed (the same gap #4145 fixed for cli/).
       - '.github/scripts/validate_loop_proposal.py'
+      - 'modules/agent-factory/skills/_shared/**'
+      - 'modules/agent-factory/skills/aidlc-emit-issues/SKILL.md'
       - 'aidlc/spaces/issue-4120/construction/loop-proposal/**'
       - '.github/workflows/gateway-ci.yml'
+      - '.github/scripts/pytest_resources.py'
+      - '.github/scripts/tests/test_pytest_resources.py'
       - '.github/workflows/superplane-ui-browser-ci.yml'
       - '.github/workflows/gateway-deploy.yml'
       - '.github/workflows/gateway-frontend-deploy.yml'
@@ -114,25 +157,48 @@ on:
       - 'platform/scripts/zip-source.sh'
       - 'platform/scripts/publish-shared-image.sh'
       - 'platform/scripts/publish-local-image.sh'
-      # Documentation-only changes do not start this workflow.
+      # Prose-only changes do not start this workflow; L5 schema JSON does.
       - '!docs/**'
       - '!**/docs/**'
       - '!**/README*'
       - '!**/CHANGELOG*'
       - '!**/CONTRIBUTING*'
       - '!**/*.rst'
+      - 'docs/l5-services/contracts/v1/*.json'
+      - 'docs/l5-services/contracts/v1/*.tsv'
+      - '!modules/tools/facade/**'
     branches:
       - main
   push:
     paths:
+      - '.github/actions/setup-gateway-python/**'
+      - 'contracts/**'
+      - 'tests/e2e/new_ui/product_fixture_provider.py'
+      - 'tests/unit/test_product_browser_provider.py'
       - 'platform/scripts/adversarial-test-assert.py'
       - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
+      - 'modules/L5-services/src/**'
+      - 'libs/python/adp-common/**'
+      - 'modules/L5-services/tests/**'
+      - 'modules/L5-services/infra/**'
+      - 'modules/L5-services/scripts/**'
+      - 'modules/L5-services/pyproject.toml'
+      - 'modules/L5-services/requirements-security.lock'
       - 'modules/gateway/deployment_evidence/**'
       - 'modules/gateway/scripts/publish-deployment-evidence.py'
       # Gateway stages the canonical harness decoder into its image.
       - 'modules/harness/jobs/harness_jobs/identity.py'
+      - 'modules/insights/projection.py'
+      - 'modules/insights/results.py'
+      - 'modules/insights/tests/**'
+      - 'tests/e2e/product_onboarding/**'
+      - 'tests/e2e/new_ui/test_product_*'
+      - 'tests/e2e/new_ui/product_*'
+      - '.github/workflows/product-profile-*.yml'
       - 'modules/gateway/scripts/stage-contracts.sh'
+      - 'modules/gateway/scripts/stage-l5-wheel.sh'
+      - 'modules/gateway/scripts/stage-common-wheel.sh'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/scripts/migrate-before-rollout.py'
       # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
@@ -142,6 +208,8 @@ on:
       # unconfigurable. Same lockstep pattern as #4029/#4539.
       - 'modules/gateway/scripts/sync_personas.py'
       - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/skills/_shared/**'
+      - 'modules/agent-factory/skills/aidlc-emit-issues/SKILL.md'
       - 'modules/agent-factory/agent/package.json'
       - 'modules/agent-factory/agent/package-lock.json'
       - 'modules/agent-factory/agent/tsconfig.json'
@@ -155,8 +223,11 @@ on:
       - 'modules/gateway/alembic/versions/**'
       - 'modules/gateway/infra/modules/budget-lambda/**'
       - 'modules/gateway/pyproject.toml'
+      - 'modules/gateway/.test_durations'
       - 'modules/gateway/Dockerfile'
       - '.github/workflows/gateway-ci.yml'
+      - '.github/scripts/pytest_resources.py'
+      - '.github/scripts/tests/test_pytest_resources.py'
       - '.github/workflows/superplane-ui-browser-ci.yml'
       - '.github/workflows/gateway-deploy.yml'
       - '.github/workflows/gateway-frontend-deploy.yml'
@@ -165,44 +236,64 @@ on:
       - 'platform/scripts/zip-source.sh'
       - 'platform/scripts/publish-shared-image.sh'
       - 'platform/scripts/publish-local-image.sh'
-      # Documentation-only changes do not start this workflow.
+      # Prose-only changes do not start this workflow; L5 schema JSON does.
       - '!docs/**'
       - '!**/docs/**'
       - '!**/README*'
       - '!**/CHANGELOG*'
       - '!**/CONTRIBUTING*'
       - '!**/*.rst'
+      - 'docs/l5-services/contracts/v1/*.json'
+      - 'docs/l5-services/contracts/v1/*.tsv'
     branches:
       - main
 
 concurrency:
-  group: ${{ github.workflow }}-gateway-ci-${{ github.event.pull_request.number || github.sha }}
+  # Each main push replaces validation of its predecessor. Grouping pushes by
+  # SHA kept every merged commit's full suite alive and starved PR checks.
+  # PRs retain their own group; explicit validation retains its reviewed SHA.
+  group: ${{ github.workflow }}-gateway-ci-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.sha }}
   cancel-in-progress: true
 
 jobs:
+  broker-test:
+    name: Broker Unit Tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Check OAuth login and signing-key rollout
+        run: |
+          pip install pytest -r modules/gateway/lambda/github-auth-broker/requirements.txt
+          python -m pytest modules/gateway/lambda/github-auth-broker/tests/ -q
+
   lint:
     name: Lint
     runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: modules/gateway/pyproject.toml
+      - name: Prepare Gateway test environment
+        uses: ./.github/actions/setup-gateway-python
 
-      - name: Install dependencies
-        working-directory: modules/gateway
-        run: |
-          pip install -e ".[dev]"
+      - name: Verify pytest resource selection
+        run: python -m pytest .github/scripts/tests/test_pytest_resources.py -q -o addopts=
 
       - name: Run Ruff
         working-directory: modules/gateway
         run: |
           ruff check src/ tests/ pricing_policy/ deployment_evidence/
           ruff format --check src/ tests/ pricing_policy/ deployment_evidence/
+
+      - name: Check Product browser fixture integration offline
+        env:
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PYTHONPATH: .:modules/gateway:.github/scripts
+        run: |
+          pip install pytest-socket
+          python -m pytest tests/unit/test_product_browser_provider.py -q --timeout=60 --disable-socket --allow-unix-socket
 
       # Issue #5420 (PMM-03): the gateway serves the persona catalogue from a
       # generated staged copy (src/admin/persona_models/_personas.py) of the
@@ -255,38 +346,17 @@ jobs:
           fi
           echo "Loop-proposal validator required --authored for the unresolved-tenant fixture as expected."
 
-  # Sharded across runners AND parallelised within each runner. This suite is
-  # ~13.9k tests; run serially in one job it took ~45min, which is most of the
-  # wall clock of every gateway PR. Measured on one machine over a 4.2k-test
-  # slice: serial 477s -> -n 4 205s -> -n 8 138s. Scaling is sublinear, so
-  # -n alone plateaus around 8min for the full suite — sharding across runners
-  # is what gets it to minutes. One shard measured 89s at -n 4, 77s at -n 8.
-  #
-  # That 12s gap is why -n stays at 4 and the runner's cpu limit is NOT raised.
-  # Once the suite is sharded each shard is small enough that per-worker startup
-  # dominates, so extra workers buy almost nothing while multiplying the
-  # oversubscription risk: arc-runner/main.tf documents a 2026-08-30 incident
-  # where packed runners hit 104% node CPU and a job died with "runner lost
-  # communication ... starves it for CPU/Memory". 8 shards x -n 4 stays inside
-  # the existing 4-CPU limit and needs no infrastructure change at all.
-  #
-  # Runner capacity is not the constraint and never was: the scale set allows 20
-  # runners, queue time was measured at 0min on every run, and we were using
-  # one. Sharding spends pool capacity deliberately -- see maxRunners in
-  # arc-runner/main.tf, raised to 40 alongside this because at typical
-  # concurrency (3-5 overlapping Gateway CI runs, peak 11 measured over 58 runs)
-  # a 20-runner pool was already oversubscribed at 4 shards, which is why shards
-  # that take 4m19s alone were showing up as 7m24s.
-  #
-  # Coverage is main-only: --cov measured +58% wall clock (138s -> 218s on the
-  # same slice). Nothing gates on the number, so PRs don't pay for it.
-  #
-  # Known imbalance: pytest-split partitions by test COUNT, not duration, so the
-  # shard holding the slow tests/cli files runs ~5min while others finish in
-  # 40-150s. Wall clock is therefore the slowest shard, not the average. Storing
-  # a durations file (`pytest --store-durations`, committed, which switches
-  # pytest-split to duration-based balancing) would even these out to ~2.5min;
-  # deliberately left as a follow-up so this change stays reviewable.
+          python3 .github/scripts/validate_loop_proposal.py --authored \
+            modules/gateway/tests/orchestration/fixtures/proposal.bounded.json
+          python3 modules/agent-factory/skills/_shared/check_proposal.py \
+            modules/gateway/tests/orchestration/fixtures/proposal.bounded.json
+
+  # Select duration-balanced files before collection, then use four workers per
+  # PR runner. Every discovered file, including unmeasured new files, is assigned.
+  # CLI files stay together; loadfile retains within-file order. Timings and test
+  # IDs are retained per shard so balancing and coverage can be audited/refreshed.
+  # Both lanes use sixteen shards. Coverage uses four workers on 16 GiB
+  # runners, with a two-worker fallback for smaller allocations.
   test-shard:
     name: Test shard ${{ matrix.shard }}
     runs-on: arc-runner-org
@@ -305,40 +375,22 @@ jobs:
       # the others, or a single failure hides the state of 10k other tests.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: modules/gateway/pyproject.toml
+      - name: Prepare Gateway test environment
+        uses: ./.github/actions/setup-gateway-python
 
-      - name: Install dependencies
-        working-directory: modules/gateway
-        run: pip install -e ".[dev]"
+      - name: Stage canonical Insights read contract
+        run: bash modules/gateway/scripts/stage-contracts.sh
 
       - name: Run Tests
         working-directory: modules/gateway
         env:
-          # pytest-split partitions the collected list deterministically, so the
-          # shards are disjoint and together cover every selected test exactly
-          # once (verified at 8 shards: 7x2183 + 2180 = 17461, plus the 86
-          # deselected = the full 17547 collected).
-          #
-          # 4 -> 8 because 4 saturated. Measured on one run: 1181s of total test
-          # work, 1.17x imbalance, ~46s fixed overhead per shard. That models
-          # 6.5m at 4 shards and 3.6m at 8. Returns fall off fast beyond this --
-          # 8->16 buys only another 1.4m against a hard ~46s/shard floor
-          # (checkout + Setup Python + pip install, paid per shard regardless) --
-          # so do not keep raising this expecting the same return.
-          SHARD_ARGS: --splits 8 --group ${{ matrix.shard }}
-          # -n 4 is pinned to the runner's 4-CPU limit (arc-runner/main.tf). Do
-          # NOT use `-n auto`: nproc inside the pod reports the NODE's 32 cores,
-          # not the cgroup limit, so auto would spawn 32 workers on 4 CPUs and
-          # run SLOWER than this. If that limit changes, change this with it.
+          SHARD_ARGS: --ci-file-shards ${{ strategy.job-total }} --ci-file-shard ${{ matrix.shard }}
+          # Bound coverage parallelism by the actual cgroup memory allocation.
+          # Do NOT use `-n auto`: nproc reports the node's CPUs, not pod limits.
           #
           # `--dist loadfile` is REQUIRED, not a tuning choice. It keeps every
           # test in a file on one worker. Parts of tests/cli depend on state that
@@ -349,16 +401,36 @@ jobs:
           # tests/cli at -n 4: default dist = 9 failures, loadfile = 6 (the same
           # 6 that fail serially, i.e. no parallelism-induced failures).
           # Removing loadfile silently reintroduces ~9 phantom failures.
-          XDIST_ARGS: -n 4 --dist loadfile
-          COV_ARGS: ${{ github.ref == 'refs/heads/main' && '--cov=src --cov-report=xml' || '' }}
+          COV_ARGS: ${{ (github.ref == 'refs/heads/main' || inputs.coverage) && '--cov=src --cov-report=xml' || '' }}
         run: |
           # -q, not -v: at 13.9k tests, per-test output was ~14k log lines per
           # run and made failures harder to find, not easier. --tb=short still
           # prints a traceback for anything that fails.
+          resource_args=()
+          if [ -n "$COV_ARGS" ]; then resource_args+=(--coverage); fi
+          workers=$(python ../../.github/scripts/pytest_resources.py "${resource_args[@]}")
+          read -r -a selected_shards <<< "$SHARD_ARGS"
+          read -r -a selected_coverage <<< "$COV_ARGS"
+          echo "Running $workers pytest workers"
           pytest tests/ -q --tb=short \
             -m "not live_only and not chat_ports" \
             --timeout=60 \
-            $SHARD_ARGS $XDIST_ARGS $COV_ARGS
+            "${selected_shards[@]}" -n "$workers" --dist loadfile "${selected_coverage[@]}" \
+            --ci-timing-output=ci-results/gateway/durations.json \
+            --ci-collection-output=ci-results/gateway/test-ids.json
+
+      - name: Record runner peak memory and OOM counters
+        if: always()
+        run: |
+          mkdir -p modules/gateway/ci-results/gateway
+          python .github/scripts/pytest_resources.py --report | tee modules/gateway/ci-results/gateway/resources.json
+
+      - name: Retain test timing and selection evidence
+        if: always()
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: gateway-test-timing-${{ matrix.shard }}
+          path: modules/gateway/ci-results/gateway/
 
       - name: Upload Coverage
         # Coverage upload is informational — it must never fail the Test gate.
@@ -368,7 +440,7 @@ jobs:
         # Per-shard artifact: each shard measures only the code its own slice
         # touched, so these are partial by construction and must be combined
         # (coverage combine) before the total means anything.
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || inputs.coverage
         continue-on-error: true
         uses: ./.github/actions/upload-ci-evidence-s3
         with:
@@ -380,10 +452,8 @@ jobs:
   # branch protection or required-check config referencing "Test" would
   # otherwise silently stop gating the moment the job was sharded.
   #
-  # Nothing depends on this job: `build` waits on test-shard directly, so this
-  # sits BESIDE the critical path rather than in it. Keep it that way — adding it
-  # to any `needs:` list reintroduces ~2min of dispatch latency to run 3s of
-  # shell. It still gates merges, because the check itself goes red.
+  # This reports the required result without serializing independent checks.
+  # The source-only image smoke build runs alongside the test jobs.
   test:
     name: Test
     runs-on: arc-runner-org
@@ -423,7 +493,7 @@ jobs:
           cache-dependency-path: modules/gateway/pyproject.toml
       - name: Install gateway test dependencies
         working-directory: modules/gateway
-        run: pip install -e '.[dev]'
+        run: pip install -e '.[dev]' -e '../L5-services[dev]' -e '../../libs/python/adp-common[l5-consumers]'
       - name: Install chat-worker test dependencies
         working-directory: modules/agent-factory/agent
         run: npm ci --include=dev --ignore-scripts
@@ -436,6 +506,30 @@ jobs:
         with:
           name: chat-port-results-${{ github.sha }}
           path: modules/gateway/chat-port-results.xml
+
+  flow-read-browser:
+    if: github.event_name == 'workflow_dispatch' && inputs.flow_read_browser
+    name: Delivery Flow Browser Checks (mocked)
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: modules/gateway/frontend/package-lock.json
+      - name: Install pinned browser dependencies
+        working-directory: modules/gateway/frontend
+        run: npm ci --include=dev
+      - name: Install pinned Chromium
+        working-directory: modules/gateway/frontend
+        run: npx playwright install chromium --with-deps
+      - name: Assert mocked graph renders before enrichment
+        working-directory: modules/gateway/frontend
+        run: npx playwright test --config tests/e2e/flow-read.config.ts
+      - name: Assert Atlassian Connections journeys against isolated API fixtures
+        working-directory: modules/gateway/frontend
+        run: npx playwright test --config tests/e2e/connections.config.ts
 
   frontend-test:
     name: Frontend Unit Tests
@@ -463,9 +557,8 @@ jobs:
 
       - name: Run Vitest
         working-directory: modules/gateway/frontend
-        # ARC requests two CPUs for this pod. Bound jsdom workers to that share
-        # instead of allowing host CPU discovery to oversubscribe the container.
-        run: npx vitest run --reporter=verbose --maxWorkers=2
+        # ARC requests/limits four CPUs. Keep workers bounded to that allocation.
+        run: npx vitest run --reporter=verbose --maxWorkers=4
 
       # The domain app's sources are typechecked only here. Vitest strips types
       # without checking them, so a type error in modules/domain-apps/ would
@@ -474,18 +567,30 @@ jobs:
         working-directory: modules/gateway/frontend
         run: npx tsc --noEmit
 
-  build:
-    if: ${{ !inputs.offline_only }}
+  build-result:
     name: Build Container
     runs-on: arc-runner-org
-    # Depends on test-shard directly, NOT on the `test` aggregator. The
-    # aggregator exists only to keep a stable check name for branch protection;
-    # putting it on this path made `build` wait for an extra job dispatch to run
-    # 3 seconds of shell. Measured on run 35470134652: shards finished 21:25:35,
-    # the aggregator did not start until 21:27:32 — 1m57s of dead wall clock for
-    # nothing. `build` now starts as soon as the shards are green, and the
-    # aggregator runs beside it purely as the reported gate.
-    needs: [test-shard, frontend-test]
+    if: ${{ always() && !inputs.offline_only }}
+    needs: [build, test-shard, frontend-test]
+    # Preserve the original check's test prerequisites even when only this
+    # check is required by branch protection. The expensive build runs earlier.
+    steps:
+      - name: Verify image smoke build and its original test prerequisites
+        env:
+          SMOKE: ${{ needs.build.result }}
+          TESTS: ${{ needs.test-shard.result }}
+          FRONTEND: ${{ needs.frontend-test.result }}
+        run: |
+          test "$SMOKE" = success
+          test "$TESTS" = success
+          test "$FRONTEND" = success
+
+  build:
+    if: ${{ !inputs.offline_only }}
+    name: Container smoke build
+    runs-on: arc-runner-org
+    # This source-only smoke build consumes no test artifacts and never pushes.
+    # Run it alongside validation; build-result preserves the existing gate.
     steps:
       - uses: actions/checkout@v7
 
@@ -562,4 +667,4 @@ jobs:
         run: pip install pytest
 
       - name: Run smoke assertion tests
-        run: pytest platform/scripts/tests/test_smoke_assertions.py -v --tb=short
+        run: pytest platform/scripts/tests/test_smoke_assertions.py platform/scripts/tests/test_product_authenticated_smoke.py -v --tb=short

@@ -3,7 +3,7 @@
 
 import argparse
 from pathlib import Path
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 
 def manifest(module: Path, name: str) -> dict[str, Path]:
@@ -29,7 +29,13 @@ def build(module: Path, output: Path) -> None:
     for name in ("pricing-refresh", "budget-usage-tracker"):
         with ZipFile(output / f"{name}.zip", "w", ZIP_DEFLATED) as archive:
             for entry, path in sorted(manifest(module, name).items()):
-                archive.write(path, entry)
+                # Checkout timestamps and host permissions are not artifact content.
+                # Stable bytes let Lambda's CodeSha256 identify an unchanged build.
+                info = ZipInfo(entry, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = ZIP_DEFLATED
+                info.create_system = 3
+                info.external_attr = 0o100644 << 16
+                archive.writestr(info, path.read_bytes())
 
 
 if __name__ == "__main__":

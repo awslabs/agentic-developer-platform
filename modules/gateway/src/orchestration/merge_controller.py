@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -50,6 +51,8 @@ from .pr_bindings import active_binding_for_node, binding_scope_matches
 from .review_cycle import CycleBlockedError, block
 from .state import ActorKind, NodeState, transition
 
+logger = logging.getLogger(__name__)
+
 MERGE_KIND = "merge_pull_request"
 PHASES = (ExecutionPhase.MERGE_READY,)
 
@@ -69,17 +72,37 @@ async def code_only_delivery(session, context, node):
     )
     marker = (plan.plan_document or {}).get("execution_continuation") if plan else None
     if marker is None:
+        from .plan_lineage import execution_plan_matches
         from .policy_admission import load_in_force_policy
 
         admission = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
         policy = admission.policy
-        if admission.refusal is not None or admission.plan_version != context.identity.accepted_plan_version:
+        # An ordinary amendment that preserved this node keeps its merge contract
+        # (#7535); only a plan that changed the node or replaced the lineage does not.
+        if admission.refusal is not None or not await execution_plan_matches(
+            session,
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            version=context.identity.accepted_plan_version,
+            current_version=admission.plan_version,
+        ):
             raise CycleBlockedError("code_delivery_contract_changed")
+        from .build_completion import explicit_code_only
+
+        if policy is not None and Action.MERGE in policy.allowed_actions and await explicit_code_only(session, plan=plan, node=node):
+            return True
+        # Deployment authority is what keeps the full delivery pipeline: a
+        # `deploy` permission or gate, or a registered environment connection.
+        # Other non-code actions (`operate`, `evaluate`, `coordinate`) do not
+        # deploy anything, so a policy that grants them but no deployment
+        # authority still delivers code only; the repository's own pipelines
+        # own what happens after the merge (#7457).
         return bool(
             policy is not None
             and Action.MERGE in policy.allowed_actions
             and not policy.environment_connection_ids
-            and set(policy.allowed_actions).union(policy.human_gates) <= {Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE}
+            and Action.DEPLOY not in set(policy.allowed_actions).union(policy.human_gates)
         )
     if not isinstance(marker, dict) or marker.get("delivery_mode") is None:
         return False
@@ -158,6 +181,19 @@ class MergeObservation(HandlerObservation):
     receipt: MergeReceipt | None = None
 
 
+class MergeVerificationPendingError(Exception):
+    """Post-merge verification cannot conclude yet, but nobody has to act.
+
+    Raised instead of `CycleBlockedError` when the only thing missing on the
+    merged head is a required check that is still running. A block names an
+    owner who must do something; here the engine simply needs to look again.
+    """
+
+    def __init__(self, detail: str):
+        self.detail = detail
+        super().__init__(detail)
+
+
 class MergeServices:
     def __init__(self, factory, *, authority=None, provider=None, storage=None):
         self.factory = factory
@@ -209,11 +245,19 @@ class MergeServices:
         raw = await authority.protected(node.org_id, run_id)
         if not raw or raw.get("status", {}).get("S") in {"revoked", "cancelled"}:
             raise CycleBlockedError("reviewer_authority_revoked", BlockCode.AUTHORITY_UNVERIFIABLE)
-        if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
+        if raw.get("status") != {"S": "completed"}:
+            # The reviewer is still running; it owns the verdict and, when it owns
+            # delivery, the merge. A merged PR with an owning reviewer is the one
+            # case the engine may read ahead: the reviewer finished the mutation.
             from .review_assignment import reviewer_owns_delivery
 
             if not (provider_state.merged and await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=run_id)):
                 raise CycleBlockedError("reviewer_still_active")
+        # A completed run — `complete` or `failed` — has nothing more to say. A
+        # reviewer that approved the exact head and then exited failed because its
+        # merge was refused used to park the story on `reviewer_still_active` for
+        # good (#7486); the recorded exact-head review below decides instead, and
+        # the observer's finished-without-merge handling (#7472) takes it from there.
         return await load_merge_review(
             session,
             context=context,
@@ -286,8 +330,16 @@ class MergeServices:
             raise CycleBlockedError("merge_evidence_bound_exceeded")
         check_reasons, checks = evaluate_required_checks(observation)
         if check_reasons:
+            if set(check_reasons) == {EligibilityReason.REQUIRED_CHECK_PENDING}:
+                # Merged with required checks still running (for example a
+                # controller that merged before current-head CI finished). The
+                # story is not delivered yet, but this is a wait, not a block.
+                running = sorted(check.name for check in checks if check.state == "pending")
+                raise MergeVerificationPendingError(
+                    "Merged; waiting for the merged head's required checks to finish before recording delivery: " + ", ".join(running)[:500]
+                )
             raise CycleBlockedError("merged_pr_checks_not_successful")
-        if not evidence.review_approved:
+        if not evidence.review_approved and not app_snapshot_withdrawn(evidence, review):
             raise CycleBlockedError("merged_pr_review_not_approved")
         _, current, current_run = await self.state(session, context)
         if before != (current.id, current.revision, current.head_sha, current_run):
@@ -302,7 +354,14 @@ class MergeServices:
             "checks_state": "SATISFIED" if checks else "NOT_REQUIRED",
             "check_requirements": asdict(observation.requirements),
             "checks": [asdict(check) for check in checks],
-            "check_sources": [{"kind": source.kind, "digest": source.payload_sha256} for source in observation.sources],
+            "check_sources": [
+                {
+                    "kind": source.kind,
+                    "digest": source.payload_sha256,
+                    **({"semantic_digest": source.semantic_sha256} if source.semantic_sha256 else {}),
+                }
+                for source in observation.sources
+            ],
             "review_state": evidence.review_state,
             "review_ref": review.artifact_ref,
         }
@@ -528,6 +587,27 @@ class MergeServices:
             return EffectResult(EffectOutcome.UNCERTAIN, detail="Merge outcome unknown; reconcile before retry.")
 
 
+def app_snapshot_withdrawn(evidence, review) -> bool:
+    """A merged PR whose only standing change request is the engine's own CI snapshot.
+
+    The reviewer App records the merge controller's canonical CI observation as a
+    GitHub "changes requested" review when a required check is red at that instant.
+    GitHub refuses to dismiss a review once the PR is merged, so that snapshot
+    would outlive the App's own complete approval of the exact merged head and the
+    live re-verification of the merged head's checks performed just before this
+    call. Accept when no other reviewer requested changes and the engine's recorded
+    review for this head is complete (#7639).
+    """
+    return (
+        evidence.merged
+        and evidence.review_state == "changes_requested"
+        and evidence.foreign_changes_requested is False
+        and bool(getattr(review, "is_complete_review", False))
+        and not getattr(review, "publication_blockers", None)
+        and getattr(review, "reviewed_head_sha", None) == evidence.head_sha
+    )
+
+
 class MergeController:
     def __init__(self, factory, services=None):
         self.factory, self.services = factory, services or MergeServices(factory)
@@ -552,7 +632,10 @@ class MergeController:
             if state.merged:
                 verification = None
                 if latest is None:
-                    receipt, verification = await self.services.completed_elsewhere(session, context, node, binding, run, state)
+                    try:
+                        receipt, verification = await self.services.completed_elsewhere(session, context, node, binding, run, state)
+                    except MergeVerificationPendingError as pending:
+                        return MergeObservation(ObservationKind.WAITING, detail=pending.detail)
                 else:
                     receipt = self.services.receipt(context, binding, state, latest)
                 return MergeObservation(
@@ -577,13 +660,22 @@ class MergeController:
             report = await session.get(OrchestrationRunReport, run)
             from .review_assignment import reviewer_owns_delivery
 
+            reviewer_finished_without_merge = False
             if await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=run):
-                # Reviewer delivery owns mutation; the engine only adopts the
-                # independently verified merged state above.
+                # Reviewer delivery owns mutation while the reviewer is alive; the
+                # engine only adopts the independently verified merged state above.
                 raw = await (await self.services.authority_for(context)).protected(node.org_id, run)
                 if (report and not report.terminal_receipt) or (not report and raw and raw.get("status") != {"S": "completed"}):
                     return MergeObservation(ObservationKind.WAITING, detail="Reviewer is delivering the merge.")
-                raise CycleBlockedError("reviewer_merge_not_delivered", BlockCode.HUMAN_INPUT_REQUIRED)
+                # The reviewer finished without merging. That used to stop the story
+                # for a human, although every reason a reviewer cannot merge — a
+                # failed required check, a conflict, an outdated base — is one the
+                # eligibility path below already turns into a bounded repair or a
+                # wait (#7472). The engine still never merges a reviewer-owned pull
+                # request: when the PR turns out eligible, another reviewer-owned
+                # delivery pass is dispatched instead (bounded by the plan).
+                reviewer_finished_without_merge = True
+                logger.info("merge: reviewer-owned delivery for node %s ended without a merge; evaluating eligibility", node.id)
             if state.queue_id:
                 if latest is None or latest.detail.get("method") != "queue":
                     raise CycleBlockedError("merge_queue_admission_unattributed")
@@ -622,6 +714,12 @@ class MergeController:
                 elif any(value in eligibility.reasons for value in (EligibilityReason.AUTHORITY_DENIED, EligibilityReason.AUTHORITY_UNAVAILABLE)):
                     code = BlockCode.AUTHORITY_UNVERIFIABLE
                 raise CycleBlockedError("merge_ineligible:" + ",".join(value.value for value in eligibility.reasons), code)
+            if reviewer_finished_without_merge:
+                return MergeObservation(
+                    ObservationKind.FAILED,
+                    snapshot={"return_to_review": True},
+                    detail="Reviewer-owned delivery ended without a merge on an eligible pull request; another delivery pass is required.",
+                )
             snapshot = self.services.snapshot(binding, state, eligibility, review, len(rows) + 1)
             if latest is not None and latest.status in {"prepared", "unknown"} and latest.detail.get("base_sha") == state.base_sha:
                 snapshot = dict(latest.detail)
@@ -767,6 +865,9 @@ async def settle_merge(session, context, receipt, snapshot):
     if action is None:
         raise CycleBlockedError("merge_intent_missing")
     action.detail = {**(action.detail or {}), "merge_receipt": receipt.model_dump(mode="json")}
+    from .story_acceptance import record_merge_acceptance
+
+    await record_merge_acceptance(session, context, receipt, snapshot, action)
     session.add(
         OrchestrationDecision(
             org_id=node.org_id,
@@ -784,6 +885,10 @@ async def settle_merge(session, context, receipt, snapshot):
     node.state = NodeState.PASSED.value
     node.updated_at = datetime.now(UTC)
     await session.flush()
+    if snapshot.get("code_only") is True:
+        from .story_acceptance import record_acceptance_completion
+
+        await record_acceptance_completion(session, context.execution, node.updated_at)
 
 
 def handlers(factory):

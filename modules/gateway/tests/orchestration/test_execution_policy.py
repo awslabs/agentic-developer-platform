@@ -91,6 +91,66 @@ def _stamped(**overrides: object) -> ExecutionPolicy:
     return stamp_policy(_policy(**overrides), principal_id=PRINCIPAL, org_id=ORG_A)
 
 
+def test_repair_paths_are_explicit_v3_scope_without_changing_older_policy_documents():
+    assert "repair_paths" not in _policy().model_dump(mode="json")
+    assert "repair_required_checks" not in _policy().model_dump(mode="json")
+    actions = [Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.DEPLOY, Action.EVALUATE, Action.OPERATE]
+    permitted = _policy(schema_version=3, allowed_actions=actions, repair_paths=["src/deploy.py"], repair_required_checks=["unit tests"])
+    assert permitted.model_dump(mode="json")["repair_paths"] == ["src/deploy.py"]
+    assert permitted.model_dump(mode="json")["repair_required_checks"] == ["unit tests"]
+    for overrides in (
+        {"schema_version": 2, "allowed_actions": actions},
+        {"schema_version": 3, "allowed_actions": [action for action in actions if action is not Action.REPAIR]},
+        {"schema_version": 3, "allowed_actions": actions, "repair_paths": ["../secret"]},
+    ):
+        with pytest.raises(ValidationError):
+            _policy(**{"repair_paths": ["src/deploy.py"], **overrides})
+    with pytest.raises(ValidationError):
+        _policy(schema_version=3, allowed_actions=actions, repair_required_checks=["unit tests"])
+    with pytest.raises(ValidationError):
+        _policy(schema_version=3, allowed_actions=actions, repair_paths=["src/deploy.py"], repair_required_checks=["unit tests", "unit tests"])
+
+
+def test_repository_repair_scope_requires_explicit_v3_authority_and_changes_policy_hash():
+    actions = [Action.OPERATE, Action.REPAIR, Action.MERGE]
+    old = _policy(schema_version=3, allowed_actions=actions, human_gates=[])
+    assert "repair_scope" not in old.model_dump(mode="json")
+    repository = _policy(schema_version=3, allowed_actions=actions, human_gates=[], repair_scope="repository", repair_required_checks=["unit tests"])
+    assert repository.model_dump(mode="json")["repair_scope"] == "repository"
+    assert repository.repair_paths == []
+    assert policy_hash(repository) != policy_hash(old)
+    assert summarize_policy(repository).repair_scope == "repository"
+    assert summarize_policy(repository).repair_path_count == 0
+    assert summarize_policy(old).repair_scope is None
+    assert ExecutionPolicy.model_validate(old.model_dump(mode="json")).model_dump(mode="json") == old.model_dump(mode="json")
+    for overrides in (
+        {"schema_version": 1},
+        {"schema_version": 2},
+        {"allowed_actions": [Action.OPERATE]},
+        {"allowed_actions": [Action.REPAIR]},
+        {"repair_paths": ["src/deploy.py"]},
+        {"repair_scope": "unrestricted"},
+    ):
+        with pytest.raises(ValidationError):
+            _policy(**{"schema_version": 3, "allowed_actions": actions, "human_gates": [], "repair_scope": "repository", **overrides})
+
+
+def test_repository_repair_history_only_preserves_explicit_scope_expansion():
+    from src.orchestration.operations_repair_history import compatible_repair_scope
+
+    values = {"schema_version": 3, "allowed_actions": [Action.OPERATE, Action.REPAIR, Action.MERGE], "human_gates": []}
+    paths = _stamped(**values, repair_paths=["src/deploy.py"])
+    repository = _stamped(**values, repair_scope="repository")
+    assert compatible_repair_scope(paths, repository)
+    assert compatible_repair_scope(repository, repository)
+    assert not compatible_repair_scope(repository, paths)
+    assert not compatible_repair_scope(repository, repository.model_copy(update={"principal_id": "other-owner"}))
+    assert not compatible_repair_scope(repository, repository.model_copy(update={"repository_ids": [REPO_B]}))
+    assert not compatible_repair_scope(repository, repository.model_copy(update={"environment_connection_ids": ["other-target"]}))
+    assert summarize_policy(paths).repair_scope == "paths"
+    assert summarize_policy(paths).repair_path_count == 1
+
+
 def _context(policy: ExecutionPolicy | None = None, **overrides: object) -> AuthorizationContext:
     """A context that permits, so each test can break exactly one thing.
 
@@ -173,13 +233,13 @@ class TestExecutionPolicySchema:
             _policy(allowed_actions=["exfiltrate"])
 
     def test_action_vocabulary_is_exactly_the_accepted_set(self) -> None:
-        """The delivery actions plus `coordinate`, and only those.
+        """The delivery actions plus `coordinate` and `operate`, and only those.
 
         Pinned as an exact set so adding a member is a deliberate act with a test
         change, not a silent widening of what a policy can authorize. `coordinate`
-        was added deliberately by #5224; the six before it are #5128's original set.
+        was added deliberately by #5224; `operate` authorizes direct story operations.
         """
-        assert {action.value for action in Action} == {"develop", "review", "repair", "merge", "deploy", "evaluate", "coordinate"}
+        assert {action.value for action in Action} == {"develop", "review", "repair", "merge", "deploy", "evaluate", "coordinate", "operate"}
 
     def test_at_least_one_action_required(self) -> None:
         with pytest.raises(ValidationError):
@@ -507,6 +567,20 @@ class TestDecisionInvariants:
 
 
 class TestAuthorizePermits:
+    def test_operate_requires_explicit_action_repository_and_attempt_allowance(self) -> None:
+        policy = _stamped(allowed_actions=[Action.OPERATE], human_gates=[])
+        from src.orchestration.runtime_policy import policy_github_permissions
+
+        permissions = policy_github_permissions(policy, Action.OPERATE)
+        assert permissions["contents"] == "read"
+        assert "actions" not in permissions
+        assert authorize_action(_context(policy=policy), Action.OPERATE, _develop(), 1).permitted
+        assert authorize_action(_context(policy=policy), Action.DEVELOP, _develop(), 1).reason is DenyReason.ACTION_NOT_PERMITTED
+        assert authorize_action(_context(policy=policy), Action.OPERATE, _develop(REPO_B), 1).reason is DenyReason.REPOSITORY_NOT_PERMITTED
+        assert (
+            authorize_action(_context(policy=policy, observed_attempts=3), Action.OPERATE, _develop(), 1).reason is DenyReason.ATTEMPT_LIMIT_EXCEEDED
+        )
+
     def test_permitted_action_in_scope_within_limits(self) -> None:
         decision = authorize_action(_context(), Action.DEVELOP, _develop(), 1)
         assert decision.permitted

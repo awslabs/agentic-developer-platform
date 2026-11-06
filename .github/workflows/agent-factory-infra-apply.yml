@@ -37,7 +37,7 @@ on:
         required: false
         default: ''
       adp_approved_revision:
-        description: 'Assistant rollout approval for this run only: full 40-hex commit with approved chat IAM files.'
+        description: 'Assistant rollout approval for non-dev targets only (dev needs none): full 40-hex commit with approved chat IAM files.'
         required: false
         type: string
         default: ''

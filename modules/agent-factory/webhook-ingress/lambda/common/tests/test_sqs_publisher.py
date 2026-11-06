@@ -27,8 +27,12 @@ def test_claim_admission_precedes_queue_publication(
     producer = MagicMock()
     producer.send_message.return_value = {"MessageId": "sqs-id"}
     monkeypatch.setattr(sqs_publisher, "_sqs", producer)
-    admit = MagicMock(return_value=admitted)
-    monkeypatch.setattr(gateway_client, "admit_issue_work", admit)
+    admit = MagicMock(
+        return_value=gateway_client.ADMISSION_ADMITTED
+        if admitted
+        else gateway_client.ADMISSION_UNAVAILABLE
+    )
+    monkeypatch.setattr(gateway_client, "admit_issue_work_outcome", admit)
     result = sqs_publisher.publish_envelope(
         {
             "channel": "github",
@@ -53,8 +57,8 @@ def test_gitlab_unavailable_channel_is_recorded_without_report_only_mutation(
     producer = MagicMock()
     producer.send_message.return_value = {"MessageId": "gitlab-sqs-id"}
     monkeypatch.setattr(sqs_publisher, "_sqs", producer)
-    admit = MagicMock(return_value=True)
-    monkeypatch.setattr(gateway_client, "admit_issue_work", admit)
+    admit = MagicMock(return_value=gateway_client.ADMISSION_ADMITTED)
+    monkeypatch.setattr(gateway_client, "admit_issue_work_outcome", admit)
     envelope = {
         "channel": "gitlab",
         "message_id": "gitlab-run",
@@ -247,3 +251,86 @@ def test_gitlab_registered_root_is_published_exactly_once_after_admission(
         assert result == "registered"
         assert producer.send_message.call_count == 1
         assert producer.send_message.call_args.kwargs["MessageBody"] == raw
+
+
+def _owned_publisher(monkeypatch, outcomes):
+    """Publisher with a stubbed admission sequence and no real sleeping (#9541)."""
+    from common import gateway_client, sqs_publisher
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setenv("ADP_WORK_ADMISSION_WAIT_SECONDS", "9")
+    monkeypatch.setenv("ADP_WORK_ADMISSION_RETRY_SECONDS", "3")
+    monkeypatch.setattr(sqs_publisher, "SUBMIT_QUEUE_URL", _TEST_QUEUE_URL)
+    producer = MagicMock()
+    producer.send_message.return_value = {"MessageId": "sqs-id"}
+    monkeypatch.setattr(sqs_publisher, "_sqs", producer)
+    admit = MagicMock(side_effect=list(outcomes))
+    monkeypatch.setattr(gateway_client, "admit_issue_work_outcome", admit)
+    clock = {"now": 100.0}
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(sqs_publisher.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(sqs_publisher.time, "sleep", fake_sleep)
+    envelope = {
+        "channel": "github",
+        "message_id": "run-2",
+        "tenant_id": "org",
+        "source_ref": {"repo": "org/repo", "issue": 26},
+    }
+    return sqs_publisher, producer, admit, sleeps, envelope
+
+
+def test_owned_refusal_is_retried_until_the_owner_releases_the_work(monkeypatch):
+    """AC-01 (#9541): 409 then admitted publishes once ownership is released."""
+    from common import gateway_client
+
+    sqs_publisher, producer, admit, sleeps, envelope = _owned_publisher(
+        monkeypatch,
+        [
+            gateway_client.ADMISSION_OWNED,
+            gateway_client.ADMISSION_OWNED,
+            gateway_client.ADMISSION_ADMITTED,
+        ],
+    )
+
+    assert sqs_publisher.publish_envelope(envelope) == "sqs-id"
+    assert admit.call_count == 3
+    assert sleeps == [3.0, 3.0]
+    assert producer.send_message.call_count == 1
+
+
+def test_owned_refusal_past_the_wait_budget_raises_without_publishing(monkeypatch):
+    """AC-02 (#9541): an owner that never releases ends in a typed refusal."""
+    from common import gateway_client
+
+    sqs_publisher, producer, admit, sleeps, envelope = _owned_publisher(
+        monkeypatch, [gateway_client.ADMISSION_OWNED] * 10
+    )
+
+    with pytest.raises(sqs_publisher.WorkOwnedByActiveRunError) as refused:
+        sqs_publisher.publish_envelope(envelope)
+    assert refused.value.run_id == "run-2"
+    # 9 s budget / 3 s pause: the first call plus three retries, then give up.
+    assert admit.call_count == 4
+    assert sum(sleeps) == 9.0
+    assert not producer.send_message.called
+
+
+def test_unavailable_admission_is_not_retried(monkeypatch):
+    """Only the owned refusal is worth waiting on; transport failures stay final."""
+    from common import gateway_client
+
+    sqs_publisher, producer, admit, sleeps, envelope = _owned_publisher(
+        monkeypatch,
+        [gateway_client.ADMISSION_UNAVAILABLE, gateway_client.ADMISSION_ADMITTED],
+    )
+
+    assert sqs_publisher.publish_envelope(envelope) is None
+    assert admit.call_count == 1
+    assert sleeps == []
+    assert not producer.send_message.called

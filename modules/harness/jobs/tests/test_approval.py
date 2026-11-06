@@ -504,3 +504,61 @@ def test_a_refusal_must_carry_a_reason():
 
 def test_utc_now_is_timezone_aware():
     assert utc_now().tzinfo is not None
+
+
+def test_recorded_streamlined_policy_allows_authorized_requester():
+    rec = record(
+        decided_by=REQUESTER,
+        approvers=frozenset({REQUESTER}),
+        requires_distinct_approver=False,
+    )
+    assert evaluate(rec, statuses={REQUESTER: approver_ok(REQUESTER)}).permitted
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"revoked": True},
+        {"is_member": False},
+        {"permissions": frozenset({"workspace:provision"})},
+    ],
+)
+def test_streamlined_policy_still_rechecks_admin_authority(change):
+    rec = record(
+        decided_by=REQUESTER,
+        approvers=frozenset({REQUESTER}),
+        requires_distinct_approver=False,
+    )
+    assert not evaluate(
+        rec, statuses={REQUESTER: approver_ok(REQUESTER, **change)}
+    ).permitted
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"revoked": True},
+        {"expires_at": NOW},
+        {"result": ApprovalResult.REJECTED},
+        {
+            "binding": ApprovalBinding.for_request(
+                principal(), request(parameters={"changed": "true"})
+            )
+        },
+        {"envelope": envelope(max_cost_micros=1)},
+    ],
+)
+def test_streamlined_policy_preserves_plan_expiry_result_and_budget_checks(change):
+    rec = record(
+        decided_by=REQUESTER,
+        approvers=frozenset({REQUESTER}),
+        requires_distinct_approver=False,
+        **change,
+    )
+    assert not evaluate(rec, statuses={REQUESTER: approver_ok(REQUESTER)}).permitted
+
+
+@pytest.mark.parametrize("value", [None, "false", 0, 1])
+def test_approval_policy_requires_a_real_boolean(value):
+    with pytest.raises(ContractViolation):
+        record(requires_distinct_approver=value)

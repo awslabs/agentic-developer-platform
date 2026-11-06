@@ -23,6 +23,10 @@ data:
   # Environment (dev, test, prod)
   BG_ENVIRONMENT: "__ENVIRONMENT__"
 
+  # Versioned Product inputs retained by L5 admission and read by its workers.
+  # Provisioned independently by modules/L5-services/infra/source-snapshots.
+  PRODUCT_SOURCE_SNAPSHOT_BUCKET: "__PRODUCT_SOURCE_SNAPSHOT_BUCKET__"
+
   # RDS Database Configuration - IAM authentication (passwordless)
   BG_RDS_IAM_AUTH: "true"
   BG_RDS_HOST: "__DB_HOST__"
@@ -67,6 +71,11 @@ data:
   # Must point at CloudFront so that requests from browsers are reachable
   # without auth headers.
   BG_GATEWAY_BASE_URL: "__GATEWAY_BASE_URL__"
+  BG_OAUTH_WORKLOAD_NAME: "adp-tools-__ENVIRONMENT__-oauth-user"
+  BG_OAUTH_RETURN_URL: "__GATEWAY_BASE_URL__/api/auth/connections/oauth/return"
+  BG_ATLASSIAN_CONFIG_REF: "__ATLASSIAN_CONFIG_REF__"
+  BG_ATLASSIAN_CONTRACT_REVISION: "__ATLASSIAN_CONTRACT_REVISION__"
+  BG_ATLASSIAN_METADATA_SHA256: "__ATLASSIAN_METADATA_SHA256__"
 
   # S3 bucket + key where the CloudFormation template YAML lives.  The gateway
   # pre-signs a GET URL on this object each time a user clicks "Connect AWS
@@ -115,9 +124,9 @@ data:
   # GIVEN service's credential may be sent to (a github credential must not go
   # to slack.com). The service -> host map is a code constant, see
   # src/internal/credential_egress.py.
-  # "false" = shadow mode (violations WARN-logged, allowed) — the default, so
-  # coverage gaps surface in logs first. "true" = enforce (403 + audit row).
-  # Flip via SSM: /adp/{env}/gateway/vault-enforce-credential-host-binding
+  # Default "true" = enforce (403 + audit row before secret retrieval).
+  # Explicit "false" = temporary shadow mode (violations WARN-logged, allowed).
+  # Configure via SSM: /adp/{env}/gateway/vault-enforce-credential-host-binding
   # =============================================================================
   BG_VAULT_ENFORCE_CREDENTIAL_HOST_BINDING: "__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__"
 
@@ -208,6 +217,8 @@ data:
   #                          503 (app.py logs a startup warning, does not crash).
   # =============================================================================
   AGENT_CONTEXT_ENABLED: "true"
+  # Enable after Product migration, scoped ingestion workers, and all Door readers.
+  SCOPED_KNOWLEDGE_IMPORTS_ENABLED: "__SCOPED_KNOWLEDGE_IMPORTS_ENABLED__"
   INGESTION_QUEUE_URL: "__INGESTION_QUEUE_URL__"
   # Same existing bucket as agent-context/terraform; no new storage.
   AGENT_CONTEXT_S3_BUCKET: "agent-context-platform-data-__PLATFORM_BEDROCK_ACCOUNT_ID__"
@@ -316,15 +327,66 @@ data:
   # =============================================================================
   BG_BEDROCK_ROUTING_SHADOW_MODE: "__BEDROCK_ROUTING_SHADOW_MODE__"
 
-  # PMM-03 (#5420): faithful Claude Agent SDK invocability probing. These are
-  # deliberately literal fail-closed values, not permissive placeholders.
-  # PMM-09 owns the separately reviewed deployment that may enable them after
-  # the destination account and spend ceiling are explicitly approved.
-  BG_MODEL_PROBE_ENABLED: "false"
-  BG_MODEL_PROBE_MAX_SLOTS_PER_CYCLE: "0"
-  BG_MODEL_PROBE_BUDGET_USD_PER_CYCLE: "0"
-  BG_MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT: "0"
+  # PMM-03 (#5420) / #7967: faithful Claude Agent SDK invocability probing. These
+  # controls are per-environment configuration rendered from SSM
+  # /adp/{env}/gateway/model-probe-* (gateway infra model-probe.tf, values from
+  # environments/<env>/modules/gateway.tfvars); an absent parameter renders the
+  # fail-closed default (off, zero slots, zero budget, whole catalogue, 24 h).
+  # Probing is fail-closed and REQUIRED whenever the chat model-policy posture
+  # below is "enforced": without fresh evidence every /v1/chat/model/decision is
+  # refused with probing_disabled and chat never answers. The probe CronJob
+  # (webhook-ingress persona_model_probe_enabled) must be unsuspended in the same
+  # environment; `deploy-all.sh --chat delegated` refuses to roll out while either
+  # side is off under "enforced" and warns under "advisory"/"off". The
+  # decision-chain mismatch that kept probing off after the 2026-10-13 window
+  # (#7596) was fixed by #7605.
+  BG_MODEL_PROBE_ENABLED: "__MODEL_PROBE_ENABLED__"
+  BG_MODEL_PROBE_MAX_SLOTS_PER_CYCLE: "__MODEL_PROBE_MAX_SLOTS_PER_CYCLE__"
+  BG_MODEL_PROBE_BUDGET_USD_PER_CYCLE: "__MODEL_PROBE_BUDGET_USD_PER_CYCLE__"
+  BG_MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT: "__MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT__"
+  BG_MODEL_PROBE_MODEL_ALLOWLIST: '__MODEL_PROBE_MODEL_ALLOWLIST__'
+  BG_MODEL_PROBE_EVIDENCE_TTL_HOURS: "__MODEL_PROBE_EVIDENCE_TTL_HOURS__"
+  # Dev Box (#7998), an OPTIONAL module (modules/user-services/dev-box). Its
+  # self-managed stage (deploy-all.sh --dev-box on / --dev-box-only ->
+  # modules/user-services/dev-box/scripts/deploy-dev-box.sh) publishes these under
+  # SSM /adp/<env>/dev-box/* from infra/self_managed.tf; both renderers read them
+  # on every deploy. Without the module the parameters do not exist and the
+  # renderers put "" / "0" here: src/cloud_desktop/routes.py then answers 403
+  # "Dev Box admission is disabled" and the frontend never shows the desktop
+  # option (it follows /crew/runtime allowed_targets, which the module's seed
+  # sets). Deployment-wide bounds are fail-closed: "0" refuses every admission.
+  BG_DEV_BOX_DEPLOYMENT_ID: "__BG_DEV_BOX_DEPLOYMENT_ID__"
+  BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES: "__BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES__"
+  BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES: "__BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES__"
+  BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB: "__BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB__"
+  BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS: "__BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS__"
+  BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD: "__BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD__"
+  # SSH grant role (#8049) from SSM /adp/<env>/dev-box/ssh-grant-role-arn, created by
+  # the module's foundation when gateway_principal_arn names this gateway's IRSA role.
+  # src/cloud_desktop/ssh_access.py assumes it for 15-minute, one-instance SSM/EC2
+  # Instance Connect credentials behind `adp devbox ssh`; "" => 503 fail-closed.
+  BG_DEV_BOX_SSH_GRANT_ROLE_ARN: "__BG_DEV_BOX_SSH_GRANT_ROLE_ARN__"
+  # Crew bootstrap mode (#8055): image | user-data, from /adp/<env>/dev-box/crew-bootstrap;
+  # exposed as crew_bootstrap on GET /cloud-desktops/{id}. Absent => image.
+  BG_DEV_BOX_CREW_BOOTSTRAP: "__BG_DEV_BOX_CREW_BOOTSTRAP__"
+  # Model policy posture for chat (#7997): off | advisory | enforced, rendered from
+  # SSM /adp/{env}/gateway/chat-model-policy-posture (gateway infra
+  # chief-of-staff-flags.tf, value from gateway.tfvars; default advisory).
+  # "enforced" is today's fail-closed chat path and needs the probe evidence above;
+  # "advisory" still signs and journals every decision but answers the turn on the
+  # persona's resolved model when the evidence check is rejected or unverified;
+  # "off" consults no evidence. not_permitted refuses in every posture.
+  BG_CHAT_MODEL_POLICY_POSTURE: "__CHAT_MODEL_POLICY_POSTURE__"
   BG_PLATFORM_BEDROCK_ACCOUNT_ID: "__PLATFORM_BEDROCK_ACCOUNT_ID__"
+  # Exact platform-account role ARNs arranged by the platform administrator for
+  # engine operations whose deploy/verify target lives in the platform account
+  # (dev AgentCore tools gateway, #7457 TLS-X01). Registering one as a personal AWS
+  # connection still requires the role's trust policy to name the connection's
+  # ExternalId and owner tag; the list only lifts `platform_account_not_allowed`
+  # for these exact ARNs. Empty string disables the exception.
+  # Optional protected SSM override: /adp/<env>/gateway/platform-operator-role-arns.
+  # The deployment renderer rejects wildcards and roles outside this account.
+  BG_PLATFORM_OPERATOR_ROLE_ARNS: "__PLATFORM_OPERATOR_ROLE_ARNS__"
 
   # PMM-03 / D3: active organization/team model-access constraints.  JSON is
   # keyed by org ID or "org_id:team_id"; the team key wins.  Empty JSON means
@@ -427,9 +489,27 @@ data:
   AGENT_CONTROL_CLUSTER_POD_CIDRS: "__AGENT_CONTROL_CLUSTER_POD_CIDRS__"
   AGENT_AUTHORITY_ENABLED: "__AGENT_AUTHORITY_ENABLED__"
   ADP_WORK_CLAIMS_ENABLED: "__ADP_WORK_CLAIMS_ENABLED__"
+  # Use the same explicit rollout setting as the scheduled engine. A missing
+  # reader setting otherwise reports a false repository_execution_withheld.
+  ADP_PRODUCT_STORY_DISPATCH_ENABLED: "__ADP_PRODUCT_STORY_DISPATCH_ENABLED__"
   ADP_WORK_CLAIM_PRODUCER_ROLES: "__ADP_WORK_CLAIM_PRODUCER_ROLES__"
   AGENT_AUTHORITY_TABLE: "__AGENT_AUTHORITY_TABLE__"
   WEBHOOK_EVENTS_TABLE: "__WEBHOOK_EVENTS_TABLE__"
+  ADP_TOOLS_GATEWAY_ROLE_ARN: "__ADP_TOOLS_GATEWAY_ROLE_ARN__"
+  ADP_TOOLS_FACADE_ROLE_ARN: "__ADP_TOOLS_FACADE_ROLE_ARN__"
+  ADP_TOOLS_ASSERTION_KEY_ARN: "__ADP_TOOLS_ASSERTION_KEY_ARN__"
+  # One Terraform-owned manifest binds the adapter endpoint, identities and release.
+  ADP_TOOL_ADAPTER_OBSERVE_URL: "__ADP_TOOL_ADAPTER_OBSERVE_URL__"
+  ADP_TOOL_ADAPTER_ASSERTION_KEY_ARN: "__ADP_TOOL_ADAPTER_ASSERTION_KEY_ARN__"
+  ADP_TOOL_ADAPTER_CORE_ROLE_ARN: "__ADP_TOOL_ADAPTER_CORE_ROLE_ARN__"
+  ADP_TOOL_ADAPTER_ADAPTER_ROLE_ARN: "__ADP_TOOL_ADAPTER_ADAPTER_ROLE_ARN__"
+  ADP_TOOL_ADAPTER_RELEASE: "__ADP_TOOL_ADAPTER_RELEASE__"
+  # Public native recipient configuration; never contains private signing keys.
+  ADP_NATIVE_CREDENTIALS_ENABLED: "__ADP_NATIVE_CREDENTIALS_ENABLED__"
+  ADP_NATIVE_CREDENTIALS_ISSUER: "__ADP_NATIVE_CREDENTIALS_ISSUER__"
+  ADP_NATIVE_CREDENTIALS_APPROVAL_ORIGIN: "__ADP_NATIVE_CREDENTIALS_APPROVAL_ORIGIN__"
+  ADP_NATIVE_CREDENTIALS_KEY_ID: "__ADP_NATIVE_CREDENTIALS_KEY_ID__"
+  ADP_NATIVE_CREDENTIALS_KEY_ARN: "__ADP_NATIVE_CREDENTIALS_KEY_ARN__"
   # Task API preparation remains default-off until a qualified pilot is enabled.
   ADP_TASK_API_ADMISSION_ENABLED: "__ADP_TASK_API_ADMISSION_ENABLED__"
   ADP_TASK_API_READ_ENABLED: "__ADP_TASK_API_READ_ENABLED__"
@@ -446,7 +526,6 @@ data:
   AGENT_DISPATCH_QUEUE_URL: "__AGENT_DISPATCH_QUEUE_URL__"
   # Same queue; this URL does not enable the unrelated legacy migration gate.
   ADP_RUN_TASK_QUEUE_URL: "__AGENT_DISPATCH_QUEUE_URL__"
-  BG_ORCH_DISPATCH_REPO: "__BG_ORCH_DISPATCH_REPO__"
   AGENT_WORKER_IMAGE_DIGESTS: "__AGENT_WORKER_IMAGE_DIGESTS__"
   AGENT_CONTROL_ENVELOPE_KEY_ID: "__AGENT_AUTHORITY_KEY_ID__"
   # Disabled until the original worker principal is isolated from all platform
@@ -488,4 +567,87 @@ data:
   ADP_ARC_MODEL_BINDINGS: "__ADP_ARC_MODEL_BINDINGS__"
   ADP_CHAT_WORKER_IMAGE_DIGESTS: "__ADP_CHAT_WORKER_IMAGE_DIGESTS__"
   ADP_CHAT_WORKER_NAMESPACE: "adp-gateway-agents"
-  ADP_CHAT_WORKER_SERVICE_ACCOUNT: "adp-agent"
+  # Chat workload identities verified by src/agentauth/workload.py (#7899). The
+  # worker service account is adp-agent for the legacy credentialed worker and
+  # adp-chat-supervisor once `deploy-all.sh --chat delegated` publishes the
+  # delegated release; sandbox (adp-chat-sandbox) and Crew (adp-crew-pod) pods are
+  # admitted only with these pinned digests. All three come from script-owned SSM
+  # parameters /adp/<env>/gateway/chat-{worker-service-account,sandbox-image-digests,
+  # crew-image-digests}; empty digests refuse the corresponding pods.
+  ADP_CHAT_WORKER_SERVICE_ACCOUNT: "__ADP_CHAT_WORKER_SERVICE_ACCOUNT__"
+  # Chat data plane for the delegated supervisor/sandboxes; off until --chat delegated.
+  ADP_CHAT_DATA_ENABLED: "__ADP_CHAT_DATA_ENABLED__"
+  # Delegated chat memory and artifact stores (#8028), served by
+  # src/agentauth/chat_data_routes.py (memory_table / artifact_storage). The
+  # agent-factory stack owns the tables and the bucket
+  # (modules/agent-factory/infra/chat-agent-infra.tf) and publishes the table
+  # names to SSM /adp/<env>/gateway/chat-memory-table and chat-artifacts-table;
+  # the bucket name is the gateway stack's /adp/<env>/gateway/task-artifact-bucket-name.
+  # Both renderers validate the names and fall back to the deterministic
+  # adp-<env>-agent-memory / adp-<env>-chat-artifacts; the bucket falls back to
+  # empty. The grants are gateway-intake-access.tf (ChatMemoryStore,
+  # ChatArtifactCatalog, ChatArtifactObjects). Empty is a supported state, not an
+  # error: the data plane answers 503 chat_memory_unconfigured /
+  # chat_artifacts_unconfigured and the sandbox answers the turn without memory
+  # or artifact tools (one log line), it does not fail.
+  MEMORY_TABLE: "__MEMORY_TABLE__"
+  ARTIFACTS_TABLE: "__ARTIFACTS_TABLE__"
+  ARTIFACTS_BUCKET: "__ARTIFACTS_BUCKET__"
+  ADP_CHAT_SANDBOX_IMAGE_DIGESTS: "__ADP_CHAT_SANDBOX_IMAGE_DIGESTS__"
+  ADP_CHAT_CREW_IMAGE_DIGESTS: "__ADP_CHAT_CREW_IMAGE_DIGESTS__"
+
+  # Delegated chat sandbox transport (modules/agent-factory/infra/chat-sandbox-tls.md).
+  # The supervisor admission/exit workload checks compare sandbox pods against
+  # these two public values. platform/scripts/apply-chat-tls.sh publishes the CA
+  # ConfigMap name to SSM /adp/<env>/gateway/chat-sandbox-ca-configmap
+  # (deploy-all.sh --chat delegated); both renderers read it from there. Empty
+  # means delegated chat is not provisioned and sandbox pods are refused. When
+  # the name is set, the URL is the fixed in-cluster listener.
+  ADP_CHAT_DATA_URL: "__ADP_CHAT_DATA_URL__"
+  ADP_CHAT_SANDBOX_CA_CONFIGMAP: "__ADP_CHAT_SANDBOX_CA_CONFIGMAP__"
+
+  # Crew proxy tuning (#7902). Both values are gateway-infra SSM parameters from
+  # modules/gateway/infra/chief-of-staff-flags.tf (tfvars crew_proxy_keepalive_seconds,
+  # crew_proxy_max_conn_per_user); both renderers read them and default to 25 / 20
+  # when the parameter is absent. Keepalive 0 disables the SSE keepalive and the
+  # pod-hop WebSocket ping; the browser-hop ping is UVICORN_WS_PING_INTERVAL in
+  # deployment.yaml, rendered from the same parameter and dropped when it is 0.
+  CREW_PROXY_KEEPALIVE_SECONDS: "__CREW_PROXY_KEEPALIVE_SECONDS__"
+  CREW_PROXY_MAX_CONN_PER_USER: "__CREW_PROXY_MAX_CONN_PER_USER__"
+  # The Crew dashboard switch and edge origin also live here (not only as gateway
+  # Deployment env) because the Dev Box controller shares this ConfigMap and passes the
+  # origin to each host's `--configure` (#8223 cause 20; 2026-10-20 a fresh box rendered
+  # dashboard.url = 127.0.0.1 because the controller never saw the origin). Same SSM
+  # parameters and defaults as the Deployment render; the Deployment env keeps precedence.
+  FEATURE_CREW_DASHBOARD: "__FEATURE_CREW_DASHBOARD__"
+  CREW_DASHBOARD_ORIGIN: "__CREW_DASHBOARD_ORIGIN__"
+
+  # Crew checkpoints (#7902): written by modules/gateway/infra/crew-checkpoints.tf.
+  # crew-checkpoints-enabled and crew-checkpoint-retention-seconds (days * 86400)
+  # exist in every environment; crew-checkpoint-bucket only while
+  # crew_checkpoints_enabled is on, and an absent parameter renders "" so the
+  # checkpoint routes answer 503 checkpoint_storage_unavailable instead of
+  # guessing a bucket.
+  ADP_CREW_CHECKPOINTS_ENABLED: "__ADP_CREW_CHECKPOINTS_ENABLED__"
+  ADP_CREW_CHECKPOINT_BUCKET: "__ADP_CREW_CHECKPOINT_BUCKET__"
+  ADP_CREW_CHECKPOINT_RETENTION_SECONDS: "__ADP_CREW_CHECKPOINT_RETENTION_SECONDS__"
+  # #8555: the owner's Dev Box gh/git and `adp github token` act as the owner through
+  # their connected GitHub account. SSM github-user-access-enabled (gateway infra).
+  ADP_GITHUB_USER_ACCESS_ENABLED: "__ADP_GITHUB_USER_ACCESS_ENABLED__"
+
+  # Tools consent posture (#8387): written by modules/gateway/infra/tools-consent.tf
+  # as tools-consent-default. "granted" lets every tenant-entitled tool be allowed and
+  # consented for a human owner by default (opt-out per tool); "explicit" keeps the
+  # opt-in Settings -> Tools contract. A tenant may override it in its settings.
+  ADP_TOOLS_CONSENT_DEFAULT: "__ADP_TOOLS_CONSENT_DEFAULT__"
+
+  # Shared AgentCore user memory (#7901, code #7210): the three public values of
+  # the memory target, written by modules/gateway/infra/agentcore-memory.tf while
+  # agentcore_memory_enabled is on. The fourth value, ADP_AGENTCORE_NAMESPACE_KEY,
+  # is a SecureString and reaches the pod only through the bedrockgateway-secrets
+  # Secret (deployment.yaml), never this ConfigMap. agentcore_recall() treats all
+  # four empty as "memory disabled" and a partial set as an outage, so both
+  # renderers refuse to render when some but not all four parameters exist.
+  ADP_AGENTCORE_MEMORY_ID: "__ADP_AGENTCORE_MEMORY_ID__"
+  ADP_AGENTCORE_MEMORY_STRATEGY_ID: "__ADP_AGENTCORE_MEMORY_STRATEGY_ID__"
+  ADP_AGENTCORE_MEMORY_REGION: "__ADP_AGENTCORE_MEMORY_REGION__"

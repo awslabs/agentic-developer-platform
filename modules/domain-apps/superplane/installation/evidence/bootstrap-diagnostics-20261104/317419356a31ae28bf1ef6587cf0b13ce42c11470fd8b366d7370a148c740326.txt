@@ -1,0 +1,70 @@
+"""Local worker diagnostics: source hashes, own SQL waits, filesystem metadata only."""
+import asyncio, hashlib, importlib.util, json, os, re, ssl, sys
+from datetime import datetime, timezone
+from pathlib import Path
+import asyncpg
+
+async def main():
+    request=json.loads(sys.stdin.readline())
+    for module, expected in request['hashes'].items():
+        path=Path(importlib.util.find_spec(module).origin)
+        assert hashlib.sha256(path.read_bytes()).hexdigest()==expected, module
+    assert os.geteuid()==65531
+    schema=os.environ['SUPERPLANE_OPERATION_SCHEMA']
+    assert re.fullmatch(r'[a-z][a-z0-9_]{0,62}',schema) and schema!='public'
+    # Existing service credential remains in the pod. No value or DSN is returned.
+    dsn=Path(os.environ['SUPERPLANE_EXECUTION_DSN_FILE']).read_text().strip()
+    connection=await asyncpg.connect(dsn,ssl=ssl.create_default_context(cafile=os.environ['SUPERPLANE_DATABASE_CA_FILE']),timeout=10,command_timeout=20,server_settings={'search_path':schema+',public'})
+    operation='d571ca63-73bc-543a-836e-a9e448b38a98'
+    try:
+        async with connection.transaction(readonly=True):
+            identity=dict(await connection.fetchrow('SELECT current_database() AS database, current_user AS username, inet_server_addr() AS server, pg_is_in_recovery() AS replica, pg_backend_pid() AS reader_pid'))
+            rows=await connection.fetch("SELECT pid,state,wait_event_type,wait_event,pg_blocking_pids(pid) AS blockers,clock_timestamp()-query_start AS query_age,query,client_addr FROM pg_stat_activity WHERE usename=current_user AND pid<>pg_backend_pid()")
+            locks=await connection.fetch("SELECT pid,granted,mode FROM pg_locks WHERE locktype='advisory' AND objsubid=1 AND classid=((hashtextextended($1,0)>>32)&4294967295)::oid AND objid=(hashtextextended($1,0)&4294967295)::oid",'harness-provider-dispatch:'+operation)
+            receipts=await connection.fetch('SELECT reauthorization_id FROM harness_provider_retries WHERE operation_id=$1 ORDER BY source_fence',operation)
+        activity=[]
+        for row in rows:
+            value=dict(row); query=value.pop('query') or ''
+            value['query_sha256']=hashlib.sha256(query.encode()).hexdigest()
+            value['tables']=sorted(set(re.findall(r'\b(?:FROM|JOIN|UPDATE|INTO)\s+([a-z_][a-z_0-9.]*)',query,re.I)))
+            activity.append(value)
+    finally:
+        await connection.close()
+    domain_dsn=Path(os.environ['SUPERPLANE_DOMAIN_DSN_FILE']).read_text().strip()
+    domain_schema=os.environ['SUPERPLANE_DOMAIN_SCHEMA']
+    assert re.fullmatch(r'[a-z][a-z0-9_]{0,62}',domain_schema)
+    domain=await asyncpg.connect(domain_dsn,ssl=ssl.create_default_context(cafile=os.environ['SUPERPLANE_DATABASE_CA_FILE']),timeout=10,command_timeout=20,server_settings={'search_path':domain_schema+',public'})
+    try:
+        async with domain.transaction(readonly=True):
+            domain_rows=await domain.fetch("SELECT pid,state,wait_event_type,wait_event,pg_blocking_pids(pid) AS blockers,clock_timestamp()-query_start AS query_age,query FROM pg_stat_activity WHERE usename=current_user AND pid<>pg_backend_pid()")
+        domain_identity=dict(await domain.fetchrow('SELECT current_database() AS database,current_schema() AS schema,inet_server_addr() AS server,pg_is_in_recovery() AS replica'))
+        journals=[]
+        for row in await domain.fetch('SELECT generation,revoked,progress_json FROM workspace_bootstrap_authority WHERE workspace_id=$1 AND operation_id=$2','53125337-0501-5b0d-bdab-66c8d8d94ff7',operation):
+            progress=json.loads(row['progress_json'])
+            journals.append({'generation':row['generation'],'revoked':row['revoked'],'phase':progress.get('phase'),'component_inventory_complete':progress.get('component_inventory_complete'),'fields':sorted(progress),'grant_phases':{k:v.get('phase') for k,v in progress.items() if isinstance(v,dict) and 'phase' in v}})
+        domain_activity=[]
+        for row in domain_rows:
+            value=dict(row); query=value.pop('query') or ''
+            value['query_sha256']=hashlib.sha256(query.encode()).hexdigest()
+            value['tables']=sorted(set(re.findall(r'\b(?:FROM|JOIN|UPDATE|INTO)\s+([a-z_][a-z_0-9.]*)',query,re.I)))
+            domain_activity.append(value)
+    finally:
+        await domain.close()
+    from workspace_provisioning.artifacts import digest
+    root=Path(os.environ['SUPERPLANE_LIFECYCLE_STATE_DIR'])/('superplane-worker-'+str(os.getuid()))
+    paths=[]
+    for op in [operation]+[operation+':bootstrap-retry:'+str(r['reauthorization_id']) for r in receipts]:
+        path=root/digest(['a79914b7-45b6-4520-adeb-e09351267194','53125337-0501-5b0d-bdab-66c8d8d94ff7',op])
+        item={'path':str(path),'exists':path.exists()}
+        if path.exists() and not path.is_symlink():
+            item['entries']=[{'name':v.name,'size':v.lstat().st_size,'mtime':v.lstat().st_mtime,'directory':v.is_dir()} for v in path.iterdir()]
+        state_path=path/'bootstrap-state.json'
+        if state_path.is_file() and not state_path.is_symlink():
+            state=json.loads(state_path.read_text())
+            item['state']={k:state.get(k) for k in ('workspace_id','cluster_arn','registration_reserved','registration_claim','controller_installed','prerequisites_recorded','registration_finalized','taint_clear_pending','taint_cleared','taint_restored')}
+        paths.append(item)
+    threads=[]
+    for path in Path('/proc/1/task').iterdir():
+        threads.append({'tid':int(path.name),'comm':(path/'comm').read_text().strip(),'wait':(path/'wchan').read_text().strip()})
+    print(json.dumps({'read_only':True,'source_verified':True,'observed_at':datetime.now(timezone.utc).isoformat(),'database':identity,'activity':activity,'domain_activity':domain_activity,'domain_database':domain_identity,'journals':journals,'dispatch_locks':[dict(r) for r in locks],'directories':paths,'threads':threads},default=str))
+asyncio.run(main())

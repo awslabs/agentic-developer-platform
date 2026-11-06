@@ -38,6 +38,8 @@ from src.admin.agent_schemas import (
 from src.admin.agent_service import AgentService
 from src.admin.audit import write_admin_audit
 from src.admin.audit_operation import AuditedAdminRoute, mark_admin_effects
+from src.admin.campaign_identity import router as campaign_identity_router
+from src.admin.campaign_quota import router as campaign_quota_router
 from src.admin.cognito_service import CognitoService
 from src.admin.config import (
     ASSIGNABLE_ROLES,
@@ -47,7 +49,9 @@ from src.admin.config import (
     AdminRole,
     Permission,
 )
+from src.admin.crew_executors import router as crew_executor_router
 from src.admin.exceptions import AccessDeniedError
+from src.admin.flow_read_health import get_flow_read_health
 from src.admin.hierarchy import router as hierarchy_router
 from src.admin.log_service import LogService
 from src.admin.memberships import project_member_org_ids
@@ -89,7 +93,10 @@ from src.admin.schemas import (
 from src.admin.service import AdminService
 from src.admin.team_membership_claims import commit_team_memberships
 from src.auth.dependencies import get_current_user  # Issue #133: Real Cognito JWT auth
+from src.shared.accounting_health import get_accounting_health
 from src.shared.database import get_db
+from src.shared.metrics import get_emf_export_health
+from src.shared.performance_diagnostics import get_diagnostic_health
 from src.shared.schemas.admin import (
     DepartmentCreateRequest,
     DepartmentListResponse,
@@ -118,6 +125,7 @@ from src.shared.schemas.auth import TokenContext
 logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class=AuditedAdminRoute, prefix="/admin", tags=["admin"])
+router.include_router(crew_executor_router)
 
 
 # Issue #133: CRITICAL SECURITY FIX
@@ -287,8 +295,8 @@ async def get_budget_config(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
 ) -> BudgetConfigResponse | None:
     """Get budget configuration for an entity."""
-    await access.check_permission(current_user, Permission.BUDGET_READ, target_org_id=org_id)
-    return await service.get_budget_config(org_id, entity_type, entity_id)
+    canonical = await _exact_budget_target(org_id, entity_type, entity_id, service, access, current_user, Permission.BUDGET_READ)
+    return await service.get_budget_config(org_id, entity_type, canonical)
 
 
 @router.get(
@@ -304,8 +312,8 @@ async def get_budget_status(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
 ) -> BudgetStatusResponse:
     """Get budget status with current spend for an entity."""
-    await access.check_permission(current_user, Permission.BUDGET_READ, target_org_id=org_id)
-    return await service.get_budget_status(org_id, entity_type, entity_id)
+    canonical = await _exact_budget_target(org_id, entity_type, entity_id, service, access, current_user, Permission.BUDGET_READ)
+    return await service.get_budget_status(org_id, entity_type, canonical)
 
 
 @router.put("/organizations/{org_id}/budget/{entity_type}/{entity_id}", response_model=BudgetConfigResponse)
@@ -324,6 +332,8 @@ async def update_budget_config(
     ``BudgetConfigResponse | None`` and returned HTTP 200 with a null body when
     no budget matched, so a no-op edit looked like a successful one.
     """
+    if entity_type == "project":
+        raise HTTPException(422, detail="Manage Project budgets through /v1/projects/{project_id}/budget.")
     await access.check_permission(current_user, Permission.BUDGET_UPDATE, target_org_id=org_id)
     mark_admin_effects()
     result = await service.update_budget_config(org_id, entity_type, entity_id, request)
@@ -743,6 +753,16 @@ async def query_logs(
 
 
 # Dashboard Endpoints
+
+
+@router.get("/diagnostics/export-health")
+async def get_export_health(
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> dict[str, float]:
+    """Expose only process-local, aggregate diagnostic health to platform admins."""
+    access.require_platform_admin(current_user)
+    return {**get_emf_export_health(), **get_diagnostic_health(), **get_accounting_health(), **get_flow_read_health()}
 
 
 @router.get("/dashboard/platform", response_model=PlatformDashboardResponse)
@@ -1567,11 +1587,10 @@ async def list_agents(
     Platform admins can specify org_id to list agents for any org.
     Org admins can only list agents for their own organization.
     """
-    # Determine which org to query
-    if org_id:
-        await access.check_permission(current_user, Permission.ORG_READ, target_org_id=org_id)
-    else:
-        org_id = current_user.org_id
+    org_id = org_id or current_user.org_id
+    if not org_id:
+        raise AccessDeniedError("An organization is required to list agents")
+    await access.check_permission(current_user, Permission.ORG_READ, target_org_id=org_id)
 
     return await service.list_agents(org_id, page, page_size)
 
@@ -2604,6 +2623,8 @@ router.include_router(_audit_sub_router)
 from src.admin.ratelimit_cli import router as _ratelimit_cli_router  # noqa: E402
 
 router.include_router(_ratelimit_cli_router)
+router.include_router(campaign_quota_router)
+router.include_router(campaign_identity_router)
 
 # Guarded CLI adapters reuse the services and permissions above.
 router.include_router(hierarchy_router)

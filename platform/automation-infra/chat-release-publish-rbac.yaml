@@ -1,0 +1,34 @@
+# Operator bootstrap: the ADP-managed chat release identity (adp:chat-release-publish,
+# platform/automation-infra/chat-deployment.tf) converges the ordinary gateway on the chat
+# release digests it just pinned into the ScaledJob (#8086): deploy-chat-scaledjob.sh
+# patches the named ConfigMap, restarts the named Deployment (a patch of its pod template)
+# and waits for the rollout (get + watch/list with a metadata.name field selector);
+# verify-chat-rollout.sh reads the ConfigMap back. Nothing else in adp-gateway, and no
+# reads of Secrets or pods. Mutations stay confined to these two named objects.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: adp-chat-release-publish
+  namespace: adp-gateway
+rules:
+  - apiGroups: ['']
+    resources: [configmaps]
+    resourceNames: [bedrockgateway-config]
+    verbs: [get, patch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [bedrockgateway]
+    verbs: [get, patch, watch, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: adp-chat-release-publish
+  namespace: adp-gateway
+subjects:
+  - kind: Group
+    name: adp:chat-release-publish
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: adp-chat-release-publish

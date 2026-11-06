@@ -3,6 +3,8 @@
 import argparse
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 
@@ -132,6 +134,10 @@ def broker(directory):
     data = verify_prepared(directory)
     manifest = load(directory, verify=False)
     name = 'bedrockgw-dev-github-auth-broker'
+    subprocess.run([
+        sys.executable, str(Path(__file__).resolve().parents[3] / 'modules/gateway/scripts/prepare-broker-state.py'),
+        '--function-name', name, '--region', REGION,
+    ], check=True)
     aws('lambda', 'update-function-code', '--function-name', name,
         '--s3-bucket', f"adp-terraform-state-{data['account']}",
         '--s3-key', key(manifest, 'lambda/github-auth-broker.zip'))

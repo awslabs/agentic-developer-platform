@@ -9,7 +9,9 @@ import os
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.compiler import compiles
 
 # The application creates its production-shaped engine at import time. Give that
 # engine an explicit credential-free local target; requests use the isolated SQLite
@@ -78,6 +80,15 @@ def _patch_jsonb_for_sqlite():
 
 
 _patch_jsonb_for_sqlite()
+
+
+@compiles(UUID, "sqlite")
+def _compile_uuid_for_sqlite(type_, compiler, **kw):
+    # SQLite gives a column declared UUID numeric affinity. A valid UUID whose
+    # hex looks numeric (including exponent notation) then becomes a float,
+    # corrupting the value and breaking SQLAlchemy's UUID result processor.
+    # Preserve the driver's 32-character hex representation in this test double.
+    return "CHAR(32)"
 
 
 async def _override_get_session():

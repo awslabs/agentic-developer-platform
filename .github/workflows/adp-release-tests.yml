@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - 'platform/scripts/release/**'
+      - '.github/scripts/*evidence_s3.py'
+      - '.github/scripts/tests/test_release_evidence_s3.py'
+      - '.github/scripts/tests/test_ci_evidence_s3.py'
       - 'platform/scripts/tests/test_release*.py'
       - 'platform/release-infra/**'
       - 'platform/infra/main.tf'
@@ -27,6 +30,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/release-tools
+      - run: python -m pytest .github/scripts/tests/test_ci_evidence_s3.py .github/scripts/tests/test_release_evidence_s3.py -q
+      - name: Verify release evidence storage on ARC
+        if: github.repository == 'aws-e/adp'
+        run: |
+          printf '{"probe":true}\n' > "$RUNNER_TEMP/release-evidence-probe.json"
+          python .github/scripts/release_evidence_s3.py upload \
+            --name release-manifest --path "$RUNNER_TEMP/release-evidence-probe.json"
+          python - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, '.github/scripts')
+          import release_evidence_s3 as evidence
+          bucket = evidence.runner_bucket()
+          prefix = evidence.prefix(os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'],
+                                   os.environ['GITHUB_JOB'], 'release-manifest')
+          temp = Path(os.environ['RUNNER_TEMP'])
+          receipt = json.loads(evidence.read_object(bucket, prefix + '/receipt.json', temp / 'receipt.json'))
+          manifest = json.loads(evidence.read_object(bucket, receipt['key'], temp / 'manifest.json', receipt))
+          artifact = manifest['artifact']
+          evidence.read_object(bucket, artifact['key'], temp / 'evidence.tar.gz', artifact)
+          print('ARC release evidence receipt, manifest, archive and checksums verified')
+          PYTHON
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_release*.py'
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py'
       - run: python -m pytest platform/scripts/tests/test_upgrade_worker_migration.py -q

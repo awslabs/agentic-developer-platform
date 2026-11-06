@@ -56,6 +56,15 @@ MAX_CHAIN_DEPTH = int(os.environ.get("MAX_CHAIN_DEPTH", "8"))
 # human→dev→reviewer→dev (3 bot dispatches) while blocking the 4th (loop).
 CROSS_PERSONA_LOOP_THRESHOLD = int(os.environ.get("CROSS_PERSONA_LOOP_THRESHOLD", "4"))
 
+DISPATCH_EVENTS = frozenset({
+    ("issue_comment", "created"),
+    ("issues", "opened"),
+    ("issues", "labeled"),
+    ("pull_request", "opened"),
+    ("pull_request", "synchronize"),
+    ("pull_request", "ready_for_review"),
+})
+
 
 @dataclass
 class Intent:
@@ -174,6 +183,13 @@ def extract_intent_with_reason(
     #     the issue's correlation pointer (issue number is in the branch name),
     #     resolved in determine_correlation. Marker ABSENCE no longer blocks.
     # Non-ADP bots (dependabot, etc.) never reach here — they 403 upstream.
+
+    if (event_type, action) not in DISPATCH_EVENTS:
+        if event_type == "installation" and action == "created":
+            return None, skip_reasons.INSTALLATION_EVENT
+        if event_type == "issue_comment" and _is_bot_sender(sender):
+            return None, skip_reasons.BOT_COMMENT_ACTION_UNHANDLED
+        return None, skip_reasons.EVENT_TYPE_UNHANDLED
 
     # issues + opened → AIDLC inception (gated on aidlc-intent label)
     if event_type == "issues" and action == "opened":

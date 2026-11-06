@@ -56,3 +56,9 @@ const mockSessionStorage = (() => {
 Object.defineProperty(window, 'sessionStorage', {
   value: mockSessionStorage,
 });
+
+// jsdom has no native dialog implementation; browser journeys verify focus and Escape.
+if (!HTMLDialogElement.prototype.showModal) {
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
+}

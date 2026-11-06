@@ -130,6 +130,9 @@ export async function codexPersonaOperation(body: { operation_id: string; reques
     const signed = await signer.sign({ method: 'POST', protocol: url.protocol, hostname: url.hostname, path: url.pathname,
       headers: { host: url.host, 'content-type': 'application/json', ...workerIdentityHeaders() }, body: payload });
     signal.throwIfAborted();
+    // The configured control URL must match the API Gateway HTTPS host/path pattern
+    // above. The operation path is fixed, and redirects cannot forward signed headers.
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
     return object(await bounded(await fetch(url, { method: 'POST', headers: signed.headers, body: payload, redirect: 'error', signal })));
   };
   try { return await Promise.race([operation(), cancelled]); }

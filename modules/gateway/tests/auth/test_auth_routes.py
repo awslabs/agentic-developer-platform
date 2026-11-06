@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from src.auth.exceptions import DuplicateServiceAccountError, ServiceAccountNotFoundError
@@ -563,6 +563,29 @@ class TestAuthRoutes:
             assert response.status_code == 200
             data = response.json()
             assert data["message"] == "Logout successful"
+        finally:
+            test_app.dependency_overrides.clear()
+
+    @pytest.mark.parametrize("unavailable", [False, True])
+    def test_cognito_logout_revokes_native_launch_token(self, unavailable):
+        context = TokenContext(
+            user_id="user-123",
+            org_id="org-456",
+            team_id="team-789",
+            department_id="dept-abc",
+            account_type="human",
+            is_admin=False,
+            token_use="access",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        test_app.dependency_overrides[get_current_user_context] = create_mock_context_dependency(context)
+        try:
+            with patch("src.auth.routes.revoke_native_launch", new_callable=AsyncMock) as revoked:
+                if unavailable:
+                    revoked.side_effect = HTTPException(503, detail={"code": "session_check_unavailable"})
+                response = client.post("/auth/logout", headers={"Authorization": "Bearer valid-token"})
+                assert response.status_code == (503 if unavailable else 200)
+                revoked.assert_awaited_once_with("Bearer valid-token", context.expires_at)
         finally:
             test_app.dependency_overrides.clear()
 

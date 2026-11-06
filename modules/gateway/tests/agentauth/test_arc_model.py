@@ -213,3 +213,18 @@ async def test_arc_cannot_bind_a_native_codex_persona_to_the_claude_harness(arc_
     binding = dict(arc_context[1]["binding"], persona="agent-codex-reviewer")
     monkeypatch.setenv("ADP_ARC_MODEL_BINDINGS", json.dumps([binding]))
     assert (await decide(arc_context)).status_code == 403
+
+
+async def test_deployment_oidc_audience_cannot_be_used_as_model_identity(arc_context):
+    from fastapi import HTTPException
+
+    from src.orchestration.deployment_credentials import AUDIENCE
+
+    _, state = arc_context
+    token = jwt.encode(state["claims"] | {"aud": AUDIENCE}, state["key"], algorithm="RS256", headers={"kid": "github-test"})
+    assert (await arc_model.github_claims(token, audience=AUDIENCE))["aud"] == AUDIENCE
+    with pytest.raises(HTTPException):
+        await arc_model.github_claims(token)
+    model_token = jwt.encode(state["claims"], state["key"], algorithm="RS256", headers={"kid": "github-test"})
+    with pytest.raises(HTTPException):
+        await arc_model.github_claims(model_token, audience=AUDIENCE)

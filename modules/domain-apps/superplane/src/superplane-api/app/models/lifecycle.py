@@ -113,3 +113,36 @@ class WorkspaceLifecycleControlOperation(Base):
     registered_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class WorkspacePartialApplyPreparation(Base):
+    __tablename__ = "workspace_partial_apply_preparations"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "workspace_id",
+            "source_operation_id",
+            "source_fence",
+            "owner_evidence_sha256",
+            name="uq_partial_apply_preparation",
+        ),
+        CheckConstraint("source_fence BETWEEN 1 AND 32 AND source_version > 0"),
+        CheckConstraint(
+            "plan_digest ~ '^[a-f0-9]{64}$' AND owner_evidence_sha256 ~ '^[a-f0-9]{64}$'"
+        ),
+        CheckConstraint("operation_id <> source_operation_id"),
+        {"info": {"postgresql_bootstrap_journal": True}},
+    )
+    operation_id = Column(String(255), primary_key=True)
+    org_id = Column(String(255), nullable=False)
+    workspace_id = Column(String(255), nullable=False)
+    source_operation_id = Column(String(255), nullable=False)
+    source_fence = Column(BigInteger, nullable=False)
+    source_version = Column(BigInteger, nullable=False)
+    plan_digest = Column(String(64), nullable=False)
+    original_allocation_id = Column(String(255), nullable=False)
+    owner_evidence_sha256 = Column(String(64), nullable=False)
+    owner_evidence_json = Column(Text, nullable=False)
+    registered_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

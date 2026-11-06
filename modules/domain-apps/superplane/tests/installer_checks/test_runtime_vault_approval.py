@@ -11,7 +11,7 @@ from installation import runtime_cli
 from installation.config import Refusal
 from installation.runtime_approval import GitHubVaultReadAPI
 
-from .test_runtime_approval import review_setup
+from .test_runtime_approval import MERGE, merged_plan, review_setup
 from .test_runtime_cli import arguments
 
 __all__ = ["review_setup", "arguments"]
@@ -41,6 +41,18 @@ def test_entire_exact_head_approval_uses_vault_transport(review_setup):
     assert result["approved"] is True and result["approver"] == "github:user:2"
     assert state["pull_reads"] == 2
     assert any("/reviews/100" in path for path in state["calls"])
+
+
+def test_same_author_merge_approval_uses_vault_transport(review_setup):
+    approval, args, state = review_setup
+    merged_plan(state)
+    state["pull"]["user"]["id"] = 2
+    approval.api = GitHubVaultReadAPI(
+        "private-approval", proxy=through_proxy(approval.api)
+    )
+    result = approval.verify_plan(**args)
+    assert result["approved"] is True and result["approver"] == "github:user:2"
+    assert any(path.endswith("ref=" + MERGE) for path in state["calls"])
 
 
 @pytest.mark.parametrize("fault", ["head", "changes-requested", "permission"])
@@ -135,10 +147,14 @@ def test_explicit_connection_label_is_validated(label):
         GitHubVaultReadAPI(label)
 
 
+@pytest.mark.parametrize("approval_kind", ["review", "merge"])
 def test_cli_explicit_vault_choice_reaches_real_approval_before_preparation(
-    arguments, review_setup, monkeypatch
+    arguments, review_setup, monkeypatch, approval_kind
 ):
     approval, args, state = review_setup
+    if approval_kind == "merge":
+        merged_plan(state)
+        state["pull"]["user"]["id"] = 2
     arguments.output = approval.directory
     arguments.execute = arguments.resume = True
     arguments.approved_plan_sha256 = args["plan_sha256"]

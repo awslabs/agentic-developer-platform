@@ -17,16 +17,22 @@ export interface BulkUploadDialogProps {
   isOpen: boolean;
   onClose: () => void;
   onAssetsAdded: () => void;
-  scope: 'personal' | 'tenant';
+  scope: 'personal' | 'tenant' | 'product';
+  productId?: string;
 }
 
 type DialogPhase = 'upload' | 'preview' | 'committing' | 'done';
 
-export function BulkUploadDialog({
+export function BulkUploadDialog(props: BulkUploadDialogProps) {
+  return props.isOpen ? <BulkImportForm key={`${props.scope}:${props.productId ?? ''}`} {...props} /> : null;
+}
+
+function BulkImportForm({
   isOpen,
   onClose,
   onAssetsAdded,
   scope,
+  productId,
 }: BulkUploadDialogProps) {
   const [phase, setPhase] = useState<DialogPhase>('upload');
   const [file, setFile] = useState<File | null>(null);
@@ -41,19 +47,11 @@ export function BulkUploadDialog({
   const dragCounter = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Reset state when dialog closes
+  const active = useRef(true);
   useEffect(() => {
-    if (!isOpen) {
-      setPhase('upload');
-      setFile(null);
-      setIsDragging(false);
-      setIsLoading(false);
-      setError(null);
-      setPreview(null);
-      setCommitResult(null);
-      dragCounter.current = 0;
-    }
-  }, [isOpen]);
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
 
   // --- Drag-and-drop handlers ---
   const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -107,10 +105,12 @@ export function BulkUploadDialog({
     setError(null);
 
     try {
-      const result = await bulkPreview(file, scope);
+      const result = await bulkPreview(file, scope, productId);
+      if (!active.current) return;
       setPreview(result);
       setPhase('preview');
     } catch (err: unknown) {
+      if (!active.current) return;
       if (err && typeof err === 'object' && 'detail' in err) {
         const detail = (err as { detail: unknown }).detail;
         setError(typeof detail === 'string' ? detail : 'Failed to preview file');
@@ -120,7 +120,7 @@ export function BulkUploadDialog({
         setError('Failed to preview file');
       }
     } finally {
-      setIsLoading(false);
+      if (active.current) setIsLoading(false);
     }
   };
 
@@ -138,11 +138,13 @@ export function BulkUploadDialog({
     }));
 
     try {
-      const result = await bulkCommit({ items, scope });
+      const result = await bulkCommit({ items, scope, ...(scope === 'product' ? { product_id: productId } : {}) });
+      if (!active.current) return;
       setCommitResult({ created: result.created, skipped: result.skipped_duplicates });
       setPhase('done');
       onAssetsAdded();
     } catch (err: unknown) {
+      if (!active.current) return;
       setPhase('preview'); // revert to preview so user can retry
       if (err && typeof err === 'object' && 'detail' in err) {
         const detail = (err as { detail: unknown }).detail;
@@ -164,7 +166,10 @@ export function BulkUploadDialog({
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Bulk Upload" size="xl">
+    <Modal isOpen={isOpen} onClose={onClose} title="Import a list of links" size="xl">
+      <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">
+        {scope === 'product' ? 'Your Product team and platform admins can access information added here.' : scope === 'personal' ? 'Information added here stays in your personal Context.' : 'Information added here is shared with your organization.'}
+      </p>
       {/* Upload phase */}
       {phase === 'upload' && (
         <div className="space-y-4">

@@ -32,7 +32,6 @@ workers = kubernetes("scaledjob", "agent-scaledjob", "adp-agents")
 keys = {
     "AGENT_AUTHORITY_ENABLED",
     "ADP_WORK_CLAIMS_ENABLED",
-    "BG_ORCH_DISPATCH_REPO",
     "AGENT_WORKER_IMAGE_DIGESTS",
     "AGENT_WORKER_SERVICE_ACCOUNT",
     "AGENT_AUTHORITY_TABLE",

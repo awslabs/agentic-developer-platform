@@ -62,11 +62,25 @@ def validate_runtime_config(value):
     }
     if (
         not isinstance(value, dict)
-        or set(value) - required - {"new_account", "management_public_access"}
+        or set(value)
+        - required
+        - {"new_account", "management_public_access", "management_ca_pem"}
         or required - set(value)
     ):
         raise LifecycleRefused("lifecycle runtime configuration is incomplete")
     config = deepcopy(value)
+    if "management_ca_pem" in config:
+        import ssl
+
+        ca = config["management_ca_pem"]
+        try:
+            if not isinstance(ca, str) or not 1 <= len(ca) <= 16384:
+                raise ValueError()
+            ssl.create_default_context(cadata=ca)
+        except (ValueError, TypeError, ssl.SSLError):
+            raise LifecycleRefused(
+                "management TLS trust must be a valid public CA certificate"
+            ) from None
     for key in ("controller_image", "imds_probe_image"):
         if not isinstance(config[key], str) or not re.fullmatch(
             r"[^\s]+@sha256:[a-f0-9]{64}", config[key]

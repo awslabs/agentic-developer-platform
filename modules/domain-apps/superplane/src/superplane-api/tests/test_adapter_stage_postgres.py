@@ -14,6 +14,7 @@ from app.database import get_session
 from app.main import app
 from app.models.organization_grant import OrganizationGrantRecord
 from app.models.provider_connection import ProviderConnectionBinding
+from app.models.user import USER_STATUS_ACTIVE, User
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
 from app.operation_activation import STAGED_ADMISSION_PROBE
@@ -45,6 +46,14 @@ async def stage_api(connection_db, enforcing, monkeypatch):  # noqa: F811
                 principal_type="human",
                 permissions="organization:administer",
                 granted_by="test-owner",
+            )
+        )
+        session.add(
+            User(
+                org_id=ctx.org,
+                email="pg-owner@example.invalid",
+                cognito_sub="pg-owner",
+                status=USER_STATUS_ACTIVE,
             )
         )
         await session.commit()

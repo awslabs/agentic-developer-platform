@@ -1,6 +1,7 @@
 import { DEVELOPMENT_TIMEOUT_MS } from "./timeouts.js";
 import { runDeveloper, type DeveloperTask } from "./developer.js";
 import { withGitHubTokenRenewal } from "./token-lifecycle.js";
+import { parseDeveloperNodeScope } from "./developer-scope.js";
 
 async function main() {
   const embedded = process.argv.includes("--embedded");
@@ -23,6 +24,12 @@ async function main() {
     maxTurns: process.env.CODEX_DEVELOPER_MAX_TURNS === undefined
       ? undefined : Number(process.env.CODEX_DEVELOPER_MAX_TURNS),
   };
+  if (embedded && task.persona === "developer") {
+    task.nodeScope = parseDeveloperNodeScope(process.env.ADP_DEVELOPER_NODE_CONTEXT, {
+      repository: task.repository, issue: task.issue,
+      flowId: process.env.ADP_BOARD_FLOW_ID, nodeAddress: process.env.ADP_BOARD_NODE_ADDRESS,
+    });
+  }
   if (!embedded && !value("--workspace")) throw new Error("Standalone execution requires --workspace pointing to a new clone directory");
   // Use the same broker/token-file renewal already used by the Codex reviewer.
   // Mediated credentials require their typed tools; do not silently bypass them.

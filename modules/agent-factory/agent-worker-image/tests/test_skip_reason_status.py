@@ -228,6 +228,13 @@ class TestAwsLabelFatalStatus:
 
         envelope = json.loads(json.dumps(SAMPLE_ENVELOPE))
         envelope["persona"] = "operations"
+        monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", MagicMock(return_value={"status": "up_to_date"}))
+        # Reach the role-selection boundary without real Git, CloudWatch or
+        # GitHub traffic. The label-less case stops just after that boundary.
+        monkeypatch.setattr(entrypoint, "BootstrapLogger", MagicMock())
+        monkeypatch.setattr(entrypoint.subprocess, "run", MagicMock(return_value=MagicMock(returncode=2, stdout="", stderr="")))
+        monkeypatch.setattr(entrypoint, "create_check_run", MagicMock(return_value={}))
+        monkeypatch.setattr(entrypoint, "_stage_personas_and_skills", MagicMock(side_effect=RuntimeError("past role selection")))
         if aws_label is not None:
             envelope["aws_label"] = aws_label
 

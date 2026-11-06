@@ -46,6 +46,26 @@ class LifecycleRecovery(ScopedRecovery):
                 self.operation_id,
             )
         if not registered or operation.request.action != "provision":
+            if (
+                operation.request.parameters.get("lifecycle_phase")
+                == "prepare-partial-apply"
+                and operation.request.action == "provision"
+            ):
+                from .partial_apply_request import registration_values
+
+                async with (
+                    self.context.connect() as connection,
+                    self.context.domain_connect() as domain,
+                ):
+                    await registration_values(
+                        connection,
+                        domain,
+                        operation_id=self.operation_id,
+                        org_id=self.principal.org_id,
+                        workspace_id=self.principal.workspace_id,
+                    )
+                registered = True
+        if not registered or operation.request.action != "provision":
             raise OperationRefused("original lifecycle registration is unavailable")
         _, _, _, _, step = await validate_phase(
             operation, self.context, require_fresh=False
@@ -60,10 +80,13 @@ class LifecycleRecovery(ScopedRecovery):
             self.proposals = BootstrapRecovery(self.context)
             self.observe_claim = self.proposals.observe
         async with self.provider.execution_pool.acquire() as connection:
-            started = await connection.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM harness_provider_call_intent WHERE operation_id=$1)",
+            from harness_jobs.provider_retry import active_call_rows
+
+            calls = await connection.fetch(
+                "SELECT idempotency_key FROM harness_provider_call_intent WHERE operation_id=$1",
                 self.operation_id,
             )
+            started = bool(await active_call_rows(connection, self.operation_id, calls))
         if started and step.step_id != "create-account":
             async with self.provider.domain_pool.acquire() as connection:
                 proposed = (

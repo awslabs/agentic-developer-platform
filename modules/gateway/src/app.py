@@ -7,6 +7,7 @@ from importlib import import_module
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.admin.middleware import create_request_logging_middleware
 from src.agentauth.model_identity import AgentModelIdentityMiddleware
@@ -26,13 +27,20 @@ from src.shared.tracing import setup_tracing, shutdown_tracing
 logger = logging.getLogger("bedrockgateway")
 
 UNIT_MODULES = [
+    "src.cloud_desktop.routes",
     "src.domain_proxy.superplane",
     "src.auth.routes",
     "src.auth.workspaces",  # Process-local tenant discovery/context; retain /auth legacy aliases.
     "src.auth.session_admin",
     "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
     "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators
+    "src.auth.native_credentials",  # Private native recipient delivery; default-off until configured.
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
+    "src.auth.connections_routes",  # OAuth consent and Identity-owned vault pointers
+    "src.auth.atlassian_mcp_routes",  # Owner-bound Atlassian MCP Identity connection
+    "src.auth.atlassian_system_routes",
+    "src.auth.atlassian_forge_routes",
+    "src.products.jira_context",
     "src.auth.vault_authority_routes",  # Workspace delegation and independent validation
     "src.auth.aws_connect_routes",  # Issue #562: self-serve AWS account connect
     "src.internal.routes",  # Issue #446: internal service-to-service endpoints
@@ -45,9 +53,23 @@ UNIT_MODULES = [
     "src.internal.vault_evidence_routes",
     "src.internal.controller_execution_routes",
     "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path
+    "src.internal.l5_product_routes",
+    "src.internal.l5_consumer_routes",
+    "src.products.l5_consumer_routes",
+    "src.internal.connector_context_routes",
+    "src.internal.connector_source_broker",
+    "src.internal.profile_discovery_authority",
+    "src.products.collection_jobs",
+    "src.l5_integration",
+    "src.internal.l5_snapshot_routes",
+    "src.internal.l5_schedule_routes",
+    "src.products.source_snapshot_routes",
+    "src.internal.l5_credential_routes",
     "src.internal.task_credentials",  # Existing customer trust principal, restricted task session
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
+    "src.internal.ingestion_control_routes",
+    "src.internal.ingestion_refresh_routes",
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
     "src.internal.persona_model_probe_routes",  # PMM-03: bounded harness probe worker API
     "src.internal.persona_model_selection",
@@ -58,6 +80,15 @@ UNIT_MODULES = [
     "src.agentauth.external_roots",  # Registered ingress creates protected roots before publication.
     "src.agentauth.chat_model",  # Verified chat pod, fresh signed SDK decision.
     "src.agentauth.chat_data_routes",
+    "src.agentauth.chat_tools",
+    "src.crew.proxy",
+    "src.crew.checkpoint_routes",
+    "src.usage.conversations_routes",  # #9026: my conversations, newest first
+    "src.crew.host_tools",  # #8380: Dev Box Crew tools under the host's signed model identity.
+    "src.crew.host_github",  # #8555: the owner's GitHub token for the Dev Box's gh/git, same host proof.
+    "src.crew.orchestration_read_routes",
+    "src.crew.host_aws",  # Owner connections through the same host proof and existing STS broker.
+    "src.agentauth.installation_ui",
     "src.agentauth.chat_cancellation",
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
     "src.agentauth.task_admission_routes",  # Task ingress proof, caller identity and durable admission.
@@ -67,6 +98,11 @@ UNIT_MODULES = [
     "src.agentauth.registration_routes",
     "src.agentauth.run_services",
     "src.agentauth.knowledge_service",
+    "src.internal.tools_knowledge",
+    "src.internal.tools_github",
+    "src.internal.tools_slack",
+    "src.internal.tools_jira",
+    "src.internal.tool_adapter_authority",
     "src.agentauth.task_routes",
     # #5796: the publication protocol's claim/settle/sweep adapters. Separate
     # from task_routes because these serve the platform's own publisher and
@@ -90,6 +126,11 @@ UNIT_MODULES = [
     "src.agentauth.artifact_service",
     "src.agentauth.cyber_jobs",
     "src.orchestration.shared_review",
+    "src.orchestration.deployment_credentials",
+    "src.orchestration.operations_release_job",
+    "src.orchestration.l5_observation_export_routes",
+    "src.orchestration.security_evidence_release",
+    "src.orchestration.tool_adapter_release",
     # #5223: mediated GitHub operations. A separate module from
     # registration_routes even though it shares the /self prefix, because this is
     # the only route on that prefix that reaches an external provider and holds an
@@ -97,6 +138,7 @@ UNIT_MODULES = [
     # authorization it performs is reviewed on its own terms rather than inherited
     # from a router whose other routes only touch our own records.
     "src.agentauth.github_operation_routes",
+    "src.agentauth.actions_routes",
     # #5301: the delivering run binds its own implementation PR to its story,
     # authenticated by the run credential rather than a self-declared run header.
     "src.agentauth.pr_binding_routes",
@@ -104,10 +146,12 @@ UNIT_MODULES = [
     "src.agentauth.service_authority",  # Human-only standing service delegation; never on the internal plane.
     "src.proxy.routes",
     "src.admin.routes",
+    "src.admin.tool_routes",
     "src.admin.identity.router",
     "src.admin.identity.github_enrollment_routes",
     "src.admin.identity.recovery_routes",  # Native Cognito recovery: no legacy /api prefix.
     "src.admin.connections.routes",  # Issue #465: GitHub App install + connections
+    "src.admin.connections.oauth_apps",  # Reusable provider-app setup for user OAuth
     # Issue #4842: platform-admin attach/detach of an ORG's GitHub connection.
     # Separate from src.admin.connections.routes on purpose — that router is the
     # self-serve path (a user installs the App and it binds to their own tenant);
@@ -117,8 +161,26 @@ UNIT_MODULES = [
     "src.admin.tenants.routes",  # Issue #2954: Multi-org-to-tenant linking (rule 3)
     "src.admin.onboarding.handler",  # Issue #538: Self-serve onboarding flow
     "src.pool.routes",
+    "src.products.routes",
+    "src.products.shared_profile_routes",
+    "src.gitlab.home_routes",
+    "src.products.evaluation_cleanup_routes",
+    "src.products.runtime_proof_routes",
+    "src.catalog.routes",
+    "src.catalog.initiative_routes",
+    "src.products.project_routes",
+    "src.products.budget_routes",
+    "src.products.work_scope_routes",
+    "src.insights_results.routes",
+    "src.products.source_routes",
+    "src.products.connector_grants",
+    "src.product_onboarding.routes",
+    "src.product_onboarding.handoffs",
+    "src.product_onboarding.callbacks",
+    "src.product_onboarding.recovery",
     "src.budget.routes",
     "src.budget.enforcement_routes",
+    "src.budget.metering_reconciliation_routes",
     # Issue #4397: own-scope budget read API (GET /me/budget). A SEPARATE module
     # from src.budget.routes on purpose — that router takes entity_type/entity_id
     # unscoped from the request (open IDOR #4384), so this one takes identity from
@@ -242,9 +304,27 @@ UNIT_MODULES = [
 ]
 
 
+class ShutdownAdmissionMiddleware:
+    def __init__(self, app: ASGIApp, gateway: FastAPI) -> None:
+        self.app = app
+        self.gateway = gateway
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and getattr(self.gateway.state, "shutting_down", False):
+            response = JSONResponse(
+                status_code=503,
+                content={"error": "gateway_shutting_down", "message": "Gateway is draining model usage settlements."},
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("BedrockGateway starting up", extra={"event": "startup"})
+    app.state.shutting_down = False
+    app.state.metered_responses_ready = False
 
     # Issue #2918: Only run create_all when BG_DB_AUTO_CREATE=true (local dev).
     # In deployed environments, alembic migrations are the single source of truth.
@@ -276,6 +356,7 @@ async def lifespan(app: FastAPI):
         logger.info("Skipping create_all (BG_DB_AUTO_CREATE=false); alembic manages schema")
 
     # Initialize proxy service with single-account Bedrock pool
+    pool = None
     try:
         from src.pool.simple_pool import SimplePoolService
         from src.proxy.model_resolver import production_model_resolver
@@ -284,23 +365,62 @@ async def lifespan(app: FastAPI):
 
         pool = SimplePoolService()
         model_resolver = production_model_resolver(settings)
-        proxy = ProxyService(pool_service=pool, model_resolver=model_resolver)
+        proxy = ProxyService(
+            pool_service=pool,
+            model_resolver=model_resolver,
+            bedrock_stream_operation_timeout=settings.bedrock_stream_operation_timeout_seconds,
+        )
         set_model_resolver(model_resolver)
         set_proxy_service(proxy)
         logger.info("Proxy service initialized with single-account pool and deployed model policy")
     except Exception as e:
         logger.error(f"Failed to initialize proxy service: {e}")
 
+    journal_bucket = os.getenv("BG_METERING_JOURNAL_BUCKET")
+    metered_serving = os.getenv("BG_METERED_RESPONSES_ENABLED") == "true"
+    journal_client = None
+    metering_journal = None
+    if journal_bucket:
+        try:
+            import boto3
+            from botocore.config import Config
+
+            from src.usage.metering_journal import ImmutableMeteringJournal
+
+            journal_client = boto3.client(
+                "s3", region_name=settings.mantle_region, config=Config(connect_timeout=2, read_timeout=3, retries={"max_attempts": 1})
+            )
+            metering_journal = ImmutableMeteringJournal(journal_bucket, region=settings.mantle_region, client=journal_client)
+        except Exception:
+            logger.exception("Metering journal unavailable; metered Responses remain disabled")
+
     # Issue #2709: Initialize the bedrock-mantle passthrough service for OpenAI
     # Responses-API traffic (Codex metering/governance). Only wired when enabled;
     # otherwise the route returns 503 (get_mantle_service raises).
+    from src.proxy.routes import set_mantle_service
+
+    set_mantle_service(None)
+    mantle_client = None
     try:
-        settings = get_settings()
         if settings.mantle_enabled:
+            import httpx
+
+            from src.budget.metering_admission import MeteringAdmission
             from src.proxy.mantle_auth import make_mantle_auth
             from src.proxy.mantle_service import MantlePassthroughService
-            from src.proxy.routes import set_mantle_service
+            from src.proxy.metered_transport import MeteredHTTPTransport
+            from src.shared.database import get_accounting_session_factory, get_session_factory
 
+            if metered_serving and settings.mantle_operation_timeout_seconds is None:
+                raise RuntimeError("metered Responses require BG_MANTLE_OPERATION_TIMEOUT_SECONDS")
+            if metered_serving and metering_journal is None:
+                raise RuntimeError("metering journal unavailable")
+            metering = None
+            transport = None
+            if metered_serving:
+                metering = MeteringAdmission(get_session_factory(), metering_journal, settlement_session_factory=get_accounting_session_factory())
+                transport = MeteredHTTPTransport()
+                mantle_client = httpx.AsyncClient(transport=transport, timeout=120.0, trust_env=False)
             base_url = settings.mantle_base_url.replace("{region}", settings.mantle_region)
             auth = make_mantle_auth(settings.mantle_region)
             set_mantle_service(
@@ -309,14 +429,23 @@ async def lifespan(app: FastAPI):
                     base_url,
                     inference_profile_prefix=settings.mantle_inference_profile_prefix,
                     on_demand_models=settings.mantle_on_demand_models,
+                    operation_timeout=settings.mantle_operation_timeout_seconds,
                     stream_read_timeout=settings.mantle_stream_read_timeout_seconds,
+                    stream_finalization_timeout=settings.mantle_stream_finalization_timeout_seconds,
+                    metering=metering,
+                    metered_transport=transport,
+                    http_client=mantle_client,
                 )
             )
-            logger.info("Mantle passthrough service initialized", extra={"auth_mode": "sigv4"})
+            app.state.metered_responses_ready = metering is not None
+            logger.info("Mantle passthrough service initialized", extra={"auth_mode": "sigv4", "metered": bool(metering)})
         else:
             logger.info("Mantle passthrough disabled (BG_MANTLE_ENABLED not set)")
-    except Exception as e:
-        logger.error(f"Failed to initialize mantle passthrough service: {e}")
+    except Exception:
+        logger.exception("Failed to initialize mantle passthrough service")
+        if mantle_client is not None:
+            await mantle_client.aclose()
+            mantle_client = None
 
     from src.budget.pricing_decisions import maintain_pricing_cache, refresh_pricing_cache
 
@@ -329,18 +458,74 @@ async def lifespan(app: FastAPI):
     from src.agentauth.chat_notifications import maintain_chat_notifications
 
     notifications_task = asyncio.create_task(maintain_chat_notifications(), name="chat_notification_recovery")
+    from src.products.source_capture_jobs import maintain_source_captures
+    from src.shared.database import get_session_factory
+
+    source_capture_task = asyncio.create_task(maintain_source_captures(get_session_factory()), name="product_source_capture_recovery")
+    from src.admin.request_log_queue import create_request_log_queue
+
+    try:
+        app.state.request_log_queue = create_request_log_queue(settings)
+    except Exception:
+        logger.warning("Request log queue configuration unavailable; using synchronous persistence", exc_info=True)
+        app.state.request_log_queue = None
+    if app.state.request_log_queue is not None:
+        app.state.request_log_queue.start()
+    metering_task = None
+    if metering_journal is not None:
+        from src.budget.metering_recovery import maintain_metering_recovery
+        from src.shared.database import get_accounting_session_factory
+
+        metering_task = asyncio.create_task(
+            maintain_metering_recovery(get_accounting_session_factory(), metering_journal), name="metering_receipt_recovery"
+        )
     try:
         yield
     finally:
+        app.state.shutting_down = True
+        app.state.metered_responses_ready = False
+        if app.state.request_log_queue is not None:
+            await app.state.request_log_queue.close()
+            app.state.request_log_queue = None
+        from src.proxy.mantle_service import drain_usage_finalizers
+
+        await drain_usage_finalizers()
+        if metering_task is not None:
+            metering_task.cancel()
+            done, _ = await asyncio.wait({metering_task}, timeout=2)
+            if not done:
+                logger.warning("Metering recovery did not stop within shutdown drain")
+            else:
+                with suppress(asyncio.CancelledError):
+                    metering_task.result()
         notifications_task.cancel()
         with suppress(asyncio.CancelledError):
             await notifications_task
+        source_capture_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await source_capture_task
         pricing_task.cancel()
         with suppress(asyncio.CancelledError):
             await pricing_task
         claims_task.cancel()
         with suppress(asyncio.CancelledError):
             await claims_task
+        if mantle_client is not None:
+            await mantle_client.aclose()
+        if journal_client is not None:
+            journal_client.close()
+        if pool is not None:
+            await pool.aclose()
+        from src.orchestration.cost_cache import close_display_cost_cache
+
+        await close_display_cost_cache()
+        from src.orchestration.read_cache import close_flow_read_cache
+
+        await close_flow_read_cache()
+        from src.orchestration.activity_reads import close_activity_reader
+
+        await close_activity_reader()
+        set_mantle_service(None)
 
     await app.state.ratelimit_service.close()
 
@@ -408,7 +593,7 @@ def create_app() -> FastAPI:
 
     # Issue #131: Add enforcement middleware
     # Middleware order is important - they execute in reverse order of addition:
-    # Request → Identity → Auth → Approval → ModelIdentity → Budget → RateLimit → Logging → Handler
+    # Request → Identity → Auth → Approval → NativeTest → ModelIdentity → Budget → RateLimit → Logging → Handler
     # Registration is reversed: identity is added last to wrap admission.
     #
     # Note: Auth middleware sets request.state.token_context which enforcement middleware depends on
@@ -420,9 +605,23 @@ def create_app() -> FastAPI:
     app.add_middleware(BudgetEnforcementMiddleware)
     logger.info("Budget middleware enabled with live enforcement controls")
 
+    from src.proxy.stream_capacity import StreamCapacityMiddleware, admission_settings
+
+    stream_limits = admission_settings(os.environ)
+    if stream_limits is not None:
+        app.add_middleware(StreamCapacityMiddleware, gateway=app, max_active=stream_limits[0], queue_limit=stream_limits[1], wait_ms=stream_limits[2])
+
     # Execute after token-context authentication and before budget resolution.
     # Protected workers cannot fall back to a caller-selected run capability.
     app.add_middleware(AgentModelIdentityMiddleware)
+
+    # A consistent designation read precedes every paid model admission once a
+    # registry is bound (ADP_NATIVE_TEST_AUTHORITY_TABLE). With no registry bound
+    # the boundary passes ordinary traffic; with one bound but unreadable it
+    # fails closed. See native_test_runtime.build_native_test_runtime.
+    from src.agentauth.native_test_runtime import install_native_test_runtime
+
+    install_native_test_runtime(app)
 
     # Issue #4144: approval (org-assignment) enforcement. Added AFTER budget/rate-limit
     # and BEFORE TokenContextMiddleware, so at runtime it executes after token_context is
@@ -437,8 +636,12 @@ def create_app() -> FastAPI:
     # TokenContextMiddleware must be added LAST so it runs FIRST in the request chain.
     # It extracts the Cognito JWT and sets request.state.token_context before
     # budget and rate-limit middleware access it.
+    from src.shared.middleware.proxy_body_limit import ProxyBodyLimitMiddleware
+
+    app.add_middleware(ProxyBodyLimitMiddleware)
     app.add_middleware(TokenContextMiddleware)
     logger.info("Token context middleware enabled")
+    app.add_middleware(ShutdownAdmissionMiddleware, gateway=app)
     # Outermost: every admission/settlement path sees one server-owned identity.
     app.add_middleware(RequestIdentityMiddleware)
 
@@ -490,6 +693,10 @@ def create_app() -> FastAPI:
                 extra={"module_path": module_path, "error": str(e)},
             )
 
+    from src.l5_backend_registry import install_l5_backends
+
+    install_l5_backends(app)
+
     # Issue #2047: Startup warning when knowledge dispatch is enabled but queue is absent.
     if os.environ.get("AGENT_CONTEXT_ENABLED", "").lower() == "true":
         if not os.environ.get("INGESTION_QUEUE_URL"):
@@ -528,4 +735,7 @@ def create_app() -> FastAPI:
         # to the gateway (src.knowledge.routes, src.knowledge.github_repos) and
         # registered via UNIT_MODULES above. No cross-module import needed.
 
+    from src.crew.dashboard import install_crew_dashboard
+
+    install_crew_dashboard(app)
     return app

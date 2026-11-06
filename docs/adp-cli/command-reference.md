@@ -19,6 +19,7 @@ a Python command's options. Codex and Claude arguments belong to those tools.
 | `adp token` | None | Prints a valid access token for a tool's auth helper; keep stdout private |
 | `adp codex setup` | None | Writes ADP's Codex configuration |
 | `adp claude setup` | None | Writes ADP's Claude Code configuration |
+| `adp claude-desktop setup` | `--check`, `--json`; optional global `--deployment NAME`, `--tenant TENANT_ID` | Resolves your tenant and installs a deployment- and tenant-pinned token helper, prints Desktop connection details without writing Desktop settings; `--check` tests the gateway's entitled model list. Multi-tenant logins must select a tenant first (`adp tenant use`) |
 | `adp hermes setup` | None | Writes ADP's Hermes configuration |
 | `adp codex` | Any Codex arguments | Starts the auth proxy if needed, then launches Codex |
 | `adp claude` | Any Claude Code arguments | Checks the ADP session, then launches Claude Code |
@@ -145,10 +146,30 @@ See [connect a repository](github.md#connect-your-repository).
 |---|---|---|
 | `adp github connect` | `--repo OWNER/REPOSITORY` | `--org ORG`, `--no-browser`, `--yes`, `--dry-run`, `--json` |
 | `adp github status` | None | `--repo OWNER/REPOSITORY`, `--org ORG`, `--json` |
+| `adp github token` | None | `--json` |
+| `adp github credential-helper` | `get`, `store` or `erase` (git supplies it) | None |
 
 `--org` narrows the results to an ADP organization you belong to. Repository
 selection and approvals happen on GitHub. Rerun `connect` after approval to
 resume. There is no `adp github disconnect` command in this build.
+
+`adp github token` prints your own GitHub token with repository access, from the
+GitHub account you connected in Settings → Connections with "Include repository
+access" (or "Grant repository access" on an existing connection). It works on any
+machine where you ran `adp login`; a Dev Box does not need it because its `gh` and
+`git` already act as you. The bare token is printed so it pipes, for example
+`gh auth login --with-token < <(adp github token)`; `--json` adds `login` and
+`expires_at`, the time after which you should ask again. Nothing is stored
+locally. To let `git` use it, configure the helper once:
+
+```bash
+git config --global credential.https://github.com.helper '!adp github credential-helper'
+```
+
+A refusal names the one step that fixes it: connect GitHub, grant repository
+access, allow agents to use the account, or reconnect. A platform administrator
+enables the feature per deployment (`ADP_GITHUB_USER_ACCESS_ENABLED=true` on the
+gateway).
 
 ## Administrator GitHub configuration
 
@@ -211,6 +232,27 @@ An older domain without the replay contract is refused before mutation.
 Superplane mutations support `--dry-run` and require interactive confirmation
 or `--yes`. A provider secret is read from a hidden prompt or stdin, never from a
 secret-valued command argument.
+
+## Project budgets
+
+| Command | Options / arguments | What it does |
+|---|---|---|
+| `adp product budget show` | Required `--product PRODUCT_ID --project PROJECT_ID`; optional `--json` | Reads the Project cap, spent and reserved amounts, available headroom, accounting status, and per-flow spend and run counts. A null `budget_usd` means **no cap, metered** (`cap_status: "none_metered"` in JSON), not free usage. |
+| `adp product budget set` | Required `--product PRODUCT_ID --project PROJECT_ID --budget-usd 250.00 --reason TEXT`; optional `--json` | Sets the Project cap as its Product owner or a platform administrator; the reason is saved with the change audit event. Only a positive USD amount with exactly two decimal places, up to `99999999.99`, is accepted. |
+
+The `show` command uses the owner's Project visibility and can read through the
+Dev Box host-run adapter when the host-run CLI binding is available. `set` is
+laptop-only: a Dev Box refuses the command before making a request. A gateway
+permission refusal reports the route message with exit 3; invalid values and
+Dev Box writes exit 2 without a request. Both commands accept `--json` for the
+shared CLI result envelope; human output labels an uncapped Project explicitly.
+
+Before setting a cap, the CLI checks that the Project belongs to the selected
+Product; a mismatch stops before the write. Audit reasons support Unicode text
+up to 500 characters. The CLI sends UTF-8 bytes as base64 in
+`X-ADP-Budget-Reason-Base64`, leaving the decimal budget body unchanged. The
+gateway also accepts the legacy `X-ADP-Budget-Reason` header (but not both reason
+headers together) and dashboard writes without a reason.
 
 ## Capability discovery and diagnosis
 

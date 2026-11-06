@@ -15,7 +15,9 @@ import pytest
 from sqlalchemy import select
 
 from src.agentauth.github_operation_service import (
+    authorize_actions_read_grant,
     authorize_operation,
+    authorize_operations_grant,
     build_assignment,
     operation_permissions,
     require_current_claim,
@@ -29,6 +31,7 @@ from src.orchestration.models import (
     OrchestrationDecision,
     OrchestrationWorkClaim,
 )
+from src.orchestration.runtime_policy import ACTIONS_OPERATION_PATH, authorize_worker_credential
 from src.orchestration.state import NodeState
 from src.shared.models.audit import AuditLog  # noqa: F401 — register before fixture creates schema
 from tests.orchestration.test_policy_admission import (
@@ -156,14 +159,15 @@ async def authorize(session, assignment, operation=GitHubOperation.PUBLISH_COMMI
 # --- The refusal this story unblocks, without weakening it -------------------
 
 
-async def test_commit_is_authorized_while_merge_stays_human_only(session, assignment):
+@pytest.mark.parametrize("operation", [GitHubOperation.PUBLISH_COMMIT, GitHubOperation.RECONCILE_WORK_BRANCH])
+async def test_commit_is_authorized_while_merge_stays_human_only(session, assignment, operation):
     """The whole point: the SAME assignment can publish a commit and cannot merge.
 
     A `contents: write` token could not express this, which is why the work was
     refused. Mediation expresses it because the capability never leaves the
     gateway and merge is a separately authorized operation.
     """
-    authorized = await authorize(session, assignment, GitHubOperation.PUBLISH_COMMIT)
+    authorized = await authorize(session, assignment, operation)
     assert authorized.assignment.branch == f"agent/issue-{ISSUE}"
     assert authorized.assignment.repository_id == REPOSITORY_ID
 
@@ -176,6 +180,177 @@ async def test_installation_token_permissions_are_narrowed_per_operation(session
     assert operation_permissions(GitHubOperation.PUBLISH_REVIEW)["contents"] == "read"
     assert operation_permissions(GitHubOperation.PUBLISH_COMMIT)["contents"] == "write"
     assert operation_permissions(GitHubOperation.READ_REPOSITORY)["pull_requests"] == "read"
+
+
+@pytest.fixture
+def operations_contract(monkeypatch, assignment):
+    from src.orchestration import accepted_node
+
+    async def accepted(_session, _node):
+        return SimpleNamespace(
+            plan_version=1,
+            node=SimpleNamespace(
+                executor=SimpleNamespace(role="operate", persona="operations"),
+                repository_identity=REPO,
+                required_inputs=[SimpleNamespace(source="deployment_workflow:gateway-deploy.yml")],
+            ),
+        )
+
+    monkeypatch.setattr(accepted_node, "accepted_node_contract", accepted)
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    assignment.execution["persona"] = {"S": "operations"}
+    return SimpleNamespace(permitted=True, action="operate", policy=SimpleNamespace(repository_ids={REPO}), plan_version=1)
+
+
+async def test_operations_grant_is_scoped_and_audited(session, assignment, operations_contract):
+    issued = await authorize_operations_grant(session, execution=assignment.execution, grant=assignment.grant, decision=operations_contract)
+    assert issued.kind == "operations"
+    assert issued.repository == REPO
+    assert issued.workflow_allowlist == {"gateway-deploy.yml"}
+    assert issued.permissions == {"actions": "write", "metadata": "read"}
+    audit = await session.scalar(select(AuditLog).where(AuditLog.event_type == "operations_grant_issued"))
+    assert audit.actor_id == assignment.grant.principal
+    assert audit.details["workflows"] == ["gateway-deploy.yml"]
+
+
+@pytest.mark.parametrize("proof_phase", ["none", "stage.identity-proof"])
+async def test_accepted_selections_propagate_to_protected_operations_grant(session, assignment, operations_contract, monkeypatch, proof_phase):
+    from unittest.mock import AsyncMock
+
+    from src.orchestration import accepted_node, operations_release_resolution
+    from src.orchestration.models import OrchestrationExecution
+
+    selected = "api_product_lifecycle,api_denial_oracle,api_recovery_cleanup"
+    scalar = session.scalar
+
+    async def current(statement, *args, **kwargs):
+        if statement.column_descriptions[0]["entity"] is OrchestrationExecution:
+            return SimpleNamespace(status="running", cycle=assignment.node.attempts)
+        return await scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(session, "scalar", current)
+    monkeypatch.setattr(operations_release_resolution, "operational_execution_pins", AsyncMock(return_value={"source_revision": "a" * 40}))
+
+    async def accepted(_session, _node):
+        return SimpleNamespace(
+            plan_version=1,
+            node=SimpleNamespace(
+                executor=SimpleNamespace(role="operate", persona="operations"),
+                repository_identity=REPO,
+                required_inputs=[
+                    SimpleNamespace(source=f"deployment_workflow:{'tools-live-evaluation.yml' if proof_phase != 'none' else 'gateway-deploy.yml'}")
+                ],
+                operational_release_binding=SimpleNamespace(product_cases=selected if proof_phase == "none" else "none", proof_phase=proof_phase),
+            ),
+        )
+
+    monkeypatch.setattr(accepted_node, "accepted_node_contract", accepted)
+    issued = await authorize_operations_grant(session, execution=assignment.execution, grant=assignment.grant, decision=operations_contract)
+    assert issued.product_cases == (selected if proof_phase == "none" else "none")
+    assert issued.proof_phase == proof_phase
+
+
+@pytest.mark.parametrize("identity,issued", [(None, True), (REPO, True), ("someone/else", False)])
+async def test_operations_grant_reads_the_node_repository_identity_as_optional(
+    session, assignment, operations_contract, monkeypatch, identity, issued
+):
+    """The plan schema makes a node's repository identity optional (#7349).
+
+    When absent, the repository is already bounded by the grant scope and the
+    accepted policy's repository_ids; only a node naming a *different* repository
+    is refused.
+    """
+    from src.orchestration import accepted_node
+
+    async def accepted(_session, _node):
+        return SimpleNamespace(
+            plan_version=1,
+            node=SimpleNamespace(
+                executor=SimpleNamespace(role="operate", persona="operations"),
+                repository_identity=identity,
+                required_inputs=[SimpleNamespace(source="deployment_workflow:gateway-deploy.yml")],
+            ),
+        )
+
+    monkeypatch.setattr(accepted_node, "accepted_node_contract", accepted)
+    if issued:
+        result = await authorize_operations_grant(session, execution=assignment.execution, grant=assignment.grant, decision=operations_contract)
+        assert result.repository == REPO
+    else:
+        with pytest.raises(OperationRefusedError):
+            await authorize_operations_grant(session, execution=assignment.execution, grant=assignment.grant, decision=operations_contract)
+
+
+@pytest.mark.parametrize("persona,action", [("developer", "develop"), ("developer", "operate"), ("operations", "develop")])
+async def test_non_operations_executor_cannot_get_actions_write(session, assignment, operations_contract, persona, action):
+    assignment.execution["persona"] = {"S": persona}
+    decision = SimpleNamespace(**{**vars(operations_contract), "action": action})
+    with pytest.raises(OperationRefusedError):
+        await authorize_operations_grant(session, execution=assignment.execution, grant=assignment.grant, decision=decision)
+    assert await session.scalar(select(AuditLog).where(AuditLog.event_type == "operations_grant_issued")) is None
+
+
+async def test_operations_grant_refuses_disabled_or_unlisted_workflow(session, assignment, operations_contract, monkeypatch):
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "false")
+    with pytest.raises(OperationRefusedError):
+        await authorize_operations_grant(session, execution=assignment.execution, grant=assignment.grant, decision=operations_contract)
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    from src.orchestration import accepted_node
+
+    async def invalid(_session, _node):
+        return SimpleNamespace(
+            plan_version=1,
+            node=SimpleNamespace(
+                executor=SimpleNamespace(role="operate", persona="operations"),
+                repository_identity=REPO,
+                required_inputs=[SimpleNamespace(source="deployment_workflow:../unsafe.yml")],
+            ),
+        )
+
+    monkeypatch.setattr(accepted_node, "accepted_node_contract", invalid)
+    with pytest.raises(OperationRefusedError):
+        await authorize_operations_grant(session, execution=assignment.execution, grant=assignment.grant, decision=operations_contract)
+
+
+async def test_developer_actions_read_grant_is_repository_scoped_and_audited(session, assignment, monkeypatch):
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    decision = SimpleNamespace(
+        permitted=True,
+        action="develop",
+        plan_version=1,
+        provider_repository_id=REPOSITORY_ID,
+        policy=SimpleNamespace(repository_ids={REPO}),
+    )
+    read = await authorize_actions_read_grant(session, execution=assignment.execution, grant=assignment.grant, decision=decision)
+    assert read.kind == "operations_read" and read.permissions == {"actions": "read", "metadata": "read"}
+    assert read.repository == REPO
+    audit = await session.scalar(select(AuditLog).where(AuditLog.event_type == "operations_grant_issued"))
+    assert audit.details["permissions"] == read.permissions
+    with pytest.raises(OperationRefusedError):
+        await authorize_actions_read_grant(
+            session,
+            execution=assignment.execution,
+            grant=replace(assignment.grant, repo_scope=frozenset({"someone/else"})),
+            decision=decision,
+        )
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "false")
+    with pytest.raises(OperationRefusedError):
+        await authorize_actions_read_grant(session, execution=assignment.execution, grant=assignment.grant, decision=decision)
+
+
+async def test_developer_actions_read_scope_uses_accepted_policy(session, assignment, monkeypatch):
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    decision = await authorize_worker_credential(
+        session,
+        execution=assignment.execution,
+        grant=assignment.grant,
+        broker_path=ACTIONS_OPERATION_PATH,
+    )
+    assert decision.permitted and decision.action.value == "develop"
+    issued = await authorize_actions_read_grant(session, execution=assignment.execution, grant=assignment.grant, decision=decision)
+    assert issued.permissions == {"actions": "read", "metadata": "read"}
+    with pytest.raises(OperationRefusedError):
+        await authorize_operations_grant(session, execution=assignment.execution, grant=assignment.grant, decision=decision)
 
 
 async def test_merge_is_authorized_only_when_merge_is_autonomous(session, assignment):
@@ -346,3 +521,42 @@ async def test_a_released_claim_blocks_reads_too(session, assignment):
     await session.flush()
     with pytest.raises(OperationRefusedError):
         await authorize(session, assignment, GitHubOperation.READ_REPOSITORY)
+
+
+async def test_operations_repair_requires_explicit_policy_and_accepted_executor(session, assignment, operations_contract, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.orchestration import runtime_policy
+    from src.orchestration.execution_policy import Action
+
+    # Reuse an actually resolved worker decision; only change the action being tested.
+    assignment.execution["persona"] = {"S": "developer"}
+    decision = await runtime_policy.authorize_worker_credential(
+        session, execution=assignment.execution, grant=assignment.grant, broker_path="/internal/v1/agent/self/github-operation"
+    )
+    assignment.execution["persona"] = {"S": "operations"}
+    policy = SimpleNamespace(repository_ids={REPO}, permits=lambda action: action in {Action.OPERATE, Action.REPAIR, Action.MERGE, Action.DEPLOY})
+    admitted = replace(decision, action=Action.OPERATE, policy=policy)
+    monkeypatch.setattr(runtime_policy, "authorize_worker_credential", AsyncMock(return_value=admitted))
+    for operation in (GitHubOperation.PUBLISH_COMMIT, GitHubOperation.UPSERT_PULL_REQUEST, GitHubOperation.MERGE_PULL_REQUEST):
+        assert (await authorize(session, assignment, operation)).operations_repair is True
+    assert (await authorize(session, assignment, GitHubOperation.VALIDATE_REPAIR_EDIT)).operations_repair is True
+    with pytest.raises(OperationRefusedError):
+        await authorize(session, assignment, GitHubOperation.VALIDATE_REPAIR_EDIT, asserted_repository="attacker/repo")
+    claim = await session.scalar(select(OrchestrationWorkClaim).where(OrchestrationWorkClaim.claim_event_id == "worker"))
+    prior_state = claim.state
+    claim.state = ClaimState.RELEASED.value
+    await session.flush()
+    with pytest.raises(OperationRefusedError):
+        await authorize(session, assignment, GitHubOperation.MERGE_PULL_REQUEST)
+    claim.state = prior_state
+    await session.flush()
+    policy.permits = lambda action: action is Action.OPERATE
+    for operation in (
+        GitHubOperation.VALIDATE_REPAIR_EDIT,
+        GitHubOperation.PUBLISH_COMMIT,
+        GitHubOperation.UPSERT_PULL_REQUEST,
+        GitHubOperation.MERGE_PULL_REQUEST,
+    ):
+        with pytest.raises(OperationRefusedError):
+            await authorize(session, assignment, operation)

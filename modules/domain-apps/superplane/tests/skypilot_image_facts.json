@@ -1,13 +1,14 @@
 {
   "_comment": [
-    "Current facts derived from retained exact published OCI config, filesystem, SBOM and packaged-runtime evidence; no new scan/container run.",
-    "Registry-independent content reference. Source-derived startup facts are retained only after exact equality of all 555 SkyPilot Python files; see the public preservation summary."
+    "Current facts re-recorded from the published immutable runtime in read-only, network-isolated containers.",
+    "The release pins the OCI index; amd64_manifest_digest identifies its runtime platform manifest.",
+    "Source-derived startup facts are retained after exact equality of every SkyPilot Python file; see derivation_receipt."
   ],
-  "image_reference": "oci-layout:sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4",
+  "image_reference": "oci-layout:sha256:398c9bf405f449c9fcc51a2752e830c329e02c211cbc8bdf114b67c76a100851",
   "skypilot_version": "0.12.3",
-  "image_index_digest": "sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4",
-  "amd64_manifest_digest": "sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4",
-  "config_blob_digest": "sha256:13b37339105846307b05f19a696ad500fc286643581a0842dfe77c25d0dd3d52",
+  "image_index_digest": "sha256:398c9bf405f449c9fcc51a2752e830c329e02c211cbc8bdf114b67c76a100851",
+  "amd64_manifest_digest": "sha256:4084403de39a3d9835da36638108a0d7168c5b432d06ffe73850d34fc114570c",
+  "config_blob_digest": "sha256:3dd4e4a2786f6f1a71a304b0843bb424a3bdbf06c49e67b78da6c77764b1b37c",
   "config": {
     "Entrypoint": null,
     "Cmd": [
@@ -19,8 +20,8 @@
       "PATH=/opt/google-cloud-sdk/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "LANG=C.UTF-8",
       "GPG_KEY=A035C8C19219BA821ECEA86B64E628F8D684696D",
-      "PYTHON_VERSION=3.10.21",
-      "PYTHON_SHA256=a0da1e72132e950154eca0f6f47d5db828454700de20e5113667940d81e0db04",
+      "PYTHON_VERSION=3.10.22",
+      "PYTHON_SHA256=c61fe9b1a1a7ec2a0b0388e664187c378a5325a89e3606d220abf5bdfccb2543",
       "DEBIAN_FRONTEND=noninteractive"
     ]
   },
@@ -53,7 +54,7 @@
   ],
   "package_facts": {
     "_comment": [
-      "Source-derived SkyPilot 0.12.3 contract retained after 555-file equality. Existing exact-image isolated health/restart/status/task-parser evidence passed; live Postgres/provisioning remains separate."
+      "Source-derived SkyPilot startup contract retained after exact source equality with the previous locked image, recorded in derivation_receipt."
     ],
     "api_server_cmd": "-m sky.server.server",
     "api_server_cmd_source": "sky/server/common.py: API_SERVER_CMD",
@@ -79,5 +80,5 @@
     "deploy_flag_enables_consolidation_mode": true,
     "deploy_flag_source": "sky/jobs/utils.py: setup_consolidation_mode_on_startup(deploy)"
   },
-  "derivation_receipt": "docs/security/runs/2026-10-06/demo-image-pins/startup-source-preservation.json"
+  "derivation_receipt": "docs/security/runs/2026-10-25/system-ca/startup-source-preservation.json"
 }

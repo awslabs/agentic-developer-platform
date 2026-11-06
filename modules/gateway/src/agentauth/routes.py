@@ -180,16 +180,14 @@ class AgentRuntime:
         from src.agentauth.coordinator import bind_coordinator, resolve_coordinator_assignment
         from src.shared.database import get_session_factory
 
-        config = os.environ if self.env is None else self.env
-        repo = config.get("BG_ORCH_DISPATCH_REPO", "")
-        if grant.authority.kind != AUTHORITY_GITHUB_EVENT or not repo:
+        if grant.authority.kind != AUTHORITY_GITHUB_EVENT:
             return record, grant
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         if not execution or execution.get("persona", {}).get("S") not in {"operations", "aidlc"}:
             return record, grant
         try:
             async with get_session_factory()() as session:
-                assignment = await resolve_coordinator_assignment(session=session, execution=execution, grant=grant, configured_repo=repo)
+                assignment = await resolve_coordinator_assignment(session=session, execution=execution, grant=grant)
                 if assignment is None:
                     return record, grant
                 await run_in_threadpool(bind_coordinator, store=self.store, record=record, grant=grant, assignment=assignment)
@@ -231,14 +229,12 @@ class AgentRuntime:
             return False
         try:
             async with get_session_factory()() as session:
-                config = os.environ if self.env is None else self.env
                 return await resolve_repository_fan_out(
                     session=session,
                     execution=execution,
                     grant=grant,
                     target_repo=body.target.repo,
                     target_issue=body.target.issue,
-                    orchestration_repo=config.get("BG_ORCH_DISPATCH_REPO", ""),
                 )
         except Exception:
             return False
@@ -262,28 +258,24 @@ class AgentRuntime:
         from src.agentauth.graph_dispatch import dispatch_graph
         from src.shared.database import get_session_factory
 
-        config = os.environ if self.env is None else self.env
         return await dispatch_graph(
             service=self.dispatcher,
             session_factory=get_session_factory(),
             body=body,
             credential_token=credential_token,
             workload_binding=context[0].uid,
-            configured_repo=config.get("BG_ORCH_DISPATCH_REPO", ""),
         )
 
     async def bind_wave(self, body, credential_token, workload_token, *, context):
         from src.agentauth.waves import register_wave
         from src.shared.database import get_session_factory
 
-        config = os.environ if self.env is None else self.env
         return await register_wave(
             service=self.dispatcher,
             session_factory=get_session_factory(),
             body=body,
             credential_token=credential_token,
             workload_binding=context[0].uid,
-            configured_repo=config.get("BG_ORCH_DISPATCH_REPO", ""),
         )
 
     async def revalidate(self, body, credential_token, workload_token, *, context):
@@ -355,6 +347,20 @@ def get_agent_runtime() -> AgentRuntime:
         raise HTTPException(503, "agent authority is not configured") from None
 
 
+class ModelPolicyWithheldError(HTTPException):
+    """Run authority withheld by :func:`_refuse_unconsumable_model_policy`.
+
+    Still the 409 the worker route has always returned, with the same message:
+    the only addition is the stable policy ``reason`` so the sandbox decision
+    route can report *why* the turn cannot run instead of an anonymous conflict.
+    The reason never carries posture detail, credentials or exception text.
+    """
+
+    def __init__(self, detail: str, *, reason: str) -> None:
+        super().__init__(409, detail)
+        self.reason = reason
+
+
 def _refuse_unconsumable_model_policy(
     model_policy: dict,
     *,
@@ -402,26 +408,27 @@ def _refuse_unconsumable_model_policy(
     """
     posture = model_policy.get("posture")
     verified = model_policy.get("posture_verified") is True
+    reason = model_policy.get("reason")
     if not verified:
         logger.warning(
             "Withholding run authority: live model policy posture unverified",
-            extra={"invocation_id": invocation_id, "reason": model_policy.get("reason")},
+            extra={"invocation_id": invocation_id, "reason": reason},
         )
-        raise HTTPException(409, "model policy unavailable")
+        raise ModelPolicyWithheldError("model policy unavailable", reason=reason if isinstance(reason, str) and reason else "posture_unverified")
     if posture != "enforcing":
         return
     if model_policy.get("status") != "proposed":
         logger.warning(
             "Withholding run authority: enforcing posture with no admissible proposal",
-            extra={"invocation_id": invocation_id, "reason": model_policy.get("reason")},
+            extra={"invocation_id": invocation_id, "reason": reason},
         )
-        raise HTTPException(409, "model policy unavailable")
+        raise ModelPolicyWithheldError("model policy unavailable", reason=reason if isinstance(reason, str) and reason else "policy_unavailable")
     if client_contract is None or client_contract < MODEL_POLICY_CONTRACT_VERSION:
         logger.warning(
             "Withholding run authority: client cannot consume an enforcing decision",
             extra={"invocation_id": invocation_id, "client_contract": client_contract},
         )
-        raise HTTPException(409, "model policy contract unsupported")
+        raise ModelPolicyWithheldError("model policy contract unsupported", reason="client_contract_unsupported")
 
 
 @router.post("/bootstrap")
@@ -550,13 +557,31 @@ async def _agent_call(request: Request, runtime: AgentRuntime, method, *args) ->
         raise HTTPException(503, "agent authority unavailable") from None
 
 
-async def resolved_model_response(*, db, runtime, record, grant, nonce: str, client_contract: int, response_context: dict | None = None) -> dict:
-    """Sign the full fresh response after the caller proves its execution binding."""
+async def resolved_model_response(
+    *,
+    db,
+    runtime,
+    record,
+    grant,
+    nonce: str,
+    client_contract: int,
+    response_context: dict | None = None,
+    chat_posture: str | None = None,
+) -> dict:
+    """Sign the full fresh response after the caller proves its execution binding.
+
+    ``chat_posture`` (#7997) is passed only by the chat decision route.  Under
+    ``advisory``/``off`` the live policy is produced for that posture and the
+    mixed-version refusal below is skipped: it exists to stop a worker ignoring
+    an *enforcing* decision, whereas the chat route checks the body it receives
+    against the posture it asked for before any model runs.
+    """
     from src.agentauth.envelope import sign_envelope
     from src.agentauth.model_policy import MODEL_POLICY_AUDIENCE, bootstrap_model_policy_live, canonical_json
 
-    policy = await bootstrap_model_policy_live(db, store=runtime.store, record=record, grant=grant, env=runtime.env)
-    _refuse_unconsumable_model_policy(policy, client_contract=client_contract, invocation_id=record.invocation_id)
+    policy = await bootstrap_model_policy_live(db, store=runtime.store, record=record, grant=grant, env=runtime.env, chat_posture=chat_posture)
+    if chat_posture not in ("advisory", "off"):
+        _refuse_unconsumable_model_policy(policy, client_contract=client_contract, invocation_id=record.invocation_id)
     result = {
         "nonce": nonce,
         "invocation_id": record.invocation_id,
@@ -626,6 +651,28 @@ async def status(request: Request, run: str, runtime: AgentRuntime = Depends(get
     if not run or len(run) > 128:
         raise HTTPException(404, "not found")
     return await _agent_call(request, runtime, runtime.status, run)
+
+
+@router.get("/campaign-binding")
+async def campaign_binding(request: Request, runtime: AgentRuntime = Depends(get_agent_runtime)) -> JSONResponse:
+    from src.agentauth.campaign_execution import CampaignExecutionRecovery
+
+    def capture(_target, credential, workload, *, context):
+        pod, caller, record, grant = context
+        result = CampaignExecutionRecovery(runtime.store).capture(
+            tenant=caller.tenant_id, invocation=caller.invocation_id, human=grant.authority.human_id
+        )
+        execution = result["binding"]["execution"]
+        if (
+            execution["current_attempt"] != {"N": str(caller.attempt)}
+            or execution["current_credential_epoch"] != {"N": str(caller.credential_epoch)}
+            or execution["workload_binding"] != {"S": pod.uid}
+        ):
+            raise BootstrapRefusedError("campaign workload binding changed")
+        runtime.authenticate(credential, workload)
+        return result
+
+    return await _agent_call(request, runtime, capture, "campaign-binding")
 
 
 @router.post("/dispatch", status_code=202)

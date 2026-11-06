@@ -25,6 +25,7 @@ from .test_dispatch_preparation import _snapshot_of
 from .test_pending_amendments import ORG_A
 from .test_replan_authoring_dispatch import ASKER, INSTALLATION, REPO, FakeSQS, flow_with_asker, flush, replan
 from .test_replan_authoring_dispatch import session as session_fixture
+from .test_replan_authoring_dispatch import verified_authoring_source as verified_authoring_source
 
 session = session_fixture
 protected = protected_fixture
@@ -165,7 +166,7 @@ async def test_unavailable_snapshot_is_reported_without_blocking_report_only_pub
         def unavailable():
             nonlocal calls
             calls += 1
-            if calls == 1:
+            if calls == 2:
                 raise RuntimeError("database connection unavailable")
             return factory()
 

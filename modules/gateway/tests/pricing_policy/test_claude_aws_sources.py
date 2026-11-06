@@ -99,6 +99,31 @@ def test_changed_units_columns_scopes_or_expressions_reject(snapshot, before, af
         parse(snapshot, page=(FIXTURES / "pricing-widgets.html").read_bytes().replace(before, after))
 
 
+def test_long_context_widgets_do_not_supply_or_replace_flat_rates(snapshot):
+    flat_page = (FIXTURES / "pricing-widgets.html").read_bytes()
+    long_context = (FIXTURES / "long-context-widgets.html").read_bytes()
+    expected = parse(snapshot)
+    # Both orders must retain the complete existing rate inventory. Only the
+    # provenance digest changes because it identifies the full source page.
+    for page in (flat_page + long_context, long_context + flat_page):
+        actual = parse(snapshot, page=page)
+        assert len(actual) == len(expected)
+        assert tuple(replace(row, source_content_sha256="") for row in actual) == tuple(replace(row, source_content_sha256="") for row in expected)
+    with pytest.raises(SourceValidationError, match="both Claude regional and global pricing widgets are required"):
+        parse(snapshot, page=long_context)
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [(b"1M long-context", b"1K long-context"), (b"1h cache write", b"30m cache write")],
+)
+def test_unknown_long_context_columns_still_reject(snapshot, before, after):
+    page = (FIXTURES / "pricing-widgets.html").read_bytes()
+    long_context = (FIXTURES / "long-context-widgets.html").read_bytes().replace(before, after)
+    with pytest.raises(SourceValidationError, match="unrecognized Claude pricing columns or units"):
+        parse(snapshot, page=page + long_context)
+
+
 @pytest.mark.parametrize("mutation", ["currency", "service", "timestamp", "nan", "negative", "zero", "number", "sku"])
 def test_malformed_map_rejects_whole_publication(snapshot, mutation):
     data = json.loads((FIXTURES / "token-map.json").read_text())

@@ -669,7 +669,7 @@ async def test_owner_cannot_forge_positive_provider_readings(pair, failure):
         await asyncio.to_thread(pair.adapter.fetch_material, pair.lease)
 
 
-async def test_produced_validation_is_attested_without_echoing_a_report(pair):
+async def test_produced_validation_does_not_authorize_unbound_executor_metadata(pair):
     response = await asyncio.to_thread(pair.api.post, "/auth/credentials/cred-1/workspaces/workspace/validation")
     assert response.status_code == 200
     produced = response.json()
@@ -688,8 +688,9 @@ async def test_produced_validation_is_attested_without_echoing_a_report(pair):
             "report_digest": produced["report_digest"],
         },
     )
-    assert response.status_code == 200
-    assert response.json()["attested_report_digest"] == produced["report_digest"]
+    assert response.status_code == 403
+    assert response.json() == {"detail": {"error": "denied", "message": "credential evidence could not be established"}}
+    assert produced["report_digest"] not in response.text
     assert VALUE not in response.text
 
 

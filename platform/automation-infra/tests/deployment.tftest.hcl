@@ -187,3 +187,24 @@ run "security_delivery_can_only_emit_its_root_event" {
     error_message = "Only the security-agent root event vocabulary may be emitted."
   }
 }
+
+run "scan_evidence_is_create_only_and_scoped" {
+  command = plan
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.scan.policy).Statement : s if s.Sid == "AuthenticatedScanEvidence"]).Action == ["s3:PutObject"]
+    error_message = "The scan writer must not gain read, delete, or bucket administration."
+  }
+  assert {
+    condition = toset(one([for s in jsondecode(aws_iam_role_policy.scan.policy).Statement : s if s.Sid == "AuthenticatedScanEvidence"]).Resource) == toset([
+      "arn:aws:s3:::adp-test-deployment-evidence-123456789012/deployment-evidence/v1/*/*/*/context/security-scan.yml.json",
+      "arn:aws:s3:::adp-test-deployment-evidence-123456789012/deployment-evidence/v1/*/*/*/repository-artifact/*"
+    ])
+    error_message = "Scan evidence must not write deployment contexts or release evidence."
+  }
+  assert {
+    condition = one([for s in jsondecode(aws_iam_role_policy.scan.policy).Statement : s if s.Sid == "AuthenticatedScanEvidence"]).Condition.StringEquals == {
+      "s3:if-none-match" = "*", "s3:x-amz-server-side-encryption" = "AES256"
+    }
+    error_message = "Scan evidence writes must be conditional and encrypted."
+  }
+}

@@ -254,6 +254,24 @@ def verify_role(env, role, documents, oidc, *, legacy_routes=False):
         prefix + "current-identity",
         prefix + "current-identity/readiness",
     }
+    original_seven = set(allowed)
+    allowed.add(prefix + "recover-undispatched")
+    original_eight = set(allowed)
+    allowed.add(prefix + "recover-uncredentialed")
+    original_nine = set(allowed)
+    allowed.add(prefix + "recover-unstarted-planning")
+    original_ten = set(allowed)
+    allowed.add(prefix + "complete-saved-plan")
+    original_eleven = set(allowed)
+    allowed.update(
+        {prefix + "partial-apply-observation", prefix + "repair-partial-apply"}
+    )
+    original_thirteen = set(allowed)
+    allowed.add(prefix + "recover-unstarted-bootstrap")
+    original_fourteen = set(allowed)
+    allowed.add(prefix + "recover-settled-bootstrap")
+    original_fifteen = set(allowed)
+    allowed.add(prefix + "recover-interrupted-planning")
     observed = set()
     for document in documents:
         statements = document.get("Statement", [])
@@ -280,7 +298,19 @@ def verify_role(env, role, documents, oidc, *, legacy_routes=False):
             )
             observed.update(resources)
     require(
-        observed in (original_three, original_six)
+        observed
+        in (
+            original_three,
+            original_six,
+            original_seven,
+            original_eight,
+            original_nine,
+            original_ten,
+            original_eleven,
+            original_thirteen,
+            original_fourteen,
+            original_fifteen,
+        )
         if legacy_routes
         else observed == allowed,
         "API producer role lacks required producer routes",

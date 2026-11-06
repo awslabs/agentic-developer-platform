@@ -199,8 +199,12 @@ class TestTheGrantIsReadOnlyAndNarrow:
     from a plan they cannot run, and because every item here is a boundary some other
     test depends on rather than a preference:
 
-    - legacy intake remains read-only; the separately scoped chat-* Task journal
-      has standing PutItem permission, asserted independently below;
+    - legacy intake remains read-only; the separately scoped Task journal and
+      Crew host lease have write permission, asserted independently below;
+    - delegated writes are restricted to their named statement, table and
+      partition prefixes; legacy intake statements cannot gain those actions;
+    - Crew host leases can only be created and deleted under the crew partition
+      prefix in the chat-context table;
     - `dynamodb:Scan` would make a cross-tenant read a matter of forgetting a filter
       instead of a permission error, and `latest_for_user` filters tenant in code
       precisely because the GSI cannot;
@@ -213,27 +217,132 @@ class TestTheGrantIsReadOnlyAndNarrow:
         "dynamodb:BatchWriteItem",
         "dynamodb:Scan",
         "sqs:SendMessage",
+        # The artifact object grant (#8028) is Get/Put on one session path; deleting
+        # is the lifecycle's and the sweeper's, and listing would make the bucket the
+        # index instead of the catalog table.
+        "s3:DeleteObject",
+        "s3:ListBucket",
     ]
 
     @pytest.mark.parametrize("action", _FORBIDDEN)
     def test_the_policy_does_not_grant(self, intake_tf, action):
         # Against the effective policy, not the prose: the file names every one of
         # these to explain its absence.
-        assert action not in _without_comments(intake_tf), (
+        statements = re.split(r'Sid\s*=\s*"', _without_comments(intake_tf))
+        # The chat plane and Crew lease have separate, bounded write grants.
+        # Check their exact scope below, preserving the legacy-intake guard.
+        effective = "".join(
+            part
+            for part in statements
+            if not part.startswith('ChatDataPlaneWrite"') and not (action == "dynamodb:DeleteItem" and part.startswith('CrewHostLeaseWrite"'))
+        )
+        assert action not in effective, (
             f"gateway-intake-access.tf grants {action}, which this path must not have. "
             "See the class docstring: each of these turns a tested invariant back into an accident."
         )
 
-    def test_put_item_is_only_for_the_task_chat_journal(self, intake_tf):
+    def test_put_item_is_only_for_the_scoped_journals_and_lease(self, intake_tf):
         effective = _without_comments(intake_tf)
         statements = re.split(r'Sid\s*=\s*"', effective)
         writes = [part for part in statements if "dynamodb:PutItem" in part]
-        assert len(writes) == 1
-        grant = writes[0]
+        assert len(writes) == 5
+        assert {part.split('"', 1)[0] for part in writes} == {
+            "HostedTaskChatSessionsWrite",
+            "ChatDataPlaneWrite",
+            "CrewHostLeaseWrite",
+            "ChatMemoryStore",
+            "ChatArtifactCatalog",
+        }
+        grant = next(part for part in writes if part.startswith('HostedTaskChatSessionsWrite"'))
         assert grant.startswith('HostedTaskChatSessionsWrite"')
         assert re.search(r'Action\s*=\s*\["dynamodb:PutItem"\]', grant)
         assert re.search(r"Resource\s*=\s*\[module.gateway_sessions.table_arn\]", grant)
         assert re.search(r'"ForAllValues:StringLike"\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*\["chat-\*"\]\s*\}', grant)
+
+    def test_crew_lease_writes_have_exact_actions_resource_and_partition_bounds(self, intake_tf):
+        statements = re.split(r'Sid\s*=\s*"', _without_comments(intake_tf))
+        grants = [part for part in statements if part.startswith('CrewHostLeaseWrite"')]
+        assert len(grants) == 1
+        grant = grants[0]
+        actions = re.search(r"Action\s*=\s*\[(.*?)\]", grant, re.S).group(1)
+        assert set(re.findall(r'"([^"\n]+)"', actions)) == {"dynamodb:PutItem", "dynamodb:DeleteItem"}
+        assert re.search(r'Effect\s*=\s*"Allow"', grant)
+        assert re.search(r"Resource\s*=\s*\[aws_dynamodb_table.chat_context.arn\]", grant)
+        assert re.search(r'"ForAllValues:StringLike"\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*\["crew#\*"\]\s*\}', grant)
+
+    def test_delegated_chat_writes_have_exact_actions_resource_and_partition_bounds(self, intake_tf):
+        statements = re.split(r'Sid\s*=\s*"', _without_comments(intake_tf))
+        grants = [part for part in statements if part.startswith('ChatDataPlaneWrite"')]
+        assert len(grants) == 1
+        grant = grants[0]
+        actions = re.search(r"Action\s*=\s*\[(.*?)\]", grant, re.S).group(1)
+        # #7983: the turn-result and finalization transactions carry ConditionCheck items and
+        # Query reads under the same partitions; DynamoDB authorizes each transaction item.
+        assert set(re.findall(r'"([^"\n]+)"', actions)) == {
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+            "dynamodb:DeleteItem",
+            "dynamodb:ConditionCheckItem",
+            "dynamodb:Query",
+        }
+        assert re.search(r"Resource\s*=\s*\[aws_dynamodb_table.chat_context.arn\]", grant)
+        assert re.search(
+            r'"ForAllValues:StringLike"\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*\["chat-input#\*", "session#\*"\]\s*\}',
+            grant,
+        )
+
+    # Delegated chat memory/artifact stores (#8028): the gateway's key scheme, read from
+    # src/agentauth/chat_memory.py and chat_artifact.py, pinned here so a grant cannot
+    # quietly widen past the partitions and the object path the gateway actually uses.
+    _SCOPED_STORE_GRANTS = {
+        "CrewHostLeaseWrite": (
+            {"dynamodb:PutItem", "dynamodb:DeleteItem"},
+            r"Resource\s*=\s*\[aws_dynamodb_table.chat_context.arn\]",
+            r'"ForAllValues:StringLike"\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*\["crew#\*"\]\s*\}',
+        ),
+        "ChatMemoryStore": (
+            {"dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"},
+            r"Resource\s*=\s*\[aws_dynamodb_table.agent_memory.arn\]",
+            r'"ForAllValues:StringLike"\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*\["memory#\*", "memory-owner#\*"\]\s*\}',
+        ),
+        "ChatArtifactCatalog": (
+            {"dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"},
+            r"Resource\s*=\s*\[aws_dynamodb_table.chat_artifacts.arn\]",
+            r'"ForAllValues:StringLike"\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*\["session#\*"\]\s*\}',
+        ),
+        "ChatArtifactObjects": (
+            {"s3:GetObject", "s3:PutObject"},
+            r'Resource\s*=\s*\["\$\{aws_s3_bucket.chat_artifacts.arn\}/o/\*/t/\*/u/\*/s/\*/\*"\]',
+            None,
+        ),
+    }
+
+    @pytest.mark.parametrize("sid", sorted(_SCOPED_STORE_GRANTS))
+    def test_scoped_store_grants_have_exact_actions_resource_and_key_bounds(self, intake_tf, sid):
+        actions, resource, condition = self._SCOPED_STORE_GRANTS[sid]
+        statements = re.split(r'Sid\s*=\s*"', _without_comments(intake_tf))
+        grants = [part for part in statements if part.startswith(f'{sid}"')]
+        assert len(grants) == 1, f"expected exactly one {sid} statement"
+        grant = grants[0]
+        granted = re.search(r"Action\s*=\s*\[(.*?)\]", grant, re.S).group(1)
+        assert set(re.findall(r'"([^"\n]+)"', granted)) == actions
+        assert re.search(resource, grant), f"{sid} must name exactly its table or object path"
+        if condition is None:
+            assert "Condition" not in grant, f"{sid} is bounded by its object path, not a key condition"
+        else:
+            assert re.search(condition, grant), f"{sid} must be bounded to the gateway's key prefixes"
+        assert "/index/" not in grant, f"{sid} must not grant the GSIs; the gateway queries the table"
+
+    def test_chat_store_key_prefixes_are_the_ones_the_gateway_writes(self):
+        """The leading-key bounds above are only right while the stores keep their key scheme."""
+        memory = (_GATEWAY_ROOT / "src" / "agentauth" / "chat_memory.py").read_text()
+        artifact = (_GATEWAY_ROOT / "src" / "agentauth" / "chat_artifact.py").read_text()
+        assert 'f"memory#{memory_id}"' in memory and 'f"memory-owner#{launch.tenant_id}#{launch.user_id}"' in memory
+        assert re.search(r'"PK": f"memory#', memory)
+        assert re.search(r"get_item\(Key=\{\"PK\": header\[\"PK\"\]", artifact), "artifact rows share the session header's PK"
+        assert "f\"o/{tenant}/t/{team or '~personal'}/u/{user}/s/{session_id}/\"" in artifact
+        assert 'f"gateway/out/{artifact_id}"' in artifact
+        assert "delete_object" not in artifact, "the gateway does not delete artifact objects; the grant must not either"
 
     def test_no_wildcard_resource(self, intake_tf):
         effective = _without_comments(intake_tf)

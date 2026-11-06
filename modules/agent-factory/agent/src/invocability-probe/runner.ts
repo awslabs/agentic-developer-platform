@@ -1,6 +1,7 @@
 import type { SDKStreamMessage } from '../utils/resilientQuery';
 import { resilientQuery } from '../utils/resilientQuery';
 import { CLAUDE_ADAPTER_ID, CLAUDE_SDK_VERSION } from '../harnesses/claude-control';
+import { PROBE_PRINT_BODY_ENV, printCanonicalProbeBody, probeBodyPrintEnabled } from './body-debug';
 import { startCaptureProxy, type CapturedBedrockRequest, type CaptureProxy } from './capture-proxy';
 import { REQUEST_SHAPE_NORMALIZATION } from './canonical-json';
 import {
@@ -231,6 +232,10 @@ export async function runOneProbe(gateway: ProbeGateway = new SigV4ProbeGateway(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), claim.timeout_seconds * 1000);
   let proxy: CaptureProxy | null = null;
+  // Bounded operator diagnostics (#7993): retain the body only when the switch is
+  // set, and print it only for a request that failed the shape check.
+  const printBody = probeBodyPrintEnabled();
+  let capturedBody: unknown;
   let completion: ProbeCompletion = {
     outcome: 'error',
     request_shape_sha256: claim.expected_request_shape_sha256,
@@ -250,6 +255,7 @@ export async function runOneProbe(gateway: ProbeGateway = new SigV4ProbeGateway(
       expectedRequestShapeSha256: claim.expected_request_shape_sha256,
       signal: controller.signal,
       onRequestRejected: () => controller.abort(),
+      onCapturedBody: printBody ? (body) => { capturedBody = body; } : undefined,
     });
     const observation = await invokeHarness(claim, started, proxy.baseUrl, budget, controller);
     const captured = await proxy.captured();
@@ -272,6 +278,12 @@ export async function runOneProbe(gateway: ProbeGateway = new SigV4ProbeGateway(
     controller.abort();
     try { await proxy?.close(); }
     catch (error) { console.error(`[invocability-probe] proxy close failed: ${(error as Error).message}`); }
+  }
+
+  if (completion.error_code === 'request_shape_mismatch' && capturedBody !== undefined) {
+    console.error(`[invocability-probe] ${PROBE_PRINT_BODY_ENV}=1: canonical body of the refused request for `
+      + `${claim.model_id} follows (observed ${completion.request_shape_sha256}, expected ${claim.expected_request_shape_sha256})`);
+    printCanonicalProbeBody(`invocability-probe:body:${claim.model_id}`, capturedBody);
   }
 
   await gateway.complete(claim.slot_id, claim.lease_token, completion);

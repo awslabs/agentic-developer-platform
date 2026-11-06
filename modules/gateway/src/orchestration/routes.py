@@ -53,25 +53,32 @@ readable" is the guarantee amendment rests on, and a guarantee with no read path
 untestable end-to-end. It is a read, gated on the same permission.
 """
 
+import asyncio
 import json
 import logging
-import os
 import re
+import time
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.orchestration.amend import AmendmentContext, FlowNotFoundError, amend_plan
+from src.orchestration.amendment_review_routes import router as amendment_review_router
+from src.orchestration.budget_read_routes import router as budget_read_router
+from src.orchestration.build_completion_routes import router as build_completion_router
 from src.orchestration.compile import ApprovalContext, ProposalRejectedError, TenantMismatchError, compile_proposal
+from src.orchestration.continuation_activity import current_continuations
 from src.orchestration.continuation_routes import router as continuation_router
 from src.orchestration.cost import (
     COST_SCOPE_LABEL,
@@ -79,12 +86,13 @@ from src.orchestration.cost import (
     CostStatus,
     NodeCost,
     UnknownReason,
-    get_cost_by_address_prefixes,
     get_flow_cost,
 )
+from src.orchestration.cost_cache import SNAPSHOT_STARTED, DisplayCostRefreshUnavailable, get_display_costs, get_display_flow_cost
 from src.orchestration.dispatch_pass import (
-    REPO_ENV,
     RoutingBlocker,
+    issue_number_for_dispatch,
+    product_binding_hold,
     resolve_installation_id,
     routing_blocker_for_node,
 )
@@ -94,10 +102,17 @@ from src.orchestration.evaluation_acceptance_routes import router as evaluation_
 from src.orchestration.evaluation_waiver_routes import router as evaluation_waiver_router
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.execution_read import MAX_EXECUTIONS_PER_PAGE, load_flow_execution_view
+from src.orchestration.executor_read import OperationsExecutorSummary
+from src.orchestration.external_completion_routes import router as external_completion_router
 from src.orchestration.flow_controls import router as flow_controls_router
-from src.orchestration.models import DecisionKind, NodeState
-from src.orchestration.node_activity import NodeActivity, StoryExecution, load_story_execution
-from src.orchestration.policy_admission import load_in_force_policy
+from src.orchestration.l5_observation_routes import router as l5_observation_router
+from src.orchestration.legacy_binding_routes import router as legacy_binding_router
+from src.orchestration.maintenance_adoption_routes import router as maintenance_adoption_router
+from src.orchestration.models import DecisionKind, NodeState, OrchestrationAmendmentIssueBinding, OrchestrationFlow, OrchestrationNode
+from src.orchestration.node_activity import NodeActivity, StoryExecution, load_bounded_story_execution, load_story_execution
+from src.orchestration.node_files import NodeFileGroup, project_file_groups
+from src.orchestration.plan_lineage import PlanLineageResolver
+from src.orchestration.policy_admission import display_policy_from_plan
 from src.orchestration.pr_bindings import (
     BindingError,
     BindingRefusal,
@@ -108,18 +123,22 @@ from src.orchestration.pr_bindings import (
     recover_binding,
 )
 from src.orchestration.pr_identity import PrIdentityError, resolve_pr_identity
-from src.orchestration.proposal import EpicMetadata, LoopProposal, WaveMetadata, split_address
+from src.orchestration.proposal import EpicMetadata, LoopProposal, NodeLineage, WaveMetadata, split_address
+from src.orchestration.recovery_control import automatic_recovery_enabled
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
 from src.orchestration.run_report_read import MAX_REPORTS_PER_PAGE, FlowRunReportsResponse, load_flow_run_reports
+from src.orchestration.security_evidence_roster import router as security_evidence_roster_router
 from src.orchestration.shared_amendment_routes import router as shared_amendment_router
 from src.orchestration.shared_budget_routes import router as shared_budget_router
 from src.orchestration.shared_concurrency_routes import router as shared_concurrency_router
 from src.orchestration.shared_retry_routes import router as shared_retry_router
 from src.orchestration.shared_window_routes import router as shared_window_router
+from src.orchestration.timeline_read import MAX_TIMELINE_NODES, FlowTimelineResponse, load_flow_timeline
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
-from .delivery_progress import DeliveryProgress, current_executions, is_preserved_execution, node_progress
+from .delivery_progress import DeliveryProgress, current_executions, is_preserved_execution, node_progress, with_runtime_budget_wait
+from .story_run_insights import StoryRunInsight, budget_failure_insight, current_story_run_insights
 
 logger = logging.getLogger("bedrockgateway.orchestration")
 
@@ -158,6 +177,16 @@ async def get_flow_run_reports(
     return await load_flow_run_reports(db, org_id=current_user.org_id, flow_id=flow_id, limit=limit, offset=offset)
 
 
+class AmendmentReceiptDisposition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["budget", "retry", "window", "concurrency"]
+    decision_id: str
+    before: Any
+    after: Any
+    reason: str
+
+
 class AmendmentResponse(BaseModel):
     """The outcome of an amendment.
 
@@ -178,6 +207,10 @@ class AmendmentResponse(BaseModel):
     nodes_superseded: int
     edges_created: int
     already_amended: bool
+    receipts_preserved: list[AmendmentReceiptDisposition] = Field(default_factory=list)
+    receipts_dropped: list[AmendmentReceiptDisposition] = Field(default_factory=list)
+    effective_limits_before: dict | None = None
+    effective_limits_after: dict | None = None
 
 
 class DispatchBlockedCause(BaseModel):
@@ -232,6 +265,8 @@ class FlowCreatedResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     flow_id: str
+    product_id: str | None = None
+    project_id: str | None = None
     plan_version: int
     decision_id: str
     plan_hash: str
@@ -260,13 +295,8 @@ class PlanVersionResponse(BaseModel):
 # from `RoutingBlocker` in `dispatch_pass`, so the two vocabularies are declared
 # where their rule lives rather than restated as one list here.
 _CAUSE_AMBIGUOUS_INSTALLATION = "ambiguous_installation"
-_CAUSE_UNKNOWN_DISPATCH_REPO = "unknown_dispatch_repo"
-
-# The sentinel Terraform writes to SSM when no dispatch repository is configured
-# (`agent-authority-coordinator.tf`), which reaches the pod as this literal
-# rather than as an empty string. Treated as unconfigured, exactly as an empty
-# value is.
-_DISPATCH_REPO_DISABLED = "disabled"
+_CAUSE_LEGACY_BINDING_UNRESOLVED = "legacy_binding_unresolved"
+_CAUSE_REPOSITORY_VERIFICATION_PENDING = "repository_verification_pending"
 
 
 async def _dispatch_blocked_causes(
@@ -290,26 +320,20 @@ async def _dispatch_blocked_causes(
 
     Bounded: one read of the just-compiled flow's nodes, scoped to `org_id`, with
     no per-node query. `installation_id` is resolved once for the whole flow
-    because it is a property of the org, not of a node.
+    only for nodes without an accepted story connection; bound stories resolve their own installation.
     """
     causes: list[DispatchBlockedCause] = []
-
-    # --- Configuration: is there a repository to dispatch into at all? ---
-    #
-    # Reported as *unknown* rather than as a confirmed block. The gateway pod and
-    # the scheduled tick are configured from separate places (the pod's configmap
-    # versus the tick's own Terraform-stamped environment), so this process's view
-    # is evidence about the gateway, not proof about the deployed tick. Naming it
-    # `unknown_dispatch_repo` keeps the honest reading available; claiming the
-    # tick is misconfigured from here would be a guess, and claiming the plan is
-    # fine would hide a real and common cause.
-    if (os.environ.get(REPO_ENV) or "").strip() in ("", _DISPATCH_REPO_DISABLED):
+    binding_hold = await product_binding_hold(db, org_id=org_id, flow_id=flow_id)
+    if binding_hold is not None:
         causes.append(
             DispatchBlockedCause(
-                cause=_CAUSE_UNKNOWN_DISPATCH_REPO,
+                cause=binding_hold,
                 detail=(
-                    "no dispatch target repository is configured for this gateway, so the engine may have no repository to "
-                    "deliver into; confirm the deployed engine's dispatch configuration"
+                    "Product-bound work awaits repository verification and compatible execution readers before dispatch"
+                    if binding_hold == _CAUSE_REPOSITORY_VERIFICATION_PENDING
+                    else "Product-bound story publication awaits confirmed native epic links before dispatch"
+                    if binding_hold == "amendment_issue_link_unconfirmed"
+                    else "Verified Product-bound stories await compatible execution readers before dispatch"
                 ),
             )
         )
@@ -321,9 +345,20 @@ async def _dispatch_blocked_causes(
     # by the tick and never consume a worker — and that exemption comes from the
     # shared predicate rather than a kind check written here.
     repo = OrchestrationRepository(db)
+    nodes = await repo.list_nodes(org_id=org_id, flow_id=flow_id)
+    legacy_target_needed = any(
+        not (node.repository_identity and node.provider_repository_id and node.repository_connection) for node in nodes if node.kind == "story"
+    )
+    if legacy_target_needed:
+        causes.append(
+            DispatchBlockedCause(
+                cause=_CAUSE_LEGACY_BINDING_UNRESOLVED,
+                detail="Repository identity is unresolved for legacy nodes; verify their stored provenance before dispatch.",
+            )
+        )
     missing: list[str] = []
     malformed: list[str] = []
-    for node in await repo.list_nodes(org_id=org_id, flow_id=flow_id):
+    for node in nodes:
         blocker = routing_blocker_for_node(kind=node.kind, issue_ref=node.issue_ref)
         if blocker is RoutingBlocker.MISSING_ISSUE_REF:
             missing.append(f"{node.kind} node {node.node_ref!r}")
@@ -354,7 +389,10 @@ async def _dispatch_blocked_causes(
     #
     # Last because dispatch checks it last, and the ordering is what makes the
     # joined reason string read in the order an operator would hit the causes.
-    if installation_id is None:
+    if legacy_target_needed and installation_id is None:
+        bound_stories = any(
+            node.kind == "story" and node.repository_identity and node.provider_repository_id and node.repository_connection for node in nodes
+        )
         causes.append(
             DispatchBlockedCause(
                 cause=_CAUSE_AMBIGUOUS_INSTALLATION,
@@ -362,7 +400,11 @@ async def _dispatch_blocked_causes(
                 # how many: the count is another org's-shape detail that the
                 # submitter does not need in order to fix it, and this string is
                 # logged and rendered widely.
-                detail=f"org {org_id!r} does not resolve to exactly one GitHub installation",
+                detail=(
+                    "Unbound nodes need a tenant installation; verified stories retain their accepted connections"
+                    if bound_stories
+                    else f"org {org_id!r} does not resolve to exactly one GitHub installation"
+                ),
             )
         )
 
@@ -421,6 +463,7 @@ async def create_flow(
         org_id=current_user.org_id,
         actor_id=current_user.user_id,
         actor_role=await _resolve_actor_role(access, current_user),
+        username=current_user.cognito_username,
         reason=reason,
     )
 
@@ -464,7 +507,7 @@ async def create_flow(
             f"org {actor.org_id!r} does not resolve to exactly one GitHub installation, so no node in this flow can be "
             "dispatched; the engine will count every node undispatchable until exactly one installation is configured"
         )
-        if cause.cause == _CAUSE_AMBIGUOUS_INSTALLATION
+        if cause.cause == _CAUSE_AMBIGUOUS_INSTALLATION and cause.detail.startswith("org ")
         else cause.detail
         for cause in causes
     ]
@@ -500,8 +543,11 @@ async def create_flow(
             dispatch_blocked_reason,
         )
 
+    flow = await OrchestrationRepository(db).get_flow(org_id=actor.org_id, flow_id=result.flow_id)
     return FlowCreatedResponse(
         flow_id=result.flow_id,
+        product_id=flow.product_id,
+        project_id=flow.project_id,
         plan_version=result.plan_version,
         decision_id=result.decision_id,
         plan_hash=result.plan_hash,
@@ -608,15 +654,14 @@ async def recover_story_binding(
 
     adoption_scope = None
     if body.adopt_delivery:
-        from .dispatch_pass import DispatchPassConfig
         from .pr_bindings import _accepted_scope
 
         if node.attempts != 0 or node.state not in {"pending", "ready", "awaiting_merge", "passed"}:
             raise HTTPException(status_code=409, detail="historical adoption requires a never-dispatched story; recover its current run instead")
         if body.replaces_reason:
             raise HTTPException(status_code=409, detail="historical adoption cannot replace an existing implementation")
-        if body.repo.lower() != DispatchPassConfig.from_env().repo.lower():
-            raise HTTPException(status_code=409, detail="historical delivery must use the configured engine repository")
+        if not node.repository_identity or body.repo.lower() != node.repository_identity.lower():
+            raise HTTPException(status_code=409, detail="historical delivery must use the saved story repository")
         adoption_scope = await _accepted_scope(db, node)
 
     # A historical dispatch may lack immutable IDs; preserve any authority it
@@ -766,6 +811,7 @@ async def create_amendment(
         org_id=current_user.org_id,
         actor_id=current_user.user_id,
         actor_role=await _resolve_actor_role(access, current_user),
+        username=current_user.cognito_username,
         reason=reason,
     )
 
@@ -810,6 +856,10 @@ async def create_amendment(
         nodes_superseded=result.nodes_superseded,
         edges_created=result.edges_created,
         already_amended=result.already_amended,
+        receipts_preserved=result.receipts_preserved,
+        receipts_dropped=result.receipts_dropped,
+        effective_limits_before=result.effective_limits_before,
+        effective_limits_after=result.effective_limits_after,
     )
 
 
@@ -948,23 +998,30 @@ def _flow_cost_response(flow_id: str, aggregate: AggregateCost) -> FlowCostRespo
     )
 
 
-async def _stalled_node_ids(repo: OrchestrationRepository, *, org_id: str, flow_id: str) -> set[str]:
-    """Node ids whose latest stall-or-halt decision was a **stall**.
+def _unavailable_flow_cost(flow: OrchestrationFlow, nodes: list[OrchestrationNode]) -> AggregateCost:
+    costs = tuple(
+        NodeCost(
+            address=f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+            status=CostStatus.UNKNOWN,
+            reason=UnknownReason.NOT_COSTABLE if node.kind in ("gate", "eval") else UnknownReason.REFRESH_UNAVAILABLE,
+        )
+        for node in nodes
+    )
+    return AggregateCost(
+        address=flow.slug,
+        status=CostStatus.UNKNOWN,
+        node_count=len(costs),
+        unknown_node_count=len(costs),
+        partial=bool(costs),
+        reason=UnknownReason.REFRESH_UNAVAILABLE,
+        nodes=costs,
+    )
 
-    Why this is needed at all: stall detection transitions a stalled node to
-    `failed`, not to a state of its own (`stall.py`), while halting moves it to
-    `halted`. So `halted` is readable from `state` but "stalled" is not — a stalled
-    node and a node whose work simply failed are indistinguishable by state, and
-    AC-3 requires the view to distinguish them.
 
-    Latest-wins rather than any-match: a node that stalled, was resumed, and then
-    halted must not still read as stalled. `list_decisions` returns in `created_at`
-    order, so the last of the two kinds seen for a node is the current one.
-    Decisions are append-only, which is what makes this reduction sound — no row
-    is ever rewritten behind it.
-    """
+def _stalled_node_ids(decisions) -> set[str]:
+    """Reduce the shared, timestamp/ID-ordered current-display evidence."""
     latest: dict[str, str] = {}
-    for decision in await repo.list_decisions(org_id=org_id, flow_id=flow_id):
+    for decision in decisions:
         if decision.node_id and decision.kind in (DecisionKind.NODE_STALLED.value, DecisionKind.NODE_HALTED.value):
             latest[decision.node_id] = decision.kind
     return {node_id for node_id, kind in latest.items() if kind == DecisionKind.NODE_STALLED.value}
@@ -1069,9 +1126,12 @@ class FlowSummaryResponse(BaseModel):
 
     id: str
     execution_paused: bool = True
+    archived_at: str | None = None
     slug: str
     title: str
     intent_ref: str | None
+    product_id: str | None = None
+    project_id: str | None = None
     # --- The design loop's story (#4885) -----------------------------------
     # Both ride the flow row already fetched by the page query: no new query, no
     # change to the join, no change to the statement-count bound #4869 pins.
@@ -1083,13 +1143,13 @@ class FlowSummaryResponse(BaseModel):
     # here for exactly that reason.
     description: str | None
     design_history: dict[str, Any] | None
-    # One of the six `FlowStatus` values, derived by `derive_flow_status`.
+    # Archived status overrides the node-derived flow status.
     status: str
     # Surfaced alongside `status` because `status` is first-match-wins: a flow that
     # is both stalled and gated reports `attention_needed`, and the card still has
     # to be able to say "1 waiting on you".
     awaiting_gate_count: int
-    # Current attention count, identical to display_counts.stalled.
+    # Current attention count; archived flows retain historical display counts.
     stalled_count: int
     display_counts: FlowDisplayCountsResponse
     total_nodes: int
@@ -1112,14 +1172,15 @@ class FlowSummaryResponse(BaseModel):
 
 
 class FlowListResponse(BaseModel):
-    """A page of flows, the filtered total, and the unfiltered status chips.
+    """A page of flows, the filtered total, and status chips for the archive selection.
 
     `total` counts rows matching the **filters across all pages** — it is not
     `len(flows)`. A client showing "Showing 3 of 5" needs both numbers, and a
     `total` that only described the current page would make the pager lie about
     how much is there.
 
-    `status_counts` is **unfiltered and tenant-wide**, which is why it is a
+    `status_counts` ignores search and status filters but shares the archive
+    selection, so it is a
     separate number from `total`: the chips describe the population the operator
     is choosing among, so they still total 5 while a `needs_me` filter shows 3.
     Every status is present including zeroes — "nothing is stalled" is information.
@@ -1127,6 +1188,8 @@ class FlowListResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    product_id: str | None = None
+    project_id: str | None = None
     flows: list[FlowSummaryResponse]
     total: int
     limit: int
@@ -1149,6 +1212,29 @@ def _wave_summary(wave: WaveAggregate, metadata: dict | None = None) -> WaveSumm
     )
 
 
+@asynccontextmanager
+async def _flow_read_snapshot(db: AsyncSession, *, separate_sqlite: bool = False):
+    """Current structural snapshot; display-only measured costs may be cached."""
+    if db.bind.dialect.name != "postgresql" and not separate_sqlite:
+        yield db
+        return
+    if db.info.get("http_request_session") and not (db.new or db.dirty or db.deleted):
+        # Authorization may have checked out a connection. Release that read
+        # transaction before opening the dedicated structural snapshot; otherwise
+        # concurrent reads can each hold one slot while waiting for a second.
+        await db.rollback()
+    async with db.bind.connect() as connection:
+        async with connection.begin():
+            if connection.dialect.name == "postgresql":
+                await connection.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+            async with AsyncSession(bind=connection, expire_on_commit=False) as read_db:
+                # Expiry includes the snapshot's age, not only the final ledger
+                # query duration. Publishing a slow read cannot extend freshness.
+                if connection.dialect.name == "postgresql":
+                    read_db.info[SNAPSHOT_STARTED] = time.monotonic()
+                yield read_db
+
+
 @router.get("/flows", response_model=FlowListResponse)
 async def list_flows_route(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
@@ -1158,8 +1244,11 @@ async def list_flows_route(
     offset: Annotated[int, Query(ge=0)] = 0,
     q: Annotated[str | None, Query(max_length=256)] = None,
     status: Annotated[FlowStatus | None, Query()] = None,
+    include_archived: Annotated[bool, Query()] = False,
     needs_me: Annotated[bool, Query()] = False,
     sort: Annotated[Literal["created", "updated", "stalled"], Query()] = "created",
+    product_id: Annotated[str | None, Query(min_length=1, max_length=36)] = None,
+    project_id: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
 ) -> FlowListResponse:
     """The tenant's delivery flows, with derived status, wave rollups and cost.
 
@@ -1184,6 +1273,10 @@ async def list_flows_route(
     Every aggregate filters `org_id` in SQL; the page's flow ids are never used as
     the only scoping. Query count is constant in page size (three, or four with
     the chips) — see `list_flows_page_with_aggregates`.
+
+    `product_id` selects flows across every Project in that Product. Rows, totals
+    and status chips share that scope. Current Product team access (or platform
+    administration) is checked before any cached Product projection is read.
     """
     await access.check_permission(
         current_user,
@@ -1191,25 +1284,95 @@ async def list_flows_route(
         target_org_id=current_user.org_id,
     )
 
-    repo = OrchestrationRepository(db)
+    from .read_cache import cached_projection
 
-    page = await repo.list_flows_page_with_aggregates(
-        org_id=current_user.org_id,
-        limit=limit,
-        offset=offset,
-        q=q,
-        status=status,
-        needs_me=needs_me,
-        sort=sort,
-    )
+    async with _flow_read_snapshot(db) as read_db:
+        if project_id is not None:
+            from src.products.budget_routes import accessible_project
 
-    # ONE grouped ledger query for the whole page: a flow's slug is its graph
-    # address prefix (`compile.address_of`), so every flow's spend comes back from
-    # a single `or_()` of prefix predicates. A per-flow cost call here would be the
-    # N+1 the address-keyed cost model exists to avoid.
-    slugs = [aggregate.flow.slug for aggregate in page.flows]
-    ledger = await get_cost_by_address_prefixes(db, org_id=current_user.org_id, address_prefixes=slugs)
+            product, _, _, _ = await accessible_project(read_db, current_user, project_id)
+            if product_id is not None and product.id != product_id:
+                raise HTTPException(404, "Project unavailable or you do not have access.")
+            product_id = product.id
+        if product_id is not None:
+            from src.products.models import Product
+            from src.shared.identity.product_scope import product_member, product_visibility_scope
 
+            # Check current membership on every request, before consulting the
+            # shared projection cache. Scope is a Product, across all Projects.
+            member = await product_member(
+                read_db,
+                user_id=current_user.user_id,
+                org_id=current_user.org_id,
+                username=current_user.cognito_username,
+                account_type=current_user.account_type or "human",
+                is_platform_admin=current_user.is_admin,
+            )
+            if member is None or not await read_db.scalar(
+                select(Product.id).where(
+                    Product.id == product_id,
+                    product_visibility_scope(member, current_user.org_id, is_platform_admin=current_user.is_admin),
+                )
+            ):
+                raise HTTPException(status_code=404, detail="Product unavailable or you do not have access.")
+
+        async def load():
+            repo = OrchestrationRepository(read_db, lineage_resolver=PlanLineageResolver())
+            page = await repo.list_flows_page_with_aggregates(
+                org_id=current_user.org_id,
+                limit=limit,
+                offset=offset,
+                q=q,
+                status=status,
+                needs_me=needs_me,
+                include_archived=include_archived,
+                sort=sort,
+                product_id=product_id,
+                project_id=project_id,
+            )
+            flows = await _flow_summaries(read_db, current_user.org_id, page, include_costs=False)
+            status_counts = await repo.count_flows_by_status(
+                org_id=current_user.org_id,
+                include_archived=include_archived or status is FlowStatus.ARCHIVED,
+                product_id=product_id,
+                project_id=project_id,
+            )
+            return FlowListResponse(
+                product_id=product_id,
+                project_id=project_id,
+                flows=flows,
+                total=page.total,
+                limit=limit,
+                offset=offset,
+                status_counts={flow_status.value: count for flow_status, count in status_counts.items()},
+            ).model_dump(mode="json")
+
+        projection = await cached_projection(
+            read_db,
+            org_id=current_user.org_id,
+            operation="list",
+            parameters=[limit, offset, q, status, needs_me, include_archived, sort, product_id, project_id],
+            load=load,
+        )
+        response = FlowListResponse.model_validate(projection)
+    # Optional spend must not make healthy delivery progress unavailable. Use a
+    # separate snapshot so cancellation of the ledger query rolls back before
+    # returning the already-authorized structural response.
+    try:
+        async with _flow_read_snapshot(db) as cost_db:
+            ledger = await get_display_costs(cost_db, org_id=current_user.org_id, address_prefixes=[flow.slug for flow in response.flows])
+        measured = _costs_by_flow(ledger)
+        for flow in response.flows:
+            flow.delivery_cost = _node_cost_response(_roll_up_delivery_cost(flow.slug, measured.get(flow.slug, [])))
+    except DisplayCostRefreshUnavailable:
+        for flow in response.flows:
+            flow.delivery_cost = _node_cost_response(
+                NodeCost(address=flow.slug, status=CostStatus.UNKNOWN, amount_usd=None, reason=UnknownReason.REFRESH_UNAVAILABLE)
+            )
+    return response
+
+
+def _costs_by_flow(ledger: list[NodeCost]) -> dict[str, list[NodeCost]]:
     # Attribute each measured address back to its flow by its FIRST segment, which
     # is the flow slug. Summed per slug rather than per node: the card shows one
     # figure per flow.
@@ -1230,7 +1393,21 @@ async def list_flows_route(
             continue
         measured[flow_slug].append(node_cost)
 
-    display_metadata = await repo.display_metadata_for_flows(org_id=current_user.org_id, flow_ids=[aggregate.flow.id for aggregate in page.flows])
+    return measured
+
+
+async def _flow_summaries(db: AsyncSession, org_id: str, page, *, include_costs: bool = True) -> list[FlowSummaryResponse]:
+    # ONE grouped ledger query for the whole page: a flow's slug is its graph
+    # address prefix (`compile.address_of`), so every flow's spend comes back from
+    # a single statement over those prefixes. A per-flow cost call here would be the
+    # N+1 the address-keyed cost model exists to avoid.
+    slugs = [aggregate.flow.slug for aggregate in page.flows]
+    ledger = await get_display_costs(db, org_id=org_id, address_prefixes=slugs) if include_costs else []
+
+    measured = _costs_by_flow(ledger)
+
+    # Read once by `list_flows` for wave ordering (#7226); reused here for display text.
+    display_metadata = page.display_metadata
     flows: list[FlowSummaryResponse] = []
     for aggregate in page.flows:
         wave_metadata = {(item["epic_ref"], item["wave_ref"]): item for item in display_metadata.get(aggregate.flow.id, {}).get("wave_metadata", [])}
@@ -1238,12 +1415,19 @@ async def list_flows_route(
             FlowSummaryResponse(
                 id=aggregate.flow.id,
                 execution_paused=aggregate.flow.execution_paused,
+                archived_at=(
+                    aggregate.flow.archived_at.replace(tzinfo=aggregate.flow.archived_at.tzinfo or UTC).isoformat()
+                    if aggregate.flow.archived_at
+                    else None
+                ),
                 slug=aggregate.flow.slug,
                 title=aggregate.flow.title,
                 intent_ref=aggregate.flow.intent_ref,
+                product_id=aggregate.flow.product_id,
+                project_id=aggregate.flow.project_id,
                 description=aggregate.flow.description,
                 design_history=aggregate.flow.design_history,
-                status=aggregate.status.value,
+                status="archived" if aggregate.flow.archived_at else aggregate.status.value,
                 awaiting_gate_count=aggregate.awaiting_gate_count,
                 stalled_count=aggregate.stalled_count,
                 display_counts=FlowDisplayCountsResponse(**asdict(aggregate.display_counts)),
@@ -1265,15 +1449,7 @@ async def list_flows_route(
             )
         )
 
-    status_counts = await repo.count_flows_by_status(org_id=current_user.org_id)
-
-    return FlowListResponse(
-        flows=flows,
-        total=page.total,
-        limit=limit,
-        offset=offset,
-        status_counts={flow_status.value: count for flow_status, count in status_counts.items()},
-    )
+    return flows
 
 
 def _roll_up_delivery_cost(slug: str, node_costs: list[NodeCost]) -> NodeCost:
@@ -1341,7 +1517,18 @@ class GraphNodeResponse(BaseModel):
     state: str
     display_state: str | None = None
     title: str
+    executor: OperationsExecutorSummary | None = None
     issue_ref: str | None
+    repository_identity: str | None = None
+    provider_repository_id: int | None = None
+    repository_connection: dict[str, Any] | None = None
+    planning_epic: dict[str, Any] | None = None
+    repository_status: Literal["verified", "unbound", "denied", "stale"] | None = None
+    issue_publication_status: Literal["issue_pending", "issue_created", "issue_created_link_pending", "linked", "unconfirmed"] | None = None
+    readiness_hold: str | None = None
+    lineage: NodeLineage | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    file_groups: list[NodeFileGroup] = Field(default_factory=list)
     attempts: int
     run_id: str | None = None
     activity: NodeActivity | None = None
@@ -1349,6 +1536,7 @@ class GraphNodeResponse(BaseModel):
     issue_url: str | None = None
     result_summary: str | None = None
     delivery_progress: DeliveryProgress | None = None
+    run_insight: StoryRunInsight | None = None
     configuration_problem: str | None = None
     last_gate_decision: GateDecisionSummary | None = None
     # True when the most recent stall/halt decision for this node was a stall.
@@ -1409,13 +1597,21 @@ class FlowGraphResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     flow_id: str
+    activity_included: bool = True
     execution_paused: bool = True
+    recovery_enabled: bool = True
+    archived_at: str | None = None
     slug: str
     title: str
     intent_ref: str | None
     state: str
     created_at: str
     updated_at: str | None
+    product_id: str | None = None
+    project_id: str | None = None
+    product_name: str | None = None
+    product_status: Literal["accessible", "unavailable"] | None = None
+    planning_epics: list[dict[str, Any]] = Field(default_factory=list)
     nodes: list[GraphNodeResponse]
     edges: list[GraphEdgeResponse]
     wave_metadata: list[WaveMetadata] = Field(default_factory=list)
@@ -1432,12 +1628,148 @@ class FlowGraphResponse(BaseModel):
     execution_window: dict | None = None
 
 
+async def _authorize_story_selection(
+    *,
+    db: AsyncSession,
+    current_user: TokenContext,
+    flow_id: str,
+    node_ids: list[str] | None,
+) -> list[OrchestrationNode]:
+    if not node_ids or len(node_ids) > 20 or any(not node_id.strip() for node_id in node_ids) or len(set(node_ids)) != len(node_ids):
+        raise HTTPException(status_code=422, detail="select 1 to 20 distinct nonempty story node_ids")
+
+    repo = OrchestrationRepository(db)
+    flow = await repo.get_flow(org_id=current_user.org_id, flow_id=flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail="orchestration flow not found")
+
+    rows = (
+        await db.scalars(
+            select(OrchestrationNode).where(
+                OrchestrationNode.org_id == current_user.org_id,
+                OrchestrationNode.flow_id == flow.id,
+                OrchestrationNode.id.in_(node_ids),
+            )
+        )
+    ).all()
+    by_id = {row.id: row for row in rows}
+    if len(by_id) != len(node_ids):
+        raise HTTPException(status_code=404, detail="story node not found")
+    if any(row.kind != "story" for row in rows):
+        raise HTTPException(status_code=422, detail="only story nodes support activity")
+    return [by_id[node_id] for node_id in node_ids]
+
+
+async def _current_story_bindings(
+    *, db: AsyncSession, org_id: str, flow_id: str, nodes: list[OrchestrationNode], deadline: float
+) -> dict[str, str | None]:
+    if time.monotonic() >= deadline:
+        raise HTTPException(status_code=503, detail="story activity binding unavailable")
+
+    rows = await OrchestrationRepository(db).display_decisions(
+        org_id=org_id, flow_id=flow_id, node_ids=[node.id for node in nodes], dispatch_only=True
+    )
+    if time.monotonic() >= deadline:
+        raise HTTPException(status_code=503, detail="story activity binding unavailable")
+
+    latest: dict[str, dict] = {}
+    for decision in rows:
+        try:
+            detail = json.loads(decision.reason or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(detail, dict):
+            latest[decision.node_id] = detail
+
+    bindings = {}
+    for node in nodes:
+        detail = latest.get(node.id, {})
+        run_id = detail.get("run_id")
+        bindings[node.id] = (
+            run_id
+            if node.state not in ("pending", "ready", "superseded") and detail.get("attempt") == node.attempts and isinstance(run_id, str) and run_id
+            else None
+        )
+    return bindings
+
+
+class StoryActivityItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    attempt: int
+    run_id: str | None
+    availability: Literal["available", "unavailable", "not_started"]
+    execution_history: StoryExecution | None
+    run_insight: StoryRunInsight | None = None
+
+
+class FlowActivityResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    flow_id: str
+    observed_at: str
+    items: list[StoryActivityItem]
+
+
+@router.get("/flows/{flow_id}/activity", response_model=FlowActivityResponse)
+async def get_flow_activity(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    node_ids: Annotated[list[str] | None, Query()] = None,
+) -> FlowActivityResponse:
+    deadline = time.monotonic() + 5
+    try:
+        async with asyncio.timeout_at(deadline):
+            await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=current_user.org_id)
+            nodes = await _authorize_story_selection(db=db, current_user=current_user, flow_id=flow_id, node_ids=node_ids)
+            bindings = await _current_story_bindings(db=db, org_id=current_user.org_id, flow_id=flow_id, nodes=nodes, deadline=deadline)
+            selected = [(node.id, node.attempts, bindings[node.id]) for node in nodes]
+            run_insights = await current_story_run_insights(db, current_user=current_user, flow_id=flow_id, node_ids=[node.id for node in nodes])
+            current = await current_continuations(db, org_id=current_user.org_id, flow_id=flow_id, node_ids=[node.id for node in nodes])
+            continuations = {
+                run_id: current[node_id]
+                for node_id, attempt, run_id in selected
+                if run_id and node_id in current and current[node_id].cycle == attempt and current[node_id].correlation_id != run_id
+            }
+            observed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            await db.commit()
+    except TimeoutError as exc:
+        raise HTTPException(status_code=503, detail="story activity binding unavailable") from exc
+
+    executions = await load_bounded_story_execution(
+        org_id=current_user.org_id,
+        run_ids=[run_id for _, _, run_id in selected if run_id],
+        deadline=deadline,
+        continuations=continuations,
+    )
+    items = []
+    for node_id, attempt, run_id in selected:
+        execution = executions.get(run_id) if run_id else None
+        if execution is not None and execution.run_id != run_id:
+            execution = None
+        items.append(
+            StoryActivityItem(
+                node_id=node_id,
+                attempt=attempt,
+                run_id=run_id,
+                availability="not_started" if run_id is None else "available" if execution is not None else "unavailable",
+                execution_history=execution,
+                run_insight=run_insights.get(node_id) or budget_failure_insight(execution, run_id=run_id, attempt=attempt),
+            )
+        )
+    return FlowActivityResponse(flow_id=flow_id, observed_at=observed_at, items=items)
+
+
 @router.get("/flows/{flow_id}", response_model=FlowGraphResponse)
 async def get_flow_graph(
     flow_id: Annotated[str, Path(min_length=1, max_length=36)],
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    include_activity: bool = True,
 ) -> FlowGraphResponse:
     """The whole journey for one flow: nodes, edges, and three-valued cost.
 
@@ -1458,7 +1790,69 @@ async def get_flow_graph(
         target_org_id=current_user.org_id,
     )
 
-    repo = OrchestrationRepository(db)
+    async with _flow_read_snapshot(db) as read_db:
+        response, flow, nodes = await _flow_graph_core(db=read_db, current_user=current_user, flow_id=flow_id)
+        if include_activity:
+            insights = await current_story_run_insights(read_db, current_user=current_user, flow_id=flow_id)
+            for node in response.nodes:
+                node.run_insight = insights.get(node.id)
+        current = (
+            await current_continuations(
+                read_db,
+                org_id=current_user.org_id,
+                flow_id=flow_id,
+                node_ids=[node.id for node in response.nodes if node.kind == "story" and node.run_id],
+            )
+            if include_activity
+            else {}
+        )
+
+    # Optional spend must not hide the authorized graph. Finish its structural
+    # snapshot before a separate cost read, so a cancelled ledger query cannot
+    # invalidate the transaction used to assemble delivery progress.
+    try:
+        async with _flow_read_snapshot(db) as cost_db:
+            aggregate = await get_display_flow_cost(cost_db, org_id=current_user.org_id, flow=flow, nodes=nodes)
+    except DisplayCostRefreshUnavailable:
+        logger.warning(
+            "Flow display cost refresh unavailable; returning delivery progress",
+            extra={"event": "flow_display_cost_unavailable", "reason": UnknownReason.REFRESH_UNAVAILABLE.value, "flow_id": flow_id},
+        )
+    else:
+        response.cost = _flow_cost_response(flow_id, aggregate)
+        costs = {cost.address: cost for cost in response.cost.nodes}
+        for node in response.nodes:
+            node.cost = costs[node.cost.address]
+
+    response.activity_included = include_activity
+    if include_activity:
+        history_nodes = [
+            node for node in response.nodes if node.kind == "story" and node.run_id and node.state not in ("pending", "ready", "superseded")
+        ]
+        executions = await load_story_execution(
+            org_id=current_user.org_id,
+            run_ids=[node.run_id for node in history_nodes],
+            continuations={
+                node.run_id: current[node.id]
+                for node in history_nodes
+                if node.id in current and current[node.id].cycle == node.attempts and current[node.id].correlation_id != node.run_id
+            },
+        )
+        for node in history_nodes:
+            execution = executions.get(node.run_id)
+            node.execution_history = execution
+            node.run_insight = node.run_insight or budget_failure_insight(execution, run_id=node.run_id, attempt=node.attempts)
+            if node.state in ("running", "awaiting_merge"):
+                node.activity = execution.activity if execution else None
+                node.delivery_progress = with_runtime_budget_wait(node.delivery_progress, node.activity)
+    return response
+
+
+async def _flow_graph_core(
+    *, db: AsyncSession, current_user: TokenContext, flow_id: str
+) -> tuple[FlowGraphResponse, OrchestrationFlow, list[OrchestrationNode]]:
+    lineage_resolver = PlanLineageResolver()
+    repo = OrchestrationRepository(db, lineage_resolver=lineage_resolver)
 
     # Org-filtered resolution before any node, edge or ledger read, so a
     # cross-tenant flow_id can never reach them.
@@ -1466,20 +1860,85 @@ async def get_flow_graph(
     if flow is None:
         raise HTTPException(status_code=404, detail=f"no orchestration flow {flow_id!r} in this tenant")
 
+    product_name = None
+    product_status = None
+    if flow.product_id:
+        from src.products.models import Product
+        from src.shared.identity.product_scope import product_member, product_visibility_scope
+
+        member = await product_member(
+            db,
+            user_id=current_user.user_id,
+            org_id=current_user.org_id,
+            username=current_user.cognito_username,
+            account_type=current_user.account_type or "human",
+            is_platform_admin=current_user.is_admin,
+        )
+        product = (
+            await db.scalar(
+                select(Product).where(
+                    product_visibility_scope(member, current_user.org_id, is_platform_admin=current_user.is_admin),
+                    Product.id == flow.product_id,
+                    Product.archived_at.is_(None),
+                )
+            )
+            if member is not None
+            else None
+        )
+        product_name = product.name if product is not None else None
+        product_status = "accessible" if product is not None else "unavailable"
+
+    planning_epics = [
+        reference
+        for reference in flow.tracker_refs or []
+        if isinstance(reference, dict) and reference.get("scope") == "epic" and isinstance(reference.get("issue"), dict)
+    ]
+    epic_issues = {reference["address"]: reference["issue"] for reference in planning_epics if isinstance(reference.get("address"), str)}
+
+    accepted_plan = await repo.get_accepted_plan(org_id=current_user.org_id, flow_id=flow.id)
+    accepted_document = (accepted_plan.plan_document or {}) if accepted_plan is not None else {}
+    file_groups_by_address = project_file_groups(accepted_document or {})
+    accepted_nodes = {
+        item["address"]: item
+        for item in (accepted_document.get("nodes", []) if flow.product_id else [])
+        if isinstance(item, dict) and isinstance(item.get("address"), str)
+    }
+    publication_keys = {
+        (item["provider_repository_id"], item["proposal_identity"])
+        for item in accepted_nodes.values()
+        if type(item.get("provider_repository_id")) is int and isinstance(item.get("proposal_identity"), str)
+    }
+    publications = {}
+    if publication_keys:
+        rows = await db.scalars(
+            select(OrchestrationAmendmentIssueBinding).where(
+                OrchestrationAmendmentIssueBinding.org_id == current_user.org_id,
+                tuple_(OrchestrationAmendmentIssueBinding.provider_repository_id, OrchestrationAmendmentIssueBinding.proposal_identity).in_(
+                    publication_keys
+                ),
+            )
+        )
+        publications = {(row.provider_repository_id, row.proposal_identity): row for row in rows}
+    flow_hold = await product_binding_hold(db, org_id=current_user.org_id, flow_id=flow.id) if flow.product_id else None
+
     nodes = await repo.list_nodes(org_id=current_user.org_id, flow_id=flow.id)
     edges = await repo.list_edges(org_id=current_user.org_id, flow_id=flow.id)
+    from .executor_read import operations_executor_summaries
+
+    executors = operations_executor_summaries(accepted_document if accepted_plan and accepted_plan.accepted_by_decision_id is not None else None)
     # The same loader admission uses, so the view describes the policy that is
     # actually deciding rather than a second reading of the plan document. It resolves
     # the version currently in force, which is what makes an amendment show up here
     # without a superseded version ever being shown as current.
-    policy_inputs = await load_in_force_policy(db, org_id=current_user.org_id, flow_id=flow.id)
+    policy_inputs = await display_policy_from_plan(db, org_id=current_user.org_id, flow_id=flow.id, plan=accepted_plan)
     from .window_view import execution_window_view
 
-    window_view = await execution_window_view(db, flow=flow, nodes=nodes, inputs=policy_inputs)
-    display_metadata = await repo.display_metadata_for_flows(org_id=current_user.org_id, flow_ids=[flow.id])
-    aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
+    window_view = await execution_window_view(db, flow=flow, nodes=nodes, inputs=policy_inputs, plan=accepted_plan)
+    display_metadata = {flow.id: {field: accepted_document.get(field) or [] for field in ("wave_metadata", "epic_metadata")}}
+    aggregate = _unavailable_flow_cost(flow, nodes)
     display_states = await repo.node_display_states(org_id=current_user.org_id, flow_id=flow.id)
-    stalled_node_ids = await _stalled_node_ids(repo, org_id=current_user.org_id, flow_id=flow.id)
+    decisions = await repo.display_decisions(org_id=current_user.org_id, flow_id=flow.id, node_ids=[node.id for node in nodes])
+    stalled_node_ids = _stalled_node_ids(decisions)
 
     # Only committed dispatch records can produce run links. Older attempts
     # remain in the decision log but must not masquerade as the current result.
@@ -1489,11 +1948,20 @@ async def get_flow_graph(
     waivers: dict[str, dict] = {}
     observed_at: dict[str, tuple[int, str]] = {}
     admission_refusals: dict[str, dict] = {}
+    evaluation_waits: dict[str, dict] = {}
+    repository_refusals: dict[str, object] = {}
+    repository_observations: dict[str, object] = {}
     developer_retries: dict[str, dict] = {}
     from .admission_diagnostics import ACTOR as ADMISSION_ACTOR
     from .admission_diagnostics import CONTRACT as ADMISSION_CONTRACT
+    from .repository_evaluation_diagnostics import ACTOR as REPOSITORY_ACTOR
+    from .repository_evaluation_diagnostics import current_diagnostic
 
-    for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+    for decision in decisions:
+        if decision.kind == "transition_rejected" and decision.actor_id == REPOSITORY_ACTOR and decision.actor_kind == "service":
+            repository_refusals[decision.node_id] = decision
+        if decision.kind == "result_observed" and decision.actor_id == REPOSITORY_ACTOR and decision.actor_kind == "service":
+            repository_observations[decision.node_id] = decision
         if decision.kind == "developer_retry_checked" and decision.actor_id == "system:developer-recovery" and decision.actor_kind == "service":
             try:
                 retry = json.loads(decision.reason or "{}")
@@ -1523,12 +1991,34 @@ async def get_flow_graph(
                 pass
         if decision.kind == DecisionKind.NODE_DISPATCHED.value:
             admission_refusals.pop(decision.node_id, None)
+        if decision.kind == "evaluation_evidence_ready" and decision.actor_id == "system:orchestration-tick" and decision.actor_kind == "service":
+            evaluation_waits.pop(decision.node_id, None)
+        if decision.kind == "evaluation_evidence_wait" and decision.actor_id == "system:orchestration-tick" and decision.actor_kind == "service":
+            try:
+                wait = json.loads(decision.reason or "{}")
+                if isinstance(wait, dict):
+                    evaluation_waits[decision.node_id] = {**wait, "observed_at": decision.created_at.isoformat()}
+            except (ValueError, TypeError):
+                pass
         if decision.kind in (DecisionKind.GATE_APPROVED.value, DecisionKind.GATE_REJECTED.value) and decision.node_id:
             gate_decisions[decision.node_id] = GateDecisionSummary(
                 action="approved" if decision.kind == DecisionKind.GATE_APPROVED.value else "changes_requested",
                 reason=decision.reason,
                 created_at=decision.created_at.isoformat(),
             )
+        if decision.kind == "external_completion_accepted" and decision.actor_kind == "human":
+            try:
+                content = json.loads(decision.reason or "{}")
+                if content.get("contract") == "external-operations-completion/v1":
+                    result_summaries[decision.node_id] = {
+                        "attempt": content["request"]["expected_attempt"],
+                        "evidence": content["summary"],
+                        "external_completion": True,
+                    }
+                    observed_at[decision.node_id] = (content["request"]["expected_attempt"], decision.created_at.isoformat())
+                    admission_refusals.pop(decision.node_id, None)
+            except (ValueError, KeyError, TypeError, AttributeError):
+                pass
         if decision.kind not in (DecisionKind.NODE_DISPATCHED.value, DecisionKind.RESULT_OBSERVED.value):
             continue
         try:
@@ -1546,6 +2036,13 @@ async def get_flow_graph(
     # pull request a waiting story is waiting on and what is missing from it.
     bindings = await active_bindings_for_flow(db, org_id=current_user.org_id, flow_id=flow.id)
     executions_by_node = await current_executions(db, org_id=current_user.org_id, flow_id=flow.id)
+    from .operations_progress import current_operations_progress, with_operations_progress
+    from .story_acceptance import current_story_acceptance, with_story_acceptance
+    from .validation_diagnostics import current_validation_checks, with_validation_checks
+
+    validation_checks = await current_validation_checks(db, org_id=current_user.org_id, executions=executions_by_node)
+    operations_progress = await current_operations_progress(db, org_id=current_user.org_id, executions=executions_by_node)
+    acceptance_records = await current_story_acceptance(db, org_id=current_user.org_id, executions=executions_by_node)
 
     # Keyed by address because that is what `get_flow_cost` returns them under.
     # Built once rather than searched per node: a linear scan inside the node loop
@@ -1555,7 +2052,27 @@ async def get_flow_graph(
     graph_nodes: list[GraphNodeResponse] = []
     from .plan_lineage import preserved_execution_pairs
 
-    preserved = set(await preserved_execution_pairs(db, org_id=current_user.org_id, flow_ids=[flow_id]))
+    preserved = set(await preserved_execution_pairs(db, org_id=current_user.org_id, flow_ids=[flow_id], resolver=lineage_resolver))
+    # The dispatcher refuses a READY node whose accepted contract still names inputs
+    # nobody has supplied (unpinned deployment revisions, a missing connection, an
+    # upstream node not yet passed). Say so on the card instead of leaving the node
+    # looking eligible while its counter ticks silently in the tick log.
+    from .accepted_node import contract_from_plan, unresolved_contract_inputs, unresolved_required_inputs_problem
+
+    # Pending nodes are held back by the same check (the tick refuses to promote a
+    # node whose contract names unavailable inputs, #7759), so they get the same
+    # sentence; a pending node with satisfied inputs is simply waiting on its
+    # predecessors and reports nothing.
+    unresolved_input_problems: dict[str, str] = {}
+    unresolved_input_names: dict[str, list[str]] = {}
+    for node in nodes:
+        if node.state in {"ready", "pending"} and node.kind in {"story", "eval"}:
+            missing = await unresolved_contract_inputs(db, node, contract_from_plan(flow, node, accepted_plan))
+            problem = unresolved_required_inputs_problem(missing)
+            if problem:
+                unresolved_input_problems[node.id] = problem
+                unresolved_input_names[node.id] = [item.name for item in missing]
+
     for node in nodes:
         address = f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}"
         node_cost = cost_by_address.get(address)
@@ -1597,9 +2114,62 @@ async def get_flow_graph(
 
         source_repo = dispatch.get("repo", "")
         source_issue = dispatch.get("issue")
+        accepted_repository = node.repository_identity
+        accepted_issue = issue_number_for_dispatch(node.issue_ref)
+        repository_verified = (
+            node.kind == "story"
+            and bool(accepted_repository and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", accepted_repository))
+            and type(node.provider_repository_id) is int
+            and node.provider_repository_id > 0
+            and isinstance(node.repository_connection, dict)
+            and node.repository_connection.get("provider") == "github"
+            and type(node.repository_connection.get("installation_id")) is int
+            and node.repository_connection["installation_id"] > 0
+        )
+        accepted_node = accepted_nodes.get(address)
+        repository_status = None
+        if node.kind == "story" and flow.product_id:
+            if (
+                not accepted_node
+                or accepted_document.get("product_id") != flow.product_id
+                or any(
+                    accepted_node.get(field) != getattr(node, field)
+                    for field in ("repository_identity", "provider_repository_id", "repository_connection", "issue_ref")
+                )
+            ):
+                repository_status = "stale"
+            elif repository_verified:
+                repository_status = "verified"
+            else:
+                repository_status = "unbound"
+
+        publication_status = None
+        if node.kind == "story" and accepted_node and accepted_node.get("proposal_identity") and flow.product_id:
+            publication = publications.get((accepted_node.get("provider_repository_id"), accepted_node["proposal_identity"]))
+            if publication is None or publication.issue_number is None:
+                publication_status = "issue_pending"
+            elif (
+                publication.provider_repository_id != node.provider_repository_id
+                or publication.repository.casefold() != (node.repository_identity or "").casefold()
+                or publication.issue_number != accepted_issue
+            ):
+                publication_status = "unconfirmed"
+            elif epic_issues.get(f"{flow.slug}/{node.epic_ref}") and (
+                publication.link_confirmed_at is None
+                or publication.parent_repository_id != epic_issues[f"{flow.slug}/{node.epic_ref}"].get("repository_id")
+                or publication.parent_issue_id is None
+            ):
+                publication_status = "issue_created_link_pending"
+            elif publication.state == "created":
+                publication_status = "linked" if epic_issues.get(f"{flow.slug}/{node.epic_ref}") else "issue_created"
+            else:
+                publication_status = "unconfirmed"
+
         issue_url = (
             f"https://github.com/{source_repo}/issues/{source_issue}"
             if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source_repo) and isinstance(source_issue, int) and source_issue > 0
+            else f"https://github.com/{accepted_repository}/issues/{accepted_issue}"
+            if repository_status == "verified" and publication_status not in {"issue_pending", "unconfirmed"} and accepted_issue
             else None
         )
         graph_nodes.append(
@@ -1611,29 +2181,79 @@ async def get_flow_graph(
                 kind=node.kind,
                 state=node.state,
                 title=node.title,
+                executor=executors.get(address) if node.kind == "story" else None,
                 issue_ref=node.issue_ref,
+                repository_identity=node.repository_identity,
+                provider_repository_id=node.provider_repository_id,
+                repository_connection=node.repository_connection,
+                planning_epic=epic_issues.get(f"{flow.slug}/{node.epic_ref}"),
+                repository_status=repository_status,
+                issue_publication_status=publication_status,
+                readiness_hold=flow_hold if node.kind == "story" else None,
+                lineage=node.lineage,
+                labels=node.labels or {},
+                file_groups=file_groups_by_address.get(address, []) if node.kind == "story" else [],
                 attempts=node.attempts,
                 run_id=dispatch.get("run_id"),
                 issue_url=issue_url,
                 result_summary=result.get("evidence"),
-                delivery_progress=node_progress(
+                delivery_progress=with_story_acceptance(
+                    with_validation_checks(
+                        with_operations_progress(
+                            node_progress(
+                                node=node,
+                                binding=candidate if has_current_binding else None,
+                                dispatch=dispatch,
+                                result=result,
+                                execution=executions_by_node.get(node.id),
+                                policy_enabled=policy_inputs.policy is not None or policy_inputs.refusal is not None,
+                                plan_version=policy_inputs.plan_version,
+                                preserved_execution=is_preserved_execution(executions_by_node.get(node.id), preserved),
+                                policy_hash=policy_inputs.policy.policy_hash if policy_inputs.policy else None,
+                                admission_refusal=admission_refusals.get(node.id),
+                                evaluation_wait=evaluation_waits.get(node.id),
+                                repository_refusal=await current_diagnostic(
+                                    db, node, repository_refusals.get(node.id), repository_observations.get(node.id)
+                                ),
+                                developer_retry=developer_retries.get(node.id),
+                                observed_at=observed_at[node.id][1] if node.id in observed_at and observed_at[node.id][0] == node.attempts else None,
+                            ),
+                            execution=executions_by_node.get(node.id),
+                            summaries=operations_progress,
+                        ),
+                        checks=(
+                            validation_checks.get(executions_by_node[node.id].id, [])
+                            if node.id in executions_by_node
+                            and executions_by_node[node.id].cycle == node.attempts
+                            and (
+                                executions_by_node[node.id].accepted_plan_version == policy_inputs.plan_version
+                                or is_preserved_execution(executions_by_node[node.id], preserved)
+                            )
+                            else []
+                        ),
+                        configuration_problem=unresolved_input_problems.get(node.id),
+                        required_input_names=unresolved_input_names.get(node.id, []),
+                    ),
                     node=node,
-                    binding=candidate if has_current_binding else None,
-                    dispatch=dispatch,
-                    result=result,
                     execution=executions_by_node.get(node.id),
-                    policy_enabled=policy_inputs.policy is not None or policy_inputs.refusal is not None,
-                    plan_version=policy_inputs.plan_version,
-                    preserved_execution=is_preserved_execution(executions_by_node.get(node.id), preserved),
-                    policy_hash=policy_inputs.policy.policy_hash if policy_inputs.policy else None,
-                    admission_refusal=admission_refusals.get(node.id),
-                    developer_retry=developer_retries.get(node.id),
-                    observed_at=observed_at[node.id][1] if node.id in observed_at and observed_at[node.id][0] == node.attempts else None,
+                    binding=candidate if has_current_binding else None,
+                    records=acceptance_records,
+                    paused=flow.execution_paused,
+                    current=(
+                        node.id in executions_by_node
+                        and executions_by_node[node.id].cycle == node.attempts
+                        and (
+                            executions_by_node[node.id].accepted_plan_version == policy_inputs.plan_version
+                            or is_preserved_execution(executions_by_node[node.id], preserved)
+                        )
+                    ),
                 ),
                 last_gate_decision=gate_decisions.get(node.id),
                 evaluation_waiver=waivers.get(node.id) if node.state == "waived" else None,
                 configuration_problem=(
-                    "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
+                    "Link an evaluation issue in the plan before this evaluation can run."
+                    if node.kind == "eval" and not node.issue_ref and policy_inputs.policy is None and policy_inputs.refusal is None
+                    else unresolved_input_problems.get(node.id)
                 ),
                 display_state=display_states[node.id],
                 stalled=node.state == "failed" and node.id in stalled_node_ids,
@@ -1661,20 +2281,30 @@ async def get_flow_graph(
                 updated_at=node.updated_at.isoformat() if node.updated_at else None,
             )
         )
+        if node.kind == "story" and graph_nodes[-1].delivery_progress and graph_nodes[-1].delivery_progress.stage == "admission":
+            refusal = graph_nodes[-1].delivery_progress.blocker
+            if refusal in {"repository_binding_changed", "repository_unavailable", "repository_verification_unavailable", "stale_generation"}:
+                graph_nodes[-1].repository_status = "stale"
+            elif refusal and refusal.startswith(("repository_", "connection_", "installation_")):
+                graph_nodes[-1].repository_status = "denied"
+            if graph_nodes[-1].repository_status in {"stale", "denied"} and not graph_nodes[-1].run_id:
+                graph_nodes[-1].issue_url = None
+        if node.kind == "eval" and graph_nodes[-1].delivery_progress:
+            if graph_nodes[-1].delivery_progress.stage in {"admission", "evidence_wait"}:
+                graph_nodes[-1].display_state = "stalled"
+            if graph_nodes[-1].delivery_progress.stage in {"awaiting_gate", "evidence_wait", "admission"}:
+                graph_nodes[-1].configuration_problem = None
 
-    # Retain observed history after merge or interruption. Queued/replaced
-    # stories must not borrow a previous attempt's activity.
-    history_nodes = [node for node in graph_nodes if node.kind == "story" and node.run_id and node.state not in ("pending", "ready", "superseded")]
-    executions = await load_story_execution(org_id=current_user.org_id, run_ids=[node.run_id for node in history_nodes])
-    for node in history_nodes:
-        execution = executions.get(node.run_id)
-        node.execution_history = execution
-        if node.state in ("running", "awaiting_merge"):
-            node.activity = execution.activity if execution else None
-
-    return FlowGraphResponse(
+    response = FlowGraphResponse(
         flow_id=flow.id,
+        product_id=flow.product_id,
+        project_id=flow.project_id,
+        product_name=product_name,
+        product_status=product_status,
+        planning_epics=planning_epics,
         execution_paused=flow.execution_paused,
+        recovery_enabled=await automatic_recovery_enabled(db, org_id=flow.org_id, flow_id=flow.id),
+        archived_at=(flow.archived_at.replace(tzinfo=flow.archived_at.tzinfo or UTC).isoformat() if flow.archived_at else None),
         slug=flow.slug,
         title=flow.title,
         intent_ref=flow.intent_ref,
@@ -1689,6 +2319,7 @@ async def get_flow_graph(
         execution_policy=summarize_policy(policy_inputs.policy) if policy_inputs.policy is not None else None,
         execution_window=window_view,
     )
+    return response, flow, nodes
 
 
 # ---------------------------------------------------------------------------
@@ -1960,13 +2591,42 @@ async def get_flow_execution(
 
 
 router.include_router(continuation_router)
+router.include_router(legacy_binding_router)
 router.include_router(flow_controls_router)
 router.include_router(shared_amendment_router)
 router.include_router(shared_budget_router)
+router.include_router(budget_read_router)
 router.include_router(shared_concurrency_router)
 router.include_router(shared_retry_router)
 router.include_router(shared_window_router)
 router.include_router(evaluation_acceptance_router)
+router.include_router(build_completion_router)
+router.include_router(external_completion_router)
+router.include_router(maintenance_adoption_router)
+router.include_router(l5_observation_router)
+router.include_router(security_evidence_roster_router)
 router.include_router(evaluation_waiver_router)
 
 router.include_router(draft_revision_router)
+
+# Issue #5329: the amendment review loop (propose/list/show/preview/edit/reject/accept).
+# Registered onto THIS router deliberately, so the PLAN_APPROVE guard in
+# test_internal_plane_guard.py covers every one of its handlers.
+router.include_router(amendment_review_router)
+
+
+@router.get("/flows/{flow_id}/timeline", response_model=FlowTimelineResponse)
+async def get_flow_timeline(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=MAX_TIMELINE_NODES)] = MAX_TIMELINE_NODES,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> FlowTimelineResponse:
+    """Read story wall times; resolve authorization and tenant before history."""
+    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=current_user.org_id)
+    flow = await OrchestrationRepository(db).get_flow(org_id=current_user.org_id, flow_id=flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail=f"no orchestration flow {flow_id!r} in this tenant")
+    return await load_flow_timeline(db, org_id=current_user.org_id, flow_id=flow.id, limit=limit, offset=offset)

@@ -14,10 +14,15 @@ import {
   useState,
   type KeyboardEvent,
 } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { assignChatProject } from '@/services/products';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
+import { useFeatures } from '@/hooks/useFeatures';
+import CrewRuntimeAction from '@/components/chat/CrewRuntimeAction';
+import { EXECUTOR_LABELS, runtimeChoiceFor, sessionSelectionFor, useCrewRuntime, type CrewRuntimeChoice } from '@/hooks/useCrewRuntime';
 import { useAgUiEvents } from '@/hooks/useAgUiEvents';
 import { requestServerSessionId } from '@/services/chatSession';
-import { readChatMode, selectChatMode, endChatSession, type ChatSessionMode, type ChatSessionState } from '@/services/chatMode';
+import { readChatMode, selectChatMode, endChatSession, type ChatExecutor, type ChatSessionMode, type ChatSessionState } from '@/services/chatMode';
 import { ConversationSidebar } from '@/components/chat/ConversationSidebar';
 import { ChatMessageRenderer } from '@/components/chat/ChatMessageRenderer';
 import { ToolCallRow } from '@/components/chat/ToolCallRow';
@@ -25,7 +30,7 @@ import { SessionMetaPanel } from '@/components/chat/SessionMetaPanel';
 import { DraftPanel } from '@/components/chat/DraftPanel';
 import { TypingIndicator } from '@/components/chat/TypingIndicator';
 import { FileDropZone, type PendingUpload } from '@/components/chat/FileDropZone';
-import type { ChatMessage, Conversation, ConnectionStatus } from '@/types/chat';
+import type { ChatMessage, ChatTurnPhase, Conversation, ConnectionStatus } from '@/types/chat';
 
 // highlight.js theme for code blocks
 import 'highlight.js/styles/github-dark.css';
@@ -36,6 +41,18 @@ import 'highlight.js/styles/github-dark.css';
 
 const STORAGE_KEY = 'adp_chat_conversations';
 const MAX_MESSAGE_LENGTH = 10_000;
+const TURN_PHASE_LABELS: Record<ChatTurnPhase, string> = {
+  sending: 'Sending message; awaiting acknowledgement',
+  acknowledged: 'Acknowledged by chat service',
+  queued: 'Queued',
+  starting: 'Starting executor',
+  running: 'Running',
+  streaming: 'Streaming answer',
+  completed: 'Completed',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+  interrupted: 'Interrupted',
+};
 
 const SUGGESTION_CHIPS = [
   'Explain this codebase',
@@ -75,7 +92,15 @@ function createConversation(sessionId: string, title?: string): Conversation {
 // Page component
 // ---------------------------------------------------------------------------
 
-export default function AgentChat() {
+export default function AgentChat({ activityId, installationId }: { activityId?: string; installationId?: string }) {
+  const [searchParams] = useSearchParams();
+  const productId = !activityId && !installationId ? searchParams.get('product') : null;
+  const projectId = productId ? searchParams.get('project') : null;
+  const selectedProjectScope = productId ? `${productId}:${projectId ?? ''}` : null;
+  const currentProjectScope = useRef(selectedProjectScope);
+  currentProjectScope.current = selectedProjectScope;
+  const features = useFeatures();
+  const contextPrefix = activityId ? `Regarding my activity ${activityId}: ` : installationId ? `Regarding installation ${installationId}: ` : '';
   // Persisted conversations
   const [conversations, setConversations] = useLocalStorage<Conversation[]>(STORAGE_KEY, []);
   const [activeConvId, setActiveConvId] = useState<string | null>(() => {
@@ -87,6 +112,11 @@ export default function AgentChat() {
   const [modeBusy, setModeBusy] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
   const currentMode = modeState?.sessionId === activeConvId ? modeState.state : null;
+  const modeActionVersion = useRef(0);
+  // The runtime select (#8115): the local preference seeds new conversations; an active
+  // conversation's choice is the session's server-owned mode + executor.
+  const runtime = useCrewRuntime();
+  const runtimeChoice = runtimeChoiceFor(currentMode, runtime.choice);
 
   // Sidebar collapsed state for responsive
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -95,6 +125,9 @@ export default function AgentChat() {
   const [inputValue, setInputValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const conversationLogRef = useRef<HTMLDivElement>(null);
+  const pendingInitialSendRef = useRef(false);
+  const restoreChatFocusRef = useRef(false);
 
   // #5615: starting a conversation is now a server round-trip, so it can be in
   // flight and it can fail.
@@ -155,6 +188,8 @@ export default function AgentChat() {
     setStartError(null);
     try {
       const sessionId = await requestServerSessionId();
+      if (productId) await assignChatProject(sessionId, productId, projectId ?? undefined);
+      if (currentProjectScope.current !== (productId ? `${productId}:${projectId ?? ''}` : null)) return null;
       const conv = createConversation(sessionId);
       setConversations((prev) => [conv, ...prev]);
       setActiveConvId(conv.id);
@@ -168,13 +203,25 @@ export default function AgentChat() {
       startInFlightRef.current = false;
       setIsStartingConversation(false);
     }
-  }, [setConversations]);
+  }, [productId, projectId, setConversations]);
+
+  const productEntry = useRef<string | null>(null);
+  useEffect(() => {
+    const selected = productId ? `${productId}:${projectId ?? ''}` : null;
+    if (!selected || productEntry.current === selected || isStartingConversation) return;
+    productEntry.current = selected;
+    pendingInitialSendRef.current = false;
+    setActiveConvId(null);
+    void startConversation();
+  }, [productId, projectId, startConversation, isStartingConversation]);
 
   const handleCreateConversation = useCallback(() => {
+    pendingInitialSendRef.current = false;
     void startConversation();
   }, [startConversation]);
 
   const handleSelectConversation = useCallback((id: string) => {
+    pendingInitialSendRef.current = false;
     setActiveConvId(id);
   }, []);
 
@@ -193,7 +240,7 @@ export default function AgentChat() {
   // Agent chat hook
   // ------------------------------------------------------------------
 
-  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionExpired, replayWarning, sessionMeta, sendMessage, cancelTurn, canCancel, cancelState, activeToolCalls, wsRef } = useAgUiEvents({
+  const { connectionStatus, isAwaitingReply, turnPhase, reconnectAttempt, sessionExpired, replayWarning, retryConnection, sessionMeta, sendMessage, cancelTurn, canCancel, cancelState, activeToolCalls, wsRef } = useAgUiEvents({
     conversation: activeConversation,
     onMessagesChange: handleMessagesChange,
   });
@@ -204,13 +251,14 @@ export default function AgentChat() {
     setModeState(null);
     setModeError(null);
     const refresh = () => {
+      const version = modeActionVersion.current;
       void readChatMode(activeConvId).then((state) => {
-        if (active) {
+        if (active && version === modeActionVersion.current) {
           setModeState({ sessionId: activeConvId, state });
           setModeError(null);
         }
       }).catch(() => {
-        if (active) {
+        if (active && version === modeActionVersion.current) {
           setModeState(null);
           setModeError('Session mode unavailable');
         }
@@ -221,31 +269,44 @@ export default function AgentChat() {
     return () => { active = false; clearInterval(interval); };
   }, [activeConvId, isAwaitingReply]);
 
-  const changeMode = useCallback(async (mode: ChatSessionMode) => {
+  const changeMode = useCallback(async (mode: ChatSessionMode, executor?: ChatExecutor) => {
     if (!activeConvId || !currentMode || modeBusy) return;
     setModeBusy(true);
     setModeError(null);
+    modeActionVersion.current += 1;
     try {
-      const state = await selectChatMode(activeConvId, mode);
+      const state = await selectChatMode(activeConvId, mode, executor);
       setModeState({ sessionId: activeConvId, state });
     } catch {
-      setModeError('Could not change session mode. Please try again.');
+      setModeError('Could not change the session runtime. If a sandbox is running, end the session first, then try again.');
     } finally {
+      modeActionVersion.current += 1;
       setModeBusy(false);
     }
   }, [activeConvId, currentMode, modeBusy]);
+
+  const changeRuntime = useCallback((choice: CrewRuntimeChoice) => {
+    runtime.setChoice(choice);
+    if (!currentMode) return;
+    const selection = sessionSelectionFor(choice);
+    const sameMode = currentMode.mode === selection.mode && !currentMode.pending_mode;
+    const sameExecutor = selection.mode === 'ephemeral' || currentMode.executor === selection.executor;
+    if (sameMode && sameExecutor) return;
+    void changeMode(selection.mode, selection.executor);
+  }, [runtime, currentMode, changeMode]);
 
   const endSession = useCallback(async () => {
     if (!activeConvId || !currentMode || modeBusy) return;
     setModeBusy(true);
     setModeError(null);
+    modeActionVersion.current += 1;
     try {
       const state = await endChatSession(activeConvId);
       setModeState({ sessionId: activeConvId, state });
-      setInputValue('');
     } catch {
       setModeError('Could not end session. Please try again.');
     } finally {
+      modeActionVersion.current += 1;
       setModeBusy(false);
     }
   }, [activeConvId, currentMode, modeBusy]);
@@ -269,13 +330,29 @@ export default function AgentChat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeConversation?.messages]);
 
+  useEffect(() => {
+    const cancelFocusRestoration = (event: FocusEvent) => {
+      if (event.target !== textareaRef.current && event.target !== document.body && event.target !== document.documentElement) {
+        restoreChatFocusRef.current = false;
+      }
+    };
+    document.addEventListener('focusin', cancelFocusRestoration);
+    return () => document.removeEventListener('focusin', cancelFocusRestoration);
+  }, []);
+
+  useEffect(() => {
+    if (connectionStatus !== 'connected' || !restoreChatFocusRef.current || !activeConvId || sessionExpired) return;
+    restoreChatFocusRef.current = false;
+    textareaRef.current?.focus();
+  }, [connectionStatus, activeConvId, sessionExpired]);
+
   // ------------------------------------------------------------------
   // Input handling
   // ------------------------------------------------------------------
 
   const handleSend = useCallback(() => {
     const text = inputValue.trim();
-    if (!text || isAwaitingReply || currentMode?.pending_mode || currentMode?.health === 'ending' || currentMode?.health === 'recovering' || currentMode?.health === 'cleanup_delayed') return;
+    if (!text || isAwaitingReply || sessionExpired || (activeConvId && connectionStatus !== 'connected') || currentMode?.pending_mode || currentMode?.health === 'ending' || currentMode?.health === 'recovering' || currentMode?.health === 'cleanup_delayed') return;
     if (text === '/exit' && activeConvId && currentMode?.mode === 'persistent') {
       void endSession();
       return;
@@ -286,13 +363,14 @@ export default function AgentChat() {
     // new conversation is connected. On failure the text is still there and the
     // error is shown, so the user loses nothing and can retry.
     if (!activeConvId) {
+      pendingInitialSendRef.current = true;
       void startConversation();
       return;
     }
 
     // Stage C (#186): include attachment IDs in the message
     const attachmentIds = pendingUploads.map((u) => u.artifactId);
-    sendMessage(text, attachmentIds.length > 0 ? attachmentIds : undefined);
+    if (!sendMessage(`${contextPrefix}${text}`, attachmentIds.length > 0 ? attachmentIds : undefined)) return;
     setInputValue('');
     setPendingUploads([]);
 
@@ -300,7 +378,7 @@ export default function AgentChat() {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [inputValue, isAwaitingReply, activeConvId, sendMessage, startConversation, pendingUploads, currentMode, endSession]);
+  }, [inputValue, isAwaitingReply, sessionExpired, connectionStatus, activeConvId, sendMessage, startConversation, pendingUploads, currentMode, endSession, contextPrefix]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -330,12 +408,13 @@ export default function AgentChat() {
         // #5615: park the chip in the input and let the connect effect send it
         // once the server has issued an identifier.
         setInputValue(chip);
+        pendingInitialSendRef.current = true;
         void startConversation();
         return;
       }
-      sendMessage(chip);
+      if (!sendMessage(`${contextPrefix}${chip}`)) setInputValue(chip);
     },
-    [activeConvId, sendMessage, startConversation],
+    [activeConvId, sendMessage, startConversation, contextPrefix],
   );
 
   // Send pending input after connection establishes.
@@ -343,10 +422,12 @@ export default function AgentChat() {
   // is deliberately gated on `activeConvId` — the SERVER-ISSUED id — so the
   // first message can only ever go to an identifier the server acknowledged.
   useEffect(() => {
-    if (connectionStatus === 'connected' && inputValue.trim() && activeConvId && !sessionExpired) {
+    if (pendingInitialSendRef.current && connectionStatus === 'connected' && inputValue.trim() && activeConvId && !sessionExpired) {
       const text = inputValue.trim();
-      sendMessage(text);
-      setInputValue('');
+      if (sendMessage(`${contextPrefix}${text}`)) {
+        pendingInitialSendRef.current = false;
+        setInputValue('');
+      }
     }
     // Only trigger when connection status changes to connected
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -361,6 +442,8 @@ export default function AgentChat() {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+      {activityId && <span className="sr-only">Asking about authorized activity {activityId}</span>}
+      {installationId && <span className="sr-only">Asking about authorized installation {installationId}</span>}
       {/* Sidebar */}
       <div className={`${sidebarOpen ? 'w-72 flex-shrink-0' : 'w-0 overflow-hidden'} transition-all duration-200`}>
         <ConversationSidebar
@@ -395,6 +478,8 @@ export default function AgentChat() {
           <h1 className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate flex-1">
             {activeConversation?.title || 'Agent Chat'}
           </h1>
+          {features.assistant_ui && features.crew_dashboard && features.crew_dashboard_origin &&
+            <CrewRuntimeAction handoffUrl={`${features.crew_dashboard_origin}/crew/handoff`} />}
 
           {activeConvId && (
             <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
@@ -403,13 +488,14 @@ export default function AgentChat() {
               {currentMode?.mode === 'persistent' && (
                 <span role="status" aria-label={`Persistent session ${currentMode.health}`} className="flex items-center gap-1">
                   {currentMode.health === 'active' && <span aria-hidden="true" className="h-2 w-2 rounded-full bg-green-500" />}
-                  {currentMode.health}
+                  {currentMode.health}{currentMode.executor ? ` · ${EXECUTOR_LABELS[currentMode.executor]}` : ''}
                 </span>
               )}
-              <select aria-label="Session mode" value={currentMode?.mode ?? 'ephemeral'}
-                disabled={!currentMode || modeBusy || !!currentMode.pending_mode || currentMode.health === 'ending' || currentMode.health === 'recovering' || currentMode.health === 'cleanup_delayed'} onChange={(event) => { void changeMode(event.target.value as ChatSessionMode); }}>
-                <option value="ephemeral">Ephemeral</option>
-                <option value="persistent">Persistent</option>
+              <select aria-label="Session runtime" value={runtimeChoice}
+                disabled={!currentMode || modeBusy || runtime.loading || !!currentMode.pending_mode || currentMode.health === 'ending' || currentMode.health === 'recovering' || currentMode.health === 'cleanup_delayed'}
+                onChange={(event) => { changeRuntime(event.target.value as CrewRuntimeChoice); }}>
+                {runtime.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                {runtimeChoice === 'persistent-default' && <option value="persistent-default" disabled>Persistent sandbox (deployment default)</option>}
               </select>
               {currentMode?.mode === 'persistent' && currentMode.health === 'active' && !currentMode.pending_mode && (
                 <button type="button" disabled={modeBusy} onClick={() => void endSession()} aria-label="End session">End session</button>
@@ -422,16 +508,43 @@ export default function AgentChat() {
           <ConnectionBadge status={connectionStatus} reconnectAttempt={reconnectAttempt} />
         </div>
 
-        {replayWarning && <div role="alert" className="px-4 py-2 text-sm text-amber-900 bg-amber-100 dark:text-amber-100 dark:bg-amber-900">{replayWarning}</div>}
+        {!sessionExpired && (replayWarning || (activeConvId && connectionStatus === 'disconnected') || turnPhase === 'failed' || turnPhase === 'interrupted') && (
+          <div role="alert" data-testid="chat-recovery" className="px-4 py-2 text-sm text-amber-900 bg-amber-100 dark:text-amber-100 dark:bg-amber-900">
+            {(replayWarning || turnPhase === 'failed' || turnPhase === 'interrupted') && (
+              <span>{replayWarning || 'The reply stopped unexpectedly. Check what arrived before trying another request.'}{' '}</span>
+            )}
+            {activeConvId && connectionStatus === 'disconnected' ? (
+              <>
+                <span>Chat is disconnected. Your unsent text is preserved.</span>
+                <button type="button" onClick={() => { restoreChatFocusRef.current = true; retryConnection(); }} className="ml-2 underline">Retry connection</button>
+              </>
+            ) : (
+              <button type="button" onClick={() => conversationLogRef.current?.focus()} className="ml-2 underline">Review conversation</button>
+            )}
+          </div>
+        )}
+
+        {currentMode?.mode === 'persistent' && currentMode.health === 'active' && typeof currentMode.idle_timeout_seconds === 'number' && (
+          <p role="note" className="px-4 py-2 text-sm text-amber-900 bg-amber-50 dark:text-amber-100 dark:bg-amber-900">
+            Persistent sessions shut down after {currentMode.idle_timeout_seconds % 60 === 0
+              ? `${currentMode.idle_timeout_seconds / 60} minutes`
+              : `${currentMode.idle_timeout_seconds} seconds`} without activity once work finishes.
+            Keeping a sandbox ready may incur capacity costs; model use can incur separate charges.
+          </p>
+        )}
 
         {/* Messages area */}
+        {turnPhase && <p role="status" data-testid="turn-progress" aria-live="polite" className="px-4 py-2 text-sm text-gray-700 dark:text-gray-200">{TURN_PHASE_LABELS[turnPhase]}</p>}
+
         <div
+          ref={conversationLogRef}
+          tabIndex={-1}
           className="flex-1 overflow-y-auto px-4 py-4"
           role="log"
           aria-live="polite"
           aria-label="Chat messages"
         >
-          {messages.length === 0 ? (
+          {messages.length === 0 && !isAwaitingReply && activeToolCalls.length === 0 ? (
             <EmptyState onChipClick={handleSuggestionClick} />
           ) : (
             <>
@@ -452,7 +565,9 @@ export default function AgentChat() {
               {activeToolCalls.length > 0 && (
                 <div className="ml-10 mb-2">
                   {activeToolCalls
-                    .filter((tc) => tc.status === 'running')
+                    .filter((tc) => tc.status === 'running' && !messages.some(
+                      (message) => message.toolCalls?.some((attached) => attached.toolCallId === tc.toolCallId),
+                    ))
                     .map((tc) => (
                       <ToolCallRow key={tc.toolCallId} toolCall={tc} />
                     ))}
@@ -465,6 +580,7 @@ export default function AgentChat() {
               {isAwaitingReply && (
                 <div className="ml-10 mb-2" data-testid="typing-indicator">
                   <TypingIndicator
+                    ariaLabel={turnPhase === 'streaming' ? 'Assistant response streaming' : 'Waiting for assistant update'}
                     toolUse={
                       (() => {
                         const running = activeToolCalls.find((tc) => tc.status === 'running');
@@ -500,7 +616,7 @@ export default function AgentChat() {
             >
               <span>{startError}</span>
               <button
-                onClick={handleCreateConversation}
+                onClick={() => void startConversation()}
                 disabled={isStartingConversation}
                 className="flex-shrink-0 font-medium underline hover:no-underline disabled:opacity-50"
                 data-testid="start-session-retry"
@@ -518,7 +634,7 @@ export default function AgentChat() {
               role="alert"
               data-testid="session-expired-notice"
             >
-              <span>This conversation is no longer available.</span>
+              <span>This conversation is no longer available. Your unsent text is preserved.</span>
               <button
                 onClick={handleCreateConversation}
                 disabled={isStartingConversation}
@@ -557,6 +673,8 @@ export default function AgentChat() {
                 value={inputValue}
                 onChange={handleTextareaChange}
                 onKeyDown={handleKeyDown}
+                onFocus={() => { restoreChatFocusRef.current = true; }}
+                onBlur={() => { if (connectionStatus === 'connected') restoreChatFocusRef.current = false; }}
                 placeholder={
                   sessionExpired
                     ? 'Start a new conversation to continue'

@@ -45,6 +45,34 @@ def test_worker_cannot_read_secrets_or_escalate_even_with_extra_identity_grants(
     assert set(by_id["DenyUnlistedActions"]["NotAction"]) == permitted_actions
 
 
+def test_workload_role_cannot_invoke_agentcore_even_with_extra_identity_grants(statements):
+    by_id = {statement["Sid"]: statement for statement in statements}
+    assert by_id["DenyDirectAgentCoreTools"] == {
+        "Sid": "DenyDirectAgentCoreTools",
+        "Effect": "Deny",
+        "Action": ["bedrock-agentcore:*"],
+        "Resource": "*",
+    }
+    assert "bedrock-agentcore:InvokeGateway" not in by_id["DenyUnlistedActions"]["NotAction"]
+    assert not any(
+        action.startswith("bedrock-agentcore:")
+        for statement in statements if statement["Effect"] == "Allow"
+        for action in statement["Action"]
+    )
+
+
+def test_legacy_worker_denies_agentcore_in_both_rollout_modes():
+    infra = Path(__file__).resolve().parents[1] / "infra"
+    legacy = (infra / "scaledjob-iam.tf").read_text()
+    direct_deny = legacy.split('Sid      = "DenyDirectAgentCoreBrowser"', 1)[1].split("},", 1)[0]
+    assert 'Effect   = "Deny"' in direct_deny
+    assert 'Action   = ["bedrock-agentcore:*"]' in direct_deny
+    assert 'Resource = "*"' in direct_deny
+    assert "var.agent_legacy_worker_admin_retired ? jsonencode(local.agent_task_source_scoped_policy)" in legacy
+    retired = (infra / "agent-authority-task-source.tf").read_text()
+    assert 'NotAction = ["sts:AssumeRole", "sts:TagSession", "sts:SetSourceIdentity", "sts:GetCallerIdentity"]' in retired
+
+
 def test_operational_resources_do_not_wildcard_other_environments_or_accounts(statements):
     allows = [s for s in statements if s["Effect"] == "Allow"]
     for statement in allows:

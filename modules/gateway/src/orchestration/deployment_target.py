@@ -35,7 +35,17 @@ class DeploymentTargetResolver:
         self.secrets, self.assume, self.session_factory = secrets, assume, session_factory
 
     async def resolve(
-        self, session, *, entry, policy, principal_user_id, execution_id, inspect_target=None, authorize_scope=None, action=Action.DEPLOY
+        self,
+        session,
+        *,
+        entry,
+        policy,
+        principal_user_id,
+        execution_id,
+        inspect_target=None,
+        authorize_scope=None,
+        action=Action.DEPLOY,
+        session_policy=None,
     ):
         if action not in {Action.DEPLOY, Action.EVALUATE}:
             raise CycleBlockedError("deployment_target_action_unsupported")
@@ -47,9 +57,29 @@ class DeploymentTargetResolver:
         credential = await resolve_user_credential(session, org_id=policy.org_id, user_id=principal_user_id, credential_id=entry.connection_id)
         if credential.credential_type != "aws_role" or credential.service != "aws":
             raise CycleBlockedError("deployment_connection_requires_registered_aws_role")
-        if entry.resource_kind != "eks-namespace" or not re.fullmatch(
-            r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}/[a-z0-9][a-z0-9-]{0,62}", entry.resource_id or ""
-        ):
+        resource = entry.resource_id or ""
+        generic = getattr(entry, "verification_adapter", None) == "workflow-evidence-v2"
+        if generic:
+            valid = bool(resource) and len(resource) <= 512 and not any(ord(char) < 32 for char in resource)
+        elif entry.resource_kind == "eks-namespace":
+            valid = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}/[a-z0-9][a-z0-9-]{0,62}", resource)
+        elif entry.resource_kind == "eks-deployment":
+            if getattr(entry, "verification_adapter", None) == "qualification-api-runtime-verification":
+                valid = re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}/[a-z0-9][a-z0-9-]{0,62}/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?",
+                    resource,
+                )
+            else:
+                valid = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}/[a-z0-9][a-z0-9-]{0,62}/tools-facade", resource)
+        elif entry.resource_kind == "agentcore-gateway":
+            valid = re.fullmatch(r"arn:aws:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:gateway/[A-Za-z0-9-]+", resource)
+        elif entry.resource_kind == "lambda-function":
+            valid = re.fullmatch(r"arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]+", resource)
+        elif entry.resource_kind == "ec2-launch-template":
+            valid = re.fullmatch(r"lt-[0-9a-f]{8,17}", resource)
+        else:
+            valid = None
+        if not valid:
             raise CycleBlockedError("deployment_resource_boundary_unverifiable")
         secret = await asyncio.to_thread((self.secrets or SecretsManagerHelper()).get_secret, credential.secret_arn)
         config = json.loads(secret)
@@ -71,11 +101,13 @@ class DeploymentTargetResolver:
             agent_id="deployment-controller",
             task_id=execution_id,
             label=credential.label,
+            **({"session_policy": session_policy} if session_policy is not None else {}),
         )
         deadline = datetime.fromisoformat(temporary.expiration.replace("Z", "+00:00"))
         if deadline.tzinfo is None or deadline <= datetime.now(UTC):
             raise CycleBlockedError("deployment_target_credential_expired")
-        cluster, namespace = entry.resource_id.split("/", 1)
+        if not generic and entry.resource_kind in {"eks-namespace", "eks-deployment"}:
+            cluster, namespace = resource.split("/")[:2]
 
         def read_identity():
             scoped = self.session_factory(
@@ -86,14 +118,42 @@ class DeploymentTargetResolver:
             )
             bounded = Config(connect_timeout=3, read_timeout=10, retries={"total_max_attempts": 1})
             account = scoped.client("sts", config=bounded).get_caller_identity()["Account"]
-            description = scoped.client("eks", config=bounded).describe_cluster(name=cluster)["cluster"]
-            if (
-                account != match[2]
-                or description.get("arn") != f"arn:{match[1]}:eks:{temporary.region}:{account}:cluster/{cluster}"
-                or description.get("name") != cluster
-            ):
+            if account != match[2]:
                 raise CycleBlockedError("deployment_target_identity_mismatch")
-            return account, inspect_target(scoped, description, namespace) if inspect_target else None
+            if generic:
+                # The workflow verifies deployment state; the engine resolves only
+                # credential/account identity and the accepted resource boundary.
+                description, scope = {}, None
+            elif entry.resource_kind == "ec2-launch-template":
+                result = scoped.client("ec2", config=bounded).describe_launch_templates(LaunchTemplateIds=[resource])
+                templates = result.get("LaunchTemplates", [])
+                if len(templates) != 1 or templates[0].get("LaunchTemplateId") != resource or result.get("NextToken"):
+                    raise CycleBlockedError("deployment_target_identity_mismatch")
+                description = templates[0]
+                scope = None
+            elif entry.resource_kind in {"eks-namespace", "eks-deployment"}:
+                description = scoped.client("eks", config=bounded).describe_cluster(name=cluster)["cluster"]
+                if (
+                    description.get("arn") != f"arn:{match[1]}:eks:{temporary.region}:{account}:cluster/{cluster}"
+                    or description.get("name") != cluster
+                ):
+                    raise CycleBlockedError("deployment_target_identity_mismatch")
+                scope = namespace
+            else:
+                _, partition, _, region, target_account, _ = resource.split(":", 5)
+                if (partition, region, target_account) != (match[1], temporary.region, account):
+                    raise CycleBlockedError("deployment_target_identity_mismatch")
+                if entry.resource_kind == "agentcore-gateway":
+                    gateway_id = resource.rsplit("/", 1)[-1]
+                    description = scoped.client("bedrock-agentcore-control", config=bounded).get_gateway(gatewayIdentifier=gateway_id)
+                    actual = description.get("gatewayArn")
+                else:
+                    description = scoped.client("lambda", config=bounded).get_function(FunctionName=resource)
+                    actual = description.get("Configuration", {}).get("FunctionArn")
+                if actual != resource:
+                    raise CycleBlockedError("deployment_target_identity_mismatch")
+                scope = None
+            return account, inspect_target(scoped, description, scope) if inspect_target else None
 
         account, observation = await asyncio.to_thread(read_identity)
         return ResolvedTarget(
@@ -101,8 +161,8 @@ class DeploymentTargetResolver:
                 provider="aws",
                 account_id=account,
                 region=temporary.region,
-                resource_kind="eks-namespace",
-                resource_id=f"{cluster}/{namespace}",
+                resource_kind=entry.resource_kind,
+                resource_id=resource,
                 evidence=TargetEvidence(source=f"registered-aws-role:{credential.id}", verified_at=datetime.now(UTC).isoformat()),
             ),
             credential.id,

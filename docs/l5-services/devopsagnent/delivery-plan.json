@@ -1,0 +1,1059 @@
+{
+  "schema_version": 1,
+  "status": "planning_not_registered",
+  "requirements_revision": "R3-secure-native-ui-ingress",
+  "epic_url": "https://github.com/aws-e/adp/issues/8865",
+  "source_baseline": "33fa3ffbb2c428fc67f70d5514cb62099ed9517e",
+  "architecture": "docs/l5-services/devopsagnent/architecture.md",
+  "project_portability": {
+    "scope": "any_onboarded_product_project",
+    "configuration_source": "authorized_product_source_apis_and_explicit_overrides",
+    "prerequisites": "per_capability_and_supported_connector",
+    "same_platform_artifacts": true,
+    "per_project_platform_redeployment": false,
+    "minimum_non_adp_live_projects": 2,
+    "non_eks_live_fixture_required": true,
+    "epic_acceptance": "EC-10",
+    "story_acceptance": "DA19#AC-04"
+  },
+  "initial_execution_authorization": true,
+  "recurring_human_gates": 0,
+  "planned_grouped_l5_releases": 1,
+  "file_groups_policy": "optional_nonbinding_no_diff_enforcement",
+  "stories": [
+    {
+      "alias": "DA01",
+      "title": "Publish the DevOps architecture, schemas and capability qualification contract",
+      "outcome": "Freeze shared contracts, conditional prerequisites and project portability rules.",
+      "depends_on": [],
+      "shared": [
+        8683
+      ],
+      "wave": 1,
+      "epic_criteria": [
+        "EC-01",
+        "EC-10"
+      ],
+      "file_groups": [
+        {
+          "name": "Architecture and generated contracts",
+          "action": "modify",
+          "paths": [
+            "docs/l5-services/devopsagnent/architecture.md",
+            "docs/l5-services/contracts/v1/catalog.py",
+            "docs/l5-services/contracts/v1/validate.py"
+          ]
+        },
+        {
+          "name": "Capability fixtures and compatibility",
+          "action": "create",
+          "paths": [
+            "docs/l5-services/devopsagnent/capability-matrix.md",
+            "modules/L5-services/tests/contracts/test_devops_contracts.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8866",
+      "issue_number": 8866,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ]
+    },
+    {
+      "alias": "DA02",
+      "title": "Normalize Product environments and connect the DevOps capability handoff",
+      "outcome": "Make saved Product selections available consistently and link DevOps configuration without losing Profile progress.",
+      "depends_on": [
+        "DA01"
+      ],
+      "shared": [
+        8684,
+        8685
+      ],
+      "wave": 1,
+      "epic_criteria": [
+        "EC-01"
+      ],
+      "file_groups": [
+        {
+          "name": "Profile and handoff",
+          "action": "modify",
+          "paths": [
+            "modules/gateway/src/products/configuration.py",
+            "modules/gateway/src/products/source_routes.py",
+            "modules/gateway/src/product_onboarding/handoffs.py"
+          ]
+        },
+        {
+          "name": "Migration and Product regression coverage",
+          "action": "create",
+          "paths": [
+            "modules/gateway/alembic/versions/normalize_profile_environments.py",
+            "modules/gateway/tests/products/test_devops_handoff.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8867",
+      "issue_number": 8867,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA03",
+      "title": "Implement DevOps configuration, readiness and delegated access",
+      "outcome": "Configure any onboarded project and report only its capability-specific readiness gaps.",
+      "depends_on": [
+        "DA01",
+        "DA02"
+      ],
+      "shared": [
+        8684,
+        8685,
+        8688
+      ],
+      "wave": 1,
+      "epic_criteria": [
+        "EC-01",
+        "EC-02",
+        "EC-10"
+      ],
+      "file_groups": [
+        {
+          "name": "DevOps configuration and storage",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/devops/configuration.py",
+            "modules/L5-services/src/l5_services/models/devops.py",
+            "modules/L5-services/src/l5_services/migrations/versions/devops_state.py"
+          ]
+        },
+        {
+          "name": "Shared API integration",
+          "action": "modify after SA03",
+          "paths": [
+            "modules/L5-services/src/l5_services/api/configuration.py",
+            "modules/gateway/src/l5_integration.py"
+          ]
+        },
+        {
+          "name": "Configuration integration tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_configuration.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8868",
+      "issue_number": 8868,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ]
+    },
+    {
+      "alias": "DA04",
+      "title": "Manage persistent DevOps Agent Spaces and recover their lifecycle",
+      "outcome": "Provide recoverable create, adopt, update, suspend, resume and retirement operations for a scoped Agent Space.",
+      "depends_on": [
+        "DA03"
+      ],
+      "shared": [
+        8686,
+        8687,
+        8688
+      ],
+      "wave": 2,
+      "epic_criteria": [
+        "EC-02",
+        "EC-08"
+      ],
+      "file_groups": [
+        {
+          "name": "Provider lifecycle and reconciliation",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/adapters/devops/spaces.py",
+            "modules/L5-services/src/l5_services/devops/lifecycle.py"
+          ]
+        },
+        {
+          "name": "Shared binding integration",
+          "action": "modify after SA04",
+          "paths": [
+            "modules/L5-services/src/l5_services/api/bindings.py"
+          ]
+        },
+        {
+          "name": "Lifecycle integration tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_spaces.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8869",
+      "issue_number": 8869,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA05",
+      "title": "Configure DevOps AWS resource access with conditional EKS support",
+      "outcome": "Verify selected AWS resource access; require EKS setup only for Kubernetes workloads.",
+      "depends_on": [
+        "DA04"
+      ],
+      "shared": [
+        8684,
+        8688
+      ],
+      "wave": 2,
+      "epic_criteria": [
+        "EC-02",
+        "EC-10"
+      ],
+      "file_groups": [
+        {
+          "name": "AWS/EKS provider access",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/adapters/devops/aws_access.py",
+            "modules/L5-services/src/l5_services/devops/resource_scope.py"
+          ]
+        },
+        {
+          "name": "Access infrastructure",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/infra/devops-access.tf"
+          ]
+        },
+        {
+          "name": "Permission and scope tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_access.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8870",
+      "issue_number": 8870,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ]
+    },
+    {
+      "alias": "DA06",
+      "title": "Connect DevOps repositories, pipelines and telemetry with verified readiness",
+      "outcome": "Connect each project\u2019s supported sources and deployment evidence without ADP layout assumptions.",
+      "depends_on": [
+        "DA04",
+        "DA05"
+      ],
+      "shared": [
+        8684
+      ],
+      "wave": 2,
+      "epic_criteria": [
+        "EC-02",
+        "EC-04"
+      ],
+      "file_groups": [
+        {
+          "name": "Repository and telemetry adapters",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/adapters/devops/integrations.py",
+            "modules/L5-services/src/l5_services/devops/source_readiness.py"
+          ]
+        },
+        {
+          "name": "Integration scenario tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_integrations.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8871",
+      "issue_number": 8871,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA07",
+      "title": "Publish versioned Product instructions, runbooks and skills to DevOps",
+      "outcome": "Synchronize entitled Product knowledge into native instructions, skills and qualified source context.",
+      "depends_on": [
+        "DA06"
+      ],
+      "shared": [
+        8684
+      ],
+      "wave": 2,
+      "epic_criteria": [
+        "EC-07"
+      ],
+      "file_groups": [
+        {
+          "name": "Knowledge synchronization and native assets",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/devops/knowledge.py",
+            "modules/L5-services/src/l5_services/adapters/devops/assets.py"
+          ]
+        },
+        {
+          "name": "Knowledge fixtures and tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_knowledge.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8872",
+      "issue_number": 8872,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA08",
+      "title": "Provide Product-authorized DevOps native UI access from ADP sign-in",
+      "outcome": "Implement gateway-only native UI launch, current Product authorization and verified person/session policy; no Function URL.",
+      "depends_on": [
+        "DA04"
+      ],
+      "shared": [
+        8684
+      ],
+      "wave": 2,
+      "epic_criteria": [
+        "EC-03",
+        "EC-10"
+      ],
+      "file_groups": [
+        {
+          "name": "Launch API and native session adapter",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/api/devops_access.py",
+            "modules/L5-services/src/l5_services/devops/access.py",
+            "modules/L5-services/src/l5_services/adapters/devops/federation.py"
+          ]
+        },
+        {
+          "name": "Access policy and session tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_sessions.py",
+            "modules/L5-services/tests/e2e/test_devops_sso.py"
+          ]
+        },
+        {
+          "name": "Scoped deployment roles",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/infra/devops-ui-access.tf"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8873",
+      "issue_number": 8873,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ]
+    },
+    {
+      "alias": "DA09",
+      "title": "Admit DevOps investigations from manual requests and verified incident events",
+      "outcome": "Submit scoped investigations through shared L5 admission and durable event-driven dispatch.",
+      "depends_on": [
+        "DA03",
+        "DA05",
+        "DA06"
+      ],
+      "shared": [
+        8687,
+        8688,
+        8691
+      ],
+      "wave": 3,
+      "epic_criteria": [
+        "EC-04",
+        "EC-08"
+      ],
+      "file_groups": [
+        {
+          "name": "Investigation submission and incident events",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/adapters/devops/investigations.py",
+            "modules/L5-services/src/l5_services/devops/incident_events.py"
+          ]
+        },
+        {
+          "name": "Shared execution integration",
+          "action": "modify after SA05/SA06",
+          "paths": [
+            "modules/L5-services/src/l5_services/api/runs.py",
+            "modules/L5-services/src/l5_services/workers/execution.py"
+          ]
+        },
+        {
+          "name": "Admission/producer-consumer tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_investigations.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8874",
+      "issue_number": 8874,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA10",
+      "title": "Track DevOps native work, monitoring health and reusable results",
+      "outcome": "Reconcile DevOps work into scoped L5 runs and results with honest origin and monitoring state.",
+      "depends_on": [
+        "DA09"
+      ],
+      "shared": [
+        8688,
+        8692
+      ],
+      "wave": 3,
+      "epic_criteria": [
+        "EC-04",
+        "EC-08"
+      ],
+      "file_groups": [
+        {
+          "name": "Native events, readback and results",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/adapters/devops/observations.py",
+            "modules/L5-services/src/l5_services/devops/monitoring.py",
+            "modules/L5-services/src/l5_services/devops/results.py"
+          ]
+        },
+        {
+          "name": "Run/result integration tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_results.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8875",
+      "issue_number": 8875,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA11",
+      "title": "Deliver native DevOps release-readiness reviews with exact change evidence",
+      "outcome": "Run release-readiness reviews and return source-grounded native findings through L5.",
+      "depends_on": [
+        "DA06",
+        "DA07",
+        "DA10"
+      ],
+      "shared": [
+        8684
+      ],
+      "wave": 3,
+      "epic_criteria": [
+        "EC-05"
+      ],
+      "file_groups": [
+        {
+          "name": "Release-readiness adapter",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/adapters/devops/release_readiness.py"
+          ]
+        },
+        {
+          "name": "Contract and live release evidence",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_release_readiness.py",
+            "modules/L5-services/tests/live/test_devops_release_readiness.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8876",
+      "issue_number": 8876,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA12",
+      "title": "Deliver native DevOps release verification against an isolated deployment",
+      "outcome": "Execute bounded native release-verification scenarios with independently checked deployment identity.",
+      "depends_on": [
+        "DA06",
+        "DA10"
+      ],
+      "shared": [
+        8684
+      ],
+      "wave": 3,
+      "epic_criteria": [
+        "EC-05"
+      ],
+      "file_groups": [
+        {
+          "name": "Release-verification adapter and fixture validation",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/adapters/devops/release_verification.py",
+            "modules/L5-services/src/l5_services/devops/verification_targets.py"
+          ]
+        },
+        {
+          "name": "Target and scenario tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_release_verification.py",
+            "modules/L5-services/tests/live/test_devops_release_verification.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8877",
+      "issue_number": 8877,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA13",
+      "title": "Configure and reconcile recurring DevOps prevention",
+      "outcome": "Manage explicit prevention enablement, cadence, pause and individual execution tracking.",
+      "depends_on": [
+        "DA04",
+        "DA10"
+      ],
+      "shared": [
+        8691
+      ],
+      "wave": 3,
+      "epic_criteria": [
+        "EC-06",
+        "EC-08"
+      ],
+      "file_groups": [
+        {
+          "name": "Prevention policy and adapter",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/devops/prevention.py",
+            "modules/L5-services/src/l5_services/adapters/devops/prevention.py"
+          ]
+        },
+        {
+          "name": "Schedule and budget semantics tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_prevention.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8878",
+      "issue_number": 8878,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA14",
+      "title": "Publish DevOps findings and learned assets into Product Context",
+      "outcome": "Publish selected DevOps results with provenance, freshness and revocation-aware reuse.",
+      "depends_on": [
+        "DA07",
+        "DA10"
+      ],
+      "shared": [
+        8693,
+        8149
+      ],
+      "wave": 3,
+      "epic_criteria": [
+        "EC-07"
+      ],
+      "file_groups": [
+        {
+          "name": "Context contribution translation",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/src/l5_services/devops/context.py"
+          ]
+        },
+        {
+          "name": "Shared publication integration",
+          "action": "modify after SA11",
+          "paths": [
+            "modules/L5-services/src/l5_services/publication/contributions.py"
+          ]
+        },
+        {
+          "name": "Contribution, invalidation and reuse tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/integration/test_devops_context.py",
+            "modules/L5-services/tests/live/test_devops_context_reuse.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8879",
+      "issue_number": 8879,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA15",
+      "title": "Add the Product DevOps configuration, operations and native UI tab",
+      "outcome": "Provide the complete DevOps service journey in the existing Product L5 Services UI.",
+      "depends_on": [
+        "DA03",
+        "DA08",
+        "DA10",
+        "DA11",
+        "DA12",
+        "DA13",
+        "DA14"
+      ],
+      "shared": [
+        8694
+      ],
+      "wave": 3,
+      "epic_criteria": [
+        "EC-01",
+        "EC-03",
+        "EC-09"
+      ],
+      "file_groups": [
+        {
+          "name": "Product DevOps tab and client integration",
+          "action": "create",
+          "paths": [
+            "modules/gateway/frontend/src/pages/products/services/DevOpsServiceTab.tsx",
+            "modules/gateway/frontend/src/__tests__/pages/products/services/DevOpsServiceTab.test.tsx"
+          ]
+        },
+        {
+          "name": "Existing L5 client and route",
+          "action": "modify after SA12",
+          "paths": [
+            "modules/gateway/frontend/src/services/l5Services.ts"
+          ]
+        },
+        {
+          "name": "Browser journeys",
+          "action": "create",
+          "paths": [
+            "modules/gateway/frontend/tests/e2e/l5-devops.spec.ts"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8880",
+      "issue_number": 8880,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA16",
+      "title": "Expose complete DevOps configuration and operations in the installed CLI",
+      "outcome": "Extend the installed adp service CLI with DevOps configuration, bindings, capabilities and results.",
+      "depends_on": [
+        "DA03",
+        "DA10",
+        "DA11",
+        "DA12",
+        "DA13",
+        "DA14"
+      ],
+      "shared": [
+        8695
+      ],
+      "wave": 3,
+      "epic_criteria": [
+        "EC-09"
+      ],
+      "file_groups": [
+        {
+          "name": "Installed CLI and command manifest",
+          "action": "modify after SA13",
+          "paths": [
+            "modules/gateway/cli/adp-service.py",
+            "modules/gateway/cli/command-manifest.json"
+          ]
+        },
+        {
+          "name": "CLI reference and installed tests",
+          "action": "create",
+          "paths": [
+            "docs/l5-services/devopsagnent/cli.md",
+            "modules/gateway/tests/cli/test_devops_service.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8881",
+      "issue_number": 8881,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA17",
+      "title": "Expose scoped DevOps capabilities through the existing MCP transport",
+      "outcome": "Expose the DevOps operation matrix through existing authenticated L5 MCP tools.",
+      "depends_on": [
+        "DA03",
+        "DA10",
+        "DA11",
+        "DA12",
+        "DA13",
+        "DA14"
+      ],
+      "shared": [
+        8696
+      ],
+      "wave": 3,
+      "epic_criteria": [
+        "EC-09"
+      ],
+      "file_groups": [
+        {
+          "name": "MCP contract and host registration",
+          "action": "modify after SA14",
+          "paths": [
+            "docs/l5-services/contracts/v1/mcp-tools.json",
+            "modules/gateway/src/internal/tools_discovery.py",
+            "modules/gateway/src/internal/tools_l5.py"
+          ]
+        },
+        {
+          "name": "MCP transport integration tests",
+          "action": "create",
+          "paths": [
+            "modules/gateway/tests/internal/test_devops_mcp.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8882",
+      "issue_number": 8882,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03"
+      ]
+    },
+    {
+      "alias": "DA18",
+      "title": "Package and deploy DevOps through the shared L5 release pipeline",
+      "outcome": "Package one shared release and verify scoped roles, gateway-only SSO and absence of public launcher infrastructure.",
+      "depends_on": [
+        "DA01",
+        "DA03"
+      ],
+      "shared": [
+        8698
+      ],
+      "wave": 2,
+      "epic_criteria": [
+        "EC-08",
+        "EC-09",
+        "EC-10"
+      ],
+      "file_groups": [
+        {
+          "name": "Shared package and worker publication",
+          "action": "modify after SA15",
+          "paths": [
+            "modules/L5-services/pyproject.toml",
+            "modules/L5-services/scripts/build-package.sh",
+            "modules/L5-services/scripts/build-workers.sh"
+          ]
+        },
+        {
+          "name": "DevOps queues/events and release wiring",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/infra/devops-events.tf"
+          ]
+        },
+        {
+          "name": "GitHub Actions and host filters",
+          "action": "modify after SA15",
+          "paths": [
+            ".github/workflows/l5-services-release.yml",
+            ".github/workflows/l5-services-ci.yml",
+            ".github/workflows/gateway-deploy.yml"
+          ]
+        },
+        {
+          "name": "Packaging and infrastructure tests",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/deployment/test_devops_release.py"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8883",
+      "issue_number": 8883,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ]
+    },
+    {
+      "alias": "DA19",
+      "title": "Qualify DevOps across projects and reusable context on one shared release",
+      "outcome": "Qualify all capabilities, R3 SSO ingress/denials and two non-ADP projects, including non-EKS, on the same release.",
+      "depends_on": [
+        "DA04",
+        "DA05",
+        "DA06",
+        "DA07",
+        "DA08",
+        "DA09",
+        "DA10",
+        "DA11",
+        "DA12",
+        "DA13",
+        "DA14",
+        "DA15",
+        "DA16",
+        "DA17",
+        "DA18"
+      ],
+      "shared": [
+        8698
+      ],
+      "wave": 4,
+      "epic_criteria": [
+        "EC-01",
+        "EC-02",
+        "EC-03",
+        "EC-04",
+        "EC-05",
+        "EC-06",
+        "EC-07",
+        "EC-08",
+        "EC-09",
+        "EC-10"
+      ],
+      "file_groups": [
+        {
+          "name": "Live fixtures, drivers and independent verifier",
+          "action": "create",
+          "paths": [
+            "modules/L5-services/tests/live/devops/",
+            "modules/L5-services/scripts/qualify-devops.py"
+          ]
+        },
+        {
+          "name": "Qualification workflow and combined release",
+          "action": "create",
+          "paths": [
+            ".github/workflows/l5-devops-live.yml"
+          ]
+        },
+        {
+          "name": "Release integration",
+          "action": "modify after DA18",
+          "paths": [
+            ".github/workflows/l5-services-release.yml"
+          ]
+        },
+        {
+          "name": "Acceptance and operations documentation",
+          "action": "create",
+          "paths": [
+            "docs/l5-services/devopsagnent/qualification.md"
+          ]
+        }
+      ],
+      "issue_url": "https://github.com/aws-e/adp/issues/8884",
+      "issue_number": 8884,
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ]
+    }
+  ],
+  "final_story_phases": [
+    "DA19-build-harness",
+    "DA19-release-and-qualify"
+  ],
+  "requirements_amendment": {
+    "baseline": "R2-project-portability",
+    "affected_stories": [
+      "DA08",
+      "DA18",
+      "DA19"
+    ],
+    "acceptance_ids_preserved": true,
+    "unaffected_evidence_preserved": true,
+    "required_live_checks": [
+      "sso-gateway-only-ingress",
+      "sso-denial-before-federation"
+    ],
+    "browser_operation": "launchNativeBrowser",
+    "ingress": "existing_authenticated_gateway_l5_api",
+    "sso_function_urls_allowed": false,
+    "separate_public_launcher_allowed": false
+  }
+}

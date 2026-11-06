@@ -274,12 +274,19 @@ jobs:
             ARGS+=(--allow-removal)
           fi
           TFVAR=$(python3 platform/scripts/resolve-capacity-subnets.py \
+            --terraform-vars \
             --environment "${ENVIRONMENT}" \
             --bucket "${STATE_BUCKET}" \
             --configured "${ADDITIONAL_PRIVATE_SUBNETS_BY_AZ:-}" \
             "${ARGS[@]}")
-          echo "TF_VAR_additional_private_subnet_ids_by_az=${TFVAR}" >> "$GITHUB_ENV"
-          echo "Effective additional private capacity subnets: ${TFVAR}"
+          python3 - "${TFVAR}" <<'PY'
+          import json, os, sys
+          values = json.loads(sys.argv[1])
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              for key, value in values.items():
+                  encoded = value if isinstance(value, str) else json.dumps(value, separators=(",", ":"))
+                  stream.write(f"TF_VAR_{key}={encoded}\n")
+          PY
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}

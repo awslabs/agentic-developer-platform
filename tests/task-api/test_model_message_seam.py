@@ -252,7 +252,8 @@ def test_adapter_refuses_oversize_before_committing_a_turn():
     assert turns.calls == 0
 
 
-def test_actual_child_final_progress_can_exit_before_durable_report_ack(tmp_path, monkeypatch):
+@pytest.mark.parametrize("allowed", [True, False])
+def test_actual_child_final_progress_can_exit_before_durable_report_ack(tmp_path, monkeypatch, allowed):
     import importlib.util
     import shutil
 
@@ -279,12 +280,21 @@ def test_actual_child_final_progress_can_exit_before_durable_report_ack(tmp_path
             return super().report(body)
 
         def model(self, body):
+            if not allowed:
+                return {
+                    "schema_version": "1.0", "task_id": assignment.task_id,
+                    "turn_id": body["turn_id"], "request_digest": body["request_digest"],
+                    "automatic_replay_permitted": False, "operation_status": "rejected",
+                    "handoff": "not_started", "content": None, "stop_reason": None,
+                    "usage": None, "error_code": "budget_exceeded",
+                }
             return {
                 "schema_version": "1.0", "task_id": assignment.task_id,
                 "turn_id": body["turn_id"], "request_digest": body["request_digest"],
                 "automatic_replay_permitted": False, "operation_status": "confirmed",
                 "handoff": "confirmed", "content": [{"type": "text", "text": json.dumps(report)}],
                 "stop_reason": "end_turn",
+                "usage": {"input_tokens": 332, "output_tokens": 360, "estimated_usd": 0.002132},
             }
 
     entry = ROOT / "modules/agent-factory/task-agents/investigator/dist/index.js"
@@ -299,7 +309,16 @@ def test_actual_child_final_progress_can_exit_before_durable_report_ack(tmp_path
     assert node
     client = SlowReportClient(bootstrap, events)
     host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda _: [node, str(entry), "--embedded"])
-    assert host.run(assignment, envelope, heartbeat=helpers.FakeHeartbeat(events), acknowledge=lambda: events.append("ack")) == 0, client.finalize_body
+    exit_code = host.run(assignment, envelope, heartbeat=helpers.FakeHeartbeat(events), acknowledge=lambda: events.append("ack"))
+    if not allowed:
+        assert exit_code == helpers.TASK_EXIT_FAILED
+        assert client.finalize_body["outcome"] == "failed"
+        assert client.finalize_body["error"]["code"] == "process_failed"
+        assert client.finalize_body["error"]["message"] == "The model operation was refused because its budget was exceeded."
+        assert "artifact" not in events
+        assert events.index("finalize:failed") < events.index("ack")
+        return
+    assert exit_code == 0, client.finalize_body
     assert client.finalize_body["outcome"] == "completed"
     assert client.finalize_body["result"]["artifact_ids"] == client.finalize_body["committed_result_refs"]
     assert len(client.finalize_body["committed_result_refs"]) == 1

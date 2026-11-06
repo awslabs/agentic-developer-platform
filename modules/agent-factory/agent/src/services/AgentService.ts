@@ -9,6 +9,10 @@ import { ConcurrencyGuard } from '../components/ConcurrencyGuard';
 import { AgentOrchestrator } from '../components/AgentOrchestrator';
 import { ApprovalService } from './ApprovalService';
 import { ErrorRecoveryService } from './ErrorRecoveryService';
+import { selectLegacyRetry } from '../utils/legacy-retry';
+import { resolveSuperpowerTriggerComment } from '../utils/superpower-guidance';
+import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 
 export class AgentService {
   private configLoader: ConfigLoader;
@@ -45,7 +49,8 @@ export class AgentService {
     await githubClient.initialize(issueContext.owner, issueContext.repo, issueContext.issueNumber);
 
     // Check if this is a retry - if so, we should override any existing lock
-    const isRetry = await this.isRetryTriggered(githubClient, issueContext.issueNumber);
+    const retry = await this.findAuthorizedRetry(githubClient, issueContext.owner, issueContext.repo, issueContext.issueNumber);
+    const isRetry = retry !== null;
     
     this.concurrencyGuard = new ConcurrencyGuard(this.logger);
     const lockAcquired = await this.concurrencyGuard.acquireLock(String(issueContext.issueNumber), isRetry);
@@ -57,10 +62,9 @@ export class AgentService {
 
     try {
       // Check for /retry comment with additional guidance
-      const retryGuidance = await this.getRetryGuidance(githubClient, issueContext.issueNumber);
-      if (retryGuidance) {
-        issueContext.retryGuidance = retryGuidance;
-        this.logger.info('Found retry guidance', { component: 'AgentService', guidance: retryGuidance.substring(0, 100) });
+      if (retry?.guidance) {
+        issueContext.retryGuidance = retry.guidance;
+        this.logger.info('Verified retry guidance', { component: 'AgentService' });
       }
 
       const workspaceManager = new WorkspaceManager(this.logger);
@@ -91,41 +95,25 @@ export class AgentService {
     await this.logger?.close();
   }
 
-  private async getRetryGuidance(githubClient: GitHubClient, issueNumber: number): Promise<string | undefined> {
+  private async findAuthorizedRetry(
+    githubClient: GitHubClient, owner: string, repo: string, issueNumber: number,
+  ): Promise<{ guidance?: string } | null> {
     try {
-      const comments = await githubClient.getComments(issueNumber);
-      // Find the most recent /retry comment
-      const retryComments = comments
-        .filter(c => c.body.includes('/retry'))
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      
-      if (retryComments.length > 0) {
-        const latestRetry = retryComments[0].body;
-        // Extract guidance after /retry command
-        const match = latestRetry.match(/\/retry\s*([\s\S]*)/);
-        if (match && match[1].trim()) {
-          return match[1].trim();
-        }
-      }
-    } catch (err) {
-      this.logger?.warn('Could not fetch retry guidance', { component: 'AgentService', error: (err as Error).message });
+      if (!process.env.GITHUB_EVENT_PATH) return null;
+      const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) as
+        { sender?: { id?: number } };
+      const triggerId = resolveSuperpowerTriggerComment(event, owner, repo, issueNumber);
+      if (!triggerId || !event.sender?.id) return null;
+      const target = (process.env.TARGET_REPO || `${owner}/${repo}`).split('/');
+      if (target.length !== 2 || !target[0] || !target[1]) return null;
+      return await selectLegacyRetry(await githubClient.getApprovalComments(issueNumber), {
+        owner, repo, runId: process.env.ADP_MESSAGE_ID || randomUUID(),
+        effectRepo: { owner: target[0], repo: target[1] },
+        tokenProvider: () => githubClient.getApprovalToken(),
+      }, triggerId, event.sender.id);
+    } catch {
+      this.logger?.warn('Retry authority could not be verified', { component: 'AgentService' });
+      return null;
     }
-    return undefined;
-  }
-
-  private async isRetryTriggered(githubClient: GitHubClient, issueNumber: number): Promise<boolean> {
-    try {
-      const comments = await githubClient.getComments(issueNumber);
-      // Check if there's a recent /retry comment (within last 5 minutes)
-      const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-      const recentRetry = comments.some(c => 
-        c.body.includes('/retry') && 
-        new Date(c.created_at).getTime() > fiveMinutesAgo
-      );
-      return recentRetry;
-    } catch (err) {
-      this.logger?.warn('Could not check for retry', { component: 'AgentService', error: (err as Error).message });
-    }
-    return false;
   }
 }

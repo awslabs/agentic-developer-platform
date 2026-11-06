@@ -325,10 +325,12 @@ else
   fail "SKILL.md missing deterministic gates guidance"
 fi
 
-if grep -q "five-section" "$SKILL_FILE" 2>/dev/null || grep -q "five section" "$SKILL_FILE" 2>/dev/null; then
-  pass "SKILL.md references five-section format"
+# The canonical template is a plain-terms opening plus five technical sections
+# (six in total); accept the wording the skill and the issue-authoring guide use.
+if grep -q -E "five-section|five section|five technical sections|six sections" "$SKILL_FILE" 2>/dev/null; then
+  pass "SKILL.md references the plain-terms + five-section issue format"
 else
-  fail "SKILL.md missing five-section format reference"
+  fail "SKILL.md missing the issue-format reference (five technical sections / six sections)"
 fi
 
 if grep -q "sub-issue\|sub_issue\|subIssue" "$SKILL_FILE" 2>/dev/null; then
@@ -336,6 +338,187 @@ if grep -q "sub-issue\|sub_issue\|subIssue" "$SKILL_FILE" 2>/dev/null; then
 else
   fail "SKILL.md missing sub-issue linking instructions"
 fi
+echo ""
+
+# =============================================================================
+# End-to-end: run the REAL installer against temporary git repositories (#9539).
+#
+# No network: the default-tag path is exercised against a local bare repository
+# through AIDLC_REPO, and --from-dir against a generated distribution tree. The
+# installer must succeed with a valid source and must fail with a precise
+# message — writing nothing to the target — for a missing tag or a foreign
+# layout (upstream's harness/<client> layout from v2.8 on).
+# =============================================================================
+INSTALLER="$SCRIPT_DIR/../install-aidlc.sh"
+
+make_dist() {
+  # make_dist ROOT: write a minimal dist/claude distribution under ROOT.
+  local root="$1"
+  mkdir -p "$root/dist/claude/.claude/agents" "$root/dist/claude/.claude/skills/aidlc" \
+           "$root/dist/claude/.claude/scopes" "$root/dist/claude/aidlc/spaces"
+  echo "# agent" > "$root/dist/claude/.claude/agents/aidlc.md"
+  echo "# skill" > "$root/dist/claude/.claude/skills/aidlc/SKILL.md"
+  echo "# feature scope" > "$root/dist/claude/.claude/scopes/aidlc-feature.md"
+  echo "# AIDLC" > "$root/dist/claude/.claude/CLAUDE.md"
+  echo "placeholder" > "$root/dist/claude/aidlc/spaces/.keep"
+  cat > "$root/dist/claude/.claude/settings.json" <<'SETTINGS'
+{
+  "model": "claude-opus-4",
+  "env": {"AWS_REGION": "us-east-1", "ANTHROPIC_API_KEY": "x"},
+  "hooks": {"PreToolUse": [{"matcher": "Bash", "hook": "guard.sh"}]},
+  "permissions": {"allow": ["Read"]}
+}
+SETTINGS
+}
+
+make_target() {
+  # make_target DIR: an empty git repository with an identity so commits work in CI.
+  local dir="$1"
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" config user.email "ci@example.invalid"
+  git -C "$dir" config user.name "CI"
+}
+
+assert_installed() {
+  # assert_installed TARGET LABEL VERSION: the AC-01 tree and strip assertions.
+  local target="$1" label="$2" version="$3"
+  [ -d "$target/.claude/agents" ] && pass "$label: .claude/agents installed" || fail "$label: .claude/agents missing"
+  [ -d "$target/.claude/skills/aidlc" ] && pass "$label: .claude/skills installed" || fail "$label: .claude/skills missing"
+  [ -d "$target/aidlc" ] && pass "$label: aidlc/ installed" || fail "$label: aidlc/ missing"
+  if [ -f "$target/.claude/settings.json" ] && assert_clean "$target/.claude/settings.json"; then
+    pass "$label: settings.json has no model/provider/env keys"
+  else
+    fail "$label: settings.json still carries denied keys (or is missing)"
+  fi
+  if jq -e '.hooks.PreToolUse' "$target/.claude/settings.json" >/dev/null 2>&1; then
+    pass "$label: non-denied settings (hooks) preserved"
+  else
+    fail "$label: hooks dropped from settings.json"
+  fi
+  if [ "$(cat "$target/aidlc/.aidlc-version" 2>/dev/null)" = "$version" ]; then
+    pass "$label: aidlc/.aidlc-version is $version"
+  else
+    fail "$label: aidlc/.aidlc-version is '$(cat "$target/aidlc/.aidlc-version" 2>/dev/null)', expected $version"
+  fi
+  if grep -q "aidlc-gate-behavior-injected" "$target/.claude/scopes/aidlc-feature.md" 2>/dev/null; then
+    pass "$label: gate behaviour patched into scope doc"
+  else
+    fail "$label: scope doc not patched with gate behaviour"
+  fi
+  if git -C "$target" log -1 --format=%s 2>/dev/null | grep -q "install AIDLC $version"; then
+    pass "$label: installation committed"
+  else
+    fail "$label: no installation commit (last: $(git -C "$target" log -1 --format=%s 2>/dev/null))"
+  fi
+  if ! grep -q "ERROR" "$target.log"; then
+    pass "$label: no ERROR lines in installer output"
+  else
+    fail "$label: installer printed ERROR: $(grep -m1 ERROR "$target.log")"
+  fi
+}
+
+assert_untouched() {
+  # assert_untouched TARGET LABEL: AC-02 — a refused install writes nothing.
+  local target="$1" label="$2"
+  if [ ! -e "$target/.claude" ] && [ ! -e "$target/aidlc" ] && [ -z "$(git -C "$target" log --oneline 2>/dev/null)" ]; then
+    pass "$label: target left untouched"
+  else
+    fail "$label: target was modified despite the refusal"
+  fi
+}
+
+# --- Test 13: AC-01 — default tag path against a local source repository -------
+echo "--- Test 13: default tag path installs from the configured source (AC-01) ---"
+make_dist "$TMPDIR/source-work"
+git -C "$TMPDIR/source-work" init -q
+git -C "$TMPDIR/source-work" config user.email "ci@example.invalid"
+git -C "$TMPDIR/source-work" config user.name "CI"
+git -C "$TMPDIR/source-work" add -A
+git -C "$TMPDIR/source-work" commit -q -m "dist"
+git -C "$TMPDIR/source-work" tag v2.2.0
+git clone -q --bare "$TMPDIR/source-work" "$TMPDIR/source.git"
+make_target "$TMPDIR/target-default"
+if AIDLC_REPO="file://$TMPDIR/source.git" bash "$INSTALLER" "$TMPDIR/target-default" > "$TMPDIR/target-default.log" 2>&1; then
+  pass "default-tag install exits 0"
+else
+  fail "default-tag install exited non-zero: $(tail -n 3 "$TMPDIR/target-default.log" | tr '\n' ' ')"
+fi
+assert_installed "$TMPDIR/target-default" "default-tag" "v2.2.0"
+echo ""
+
+# --- Test 14: AC-01 — --from-dir on an upstream-style checkout -----------------
+echo "--- Test 14: --from-dir installs from a checkout without network (AC-01) ---"
+make_target "$TMPDIR/target-dir"
+if bash "$INSTALLER" "$TMPDIR/target-dir" --from-dir "$TMPDIR/source-work" > "$TMPDIR/target-dir.log" 2>&1; then
+  pass "--from-dir install exits 0"
+else
+  fail "--from-dir install exited non-zero: $(tail -n 3 "$TMPDIR/target-dir.log" | tr '\n' ' ')"
+fi
+assert_installed "$TMPDIR/target-dir" "--from-dir" "v2.2.0"
+echo ""
+
+# --- Test 15: AC-01 — --from-git URL@REF ---------------------------------------
+echo "--- Test 15: --from-git URL@REF installs from an alternate repository (AC-01) ---"
+make_target "$TMPDIR/target-git"
+if bash "$INSTALLER" "$TMPDIR/target-git" --from-git "file://$TMPDIR/source.git@v2.2.0" > "$TMPDIR/target-git.log" 2>&1; then
+  pass "--from-git install exits 0"
+else
+  fail "--from-git install exited non-zero: $(tail -n 3 "$TMPDIR/target-git.log" | tr '\n' ' ')"
+fi
+assert_installed "$TMPDIR/target-git" "--from-git" "v2.2.0"
+echo ""
+
+# --- Test 16: AC-02 — a tag that does not exist is refused precisely ----------
+echo "--- Test 16: missing tag is refused by name and writes nothing (AC-02) ---"
+make_target "$TMPDIR/target-missing-tag"
+if AIDLC_REPO="file://$TMPDIR/source.git" bash "$INSTALLER" "$TMPDIR/target-missing-tag" v2.2.3 > "$TMPDIR/target-missing-tag.log" 2>&1; then
+  fail "missing tag: installer exited 0"
+else
+  pass "missing tag: installer exits non-zero"
+fi
+if grep -q "Tag v2.2.3 does not exist in file://$TMPDIR/source.git" "$TMPDIR/target-missing-tag.log"; then
+  pass "missing tag: message names the tag and the repository"
+else
+  fail "missing tag: message imprecise: $(grep -m1 ERROR "$TMPDIR/target-missing-tag.log")"
+fi
+assert_untouched "$TMPDIR/target-missing-tag" "missing tag"
+echo ""
+
+# --- Test 17: AC-02 — the upstream harness layout is named, not mis-installed --
+echo "--- Test 17: harness/<client> layout is refused with guidance (AC-02) ---"
+mkdir -p "$TMPDIR/harness-src/harness/claude/skills"
+make_target "$TMPDIR/target-harness"
+if bash "$INSTALLER" "$TMPDIR/target-harness" --from-dir "$TMPDIR/harness-src" > "$TMPDIR/target-harness.log" 2>&1; then
+  fail "harness layout: installer exited 0"
+else
+  pass "harness layout: installer exits non-zero"
+fi
+if grep -q "harness/<client>" "$TMPDIR/target-harness.log" && grep -q "v2.7.0" "$TMPDIR/target-harness.log"; then
+  pass "harness layout: message names the layout and the supported tag range"
+else
+  fail "harness layout: message imprecise: $(grep -m2 -i "error\|harness" "$TMPDIR/target-harness.log" | tr '\n' ' ')"
+fi
+assert_untouched "$TMPDIR/target-harness" "harness layout"
+echo ""
+
+# --- Test 18: AC-02 — a missing --from-dir path and a non-repository target ---
+echo "--- Test 18: bad source path and non-git target are refused (AC-02) ---"
+make_target "$TMPDIR/target-badpath"
+if bash "$INSTALLER" "$TMPDIR/target-badpath" --from-dir "$TMPDIR/does-not-exist" > "$TMPDIR/target-badpath.log" 2>&1; then
+  fail "missing --from-dir path: installer exited 0"
+else
+  pass "missing --from-dir path: installer exits non-zero"
+fi
+grep -q "does not exist or is not a directory" "$TMPDIR/target-badpath.log" && pass "missing --from-dir path: message names the path" || fail "missing --from-dir path: imprecise message"
+assert_untouched "$TMPDIR/target-badpath" "missing --from-dir path"
+mkdir -p "$TMPDIR/not-a-repo"
+if bash "$INSTALLER" "$TMPDIR/not-a-repo" --from-dir "$TMPDIR/source-work" > "$TMPDIR/not-a-repo.log" 2>&1; then
+  fail "non-git target: installer exited 0"
+else
+  pass "non-git target: installer exits non-zero"
+fi
+grep -q "is not a git repository" "$TMPDIR/not-a-repo.log" && pass "non-git target: message says so" || fail "non-git target: imprecise message"
 echo ""
 
 # =============================================================================

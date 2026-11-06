@@ -120,6 +120,7 @@ class TestCorrelationEnvelopeContract:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", MagicMock(return_value={"status": "up_to_date"}))
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect
 

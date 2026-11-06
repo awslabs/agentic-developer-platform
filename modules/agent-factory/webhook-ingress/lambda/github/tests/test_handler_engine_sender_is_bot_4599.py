@@ -64,19 +64,20 @@ def _mock_resolved_identity(tenant_id="acme", user_id="u_test1"):
         org_id=tenant_id,
         user_id=user_id,
         user_provisioning_mode="strict",
+        verification_method="org_placement",
     )
 
 
 def _engine_comment_payload(sender: dict, body: str = "@agent-engine accept") -> dict:
     return {
         "action": "created",
-        "comment": {"body": body},
+        "comment": {"body": body, "user": {"id": sender["id"]}},
         "issue": {
             "number": 4599,
             "title": "Engine bridge noise",
             "html_url": "https://github.com/acme/repo/issues/4599",
         },
-        "repository": {"full_name": "acme/repo"},
+        "repository": {"id": 51, "full_name": "acme/repo"},
         "sender": sender,
         "installation": {"id": 123},
     }
@@ -93,15 +94,19 @@ TYPE_ONLY_BOT = {"login": "some-app", "id": 201, "type": "Bot"}
 
 
 def _run(payload: dict):
+    from common.github_actor_authority import ActorDecision
+
     with (
         patch("handler._get_events_log") as mock_log,
         patch("handler._get_rate_limiter") as mock_rate,
         patch("handler._get_identity_resolver") as mock_resolver,
         patch("handler._get_signature") as mock_sig,
         patch("handler._capture_invocation_event") as mock_capture,
+        patch("common.github_actor_authority.check_actor", return_value=ActorDecision(True, "allowed", "writer", "write")),
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
+        mock_resolver.return_value.last_tenant_item = {"min_author_association": "NONE"}
         rate = MagicMock()
         rate.allowed = True
         rate.retry_after_seconds = 0
@@ -115,21 +120,18 @@ def _run(payload: dict):
 
 
 class TestTheFlagIsWrittenOnTheEnginePath:
-    def test_a_bot_authored_command_is_marked_as_bot(self):
+    def test_a_bot_authored_command_is_refused_before_engine_persistence(self):
         result, mock_capture = _run(_engine_comment_payload(AGENT_BOT))
 
-        assert result["statusCode"] == 200
-        kwargs = mock_capture.call_args.kwargs
-        # Still marked as an engine command — the Lambda does not decide anything
-        # about it, it only records who wrote it. Suppression is the tick's call.
-        assert kwargs["engine_command"] is True
-        assert kwargs["sender_is_bot"] is True
+        assert result["statusCode"] == 403
+        mock_capture.assert_not_called()
 
     def test_a_bot_without_the_login_suffix_is_still_a_bot(self):
         """`type == "Bot"` alone is sufficient, so a GitHub App sender is caught."""
-        _, mock_capture = _run(_engine_comment_payload(TYPE_ONLY_BOT))
+        result, mock_capture = _run(_engine_comment_payload(TYPE_ONLY_BOT))
 
-        assert mock_capture.call_args.kwargs["sender_is_bot"] is True
+        assert result["statusCode"] == 403
+        mock_capture.assert_not_called()
 
     def test_a_human_command_is_not_marked_as_bot(self):
         """The positive control. If this ever flips, every real command is dropped."""

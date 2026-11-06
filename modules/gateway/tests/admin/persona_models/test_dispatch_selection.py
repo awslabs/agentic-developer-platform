@@ -178,6 +178,53 @@ async def test_engine_launch_refuses_invalid_configuration(mapped):
         await dispatch_selection.resolve_launch_configuration(mapped, org_id="tenant-b", user_id="root-sub", persona="developer")
 
 
+async def test_engine_direct_launch_keeps_request_provenance_without_changing_preferences(mapped):
+    selected = await dispatch_selection.resolve_launch_configuration(
+        mapped, org_id="tenant-a", user_id="root-sub", persona="agent-codex-reviewer", direct_model="gpt6-sol"
+    )
+    assert selected["model_requested"] == "gpt6-sol"
+    assert selected["model_resolved"] == "openai.gpt-6-sol"
+    assert selected["model_selection"] == {
+        "model": "openai.gpt-6-sol",
+        "source": "explicit-direct",
+        "persona": "agent-codex-reviewer",
+        "principal_id": "human-root",
+        "preference_revision": None,
+        "compatibility_class": "codex-sdk",
+        "harness_contract_revision": "0.155.1",
+    }
+    assert (
+        await service.get_preference(mapped, org_id="tenant-a", principal_kind="human", principal_id="human-root", persona_key="agent-codex-reviewer")
+        is None
+    )
+    normal = await dispatch_selection.resolve_launch_configuration(mapped, org_id="tenant-a", user_id="root-sub", persona="developer")
+    assert normal["model_resolved"] == HAIKU and "model_requested" not in normal
+
+
+@pytest.mark.parametrize("change", ["disabled", "incompatible", "retired", "disallowed"])
+async def test_engine_direct_launch_refuses_unsupported_choice_without_fallback(mapped, monkeypatch, change):
+    model = "gpt6-sol"
+    if change == "disabled":
+        monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "false")
+    elif change == "incompatible":
+        model = SONNET
+    elif change == "retired":
+        from dataclasses import replace
+
+        lookup = catalogue_service.catalogue_lookup
+        monkeypatch.setattr(catalogue_service, "catalogue_lookup", lambda name: replace(lookup(name), lifecycle="retired") if lookup(name) else None)
+    else:
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            "src.agentauth.model_policy._resolve_active_allowlist_policy", AsyncMock(return_value=SimpleNamespace(tenant_patterns=[]))
+        )
+    with pytest.raises(service.PreferenceRejectedError):
+        await dispatch_selection.resolve_launch_configuration(
+            mapped, org_id="tenant-a", user_id="root-sub", persona="agent-codex-reviewer", direct_model=model
+        )
+
+
 async def test_platform_persona_default_is_below_user_and_direct_choices(mapped):
     from src.shared.models.persona_models import PersonaPlatformDefault
 

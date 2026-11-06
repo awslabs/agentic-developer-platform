@@ -49,6 +49,7 @@ export function RollupBar({ counts, total, stories, storyScope = 'all' }: Rollup
       </p>
       <div
         role="img"
+        dir="ltr"
         aria-label={description}
         data-testid="rollup-bar"
         className="flex h-4 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700"

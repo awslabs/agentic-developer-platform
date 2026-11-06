@@ -216,6 +216,36 @@ async def test_recovery_does_not_starve_behind_legacy_receipts(shared, monkeypat
     assert (await shared.store.snapshot(shared.target)).total_usd == 21
 
 
+async def test_recovered_flow_receipt_also_repairs_run_and_chain_counters(shared):
+    from src.budget.reservations import ReservationTarget
+    from src.orchestration.flow_meter import reconcile_flow_meter
+
+    request_id = "recovered-call"
+    targets = [
+        ReservationTarget(shared.flow.org_id, kind, "reviewer", "run", "lifetime", Decimal(100), ttl_seconds=86400) for kind in ("run", "chain")
+    ]
+    assert (await shared.store.reserve(request_id, Decimal("20"), [shared.target, *targets])).admitted
+    before = {target.key(): await shared.client.hget(target.key(), request_id) for target in targets}
+    shared.session.add(
+        BudgetSettlementReceipt(
+            org_id=shared.flow.org_id,
+            request_id=request_id,
+            user_id="worker",
+            allocation_key="test",
+            cost_usd=Decimal("0.270033"),
+            total_tokens=207151,
+            reservation_scope_keys=[shared.target.key(), *(target.key() for target in targets)],
+        )
+    )
+    await shared.session.commit()
+    await reconcile_flow_meter(shared.session, org_id=shared.flow.org_id, flow_id=shared.flow.id, policy=shared.policy)
+    for target in targets:
+        assert (await shared.store.live_request_amounts(target))[request_id] == Decimal("0.270033")
+        after = await shared.client.hget(target.key(), request_id)
+        assert after.split(":")[1] == before[target.key()].split(":")[1]
+    assert (await shared.store.snapshot(shared.target)).total_usd == Decimal("20.270033")
+
+
 async def test_actual_spend_above_estimate_still_blocks_next_story(shared, monkeypatch):
     monkeypatch.setattr(budget_config, "budget_run_cap_usd", Decimal(20))
     assert (await shared.store.reserve("request", Decimal(1), [shared.target])).admitted

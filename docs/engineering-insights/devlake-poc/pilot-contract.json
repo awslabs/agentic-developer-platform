@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "story": "aws-e/adp#8888",
+  "baseline_revision": "a9c014f2537bf7956970e8484ce44f9b613104c8",
+  "status": "proposed; private bindings and approvals unverified",
+  "flags": {
+    "master": "FEATURE_DEVLAKE_CONNECTORS_ENABLED",
+    "collection": "DEVLAKE_COLLECTION_ENABLED",
+    "default": false,
+    "enabled_literal": "true (case-insensitive)",
+    "collection_requires_master": true
+  },
+  "limits": {
+    "primary_connections": 2,
+    "primary_scopes": 3,
+    "lookback_days": 30,
+    "concurrent_collections": 2,
+    "expiry_days": 14,
+    "discovery_records_per_page": 100,
+    "discovery_pages_per_operation": 5,
+    "discovery_timeout_seconds": 30,
+    "minimum_adversarial_tenants": 2,
+    "minimum_adversarial_projects_within_tenant": 2,
+    "minimum_adversarial_cells": 4,
+    "staging_rows_per_cell_batch": 100000,
+    "staging_bytes_per_cell_batch": 104857600,
+    "scheduler_poll_minutes": 15,
+    "finalization_ack_minutes": 30,
+    "disable_fence_minutes": 30,
+    "operator_escalation_minutes": 60,
+    "worker_vcpu_per_job": 2,
+    "worker_memory_mib_per_job": 4096,
+    "incremental_storage_gib_per_cell": 10,
+    "total_incremental_budget_usd": 100,
+    "controlled_updates": 20,
+    "minimum_observation_hours": 48,
+    "freshness_p95_minutes": 15
+  },
+  "private_binding_fields": [
+    "registered_product_project_and_catalog_refs",
+    "source_connection_refs_grants_and_native_oracles",
+    "named_owners_delegations_and_approvals",
+    "policy_realm_and_adversarial_fixture_refs",
+    "db_version_ca_iam_tls_headroom_and_roles",
+    "ledger_location_and_finalizer_authority",
+    "approved_limits_retention_rubric_and_evidence_refs"
+  ],
+  "provider_expansion": {
+    "keys": ["sonarqube", "jenkins", "argocd", "gitlab", "pagerduty", "linear", "slack"],
+    "manifest_fields": ["provider_selection", "provider_receipt"],
+    "source": ".github/workflows/devlake-poc-provider-profile.yml",
+    "proof": "approved independent source artifact and native readback must match protected current selection; no pass from setup or status alone",
+    "live_obligation": "SCN-06 source qualification and cleanup belongs to coordinator/operator after merge"
+  }
+}

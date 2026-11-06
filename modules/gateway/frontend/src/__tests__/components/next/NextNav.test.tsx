@@ -154,14 +154,34 @@ describe('NextNav — Issue #5080', () => {
     });
   });
 
-  describe('a server-owned path must leave the SPA — #5123', () => {
-    // GitLab is served by the backend and has no react-router route. Rendered as a
-    // router `Link` the click is a client-side push that matches nothing and lands
-    // on the /next catch-all 404, which is what users saw.
-    const withGitlab = buildJourneys(
-      { ...ALL_FEATURES_ENABLED, gitlab: true },
-      { isPlatformAdmin: true, orgId: 'org-1' },
-    );
+  describe('GitLab handoff navigation', () => {
+    // The release navigation hides GitLab. Supply an explicit renderer fixture to
+    // retain external-link behavior coverage without advertising that entry.
+    const withGitlab: Journey = {
+      ...journeys.use,
+      sections: [
+        ...journeys.use.sections,
+        {
+          title: 'External handoff fixture',
+          entries: [{
+            id: 'gitlab',
+            to: '/gitlab-launch',
+            label: 'GitLab',
+            description: 'Open the connected GitLab instance.',
+            currentUi: true,
+            external: true,
+          }],
+        },
+      ],
+    };
+
+    it('hides GitLab in the release navigation even when enabled', () => {
+      renderNav(buildJourneys(
+        { ...ALL_FEATURES_ENABLED, gitlab: true },
+        { isPlatformAdmin: true, orgId: 'org-1' },
+      ).use);
+      expect(screen.queryByRole('link', { name: /GitLab/ })).not.toBeInTheDocument();
+    });
 
     /** Renders the nav plus a location probe, so we can see whether a click
      *  navigated the router or was left to the browser. */
@@ -179,18 +199,18 @@ describe('NextNav — Issue #5080', () => {
       );
     }
 
-    it('renders the GitLab entry as a real anchor to the server path', () => {
-      renderWithLocation(withGitlab.use);
+    it('renders the GitLab entry as an anchor to the ADP launch page', () => {
+      renderWithLocation(withGitlab);
       const entry = screen.getByTestId('next-nav-entry-gitlab');
       expect(entry.tagName).toBe('A');
-      expect(entry).toHaveAttribute('href', '/gitlab/');
+      expect(entry).toHaveAttribute('href', '/gitlab-launch');
     });
 
     it('does not route a GitLab click through the SPA router', () => {
       // The behavioural assertion. Both a Link and an anchor carry an href, so the
       // tag name alone would not prove the defect is fixed; what proves it is that
       // the click does not become a client-side navigation.
-      renderWithLocation(withGitlab.use);
+      renderWithLocation(withGitlab);
       fireEvent.click(screen.getByTestId('next-nav-entry-gitlab'));
       expect(screen.getByTestId('location')).toHaveTextContent('/next');
     });
@@ -198,7 +218,7 @@ describe('NextNav — Issue #5080', () => {
     it('still routes an ordinary entry through the SPA router', () => {
       // Scope check: the fix must not have turned every entry into a full page load,
       // which would discard identity, the active organization and the query cache.
-      renderWithLocation(withGitlab.use);
+      renderWithLocation(withGitlab);
       fireEvent.click(screen.getByTestId('next-nav-entry-runs'));
       expect(screen.getByTestId('location')).toHaveTextContent('/runs');
     });

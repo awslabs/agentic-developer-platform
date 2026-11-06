@@ -13,7 +13,7 @@ concurrency:
 jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     environment: adp-deploy-dev
     permissions:
       contents: read

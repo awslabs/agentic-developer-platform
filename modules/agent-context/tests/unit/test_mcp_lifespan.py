@@ -18,6 +18,9 @@ import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 
+from door import server as door_server
+from door.acl import SearchHit
+from door.search_backend import ZoektUnavailable
 from door.server import app
 
 # Use module-scoped event loop so the lifespan fixture (which can only run
@@ -68,6 +71,30 @@ async def live_client(live_app):
         headers={"Accept": "application/json, text/event-stream"},
     ) as client:
         yield client
+
+
+@pytest.fixture
+def healthy_code_backend(monkeypatch):
+    class HealthyIndex:
+        def __init__(self):
+            self.calls = 0
+
+        async def search(self, query, *, limit):
+            self.calls += 1
+            return [SearchHit(repo_name="fixture/private", data={"file": "private.py", "fact": "private-sentinel"})]
+
+    index = HealthyIndex()
+    monkeypatch.setattr(door_server.state, "zoekt", index)
+    return index
+
+
+@pytest.fixture
+def unavailable_code_backend(monkeypatch):
+    class UnavailableIndex:
+        async def search(self, query, *, limit):
+            raise ZoektUnavailable("isolated backend unavailable")
+
+    monkeypatch.setattr(door_server.state, "zoekt", UnavailableIndex())
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +169,178 @@ class TestMCPLifespanComposed:
         }
 
 
+@pytest.mark.door_auth
+async def test_signed_secure_identify_and_plan_use_server_identity_on_both_transports(
+    live_client, monkeypatch, caplog
+):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from door import auth, server
+    from door.acl import CallerPrincipal
+    from tests.unit.test_door_auth import token
+    from tests.unit.test_secure_identify_ownership import CataloguePool
+
+    key = Ed25519PrivateKey.generate()
+    public = (
+        key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    monkeypatch.setattr(auth.config, "door_verification_keys", json.dumps({"test": public}))
+    catalogue = CataloguePool()
+    callers = []
+
+    class Store:
+        allowed = {"OrgA/Service", "OrgA/Empty"}
+        unavailable = False
+
+        def get_allowed_repos(self, caller):
+            callers.append(caller)
+            if self.unavailable:
+                raise RuntimeError("synthetic ACL outage")
+            return self.allowed
+
+    store = Store()
+    monkeypatch.setattr(server.state, "db_pool", catalogue)
+    monkeypatch.setattr(server.state, "acl_store", store)
+    monkeypatch.setattr(server.config, "project_filter_enabled", True)
+
+    def forbid_project_lookup(*args, **kwargs):
+        raise AssertionError("secure dispatch must not read project metadata before ACL admission")
+
+    monkeypatch.setattr(server, "_resolve_project_scope", forbid_project_lookup)
+
+    async def invoke(path, action, repo):
+        arguments = {"action": action, "cve": "CVE-2026-1234", "project": "untrusted"}
+        if repo is not None:
+            arguments["repo"] = repo
+        if path == "/call":
+            payload = {"name": "secure", "arguments": arguments}
+        else:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "secure", "arguments": arguments},
+            }
+        body = json.dumps(payload).encode()
+        response = await live_client.post(
+            path,
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "x-adp-door-identity": token(key, path=path, body=body),
+                "x-github-login": "mallory",
+                "x-tenant-id": "tenant-b",
+                "x-owner-sub": "mallory",
+            },
+        )
+        assert response.status_code == 200
+        return (
+            response.json()
+            if path == "/call"
+            else json.loads(_parse_sse_json(response.text)["result"]["content"][0]["text"])
+        )
+
+    try:
+        for path in ("/call", "/mcp/"):
+            for action in ("identify", "plan"):
+                catalogue.queries.clear()
+                foreign = await invoke(path, action, "OrgB/Service")
+                unknown = await invoke(path, action, "Unknown/Service")
+                assert json.dumps(foreign, sort_keys=True).replace(
+                    "OrgB/Service", "<repo>"
+                ) == json.dumps(unknown, sort_keys=True).replace("Unknown/Service", "<repo>")
+                basename = await invoke(path, action, "Service")
+                domain_alias = await invoke(path, action, "github.com/OrgB/Service")
+                assert not catalogue.queries
+                assert all(
+                    result["metadata"]["repo_indexed"] is False
+                    for result in (foreign, unknown, basename, domain_alias)
+                )
+                owned = await invoke(path, action, "github.com/orga/service")
+                assert owned["findings_count"] == 1
+                assert owned["findings"][0]["repos_affected"] == ["OrgA/Service"]
+                catalogue.queries.clear()
+                empty = await invoke(path, action, "OrgA/Empty")
+                assert empty["findings_count"] == 0
+                assert empty["metadata"] == {"cve_known": True, "repo_indexed": True}
+                assert any(
+                    "FROM repositories WHERE repo_name = %s" in sql and params == ("OrgA/Empty",)
+                    for sql, params in catalogue.queries
+                )
+                assert all(
+                    caller.tenant_id == "tenant-a" and caller.github_login == "alice"
+                    for caller in callers
+                )
+                catalogue.queries.clear()
+                store.allowed = set()
+                denied = await invoke(path, action, "OrgA/Service")
+                denied_unknown = await invoke(path, action, "Unknown/Service")
+                assert denied["findings_count"] == 0
+                assert denied["metadata"]["repo_indexed"] is False
+                assert json.dumps(denied, sort_keys=True).replace(
+                    "OrgA/Service", "<repo>"
+                ) == json.dumps(denied_unknown, sort_keys=True).replace("Unknown/Service", "<repo>")
+                assert not catalogue.queries
+
+                store.allowed = {"OrgA/Service", "OrgA/Empty"}
+                store.unavailable = True
+                unavailable = await invoke(path, action, "OrgA/Service")
+                unavailable_foreign = await invoke(path, action, "OrgB/Service")
+                assert unavailable["findings_count"] == 0
+                assert unavailable["metadata"]["repo_indexed"] is False
+                assert json.dumps(unavailable, sort_keys=True).replace(
+                    "OrgA/Service", "<repo>"
+                ) == json.dumps(unavailable_foreign, sort_keys=True).replace(
+                    "OrgB/Service", "<repo>"
+                )
+                assert not catalogue.queries
+                store.unavailable = False
+
+                monkeypatch.setattr(server.state, "acl_store", None)
+                missing = await invoke(path, action, "OrgA/Service")
+                missing_foreign = await invoke(path, action, "OrgB/Service")
+                assert missing["code"] == "acl_store_unavailable"
+                assert missing == missing_foreign
+                assert not catalogue.queries
+                monkeypatch.setattr(server.state, "acl_store", store)
+            catalogue.queries.clear()
+            unfiltered = await invoke(path, "identify", None)
+            assert unfiltered["findings_count"] == 1
+            dependency_queries = [sql for sql, _ in catalogue.queries if "JOIN repositories" in sql]
+            assert dependency_queries and all(
+                "r.repo_name = ANY(%s)" in sql for sql in dependency_queries
+            )
+
+        assert "reason=secure_repo_not_permitted" in caplog.text
+        assert "reason=secure_repo_acl_unavailable" in caplog.text
+        assert "reason=acl_store_unavailable" in caplog.text
+
+        catalogue.queries.clear()
+        mismatched_caller = CallerPrincipal(github_login="mallory", tenant_id="tenant-b")
+        rederived = await server._dispatch_tool(
+            "secure",
+            {"action": "identify", "repo": "OrgA/Service"},
+            {"x-github-login": "alice", "x-tenant-id": "tenant-a"},
+            mismatched_caller,
+        )
+        assert rederived["findings_count"] == 1
+        assert callers[-1].github_login == "alice" and callers[-1].tenant_id == "tenant-a"
+        catalogue.queries.clear()
+        refused = await server._dispatch_tool(
+            "secure",
+            {"action": "identify", "repo": "OrgA/Service"},
+            {},
+            mismatched_caller,
+        )
+        assert refused["error"] == "unauthorized"
+        assert not catalogue.queries
+    finally:
+        catalogue.db.close()
+
+
 # ---------------------------------------------------------------------------
 # ACL fail-closed under live lifespan (re-validates #1609 ACL tests)
 # ---------------------------------------------------------------------------
@@ -156,8 +355,8 @@ class TestACLUnderLiveLifespan:
     when the session manager is actually alive.
     """
 
-    async def test_mcp_search_no_identity_returns_empty(self, live_client, acl_store_live):
-        """MCP tools/call search without identity headers -> empty results (fail-closed).
+    async def test_mcp_search_no_identity_returns_empty(self, live_client, acl_store_live, healthy_code_backend):
+        """MCP tools/call without identity filters private indexed results.
 
         ``acl_store_live`` supplies a reachable but empty ACL store. The real
         lifespan cannot build one here (no database in a unit test), and without
@@ -183,8 +382,9 @@ class TestACLUnderLiveLifespan:
         content = body["result"]["content"]
         assert len(content) >= 1
         parsed = json.loads(content[0]["text"])
-        # ACL fail-closed: no identity -> empty results
         assert parsed["results"] == []
+        assert "private-sentinel" not in str(parsed)
+        assert healthy_code_backend.calls == 1
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +408,7 @@ class TestLegacyRESTUnderLiveLifespan:
         tools = resp.json()
         assert len(tools) == 7
 
-    async def test_post_call_endpoint(self, live_client, acl_store_live):
+    async def test_post_call_endpoint(self, live_client, acl_store_live, unavailable_code_backend):
         """POST /call still routes correctly (REST path unaffected).
 
         ``acl_store_live`` is required for the same reason as above: this test's
@@ -224,4 +424,7 @@ class TestLegacyRESTUnderLiveLifespan:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert "results" in body
+        assert body == {
+            "error": "Knowledge search backend is unavailable.",
+            "code": "knowledge_backend_unavailable",
+        }

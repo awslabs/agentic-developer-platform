@@ -77,7 +77,10 @@ admits only reference-shaped values and drops anything else, so a column that wa
 somehow written with prose, a credential-looking blob or a `javascript:` payload
 cannot reach an operator's browser as a link. Dropping is the fail-closed
 direction: a withheld reference shows as pending, while a rendered hostile one has
-no revocation path.
+no revocation path. Canonical handoff receipts contain private claim and plan
+bindings, so the read model verifies them against their execution row and exposes
+only a stable opaque reference. That reference records presence, not authority or
+a download URL.
 """
 
 from __future__ import annotations
@@ -85,6 +88,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from hashlib import sha256
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,8 +103,10 @@ from .evaluation_correction_state import bounded_correction_summary
 from .execution_state import (
     ActionStatus,
     BlockCode,
+    ExecutionIdentity,
     ExecutionPhase,
     ExecutionStatus,
+    ExecutionStoreError,
 )
 
 # `_decode_gates` is imported from the store rather than reimplemented. It is
@@ -111,6 +117,7 @@ from .execution_state import (
 # gates" rather than an exception so a cosmetic storage problem cannot make a
 # record unreadable to the operator diagnosing it.
 from .execution_store import _decode_gates
+from .handoff import handoff_receipt_ref
 from .merge_controller import bounded_receipt_summary
 from .merge_evidence import bounded_merge_summary
 from .models import OrchestrationAction, OrchestrationExecution, OrchestrationNode
@@ -164,6 +171,10 @@ _ALLOWED_SCHEMES = frozenset({"s3"})
 # A reference long enough to be a transcript or a blob is refused outright,
 # before the pattern, so the pattern never has to reason about length.
 _MAX_REF_LENGTH = 512
+_HANDOFF_REF_PATTERN = re.compile(
+    r"handoff:execution=[A-Za-z0-9][A-Za-z0-9_-]{0,35}:cycle=[1-9][0-9]*:"
+    r"plan=(?:0|[1-9][0-9]*):claim=[A-Za-z0-9][A-Za-z0-9_-]{0,35}:generation=[1-9][0-9]*"
+)
 
 
 def _safe_ref(raw: str | None) -> str | None:
@@ -191,10 +202,11 @@ def _safe_ref(raw: str | None) -> str | None:
     #
     # Known cost, accepted deliberately: this also refuses a hypothetical
     # colon-prefixed reference such as `pr:PR_kwDO123`. That form appears nowhere in
-    # the stored vocabulary (the documented and fixture shapes are `s3://…`,
+    # the generic reference vocabulary (the documented and fixture shapes are `s3://…`,
     # `pr/PR_kwDO…`, `issue-comment/5142#c9`, `ses/0190a7…` — the colon-delimited
     # form is used for `operation_key`, which is a key rather than a reference and is
-    # not passed through here). An allowlist that fails closed on an unknown scheme
+    # not passed through here). Canonical handoffs are verified and projected
+    # separately by `_public_handoff_ref`. An allowlist that fails closed on an unknown scheme
     # is the right direction when the alternative is a blocklist that fails OPEN on
     # whatever scheme it has not heard of.
     scheme = _SCHEME_PATTERN.match(value)
@@ -202,6 +214,30 @@ def _safe_ref(raw: str | None) -> str | None:
         logger.warning("execution read: dropping a reference with a disallowed URL scheme %r", scheme.group(1).lower())
         return None
     return value
+
+
+def _public_handoff_ref(row: OrchestrationExecution) -> str | None:
+    """Expose a row-bound receipt without publishing its private authority fields."""
+    raw = row.handoff_receipt_ref
+    if raw is None or not raw.startswith("handoff:"):
+        return _safe_ref(raw)
+    if len(raw) > 255 or not _HANDOFF_REF_PATTERN.fullmatch(raw):
+        return None
+    try:
+        identity = ExecutionIdentity(
+            org_id=row.org_id,
+            node_id=row.node_id,
+            cycle=row.cycle,
+            accepted_plan_version=row.accepted_plan_version,
+            claim_id=row.claim_id,
+            claim_generation=row.claim_generation,
+        )
+        expected = handoff_receipt_ref(identity, row.id)
+    except (ExecutionStoreError, ValueError):
+        return None
+    if raw != expected:
+        return None
+    return f"handoff/{sha256(raw.encode()).hexdigest()}"
 
 
 def _as_aware(moment: datetime | None) -> datetime | None:
@@ -457,7 +493,7 @@ def _execution_view(row: OrchestrationExecution, actions: list[OrchestrationActi
         return None
 
     # Newest first: the recent actions are the ones that answer "what is pending".
-    ordered = sorted(actions, key=lambda action: (action.created_at or datetime.min.replace(tzinfo=UTC)), reverse=True)
+    ordered = sorted(actions, key=lambda action: action.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
     capped = ordered[:MAX_ACTIONS_PER_EXECUTION]
     views = tuple(view for view in (_action_view(action) for action in capped) if view is not None)
 
@@ -476,7 +512,7 @@ def _execution_view(row: OrchestrationExecution, actions: list[OrchestrationActi
         block=_block_view(row),
         pending_action_key=row.pending_action_key,
         notification_receipt_ref=_safe_ref(row.notification_receipt_ref),
-        handoff_receipt_ref=_safe_ref(row.handoff_receipt_ref),
+        handoff_receipt_ref=_public_handoff_ref(row),
         created_at=_as_aware(row.created_at),
         updated_at=_as_aware(row.updated_at),
         actions=views,

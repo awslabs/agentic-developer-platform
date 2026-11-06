@@ -51,8 +51,25 @@ spec:
               value: REPLACE_WITH_SANDBOX_IMAGE_DIGEST
             - name: ADP_CHAT_DATA_URL
               value: REPLACE_WITH_GATEWAY_HTTPS_ORIGIN
+            - name: ADP_CREW_DASHBOARD_ORIGIN
+              value: REPLACE_WITH_CREW_DASHBOARD_ORIGIN
             - name: ADP_CHAT_SANDBOX_CA_CONFIGMAP
               value: REPLACE_WITH_SANDBOX_CA_CONFIGMAP
+            # How long the supervisor waits for a sandbox pod to run before it gives the
+            # turn up (sandbox-launcher.ts; 5 s..300 s). Set explicitly so the value is
+            # visible on the live ScaledJob and parity-tested (#8059). A container still
+            # being created (image pull) earns one extra ADP_CHAT_SANDBOX_PULL_ALLOWANCE_MS
+            # (default 180 s) on top; the pre-pull DaemonSet makes that the exception.
+            - name: ADP_CHAT_SANDBOX_START_DEADLINE_MS
+              value: "REPLACE_WITH_SANDBOX_START_DEADLINE_MS"
+            # Deployment default for the executor a persistent session's pod runs when the
+            # session has not chosen one (sandbox-supervisor-admission.ts persistentExecutor):
+            # sandbox-loop (minimal look-up loop) | claude-code (Claude Agent SDK in the
+            # sandbox, #7208) | kirocrew. Rendered from SSM /adp/<env>/gateway/chat-persistent-
+            # executor by deploy-chat-scaledjob.sh and parity-tested (#8115). Ephemeral sessions
+            # always run sandbox-loop.
+            - name: ADP_CHAT_PERSISTENT_EXECUTOR
+              value: REPLACE_WITH_PERSISTENT_EXECUTOR
             - name: AWS_EC2_METADATA_DISABLED
               value: "true"
           volumeMounts:

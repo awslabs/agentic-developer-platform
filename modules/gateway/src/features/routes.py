@@ -65,7 +65,18 @@ async def get_features(_current_user=Depends(get_current_user)):
     """
     return {
         "features": {
+            "product_profile": _is_enabled_strict("BG_PRODUCT_PROFILE_ENABLED"),
+            "product_onboarding": _is_enabled_strict("BG_PRODUCT_ONBOARDING_ENABLED"),
+            "devlake_connectors": _is_enabled_strict("FEATURE_DEVLAKE_CONNECTORS_ENABLED"),
             "chat": _is_enabled("FEATURE_CHAT_ENABLED"),
+            "assistant_ui": _is_enabled_strict("FEATURE_ASSISTANT_UI_ENABLED") and _is_enabled("FEATURE_CHAT_ENABLED"),
+            "crew_dashboard": (
+                _is_enabled_strict("FEATURE_CREW_DASHBOARD")
+                and _is_enabled_strict("FEATURE_ASSISTANT_UI_ENABLED")
+                and _is_enabled("FEATURE_CHAT_ENABLED")
+                and _is_enabled_strict("CREW_PROXY_ENABLED")
+                and bool(os.environ.get("CREW_DASHBOARD_ORIGIN"))
+            ),
             "knowledge": _is_enabled("FEATURE_KNOWLEDGE_ENABLED", "AGENT_CONTEXT_ENABLED"),
             "indexing": _is_enabled("FEATURE_INDEXING_ENABLED", "AGENT_CONTEXT_ENABLED"),
             "tenant_org_links": _is_enabled_strict("FEATURE_TENANT_ORG_LINKS_ENABLED"),
@@ -132,5 +143,10 @@ async def get_features(_current_user=Depends(get_current_user)):
             # page (Issue #5422). PMM-09 enables it only after model evidence and
             # runtime enforcement are ready; absence must therefore remain off.
             "agent_models": _is_enabled_strict("FEATURE_AGENT_MODELS_ENABLED"),
+            **(
+                {"crew_dashboard_origin": os.environ["CREW_DASHBOARD_ORIGIN"]}
+                if _is_enabled_strict("CREW_PROXY_ENABLED") and os.environ.get("CREW_DASHBOARD_ORIGIN")
+                else {}
+            ),
         }
     }

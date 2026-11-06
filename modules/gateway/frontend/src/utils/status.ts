@@ -88,6 +88,7 @@ const STATUS_CONFIG: Record<InvocationStatus, StatusEntry> = {
   blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
   skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
   budget_stopped: { glyph: '⊘', label: 'Budget stopped', colorClass: 'text-amber-600 dark:text-amber-400' },
+  tool_authorized: { glyph: '✓', label: 'Tool authorized', colorClass: 'text-blue-600 dark:text-blue-400' },
   // Issue #3964: amber like `budget_stopped`, not red. Someone deliberately
   // stopped this run, so it reads as "a decision was taken here", not "something
   // broke" — styling it as an error would send operators to investigate their own

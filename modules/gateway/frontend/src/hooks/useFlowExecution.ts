@@ -43,6 +43,7 @@ import { useRef } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { getFlowExecution } from '@/services/orchestration';
 import type { ExecutionSummary, FlowExecution } from '@/types/orchestration';
+import { useFlowPollInterval } from '@/hooks/useFlowPollInterval';
 
 /**
  * Poll cadence, matched to the engine's dispatch pass rather than tuned for feel:
@@ -92,7 +93,8 @@ export function mergeByRevision(
   return { ...incoming, executions };
 }
 
-export function useFlowExecution(flowId: string | undefined) {
+export function useFlowExecution(flowId: string | undefined, { enabled = true }: { enabled?: boolean } = {}) {
+  const interval = useFlowPollInterval(FLOW_EXECUTION_REFETCH_INTERVAL_MS);
   // Held in a ref rather than read from the query cache inside `select`: `select`
   // runs on cached data too, so comparing against the cache would compare a value
   // with itself and never detect a regression.
@@ -119,8 +121,9 @@ export function useFlowExecution(flowId: string | undefined) {
     // aborts the request in flight rather than letting it resolve into a component
     // that no longer exists.
     queryFn: ({ signal }) => getFlowExecution(flowId as string, {}, signal),
-    enabled: Boolean(flowId),
-    refetchInterval: FLOW_EXECUTION_REFETCH_INTERVAL_MS,
+    enabled: Boolean(flowId) && enabled,
+    refetchInterval: interval,
+    refetchIntervalInBackground: false,
     // An operator who tabs away to GitHub and back expects current state on
     // arrival, not on the next tick. Plain `true` defers to `staleTime`, which is
     // five minutes here, and would do nothing.

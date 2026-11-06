@@ -75,8 +75,17 @@ run "producer_exact_api_identity_and_routes" {
       "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/binding-proof",
       "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/current-identity",
       "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/current-identity/readiness",
-      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/credential-evidence"
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/credential-evidence",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/recover-undispatched",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/recover-uncredentialed",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/recover-unstarted-planning",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/recover-unstarted-bootstrap",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/recover-settled-bootstrap",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/recover-interrupted-planning",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/complete-saved-plan",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/partial-apply-observation",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/repair-partial-apply"
     ])
-    error_message = "Invoke authority must be exactly the seven selected POST routes."
+    error_message = "Invoke authority must be exactly the selected POST routes."
   }
 }

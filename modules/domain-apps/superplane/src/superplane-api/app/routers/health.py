@@ -13,6 +13,15 @@ from app.schemas.health import HealthResponse
 router = APIRouter()
 
 
+@router.get("/control-plane-health")
+async def control_plane_health(request: Request, db: AsyncSession = Depends(get_session)):
+    """Authenticated UI observation; never asserts workspace/provider readiness."""
+    from datetime import UTC, datetime
+
+    await readiness(request, db)
+    return {"status": "healthy", "observed_at": datetime.now(UTC).isoformat()}
+
+
 @router.get("/readyz")
 async def readiness(request: Request, db: AsyncSession = Depends(get_session)):
     try:

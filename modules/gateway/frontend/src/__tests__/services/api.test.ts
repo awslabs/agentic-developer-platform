@@ -16,6 +16,17 @@ describe('ApiClient', () => {
   });
 
   describe('GET requests', () => {
+    it('keeps an activity-only 401 local without clearing the authenticated session', async () => {
+      sessionStorage.setItem('cognito_access_token', 'fixture-token');
+      mockFetch.mockResolvedValueOnce({
+        ok: false, status: 401, statusText: 'Unauthorized',
+        json: () => Promise.resolve({ error: 'Unauthorized', message: 'Activity denied' }),
+      });
+      await expect(client.get('/orchestration/flows/flow-1/activity?node_ids=story-a', undefined, true))
+        .rejects.toMatchObject({ status: 401 });
+      expect(sessionStorage.getItem('cognito_access_token')).toBe('fixture-token');
+      sessionStorage.removeItem('cognito_access_token');
+    });
     it('makes GET request with correct URL', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,

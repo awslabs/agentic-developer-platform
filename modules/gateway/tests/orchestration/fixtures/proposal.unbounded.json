@@ -1,0 +1,15 @@
+{
+  "flow_slug": "example-delivery",
+  "title": "Example unbounded delivery",
+  "org_id": "",
+  "product_id": "example-product",
+  "spec_revision": "example-revision-1",
+  "intent_ref": "100",
+  "nodes": [
+    {"address": "example-delivery/epic-100/wave-1/story-101", "kind": "story", "title": "Build example", "issue_ref": "101"},
+    {"address": "example-delivery/epic-100/wave-1/eval", "kind": "eval", "title": "Review example"}
+  ],
+  "edges": [
+    {"from_address": "example-delivery/epic-100/wave-1/story-101", "to_address": "example-delivery/epic-100/wave-1/eval"}
+  ]
+}

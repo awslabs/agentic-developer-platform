@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acceptanceIds, attributeCommits, boardComplete, breakdownWarnings, carryCommits, isBoardCommit, kindMismatch, newlyDone, nextTask, parseTaskBoard,
-  readTaskBoardFile, renderTaskBoard, sanitizeTasks, sizeSignal, taskBoardPath, uncoveredCode, upsertTaskBoardSection, validateTasks, writeTaskBoardFile,
+import { acceptanceIds, attributeCommits, boardComplete, breakdownWarnings, carryCommits, checkpointIdentity, isBoardCommit, kindMismatch, newlyDone, nextTask, parseTaskBoard,
+  readTaskBoardFile, renderTaskBoard, safeCheckpointNote, sanitizeTasks, sizeSignal, taskBoardPath, uncoveredCode, upsertTaskBoardSection, validateTasks, writeTaskBoardFile,
   planSteps, preserveTaskHistory, type Task } from "./task-board.js";
 
 const task = (id: string, kind: Task["kind"], status: Task["status"] = "open", covers: string[] = [], extra: Partial<Task> = {}): Task =>
@@ -20,7 +20,7 @@ test("saved hierarchy survives process restart and resumes the active child", as
     const file = JSON.parse(await readFile(join(workspace, taskBoardPath(42)), "utf8"));
     assert.deepEqual(file.plan, [{ ...planStep, status: "in_progress", taskIds: ["A-c1", "A-t1"], completed: 1, total: 2 }]);
     const restored = (await readTaskBoardFile(workspace, 42)).tasks!;
-    assert.deepEqual(restored, tasks);
+    assert.deepEqual(restored.map(({ started_at, finished_at, run_id, attempt, checkpoint_note, ...item }) => item), tasks);
     assert.equal(nextTask(restored)?.id, "A-t1");
     assert.equal(planSteps(restored)[0]?.status, "in_progress");
     assert.match(renderTaskBoard(restored), /\*\*▶ Plan `recover-chat` — Keep the conversation/);
@@ -154,9 +154,9 @@ test("the branch board file round-trips, rejects another issue's board, and repo
   assert.equal(path, taskBoardPath(42));
   assert.equal(path, ".adp/tasks/42.json");
   const raw = await readFile(join(workspace, path), "utf8");
-  assert.match(raw, /"version": 1,\n  "issue": 42,\n  "updated_at": "2026-10-05T06:00:00.000Z"/);
+  assert.match(raw, /"version": 2,\n  "issue": 42,\n  "updated_at": "2026-10-05T06:00:00.000Z"/);
   assert.match(raw, /\n$/);
-  assert.deepEqual((await readTaskBoardFile(workspace, 42)).tasks, tasks);
+  assert.deepEqual((await readTaskBoardFile(workspace, 42)).tasks?.map(({ started_at, finished_at, run_id, attempt, checkpoint_note, ...item }) => item), tasks);
   assert.deepEqual(await readTaskBoardFile(workspace, 43), { tasks: null }, "another issue's path is simply absent");
   await writeFile(join(workspace, taskBoardPath(43)), JSON.stringify({ version: 1, issue: 42, updated_at: "x", tasks }), "utf8");
   assert.match((await readTaskBoardFile(workspace, 43)).error ?? "", /another issue/, "a board written for a different issue is never adopted");
@@ -228,4 +228,222 @@ test("GitHub PR progress leads with readable outcomes and collapses the detailed
   assert.ok(body.indexOf('Conversations resume') < body.indexOf('### Implementation progress'));
   assert.ok(body.indexOf('<details>') < body.indexOf('- ☑ `code` A-c1'));
   assert.equal(upsertTaskBoardSection(body, tasks), body);
+});
+
+
+test("version-2 fixture checkpoints retain task attempts, original start, completion, pattern and lineage", async t => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-v2-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const first = [task("A-c1", "code", "in_progress", [], { note: "tried parser" }), task("A-t1", "test", "open", ["A-c1"])];
+  const start = new Date("2026-10-09T12:00:00Z");
+  await writeTaskBoardFile(workspace, 42, first, start, { runId: "run-one", attempt: 2, nodeAddress: "wave/story", flowId: "flow-one" });
+  const initial = JSON.parse(await readFile(join(workspace, taskBoardPath(42)), "utf8"));
+  assert.equal(initial.version, 2);
+  assert.equal(initial.node_address, "wave/story");
+  assert.equal(initial.flow_id, "flow-one");
+  assert.deepEqual([initial.tasks[0].started_at, initial.tasks[0].finished_at, initial.tasks[0].run_id, initial.tasks[0].attempt, initial.tasks[0].checkpoint_note],
+    [start.toISOString(), null, "run-one", 2, "tried parser"]);
+  assert.deepEqual([initial.tasks[1].started_at, initial.tasks[1].finished_at, initial.tasks[1].attempt], [null, null, 0]);
+  const previous = (await readTaskBoardFile(workspace, 42)).tasks!;
+  const finished = first.map((item, index) => index === 0 ? { ...item, status: "done" as const, note: "parser unblocked", pattern_id: "pattern-1" } : item);
+  const end = new Date("2026-10-09T12:05:00Z");
+  await writeTaskBoardFile(workspace, 42, finished, end, { runId: "run-one", attempt: 2, previous });
+  const saved = JSON.parse(await readFile(join(workspace, taskBoardPath(42)), "utf8"));
+  assert.deepEqual([saved.tasks[0].started_at, saved.tasks[0].finished_at, saved.tasks[0].attempt, saved.tasks[0].checkpoint_note, saved.tasks[0].pattern_id],
+    [start.toISOString(), end.toISOString(), 2, "parser unblocked", "pattern-1"]);
+  assert.equal(saved.node_address, "wave/story", "reviewer writes without dispatch preserve header");
+  assert.equal(saved.flow_id, "flow-one");
+  assert.equal((await readTaskBoardFile(workspace, 42)).tasks?.[0]?.pattern_id, "pattern-1");
+  await writeTaskBoardFile(workspace, 42, (await readTaskBoardFile(workspace, 42)).tasks!, new Date("2026-10-09T12:06:00Z"));
+  assert.equal((await readTaskBoardFile(workspace, 42)).tasks?.[0]?.attempt, 2, "repeat writes do not create attempts");
+});
+
+test("a legacy version-1 fixture reads with defaults and remains byte-for-byte unchanged", async t => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-v1-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const old = await readFile(new URL("../../../../.adp/tasks/6932.json", import.meta.url), "utf8");
+  const path = join(workspace, taskBoardPath(6932));
+  await mkdir(join(workspace, ".adp", "tasks"), { recursive: true });
+  await writeFile(path, old, "utf8");
+  const restored = await readTaskBoardFile(workspace, 6932);
+  assert.equal(restored.error, undefined);
+  assert.ok(restored.tasks?.length);
+  assert.deepEqual([restored.tasks![0]!.started_at, restored.tasks![0]!.finished_at, restored.tasks![0]!.run_id,
+    restored.tasks![0]!.attempt, restored.tasks![0]!.checkpoint_note], [null, null, null, 0, ""]);
+  assert.equal(await readFile(path, "utf8"), old);
+});
+
+test("a missing version-1 field and concurrent checkpoint writes cannot corrupt the board", async t => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-atomic-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const tasks = [task("A-c1", "code", "in_progress")];
+  await Promise.all(Array.from({ length: 8 }, (_, index) => writeTaskBoardFile(workspace, 42, tasks,
+    new Date(1760000000000 + index * 1000), { runId: "run-" + index })));
+  assert.equal((await readTaskBoardFile(workspace, 42)).tasks?.[0]?.id, "A-c1");
+  assert.equal((await readdir(join(workspace, ".adp", "tasks"))).length, 1, "atomic temp files are removed");
+});
+
+test("checkpoint notes mask credentials before truncation", () => {
+  const text = "tried token=super-secret and AKIAABCDEFGHIJKLMNOP and Bearer header-secret " + "x".repeat(500);
+  const result = safeCheckpointNote(text);
+  assert.ok(result.length <= 400);
+  assert.match(result, /tried token=\[REDACTED\]/);
+  assert.doesNotMatch(result, /super-secret|AKIAABCDEFGHIJKLMNOP|header-secret/);
+});
+
+test("checkpoint notes redact quoted credentials and standard private-key blocks before persistence", async t => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-note-secrets-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fixtures = [
+    '{"token":"fixture-json-secret"}',
+    '{"api_key": "fixture-api-secret"}',
+    "{'password': 'fixture single quoted password'}",
+    'password="fixture password with spaces"',
+    'token="fixture \\"quoted\\" secret"',
+    'token="fixture unterminated secret',
+    "-----BEGIN PRIVATE KEY-----\nfixture-key-material\n-----END PRIVATE KEY-----",
+    "-----BEGIN RSA PRIVATE KEY-----\nfixture-rsa-key\n-----END RSA PRIVATE KEY-----",
+    "-----BEGIN OPENSSH PRIVATE KEY-----\nfixture-openssh-key\n-----END OPENSSH PRIVATE KEY-----",
+    "-----BEGIN PRIVATE KEY-----\nfixture-incomplete-key",
+  ];
+  for (const fixture of fixtures) {
+    const note = `checkpoint ${fixture}; ${"x".repeat(500)}`;
+    const sanitized = safeCheckpointNote(note);
+    assert.doesNotMatch(sanitized, /fixture/, "synthetic credential must be fully masked");
+    assert.match(sanitized, /\[REDACTED\]/);
+    assert.ok(sanitized.length <= 400);
+    const tasks = [task("A-c1", "code", "done", [], { note })];
+    await writeTaskBoardFile(workspace, 42, tasks);
+    const raw = await readFile(join(workspace, taskBoardPath(42)), "utf8");
+    assert.doesNotMatch(raw, /fixture/, "neither note field may persist the synthetic credential");
+    const saved = JSON.parse(raw).tasks[0];
+    assert.equal(saved.note, sanitized);
+    assert.equal(saved.checkpoint_note, sanitized);
+  }
+  assert.equal(safeCheckpointNote('Parser accepted {"status":"done"}; tests passed'),
+    'Parser accepted {"status":"done"}; tests passed');
+});
+
+
+test("checkpoint persistence masks complete authorization values and qualified token keys", async t => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-qualified-secrets-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const credential = Buffer.from("fixture-user:fixture-password").toString("base64");
+  const token = "fixture-token-value";
+  const fixtures = [
+    { note: `Authorization: Basic ${credential}`, secret: credential },
+    { note: `authorization = basic ${credential}`, secret: credential },
+    { note: `Proxy-Authorization: Basic ${credential}`, secret: credential },
+    { note: `{"Authorization":"Basic ${credential}"}`, secret: credential },
+    { note: `Authorization: Digest username="fixture-user", response="${token}"`, secret: token },
+    { note: `Authorization: Bearer ${token}`, secret: token },
+    { note: `{"access_token":"${token}"}`, secret: token },
+    { note: `{'refresh_token': '${token}'}`, secret: token },
+    { note: `AWS_SESSION_TOKEN=${token}`, secret: token },
+    { note: `export aws_session_token="${token}"`, secret: token },
+    { note: `session-token: ${token}`, secret: token },
+    { note: `id_token=${token}`, secret: token },
+  ];
+  for (const [index, fixture] of fixtures.entries()) {
+    const note = `${fixture.note}\nretry status unchanged ${"x".repeat(500)}`;
+    await writeTaskBoardFile(workspace, 42, [task("A-c1", "code", "in_progress", [], { note })]);
+    const raw = await readFile(join(workspace, taskBoardPath(42)), "utf8");
+    assert.ok(!raw.includes(fixture.secret), `persisted notes must mask ${fixture.note.split(/[:=]/)[0]}`);
+    const saved = JSON.parse(raw).tasks[0];
+    for (const value of [saved.note, saved.checkpoint_note]) {
+      assert.match(value, /\[REDACTED\]/);
+      assert.match(value, /retry status unchanged/);
+      assert.ok(value.length <= 400);
+    }
+    await writeTaskBoardFile(workspace, 43, [task("A-c1", "code", "in_progress")], new Date(),
+      { runId: `fixture-run-${index}`, summary: note });
+    const summaryRaw = await readFile(join(workspace, taskBoardPath(43)), "utf8");
+    assert.ok(!summaryRaw.includes(fixture.secret), "checkpoint summary must also be masked");
+    assert.match(JSON.parse(summaryRaw).tasks[0].checkpoint_note, /\[REDACTED\]/);
+  }
+});
+
+test("controller metadata maps the run envelope without inferring missing dispatch lineage", () => {
+  assert.deepEqual(checkpointIdentity({ ADP_MESSAGE_ID: "run-one", ADP_RUN_ATTEMPT: "3",
+    ADP_BOARD_NODE_ADDRESS: "wave/story", ADP_BOARD_FLOW_ID: "flow-one" }),
+  { runId: "run-one", attempt: 3, nodeAddress: "wave/story", flowId: "flow-one" });
+  assert.deepEqual(checkpointIdentity({ ADP_RUN_ATTEMPT: "invalid" }),
+    { runId: undefined, attempt: undefined, nodeAddress: undefined, flowId: undefined });
+});
+
+test("restarted in-progress tasks increment the attempt and keep safe notes on disk", async t => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-retry-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const tasks = [task("A-c1", "code", "in_progress")];
+  await writeTaskBoardFile(workspace, 42, tasks, new Date("2026-10-09T12:00:00Z"), { runId: "run-one", attempt: 1 });
+  const previous = (await readTaskBoardFile(workspace, 42)).tasks!;
+  await writeTaskBoardFile(workspace, 42, tasks, new Date("2026-10-09T12:10:00Z"), { runId: "run-two", attempt: 2,
+    previous, summary: "tried token=not-for-repo; retry blocked" });
+  const raw = await readFile(join(workspace, taskBoardPath(42)), "utf8");
+  const saved = JSON.parse(raw).tasks[0];
+  assert.equal(saved.run_id, "run-two");
+  assert.equal(saved.attempt, 2);
+  assert.equal(saved.started_at, "2026-10-09T12:10:00.000Z");
+  assert.match(saved.checkpoint_note, /token=\[REDACTED\]/);
+  assert.doesNotMatch(raw, /not-for-repo/);
+});
+
+test("persisted lineage takes precedence over stale tasks and previous snapshots", async t => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-stale-lineage-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  await writeTaskBoardFile(workspace, 42, [task("A-c1", "code", "in_progress")], new Date("2026-10-09T12:00:00Z"),
+    { runId: "run-one", attempt: 1, summary: "initial attempt" });
+  const stale = (await readTaskBoardFile(workspace, 42)).tasks!;
+  await writeTaskBoardFile(workspace, 42, stale, new Date("2026-10-09T12:10:00Z"),
+    { runId: "run-two", attempt: 2, summary: "resumed attempt" });
+  const completed = stale.map(entry => ({ ...entry, status: "done" as const }));
+  await writeTaskBoardFile(workspace, 42, completed, new Date("2026-10-09T12:20:00Z"),
+    { runId: "run-two", attempt: 2, previous: stale });
+  const saved = (await readTaskBoardFile(workspace, 42)).tasks![0]!;
+  assert.equal(saved.run_id, "run-two");
+  assert.equal(saved.attempt, 2);
+  assert.equal(saved.started_at, "2026-10-09T12:10:00.000Z");
+  assert.equal(saved.finished_at, "2026-10-09T12:20:00.000Z");
+  assert.equal(saved.checkpoint_note, "resumed attempt");
+  await writeTaskBoardFile(workspace, 42, completed, new Date("2026-10-09T12:30:00Z"));
+  assert.deepEqual((await readTaskBoardFile(workspace, 42)).tasks![0], saved, "a later rewrite must not restore stale lineage");
+});
+
+test("same-run harness attempts advance once and unchanged checkpoints retain their start", async t => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-harness-retry-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const tasks = [task("A-c1", "code", "in_progress")];
+  await writeTaskBoardFile(workspace, 42, tasks, new Date("2026-10-09T12:00:00Z"), { runId: "same-run", attempt: 1 });
+  await writeTaskBoardFile(workspace, 42, tasks, new Date("2026-10-09T12:10:00Z"), { runId: "same-run", attempt: 2 });
+  const retried = (await readTaskBoardFile(workspace, 42)).tasks![0]!;
+  assert.equal(retried.run_id, "same-run");
+  assert.equal(retried.attempt, 2);
+  assert.equal(retried.started_at, "2026-10-09T12:10:00.000Z");
+  assert.equal(retried.finished_at, null);
+  await writeTaskBoardFile(workspace, 42, tasks, new Date("2026-10-09T12:20:00Z"), { runId: "same-run", attempt: 2 });
+  assert.deepEqual((await readTaskBoardFile(workspace, 42)).tasks![0], retried);
+  await writeTaskBoardFile(workspace, 42, tasks.map(entry => ({ ...entry, status: "done" })), new Date("2026-10-09T12:30:00Z"),
+    { runId: "same-run", attempt: 2 });
+  const completed = (await readTaskBoardFile(workspace, 42)).tasks![0]!;
+  assert.equal(completed.attempt, 2);
+  assert.equal(completed.started_at, retried.started_at);
+  assert.equal(completed.finished_at, "2026-10-09T12:30:00.000Z");
+  await writeTaskBoardFile(workspace, 42, [completed], new Date("2026-10-09T12:40:00Z"), { runId: "same-run", attempt: 3 });
+  assert.deepEqual((await readTaskBoardFile(workspace, 42)).tasks![0], completed, "a later harness attempt must not relabel completed work");
+});
+
+test("new fixture boards populate every version-2 field for later live evaluation", async t => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-live-ready-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const schema = JSON.parse(await readFile(new URL("../schemas/task-board-v2.schema.json", import.meta.url), "utf8"));
+  const tasks = [task("A-c1", "code", "done", [], { note: "verified" }), task("A-t1", "test", "done", ["A-c1"], { note: "passed" })];
+  await writeTaskBoardFile(workspace, 42, tasks, new Date("2026-10-09T12:00:00Z"),
+    { runId: "run-1", attempt: 1, nodeAddress: "wave/story", flowId: "flow-1" });
+  const file = JSON.parse(await readFile(join(workspace, taskBoardPath(42)), "utf8"));
+  for (const key of schema.required as string[]) assert.ok(key in file, `board needs ${key}`);
+  assert.equal(file.version, schema.properties.version.const);
+  for (const entry of file.tasks) {
+    for (const key of schema.properties.tasks.items.required as string[]) assert.ok(key in entry, `task needs ${key}`);
+    assert.ok(entry.started_at && entry.finished_at && entry.run_id && entry.attempt > 0 && entry.checkpoint_note);
+  }
 });

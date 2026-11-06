@@ -1,0 +1,12 @@
+.product-service-selection > p { margin-top: 8px; }
+.product-service-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 12px; margin: 18px 0; }
+.product-service-cards a { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 18px; border: 1px solid var(--product-line, #d7dfe9); border-radius: 8px; background: var(--color-white, white); color: var(--product-ink, #18263c); overflow-wrap: anywhere; }
+.product-service-cards h3 { font-size: 16px; font-weight: 650; }
+.product-service-cards p { flex: 1; margin: 8px 0 16px; font-size: 13px; color: var(--product-muted, #52647b); }
+.product-service-cards span { font-size: 13px; font-weight: 600; color: #245ac4; }
+.product-service-cards a:hover, .product-service-switcher button:hover { border-color: #91ace1; background: #f2f6ff; }
+.product-service-cards a:focus-visible, .product-service-switcher button:focus-visible { outline: 3px solid #6d9bea; outline-offset: 3px; }
+.product-service-switcher { display: flex; flex-wrap: wrap; gap: 8px; }
+.product-service-switcher button { min-height: 44px; padding: 10px 14px; border: 1px solid var(--product-line, #d7dfe9); border-radius: 8px; background: var(--color-white, white); color: var(--product-ink, #18263c); }
+.product-service-switcher button[aria-current] { border-color: #245ac4; background: #e7efff; color: #193d84; box-shadow: inset 0 -2px #245ac4; }
+@media (max-width: 480px) { .product-service-cards { grid-template-columns: minmax(0, 1fr); } .product-service-switcher button { flex: 1 1 40%; } }

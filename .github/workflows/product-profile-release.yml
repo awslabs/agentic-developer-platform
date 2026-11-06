@@ -1,0 +1,154 @@
+name: Product Profile Release
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      adp_correlation:
+        description: Engine delivery correlation
+        required: true
+        type: string
+      adp_source_revision:
+        description: Pinned approved main source revision
+        required: true
+        type: string
+      adp_definition_revision:
+        description: Pinned workflow definition revision
+        required: true
+        type: string
+      adp_contract_digest:
+        description: Accepted version-2 delivery contract digest
+        required: true
+        type: string
+      environment:
+        description: Fixed Product target
+        type: choice
+        options: [dev]
+        default: dev
+      suite:
+        description: Fixed Product suite
+        type: choice
+        options: [product-profile]
+        default: product-profile
+      max_parallel:
+        description: Fixed suite concurrency
+        type: choice
+        options: ['8']
+        default: '8'
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+  ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1
+
+concurrency:
+  group: product-profile-release-dev
+  cancel-in-progress: false
+
+jobs:
+  release-manifest:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 20
+    environment: adp-gateway-deploy-dev
+    outputs:
+      manifest_sha256: ${{ steps.manifest.outputs.manifest_sha256 }}
+      release_id: ${{ steps.manifest.outputs.release_id }}
+    env:
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+      ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+      PRODUCT_ENVIRONMENT: ${{ inputs.environment }}
+      PRODUCT_SUITE: ${{ inputs.suite }}
+      PRODUCT_MAX_PARALLEL: ${{ inputs.max_parallel }}
+      GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+      EXPECTED_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      ADP_GATEWAY_BASE_URL: ${{ vars.ADP_FOUNDATION_GATEWAY_URL }}
+      PRODUCT_DELIVERY_ROLE_ARN: ${{ vars.ADP_FOUNDATION_CONNECTION_ROLE_ARN }}
+      PRODUCT_MUTATION_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      PRODUCT_ACCEPTED_CONTRACT_JSON: ${{ vars.PRODUCT_PROFILE_RELEASE_CONTRACT }}
+      PRODUCT_TARGET_REGION: ${{ vars.ADP_DEPLOY_REGION }}
+      ADP_RUNTIME_PROOF_INVOKE_URL: ${{ vars.PRODUCT_PROFILE_RUNTIME_PROOF_URL }}
+      GH_TOKEN: ${{ github.token }}
+      PYTHONPATH: ${{ github.workspace }}/modules/gateway
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse a stale or unapproved source
+        run: |
+          set -euo pipefail
+          export ADP_CHECKOUT_REVISION="$(git rev-parse HEAD)"
+          echo "ADP_CHECKOUT_REVISION=$ADP_CHECKOUT_REVISION" >> "$GITHUB_ENV"
+          python3 -c 'import os; from tests.e2e.product_onboarding.product_completion_release import release_identity; release_identity(os.environ)'
+          # Full checkout already has main. Independent merges may advance it
+          # while a pinned release waits, without changing the approved source.
+          git merge-base --is-ancestor "$ADP_CHECKOUT_REVISION" refs/remotes/origin/main
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install pinned gateway contract dependencies
+        run: python -m pip install ./modules/gateway
+      - name: Verify source and authenticated engine ownership
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/product-profile-release"
+          python3 -m tests.e2e.product_onboarding.product_completion_authorization
+          python3 -m tests.e2e.product_onboarding.product_completion_context
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION }}
+      - name: Resolve the authorized target
+        run: |
+          set -euo pipefail
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$account" = "$(cut -d: -f5 <<< "$PRODUCT_MUTATION_ROLE_ARN")"
+          echo "ACCOUNT_ID=$account" >> "$GITHUB_ENV"
+      - name: Retain provider-owned attempt context
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py context product-profile-release.yml "$RUNNER_TEMP/product-profile-release/deployment-context.json"
+      - name: Observe matching Actions deployments and installed CLI
+        run: python3 -m tests.e2e.product_onboarding.product_completion_observe
+      - name: Choose matching artifacts for reuse
+        run: |
+          set -euo pipefail
+          python3 -m tests.e2e.product_onboarding.product_completion_release \
+            --desired "$RUNNER_TEMP/product-profile-release/desired.json" \
+            --current "$RUNNER_TEMP/product-profile-release/current.json" \
+            --plan "$RUNNER_TEMP/product-profile-release/plan.json"
+      - name: Verify deployed and reused components
+        id: manifest
+        run: |
+          set -euo pipefail
+          python3 -m tests.e2e.product_onboarding.product_completion_release \
+            --desired "$RUNNER_TEMP/product-profile-release/desired.json" \
+            --current "$RUNNER_TEMP/product-profile-release/current.json" \
+            --plan "$RUNNER_TEMP/product-profile-release/plan.json" \
+            --receipts "$RUNNER_TEMP/product-profile-release/component-receipts.json" \
+            --output "$RUNNER_TEMP/product-profile-release/manifest.json"
+      - name: Publish verified version-2 delivery receipt
+        run: python3 -m tests.e2e.product_onboarding.product_completion_release_delivery
+      - name: Retain immutable shared manifest
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py workflow-artifact product-profile-manifest "$RUNNER_TEMP/product-profile-release/manifest.json"
+      - name: Retain verified delivery receipt and observations
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py delivery delivery-evidence "$RUNNER_TEMP/product-profile-release/delivery.json"
+      - name: Retain component observations
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py workflow-artifact product-profile-observations "$RUNNER_TEMP/product-profile-release/evidence"
+      - name: Retain private attempt diagnostics
+        if: always()
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: product-profile-release-attempt
+          path: ${{ runner.temp }}/product-profile-release/
+          if-no-files-found: warn
+          retention-days: 14

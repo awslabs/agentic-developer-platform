@@ -1,0 +1,190 @@
+{
+  "specification": {
+    "schema_version": 1,
+    "evidence_schema": "multi-repository-evaluation/v1",
+    "mode": "repository",
+    "acceptance_mode": "machine",
+    "harness": {
+      "repository": "fixture/harness",
+      "repository_id": 303,
+      "installation_id": 903,
+      "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "definition_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "harness_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "adapter": "fixture-harness",
+      "operation": "evaluate"
+    },
+    "predecessors": [
+      {
+        "address": "flow/epic/wave/a",
+        "repository_id": 101,
+        "evidence_kind": "merge",
+        "required_checks": [
+          {
+            "name": "ci",
+            "app_id": 7,
+            "workflow_path": null,
+            "workflow_source_revision": null,
+            "workflow_definition_revision": null
+          }
+        ]
+      },
+      {
+        "address": "flow/epic/wave/b",
+        "repository_id": 202,
+        "evidence_kind": "deployment",
+        "required_checks": []
+      }
+    ],
+    "criteria": [
+      {
+        "criterion_id": "AC-01",
+        "required": true
+      }
+    ],
+    "environment": null,
+    "max_age_seconds": 600
+  },
+  "sources": [
+    {
+      "org_id": "org-fixture",
+      "flow_id": "flow-fixture",
+      "accepted_plan_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "accepted_plan_version": 2,
+      "execution_id": "source-execution",
+      "cycle": 1,
+      "claim_generation": 1,
+      "source_binding_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "address": "flow/epic/wave/a",
+      "node_id": "node-a",
+      "repository_id": 101,
+      "checks": [
+        {
+          "name": "ci",
+          "app_id": 7,
+          "head_sha": "1111111111111111111111111111111111111111",
+          "workflow_path": null,
+          "workflow_source_revision": null,
+          "workflow_definition_revision": null,
+          "conclusion": "success"
+        }
+      ],
+      "evidence_kind": "merge",
+      "pull_request_node_id": "PR-fixture-a",
+      "pull_request_number": 17,
+      "reviewed_head_sha": "1111111111111111111111111111111111111111",
+      "merge_sha": "2222222222222222222222222222222222222222"
+    },
+    {
+      "org_id": "org-fixture",
+      "flow_id": "flow-fixture",
+      "accepted_plan_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "accepted_plan_version": 2,
+      "execution_id": "source-execution",
+      "cycle": 1,
+      "claim_generation": 1,
+      "source_binding_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "address": "flow/epic/wave/b",
+      "node_id": "node-b",
+      "repository_id": 202,
+      "checks": [],
+      "evidence_kind": "deployment",
+      "deployment_receipt_key": "deployment-fixture-b",
+      "operation_key": "operation-fixture-b",
+      "deployed_revision": "3333333333333333333333333333333333333333"
+    }
+  ],
+  "receipt": {
+    "schema_version": 1,
+    "evidence_schema": "multi-repository-evaluation/v1",
+    "mode": "repository",
+    "org_id": "org-fixture",
+    "flow_id": "flow-fixture",
+    "node_id": "eval-node",
+    "execution_id": "eval-execution",
+    "attempt": 1,
+    "claim_generation": 1,
+    "specification_digest": "1b8246f9ed95e137e9df3333617b33a3aded276a6f955bfd7a2b868bd1b7c4b7",
+    "input_set_digest": "f13add4678e97324ac1a11b2a5b8613f6cc5a87645b6851d02ff3d96b00e84d4",
+    "harness": {
+      "repository": "fixture/harness",
+      "repository_id": 303,
+      "installation_id": 903,
+      "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "definition_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "harness_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "adapter": "fixture-harness",
+      "operation": "evaluate"
+    },
+    "environment": null,
+    "sources": [
+      {
+        "org_id": "org-fixture",
+        "flow_id": "flow-fixture",
+        "accepted_plan_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "accepted_plan_version": 2,
+        "execution_id": "source-execution",
+        "cycle": 1,
+        "claim_generation": 1,
+        "source_binding_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "address": "flow/epic/wave/a",
+        "node_id": "node-a",
+        "repository_id": 101,
+        "checks": [
+          {
+            "name": "ci",
+            "app_id": 7,
+            "head_sha": "1111111111111111111111111111111111111111",
+            "workflow_path": null,
+            "workflow_source_revision": null,
+            "workflow_definition_revision": null,
+            "conclusion": "success"
+          }
+        ],
+        "evidence_kind": "merge",
+        "pull_request_node_id": "PR-fixture-a",
+        "pull_request_number": 17,
+        "reviewed_head_sha": "1111111111111111111111111111111111111111",
+        "merge_sha": "2222222222222222222222222222222222222222"
+      },
+      {
+        "org_id": "org-fixture",
+        "flow_id": "flow-fixture",
+        "accepted_plan_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "accepted_plan_version": 2,
+        "execution_id": "source-execution",
+        "cycle": 1,
+        "claim_generation": 1,
+        "source_binding_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "address": "flow/epic/wave/b",
+        "node_id": "node-b",
+        "repository_id": 202,
+        "checks": [],
+        "evidence_kind": "deployment",
+        "deployment_receipt_key": "deployment-fixture-b",
+        "operation_key": "operation-fixture-b",
+        "deployed_revision": "3333333333333333333333333333333333333333"
+      }
+    ],
+    "criteria": [
+      {
+        "criterion_id": "AC-01",
+        "outcome": "pass",
+        "evidence_references": [
+          "fixture-observation"
+        ]
+      }
+    ],
+    "producer": {
+      "adapter": "fixture-only",
+      "provider_identity": "fixture-producer",
+      "run_id": "run-fixture",
+      "run_attempt": 1
+    },
+    "observed_at": "2026-10-20T12:00:00+00:00",
+    "expires_at": "2026-10-20T12:05:00+00:00",
+    "verdict": "pass"
+  },
+  "expected_specification_digest": "1b8246f9ed95e137e9df3333617b33a3aded276a6f955bfd7a2b868bd1b7c4b7",
+  "expected_input_set_digest": "f13add4678e97324ac1a11b2a5b8613f6cc5a87645b6851d02ff3d96b00e84d4"
+}

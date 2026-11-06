@@ -193,6 +193,14 @@ def submit_request(body: dict) -> dict:
     if "inputs" in body and not isinstance(body["inputs"], dict):
         raise errors.invalid_request("inputs must be a JSON object.")
 
+    # These are requested work scopes. The gateway still resolves them against
+    # the authenticated principal before admitting or charging the task.
+    for field, maximum in (("product_id", 36), ("project_id", 255)):
+        if field in body:
+            value = _require_string(body, field, max_characters=maximum)
+            if not value:
+                raise errors.invalid_request(f"{field} must not be empty.")
+
     if "external_reference" in body:
         _require_string(
             body,

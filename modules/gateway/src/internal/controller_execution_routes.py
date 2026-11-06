@@ -16,9 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.operation_contract import identity_contract
 from src.internal.auth_deps import verify_internal_or_irsa
-from src.internal.domain_operation_runtime import authenticated
+from src.internal.domain_operation_runtime import EXECUTOR_SCOPE, authenticated, current_registry
 from src.internal.domain_operation_store import operation_session
-from src.internal.vault_evidence_routes import _granted_permissions, _verified_executor
+from src.internal.vault_evidence_routes import _verified_executor
 
 
 async def get_operation_db(request: Request, _: None = Depends(verify_internal_or_irsa)):
@@ -42,8 +42,9 @@ async def execution_authority(
     db: AsyncSession = Depends(get_operation_db),
     _: None = Depends(verify_internal_or_irsa),
 ):
-    if "workspace:provision" not in _granted_permissions(request):
-        raise HTTPException(403, "execution authority refused")
+    # This reads the paid worker's existing lease. Generic vault delivery is a
+    # separate capability and is not held by native brokered-provider workers.
+    registry_id = current_registry(request, EXECUTOR_SCOPE)
     holder, org_id = await _verified_executor(request)
     try:
         result = await db.execute(
@@ -83,7 +84,7 @@ async def execution_authority(
         raise HTTPException(503, "execution contract unavailable") from None
     # The database read may have waited. Revoke a response if its real run/pod
     # changed during that wait, before returning any admitted plan metadata.
-    if await _verified_executor(request) != (holder, org_id) or "workspace:provision" not in _granted_permissions(request):
+    if await _verified_executor(request) != (holder, org_id) or current_registry(request, EXECUTOR_SCOPE) != registry_id:
         raise HTTPException(403, "execution authority refused")
     if min(row["expires_at"], row["runtime_deadline"]) <= datetime.now(UTC):
         raise HTTPException(403, "execution authority refused")

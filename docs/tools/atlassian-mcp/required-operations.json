@@ -1,0 +1,55 @@
+{
+  "revision": "8446-provisional-1",
+  "design_source_commit": "3454ce6b73d7a263e4e90979d6eaa49f5896d098",
+  "resource": "https://mcp.atlassian.com/v2/mcp",
+  "discovery_url": "https://mcp.atlassian.com/v2/mcp?tools=all",
+  "metadata_sha256": {
+    "protected_resource": "d4687eded5e691a672019ff34ea3feeaef3aab895362b8061d05544d2a870d44",
+    "authorization_server": "aab7a57bc585f29197f8f4f929ab94abfa60179b2dc58d17bdf6f2adef09d839"
+  },
+  "documented_tools_sha256": "9c0f07c976713c7483649c29ea78322822f306e69f30a42ae22666168a9c5555",
+  "schema_state": "unobserved_requires_authenticated_discovery",
+  "site_rule": "Every operation requires the selected site/cloud ID to match the current owner-bound grant and provider-accessible resource; no cross-site fallback.",
+  "scope_rule": "Read consent requests four documented product read/search scopes plus read:me for subject observation, read:account for sites and offline_access for Identity-managed refresh. Jira write scope requires separate explicit opt-in. Granted scopes must be observed through Identity and rechecked per dispatch.",
+  "identity_scopes": ["read:me", "read:account", "offline_access"],
+  "retry": {
+    "total_upstream_seconds": 20,
+    "connect_seconds": 2,
+    "read_seconds": 5,
+    "read_retry_count": 1,
+    "read_retry_conditions": ["rate_limited", "provider_unavailable"],
+    "write_retry_after_dispatch": 0,
+    "catalogue_max_pages": 32,
+    "catalogue_max_tools": 1024,
+    "catalogue_max_definition_bytes": 262144,
+    "catalogue_max_total_bytes": 4194304,
+    "discovery_cache_seconds": 60
+  },
+  "errors": {
+    "missing_login": "login_required",
+    "missing_or_stale_grant": "reconnect_required",
+    "owner_or_binding_changed": "connection_changed",
+    "missing_scope": "scope_not_granted",
+    "wrong_site": "site_denied",
+    "approval_missing": "approval_required",
+    "provider_401": "provider_unauthorized",
+    "provider_403": "provider_forbidden",
+    "provider_404": "not_found",
+    "provider_429": "rate_limited",
+    "provider_timeout": "provider_unavailable",
+    "write_uncertain": "outcome_unknown",
+    "changed_operation_payload": "operation_conflict",
+    "catalogue_truncated": "catalogue_incomplete",
+    "unknown_schema": "provider_contract_unverified"
+  },
+  "operations": [
+    {"alias": "atlassian___search_jira", "method": "searchJiraIssuesUsingJql", "scope": "search:jira:agent-interface", "site": "selected_jira_site", "mode": "read", "schema_name": "search-jira", "producer": "8446-provider-proof", "consumer": "8449-adapter"},
+    {"alias": "atlassian___get_jira_issue", "method": "getJiraIssue", "scope": "read:jira:agent-interface", "site": "selected_jira_site", "mode": "read", "schema_name": "get-jira-issue", "producer": "8446-provider-proof", "consumer": "8449-adapter"},
+    {"alias": "atlassian___search_confluence", "method": "searchConfluence", "scope": "search:confluence:agent-interface", "site": "selected_confluence_site", "mode": "read", "schema_name": "search-confluence", "producer": "8446-provider-proof", "consumer": "8449-adapter"},
+    {"alias": "atlassian___get_confluence_page", "method": "getConfluenceContent", "scope": "read:confluence:agent-interface", "site": "selected_confluence_site", "mode": "read", "schema_name": "get-confluence-page", "producer": "8446-provider-proof", "consumer": "8449-adapter"},
+    {"alias": "atlassian___create_jira_issue", "method": "createJiraIssue", "scope": "write:jira:agent-interface", "site": "selected_jira_site", "mode": "write", "schema_name": "create-jira-issue", "producer": "8446-provider-proof", "consumer": "8450-adapter-writes"},
+    {"alias": "atlassian___update_jira_issue", "method": "editJiraIssue", "scope": "write:jira:agent-interface", "site": "selected_jira_site", "mode": "write", "schema_name": "update-jira-issue", "producer": "8446-provider-proof", "consumer": "8450-adapter-writes"},
+    {"alias": "atlassian___comment_jira_issue", "method": "addOrEditJiraIssueComment", "scope": "write:jira:agent-interface", "site": "selected_jira_site", "mode": "write", "schema_name": "add-jira-comment-only", "subset": "add-only; reject edit identifier or mode", "producer": "8446-provider-proof", "consumer": "8450-adapter-writes"},
+    {"alias": "atlassian___transition_jira_issue", "method": "transitionJiraIssue", "scope": "write:jira:agent-interface", "site": "selected_jira_site", "mode": "write", "schema_name": "transition-jira-status-only", "subset": "status transition only; reject sprint/backlog assignment", "producer": "8446-provider-proof", "consumer": "8450-adapter-writes"}
+  ]
+}

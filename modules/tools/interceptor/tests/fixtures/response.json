@@ -1,0 +1,15 @@
+{
+  "interceptorInputVersion": "1.0",
+  "mcp": {
+    "rawGatewayRequest": {"body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\"}"},
+    "gatewayRequest": {
+      "path": "/mcp",
+      "httpMethod": "POST",
+      "body": {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "example_tool"}}
+    },
+    "gatewayResponse": {
+      "statusCode": 200,
+      "body": {"jsonrpc": "2.0", "id": 2, "result": {"tools": []}}
+    }
+  }
+}

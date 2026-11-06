@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.shared.identity import resolve_canonical_user_id
 from src.shared.models.vault import UserCredential
 from src.shared.services.canonical_user import resolve_canonical_user
 from src.shared.services.credential_resolver import CredentialNotFoundError, CredentialResolver
@@ -21,7 +22,8 @@ async def resolve_user_credential(
     service: str | None = None,
     label: str | None = None,
 ) -> UserCredential:
-    user = await resolve_canonical_user(session, user_id, calling_endpoint="execution-policy-credential")
+    canonical_id = await resolve_canonical_user_id(session, user_id, org_id=org_id)
+    user = await resolve_canonical_user(session, canonical_id, calling_endpoint="execution-policy-credential")
     if user is None or user.org_id != org_id:
         raise CredentialNotFoundError("credential unavailable")
     if credential_id is not None:

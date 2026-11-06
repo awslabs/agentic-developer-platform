@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError
 from src.agentauth.installation_reader import InstallationReader, authorize_installation_reader
@@ -88,3 +88,26 @@ async def test_self_asserted_installation_and_invalid_reference_denied(db_sessio
     for target in (101, 0, -1, True, "101"):
         with pytest.raises(ChatAuthorizationRefusedError):
             await authorize_installation_reader(db_session, tenant_id="tenant-a", user_id="installer", installation_id=target)
+
+
+@pytest.mark.asyncio
+async def test_tenant_member_whose_own_org_differs_reads_through_membership_until_revoked(db_session):
+    db_session.add_all(
+        [
+            Organization(id="tenant-a", name="Tenant A"),
+            Organization(id="personal", name="Personal"),
+            User(id="installer", org_id="personal", team_id="team", email="a@example.test"),
+            TenantMembership(user_id="installer", tenant_id="tenant-a", role="org_admin", is_active=False),
+        ]
+    )
+    await db_session.commit()
+    await installation(db_session, "tenant-a", 101, "installer")
+    assert await authorize_installation_reader(db_session, tenant_id="tenant-a", user_id="installer", installation_id=101) == InstallationReader(
+        tenant_id="tenant-a", installation_id=101
+    )
+    with pytest.raises(ChatAuthorizationRefusedError, match="installation read refused"):
+        await authorize_installation_reader(db_session, tenant_id="personal", user_id="installer", installation_id=101)
+    await db_session.execute(update(TenantMembership).where(TenantMembership.user_id == "installer").values(revoked_at=datetime.now(UTC)))
+    await db_session.commit()
+    with pytest.raises(ChatAuthorizationRefusedError, match="installation read refused"):
+        await authorize_installation_reader(db_session, tenant_id="tenant-a", user_id="installer", installation_id=101)

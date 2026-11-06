@@ -1,3 +1,6 @@
+import { withPmIssueAuthoring } from './pm-issue-authoring';
+import { shellCommand } from './lib/command';
+import { authorizeComment, CommentAuthorityCache, type CommentAuthorityContext, type CommentEnvelope } from './utils/comment-authority';
 /**
  * Monitoring Module for @agent-pm
  *
@@ -78,7 +81,7 @@ export interface UserCommand {
   command: string;
   args: string[];
   rawText: string;
-  commentId: number;
+  commentId: string;
   author: string;
   timestamp: string;
 }
@@ -273,7 +276,7 @@ export async function fetchWorkflowRunForIssue(
     try {
       // Get recent runs for this workflow
       const result = await execCommand(
-        `gh run list --repo ${repoOwner}/${repoName} --workflow "${workflowName}" --limit 20 --json databaseId,name,status,conclusion,headSha,url,createdAt,updatedAt,event`
+        shellCommand('gh', ['run', 'list', '--repo', `${repoOwner}/${repoName}`, '--workflow', workflowName, '--limit', '20', '--json', 'databaseId,name,status,conclusion,headSha,url,createdAt,updatedAt,event'])
       );
 
       const runs = JSON.parse(result || '[]') as Array<Record<string, unknown>>;
@@ -465,7 +468,7 @@ export async function fetchIssueComments(
 }>> {
   try {
     const result = await execCommand(
-      `gh issue view ${issueNumber} --json comments`
+      shellCommand('gh', ['issue', 'view', String(issueNumber), '--json', 'comments'])
     );
 
     const data = JSON.parse(result || '{"comments":[]}');
@@ -481,6 +484,28 @@ export async function fetchIssueComments(
     console.error('Failed to fetch issue comments:', (error as Error).message);
     return [];
   }
+}
+
+async function fetchMonitoringComments(
+  owner: string, repo: string, issueNumber: number, execCommand: ExecCommandFn, since: string,
+): Promise<CommentEnvelope[]> {
+  const endpoint = `repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issueNumber}/comments?per_page=100&since=${encodeURIComponent(since)}`;
+  let pages: Array<Array<Record<string, unknown>>>;
+  try {
+    pages = JSON.parse(await execCommand(`gh api '${endpoint}' --paginate --slurp`));
+    if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error('Invalid comment pages');
+  } catch {
+    throw new Error('GitHub comment pagination unavailable');
+  }
+  return pages.flat().map(comment => {
+    const user = comment.user as Record<string, unknown> | undefined;
+    return {
+      id: String(comment.id ?? ''), author: user?.login as string || '',
+      authorId: user?.id as number, authorType: user?.type as string || '',
+      body: comment.body as string || '', createdAt: comment.created_at as string || '',
+      updatedAt: comment.updated_at as string || '',
+    };
+  });
 }
 
 /**
@@ -880,30 +905,22 @@ const MONITORING_COMMANDS = [
 /**
  * Parse user commands from comments
  */
-export function parseUserCommands(
-  comments: Array<{ id: number; author: string; body: string; createdAt: string }>,
-  lastProcessedCommentId: number
-): UserCommand[] {
+export async function parseUserCommands(
+  comments: CommentEnvelope[], context: CommentAuthorityContext,
+  onDenial?: (comment: CommentEnvelope, reason: string, metadata: { permission?: string; cacheAgeMs?: number }) => Promise<void> | void,
+): Promise<UserCommand[]> {
   const commands: UserCommand[] = [];
 
   for (const comment of comments) {
-    // Skip already processed comments
-    if (comment.id <= lastProcessedCommentId) continue;
-
-    // Skip bot comments
-    if (comment.author.includes('[bot]') || comment.author === 'github-actions') continue;
-
-    // Look for commands
-    const lines = comment.body.split('\n');
-    for (const line of lines) {
+    const parsed: UserCommand[] = [];
+    for (const line of comment.body.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed.startsWith('/')) continue;
 
       const parts = trimmed.split(/\s+/);
       const cmd = parts[0].toLowerCase();
-
-      if (MONITORING_COMMANDS.some((c) => cmd.startsWith(c))) {
-        commands.push({
+      if (MONITORING_COMMANDS.some(command => cmd === command.toLowerCase())) {
+        parsed.push({
           command: cmd,
           args: parts.slice(1),
           rawText: trimmed,
@@ -913,6 +930,10 @@ export function parseUserCommands(
         });
       }
     }
+    if (!parsed.length) continue;
+    const decision = await authorizeComment(comment, context);
+    if (decision.allowed) commands.push(...parsed);
+    else await onDenial?.(comment, decision.reason, decision);
   }
 
   return commands;
@@ -1143,6 +1164,7 @@ export interface MonitoringCallbacks {
   onQueryPM?: (query: string, state: MonitoringState) => Promise<{ response: string }>;
   /** Called periodically to analyze status and take action using AI */
   onAnalyze?: (state: MonitoringState, previousReport: string | null) => Promise<{ actionTaken: boolean; newReport: string }>;
+  triggerComment?: CommentEnvelope;
 }
 
 export interface MonitoringLoopResult {
@@ -1168,7 +1190,17 @@ export async function* runMonitoringLoop(
 
   log('INFO', `Starting monitoring loop for session ${state.sessionId}`);
 
-  let lastProcessedCommentId = 0;
+  const sessionStart = new Date().toISOString();
+  const observedComments = new Set<string>();
+  const since = new Date(Date.parse(sessionStart) - 1000).toISOString();
+  const initialComments = await fetchMonitoringComments(repoOwner, repoName, state.parentIssueNumber, execCommand, since);
+  for (const comment of initialComments) observedComments.add(comment.id);
+  if (callbacks.triggerComment) observedComments.delete(callbacks.triggerComment.id);
+  const authority: CommentAuthorityContext = {
+    owner: repoOwner, repo: repoName, runId: state.sessionId,
+    tokenProvider: () => execCommand('gh auth token'), cache: new CommentAuthorityCache(),
+  };
+  let lastDenialNoticeAt = -Infinity;
   let isPaused = false;
   let pollCount = 0;
 
@@ -1197,13 +1229,8 @@ export async function* runMonitoringLoop(
       };
     }
 
-    // Skip polling if paused
-    if (isPaused) {
-      await sleep(config.pollIntervalMs);
-      continue;
-    }
-
     try {
+      if (!isPaused) {
       // 1. Fetch agents from project board
       // Check every poll (5 minutes) to keep data fresh
       const existingNumbers = new Set(state.trackedAgents.map((a) => a.issueNumber));
@@ -1355,16 +1382,32 @@ export async function* runMonitoringLoop(
         }
       }
 
-      // 3. Check for user commands
-      const comments = await fetchIssueComments(
-        state.parentIssueNumber,
-        execCommand
-      );
-
-      const commands = parseUserCommands(comments, lastProcessedCommentId);
-      if (commands.length > 0) {
-        lastProcessedCommentId = Math.max(...commands.map((c) => c.commentId));
       }
+
+      const comments = await fetchMonitoringComments(repoOwner, repoName, state.parentIssueNumber, execCommand, since);
+      const unseenById = new Map<string, CommentEnvelope>();
+      for (const comment of comments) {
+        if (!observedComments.has(comment.id) && Date.parse(comment.createdAt) >= Math.floor(Date.parse(sessionStart) / 1000) * 1000) {
+          unseenById.set(comment.id, comment);
+        }
+      }
+      if (callbacks.triggerComment && !observedComments.has(callbacks.triggerComment.id)) {
+        unseenById.set(callbacks.triggerComment.id, callbacks.triggerComment);
+      }
+      const unseen = [...unseenById.values()];
+      unseen.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+      const commands = await parseUserCommands(unseen, authority, async (comment, reason, metadata) => {
+        log('WARN', 'Monitoring command denied', { runId: state.sessionId, issueNumber: state.parentIssueNumber,
+          commentId: comment.id, authorId: comment.authorId, author: comment.author, purpose: 'monitoring_command',
+          reason, permission: metadata.permission, cacheAgeMs: metadata.cacheAgeMs });
+        if (reason === 'machine_author' || reason === 'invalid_author' || Date.now() - lastDenialNoticeAt < 60_000) return;
+        lastDenialNoticeAt = Date.now();
+        const message = reason === 'permission_unavailable'
+          ? 'Repository write permission could not be verified; retry with a new comment after recovery.'
+          : 'This command was not accepted; repository write permission is required.';
+        try { await postComment(`Comment ${comment.id}: ${message}`); } catch { return; }
+      });
+      for (const comment of unseen) observedComments.add(comment.id);
 
       for (const cmd of commands) {
         log('INFO', `Processing command: ${cmd.command} from ${cmd.author}`);
@@ -1434,7 +1477,7 @@ export async function* runMonitoringLoop(
               }
             }
             // Handle /queryPM command
-            else if (cmd.command.startsWith('/queryPM') && onQueryPM) {
+            else if (cmd.command === '/querypm' && onQueryPM) {
               const query = cmd.rawText.replace(/^\/queryPM\s*/i, '').trim();
               if (query) {
                 log('INFO', `User query: ${query}`);
@@ -1458,6 +1501,7 @@ export async function* runMonitoringLoop(
         }
       }
 
+      if (!isPaused) {
       // 4. Post periodic status update (if there are agents OR project board items)
       const timeSinceLastUpdate = now - new Date(state.lastStatusUpdateAt).getTime();
       if (timeSinceLastUpdate >= config.statusUpdateIntervalMs && (state.trackedAgents.length > 0 || state.projectNumber)) {
@@ -1544,6 +1588,7 @@ export async function* runMonitoringLoop(
         };
       }
 
+      }
       // Reset error counter on successful poll
       state.consecutiveErrors = 0;
 
@@ -1684,7 +1729,7 @@ export async function handleAgentCompletion(
         log('INFO', `Unblocking #${item.issueNumber} (was blocked by #${completedIssueNumber})`);
 
         await execCommand(
-          `gh project item-edit --id "${item.id}" --project-id "${projectId}" --field-id "${blockedByFieldId}" --text "${fieldValue}"`
+          shellCommand('gh', ['project', 'item-edit', '--id', item.id, '--project-id', projectId, '--field-id', blockedByFieldId, '--text', fieldValue])
         );
 
         unblocked.push(item.issueNumber);
@@ -1721,13 +1766,13 @@ export async function handleAgentCompletion(
           log('INFO', `Triggering ${item.assignedAgent} for #${item.issueNumber}`);
 
           await execCommand(
-            `gh issue edit ${item.issueNumber} --repo ${repoOwner}/${context.repoName} --add-label "${agentLabel}"`
+            shellCommand('gh', ['issue', 'edit', String(item.issueNumber), '--repo', `${repoOwner}/${context.repoName}`, '--add-label', agentLabel])
           );
 
           // Update status to In Progress
           if (statusFieldId && inProgressOptionId) {
             await execCommand(
-              `gh project item-edit --id "${item.id}" --project-id "${projectId}" --field-id "${statusFieldId}" --single-select-option-id "${inProgressOptionId}"`
+              shellCommand('gh', ['project', 'item-edit', '--id', item.id, '--project-id', projectId, '--field-id', statusFieldId, '--single-select-option-id', inProgressOptionId])
             );
           }
 
@@ -1895,7 +1940,7 @@ Rules:
     let response = '';
     for await (const event of resilientQuery({
       queryParams: {
-        prompt,
+        prompt: withPmIssueAuthoring(prompt),
         options: {
           model: process.env.ANTHROPIC_MODEL || 'us.anthropic.claude-sonnet-4-20250514-v1:0',
           cwd: process.cwd(),
@@ -2063,7 +2108,7 @@ Rules:
     let response = '';
     for await (const event of resilientQuery({
       queryParams: {
-        prompt,
+        prompt: withPmIssueAuthoring(prompt),
         options: {
           model: process.env.ANTHROPIC_MODEL || 'us.anthropic.claude-sonnet-4-20250514-v1:0',
           cwd: process.cwd(),
@@ -2181,7 +2226,7 @@ Respond directly - no JSON needed. Be helpful and specific.`;
     let response = '';
     for await (const event of resilientQuery({
       queryParams: {
-        prompt,
+        prompt: withPmIssueAuthoring(prompt),
         options: {
           model: process.env.ANTHROPIC_MODEL || 'us.anthropic.claude-sonnet-4-20250514-v1:0',
           cwd: process.cwd(),
@@ -2306,7 +2351,7 @@ Rules:
     let response = '';
     for await (const event of resilientQuery({
       queryParams: {
-        prompt,
+        prompt: withPmIssueAuthoring(prompt),
         options: {
           model: process.env.ANTHROPIC_MODEL || 'us.anthropic.claude-sonnet-4-20250514-v1:0',
           cwd: process.cwd(),

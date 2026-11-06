@@ -224,6 +224,7 @@ class IntakeSession:
     last_response_task_id: str = ""
     repository: str = ""
     requested_issue: str = ""
+    product_id: str = ""
     created_at: int = 0
 
     @property
@@ -361,6 +362,7 @@ def _session_from_item(item: dict[str, Any], *, draft: dict[str, Any] | None = N
         last_response_task_id=str(item.get("last_response_task_id") or ""),
         repository=str(item.get("intake_repository") or ""),
         requested_issue=str(item.get("intake_issue") or ""),
+        product_id=str(item.get("intake_product_id") or ""),
         created_at=_coerce_int(item.get("created_at")),
     )
 

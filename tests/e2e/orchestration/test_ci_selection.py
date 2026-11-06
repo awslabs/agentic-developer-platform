@@ -13,6 +13,10 @@ test would defeat the point of a network-free, dependency-free suite.
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
+import textwrap
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -63,6 +67,19 @@ def live_text() -> str:
     return LIVE_WORKFLOW.read_text(encoding="utf-8")
 
 
+def test_adp_ci_supersedes_only_prior_runs_of_the_same_pull_request():
+    workflow = (WORKFLOWS / "adp-ci.yml").read_text(encoding="utf-8")
+    root_concurrency = workflow.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+    assert "github.event_name == 'pull_request'" in root_concurrency
+    assert "github.event.pull_request.number" in root_concurrency
+    assert "github.run_id" in root_concurrency
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in root_concurrency
+    summary = workflow.split("\n  summary:\n", 1)[1].split("\n  security:\n", 1)[0]
+    assert "if: ${{ !cancelled() }}" in summary
+    assert "- gateway-ci" in summary and "- regression-contracts" in summary
+    assert "regression_report.py aggregate" in summary
+
+
 class TestWorkflowsExist:
     def test_offline_workflow_exists(self):
         assert OFFLINE_WORKFLOW.is_file()
@@ -103,6 +120,76 @@ class TestPullRequestsRunOfflineOnly:
         assert install, "expected a dependency install step"
         for line in install:
             assert "boto3" not in line
+
+
+REFUSAL_CASES = (
+    "test_preflight_checks_product_and_all_three_repositories",
+    "test_refusal_precedes_issue_creation[product-missing-Product is missing or inaccessible]",
+    "test_refusal_precedes_issue_creation[wrong-owner-Product owner identity]",
+    "test_refusal_precedes_issue_creation[unknown-installation-repository connection]",
+    "test_refusal_precedes_issue_creation[unknown-target-repository target identity]",
+    "test_refusal_precedes_issue_creation[link-permission-issues-write permission]",
+    "test_refusal_precedes_issue_creation[link-repository-issues-write access]",
+    "test_refusal_precedes_issue_creation[missing-epic-planning epic issue]",
+    "test_missing_finite_limits_are_config_errors_before_preflight[bounds.max_usd]",
+    "test_missing_finite_limits_are_config_errors_before_preflight[bounds.max_duration_seconds]",
+)
+
+
+@pytest.mark.parametrize(
+    "omitted, skipped",
+    [
+        (None, None),
+        (REFUSAL_CASES[1], None),
+        (None, REFUSAL_CASES[5]),
+        (REFUSAL_CASES[-1], None),
+    ],
+)
+def test_offline_junit_requires_executed_product_refusals(
+    offline_text, tmp_path, omitted, skipped
+):
+    run_step = offline_text.split("- name: Assert the run was not vacuous", 1)[1]
+    script = textwrap.dedent(
+        run_step.split("python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    )
+    assert "tests.e2e.orchestration.run" not in script
+    suite = ET.Element(
+        "testsuite",
+        {
+            "tests": str(len(REFUSAL_CASES) - int(omitted is not None)),
+            "skipped": str(int(skipped is not None)),
+            "failures": "0",
+            "errors": "0",
+        },
+    )
+    for name in REFUSAL_CASES:
+        if name == omitted:
+            continue
+        case = ET.SubElement(
+            suite,
+            "testcase",
+            {
+                "classname": "tests.e2e.orchestration.test_product_epic_preflight",
+                "name": name,
+            },
+        )
+        if name == skipped:
+            ET.SubElement(case, "skipped")
+    results = tmp_path / "test-results"
+    results.mkdir()
+    ET.ElementTree(suite).write(results / "orchestration-harness-junit.xml")
+    outcome = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if omitted or skipped:
+        assert outcome.returncode != 0
+        assert "Offline Product/epic refusal cases not executed" in outcome.stderr
+    else:
+        assert outcome.returncode == 0, outcome.stderr
 
 
 class TestPaidQualificationIsManualOnly:
@@ -241,6 +328,7 @@ class TestInventoryRecoveryAcrossRuns:
         """Dispatching a cleanup with no inventory to act on must be refused."""
         assert "source_run_id:" in live_text
         assert "requires source_run_id" in live_text
+        assert "latest qualification/resume/cleanup attempt" in live_text
 
     def test_the_workflow_downloads_the_originating_runs_artifact(self, live_text):
         assert "download-artifact" in _strip_comments(live_text)
@@ -248,7 +336,7 @@ class TestInventoryRecoveryAcrossRuns:
 
     def test_the_restore_step_is_scoped_to_resume_and_cleanup(self, live_text):
         """A fresh run has nothing to restore and must not try."""
-        block = live_text.split("Restore the originating run's inventory", 1)[1]
+        block = live_text.split("Restore the preceding run's inventory", 1)[1]
         condition = block.split("uses:", 1)[0]
         assert "mode == 'resume'" in condition
         assert "mode == 'cleanup'" in condition
@@ -257,7 +345,7 @@ class TestInventoryRecoveryAcrossRuns:
         assert "--restore-from" in live_text
 
     def test_the_restore_happens_before_the_qualification_runs(self, live_text):
-        restore = live_text.index("Restore the originating run's inventory")
+        restore = live_text.index("Restore the preceding run's inventory")
         run = live_text.index("- name: Run qualification")
         assert restore < run, "the inventory must be in place before the mode executes"
 

@@ -121,7 +121,7 @@ class EngineBootstrapTests(unittest.TestCase):
                         preflight.engine.current_image_digest(account=ACCOUNT, region='us-east-1',
                                                               environment='dev', allow_missing=True)
 
-    def prepare(self, tmp, state, digest, retained=None):
+    def prepare(self, tmp, state, digest, retained=None, live_dispatch='false'):
         root = Path(tmp)
         (root / 'platform.tfvars.json').write_text('{}')
         (root / 'gateway.tfvars.json').write_text(json.dumps(retained or {}))
@@ -134,6 +134,10 @@ class EngineBootstrapTests(unittest.TestCase):
                 return {}
             if service == 'events':
                 return {'State': 'DISABLED'}
+            if service == 'lambda':
+                return {'FunctionArn': f'arn:aws:lambda:us-east-1:{ACCOUNT}:function:adp-dev-orchestration-tick',
+                        'State': 'Active', 'LastUpdateStatus': 'Successful',
+                        'Environment': {'Variables': {'ADP_PRODUCT_STORY_DISPATCH_ENABLED': live_dispatch}}}
             self.fail((service, operation))
 
         with patch.object(preflight, 'aws', side_effect=read), patch.object(preflight, 'check_operator'), \
@@ -147,7 +151,7 @@ class EngineBootstrapTests(unittest.TestCase):
             self.assertTrue(settings['orchestration_tick_schedule_enabled'])
             self.assertTrue(engine.call_args.kwargs['allow_missing'])
             self.assertEqual(json.loads((Path(tmp) / 'engine-before.json').read_text()),
-                             {'missing': True, 'desired_schedule_enabled': True})
+                             {'missing': True, 'desired_schedule_enabled': True, 'product_story_dispatch_enabled': False})
 
     def test_untracked_live_engine_requires_import(self):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(ValueError, 'outside gateway state'):
@@ -167,7 +171,20 @@ class EngineBootstrapTests(unittest.TestCase):
                 self.assertEqual(settings['orchestration_tick_schedule_enabled'], expected)
                 self.assertFalse(engine.call_args.kwargs['allow_missing'])
                 self.assertEqual(json.loads((Path(tmp) / 'engine-before.json').read_text()),
-                                 {'missing': False, 'desired_schedule_enabled': expected})
+                                 {'missing': False, 'desired_schedule_enabled': expected, 'product_story_dispatch_enabled': False})
+
+    def test_product_dispatch_uses_live_flag_over_stale_state_and_preserves_retry_snapshot(self):
+        state = {'resources': [resource('aws_lambda_function', 'tick', 'module.orchestration_tick[0]',
+                                       environment=[{'variables': {'ADP_PRODUCT_STORY_DISPATCH_ENABLED': 'false'}}])],
+                 'outputs': {'release_configuration': {'value': {'orchestration_product_story_dispatch_enabled': False}}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            for _ in range(2):
+                settings, _ = self.prepare(tmp, state, DIGEST, live_dispatch='true')
+                self.assertIs(settings['orchestration_product_story_dispatch_enabled'], True)
+                self.assertIs(json.loads((Path(tmp) / 'engine-before.json').read_text())['product_story_dispatch_enabled'], True)
+            with self.assertRaisesRegex(ValueError, 'changed since the upgrade snapshot'):
+                self.prepare(tmp, state, DIGEST, live_dispatch='false')
+            self.assertIs(json.loads((Path(tmp) / 'engine-before.json').read_text())['product_story_dispatch_enabled'], True)
 
     def test_new_run_recovers_interrupted_hold_but_honors_operator_emergency_stop(self):
         state = {'resources': [resource('aws_lambda_function', 'tick', 'module.orchestration_tick[0]')],
@@ -256,6 +273,44 @@ terraform_update_apply "$MODULE" config.tfvars -var orchestration_tick_upgrade_h
 
 
 class LegacyWorkflowTests(unittest.TestCase):
+    def test_gateway_role_policy_cutover_adds_pass_one_only_when_the_helper_asks(self):
+        """#7944: the helper's phase decides whether an extra saved-plan pass runs; anything else fails closed."""
+        source = (SCRIPTS / 'deploy-all.sh').read_text()
+        start = source.index('gateway_role_policy_cutover() {')
+        function = source[start:source.index('\n}\n', start) + 3]
+        step3 = source[source.index('if deploy_phase_begin gateway-infra; then'):]
+        self.assertIn('gateway_role_policy_cutover "${GATEWAY_ALB_ARGS[@]}"', step3[:step3.index('\nrefresh_credentials')])
+        shell = '''set -euo pipefail
+step() { echo "step $1" >> "$CALLS"; }
+ok() { :; }
+fail() { echo "$*" >&2; exit 1; }
+python3() {
+  [[ " $* " = *"/modules/gateway/scripts/gateway-role-policy-cutover.py --environment dev --region us-east-1 "* ]] || exit 9
+  [[ " $* " = *" --output $UPGRADE_RUN_DIR/gateway-role-policy-cutover.tfvars.json "* ]] || exit 9
+  [ "$HELPER_RC" = 0 ] || return "$HELPER_RC"
+  printf '%s' "$HELPER_PHASE"
+}
+terraform_update_apply() { echo "plan $*" >> "$CALLS"; }
+'''
+        for phase, rc, expected in (('cutover', 0, True), ('retire', 0, True), ('complete', 0, True),
+                                    ('', 0, False), ('bogus', 0, False), ('cutover', 2, False)):
+            with self.subTest(phase=phase, rc=rc), tempfile.TemporaryDirectory() as tmp:
+                calls = Path(tmp) / 'calls'
+                env = dict(os.environ, ROOT_DIR=str(ROOT), ENVIRONMENT='dev', AWS_REGION='us-east-1',
+                           UPGRADE_RUN_DIR=tmp, GATEWAY_UPDATE_VAR_FILE='gateway.json', CALLS=str(calls),
+                           HELPER_PHASE=phase, HELPER_RC=str(rc))
+                result = subprocess.run(['/bin/bash', '-c', shell + function + '\ngateway_role_policy_cutover -var alb=x -var digest=y\n'],
+                                        env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
+                lines = calls.read_text().splitlines() if calls.exists() else []
+                if phase == 'cutover' and rc == 0:
+                    self.assertEqual(lines, ['step Step 3a/11: Gateway service role policy cutover (pass 1: attach consolidated policies, retain inline)',
+                                             f'plan gateway gateway.json -var alb=x -var digest=y -var-file={tmp}/gateway-role-policy-cutover.tfvars.json'])
+                else:
+                    self.assertEqual(lines, [], 'only the cutover phase may run an extra pass')
+                if not expected:
+                    self.assertIn('cutover', result.stderr)
+
     def test_fresh_install_builds_real_image_before_gateway_apply(self):
         source = (SCRIPTS / 'deploy-all.sh').read_text()
         start = source.index('if deploy_phase_begin gateway-infra; then')
@@ -268,6 +323,8 @@ ok() { :; }
 fail() { exit 1; }
 aws() { return 0; }
 gateway_alb_vars() { GATEWAY_ALB_ARGS=(-var internal_alb_arn=cached-alb); }
+tf_adopt_existing() { :; }
+gateway_role_policy_cutover() { :; }
 python3() { :; }
 prepare_gateway_image() {
   echo build >> "$CALLS"
@@ -323,6 +380,8 @@ terraform() { echo init >> "$CALLS"; }
 bash() { :; }
 gateway_alb_vars() { GATEWAY_ALB_ARGS=(); }
 terraform_update_apply() { echo "plan $*" >> "$CALLS"; }
+tf_adopt_existing() { :; }
+gateway_role_policy_cutover() { :; }
 '''
         for discovery, original_missing, build_fail, expected in (
                 ('MISSING', True, False, True), ('MISSING', False, False, False),

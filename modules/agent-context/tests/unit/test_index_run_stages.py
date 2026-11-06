@@ -283,6 +283,49 @@ class TestShouldSkipStage:
         assert "irs.status = 'verified'" in sql
         assert params == ("org/repo", "clone", "sha789")
 
+    @pytest.mark.parametrize("artifact,status,sha,expected", [
+        ("zoekt-shards/org/repo/source_v16.00000.zoekt", "verified", "sha", False),
+        ("zoekt-shards/org/repo/org%2Frepo_v16.00000.zoekt", "verified", "sha", True),
+        ("zoekt-shards/org/repo/orgX2Frepo_v16.00000.zoekt", "verified", "sha", False),
+        ("zoekt-shards/org/repo/org%2Frepo_v16.00000.zoekt", "failed", "sha", False),
+        ("zoekt-shards/org/repo/org%2Frepo_v16.00000.zoekt", "verified", "old", False),
+    ])
+    def test_canonical_artifact_required_before_reusing_verified_stage(self, artifact, status, sha, expected):
+        import sqlite3
+        import db
+
+        database = sqlite3.connect(":memory:")
+        database.executescript("""
+            CREATE TABLE index_runs (id TEXT, commit_sha TEXT);
+            CREATE TABLE index_run_stages
+                (run_id TEXT, repo TEXT, stage TEXT, status TEXT, artifact_ref TEXT);
+        """)
+        database.execute("INSERT INTO index_runs VALUES (?, ?)", ("run", sha))
+        database.execute("INSERT INTO index_run_stages VALUES (?, ?, ?, ?, ?)",
+                         ("run", "org/repo", "zoekt_index", status, artifact))
+
+        class Cursor:
+            def __init__(self):
+                self.cursor = database.cursor()
+
+            def execute(self, sql, params):
+                self.cursor.execute(sql.replace("%s", "?"), params)
+
+            def fetchone(self):
+                return self.cursor.fetchone()
+
+            def close(self):
+                self.cursor.close()
+
+        connection = type("Connection", (), {"cursor": lambda self: Cursor()})()
+        try:
+            assert db.should_skip_stage(
+                connection, "org/repo", "zoekt_index", "sha",
+                artifact_prefix="zoekt-shards/org/repo/org%2Frepo_",
+            ) is expected
+        finally:
+            database.close()
+
 
 # ---------------------------------------------------------------------------
 # complete_index_run tests

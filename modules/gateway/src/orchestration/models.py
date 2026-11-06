@@ -60,7 +60,7 @@ forfeit JSONB; the migration declares the identical variant so the two agree.
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, event, true
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, event, text, true
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -73,18 +73,31 @@ from .state import ActorKind, NodeState
 # Must stay identical to JSON_DOC in alembic/versions/029_orchestration_graph.py.
 JSON_DOC = JSON().with_variant(postgresql.JSONB(), "postgresql")
 
+
+class OrchestrationReadRevision(Base):
+    """Display cache invalidation, maintained transactionally by DB triggers."""
+
+    __tablename__ = "orchestration_read_revisions"
+
+    org_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    flow_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    revision: Mapped[str] = mapped_column(String(36), nullable=False)
+
+
 __all__ = [
     "ActorKind",
     "DecisionKind",
     "NodeKind",
     "NodeState",
     "OrchestrationAcceptedPlan",
+    "OrchestrationTrackerPublication",
     "OrchestrationAction",
     "OrchestrationDecision",
     "OrchestrationEdge",
     "OrchestrationEnvironmentLease",
     "OrchestrationExecution",
     "OrchestrationFlow",
+    "OrchestrationLegacyMigration",
     "OrchestrationNode",
     "OrchestrationAmendmentRequest",
     "OrchestrationPendingAmendment",
@@ -123,6 +136,7 @@ class DecisionKind(StrEnum):
 
     PLAN_ACCEPTED = "plan_accepted"  # A loop proposal was accepted at a gate
     PLAN_AMENDED = "plan_amended"  # A new accepted-plan version superseded one
+    PRODUCT_ATTRIBUTED = "product_attributed"
     GATE_APPROVED = "gate_approved"  # A gate node was approved
     GATE_PRESENTED = "gate_presented"  # Dependencies satisfied; human answer required
     NODE_RESUMED = "node_resumed"
@@ -166,6 +180,7 @@ class DecisionKind(StrEnum):
     # a graph a human can *see* without landing an approval nobody made. `kind` is
     # String(32), so this needs no DDL.
     PLAN_DRAFTED = "plan_drafted"
+    AMENDMENT_REJECTED = "amendment_rejected"
     AGENT_DISPATCHED = "agent_dispatched"  # Committed delegated dispatch receipt, never human approval
     WAVE_MATERIALIZED = "wave_materialized"  # Bound delivery issue references; never an approval
     WAVE_COORDINATOR_DISPATCHED = "wave_coordinator_dispatched"
@@ -288,6 +303,7 @@ class OrchestrationFlow(Base, TenantMixin):
     __table_args__ = (
         Index("uq_orchestration_flows_org_id_id", "org_id", "id", unique=True),
         Index("ix_orchestration_flows_org_id_created_at", "org_id", "created_at"),
+        Index("ix_orchestration_flows_org_archived_created", "org_id", "archived_at", "created_at"),
         # Issue #4898: a flow's slug is the first segment of every node's graph
         # address (`{slug}/{epic}/{wave}/{node}`), and the cost readback groups
         # `usage_logs` by `(org_id, graph_address)`. Two same-slug flows in one
@@ -308,6 +324,10 @@ class OrchestrationFlow(Base, TenantMixin):
     # The originating intent issue (e.g. "4120"). Nullable: a flow may be created
     # before its intent issue exists, and hand-run flows have none.
     intent_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    product_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    origin_ref: Mapped[dict | None] = mapped_column(JSON_DOC, nullable=True)
+    tracker_refs: Mapped[list | None] = mapped_column(JSON_DOC, nullable=True)
 
     # --- The design loop's story (#4885) -----------------------------------
     # Both captured once at registration, and both NULLABLE with NULL meaning
@@ -329,9 +349,29 @@ class OrchestrationFlow(Base, TenantMixin):
     design_history: Mapped[dict | None] = mapped_column(JSON_DOC, nullable=True)
 
     execution_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default=NodeState.PENDING.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
+
+
+class OrchestrationLegacyMigration(Base, TenantMixin):
+    """Audited Product attribution or repository amendment; never accepted JSON."""
+
+    __tablename__ = "orchestration_legacy_migrations"
+    __table_args__ = (Index("uq_orchestration_legacy_migrations_request", "org_id", "flow_id", "request_id", unique=True),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    flow_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_flows.id", ondelete="CASCADE"), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    product_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    node_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("orchestration_nodes.id"), nullable=True)
+    base_plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_decisions.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class OrchestrationNode(Base, TenantMixin):
@@ -371,6 +411,11 @@ class OrchestrationNode(Base, TenantMixin):
     # The GitHub issue this node was materialised as. Nullable: eval and gate
     # nodes frequently have no issue of their own.
     issue_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    repository_identity: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_repository_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    repository_connection: Mapped[dict | None] = mapped_column(JSON_DOC, nullable=True)
+    lineage: Mapped[dict | None] = mapped_column(JSON_DOC, nullable=True)
+    labels: Mapped[dict | None] = mapped_column(JSON_DOC, nullable=True)
     # Attempt counter — a resume/retry (R-O4b) increments it rather than
     # rewriting history.
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1171,6 +1216,7 @@ class OrchestrationEnvironmentLease(Base):
     # The release/artifact revision being deployed. A reference for operators and
     # for #5152's verification; nothing here validates it.
     release_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    publication_pending_digest: Mapped[str | None] = mapped_column(String(71), nullable=True)
 
     # --- The compare-and-set fence against a concurrent writer. Advanced by
     # exactly one per applied write, never reset. Distinct from owner_generation:
@@ -1197,6 +1243,25 @@ class OrchestrationEnvironmentLease(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
+
+
+class OrchestrationTrackerPublication(Base, TenantMixin):
+    __tablename__ = "orchestration_tracker_publications"
+    __table_args__ = (Index("ix_orchestration_tracker_publications_owed", "completed_at", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    flow_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_flows.id", ondelete="CASCADE"), nullable=False)
+    repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    epic_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    repo: Mapped[str] = mapped_column(String(255), nullable=False)
+    installation_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    issue_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    body_region: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    watermark: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class OrchestrationAmendmentRequest(Base, TenantMixin):
@@ -1295,6 +1360,7 @@ class OrchestrationAmendmentRequest(Base, TenantMixin):
     # That is what binds the draft write to this assignment rather than to whoever
     # holds the route's permission. NULL until the envelope is built.
     author_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    authoring_assignment: Mapped[dict | None] = mapped_column(JSON_DOC, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     # When the envelope reached the queue. NULL while the request is still owed.
@@ -1385,15 +1451,13 @@ class OrchestrationPendingAmendment(Base, TenantMixin):
 
     state: Mapped[str] = mapped_column(String(16), nullable=False, default=PendingAmendmentState.PENDING.value)
 
-    # --- Acceptance provenance. Server-written, never author-supplied. ---
-    # The human whose command applied this draft, and the `PLAN_AMENDED` decision
-    # `amend_plan` wrote. Both NULL while the draft is pending, and both remain NULL
-    # on a rejected or superseded draft — a terminal draft that was never applied
-    # must not carry an acceptance actor.
+    # --- Decision provenance. Server-written, never author-supplied. ---
+    # The human who accepted or rejected this draft and the append-only decision row.
+    # Historical column names are retained for schema compatibility; read APIs expose
+    # them as generic decision attribution. Both remain NULL while pending/superseded.
     accepted_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     accepted_by_decision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    # The plan version this draft became. Read back by a repeated accept so the
-    # replay reports the original result rather than re-amending.
+    # The plan version this draft became. NULL for rejection.
     accepted_plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # The draft that displaced this one, when a different amendment landed first.
@@ -1404,3 +1468,69 @@ class OrchestrationPendingAmendment(Base, TenantMixin):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     # When the draft reached a terminal state, whichever one. NULL while pending.
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AmendmentIssueBindingState(StrEnum):
+    """Publication progress: leased reservation, one-shot write intent, observed result."""
+
+    #: Reserved before the provider write boundary. An expired reservation is replaceable;
+    #: its old owner must fail the boundary's compare-and-swap before sending.
+    PENDING = "pending"
+    WRITING = "writing"
+    #: The provider issue is known and recorded. Every later publish reuses it.
+    CREATED = "created"
+
+
+class OrchestrationAmendmentIssueBinding(Base, TenantMixin):
+    """Durable binding from proposed amendment work to the one issue published for it.
+
+    Keyed by `(org_id, repository, proposal_identity)` with a unique index, so the
+    database — not a time window or a provider listing — decides whether an issue for
+    this work already exists. The row is written and committed in `pending` before the
+    provider is asked to create anything. At the external mutation boundary, that claim
+    becomes a non-reassignable `writing` intent. Only an observed attempt marker on the
+    app-owned issue permits completion to `created`, including after an uncertain write.
+    Updates use the same sequence, retaining the issue number for recovery. Two racing
+    publishers cannot both insert, and the `claim_token` compare-and-swap means only the
+    current attempt may enter the write phase or record a result.
+
+    Not referenced by any graph query: an issue binding grants nothing. Acceptance
+    reads it to bind unbound new work deterministically after a human approves.
+    """
+
+    __tablename__ = "orchestration_amendment_issue_bindings"
+    __table_args__ = (
+        Index("uq_orchestration_amendment_issue_bindings_identity", "org_id", "repository", "proposal_identity", unique=True),
+        Index(
+            "uq_orchestration_amendment_issue_bindings_repo_id",
+            "org_id",
+            "provider_repository_id",
+            "proposal_identity",
+            unique=True,
+            postgresql_where=text("provider_repository_id IS NOT NULL"),
+            sqlite_where=text("provider_repository_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    #: Repository full name, lower-cased (`owner/name`). GitHub names are
+    #: case-insensitive, so two spellings must not yield two issues.
+    repository: Mapped[str] = mapped_column(String(255), nullable=False)
+    proposal_identity: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_repository_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    parent_repository_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    parent_issue_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    link_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default=AmendmentIssueBindingState.PENDING.value)
+    #: Who owns the publication attempt, and since when. Only a pending reservation can
+    #: be replaced on expiry; writing requires observation of that exact attempt.
+    claim_token: Mapped[str] = mapped_column(String(36), nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    #: Logical content hash: intended while writing, observed when created. The opaque
+    #: write-attempt marker is excluded; unfinished content is never trusted.
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    issue_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    issue_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

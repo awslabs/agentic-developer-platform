@@ -153,33 +153,20 @@ def body(verified, operation, payload, operation_id=None):
     }
 
 
-def test_http_browser_through_task_host_with_artifacts_and_cleanup(setup, monkeypatch):
-    from lib.task_run_client import TaskRunClient
-
+def test_http_browser_service_with_artifacts_and_cleanup(setup):
     current, calls, _consumer, consume, invoke = setup
-    host = object.__new__(TaskRunClient)
-    host._tool_routes = {
-        "cyber." + name: "https://tools.example/dev/tools/browser"
-        for name in (
-            "browser_start",
-            "browser_step",
-            "browser_inspect",
-            "browser_close",
-            "browser_cleanup",
-        )
-    }
-    host._publication_tool = None
-    host._validation_tool = None
-    host._workspace_tools = None
-    host._stopping = False
-    host._deadline = time.monotonic() + 200
-    host._clock = time.monotonic
-    host._post = lambda action, payload, **kwargs: invoke(payload)[1]
-    monkeypatch.setattr("lib.task_run_client.time.sleep", lambda seconds: consume())
-    start = host.tool(
-        "cyber.browser_start",
-        body(current[0], "browser_start", {"url": "https://example.com"}),
-    )
+
+    def completed(operation, payload):
+        request = body(current[0], operation, payload)
+        status, receipt = invoke(request)
+        assert status == 200
+        if receipt["operation_status"] == "pending":
+            consume()
+            status, receipt = invoke(request)
+        assert status == 200 and receipt["operation_status"] == "confirmed"
+        return receipt
+
+    start = completed("browser_start", {"url": "https://example.com"})
     assert start["operation_status"] == "confirmed"
     assert "private-provider-token" not in str(start)
     sid = start["result"]["session_id"]
@@ -192,30 +179,18 @@ def test_http_browser_through_task_host_with_artifacts_and_cleanup(setup, monkey
     )
     assert len(ownership) == 1 and ownership[0]["session_id"] == sid
     assert ownership[0]["expires_at"] - ownership[0]["created"] == 720
-    screenshot = host.tool(
-        "cyber.browser_inspect",
-        body(
-            current[0], "browser_inspect", {"session_id": sid, "section": "screenshot"}
-        ),
+    screenshot = completed(
+        "browser_inspect", {"session_id": sid, "section": "screenshot"}
     )
     assert screenshot["result"]["image"]["media_type"] == "image/jpeg"
-    step = host.tool(
-        "cyber.browser_step",
-        body(
-            current[0],
-            "browser_step",
-            {"session_id": sid, "view_id": "view1", "action": "screenshot"},
-        ),
+    step = completed(
+        "browser_step",
+        {"session_id": sid, "view_id": "view1", "action": "screenshot"},
     )
     assert step["result"]["view_id"] == "view2"
-    inspected = host.tool(
-        "cyber.browser_inspect",
-        body(current[0], "browser_inspect", {"session_id": sid, "section": "dom"}),
-    )
+    inspected = completed("browser_inspect", {"session_id": sid, "section": "dom"})
     assert "<p>ok</p>" not in inspected["result"].get("text", "")
-    closed = host.tool(
-        "cyber.browser_close", body(current[0], "browser_close", {"session_id": sid})
-    )
+    closed = completed("browser_close", {"session_id": sid})
     assert closed["result"]["cleanup_status"] == "stopped"
     assert [operation for operation, _ in calls] == ["start", "step", "close"]
     from cyber_tools.task_report import render_report
@@ -598,25 +573,39 @@ def test_queued_claim_recovers_a_failed_queue_publish_without_replaying_browser(
     assert [name for name, _ in calls] == ["start"]
 
 
-def test_host_polls_owned_cleanup_after_task_deadline_and_cancellation(
-    setup, monkeypatch
-):
-    from lib.task_run_client import TaskRunClient
-
+def test_service_owned_cleanup_after_task_deadline_and_cancellation(setup):
     current, calls, consumer, consume, invoke = setup
-    host = object.__new__(TaskRunClient)
-    host._tool_routes = {
-        "cyber.browser_cleanup": "https://tools.example/dev/tools/browser"
-    }
-    host._publication_tool = host._validation_tool = host._workspace_tools = None
-    host._stopping = True
-    host._deadline = time.monotonic() - 1
-    host._clock = time.monotonic
-    host._post = lambda action, payload, **kwargs: invoke(payload)[1]
-    monkeypatch.setattr("lib.task_run_client.time.sleep", lambda seconds: consume())
-    assert (
-        host.tool("cyber.browser_cleanup", body(current[0], "cancel_jobs", {}))[
-            "operation_status"
-        ]
-        == "confirmed"
+    start = body(current[0], "browser_start", {"url": "https://example.com"})
+    assert invoke(start)[0] == 200
+    consume()
+    assert invoke(start)[1]["operation_status"] == "confirmed"
+    current[0].task["state"] = "cancelled"
+    current[0].task["deadline_at"] = "2000-01-01T00:00:00Z"
+    cleanup = body(current[0], "cancel_jobs", {})
+    status, receipt = invoke(cleanup)
+    assert status == 200 and receipt["operation_status"] == "pending"
+    consume()
+    status, receipt = invoke(cleanup)
+    assert status == 200 and receipt["operation_status"] == "confirmed"
+    assert receipt["result"] == {"status": "confirmed", "pending_jobs": []}
+    assert [operation for operation, _ in calls] == ["start", "close"]
+
+
+@pytest.mark.parametrize(
+    "operation", ["browser_start", "browser_step", "browser_inspect", "browser_close", "browser_cleanup"]
+)
+def test_task_host_refuses_retired_direct_browser_routes(monkeypatch, operation):
+    from lib.task_run_client import TaskRunClient, TaskRunClientError
+
+    monkeypatch.setenv("ADP_AGENT_CONTROL_ENDPOINT", "https://api.example/internal/v1/agent")
+    monkeypatch.setenv(
+        "ADP_TASK_TOOL_ROUTES",
+        json.dumps({"cyber." + operation: "https://tools.example/dev/tools/browser"}),
     )
+    host = TaskRunClient()
+    monkeypatch.setattr(host, "_post", lambda *args, **kwargs: pytest.fail("retired route invoked"))
+    with pytest.raises(TaskRunClientError, match="Gateway tool call unavailable"):
+        host.tool(
+            "cyber." + operation,
+            body(authorization(), "cancel_jobs" if operation == "browser_cleanup" else operation, {}),
+        )

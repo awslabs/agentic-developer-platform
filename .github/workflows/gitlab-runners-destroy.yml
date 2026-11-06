@@ -1,0 +1,101 @@
+name: GitLab Runners Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: 'Exact reviewed main commit (40 hex characters)'
+        required: true
+        type: string
+      account_id:
+        description: 'Exact target account (12 digits)'
+        required: true
+        type: string
+      environment:
+        description: 'Only dev is currently supported'
+        required: true
+        default: dev
+        type: string
+      confirm:
+        description: 'Type gitlab-runners to confirm drained and revoked runners'
+        required: true
+        type: string
+
+concurrency:
+  group: gitlab-runners-${{ inputs.account_id }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  destroy:
+    if: github.ref == 'refs/heads/main' && inputs.environment == 'dev' && inputs.confirm == 'gitlab-runners'
+    runs-on: arc-runner-org
+    environment: adp-deploy-dev
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      EXPECTED_ROLE: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      EXPECTED_ACCOUNT: ${{ inputs.account_id }}
+      EXPECTED_BUCKET: ${{ vars.GITLAB_RUNNERS_STATE_BUCKET }}
+      AWS_REGION: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+    steps:
+      - name: Bind dispatch to the reviewed source before AWS authentication
+        env:
+          APPROVED_REVISION: ${{ inputs.source_revision }}
+          DISPATCH_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Reviewed source revision missing'; exit 1; }
+          test "$DISPATCH_REVISION" = "$APPROVED_REVISION" || { echo '::error::Dispatch source differs from the reviewed revision'; exit 1; }
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Confirm exact account and role
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_ACCOUNT" = "${EXPECTED_ROLE:13:12}"
+          aws sts get-caller-identity --output json | python3 modules/source-control/gitlab/runners/scripts/deployment_guard.py identity --expected-role "$EXPECTED_ROLE"
+      - name: Load reviewed private backend and runner variables
+        env:
+          BACKEND: ${{ secrets.GITLAB_RUNNERS_BACKEND_TFVARS }}
+          VARIABLES: ${{ secrets.GITLAB_RUNNERS_TFVARS }}
+        run: |
+          set -euo pipefail
+          test -n "$BACKEND" && test -n "$VARIABLES"
+          for contents in "$BACKEND" "$VARIABLES"; do
+            while IFS= read -r line; do
+              if [ -n "$line" ]; then printf '::add-mask::%s\n' "$line"; fi
+            done <<< "$contents"
+          done
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/runners-backend.tfvars" "$RUNNER_TEMP/runners.tfvars"' ERR
+          printf '%s' "$BACKEND" > "$RUNNER_TEMP/runners-backend.tfvars"
+          printf '%s' "$VARIABLES" > "$RUNNER_TEMP/runners.tfvars"
+      - name: Plan and destroy only the checked owned state
+        working-directory: modules/source-control/gitlab/runners
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$RUNNER_TEMP/runners-backend.tfvars" "$RUNNER_TEMP/runners.tfvars" "$RUNNER_TEMP/runners.tfplan" "$RUNNER_TEMP/runners-plan.json"' EXIT
+          private_step() {
+            "$@" > /dev/null 2>&1 || {
+              echo '::error::Private runner step failed; inspect protected state and inputs without printing them'
+              return 1
+            }
+          }
+          private_step python3 ../scripts/runner-stack-preflight.py --region "$AWS_REGION" --bucket "$EXPECTED_BUCKET"
+          private_step terraform init -input=false -backend-config="$RUNNER_TEMP/runners-backend.tfvars" -reconfigure
+          private_step python3 scripts/deployment_guard.py backend --expected-bucket "$EXPECTED_BUCKET" < .terraform/terraform.tfstate
+          private_step terraform plan -destroy -input=false -lock-timeout=5m -var-file="$RUNNER_TEMP/runners.tfvars" -out="$RUNNER_TEMP/runners.tfplan" -no-color
+          terraform show -json "$RUNNER_TEMP/runners.tfplan" > "$RUNNER_TEMP/runners-plan.json" 2>/dev/null || {
+            echo '::error::Private runner step failed; inspect protected state and inputs without printing them'
+            exit 1
+          }
+          private_step python3 ../scripts/runner-stack-plan-guard.py destroy --account "$EXPECTED_ACCOUNT" --region "$AWS_REGION" --bucket "$EXPECTED_BUCKET" < "$RUNNER_TEMP/runners-plan.json"
+          private_step terraform apply -input=false -no-color -auto-approve "$RUNNER_TEMP/runners.tfplan"

@@ -77,6 +77,50 @@ locals {
   state_bucket         = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
   layer_builder_script = "${path.module}/../../../platform/scripts/build-lambda-layers.sh"
 }
+data "aws_security_group" "l5_endpoints" {
+  count  = var.enable_l5_security ? 1 : 0
+  vpc_id = local.vpc_id
+  filter {
+    name   = "tag:Name"
+    values = ["adp-${var.environment}-sg-vpce"]
+  }
+}
+
+# Legacy existing-state compatibility only. New installations use the independent L5 roots.
+module "l5_security" {
+  count                      = var.enable_l5_security ? 1 : 0
+  source                     = "../../L5-services/infra/modules/worker-runtime"
+  environment                = var.environment
+  vpc_id                     = local.vpc_id
+  private_subnet_ids         = local.private_subnets
+  db_security_group_id       = local.rds_security_group_id
+  endpoint_security_group_id = data.aws_security_group.l5_endpoints[0].id
+  db_port                    = module.rds.db_instance_port
+  permissions_boundary_arn   = var.automation_permissions_boundary_arn
+  worker_artifact_bucket     = var.l5_worker_artifact_bucket
+  worker_artifact_key        = var.l5_worker_artifact_key
+  worker_artifact_version    = var.l5_worker_artifact_version
+  worker_artifact_sha256     = var.l5_worker_artifact_sha256
+  worker_factory             = var.l5_worker_factory != "" ? var.l5_worker_factory : "l5_services.runtime:factory"
+  gateway_api_arn            = "arn:${data.aws_partition.current.partition}:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${module.api_gateway[0].api_gateway_id}/*/*/internal/*"
+  rds_connect_arn            = "arn:${data.aws_partition.current.partition}:rds-db:${var.aws_region}:${data.aws_caller_identity.current.account_id}:dbuser:${module.rds.db_instance_resource_id}/${var.rds_username}"
+  worker_environment = {
+    L5_GATEWAY_URL     = module.api_gateway[0].api_gateway_invoke_url
+    L5_RDS_CONNECT_ARN = "arn:${data.aws_partition.current.partition}:rds-db:${var.aws_region}:${data.aws_caller_identity.current.account_id}:dbuser:${module.rds.db_instance_resource_id}/${var.rds_username}"
+    L5_RDS_HOST        = module.rds.db_instance_address
+    L5_RDS_PORT        = tostring(module.rds.db_instance_port)
+    L5_RDS_DATABASE    = var.rds_db_name
+    L5_RDS_USER        = var.rds_username
+    L5_ARCHIVE_BUCKET  = var.l5_worker_artifact_bucket
+  }
+}
+
+resource "aws_ssm_parameter" "l5_work_queue_url" {
+  count = var.enable_l5_security ? 1 : 0
+  name  = "/adp/${var.environment}/gateway/l5-work-queue-url"
+  type  = "String"
+  value = module.l5_security[0].work_queue_url
+}
 
 # =============================================================================
 # Lambda layer builds (Issue #1038 / #408) — auto-build so NO deploy path fails
@@ -164,433 +208,14 @@ provider "helm" {
 }
 
 # =============================================================================
-# Gateway-specific IAM Policy Extensions (Option B)
+# Gateway-specific IAM Policy Extensions
 # =============================================================================
 # The platform's EKS module creates the base IRSA role with Bedrock, STS,
-# CloudWatch Logs, and DynamoDB permissions. Here we attach incremental
-# policies that depend on gateway-specific resources (Cognito pool ID,
-# RDS IAM auth, ElastiCache IAM auth, chat logs bucket, etc.).
+# CloudWatch Logs, and DynamoDB permissions. Every grant THIS module adds to that
+# role lives in gateway-role-policies.tf as one of three consolidated customer
+# managed policies (identity / data / agents): the role's inline-policy budget is
+# shared with platform/infra and the agent-factory stacks and was exhausted.
 # =============================================================================
-
-# RDS IAM Authentication — attach to the platform IRSA role
-resource "aws_iam_role_policy" "gateway_rds_iam_auth" {
-  count = var.enable_rds_iam_auth ? 1 : 0
-  name  = "${local.name_prefix}-policy-gateway-rds-iam-auth"
-  role  = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["rds-db:connect"]
-        Resource = "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:*/${var.rds_username}"
-      }
-    ]
-  })
-}
-
-# ElastiCache IAM Authentication
-resource "aws_iam_role_policy" "gateway_elasticache_iam_auth" {
-  count = var.enable_redis && var.enable_elasticache_iam_auth ? 1 : 0
-  name  = "${local.name_prefix}-policy-gateway-elasticache-iam-auth"
-  role  = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = ["elasticache:Connect"]
-        Resource = [
-          "arn:aws:elasticache:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:replicationgroup:${module.redis[0].replication_group_id}",
-          "arn:aws:elasticache:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:user:${module.redis[0].redis_iam_user_id}"
-        ]
-      }
-    ]
-  })
-
-  depends_on = [module.redis]
-}
-
-# Cognito permissions (scoped to the gateway's Cognito pool).
-# Keep the existing read policy inline, but attach the lifecycle permissions as
-# a managed policy. The gateway role has many inline policies and IAM enforces
-# a 10,240-byte aggregate limit on them. Attach the managed policy before
-# shrinking the inline policy during an upgrade.
-# Read: onboarding identity lookup, admin group/user listing.
-# Write (AdminUpdateUserAttributes): onboarding approval syncs the approved
-# user's role/org onto their Cognito custom: attributes so the pre-token Lambda
-# emits them in the access token (see admin/onboarding/approval.py). Without
-# this the approved user logs in with an empty role/org → broken SPA nav +
-# dashboard. Scoped to this pool only.
-resource "aws_iam_role_policy" "gateway_cognito_read" {
-  name = "${local.name_prefix}-policy-gateway-cognito-read"
-  role = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "CognitoReadUsers"
-        Effect = "Allow"
-        Action = [
-          "cognito-idp:ListUsers",
-          "cognito-idp:ListGroups",
-          "cognito-idp:ListUsersInGroup",
-          "cognito-idp:AdminGetUser",
-          "cognito-idp:AdminUpdateUserAttributes"
-        ]
-        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
-      }
-    ]
-  })
-
-  depends_on = [module.cognito, aws_iam_role_policy_attachment.gateway_cognito_lifecycle]
-}
-
-resource "aws_iam_policy" "gateway_cognito_lifecycle" {
-  name        = "${local.name_prefix}-policy-gateway-cognito-lifecycle"
-  description = "Gateway identity, machine client and CLI login lifecycle in its Cognito pool"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        # Native identity lifecycle (#5010). Keep every write scoped to the
-        # gateway pool; GetGroup is needed for idempotent CreateGroup retries.
-        Sid    = "CognitoIdentityLifecycle"
-        Effect = "Allow"
-        Action = [
-          "cognito-idp:AdminCreateUser",
-          "cognito-idp:AdminDeleteUser",
-          "cognito-idp:AdminAddUserToGroup",
-          "cognito-idp:AdminRemoveUserFromGroup",
-          "cognito-idp:AdminListGroupsForUser",
-          "cognito-idp:CreateGroup",
-          "cognito-idp:GetGroup",
-          "cognito-idp:DeleteGroup"
-        ]
-        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
-      },
-      {
-        # Authorized machine-agent lifecycle (#5624). Cognito client creation,
-        # protected credential delivery and terminal retirement all use this
-        # existing gateway pool. This is static gateway authority, not worker
-        # or per-task permission, and grants no client update/secret rotation.
-        Sid    = "CognitoMachineClientLifecycle"
-        Effect = "Allow"
-        Action = [
-          "cognito-idp:CreateUserPoolClient",
-          "cognito-idp:DescribeUserPoolClient",
-          "cognito-idp:DeleteUserPoolClient"
-        ]
-        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
-      },
-      {
-        # Web CLI login (/auth/cli): mints tokens on the CLI app client the
-        # same way the github-auth-broker does — fresh random permanent
-        # password + admin auth. Only invoked after the signed-in browser
-        # user approves, and only for broker-provisioned GitHub_* users
-        # (who never hold a real password). Scoped to this pool only.
-        Sid    = "CognitoCliLoginMint"
-        Effect = "Allow"
-        Action = [
-          "cognito-idp:AdminSetUserPassword",
-          "cognito-idp:AdminInitiateAuth",
-          "cognito-idp:AdminRespondToAuthChallenge"
-        ]
-        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
-      }
-    ]
-  })
-
-  depends_on = [module.cognito]
-}
-
-resource "aws_iam_role_policy_attachment" "gateway_cognito_lifecycle" {
-  role       = local.gateway_service_irsa_role_name
-  policy_arn = aws_iam_policy.gateway_cognito_lifecycle.arn
-}
-
-# CFN template read permissions (issue #562)
-# The gateway pre-signs an S3 GET URL for the CloudFormation template YAML;
-# AWS Console requires templateURL to be an S3 host, so we host the template
-# in the existing frontend bucket and let the gateway sign a short-lived URL.
-resource "aws_iam_role_policy" "gateway_cfn_template_read" {
-  name = "${local.name_prefix}-policy-gateway-cfn-template-read"
-  role = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "CfnTemplateGet"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = "${module.frontend_s3.bucket_arn}/cfn-templates/*"
-      },
-      {
-        # The "Add AWS account" flow pre-signs a GET for the CFN template; the
-        # SDK/console fetch path also performs s3:ListBucket on the bucket (a
-        # bucket-level action, so it's scoped by prefix here, not the object
-        # ARN). Without it the flow fails: "not authorized to perform
-        # s3:ListBucket on resource arn:aws:s3:::<frontend-bucket>".
-        Sid      = "CfnTemplateList"
-        Effect   = "Allow"
-        Action   = ["s3:ListBucket"]
-        Resource = module.frontend_s3.bucket_arn
-        Condition = {
-          StringLike = {
-            "s3:prefix" = ["cfn-templates/*"]
-          }
-        }
-      }
-    ]
-  })
-
-  depends_on = [module.frontend_s3]
-}
-
-# S3 chat logs write permissions
-resource "aws_iam_role_policy" "gateway_chat_logs_s3" {
-  count = var.enable_chat_logging ? 1 : 0
-  name  = "${local.name_prefix}-policy-gateway-chat-logs-s3"
-  role  = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "ChatLogsS3Write"
-        Effect   = "Allow"
-        Action   = ["s3:PutObject"]
-        Resource = "${module.s3_chat_logs[0].bucket_arn}/*"
-      },
-      {
-        Sid      = "ChatLogsS3BucketAccess"
-        Effect   = "Allow"
-        Action   = ["s3:GetBucketLocation"]
-        Resource = module.s3_chat_logs[0].bucket_arn
-      }
-    ]
-  })
-
-  depends_on = [module.s3_chat_logs]
-}
-
-# Agent run-logs transcripts — read-only (Issue #3069 / #3105)
-# The transcript viewer endpoint fetches markdown transcripts from the
-# agent-run-logs bucket. GetObject only — no List, no Put. Scoped to
-# this account's bucket by convention (adp-<env>-agent-run-logs-<account>).
-resource "aws_iam_role_policy" "gateway_run_logs_read" {
-  name = "${local.name_prefix}-policy-gateway-run-logs-read"
-  role = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "AgentRunLogsRead"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::adp-${var.environment}-agent-run-logs-${data.aws_caller_identity.current.account_id}/*"
-      }
-    ]
-  })
-}
-
-# Comprehend PII detection permissions
-resource "aws_iam_role_policy" "gateway_comprehend_pii" {
-  count = var.enable_chat_logging && var.chat_logging_scrub_level == "standard" ? 1 : 0
-  name  = "${local.name_prefix}-policy-gateway-comprehend-pii"
-  role  = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "ComprehendPiiDetection"
-        Effect   = "Allow"
-        Action   = ["comprehend:DetectPiiEntities"]
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-# Bedrock InvokeModel permissions for the bedrock-mantle / OpenAI passthrough
-# (Issue #2709). The mantle passthrough route (POST /openai/v1/responses) signs
-# upstream requests with SigV4 using the gateway pod's OWN IRSA credentials —
-# unlike the Claude proxy path, which assumes a cross-account pool role.
-#
-# The route now targets AWS Bedrock's OpenAI-compatible endpoint on
-# bedrock-runtime.<region>.amazonaws.com (BG_MANTLE_BASE_URL), which authorizes
-# against the native bedrock:InvokeModel* actions on the inference profile and
-# its underlying foundation model — covered by the "MantleBedrockInvoke"
-# statement below (Resource "*"). No IAM change was needed for that migration.
-#
-# The earlier preview host bedrock-mantle.<region>.api.aws is its OWN service
-# (prefix "bedrock-mantle:") and authorized against bedrock-mantle:CreateInference
-# on the mantle project resource — NOT bedrock:InvokeModel*. Spike #2703 missed
-# this because it tested from a role with AdministratorAccess attached, which
-# masked the real required action; the gateway pod's own role got 401
-# access_denied until this grant was added (Issue #2817). The
-# "MantleCreateInference" statement below is now vestigial (the route no longer
-# calls that host) but is retained harmlessly for rollback to the preview host.
-resource "aws_iam_role_policy" "gateway_mantle_bedrock_invoke" {
-  count = var.enable_mantle_passthrough ? 1 : 0
-  name  = "${local.name_prefix}-policy-gateway-mantle-bedrock-invoke"
-  role  = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "MantleBedrockInvoke"
-        Effect = "Allow"
-        Action = [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
-        ]
-        Resource = "*"
-      },
-      {
-        Sid    = "MantleCreateInference"
-        Effect = "Allow"
-        Action = [
-          "bedrock-mantle:CreateInference"
-        ]
-        Resource = "arn:aws:bedrock-mantle:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:project/default"
-      }
-    ]
-  })
-}
-
-# X-Ray Tracing permissions
-resource "aws_iam_role_policy" "gateway_xray_tracing" {
-  count = var.enable_xray_tracing ? 1 : 0
-  name  = "${local.name_prefix}-policy-gateway-xray-tracing"
-  role  = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "xray:PutTraceSegments",
-          "xray:PutTelemetryRecords",
-          "xray:GetSamplingRules",
-          "xray:GetSamplingTargets"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-# Secrets Manager read access for agent Cognito credentials (Issue #33)
-# The gateway (and E2E tests running in-cluster) need to read the agent
-# client_credentials secret to obtain M2M tokens.
-resource "aws_iam_role_policy" "gateway_secretsmanager_read" {
-  name = "${local.name_prefix}-policy-gateway-secretsmanager-read"
-  role = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "SecretsManagerReadAgentCreds"
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret"
-        ]
-        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:bedrockgw-*"
-      }
-    ]
-  })
-
-  depends_on = [module.cognito]
-}
-
-# Vault credentials — full CRUD across all 4 ownership scopes.
-# The gateway is the sole writer/reader of user-vault secrets; agent pods
-# have no direct Secrets Manager access and must route through
-# /internal/v1/proxy-request (per docs/user-identity-and-credentials-design.md).
-#
-# Namespaces (issue #440 scope relaxation):
-#   adp/users/<cognito_sub>/*           — user-owned
-#   adp/teams/<team_id>/*               — team-owned
-#   adp/orgs/<org_id>/*                 — tenant-owned
-#   adp/domain-apps/<app>/<org_id>/*    — domain-app, per-tenant install
-resource "aws_iam_role_policy" "gateway_vault_secrets" {
-  name = "${local.name_prefix}-policy-gateway-vault-secrets"
-  role = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "VaultSecretsCRUD"
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:CreateSecret",
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:PutSecretValue",
-          "secretsmanager:UpdateSecret",
-          "secretsmanager:DescribeSecret",
-          "secretsmanager:DeleteSecret",
-          "secretsmanager:TagResource",
-          "secretsmanager:UntagResource"
-        ]
-        Resource = [
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/users/*",
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/teams/*",
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/orgs/*",
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*",
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/github-app/*",
-          # Issue #3473: per-tenant GitHub App credentials seeded by
-          # connections/tenant_secret.py at adp/<env>/tenants/<org_id>/github-app.
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/tenants/*/github-app*",
-          # Issue #2708: the register flow writes the broker's OAuth client_id/
-          # secret here so "Sign in with GitHub" works right after registration,
-          # and get_app_status reads it to report login_enabled. Narrow to this
-          # exact secret family — NOT adp/*/cognito/*.
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/cognito/github-oauth-credentials*",
-          # Issue #2824: the register flow writes the manifest-conversion
-          # webhook_secret here so webhooks from a UI-registered App pass HMAC
-          # validation in the webhook-ingress Lambda. Terraform seeds this secret
-          # with a placeholder and never updates it. Narrow to this exact secret.
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/webhook-ingress/github-webhook-secret*",
-          # Issue #3529: The gateway resolver needs to read ops-App credentials
-          # (gh-app-ops-id / gh-app-ops-key) so it resolves installation_ids
-          # using the SAME App the ingestion worker mints tokens with. Without
-          # this pattern, GetSecretValue returns AccessDeniedException.
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/gh-app-ops-*"
-        ]
-      },
-      {
-        # #5634: staged supplied-key activation moves only this deployment's
-        # GitHub App key version. Never grant version-stage writes to the vault.
-        Sid      = "GitHubAppKeyActivation"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:UpdateSecretVersionStage"]
-        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/${var.environment}/github-app/adp-agent-platform-key-??????"
-      },
-      {
-        # ListSecrets is account-wide by necessity (no resource-level scoping).
-        # The gateway uses it to enumerate its own vault inventory (e.g. for
-        # the orphan sweeper, admin listings, and per-user quota checks).
-        Sid      = "VaultSecretsList"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:ListSecrets"]
-        Resource = "*"
-      }
-    ]
-  })
-}
 
 # Issue #2652: The github-app secrets (adp/<env>/github-app/*) are encrypted
 # with the webhook-ingress CMK (alias/adp-<env>-webhook-secrets). Without
@@ -607,46 +232,6 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
 # The grant is now unconditional — no more enable_webhook_secrets_kms_grant flag.
 data "aws_kms_alias" "webhook_secrets" {
   name = "alias/adp-${var.environment}-webhook-secrets"
-}
-
-resource "aws_iam_role_policy" "gateway_webhook_secrets_kms" {
-  name = "${local.name_prefix}-policy-gateway-webhook-secrets-kms"
-  role = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "WebhookSecretsKMSReadWrite"
-        Effect = "Allow"
-        Action = [
-          "kms:Decrypt",
-          "kms:DescribeKey",
-          "kms:Encrypt",
-          "kms:GenerateDataKey*"
-        ]
-        Resource = [data.aws_kms_alias.webhook_secrets.target_key_arn]
-      }
-    ]
-  })
-}
-
-# Cross-account Bedrock pool assume role (if pool accounts configured)
-resource "aws_iam_role_policy" "gateway_cross_account" {
-  count = length(var.pool_account_arns) > 0 ? 1 : 0
-  name  = "${local.name_prefix}-policy-gateway-cross-account"
-  role  = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["sts:AssumeRole"]
-        Resource = [for acct in var.pool_account_arns : "arn:aws:iam::${acct}:role/*BedrockGateway-Pool*"]
-      }
-    ]
-  })
 }
 
 # =============================================================================
@@ -861,7 +446,8 @@ locals {
 }
 
 module "cloudfront" {
-  source = "./modules/cloudfront"
+  client_provenance_secret = var.enable_api_gateway ? random_password.edge_provenance[0].result : ""
+  source                   = "./modules/cloudfront"
 
   environment                    = var.environment
   name_prefix                    = local.name_prefix
@@ -1213,7 +799,6 @@ module "orchestration_tick" {
   # ARN/URL variables rather than by a resource address.
   agent_submit_queue_arn = var.orchestration_agent_authority_enabled || try(local.worker_runtime_wiring.shared_run_reporting_enabled, false) ? local.worker_queue_arn : var.orchestration_dispatch_queue_arn
   agent_submit_queue_url = var.orchestration_agent_authority_enabled || try(local.worker_runtime_wiring.shared_run_reporting_enabled, false) ? local.worker_queue_url : var.orchestration_dispatch_queue_url
-  dispatch_repo          = var.orchestration_dispatch_repo
   dispatch_max_per_tick  = var.orchestration_dispatch_max_per_tick
 
   # Issue #4527: the GitHub engine-command bridge. The webhook Lambda marks an
@@ -1226,12 +811,18 @@ module "orchestration_tick" {
   # nothing and reports `commands_enabled=false`.
   engine_enabled                     = var.orchestration_engine_enabled
   agent_authority_enabled            = var.orchestration_agent_authority_enabled
+  product_story_dispatch_enabled     = var.orchestration_product_story_dispatch_enabled
+  engine_operations_executor_enabled = try(local.worker_runtime_wiring.engine_operations_executor_enabled, false)
   shared_run_reporting_enabled       = try(local.worker_runtime_wiring.shared_run_reporting_enabled, false)
   shared_worker_continuation_enabled = try(local.worker_runtime_wiring.shared_worker_continuation_enabled, false)
   shared_worker_role_arn             = try(local.worker_runtime_wiring.shared_worker_role_arn, "")
   run_report_key_parameter           = try(local.worker_runtime_wiring.run_report_key_parameter, "")
-  persona_model_mapping_enabled      = var.persona_model_mapping_enabled
-  agent_authority_prepared           = var.orchestration_agent_authority_prepared && local.worker_events_table != "" && local.worker_events_key != ""
+  # Match the existing gateway/worker run-log bucket naming contract. The tick
+  # revalidates signed review documents before it accepts a completed PR merge.
+  agent_run_logs_bucket_name = var.orchestration_agent_authority_enabled || try(local.worker_runtime_wiring.shared_run_reporting_enabled, false) ? "adp-${var.environment}-agent-run-logs-${data.aws_caller_identity.current.account_id}" : ""
+
+  persona_model_mapping_enabled = var.persona_model_mapping_enabled
+  agent_authority_prepared      = var.orchestration_agent_authority_prepared && local.worker_events_table != "" && local.worker_events_key != ""
   agent_authority_resources = {
     webhook_events_table_name  = local.worker_events_table
     webhook_events_kms_key_arn = local.worker_events_key
@@ -1271,6 +862,7 @@ module "orchestration_tick" {
 # =============================================================================
 
 module "api_gateway" {
+  edge_provenance_secret              = random_password.edge_provenance[0].result
   automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
   count                               = var.enable_api_gateway ? 1 : 0
   source                              = "./modules/api-gateway"
@@ -1557,6 +1149,11 @@ resource "aws_ssm_parameter" "cognito_user_pool_id" {
   value       = module.cognito.cognito_user_pool_id
 
   tags = local.common_tags
+
+  # Explicit so a targeted plan of this parameter evaluates the Cognito module's
+  # inputs, including the create_test_users operator boundary that
+  # tests/test_users.tftest.hcl pins (it targets this resource; #7944).
+  depends_on = [module.cognito]
 }
 
 resource "aws_ssm_parameter" "cognito_client_id" {
@@ -1803,73 +1400,4 @@ module "github_auth_broker" {
   # OpenAPI body. The broker module only creates the Lambda + IAM.
 
   depends_on = [module.cognito, module.cloudfront]
-}
-
-# IAM policy for Gateway IRSA role to access identity-index table
-resource "aws_iam_role_policy" "gateway_identity_index" {
-  name = "${local.name_prefix}-policy-gateway-identity-index"
-  role = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "IdentityIndexReadWrite"
-        Effect = "Allow"
-        Action = [
-          "dynamodb:ConditionCheckItem",
-          "dynamodb:BatchWriteItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:Query",
-          "dynamodb:UpdateItem"
-        ]
-        Resource = [
-          aws_dynamodb_table.identity_index.arn
-        ]
-      },
-      {
-        Sid      = "AgentClientRegistryRead"
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
-        Resource = [module.cognito.agent_clients_table_arn]
-      },
-      {
-        Sid    = "DynamoDBKMSAccess"
-        Effect = "Allow"
-        Action = [
-          "kms:Decrypt",
-          "kms:GenerateDataKey*",
-          "kms:DescribeKey"
-        ]
-        Resource = [aws_kms_key.dynamodb.arn]
-      }
-    ]
-  })
-}
-
-# Issue #1797: SQS SendMessage permission for Phase 1 inline ingestion dispatch.
-# The gateway publishes to the agent-context ingestion queue when a user registers
-# or reindexes a knowledge asset. Phase 2 (sweeper) will make this additive-only
-# (removable without breaking the registration flow).
-resource "aws_iam_role_policy" "gateway_ingestion_sqs_publish" {
-  count = var.enable_agent_context_sqs ? 1 : 0
-  name  = "${local.name_prefix}-policy-gateway-ingestion-sqs-publish"
-  role  = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "IngestionSQSPublish"
-        Effect = "Allow"
-        Action = [
-          "sqs:SendMessage",
-          "sqs:GetQueueUrl"
-        ]
-        Resource = var.agent_context_ingestion_queue_arn != "" ? var.agent_context_ingestion_queue_arn : "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.cluster_name}-context-ingestion"
-      }
-    ]
-  })
 }

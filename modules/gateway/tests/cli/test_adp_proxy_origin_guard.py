@@ -46,6 +46,7 @@ import pytest
 
 CLI = Path(__file__).parents[2] / "cli"
 PROXY = CLI / "bg-gateway-proxy.py"
+sys.path.insert(0, str(CLI))  # Match direct execution's installed sibling imports.
 
 _spec = importlib.util.spec_from_file_location("bg_gateway_proxy_origin_guard", PROXY)
 proxy_module = importlib.util.module_from_spec(_spec)

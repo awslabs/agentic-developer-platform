@@ -943,7 +943,10 @@ def test_revision_reads_use_explicit_oidc_before_any_aws_lookup():
     ):
         job = workflow(filename)[0]["jobs"][job_name]
         assert job["permissions"]["id-token"] == "write"
-        assert job["environment"] in ("dev", "${{ inputs.environment || 'dev' }}")
+        assert job["environment"] in (
+            "${{ inputs.target_environment || 'dev' }}",
+            "${{ inputs.target_environment || inputs.environment || 'dev' }}",
+        )
         steps = job["steps"]
         names = [step.get("name") for step in steps]
         guard = names.index("Require an explicit OIDC role (fail closed)")

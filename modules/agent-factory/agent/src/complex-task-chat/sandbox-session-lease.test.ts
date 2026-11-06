@@ -30,10 +30,12 @@ test('refuses renewal failure instead of using cached authority', async () => {
 });
 
 test('persistent pod is session-labelled without a hidden one-shot deadline', () => {
-  const pod = buildSandboxPod({ runId: 'run-a', sessionId: 'session-a', sessionMode: 'persistent',
+  const pod = buildSandboxPod({ runId: 'run-a', sessionId: 'session-a', sessionMode: 'persistent', ownerKey: 'a'.repeat(52), runBindingId: '00000000-0000-4000-8000-000000000001',
     image: `registry.test/chat@sha256:${'a'.repeat(64)}`, gatewayUrl: 'https://gateway.example.test' },
     gatewayBinding);
   expect(pod.spec).not.toHaveProperty('activeDeadlineSeconds');
-  expect(pod.metadata.labels['adp.io/session-hash']).toMatch(/^[a-f0-9]{64}$/);
-  expect(pod.metadata.labels['adp.io/run-hash']).toMatch(/^[a-f0-9]{64}$/);
+  expect(pod.metadata.annotations['adp.io/session-hash']).toMatch(/^[a-f0-9]{64}$/);
+  expect(pod.metadata.annotations['adp.io/run-hash']).toMatch(/^[a-f0-9]{64}$/);
+  expect(pod.metadata.labels).not.toHaveProperty(['adp.io/session-hash']);
+  expect(pod.metadata.labels).not.toHaveProperty(['adp.io/run-hash']);
 });

@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'modules/gateway/infra/**'
+      - 'modules/L5-services/infra/**'
       - 'environments/dev/modules/gateway.tfvars'
       - 'environments/dev/modules/gateway-backend.tfvars'
       # Documentation-only changes do not start this workflow.
@@ -76,12 +77,49 @@ jobs:
             -backend-config="bucket=${ADP_STATE_BUCKET}" \
             -input=false -reconfigure
 
+      - name: Retain native credential owner input
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -euo pipefail
+          umask 077
+          NATIVE_INPUTS="$RUNNER_TEMP/gateway-native-inputs.tfvars.json"
+          terraform show -json | python3 ../../../platform/scripts/native_credential_inputs.py > "$NATIVE_INPUTS"
+          echo "ADP_NATIVE_INPUTS=$NATIVE_INPUTS" >> "$GITHUB_ENV"
+
+      - name: Retain Product dispatch input
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          # Empty retains live intent; explicit true/false is a protected rollout.
+          ADP_PRODUCT_STORY_DISPATCH_ENABLED: ${{ vars.ADP_PRODUCT_STORY_DISPATCH_ENABLED }}
+        run: |
+          set -euo pipefail
+          umask 077
+          DISPATCH_INPUTS="$RUNNER_TEMP/gateway-dispatch-inputs.tfvars.json"
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          terraform show -json | python3 ../../../platform/scripts/product_dispatch_inputs.py \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$TF_VAR_environment" > "$DISPATCH_INPUTS"
+          echo "ADP_DISPATCH_INPUTS=$DISPATCH_INPUTS" >> "$GITHUB_ENV"
+
+      - name: Retain protected Atlassian MCP provider pins
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          GATEWAY_URL: ${{ vars.ADP_FOUNDATION_GATEWAY_URL }}
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          export ACCOUNT_ID
+          bash ../../../scripts/atlassian-mcp-gateway-pins.sh reuse
+
       - name: Terraform Plan
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_atlassian_forge: ${{ vars.ADP_ATLASSIAN_FORGE_CONFIG_JSON || 'null' }}
         run: |
           set -e
-          terraform plan -var-file="../../../${{ env.VAR_FILE }}" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
+          PIN_ARGS=()
+          if [[ -n "${ADP_ATLASSIAN_PINS:-}" ]]; then PIN_ARGS=(-var-file="$ADP_ATLASSIAN_PINS"); fi
+          terraform plan -var-file="../../../${{ env.VAR_FILE }}" -var-file="$ADP_NATIVE_INPUTS" "${PIN_ARGS[@]}" -var-file="$ADP_DISPATCH_INPUTS" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
 
       - name: Post or update PR comment
         uses: actions/github-script@v9

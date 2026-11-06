@@ -109,6 +109,22 @@ def test_cleanup_survives_revocation_but_cannot_start_work(authority):
             check(authority, tool, cleanup=True)
 
 
+def test_l5_task_grants_require_current_supported_operation(authority, monkeypatch):
+    from src.internal import tools_l5
+
+    permission = "l5.get_configuration"
+    authority.grant["tool_grants"] = [permission]
+    authority.task["tool_grants"] = [permission]
+    authority.task["grant_digest"] = _protected_grant_digest(authority.grant)
+    authority.policy["allowed_tools"] = [permission]
+    authority.env["ADP_TASK_PERSONA_TOOLS"] = '{"investigator":["l5.get_configuration"]}'
+    monkeypatch.setattr(tools_l5, "available_l5_catalogue", lambda: {"tools": [{"name": permission}]})
+    assert check(authority, permission)["task"]["tool_grants"] == [permission]
+    monkeypatch.setattr(tools_l5, "available_l5_catalogue", lambda: {"tools": []})
+    with pytest.raises(HTTPException, match="Task L5 operation unavailable"):
+        check(authority, permission)
+
+
 def test_frozen_grants_are_digest_bound(authority):
     changed = deepcopy(authority.grant)
     changed["tool_grants"].append("cyber.dynamic")

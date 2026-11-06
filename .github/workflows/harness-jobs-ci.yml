@@ -15,8 +15,9 @@ name: Harness Jobs CI
 # package -- including one that deleted its uniqueness constraint -- because it never
 # collects these tests.
 #
-# This workflow builds no image, deploys nothing, and contacts no provider, cloud or
-# AWS service. It runs on the existing self-hosted `arc-runner-org` pool like every
+# The tests build no image, deploy nothing, and contact no provider, cloud or
+# AWS service. The final evidence step alone writes reports to S3 with the runner
+# identity. This workflow uses the existing `arc-runner-org` pool like every
 # other ADP workflow. The pool has an ambient platform identity; the job clears AWS
 # credential provider inputs so normal SDK discovery cannot obtain credentials, and
 # then verifies the effective environment. That is an offline test environment, not a
@@ -299,7 +300,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: harness-jobs-results
           path: modules/harness/jobs/test-results/

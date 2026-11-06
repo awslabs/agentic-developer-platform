@@ -1572,11 +1572,23 @@ class TestOuterStatesUnchanged:
         assert not hasattr(state_module, "ExecutionPhase")
         assert not hasattr(state_module, "ExecutionStatus")
 
-    def test_the_store_touches_no_node_row(self, session, graph):
+    async def test_the_store_touches_no_node_row(self, session, graph):
         """Scope boundary: graph rows are verified but never transitioned here."""
-        source = (__import__("pathlib").Path(__file__).parents[2] / "src/orchestration/execution_store.py").read_text()
-        assert "NodeState" not in source
-        assert "node.state" not in source
+        query = select(OrchestrationNode.__table__).order_by(OrchestrationNode.id)
+        before = (await session.execute(query)).mappings().all()
+        identity, record = await _seed(session, graph)
+        outcome = await advance_execution(
+            session,
+            identity=identity,
+            advance=PhaseAdvance(
+                phase=ExecutionPhase.CONCLUDED,
+                status=ExecutionStatus.CONCLUDED,
+                expected_revision=record.revision,
+            ),
+        )
+        assert outcome.kind is OutcomeKind.APPLIED
+        await session.flush()
+        assert (await session.execute(query)).mappings().all() == before
 
 
 class TestNoNetworkInsideTransactions:

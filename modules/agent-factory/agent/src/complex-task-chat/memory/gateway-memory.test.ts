@@ -60,6 +60,46 @@ describe('gateway memory provider through the scoped transport', () => {
     await expect(provider.retrieve({ query: '' })).resolves.toEqual([]);
   });
 
+  describe('memory store unconfigured on the gateway (#8028)', () => {
+    const unconfigured = () => json({ detail: { error: 'chat_memory_unconfigured' } }, 503);
+
+    it('retrieves nothing, logs once, withdraws its tools and stops asking', async () => {
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      fetchMock.mockResolvedValueOnce(unconfigured()).mockResolvedValueOnce(unconfigured());
+      expect(provider.unconfigured).toBe(false);
+      expect(provider.tools().map(tool => tool.name)).toEqual(expect.arrayContaining(['read_memory', 'update_memory']));
+      await expect(provider.retrieve({ query: 'fact', scope: { persona: 'reviewer' } })).resolves.toEqual([]);
+      expect(provider.unconfigured).toBe(true);
+      expect(provider.tools()).toEqual([]);
+      // Bootstrap, the search, and the transport's single unavailable retry; nothing after.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      await expect(provider.retrieve({ query: 'again' })).resolves.toEqual([]);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls[0][0]).toBe('[sandbox] memory store unconfigured on this gateway; continuing without memory');
+    });
+
+    it.each([
+      ['a 503 naming another condition', () => json({ detail: { error: 'chat_data_disabled' } }, 503), 'unavailable', 503],
+      ['the artifact store answer', () => json({ detail: { error: 'chat_artifacts_unconfigured' } }, 503), 'unavailable', 503],
+      ['a 503 without a body', () => new Response(null, { status: 503 }), 'unavailable', 503],
+      ['the same code on a refusal', () => json({ detail: { error: 'chat_memory_unconfigured' } }, 403), 'denied', 403],
+    ])('still fails the retrieval on %s', async (_label, response, code, status) => {
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      fetchMock.mockImplementation(async () => response());
+      await expect(provider.retrieve({ query: '' })).rejects.toMatchObject({ code, status });
+      expect(provider.unconfigured).toBe(false);
+      expect(provider.tools()).not.toEqual([]);
+      expect(log).not.toHaveBeenCalled();
+    });
+
+    it('does not degrade reads or writes: only the search the turn depends on is optional', async () => {
+      fetchMock.mockImplementation(async () => unconfigured());
+      await expect(provider.read(ID)).rejects.toMatchObject({ code: 'unavailable', status: 503, detail: 'chat_memory_unconfigured' });
+      expect(provider.unconfigured).toBe(false);
+    });
+  });
+
   it.each([page([], null, [ID]), page([record], 'more', [OTHER_ID])])('reports missing source coverage instead of silently returning available rows', async response => {
     fetchMock.mockResolvedValueOnce(json(response));
     await expect(provider.retrieve({ query: '' })).rejects.toMatchObject({ code: 'incomplete' });

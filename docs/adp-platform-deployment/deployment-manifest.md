@@ -109,6 +109,128 @@ Deploy: `modules/agent-factory/scripts/deploy-gateway.sh`
 | KEDA | Helm | `kubectl get pods -n keda` | KEDA operator Running |
 | SQS consumer | ScaledJob | `kubectl get scaledjobs -n adp-gateway-agents` | ScaledJob listed |
 | Consumer image | ECR | `aws ecr describe-images --repository-name adp-agent-gateway --query 'imageDetails[0].imageTags'` | Image tagged |
+| Chat start-failure recovery (#8061) | EKS + SQS | Force one sandbox start failure on dev (e.g. a temporarily low `ADP_CHAT_SANDBOX_START_DEADLINE_MS` on the chat-agent ScaledJob), send a turn, then `kubectl logs -n adp-gateway-agents -l app.kubernetes.io/name=chat-agent-worker --since=30m \| grep '"step":"sandbox_start"'` and `aws sqs get-queue-attributes --queue-url $(aws sqs get-queue-url --queue-name adp-dev-agent-gateway-dlq.fifo --query QueueUrl --output text) --attribute-names ApproximateNumberOfMessages` | Log names the pod (`"status":"failed","pod_uid":…`) and ends with `"status":"reconciled"`, or the redelivered turn completes (`"step":"dispatch","status":"completed"`) with no `reconciliation deadline exceeded`; the turn ends as a retryable interruption instead of hanging; DLQ `ApproximateNumberOfMessages` unchanged |
+
+### Agent Factory — Delegated chat (ScaledJob + pre-pull DaemonSet)
+
+Deploy: `modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh`, run by `deploy-all.sh --chat delegated`
+(self-managed) and by `.github/workflows/chat-agent-deploy.yml` (ADP-managed). On both paths the script
+resolves the Crew values from SSM when the caller leaves them unset (#8058; only `ParameterNotFound` means empty — any other read failure such as `AccessDeniedException` stops the rollout, and the ADP-managed identity `<prefix>-chat-trusted-deployment` holds the read grant in `platform/automation-infra/chat-deployment.tf`) and pins both release digests
+into the `chat-agent-image-prepull` DaemonSet, waiting for every node, before it applies the ScaledJob
+(#8059). After the ScaledJob apply the same script publishes the supervisor/sandbox digests the gateway
+verifies chat workloads against to SSM (`/adp/<env>/gateway/chat-authority-worker-images`,
+`chat-sandbox-image-digests`, `chat-crew-image-digests`; put only when the value differs) and converges the
+live `bedrockgateway-config` in `adp-gateway` (`ADP_CHAT_WORKER_IMAGE_DIGESTS`, `ADP_CHAT_SANDBOX_IMAGE_DIGESTS`,
+`ADP_CHAT_CREW_IMAGE_DIGESTS` plus the CA/URL keys) with a gateway restart bounded by
+`ADP_CHAT_GATEWAY_ROLLOUT_TIMEOUT` (default `600s`) — on both paths, so an ADP-managed image deploy no
+longer ends in `chat creation image refused` until an operator publishes by hand (#8086; the ADP-managed
+identity holds `ssm:PutParameter` on the three parameters and the `adp:chat-release-publish` RBAC group,
+`platform/automation-infra/chat-release-publish-rbac.yaml`). One-shot check of every row below (what the
+workflow's drift step runs):
+`ENVIRONMENT=<env> SUPERVISOR_IMAGE=<registry>/adp-chat-agent@sha256:<supervisor> SANDBOX_IMAGE=<registry>/adp-chat-agent@sha256:<sandbox> bash modules/agent-factory/agent/k8s/verify-chat-rollout.sh`.
+
+| Resource | AWS Service | Validation Command | Expected |
+|----------|------------|-------------------|----------|
+| Chat ScaledJob | KEDA | `kubectl -n adp-gateway-agents get scaledjob chat-agent-worker -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'` | `True` |
+| ScaledJob env == SSM (#8058) | SSM / KEDA | `diff <(kubectl -n adp-gateway-agents get scaledjob chat-agent-worker -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].env[?(@.name=="ADP_CREW_DASHBOARD_ORIGIN")].value}') <(aws ssm get-parameter --name /adp/<env>/gateway/crew-dashboard-origin --query Parameter.Value --output text 2>/dev/null \| sed 's/^None$//' \| tr -d '\n')` | no output (identical; both empty while the Crew dashboard edge is off) |
+| Sandbox start deadline on the ScaledJob (#8059) | KEDA | `kubectl -n adp-gateway-agents get scaledjob chat-agent-worker -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].env[?(@.name=="ADP_CHAT_SANDBOX_START_DEADLINE_MS")].value}'` | `120000` (or the `ADP_CHAT_SANDBOX_START_DEADLINE_MS` the deploy exported; always 5000..300000) |
+| Persistent-executor default == SSM (#8115) | SSM / KEDA | `diff <(kubectl -n adp-gateway-agents get scaledjob chat-agent-worker -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].env[?(@.name=="ADP_CHAT_PERSISTENT_EXECUTOR")].value}') <(aws ssm get-parameter --name /adp/<env>/gateway/chat-persistent-executor --query Parameter.Value --output text 2>/dev/null \| sed 's/^None$//' \| grep . \|\| echo sandbox-loop \| tr -d '\n')` | no output (identical; `claude-code` on dev once published, `sandbox-loop` while the parameter is unpublished/empty). Publish with `aws ssm put-parameter --name /adp/<env>/gateway/chat-persistent-executor --type String --overwrite --value claude-code` then re-run the chat rollout (`deploy-all.sh --chat delegated` also publishes `ADP_CHAT_PERSISTENT_EXECUTOR` from the environment) |
+| DaemonSet digest == ScaledJob sandbox digest (#8059) | EKS | `diff <(kubectl -n adp-gateway-agents get daemonset chat-agent-image-prepull -o jsonpath='{.spec.template.spec.containers[?(@.name=="prepull-sandbox")].image}') <(kubectl -n adp-gateway-agents get scaledjob chat-agent-worker -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].env[?(@.name=="ADP_CHAT_SANDBOX_IMAGE")].value}')` | no output |
+| DaemonSet digest == ScaledJob supervisor digest | EKS | `diff <(kubectl -n adp-gateway-agents get daemonset chat-agent-image-prepull -o jsonpath='{.spec.template.spec.containers[?(@.name=="prepull")].image}') <(kubectl -n adp-gateway-agents get scaledjob chat-agent-worker -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].image}')` | no output |
+| Pre-pull DaemonSet converged | EKS | `kubectl -n adp-gateway-agents get daemonset chat-agent-image-prepull` | DESIRED == UP-TO-DATE == READY (node count); a first turn on any node then shows `Pulled ... already present` rather than a multi-minute pull |
+| Supervisor tolerates a pull (#8059) | EKS | `kubectl -n adp-gateway-agents logs job/<chat-agent-worker job> \| grep '"step":"sandbox_start"'` | `status=pulling` only on a node without the digest, then `status=started`; never `did not start before the supervisor deadline` |
+| SSM digests == ScaledJob digests (#8086) | SSM / KEDA | `diff <(aws ssm get-parameter --name /adp/<env>/gateway/chat-authority-worker-images --query Parameter.Value --output text) <(kubectl -n adp-gateway-agents get scaledjob chat-agent-worker -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].image}' \| sed 's/.*@//'; echo) && for p in chat-sandbox-image-digests chat-crew-image-digests; do diff <(aws ssm get-parameter --name /adp/<env>/gateway/$p --query Parameter.Value --output text) <(kubectl -n adp-gateway-agents get scaledjob chat-agent-worker -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].env[?(@.name=="ADP_CHAT_SANDBOX_IMAGE")].value}' \| sed 's/.*@//'; echo); done` | no output (SSM holds exactly the digests the ScaledJob was pinned to; `verify-chat-rollout.sh` reports `DRIFT SSM chat-…` otherwise) |
+| Gateway ConfigMap digests == SSM == ScaledJob (#8086) | EKS / SSM | `diff <(kubectl -n adp-gateway get configmap bedrockgateway-config -o jsonpath='{.data.ADP_CHAT_WORKER_IMAGE_DIGESTS}{"\n"}{.data.ADP_CHAT_SANDBOX_IMAGE_DIGESTS}{"\n"}{.data.ADP_CHAT_CREW_IMAGE_DIGESTS}{"\n"}') <(for p in chat-authority-worker-images chat-sandbox-image-digests chat-crew-image-digests; do aws ssm get-parameter --name /adp/<env>/gateway/$p --query Parameter.Value --output text; done)` | no output; the deploy log shows `[deploy-chat] published /adp/<env>/gateway/chat-…` (or `already holds`) and `[deploy-chat] bedrockgateway-config patched … and deployment/bedrockgateway restarted` (or `already carries the release digests`) |
+| First turn after an image deploy is admitted (#8086 AC-03) | EKS | `kubectl -n adp-gateway logs deploy/bedrockgateway --since=30m \| grep -c 'chat creation image refused'` | `0` — no manual `aws ssm put-parameter` / ConfigMap patch after `chat-agent-deploy.yml` |
+
+## Dev Box Module (optional)
+
+Module: `modules/user-services/dev-box/`. Deployed by `deploy-all.sh --dev-box on` /
+`--dev-box-only` → `modules/user-services/dev-box/scripts/deploy-dev-box.sh` (self-managed)
+or `.github/workflows/dev-box-deploy.yml` (ADP-managed). An environment without the
+module has none of the SSM parameters below; both gateway renderers then render `""` /
+`"0"` and the gateway fails closed (admission 403, SSH access 503).
+
+| Resource | AWS Service | Validation Command | Expected |
+|----------|------------|-------------------|----------|
+| Deployment identity | SSM | `aws ssm get-parameter --name /adp/<env>/dev-box/deployment-id --query Parameter.Value --output text` | the `deployment_id` from `dev-box.tfvars` |
+| Gateway admission keys | ConfigMap | `kubectl -n adp-gateway get configmap bedrockgateway-config -o jsonpath='{.data.BG_DEV_BOX_DEPLOYMENT_ID}'` | same deployment id |
+| Controller | Deployment | `kubectl -n adp-gateway get deploy dev-box-controller` | Ready 1/1 |
+| SSH grant role (#8049) | IAM / SSM | `aws ssm get-parameter --name /adp/<env>/dev-box/ssh-grant-role-arn --query Parameter.Value --output text` | `arn:aws:iam::<ACCOUNT>:role/adp-dev-box-ssh-grant-*` (a `" "` value means the foundation ran without `gateway_principal_arn`) |
+| SSH grant in the gateway (#8049) | ConfigMap | `kubectl -n adp-gateway get configmap bedrockgateway-config -o jsonpath='{.data.BG_DEV_BOX_SSH_GRANT_ROLE_ARN}'` | same ARN as the SSM value; `adp devbox ssh <box>` then opens a shell on the guest as `ec2-user` (503 "Dev Box SSH access is not configured" when empty) |
+| Gateway may assume the grant (#8049) | IAM | `aws iam get-role-policy --role-name <gateway IRSA role name> --policy-name adp-dev-box-assume-ssh-grant --query 'PolicyDocument.Statement[0].Resource'` | the grant role ARN |
+
+## Tools Module (separate deploy and teardown)
+
+The independent tools gateway uses the isolated Terraform key `tools/platform/<environment>.tfstate`
+in the privately configured tools state bucket. The module script is `modules/tools/deploy.sh`; the
+platform launcher passes `--tools-only` through to it. `--plan` checks prerequisites and prints stage
+order without applying; the protected platform release uses `--infra --targets` for its saved Terraform
+plan, readiness check and SSM outputs. The tool-Lambda, façade, authenticated `tools/list` and CI
+bootstrap stages still stop until their reviewed implementation assets are available. Neither an open
+PR nor a passing mocked stage check is live deployment evidence.
+
+| Resource | Owner | Expected verification after authorized deploy |
+|----------|-------|-----------------------------------------------|
+| AgentCore gateway, targets, scoped invocation role and KMS key | Tools Terraform | Private state, `READY` gateway readback, and an unchanged Terraform plan on immediate rerun |
+| Tools release values under `/adp/<env>/tools/` | Protected tools platform workflow | `release.json` agrees with SSM and the reviewed source revision |
+| Façade Deployment and immutable ECR image | Façade owner (TLS-S10) | Pinned running digest, then authenticated gateway `tools/list` smoke; not yet verifiable from this checkout |
+| Interceptor `live` Lambda alias | Protected interceptor workflow | Published version and code hash in release receipt; restore by an approved alias flip |
+
+`platform/scripts/undeploy.sh --tools-only --dry-run` selects tools before its gateway/platform
+providers. Set the original private `ADP_TOOLS_TFVARS_JSON` and, if different from the platform bucket,
+`ADP_TOOLS_STATE_BUCKET`; never put their real values in public docs. The state-bound deletion plan
+must list the exact façade identity and tools-owned Terraform resources before a real run. A real
+`--tools-only` run requires typing the confirmed account ID even with `--yes`; it removes the
+validated façade before gateway targets and KMS, retains both state backends, and rejects a changed
+façade or SSM parameter. Do not use teardown as a rollback or infer live success without the
+post-deploy reviewer's transcript.
+
+## Dev Box Module (optional, self-managed stage)
+
+Deployed by `modules/user-services/dev-box/scripts/deploy-dev-box.sh` (`deploy-all.sh
+--dev-box on` / `--dev-box-only`) into `<env>/modules/dev-box{,-platform}/terraform.tfstate`;
+see the phase reference for the seven steps. Validation lines for the Crew bootstrap
+modes (#8055):
+
+| Resource | Owner | Expected verification after authorized deploy |
+|----------|-------|-----------------------------------------------|
+| SSM `/adp/<env>/dev-box/crew-bootstrap` | Foundation Terraform (`infra/self_managed.tf`) | `aws ssm get-parameter --name /adp/<env>/dev-box/crew-bootstrap --query Parameter.Value --output text` → `image` (default) or `user-data`; the gateway ConfigMap key `BG_DEV_BOX_CREW_BOOTSTRAP` carries the same value after the next gateway render |
+| Bundle inputs the stage consumed | Stage (`deploy-dev-box.sh --crew-bootstrap user-data`) | `base64 -d` of the launch template user data (below) carries `BUNDLE_SHA256=`/`PROFILE_REVISION=` equal to `--crew-bundle-sha`/`--profile-revision`, or, when omitted, to the bundle build's script-owned `/adp/<env>/dev-box/{crew-bundle-sha256,crew-bundle-revision}`; the foundation declares no copy of those keys |
+| Launch template user data | Foundation Terraform (`infra/crew_bootstrap.tf`) | image mode: `describe-launch-template-versions ... --query 'LaunchTemplateVersions[0].LaunchTemplateData.UserData'` is empty. user-data mode: `base64 -d` of it is `infra/crew-bootstrap.sh.tftpl` rendered with the S3 paths, digests and revisions only — no credential, token or key (AC-04) |
+| Guest inline policy `crew-bootstrap-inputs-read` and the 443 egress to the S3 prefix list | Foundation Terraform | present only in user-data mode; `runtime.py` (stage step 4) refuses either in image mode and refuses their absence in user-data mode |
+| On-box receipt `/run/adp/crew-bootstrap.json` | First-boot script (root) | user-data mode: `"status": "ok"` with the pinned `profile_revision`, `source_revision`, `bundle_sha256`; the controller sets `crew_ready` only after reading it over SSM together with the installed profile (AC-03) |
+| `GET /cloud-desktops/{id}` → `crew_bootstrap` | Gateway (`src/cloud_desktop/routes.py`) | equals the SSM value; absent configuration reads as `image` |
+
+## Engineering Insights Module
+
+Module: `modules/insights/`. Terraform state key:
+`dev/modules/insights/terraform.tfstate` in the selected account's existing
+state bucket. This row describes the reviewed deployment shape, **not** a live
+inventory or evidence that the dev target has been provisioned.
+
+| Resource | Owner | Expected verification after authorized deploy |
+|----------|-------|-----------------------------------------------|
+| Versioned Evidence Lake bucket `adp-<env>-insights-evidence` and KMS key | Insights Terraform | Encryption, private access and versioning readback; only `assurance/v1/…/insights/` receives emitter writes |
+| Emitter and distiller ECR and IRSA roles | Insights Terraform | Repositories present; service-account trust bound to the `adp-insights` namespace and separate roles |
+| Namespace, quota and network policies | Insights Terraform | `kubectl get namespace,resourcequota,networkpolicy -n adp-insights`; deny-all plus scoped gateway/S3/GitHub egress |
+| Digest-pinned emitter/distiller Deployments | Owning Insights pipeline | Only created when real images exist; zero replicas until explicitly enabled, then D3 requires owned ready Pods |
+| `adp-release-insights` and D3 receipt | Insights pipeline and deployment engine | A run-bound release artifact followed by `insights-health-verification` on a verified target; a plan alone is not a receipt |
+
+The module is optional on a basic platform deploy. The authorized operator may
+run `platform/scripts/deploy-all.sh --insights-only`; the `--ci` variant plans
+without applying. `platform/scripts/undeploy.sh --insights-only` selects this
+module before shared dependencies. **After the required account confirmation,
+this command permanently deletes Insights evidence, including object versions
+and delete markers, then removes the bucket.** The teardown orchestrator empties
+the bucket explicitly; Terraform's `force_destroy = false` does not protect that
+data. Satisfy retention requirements and create and verify a backup outside the
+selected resources before confirming. Do not use teardown as a deployment retry
+or rollback when evidence must be retained.
+The platform administrator must review `modules/insights/deploy.sh
+--bootstrap-ci`, apply its runner policy, register the two ADP machine service
+accounts and configure the dev/prod protected environments before the first
+pipeline run. See [the module boundary and live handoff](../engineering-insights/architecture.md).
 
 ## Superplane Domain App
 
@@ -138,6 +260,34 @@ are omitted from a basic platform apply.
 plus a default-off flag, so an operator running these checks on a default deployment should
 expect `False`, a registered phase and **no** Terraform state. Terraform, the domain
 workload rollout and pinned images arrive with later units.
+
+## Dev Box Module (optional)
+
+Module: `modules/user-services/dev-box/`
+Deploy: `platform/scripts/deploy-all.sh --dev-box on` (Step 12) or `modules/user-services/dev-box/scripts/deploy-dev-box.sh --env <env>`; Crew image release: `modules/user-services/dev-box/scripts/release-crew-image.sh --env <env> --crew-model-id <id> --apply`
+State keys: `<env>/modules/dev-box-platform/terraform.tfstate`, `<env>/modules/dev-box/terraform.tfstate`
+
+An environment without `environments/<env>/modules/dev-box.tfvars` has none of this. The Crew image
+pipeline (#8054) adds the bundle build and the release pin to the module's AMI build.
+
+| Resource | AWS Service | Validation Command | Expected |
+|----------|------------|-------------------|----------|
+| Image CodeBuild project | CodeBuild | `aws ssm get-parameter --name /adp/<env>/dev-box/image-builder-project --query Parameter.Value --output text` | `adp-<env>-dev-box-image` |
+| Crew bundle inputs | S3 | `aws s3 ls s3://adp-terraform-state-<account>/dev-box/image-inputs/$(aws ssm get-parameter --name /adp/<env>/dev-box/crew-bundle-sha256 --query Parameter.Value --output text)/` | `crew.tar.gz` and `profile.json` |
+| Crew bundle revision | SSM | `aws ssm get-parameter --name /adp/<env>/dev-box/crew-bundle-revision --query Parameter.Value --output text` | `crew-<yyyymmdd>-<sha12>` (the profile revision of the last bundle build) |
+| Published AMI | SSM | `aws ssm get-parameters --names /adp/<env>/dev-box/image-id /adp/<env>/dev-box/image-revision /adp/<env>/dev-box/profile-revision /adp/<env>/dev-box/image-source-revision --query 'Parameters[].[Name,Value]' --output table` | `image-id` an `ami-…`; `image-revision` ends with `-crew-<profile-revision>`; `image-source-revision` = the released commit |
+| Crew model pin | SSM | `aws ssm get-parameter --name /adp/<env>/dev-box/crew-model-id --query Parameter.Value --output text` | the approved model id (never `" "` once a Crew image is released); equals `crew_model_id` in `dev-box.tfvars` |
+| AMI tags match the pin | EC2 | `aws ec2 describe-images --image-ids $(aws ssm get-parameter --name /adp/<env>/dev-box/image-id --query Parameter.Value --output text) --query 'Images[0].Tags[?starts_with(Key, \`adp:\`)]' --output table` | `adp:profile-revision` = SSM `profile-revision`, `adp:image-revision` = SSM `image-revision`, `adp:source-revision` = SSM `image-source-revision`, `adp:component` = `dev-box` |
+| Release pin journal | Local | `tail -1 .adp-dev-box/<env>/release/crew-image-journal.jsonl` | JSON line with `action: crew-image-release-pin` and the four SSM values |
+| Foundation on the Crew image | EC2 | `aws ec2 describe-launch-template-versions --launch-template-id $(aws ssm get-parameter --name /adp/<env>/dev-box/launch-template-id --query Parameter.Value --output text) --versions '$Latest' --query 'LaunchTemplateVersions[0].LaunchTemplateData.ImageId'` | = SSM `image-id` (after `deploy-dev-box.sh --skip-image`) |
+| Controller | EKS | `kubectl -n adp-gateway get deploy dev-box-controller` | Ready 1/1 |
+| Crew ready on a box | Gateway API | `python3 modules/user-services/dev-box/scripts/verify-dev-box.py --env <env> --require-crew` | exit 0 (`crew_ready: true`) |
+
+The SSM keys `/adp/<env>/dev-box/{image-id,image-revision,profile-revision,crew-model-id}` are the
+release pin `release-crew-image.sh` writes and `deploy-dev-box.sh` reads; the ADP-managed workflow
+(`.github/workflows/dev-box-crew-image.yml`) writes the same keys and reports them as
+`ADP_DEV_BOX_IMAGE_ID`, `ADP_DEV_BOX_IMAGE_REVISION`, `ADP_DEV_BOX_CREW_PROFILE_REVISION`,
+`ADP_DEV_BOX_CREW_MODEL_ID` for `dev-box-deploy.yml`.
 
 ## Deployment State File
 

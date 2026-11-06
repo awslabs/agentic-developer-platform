@@ -141,6 +141,8 @@ class _Ledger:
         # names (#4337 B1) — asserting the type alone would not notice it moving.
         self.queried: list[tuple[str, str, str]] = []
         self.session = MagicMock()
+        self.session.get = AsyncMock(return_value=None)
+        self.session.commit = AsyncMock()
         self.session.execute = AsyncMock(side_effect=self._execute)
 
     async def _execute(self, statement):

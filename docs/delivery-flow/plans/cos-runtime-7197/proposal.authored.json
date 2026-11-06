@@ -1,0 +1,399 @@
+{
+ "flow_slug": "cos-runtime-7197",
+ "title": "Chief-of-Staff runtime: Claude Code and Kiro Crew executors on the persistent chat worker (#7197)",
+ "org_id": "aws-e",
+ "spec_revision": "ed8752a45340af4fe3af81b2405de51605ff1215",
+ "intent_ref": "7197",
+ "description": "INERT DRAFT v2 for epic #7197 (parent #4964; builds on #6931/#147). 13 code stories in three waves \u2014 foundation (Claude Code back in the persistent pod), kirocrew (runtime, externalised memory, per-user lease), dashboard \u2014 each closed by a run-only repository-evidence evaluation issue (human acceptance); then a live-readiness gate and a live qualification evaluation in dev. Code-only policy: the flow never deploys. Proposed limits are not authorization.",
+ "nodes": [
+  {
+   "address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+   "kind": "story",
+   "title": "Add a crew-pod workload class for persistent chat sessions (admission, egress, narrow IRSA)",
+   "issue_ref": "7198",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/runtime/run-binding",
+   "kind": "story",
+   "title": "Mint and revoke human-rooted run bindings for long-lived crew pods",
+   "issue_ref": "7199",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/runtime/proxy-switch",
+   "kind": "story",
+   "title": "Package the sigv4-proxy into the crew pod and add the ADP_EXECUTOR switch",
+   "issue_ref": "7200",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/runtime/claude-code-executor",
+   "kind": "story",
+   "title": "Run Claude Code as the persistent session turn executor behind the crew-pod switch",
+   "issue_ref": "7208",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image",
+   "kind": "story",
+   "title": "Package Kiro Crew into the crew-pod image with rendered config and headless start",
+   "issue_ref": "7201",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge",
+   "kind": "story",
+   "title": "Bridge ADP turns into the Kiro Crew session and consolidate memory on stop",
+   "issue_ref": "7209",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/kirocrew/memory-event-store",
+   "kind": "story",
+   "title": "Add the ADP memory event store: tenant-scoped events routes, table and projector",
+   "issue_ref": "7210",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/kirocrew/memory-sink",
+   "kind": "story",
+   "title": "Add a memory event sink, outbox and replay-on-open to Kiro Crew",
+   "issue_ref": "7202",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease",
+   "kind": "story",
+   "title": "Lease one crew executor per user across all persistent sessions",
+   "issue_ref": "7203",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody",
+   "kind": "story",
+   "title": "Open the crew pod's dashboard to the gateway only and mint Kiro Crew login links on request",
+   "issue_ref": "7204",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/dashboard/dashboard-host",
+   "kind": "story",
+   "title": "Provision the Crew dashboard hostname and edge routing to the gateway",
+   "issue_ref": "7205",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy",
+   "kind": "story",
+   "title": "Add the gateway crew-proxy: ADP identity gate, Kiro Crew handoff, streaming reverse proxy",
+   "issue_ref": "7206",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew",
+   "kind": "story",
+   "title": "Add \"Open my Crew\" to the ADP UI with on-demand pod wake and readiness",
+   "issue_ref": "7207",
+   "executor": {
+    "schema_version": 1,
+    "kind": "agent",
+    "role": "develop",
+    "persona": "agent-codex-developer"
+   }
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence",
+   "kind": "eval",
+   "title": "Wave 1 repository evidence (#7214): crew pod, run binding, proxy, Claude Code executor \u2014 human acceptance",
+   "issue_ref": "7214"
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence",
+   "kind": "eval",
+   "title": "Wave 2 repository evidence (#7215): Kiro Crew runtime, externalised memory, per-user lease \u2014 human acceptance",
+   "issue_ref": "7215"
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence",
+   "kind": "eval",
+   "title": "Wave 3 repository evidence (#7216): dashboard exposure \u2014 human acceptance",
+   "issue_ref": "7216"
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/qualification/live-readiness",
+   "kind": "gate",
+   "title": "Authorize the dev target, confirm the merged revision is deployed under the #6929 rollout approval and the deploy-boundary guard, and confirm #6937 fixtures (two users, crew hostname)"
+  },
+  {
+   "address": "cos-runtime-7197/epic-7197/qualification/live-qualification",
+   "kind": "eval",
+   "title": "Live qualification in dev (#7217): EP-01..EP-05 against the deployed revision \u2014 human acceptance",
+   "issue_ref": "7217"
+  }
+ ],
+ "edges": [
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+   "to_address": "cos-runtime-7197/epic-7197/runtime/run-binding"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+   "to_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/run-binding",
+   "to_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch",
+   "to_address": "cos-runtime-7197/epic-7197/runtime/claude-code-executor"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/memory-sink"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/memory-event-store",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/memory-sink"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/claude-code-executor",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/memory-sink",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-host",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+   "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/run-binding",
+   "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch",
+   "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/claude-code-executor",
+   "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/memory-event-store",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/memory-sink",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-host",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence",
+   "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence",
+   "to_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence",
+   "to_address": "cos-runtime-7197/epic-7197/qualification/live-readiness"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence",
+   "to_address": "cos-runtime-7197/epic-7197/qualification/live-readiness"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence",
+   "to_address": "cos-runtime-7197/epic-7197/qualification/live-readiness"
+  },
+  {
+   "from_address": "cos-runtime-7197/epic-7197/qualification/live-readiness",
+   "to_address": "cos-runtime-7197/epic-7197/qualification/live-qualification"
+  }
+ ],
+ "epic_metadata": [
+  {
+   "epic_ref": "epic-7197",
+   "title": "Chief-of-Staff runtime on the persistent chat worker",
+   "description": "Give persistent chat sessions a real agent runtime (Claude Code, then Kiro Crew with externalised memory) on the engine-worker model path, and expose the Kiro Crew dashboard to users through the ADP gateway."
+  }
+ ],
+ "wave_metadata": [
+  {
+   "epic_ref": "epic-7197",
+   "wave_ref": "runtime",
+   "title": "Wave 1 \u2014 runtime (foundation): Claude Code back in the persistent pod",
+   "description": "#7198 crew-pod class, #7199 run binding, #7200 proxy + executor switch, #7208 Claude Code executor. Users regain a real harness with no credentials in the pod. Evaluation #7214."
+  },
+  {
+   "epic_ref": "epic-7197",
+   "wave_ref": "kirocrew",
+   "title": "Wave 2 \u2014 Kiro Crew runtime, externalised memory, per-user lease",
+   "description": "#7201 image, #7209 turn bridge, #7210 memory event store, #7202 memory sink/replay, #7203 per-user lease. Evaluation #7215."
+  },
+  {
+   "epic_ref": "epic-7197",
+   "wave_ref": "dashboard",
+   "title": "Wave 3 \u2014 dashboard exposure through the ADP gateway",
+   "description": "#7204 ingress + link custody, #7205 edge host, #7206 crew-proxy, #7207 Open my Crew. Evaluation #7216."
+  },
+  {
+   "epic_ref": "epic-7197",
+   "wave_ref": "qualification",
+   "title": "Live qualification in dev",
+   "description": "Live-readiness gate (authorization and deployed revision recorded; the gate does not deploy), then human-accepted live evaluation #7217 covering EP-01..EP-05."
+  }
+ ],
+ "proposed_execution_policy": {
+  "schema_version": 1,
+  "org_id": "aws-e",
+  "team_ids": [],
+  "repository_ids": [
+   "aws-e/adp"
+  ],
+  "environment_connection_ids": [],
+  "allowed_actions": [
+   "develop",
+   "review",
+   "repair",
+   "merge"
+  ],
+  "human_gates": [],
+  "evaluation_acceptance": {
+   "cos-runtime-7197/epic-7197/runtime/runtime-evidence": "human",
+   "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence": "human",
+   "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence": "human",
+   "cos-runtime-7197/epic-7197/qualification/live-qualification": "human"
+  },
+  "expires_at": "2026-10-22T11:30:42Z",
+  "limits": {
+   "max_spend_usd": "1500",
+   "max_wall_clock_seconds": 604800,
+   "max_attempts_per_node": 3,
+   "max_concurrent_actions": 2
+  }
+ }
+}

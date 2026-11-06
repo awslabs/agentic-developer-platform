@@ -163,13 +163,19 @@ def test_old_default_would_have_been_unverified_with_plaintext_fallback():
 # --- the single documented exception ------------------------------------------
 
 
-def test_local_exception_is_the_only_route_to_an_unverified_connection(caplog):
+def test_local_exception_is_the_only_route_to_an_unverified_connection(
+    caplog, monkeypatch
+):
+    # An earlier offline Alembic test disables existing application loggers.
+    # Model an enabled server logger for this assertion, then restore its state.
+    monkeypatch.setattr(schema_boundary.logger, "disabled", False)
+    monkeypatch.setattr(schema_boundary.logger, "propagate", True)
     monkeypatch_value = "true"
     import os
 
     os.environ[LOCAL_EXCEPTION_VARIABLE] = monkeypatch_value
     try:
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("WARNING", logger=schema_boundary.logger.name):
             args = transport_connect_args()
         assert args == {"ssl": "disable"}
         assert LOCAL_EXCEPTION_VARIABLE in caplog.text

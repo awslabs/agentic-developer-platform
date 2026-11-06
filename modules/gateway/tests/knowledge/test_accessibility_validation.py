@@ -238,13 +238,11 @@ class TestBulkCommitAccessibility:
     @pytest.mark.anyio
     async def test_bulk_all_valid_items_accepted(self, make_client, admin_user):
         """All items pass accessibility → batch proceeds to insert."""
-        asset_row1 = FakeRow(tenant_id=None, owner_sub=None)
+        asset_row1 = FakeRow(tenant_id="acme-corp", owner_sub=None)
         asset_row2 = FakeRow(tenant_id="acme-corp", owner_sub=None)
         db = FakeAsyncSession()
         db.execute_results = [
-            # Quota check for scope group 1 (shared: tid="", sub="")
-            FakeResult(rows=[]),
-            # Quota check for scope group 2 (tenant: tid="acme-corp", sub="")
+            # Both imports retain the explicitly selected tenant scope.
             FakeResult(rows=[]),
             # Dedup check for item 1
             FakeResult(rows=[]),
@@ -926,16 +924,15 @@ class TestMembershipFallbackRouteIntegration:
     """
 
     @pytest.mark.anyio
-    async def test_register_asset_membership_fallback_scopes_to_org_tenant(self, make_client, fake_user):
+    async def test_repo_access_does_not_promote_personal_scope(self, make_client, fake_user):
         """Full route: org member registers private repo via membership fallback.
 
-        Asserts the inserted row's tenant_id is the org tenant (aws-e), NOT the
-        caller's personal tenant (acme-corp).
+        Source authorization must not change the requested personal ownership.
         """
         from src.knowledge.accessibility import validate_repo_accessibility
 
         # The agent_context db handles: quota, dup check, insert, fetch
-        asset_row = FakeRow(tenant_id="aws-e", owner_sub=None)
+        asset_row = FakeRow(tenant_id="acme-corp", owner_sub="user-alice")
         db = FakeAsyncSession()
         db.execute_results = [
             FakeResult(scalar_val=0),  # quota count
@@ -996,12 +993,11 @@ class TestMembershipFallbackRouteIntegration:
 
         assert resp.status_code == 201
 
-        # Verify the INSERT used the org tenant (aws-e), not the caller's
-        # personal tenant (acme-corp).
+        # The source's installation tenant does not own this personal import.
         # The insert is the 3rd execute call on the agent_context db.
         insert_params = db.executed_statements[2][1]
-        assert insert_params["tenant_id"] == "aws-e"
-        assert insert_params["owner_sub"] is None  # Org-scoped, not personal
+        assert insert_params["tenant_id"] == "acme-corp"
+        assert insert_params["owner_sub"] == "user-alice"
         # Issue #3529: stored installation_id is the WORKER's (ops-App)
         assert insert_params["installation_id"] == 124731359
 
@@ -1177,16 +1173,11 @@ class TestBulkCommitQuotaPerResolvedTenant:
     """Tests for per-resolved-tenant quota enforcement in bulk_commit (Issue #3358)."""
 
     @pytest.mark.anyio
-    async def test_membership_resolved_item_rejected_at_org_tenant_quota(self, make_client, fake_user):
-        """Membership-resolved item rejected because ORG tenant is at quota.
-
-        The item is resolved to org tenant 'aws-e' via membership fallback.
-        The quota check must count against 'aws-e', not the caller's session
-        tenant. When 'aws-e' is at capacity → 429.
-        """
+    async def test_personal_import_uses_personal_quota_after_source_authorization(self, make_client, fake_user):
+        """Source permission does not select the quota or sharing scope."""
         # Create a row object that simulates the quota query result
         # (has .asset_type and .cnt, which FakeRow's dataclass doesn't support)
-        quota_row = type("QuotaRow", (), {"asset_type": "repo", "cnt": 200})()
+        quota_row = type("QuotaRow", (), {"asset_type": "repo", "cnt": 20})()
 
         db = FakeAsyncSession()
         db.execute_results = [
@@ -1223,8 +1214,10 @@ class TestBulkCommitQuotaPerResolvedTenant:
         assert resp.status_code == 429
         data = resp.json()
         assert "Quota exceeded" in data["detail"]["message"]
-        assert data["detail"]["quota"]["repo"]["used"] == 200
-        assert data["detail"]["quota"]["repo"]["limit"] == 200
+        assert data["detail"]["quota"]["repo"]["used"] == 20
+        assert data["detail"]["quota"]["repo"]["limit"] == 20
+        assert db.executed_statements[0][1]["tid"] == "acme-corp"
+        assert db.executed_statements[0][1]["sub"] == "user-alice"
 
     @pytest.mark.anyio
     async def test_bulk_commit_membership_fallback_non_admin_accepted(self, make_client, fake_user):

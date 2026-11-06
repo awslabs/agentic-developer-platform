@@ -1,0 +1,69 @@
+name: GitLab Runners Reconcile
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Confirm the protected dev account (12 digits)'
+        required: true
+        type: string
+
+concurrency:
+  group: gitlab-runners-reconcile-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  orphan-cleanup:
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 8
+    runs-on: arc-runner-org
+    environment: adp-deploy-dev
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      EXPECTED_ACCOUNT: ${{ vars.GITLAB_RUNNERS_ACCOUNT_ID }}
+      CONFIRM_ACCOUNT: ${{ inputs.account_id }}
+      EXPECTED_ROLE: ${{ vars.GITLAB_RUNNERS_RECONCILE_ROLE_ARN }}
+      GROUP_IDS: ${{ vars.GITLAB_RUNNERS_GROUP_IDS }}
+      AWS_REGION: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Require exact target, role and group scope
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_ACCOUNT" =~ ^[0-9]{12}$ ]] || { echo '::error::Protected account missing'; exit 1; }
+          if [ -n "$CONFIRM_ACCOUNT" ]; then
+            test "$CONFIRM_ACCOUNT" = "$EXPECTED_ACCOUNT" || { echo '::error::Wrong requested account'; exit 1; }
+          fi
+          test "$EXPECTED_ROLE" = "arn:aws:iam::$EXPECTED_ACCOUNT:role/adp-dev-gitlab-runners-reconciler" || { echo '::error::Missing exact scoped reconciliation role'; exit 1; }
+          GROUP_IDS=$(python3 modules/source-control/gitlab/runners/scripts/reconcile_scope.py "$GROUP_IDS")
+          test -n "$GROUP_IDS"
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.GITLAB_RUNNERS_RECONCILE_ROLE_ARN }}
+          aws-region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+          role-session-name: reconcile-${{ github.run_id }}-${{ github.run_attempt }}
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          mask-aws-account-id: true
+      - name: Reconcile only verified runner-owned EC2 instances
+        working-directory: modules/source-control/gitlab/runners
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --output json | python3 scripts/deployment_guard.py identity --expected-role "$EXPECTED_ROLE"
+          test -f scripts/reconcile_instances.py || { echo '::error::S2 scoped orphan reconciler missing'; exit 1; }
+          GROUP_IDS=$(python3 scripts/reconcile_scope.py "$GROUP_IDS")
+          trap 'rm -f "$RUNNER_TEMP/runner-reconciliation.log"' EXIT
+          if ! timeout 420s python3 scripts/reconcile_instances.py --environment dev --region "$AWS_REGION" --group-ids "$GROUP_IDS" > "$RUNNER_TEMP/runner-reconciliation.log" 2>&1; then
+            echo '::error::Scoped orphan reconciliation failed; no unqualified replacement action was attempted'
+            exit 1
+          fi

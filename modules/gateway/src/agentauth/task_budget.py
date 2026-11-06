@@ -197,6 +197,13 @@ class TaskBudget:
         # terminalization must inspect the real strict ledger before releasing.
         client = await self.reservations._get_client()
         for target in targets:
+            if target.entity_type == "project":
+                proof = await client.get(target.key() + ":settled:" + operation_id)
+                if proof is not None and Decimal(proof.decode() if isinstance(proof, bytes) else proof) == Decimal(str(amount)):
+                    continue
+                if allow_missing_zero and Decimal(str(amount)) == 0 and not await client.hexists(target.key(), operation_id):
+                    continue
+                raise TaskBudgetError("Project budget settlement unconfirmed")
             values = await client.hmget(target.key(), [operation_id, "pending:" + operation_id, "unbounded:" + operation_id])
             if allow_missing_zero and Decimal(str(amount)) == 0 and not any(values):
                 continue  # A preparing admission never authorized any spend.

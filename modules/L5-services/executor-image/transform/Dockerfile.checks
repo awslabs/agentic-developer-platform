@@ -1,0 +1,12 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER 0
+COPY worker.whl /tmp/worker.whl
+COPY check-policy.json /opt/transform-check-policy.json
+RUN mv /tmp/worker.whl /tmp/adp_l5_services-0.1.0-py3-none-any.whl \
+    && python -m pip install --no-cache-dir /tmp/adp_l5_services-0.1.0-py3-none-any.whl \
+    && rm /tmp/adp_l5_services-0.1.0-py3-none-any.whl \
+    && mkdir -p /work /input \
+    && chown 10000:10000 /work
+USER 10000:10000
+ENTRYPOINT ["python", "-m", "l5_services.adapters.transform.check_runner"]

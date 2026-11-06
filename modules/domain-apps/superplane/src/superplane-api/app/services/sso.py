@@ -4,19 +4,68 @@ Supports SAML and OIDC identity providers per organization.
 Each org gets a dedicated Cognito identity provider named 'org-{org_id}'.
 """
 
+import json
 import logging
 import uuid
+from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
 
 from app.config import settings
+from app.schemas.org import sso_https_origin
 
 logger = logging.getLogger(__name__)
+
+_CLIENT_MUTABLE_FIELDS = (
+    "ClientName", "ExplicitAuthFlows", "RefreshTokenValidity", "AccessTokenValidity",
+    "IdTokenValidity", "TokenValidityUnits", "ReadAttributes", "WriteAttributes",
+    "AllowedOAuthFlows", "AllowedOAuthScopes", "AllowedOAuthFlowsUserPoolClient",
+    "CallbackURLs", "LogoutURLs", "DefaultRedirectURI", "AnalyticsConfiguration",
+    "PreventUserExistenceErrors", "EnableTokenRevocation", "EnablePropagateAdditionalUserContextData",
+    "AuthSessionValidity", "RefreshTokenRotation",
+)
+_PROTECTED_ATTRIBUTES = frozenset({"org_id", "role", "team_id", "department_id"})
 
 
 class SSOServiceError(Exception):
     """Raised when Cognito IdP operations fail."""
+
+
+class SSOOwnershipConflict(Exception):
+    """Provider ownership has not been independently established."""
+
+
+class SSOOriginPolicyUnavailable(Exception):
+    """Operator-owned SSO origin policy is missing or invalid."""
+
+
+class SSOOriginNotApproved(Exception):
+    """The verified organization's policy does not approve this origin."""
+
+
+def require_approved_sso_origin(org_id: uuid.UUID, metadata_url: str) -> None:
+    origin = sso_https_origin(metadata_url)
+    path = settings.superplane_sso_approved_origins_file
+    if not path:
+        raise SSOOriginPolicyUnavailable()
+    try:
+        raw = Path(path).read_bytes()
+        if len(raw) > 65536:
+            raise ValueError()
+        policy = json.loads(raw)
+        if policy["version"] != 1 or not isinstance(policy["tenants"], dict):
+            raise ValueError()
+        allowed = policy["tenants"].get(str(org_id))
+        if not isinstance(allowed, list) or not allowed or any(
+            not isinstance(item, str) or item != sso_https_origin(item)
+            for item in allowed
+        ):
+            raise ValueError()
+    except (OSError, ValueError, TypeError, KeyError):
+        raise SSOOriginPolicyUnavailable() from None
+    if origin not in allowed:
+        raise SSOOriginNotApproved()
 
 
 class SSOService:
@@ -30,195 +79,186 @@ class SSOService:
         self._user_pool_id = settings.cognito_user_pool_id
 
     def _provider_name(self, org_id: uuid.UUID) -> str:
-        """Generate a unique Cognito IdP name for an organization."""
-        return f"org-{str(org_id)[:8]}"
+        return f"org-{org_id}"
+
+    def _describe(self, provider_name: str) -> dict | None:
+        try:
+            response = self._client.describe_identity_provider(
+                UserPoolId=self._user_pool_id, ProviderName=provider_name
+            )
+            return response.get("IdentityProvider")
+        except ClientError as error:
+            if error.response["Error"]["Code"] == "ResourceNotFoundException":
+                return None
+            raise SSOServiceError("Failed to describe SSO provider") from error
+
+    def preflight_new_provider(self, org_id: uuid.UUID) -> str:
+        provider_name = self._provider_name(org_id)
+        if self._describe(provider_name) is not None:
+            raise SSOOwnershipConflict()
+        return provider_name
+
+    def _verified_provider(
+        self, org_id: uuid.UUID, provider_name: str, provider_type: str, *, newly_created: bool = False
+    ) -> dict:
+        provider = self._describe(provider_name)
+        if not isinstance(provider, dict) or provider.get("ProviderName") != provider_name or (
+            provider.get("ProviderType") != provider_type
+        ):
+            raise SSOOwnershipConflict()
+        identifiers = provider.get("IdpIdentifiers")
+        if identifiers and identifiers != [str(org_id)]:
+            raise SSOOwnershipConflict()
+        if newly_created and identifiers != [str(org_id)]:
+            raise SSOOwnershipConflict()
+        return provider
+
+    def _upsert_provider(
+        self,
+        org_id: uuid.UUID,
+        provider_type: str,
+        details: dict,
+        mapping: dict,
+        *,
+        bound_provider_name: str | None,
+        enabled: bool,
+    ) -> str:
+        provider_name = bound_provider_name or self._provider_name(org_id)
+        existing = self._describe(provider_name)
+        if existing is not None:
+            if not bound_provider_name:
+                raise SSOOwnershipConflict()
+            self._verified_provider(org_id, provider_name, provider_type)
+        elif bound_provider_name and bound_provider_name != self._provider_name(org_id):
+            raise SSOOwnershipConflict()
+        try:
+            if existing is not None:
+                self._client.update_identity_provider(
+                    UserPoolId=self._user_pool_id,
+                    ProviderName=provider_name,
+                    ProviderDetails=details,
+                    AttributeMapping=mapping,
+                )
+            else:
+                self._client.create_identity_provider(
+                    UserPoolId=self._user_pool_id,
+                    ProviderName=provider_name,
+                    ProviderType=provider_type,
+                    ProviderDetails=details,
+                    AttributeMapping=mapping,
+                    IdpIdentifiers=[str(org_id)],
+                )
+        except ClientError as error:
+            raise SSOServiceError("Failed to configure SSO provider") from error
+        self._verified_provider(
+            org_id, provider_name, provider_type, newly_created=existing is None
+        )
+        self._reconcile_client_provider(provider_name, enabled=enabled)
+        return provider_name
 
     def create_or_update_saml_provider(
         self,
         org_id: uuid.UUID,
         metadata_url: str,
         display_name: str | None = None,
+        *,
+        bound_provider_name: str | None = None,
+        enabled: bool = True,
     ) -> str:
-        """Create or update a SAML identity provider in the Cognito user pool.
-
-        Args:
-            org_id: Organization UUID.
-            metadata_url: SAML IdP metadata URL.
-            display_name: Optional human-friendly name.
-
-        Returns:
-            The Cognito provider name identifier.
-        """
-        provider_name = self._provider_name(org_id)
-        idp_details = {"MetadataURL": metadata_url}
-        attribute_mapping = {
-            "email": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
-            "custom:org_id": str(org_id),
-        }
-
-        try:
-            # Try to update first (idempotent)
-            self._client.update_identity_provider(
-                UserPoolId=self._user_pool_id,
-                ProviderName=provider_name,
-                ProviderDetails=idp_details,
-                AttributeMapping=attribute_mapping,
-            )
-            logger.info("Updated SAML IdP '%s' for org %s", provider_name, org_id)
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ResourceNotFoundException":
-                # Create new provider
-                try:
-                    self._client.create_identity_provider(
-                        UserPoolId=self._user_pool_id,
-                        ProviderName=provider_name,
-                        ProviderType="SAML",
-                        ProviderDetails=idp_details,
-                        AttributeMapping=attribute_mapping,
-                        IdpIdentifiers=[str(org_id)],
-                    )
-                    logger.info(
-                        "Created SAML IdP '%s' for org %s", provider_name, org_id
-                    )
-                except ClientError as create_err:
-                    logger.error("Failed to create SAML IdP: %s", create_err)
-                    raise SSOServiceError(
-                        f"Failed to create SAML provider: {create_err}"
-                    ) from create_err
-            else:
-                logger.error("Failed to update SAML IdP: %s", e)
-                raise SSOServiceError(f"Failed to update SAML provider: {e}") from e
-
-        # Update the app client to include this provider
-        self._add_provider_to_client(provider_name)
-        return provider_name
+        require_approved_sso_origin(org_id, metadata_url)
+        return self._upsert_provider(
+            org_id,
+            "SAML",
+            {"MetadataURL": metadata_url},
+            {"email": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"},
+            bound_provider_name=bound_provider_name,
+            enabled=enabled,
+        )
 
     def create_or_update_oidc_provider(
         self,
         org_id: uuid.UUID,
         issuer_url: str,
         display_name: str | None = None,
+        *,
+        bound_provider_name: str | None = None,
+        enabled: bool = True,
     ) -> str:
-        """Create or update an OIDC identity provider in the Cognito user pool.
+        require_approved_sso_origin(org_id, issuer_url)
+        return self._upsert_provider(
+            org_id,
+            "OIDC",
+            {"iss": issuer_url, "authorize_scopes": "openid email profile"},
+            {"email": "email"},
+            bound_provider_name=bound_provider_name,
+            enabled=enabled,
+        )
 
-        Args:
-            org_id: Organization UUID.
-            issuer_url: OIDC issuer URL.
-            display_name: Optional human-friendly name.
+    def get_provider(
+        self, org_id: uuid.UUID, provider_name: str, provider_type: str, *, missing_ok: bool = False
+    ) -> dict | None:
+        if missing_ok and self._describe(provider_name) is None:
+            return None
+        return self._verified_provider(org_id, provider_name, provider_type)
 
-        Returns:
-            The Cognito provider name identifier.
-        """
-        provider_name = self._provider_name(org_id)
-        idp_details = {
-            "iss": issuer_url,
-            "authorize_scopes": "openid email profile",
-        }
-        attribute_mapping = {
-            "email": "email",
-            "custom:org_id": str(org_id),
-        }
-
-        try:
-            self._client.update_identity_provider(
-                UserPoolId=self._user_pool_id,
-                ProviderName=provider_name,
-                ProviderDetails=idp_details,
-                AttributeMapping=attribute_mapping,
-            )
-            logger.info("Updated OIDC IdP '%s' for org %s", provider_name, org_id)
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ResourceNotFoundException":
-                try:
-                    self._client.create_identity_provider(
-                        UserPoolId=self._user_pool_id,
-                        ProviderName=provider_name,
-                        ProviderType="OIDC",
-                        ProviderDetails=idp_details,
-                        AttributeMapping=attribute_mapping,
-                        IdpIdentifiers=[str(org_id)],
-                    )
-                    logger.info(
-                        "Created OIDC IdP '%s' for org %s", provider_name, org_id
-                    )
-                except ClientError as create_err:
-                    logger.error("Failed to create OIDC IdP: %s", create_err)
-                    raise SSOServiceError(
-                        f"Failed to create OIDC provider: {create_err}"
-                    ) from create_err
-            else:
-                logger.error("Failed to update OIDC IdP: %s", e)
-                raise SSOServiceError(f"Failed to update OIDC provider: {e}") from e
-
-        self._add_provider_to_client(provider_name)
-        return provider_name
-
-    def delete_provider(self, org_id: uuid.UUID) -> None:
-        """Remove the identity provider for an organization."""
-        provider_name = self._provider_name(org_id)
+    def delete_provider(self, org_id: uuid.UUID, provider_name: str, provider_type: str) -> None:
+        if self._describe(provider_name) is None:
+            return
+        self._verified_provider(org_id, provider_name, provider_type)
         try:
             self._client.delete_identity_provider(
-                UserPoolId=self._user_pool_id,
-                ProviderName=provider_name,
+                UserPoolId=self._user_pool_id, ProviderName=provider_name
             )
-            logger.info("Deleted IdP '%s' for org %s", provider_name, org_id)
-        except ClientError as e:
-            if e.response["Error"]["Code"] != "ResourceNotFoundException":
-                logger.error("Failed to delete IdP: %s", e)
-                raise SSOServiceError(f"Failed to delete provider: {e}") from e
-            # Provider doesn't exist — nothing to delete
-            logger.info("IdP '%s' not found (already deleted)", provider_name)
+        except ClientError as error:
+            raise SSOServiceError("Failed to delete SSO provider") from error
 
-    def get_provider(self, org_id: uuid.UUID) -> dict | None:
-        """Describe the identity provider for an organization.
-
-        Returns None if no provider exists.
-        """
-        provider_name = self._provider_name(org_id)
-        try:
-            response = self._client.describe_identity_provider(
-                UserPoolId=self._user_pool_id,
-                ProviderName=provider_name,
-            )
-            return response.get("IdentityProvider", {})
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ResourceNotFoundException":
-                return None
-            raise SSOServiceError(f"Failed to describe provider: {e}") from e
-
-    def _add_provider_to_client(self, provider_name: str) -> None:
-        """Add the identity provider to the CLI app client's supported providers list."""
+    def _client_config(self) -> dict:
         if not settings.cognito_app_client_id:
-            logger.warning(
-                "No Cognito app client ID configured; skipping provider registration"
-            )
-            return
-
+            raise SSOServiceError("SSO app client is unavailable")
         try:
             response = self._client.describe_user_pool_client(
-                UserPoolId=self._user_pool_id,
-                ClientId=settings.cognito_app_client_id,
+                UserPoolId=self._user_pool_id, ClientId=settings.cognito_app_client_id
             )
-            client_config = response["UserPoolClient"]
-            providers = client_config.get("SupportedIdentityProviders", ["COGNITO"])
+            config = response["UserPoolClient"]
+        except (ClientError, KeyError, TypeError) as error:
+            raise SSOServiceError("SSO app client is unavailable") from error
+        if not isinstance(config, dict) or not isinstance(config.get("SupportedIdentityProviders"), list):
+            raise SSOServiceError("SSO app client configuration is incomplete")
+        return config
 
-            if provider_name not in providers:
-                providers.append(provider_name)
+    def _reconcile_client_provider(self, provider_name: str, *, enabled: bool) -> None:
+        config = self._client_config()
+        for required in (
+            "WriteAttributes", "ReadAttributes", "ExplicitAuthFlows", "EnableTokenRevocation",
+            "RefreshTokenRotation", "TokenValidityUnits",
+        ):
+            if required not in config:
+                raise SSOServiceError("SSO app client configuration is incomplete")
+        writes = config["WriteAttributes"]
+        if not isinstance(writes, list) or not writes or not all(isinstance(item, str) for item in writes):
+            raise SSOServiceError("SSO app client write attributes are unavailable")
+        safe_writes = [
+            item for item in writes
+            if item != "*" and item.removeprefix("custom:").lower() not in _PROTECTED_ATTRIBUTES
+        ]
+        if not safe_writes:
+            raise SSOServiceError("SSO app client write attributes are unavailable")
+        providers = config["SupportedIdentityProviders"]
+        selected = list(dict.fromkeys([*providers, provider_name])) if enabled else [
+            provider for provider in providers if provider != provider_name
+        ]
+        expected = {key: config[key] for key in _CLIENT_MUTABLE_FIELDS if key in config}
+        expected.update(SupportedIdentityProviders=selected, WriteAttributes=safe_writes)
+        if providers != selected or writes != safe_writes:
+            try:
                 self._client.update_user_pool_client(
-                    UserPoolId=self._user_pool_id,
-                    ClientId=settings.cognito_app_client_id,
-                    SupportedIdentityProviders=providers,
-                    AllowedOAuthFlows=client_config.get("AllowedOAuthFlows", []),
-                    AllowedOAuthScopes=client_config.get("AllowedOAuthScopes", []),
-                    AllowedOAuthFlowsUserPoolClient=client_config.get(
-                        "AllowedOAuthFlowsUserPoolClient", True
-                    ),
-                    CallbackURLs=client_config.get("CallbackURLs", []),
-                    LogoutURLs=client_config.get("LogoutURLs", []),
+                    UserPoolId=self._user_pool_id, ClientId=settings.cognito_app_client_id, **expected
                 )
-                logger.info(
-                    "Added '%s' to CLI app client supported providers", provider_name
-                )
-        except ClientError as e:
-            logger.error("Failed to update app client providers: %s", e)
-            raise SSOServiceError(f"Failed to update app client: {e}") from e
+            except ClientError as error:
+                raise SSOServiceError("Failed to update SSO app client") from error
+        observed = self._client_config()
+        if any(observed.get(key) != value for key, value in expected.items()):
+            raise SSOServiceError("SSO app client update could not be verified")
+
+    def remove_provider_from_client(self, provider_name: str) -> None:
+        self._reconcile_client_provider(provider_name, enabled=False)

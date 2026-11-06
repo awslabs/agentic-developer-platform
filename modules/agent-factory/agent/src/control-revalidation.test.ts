@@ -101,6 +101,41 @@ test('an exception at the SDK boundary records unknown and cannot replay', async
   expect(effect).toHaveBeenCalledTimes(1);
 });
 
+test('a human steer waits fourteen minutes then obtains one delivery decision for its original command', async () => {
+  let now = Date.now();
+  const check = jest.fn(async () => ({ allowed: true, deliveryConsumed: true }));
+  const store = new ControlStateStore({ generation: 7, supportedActions: new Set(['steer']), now: () => now, revalidate: check });
+  const queued = { ...proof, queuedGrantRef: 'a'.repeat(64), principal: 'original-human', authorityKind: 'human_session' as const };
+  store.submit('steer', 'command', 'digest', queued);
+  now += 14 * 60 * 1000;
+  expect(store.lookup('command').status).toBe('pending');
+  expect(check).not.toHaveBeenCalled();
+  const handoff = jest.fn();
+  expect(await store.deliverAuthorized('command', handoff)).toBe(true);
+  expect(check).toHaveBeenCalledWith(queued, 7);
+  expect(await store.deliverAuthorized('command', handoff)).toBe(false);
+  expect(handoff).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(store.snapshot())).not.toContain(queued.queuedGrantRef);
+});
+
+test('a boundary lost after consuming delivery authority is terminal and cannot replay', async () => {
+  const store = journal(async () => ({ allowed: true, deliveryConsumed: true }));
+  const effect = jest.fn();
+  expect(await store.deliverAuthorized('command', effect, () => false)).toBe(false);
+  expect(store.lookup('command').status).toBe('unknown');
+  expect(await store.deliverAuthorized('command', effect)).toBe(false);
+  expect(effect).not.toHaveBeenCalled();
+});
+
+test('an uncertain consumed decision is visible as unknown, never delivered or retried', async () => {
+  const store = journal(async () => ({ allowed: false, deliveryOutcomeUnknown: true }));
+  const effect = jest.fn();
+  expect(await store.deliverAuthorized('command', effect)).toBe(false);
+  expect(store.lookup('command')).toMatchObject({ status: 'unknown', delivered_at: null });
+  expect(await store.deliverAuthorized('command', effect)).toBe(false);
+  expect(effect).not.toHaveBeenCalled();
+});
+
 describe('worker online transport', () => {
   let directory: string;
   let previous: NodeJS.ProcessEnv;
@@ -147,6 +182,28 @@ describe('worker online transport', () => {
       authorityKind: 'human_session' }, 7))).toBe(true);
     const sent = (global.fetch as jest.Mock).mock.calls[0][1];
     expect(JSON.parse(sent.body)).toEqual(proof);
+  });
+
+  test('queued human delivery sends only its grant reference, never an expired admission proof', async () => {
+    send.mockResolvedValue({ ok: true, json: async () => ({ allowed: true, command_id: 'command', generation: 7,
+      max_round_trip_ms: 1000, delivery_consumed: true }) } as Response);
+    const queued = { ...proof, queuedGrantRef: 'a'.repeat(64) };
+    const result = await revalidateQueuedCommand(queued, 7);
+    expect(result).toMatchObject({ allowed: true, deliveryConsumed: true });
+    expect(JSON.parse(send.mock.calls[0][1].body)).toEqual({ queued_grant_ref: queued.queuedGrantRef,
+      action: 'steer', command_id: 'command', body_base64: 'e30=' });
+  });
+
+  test('queued delivery refuses a response without durable consumption', async () => {
+    expect(await allowed(revalidateQueuedCommand({ ...proof, queuedGrantRef: 'a'.repeat(64) }, 7))).toBe(false);
+  });
+
+  test.each([404, 503, 'lost'])('queued delivery classifies %s without replay or handoff', async (outcome) => {
+    if (outcome === 'lost') send.mockRejectedValue(new Error('lost response'));
+    else send.mockResolvedValue({ ok: false, status: outcome } as Response);
+    const result = await revalidateQueuedCommand({ ...proof, queuedGrantRef: 'a'.repeat(64) }, 7);
+    expect(result).toEqual(outcome === 404 ? false : { allowed: false, deliveryOutcomeUnknown: true });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   test('proof content cannot select the HTTP destination', async () => {

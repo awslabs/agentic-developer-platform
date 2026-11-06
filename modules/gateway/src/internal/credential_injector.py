@@ -18,6 +18,8 @@ into HTTP headers — they must go through the materialize path instead.
 from __future__ import annotations
 
 import base64
+import json
+from urllib.parse import quote
 
 # Types that are delivered as files, not header values.
 FILE_CREDENTIAL_TYPES: frozenset[str] = frozenset({"ssh_key", "certificate", "config_file"})
@@ -79,3 +81,19 @@ def inject_credential(
         )
 
     return result
+
+
+def sanitize_proxy_response(credential_type: str, secret: str, headers: dict[str, str], body: str) -> tuple[dict[str, str], str]:
+    injected = inject_credential(credential_type, secret, {})["Authorization"]
+    sensitive = {secret, injected, injected.split(" ", 1)[-1], base64.b64encode(secret.encode()).decode()}
+    sensitive |= {quote(value, safe="") for value in sensitive}
+    sensitive |= {json.dumps(value, ensure_ascii=True)[1:-1] for value in sensitive}
+    sensitive.discard("")
+
+    def scrub(value: str) -> str:
+        for material in sorted(sensitive, key=len, reverse=True):
+            value = value.replace(material, "[redacted]")
+        return value
+
+    allowed = {"content-type", "content-language", "date", "etag", "last-modified", "retry-after", "x-request-id"}
+    return {key: scrub(value) for key, value in headers.items() if key.lower() in allowed}, scrub(body)

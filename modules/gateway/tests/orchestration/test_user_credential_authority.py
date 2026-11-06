@@ -15,12 +15,14 @@ from sqlalchemy import delete, select
 
 from src.orchestration.execution_policy import Action, ExecutionPolicy, UserCredentialAuthority, stamp_policy
 from src.orchestration.models import OrchestrationAcceptedPlan
-from src.orchestration.user_credentials import validate_user_credential_authority
+from src.orchestration.user_credentials import resolve_user_credential, validate_user_credential_authority
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.onboarding import TenantMembership
+from src.shared.models.organization import User
 from src.shared.models.vault import UserCredential
 from src.shared.services.credential_resolver import CredentialNotFoundError
+from tests.auth.proxy_stream import stream_from_request
 from tests.orchestration.test_runtime_policy import APPROVER, ORG_A, _limits, _policy
 from tests.orchestration.test_runtime_policy import assignment as assignment_fixture
 from tests.orchestration.test_runtime_policy import engine as engine_fixture
@@ -76,6 +78,7 @@ async def broker(session, assignment, monkeypatch):
     from src.internal import assume_role_routes, credential_routes, task_credentials
 
     cred = UserCredential(
+        agent_consent=True,
         id="approved-key",
         org_id=ORG_A,
         user_id=APPROVER,
@@ -113,6 +116,7 @@ async def broker(session, assignment, monkeypatch):
         enforce_credential_binding=False,
         webhook_events_table="events",
         vault_raw_read_enabled=True,
+        github_pat_grace_days=30,
         vault_materialization_bucket="fixture-files",
         aws_region="us-east-1",
         vault_proxy_require_https=True,
@@ -158,9 +162,6 @@ async def broker(session, assignment, monkeypatch):
         monkeypatch.setitem(module.verify_internal_or_irsa.__globals__, "get_settings", lambda: settings)
     for module in (credential_routes, assume_role_routes):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
-        monkeypatch.setattr(
-            module, "resolve_credential_binding", lambda **_: SimpleNamespace(resolved_user_id=APPROVER, from_registry=True, drift_detected=False)
-        )
     sm = MagicMock()
     sm.get_secret.return_value = "provider-key"
     app = FastAPI()
@@ -209,6 +210,15 @@ async def test_raw_key_rotation_and_audit_use_approved_provider_permissions(brok
     assert "first-key" not in str([row.details for row in logs])
 
 
+async def test_accepted_plan_cannot_replace_personal_agent_consent(broker):
+    broker.cred.agent_consent = False
+    await broker.db.commit()
+    response = broker.client.post("/internal/v1/credential-raw-read", json=broker.body, headers=broker.headers)
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["error"] == "not_consented"
+    broker.sm.get_secret.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "reason",
     [
@@ -218,7 +228,7 @@ async def test_raw_key_rotation_and_audit_use_approved_provider_permissions(brok
         "wrong-action",
         "owner-lost-access",
         "expired-key",
-        "demoted",
+        "membership-revoked",
         "stale",
         "disabled",
         "missing-registry-scope",
@@ -239,9 +249,9 @@ async def test_refusal_precedes_secret_access(broker, reason):
         broker.cred.domain_app_id = "inaccessible-domain-app"
     elif reason == "expired-key":
         broker.cred.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-    elif reason == "demoted":
+    elif reason == "membership-revoked":
         membership = await broker.db.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER))
-        membership.role = "member"
+        membership.revoked_at = datetime.now(UTC)
     elif reason == "stale":
         broker.plan.version = 2
         broker.plan.created_at = datetime.now(UTC) + timedelta(seconds=5)
@@ -270,6 +280,7 @@ async def test_proxy_uses_approved_key_with_existing_destination_rules(broker):
     context = MagicMock()
     upstream = context.__aenter__.return_value
     upstream.request = AsyncMock(return_value=httpx.Response(200, text="provider-ok"))
+    upstream.stream = lambda **kwargs: stream_from_request(upstream, **kwargs)
     with (
         patch("src.internal.credential_routes.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]),
         patch("src.internal.credential_routes.httpx.AsyncClient", return_value=context),
@@ -286,28 +297,35 @@ async def test_proxy_uses_approved_key_with_existing_destination_rules(broker):
     upstream.request.assert_awaited_once()
 
 
-async def test_file_materialization_retains_provider_value(broker):
+async def test_file_materialization_refuses_before_provider_value_fetch_or_upload(broker):
     broker.cred.credential_type = "config_file"
     await broker.db.commit()
     with patch("boto3.client") as aws:
         aws.return_value.generate_presigned_url.return_value = "https://fixture.s3.amazonaws.com/file"
         response = broker.client.post("/internal/v1/credential-materialize", json=broker.body, headers=broker.headers)
-        assert response.status_code == 201, response.text
-        assert aws.return_value.put_object.call_args.kwargs["Body"] == b"provider-key"
-        assert aws.return_value.generate_presigned_url.call_args.kwargs["ExpiresIn"] == 300
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["error"] == "credential_materialization_cleanup_unavailable"
+        aws.assert_not_called()
+        broker.sm.get_secret.assert_not_called()
 
 
-async def test_saved_role_preserves_permissions_external_id_duration_tags_and_region(broker):
+@pytest.mark.parametrize("session_duration_seconds", [900, 1800, 3600])
+async def test_saved_role_caps_duration_and_preserves_permissions_external_id_tags_and_region(broker, session_duration_seconds):
     broker.cred.credential_type = "aws_role"
     await broker.db.commit()
     broker.sm.get_secret.return_value = json.dumps(
-        {"role_arn": ROLE, "external_id": "customer-external-id", "session_duration_seconds": 1800, "default_region": "eu-west-1"}
+        {
+            "role_arn": ROLE,
+            "external_id": "customer-external-id",
+            "session_duration_seconds": session_duration_seconds,
+            "default_region": "eu-west-1",
+        }
     )
     from tests.internal.aws_ownership_fixture import verified_role_material
 
     await verified_role_material(broker.db, broker.sm, broker.sm.get_secret.return_value)
 
-    expiry = datetime.now(UTC) + timedelta(minutes=30)
+    expiry = datetime.now(UTC) + timedelta(minutes=15)
     with patch("src.internal.sts_assume_service.boto3.client") as aws:
         aws.return_value.assume_role.return_value = {
             "Credentials": {
@@ -321,7 +339,7 @@ async def test_saved_role_preserves_permissions_external_id_duration_tags_and_re
         assert response.status_code == 200, response.text
         call = aws.return_value.assume_role.call_args.kwargs
         assert call["RoleArn"] == ROLE and call["ExternalId"] == "customer-external-id"
-        assert call["DurationSeconds"] == 1800 and call["Tags"]
+        assert call["DurationSeconds"] == 900 and call["Tags"]
         assert "Policy" not in call and "PolicyArns" not in call
         assert response.json()["region"] == "eu-west-1"
 
@@ -348,6 +366,37 @@ async def test_credential_selection_must_be_accessible_at_acceptance(broker):
     await broker.db.execute(delete(UserCredential).where(UserCredential.id == broker.cred.id))
     with pytest.raises(CredentialNotFoundError):
         await validate_user_credential_authority(broker.db, policy=policy(), user_id=APPROVER)
+
+
+async def test_login_subject_resolves_the_plan_owners_existing_vault_credential(broker):
+    owner = await broker.db.get(User, APPROVER)
+    owner.cognito_sub = "plan-owner-login-subject"
+    await broker.db.flush()
+
+    await validate_user_credential_authority(broker.db, policy=policy(), user_id=owner.cognito_sub)
+    selected = await resolve_user_credential(broker.db, org_id=ORG_A, user_id=owner.cognito_sub, credential_id=broker.cred.id)
+    assert selected.id == broker.cred.id
+    assert selected.user_id == APPROVER
+    assert selected.org_id == ORG_A
+
+
+@pytest.mark.parametrize("owner_reference", ["plan-owner-login-subject", APPROVER])
+@pytest.mark.parametrize("denial", ["another_owner", "another_tenant", "missing_user"])
+async def test_login_resolution_preserves_credential_ownership_and_tenant_scope(broker, owner_reference, denial):
+    owner = await broker.db.get(User, APPROVER)
+    owner.cognito_sub = "plan-owner-login-subject"
+    if denial == "another_owner":
+        # The selected credential may exist in the tenant without belonging to
+        # the authenticated plan owner. An exact ID is not an ACL bypass.
+        broker.cred.user_id = "another-vault-owner"
+    elif denial == "another_tenant":
+        broker.cred.org_id = "another-tenant"
+    else:
+        owner_reference = "unknown-login-subject"
+    await broker.db.flush()
+
+    with pytest.raises(CredentialNotFoundError):
+        await resolve_user_credential(broker.db, org_id=ORG_A, user_id=owner_reference, credential_id=broker.cred.id)
 
 
 @pytest.mark.parametrize("removed", [True, False])
@@ -379,6 +428,7 @@ async def test_policy_removal_never_reopens_old_worker_access_but_legacy_still_w
 async def test_metadata_contains_only_selected_credentials_without_secret_references(broker):
     broker.db.add(
         UserCredential(
+            agent_consent=True,
             id="not-approved",
             org_id=ORG_A,
             user_id=APPROVER,

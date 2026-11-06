@@ -15,12 +15,13 @@ PACKAGE = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("persona,mode", [(p, "success") for p in ["architect", "product", "pm", "intent-refinement"]]
+                         + [("operations", m) for m in ["operations-restored", "operations-recovered"]]
                          + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http", "long-discussion", "large-discussion", "many-tools", "large-output", "broken-stream"]])
 def test_packaged_github_sdk(tmp_path, persona, mode):
     node = shutil.which("node")
     assert node
     snapshot = json.loads(subprocess.check_output([node, str(PACKAGE / "scripts/catalogue.mjs"),
-                                                  str(PACKAGE / "personas" / f"{persona}.json")], text=True))["snapshots"][0]
+                                                  str(PACKAGE / "personas" / f"{'operations-story' if persona == 'operations' else persona}.json")], text=True))["snapshots"][0]
     package = tmp_path / "app/codex-harness"
     shutil.copytree(PACKAGE / "dist", package / "dist")
     shutil.copytree(PACKAGE.parent / "rules", package / "rules")
@@ -38,6 +39,67 @@ def test_packaged_github_sdk(tmp_path, persona, mode):
     context = {"version": 1, "persona": f"agent-codex-{persona}", "repository": "owner/repo", "repositoryId": "123",
                "issue": 12, "snapshot": snapshot, "capabilities": ["artifacts.publish"], "maxTurns": 20, "maxTools": 0,
                "maxOutputTokens": 4096, "harnessRevision": "codex-sdk-0.155.1/adp-v1"}
+    operational = persona == 'operations'
+    story_board = {"state": "available", "issue": 12, "path": ".adp/tasks/12.json", "repository": "owner/repo", "repository_id": 123,
+                   "branch": "agent/issue-12", "sha256": "a" * 64, "confirmed_source_revision": "b" * 40,
+                   "source": "authorized_workspace", "progress_only": True, "board": {"version": 2, "issue": 12, "tasks": [
+                       {"id": "AC-c1", "kind": "code", "title": "Existing code", "status": "done", "note": "Original completion evidence"},
+                       {"id": "AC-t1", "kind": "test", "title": "Manual acceptance", "status": "blocked"},
+                   ]}}
+    if operational:
+        context['capabilities'] = ['artifacts.publish', 'repository.read', 'actions.read', 'actions.write', 'repository.write', 'change.create', 'change.merge']
+        context['maxTools'] = 32
+        # Execute the production board controller. Only its provider transport is
+        # replaced; the pinned SDK, broker receipts and host consumption stay real.
+        board_module = shared / 'board'
+        board_module.mkdir()
+        (board_module / 'package.json').write_text('{"type":"commonjs"}')
+        # Keep the shared runtime's dependency versions independent of the Codex
+        # package, as in the production image. No checkpoint/secret checks are mocked.
+        agent_dependencies = PACKAGE.parent / 'agent/node_modules'
+        assert agent_dependencies.is_dir(), 'Install the agent production dependencies before the SDK fixture'
+        (board_module / 'node_modules').symlink_to(agent_dependencies, target_is_directory=True)
+        # The contracts job does not build agent/dist. Always compile the exact
+        # current sources with this package's pinned TypeScript, so a developer's
+        # pre-existing agent build cannot mask missing or stale fixture code. Walk
+        # emitted runtime imports, including the checkpoint's real secret detector.
+        subprocess.run([node, '--input-type=module', '-e', '''
+import ts from 'typescript';
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, normalize } from 'node:path';
+const [source, destination] = process.argv.slice(1);
+const compiled = new Set();
+function compile(name) {
+  // This provider transport is the fixture boundary already supplied below.
+  if (name === 'operations-story-tools' || compiled.has(name)) return;
+  if (name.startsWith('../')) throw new Error('Shared fixture import escapes its source tree');
+  compiled.add(name);
+  const filename = join(source, name + '.ts');
+  const result = ts.transpileModule(readFileSync(filename, 'utf8'), {
+    fileName: filename, reportDiagnostics: true,
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true },
+  });
+  if (result.diagnostics?.some(diagnostic => diagnostic.category === ts.DiagnosticCategory.Error)) {
+    throw new Error('Shared runtime fixture compilation failed: ' + filename);
+  }
+  const output = join(destination, name + '.js');
+  mkdirSync(dirname(output), { recursive: true });
+  writeFileSync(output, result.outputText);
+  const emitted = ts.createSourceFile(output, result.outputText, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  function visit(node) {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'require'
+        && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0])) {
+      const dependency = node.arguments[0].text;
+      if (dependency.startsWith('.')) compile(normalize(join(dirname(name), dependency)).replace(/\\.js$/, ''));
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(emitted);
+}
+compile('operations-story-board');
+''', str(PACKAGE.parent / 'agent/src'), str(board_module)], cwd=PACKAGE, check=True)
+        (board_module / 'operations-story-tools.js').write_text("exports.invokeOperationsStoryTool = async () => JSON.stringify({story_board: process.env.FIXTURE_MODE === 'operations-recovered' ? {state:'unavailable'} : JSON.parse(process.env.FIXTURE_STORY_BOARD)});")
+        (shared / 'operations-story-board.js').write_text("import board from './board/operations-story-board.js'; export const restoreOperationsStoryBoard = board.restoreOperationsStoryBoard;")
     if mode == "budget-http":
         context["maxTurns"] = 1
     if mode in {"repository-read", "many-tools"}:
@@ -69,7 +131,7 @@ export async function codexPersonaOperation(body) {
 import { appendFileSync } from 'node:fs';
 let steered = false;
 export async function startCodexPersonaControls(log, signal) {
- return { signal, explain(text) { appendFileSync(process.env.FIXTURE_ARTIFACTS + '/progress.txt', text + '\\n'); }, async checkpoint() { signal.throwIfAborted(); },
+ return { signal, explain(text, detail) { appendFileSync(process.env.FIXTURE_ARTIFACTS + '/progress.txt', text + '\\n'); appendFileSync(process.env.FIXTURE_ARTIFACTS + '/events.jsonl', JSON.stringify({text, detail}) + '\\n'); }, async checkpoint() { signal.throwIfAborted(); },
   takeSteering() { if (process.env.FIXTURE_MODE === 'steer' && !steered) { steered = true; return ['Also inspect retry configuration.']; } return []; },
   pendingSteering() { return false; }, async operation(work) { signal.throwIfAborted(); return work(); }, async close() {} };
 }
@@ -96,6 +158,10 @@ export async function createCodexPersonaReporter() {
         gh.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps({"id":123} if sys.argv[1] == "api" else '
                       + repr(issue_payload) + '))\n')
     gh.chmod(0o700)
+    if operational:
+        python = binaries / 'python3'
+        python.write_text('#!' + __import__('sys').executable + '\nimport json,os\nprint(json.dumps({"operations_tasks":{"cycles":[]},"story_board":json.loads(os.environ["FIXTURE_STORY_BOARD"])}))\n')
+        python.chmod(0o700)
     workspace = tmp_path / "repo"
     workspace.mkdir()
     subprocess.run(['git', 'init', '-q', str(workspace)], check=True)
@@ -105,6 +171,7 @@ export async function createCodexPersonaReporter() {
     subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                     'commit', '--allow-empty', '-qm', 'fixture'], cwd=workspace, check=True)
     requests = []
+    progress_before_model = []
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -112,6 +179,7 @@ export async function createCodexPersonaReporter() {
 
         def do_POST(self):
             requests.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+            progress_before_model.append((artifacts / 'progress.txt').read_text() if (artifacts / 'progress.txt').exists() else '')
             if mode == 'unknown':
                 self.connection.shutdown(socket.SHUT_RDWR)
                 self.connection.close()
@@ -122,7 +190,7 @@ export async function createCodexPersonaReporter() {
                 return
             response = {"id": "resp_fixture", "status": "completed", "output": [
                 {"id": "msg_fixture", "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
-                 "content": [{"type": "output_text", "text": json.dumps(planning_output(persona, "issue")), "annotations": []}]}],
+                 "content": [{"type": "output_text", "text": ("Reported task progress; acceptance remains separate." if operational else json.dumps(planning_output(persona, "issue"))), "annotations": []}]}],
                         "usage": {"input_tokens": 100, "output_tokens": 10}}
             if (mode == 'repository-read' and len(requests) == 1) or (mode == 'many-tools' and len(requests) <= 35):
                 response["output"] = [{"id": f"fc_fixture_{len(requests)}", "type": "function_call", "call_id": f"call_fixture_{len(requests)}", "name": "repository_file",
@@ -133,6 +201,15 @@ export async function createCodexPersonaReporter() {
                 response['output'][0]['content'][0]['text'] = json.dumps(artifact)
                 response['output'].insert(0, {"id": "reasoning_fixture", "type": "reasoning", "encrypted_content": "x" * 70000, "summary": []})
                 response['usage']['output_tokens'] = 12000
+            if operational:
+                offset = 1 if mode == 'operations-recovered' else 0
+                if offset and len(requests) == 1:
+                    response['output'] = [{'id': 'read', 'type': 'function_call', 'call_id': 'read', 'name': 'repair_tasks', 'namespace': 'mcp__adp', 'arguments': '{}', 'status': 'completed'}]
+                elif len(requests) - offset in {1, 2}:
+                    updates = ([{'id': 'AC-new', 'status': 'open', 'kind': 'test', 'title': 'Regression check'}]
+                               if len(requests) - offset == 1 else [{'id': 'AC-t1', 'status': 'done'}])
+                    response['output'] = [{'id': f'plan{len(requests)}', 'type': 'function_call', 'call_id': f'plan{len(requests)}',
+                                           'name': 'story_task_progress', 'namespace': 'mcp__adp', 'arguments': json.dumps({'expected_sha256': 'a' * 64, 'updates': updates}), 'status': 'completed'}]
             body = ('event: response.completed\ndata: ' + json.dumps({'type': 'response.completed', 'response': response}) + '\n\n').encode()
             if mode == 'broken-stream':
                 body = b'event: response.created\ndata: {"type":"response.created","response":{"status":"in_progress"}}\n\n'
@@ -148,7 +225,10 @@ export async function createCodexPersonaReporter() {
     thread.start()
     env = {**os.environ, 'PATH': str(binaries) + os.pathsep + os.environ['PATH'], 'AGENT_TYPE': f'agent-codex-{persona}',
            'TARGET_REPO': 'owner/repo', 'ISSUE_NUMBER': '12', 'WORK_DIR': str(workspace), 'FIXTURE_MODE': mode,
-           'FIXTURE_CONTEXT': json.dumps(context), 'FIXTURE_ARTIFACTS': str(artifacts), 'SIGV4_PROXY_PORT': str(server.server_port)}
+           'FIXTURE_CONTEXT': json.dumps(context), 'FIXTURE_STORY_BOARD': json.dumps(story_board),
+           **({'ADP_ENGINE_OPERATIONS_STORY': 'true', 'ADP_ENGINE_OPERATIONS_EXECUTOR': 'true',
+               'ADP_OPERATIONS_REPORT_FILE': str(artifacts / 'report.json'),
+               'ADP_OPERATIONS_STORY_CONTEXT': json.dumps({'repository': 'owner/repo', 'issue': 12, 'title': 'Restore progress', 'workflows': ['deploy.yml']})} if operational else {}), 'FIXTURE_ARTIFACTS': str(artifacts), 'SIGV4_PROXY_PORT': str(server.server_port)}
     try:
         result = subprocess.run([node, str(package / 'dist/github-entry.mjs'), '--embedded'], cwd=workspace,
                                 env=env, capture_output=True, text=True, timeout=60)
@@ -156,10 +236,10 @@ export async function createCodexPersonaReporter() {
         server.shutdown()
         server.server_close()
         thread.join()
-    success = mode in {'success', 'steer', 'repository-read', 'transient', 'long-discussion', 'large-discussion', 'many-tools', 'large-output'}
+    success = operational or mode in {'success', 'steer', 'repository-read', 'transient', 'long-discussion', 'large-discussion', 'many-tools', 'large-output'}
     assert (result.returncode == 0) == success, result.stderr
     assert (artifacts / 'report.json').exists() == success
-    assert len(requests) == (36 if mode == 'many-tools' else 3 if mode in {'persistent-http', 'budget-http'} else 2 if mode in {'steer', 'repository-read', 'transient'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
+    assert len(requests) == (4 if mode == 'operations-recovered' else 3 if operational else 36 if mode == 'many-tools' else 3 if mode in {'persistent-http', 'budget-http'} else 2 if mode in {'steer', 'repository-read', 'transient'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
     if success:
         progress = (artifacts / 'progress.txt').read_text()
         assert progress.count('Starting the repository assessment.') == 1
@@ -168,9 +248,10 @@ export async function createCodexPersonaReporter() {
             assert 'Reading README.md (lines 1–100)' in progress
             assert 'Read README.md (lines 1–100)' in progress
             assert 'Pinned repository evidence 471.' not in progress
-        assert 'planning_persona' in json.loads((artifacts / 'report.json').read_text())['result']['response']
+        if not operational:
+            assert 'planning_persona' in json.loads((artifacts / 'report.json').read_text())['result']['response']
     if requests:
-        assert f'personas/{persona}.md' in json.dumps(requests[0])
+        assert f'personas/{"operations-story" if operational else persona}.md' in json.dumps(requests[0])
         assert requests[0]['model'] == 'gpt-5-codex'
     if mode == 'steer':
         assert 'Also inspect retry configuration.' in json.dumps(requests[1])
@@ -217,3 +298,14 @@ export async function createCodexPersonaReporter() {
     if mode == 'broken-stream':
         operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
         assert [(value['kind'], value['action']) for value in operations] == [('model', 'claim')]
+
+    if operational:
+        events = [json.loads(line) for line in (artifacts / 'events.jsonl').read_text().splitlines()]
+        plans = [event['text'] for event in events if event.get('detail', {}).get('category') == 'plan']
+        assert plans and '☑ `code` AC-c1' in plans[0] and '⛔ `test` AC-t1' in plans[0]
+        assert 'AC-c1' in progress_before_model[0 if mode == 'operations-restored' else 1]
+        assert 'Original completion evidence' in json.dumps(requests[0 if mode == 'operations-restored' else 1])
+        assert '☑ `test` AC-t1' in plans[-1]
+        assert 'AC-new — Regression check (added this run)' in plans[-1]
+        assert '☑ `code` AC-c1' in plans[-1]
+        assert 'acceptance remains separate' in json.loads((artifacts / 'report.json').read_text())['report']

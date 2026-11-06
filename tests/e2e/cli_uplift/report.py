@@ -100,6 +100,66 @@ def sanitize_command(argv):
     return " ".join(parts)
 
 
+def qualification_rows(matrix):
+    entry = matrix.get("E46") or {}
+    limitation = (entry.get("detail") or {}).get("reservation_limitation")
+    if not isinstance(limitation, dict):
+        return []
+    return [
+        {
+            "id": "QUAL03",
+            "source_case": "E46",
+            "status": "known_limitation",
+            "detail": redact(limitation),
+        }
+    ]
+
+
+def assistant_qualification_rows(matrix, config, preflight, cleanup_ok):
+    revision = (preflight or {}).get("deployed_revision")
+    rows = []
+    for case_id in ("E46", "E47"):
+        entry = matrix.get(case_id)
+        if entry is None:
+            continue
+        detail = entry.get("detail") or {}
+        verified = entry["status"] == cases.PASSED
+        rows.append(
+            redact(
+                {
+                    "source_case": case_id,
+                    "qualification_status": "pending_operator_review",
+                    "case_status": entry["status"],
+                    "expected_revision": config.get("expected_revision"),
+                    "deployed_revision": revision,
+                    "cleanup_status": "complete" if cleanup_ok else "failed",
+                    "cleanup_seconds": (
+                        detail.get("cleanup_seconds")
+                        if verified and case_id == "E46"
+                        else None
+                    ),
+                    "fault": detail.get("fault")
+                    if verified and case_id == "E47"
+                    else None,
+                    "outcome": detail.get("outcome")
+                    if verified and case_id == "E47"
+                    else None,
+                    "accounting_status": (
+                        detail.get("accounting_status")
+                        if verified and case_id == "E47"
+                        else None
+                    ),
+                    "fault_proof": (
+                        detail.get("fault_proof")
+                        if verified and case_id == "E47"
+                        else None
+                    ),
+                }
+            )
+        )
+    return rows
+
+
 def build(
     *,
     matrix,
@@ -113,6 +173,8 @@ def build(
     transcript=(),
     preflight=None,
     stages=None,
+    product_cli_attempts=(),
+    cleanup_outstanding=(),
 ):
     """Assemble report.json. The status here is the authoritative verdict.
 
@@ -137,7 +199,7 @@ def build(
                 "detail": redact(entry.get("detail") or {}),
             }
         )
-    return {
+    document = {
         "evaluation_id": evaluation_id,
         "attempt_id": attempt_id,
         "status": status,
@@ -147,6 +209,10 @@ def build(
         "partial": not cases.is_full(suites),
         "counts": cases.tally(matrix),
         "cases": rows,
+        "known_limitations": qualification_rows(matrix),
+        "assistant_qualification": assistant_qualification_rows(
+            matrix, config, preflight, cleanup_ok
+        ),
         "cleanup": "complete" if cleanup_ok else "failed",
         "expected_revision": config.get("expected_revision"),
         "harness_commit": config.get("harness_commit"),
@@ -166,6 +232,17 @@ def build(
         "preflight": redact(preflight or {}),
         "transcript": [redact(line) for line in transcript],
     }
+    cli_document = product_cli_report(
+        document, product_cli_attempts, cleanup_outstanding
+    )
+    if cli_document is not None and cli_document["status"] != "passed":
+        document["status"] = cases.FAILED
+        document["reasons"] = [
+            *reasons,
+            "Required installed Product CLI evidence is incomplete",
+        ]
+        document["full_acceptance"] = False
+    return document
 
 
 def junit(matrix, evaluation_id):
@@ -274,6 +351,11 @@ def summary(
         lines.append(
             f"| `{case_id}` | {case.owner} | {case.suite} | {icon} {entry['status']}{note} | {case.summary} |"
         )
+    for row in qualification_rows(matrix):
+        lines.append(
+            f"| `{row['id']}` | #7174 | assistant | 🚧 known_limitation | "
+            "Creation reservation has no observed pod (source E46; proof in report.json) |"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -364,7 +446,184 @@ def validate(document, schema=None):
     return errors
 
 
-def write(directory, document, matrix, evaluation_id):
+PRODUCT_CLI_CASES = {
+    "PR03-C01": ("AC-01", "SCN-01"),
+    "PR03-C02": ("AC-02", "SCN-02"),
+    "PR03-C03": ("AC-03", "SCN-03"),
+}
+
+
+def product_cli_report(document, attempts, cleanup_outstanding=()):
+    """Separate, private attempt-aware Product CLI evidence; never a BOLT decision."""
+    selected = {
+        row["id"]: row for row in document["cases"] if row["id"] in PRODUCT_CLI_CASES
+    }
+    if not selected:
+        return None
+    attempts = [
+        redact(attempt) for attempt in attempts if attempt.get("case_id") in selected
+    ]
+    release = (document.get("preflight") or {}).get("product_release_check") or {}
+    expected_hashes = (
+        (document.get("preflight") or {}).get("expected_release") or {}
+    ).get("files") or {}
+    failures = []
+    rows = []
+    for case_id, (criterion, scenario) in PRODUCT_CLI_CASES.items():
+        case = selected.get(case_id)
+        if case is None:
+            failures.append(f"{case_id} was not selected")
+            continue
+        observed = [item for item in attempts if item.get("case_id") == case_id]
+        proof = observed[-1] if observed else {}
+        receipt = proof.get("retirement_receipt") or {}
+        if any(
+            not isinstance(item.get("attempt_id"), str)
+            or not item["attempt_id"].startswith(document["evaluation_id"] + "-a")
+            or item.get("requirements_revision") != document.get("expected_revision")
+            for item in observed
+        ):
+            failures.append(f"{case_id} has an unbound CLI attempt")
+        if case["status"] != cases.PASSED:
+            failures.append(f"{case_id} is {case['status']}")
+        elif (
+            not observed
+            or proof.get("status") != "passed"
+            or (
+                case_id == "PR03-C03"
+                and (
+                    proof.get("absence_verified") is not True
+                    or not isinstance(proof.get("owned_product"), dict)
+                    or not proof["owned_product"].get("product_id")
+                    or not proof["owned_product"].get("project_id")
+                    or not isinstance(proof.get("retirement_receipt"), dict)
+                    or receipt.get("run_id") != document["evaluation_id"]
+                    or receipt.get("fixture_removed") is not True
+                    or type(receipt.get("cleanup_revision")) is not int
+                    or receipt["cleanup_revision"] < 1
+                    or any(
+                        receipt.get(field) != proof["owned_product"].get(field)
+                        for field in ("product_id", "project_id")
+                    )
+                    or not isinstance(proof.get("recovery_attempts"), list)
+                    or any(
+                        not isinstance(attempt, dict)
+                        or attempt.get("state")
+                        not in ("reconcile_started", "reconcile_received")
+                        for attempt in proof["recovery_attempts"]
+                    )
+                    or not any(
+                        isinstance(result, dict)
+                        and result.get("kind") == "product_fixture"
+                        and result.get("status") == "deleted"
+                        for result in proof.get("cleanup_results") or []
+                    )
+                )
+            )
+            or (
+                case_id != "PR03-C03"
+                and (
+                    not proof.get("cli_events")
+                    or not proof.get("installed_hashes")
+                    or any(
+                        not isinstance(event, dict)
+                        or not isinstance(event.get("argv"), list)
+                        or len(event["argv"]) < 4
+                        or event["argv"][:2] != ["adp", "product"]
+                        or event["argv"][-1] != "--json"
+                        or event.get("actor") not in ("owner", "foreign")
+                        or type(event.get("exit_code")) is not int
+                        or not isinstance(event.get("output"), dict)
+                        or event["output"].get("status") not in ("ok", "failed")
+                        for event in proof.get("cli_events") or []
+                    )
+                )
+            )
+            or (
+                case_id == "PR03-C01"
+                and (
+                    len(proof.get("cli_events") or []) < 6
+                    or len(proof.get("api_readback") or []) < 5
+                    or not isinstance(proof.get("owned_product"), dict)
+                    or any(
+                        not isinstance(readback, dict)
+                        or readback.get("status") != 200
+                        or any(
+                            readback.get(field) != proof["owned_product"].get(field)
+                            for field in ("product_id", "project_id")
+                        )
+                        for readback in proof.get("api_readback") or []
+                    )
+                )
+            )
+            or (
+                case_id == "PR03-C02"
+                and (len(proof.get("denials") or []) < 3 or not proof.get("retry"))
+            )
+        ):
+            failures.append(f"{case_id} lacks verified installed-CLI attempt evidence")
+        elif case_id != "PR03-C03" and (
+            not all(
+                proof["installed_hashes"].get(name)
+                for name in ("adp", "adp-product.py")
+            )
+            or any(
+                expected_hashes.get(name) != digest
+                for name, digest in proof["installed_hashes"].items()
+            )
+        ):
+            failures.append(f"{case_id} installed hashes differ from pinned release")
+        rows.append(
+            {
+                "case_id": case_id,
+                "criterion": criterion,
+                "scenario": scenario,
+                "status": case["status"],
+                "attempt_ids": [item.get("attempt_id") for item in observed],
+            }
+        )
+    if document.get("cleanup") != "complete" or cleanup_outstanding:
+        failures.append("Product fixture cleanup is incomplete")
+    if (
+        not release.get("workflow_revision")
+        or not release.get("image_digest")
+        or release.get("source_revision") != document.get("expected_revision")
+        or document.get("expected_revision")
+        != (document.get("preflight") or {}).get("deployed_revision")
+    ):
+        failures.append(
+            "Pinned Product source, workflow or API release proof is unavailable"
+        )
+    return {
+        "schema_version": 1,
+        "surface": "installed-cli",
+        "evaluation_id": document["evaluation_id"],
+        "attempt_id": document["attempt_id"],
+        "workflow_run_id": document.get("product_run_id"),
+        "requirements_revision": document.get("expected_revision"),
+        "source_revision": release.get("source_revision"),
+        "workflow_revision": release.get("workflow_revision"),
+        "api_image_digest": release.get("image_digest"),
+        "cli_manifest_sha256": release.get("cli_manifest_sha256"),
+        "status": "passed" if not failures else "incomplete",
+        "failures": failures,
+        "cases": rows,
+        "attempts": attempts,
+        "cleanup": document.get("cleanup"),
+        "cleanup_outstanding": list(cleanup_outstanding),
+    }
+
+
+def write(
+    directory,
+    document,
+    matrix,
+    evaluation_id,
+    *,
+    product_cli_attempts=(),
+    cleanup_outstanding=(),
+    product_run_id=None,
+):
     """Write report.json and results.xml with private permissions.
 
     The document is validated against report.schema.json before it lands.
@@ -387,4 +646,43 @@ def write(directory, document, matrix, evaluation_id):
     junit_path = root / "results.xml"
     junit_path.write_text(junit(matrix, evaluation_id))
     junit_path.chmod(0o600)
-    return {"report": str(report_path), "junit": str(junit_path)}
+    samples = next(
+        (
+            row["detail"].get("samples") or []
+            for row in document["cases"]
+            if row["id"] == "E49"
+        ),
+        [],
+    )
+    raw_path = root / "assistant-latency-samples.jsonl"
+    with raw_path.open("w") as stream:
+        for sample in samples:
+            stream.write(
+                json.dumps(
+                    {
+                        **redact(sample),
+                        "evaluation_id": evaluation_id,
+                        "harness_commit": document.get("harness_commit"),
+                        "deployed_revision": (document.get("preflight") or {}).get(
+                            "deployed_revision"
+                        ),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    raw_path.chmod(0o600)
+    paths = {"report": str(report_path), "junit": str(junit_path)}
+    cli_document = product_cli_report(
+        {**document, "product_run_id": product_run_id},
+        product_cli_attempts,
+        cleanup_outstanding,
+    )
+    if cli_document is not None:
+        private_path = root / "product-profile-cli.private.json"
+        private_path.write_text(
+            json.dumps(cli_document, indent=2, sort_keys=True) + "\n"
+        )
+        private_path.chmod(0o600)
+        paths["product_cli_private"] = str(private_path)
+    return paths

@@ -113,6 +113,15 @@ Setup merges ADP settings into `~/.codex/config.toml` or
 `~/.claude/settings.json`, preserving unrelated settings. It uses your existing
 ADP session. Setting up a second tool does not require another login.
 
+The installer also downloads and verifies the skills archive into
+`~/.adp/skills/`. Each setup command copies skills intended for that client into
+`~/.codex/skills/` or `~/.claude/skills/` and marks each ADP-owned directory.
+Re-running setup refreshes unchanged ADP skills, but leaves directories without
+an ADP marker or with local changes untouched and prints their paths. If an
+older deployment does not serve a skills archive, setup notes this and
+continues without installing skills. The CLI may include no skills until a
+deployment publishes them.
+
 Arguments after a launcher go to that tool:
 
 ```bash
@@ -132,6 +141,47 @@ For an always-running proxy on macOS, `adp daemon install` enables a launchd
 service so bare `codex` can work; `adp daemon uninstall` removes that service.
 The daemon commands are not supported on Linux. `adp serve` runs the proxy in
 the foreground and stops with Ctrl-C.
+
+### macOS apps
+
+The dashboard's **Apps & CLI Setup → macOS apps** section covers Claude App and
+compatible Codex-based ChatGPT App builds. They can reuse your existing ADP
+login, but desktop configuration depends on the installed app's capabilities.
+See [macOS app setup](macos-apps.md) for connection steps, current support limits
+and troubleshooting. Automatic ChatGPT desktop setup is not yet available.
+
+### Claude Desktop
+
+After signing in, install a credential helper tied to the selected ADP deployment:
+
+```bash
+adp claude-desktop setup
+adp claude-desktop setup --check
+```
+
+The first command prints the proposed provider (ADP gateway), Anthropic Messages
+base URL (`<your gateway>/api`), bearer authentication scheme, absolute helper
+path (`~/.adp/bin/adp-claude-desktop-token`), and the endpoint listing models
+available to your deployment and account. The helper uses ADP's existing login
+and refreshes tokens as needed. Setup also resolves your tenant (`adp tenant
+use TENANT_ID` first if your login can see more than one) and pins it in the
+helper beside the deployment. A subsequent `adp deployment use` or `adp tenant
+use` does not retarget it; rerun setup under a new selection to change its
+target. Setup is
+repeatable and does not modify Claude Desktop or Claude Code settings. Use
+`--json` for `helper_path`, `base_url`, `deployment`, and `settings_written`
+(`false`).
+
+`--check` makes one authenticated request to the selected gateway's models
+endpoint and prints only the HTTP status and number of entitled models. It does
+not print a token; a failed login requires `adp login`. This checks ADP gateway
+authentication, **not** whether a particular Claude Desktop build accepts a
+custom gateway or invokes a credential helper. Anthropic has not publicly
+documented a writable Desktop gateway settings format; apply the printed
+values only if your Desktop build exposes compatible settings. Do not paste a
+short-lived access token into Desktop settings. See the
+[Desktop contract research](../research/claude-desktop-6850/desktop-contract.md)
+for the public documentation checked and the remaining GUI uncertainty.
 
 ### Hermes Agent
 
@@ -169,6 +219,28 @@ for its bundled Node.js runtime. Model requests through the ADP proxy's
 ADP identity. Setup selects `sonnet45`; use `--model` or `model.default` in the
 Hermes configuration to choose another model exposed by your ADP deployment.
 
+## Dev Box SSH prerequisites
+
+The Settings → Dev Box page shows your box's SSH alias and these commands; it
+never shows credentials. Each connection fetches a fresh 15-minute grant through
+the CLI's `ProxyCommand`.
+
+- OpenSSH with `ssh-keygen`.
+- AWS CLI v2 and the Session Manager plugin, used only as transport for the
+  grant the CLI receives from ADP. Do **not** run `aws configure` or supply
+  personal AWS keys.
+- A signed-in CLI (`adp login`, `adp status`) and a running box.
+
+```bash
+adp update
+adp devbox ssh-config <box-name>   # writes ~/.ssh/config Host adp-devbox-<box-name>
+adp devbox ssh <box-name>          # terminal session; verify the host-key fingerprint
+```
+
+VS Code Remote - SSH, Kiro IDE and Kiro Crew remote-host mode take the printed
+alias. Details, host-key verification and named-deployment prefixes:
+[Connect from your laptop to an ADP Dev Box](../kiro-crew/connect-from-laptop.md).
+
 ## Refresh, log out and update
 
 ```bash
@@ -185,9 +257,17 @@ because the refresh session expired, run `adp login` again.
 
 `adp update` downloads from the configured gateway. `adp update --to 1.0.0`
 requires that exact version to be served; it is not a historical release
-catalog. `adp update --rollback` restores the previous local executable copies,
-leaving session data in place. `--rollback --to VERSION` checks that the locally
-saved previous version matches.
+catalog. The update also refreshes the verified skills archive; re-run
+`adp codex setup` or `adp claude setup` to copy updated skills into either
+client. `adp doctor --checks skills` compares the archive version with the CLI
+version and reports drift. `adp update --rollback` restores the previous local
+executables and skills archive, leaving session data in place. The option
+`--rollback --to VERSION` checks that the locally saved previous version matches.
+
+`adp tools logout` removes only unchanged skills marked as ADP-owned from both
+clients, preserving unmarked or locally modified skill directories. It also
+unregisters ADP tool configuration and revokes an active session; use
+`adp logout` instead to clear local session data without removing client skills.
 
 To uninstall, use the downloaded installer and the same prefix used to install:
 

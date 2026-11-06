@@ -28,6 +28,14 @@ locals {
         Effect   = "Allow"
         Action   = ["s3:PutObject"]
         Resource = ["${aws_s3_bucket.agent_run_logs.arn}/runs/*"]
+      },
+      {
+        # Server-owned evidence for explicit recovery of a terminated bootstrap.
+        # No worker role receives access, and callers cannot select the log group.
+        Sid      = "ReadWorkerExitAudit"
+        Effect   = "Allow"
+        Action   = ["logs:FilterLogEvents"]
+        Resource = ["arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/aws/eks/${local.eks_cluster_name}/cluster:*"]
       }
     ]
   })

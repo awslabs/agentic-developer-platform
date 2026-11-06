@@ -1,5 +1,6 @@
 """Historical usage is settled at acceptance; unknown provider usage stays held."""
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,6 +11,7 @@ import pytest
 from src.budget.config import budget_config
 from src.budget.reservations import ReservationStore
 from src.orchestration import flow_budget, shared_policy
+from src.orchestration.execution_policy import ExecutionPolicy
 from src.orchestration.flow_meter import meter_target
 
 
@@ -20,7 +22,13 @@ async def meter(monkeypatch):
     store = ReservationStore(redis_url=None, ttl_seconds=120, clock=lambda: clock[0], client=client)
     monkeypatch.setattr(flow_budget, "_reservations", store)
     monkeypatch.setattr(budget_config, "budget_reservation_enabled", True)
-    policy = SimpleNamespace(limits=SimpleNamespace(max_spend_usd=Decimal("50")))
+    policy = ExecutionPolicy(
+        org_id="org-baseline",
+        repository_ids=["aws-e/adp"],
+        allowed_actions=["develop"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        limits={"max_spend_usd": "50", "max_wall_clock_seconds": 3600, "max_attempts_per_node": 3, "max_concurrent_actions": 2},
+    )
     target = meter_target(org_id="org-baseline", flow_id="flow-baseline", policy=policy)
     try:
         yield SimpleNamespace(client=client, clock=clock, store=store, policy=policy, target=target)

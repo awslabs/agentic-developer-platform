@@ -265,6 +265,8 @@ class TestTheRouteDoesNotShadowGatewayRoutes:
             "/{proxy+}",
             "/agent",
             "/agent/{proxy+}",
+            "/agent/tools",
+            "/agent/tools/{proxy+}",
             "/internal/{proxy+}",
             "/auth/github/{proxy+}",
             "/v1/tasks",

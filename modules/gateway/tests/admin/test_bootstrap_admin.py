@@ -105,6 +105,7 @@ async def test_bootstrap_idempotent_rerun(db_session):
         identity_writer=_writer(),
     )
     assert second["status"] == "already-bootstrapped"
+    assert second["role"] == first["role"] == "platform_admin"
 
     # No duplicate user rows for this sub.
     users = (await db_session.execute(select(User).where(User.cognito_sub == SUB))).scalars().all()
@@ -158,6 +159,31 @@ async def test_bootstrap_rejects_reserved_org(db_session):
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "false"})
 async def test_bootstrap_requires_v2_flag(db_session):
     with pytest.raises(RuntimeError):
+        await bootstrap_first_admin(
+            db_session,
+            cognito_sub=SUB,
+            org_id="platform-admin",
+            display_name="platform-admin",
+            email="admin@example.com",
+            identity_writer=_writer(),
+        )
+
+
+@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
+@pytest.mark.parametrize("change", ["role", "org_id"])
+async def test_bootstrap_refuses_mismatched_existing_identity(db_session, change):
+    await bootstrap_first_admin(
+        db_session,
+        cognito_sub=SUB,
+        org_id="platform-admin",
+        display_name="platform-admin",
+        email="admin@example.com",
+        identity_writer=_writer(),
+    )
+    user = await db_session.scalar(select(User).where(User.cognito_sub == SUB))
+    setattr(user, change, {"role": "member", "org_id": "another-org"}[change])
+    await db_session.flush()
+    with pytest.raises(ValueError, match="does not match"):
         await bootstrap_first_admin(
             db_session,
             cognito_sub=SUB,

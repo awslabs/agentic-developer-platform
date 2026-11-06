@@ -1,0 +1,20 @@
+{
+  "kind": "eval",
+  "state": "ready",
+  "display_state": "stalled",
+  "issue_ref": null,
+  "run_id": null,
+  "attempts": 0,
+  "configuration_problem": null,
+  "delivery_progress": {
+    "stage": "admission",
+    "actor": "flow-owner",
+    "blocker": "evaluation_specification_missing",
+    "blockers": ["evaluation_specification_missing"],
+    "detail": "The machine evaluation has no accepted specification; no worker can be dispatched.",
+    "next_action": "Accept a machine evaluation specification or choose human acceptance in the plan.",
+    "next_check_at": null,
+    "scheduled_action": null,
+    "automation": "blocked"
+  }
+}

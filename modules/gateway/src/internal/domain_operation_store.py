@@ -14,7 +14,9 @@ import ssl
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 
 import asyncpg
 import boto3
@@ -93,12 +95,25 @@ def binding_for(domain: str, org_id: str) -> DomainBinding:
     return matches[0]
 
 
-def aws_client(service):
+_client_creation_lock = Lock()
+
+
+@lru_cache(maxsize=32)
+def _aws_client(service, region):
     return boto3.client(
         service,
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        region_name=region,
         config=Config(connect_timeout=3, read_timeout=15, retries={"total_max_attempts": 2}),
     )
+
+
+def aws_client(service):
+    # Reuse only SDK connection pools, never authority or secret responses.
+    # Botocore clients retain the normal refreshable credential provider and
+    # support concurrent calls. Serialize construction because the default
+    # boto3 session is not thread safe; release the lock before any AWS request.
+    with _client_creation_lock:
+        return _aws_client(service, os.environ.get("AWS_REGION", "us-east-1"))
 
 
 async def secret(secret_id):

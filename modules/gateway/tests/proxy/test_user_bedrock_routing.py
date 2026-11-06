@@ -190,7 +190,7 @@ async def test_openai_signs_with_resolved_credentials_and_keeps_decision(
             service = MantlePassthroughService(
                 platform_auth, "https://bedrock-runtime.us-east-1.amazonaws.com", inference_profile_prefix=profile, http_client=client
             )
-            service._log_usage = AsyncMock()
+            service._log_usage = AsyncMock(return_value=True)
             result = await service.create_response(
                 b'{"model":"openai.gpt-6-astra"}', worker() if cloud else _context(), stream=stream, model="openai.gpt-6-astra", agent_run_id="run"
             )
@@ -213,7 +213,7 @@ async def test_claude_cloud_passes_owner_credentials_to_bedrock_client(session_f
     credentials = _credentials()
     pool = MagicMock(get_client=AsyncMock(return_value=MockBedrockClient()))
     service = ProxyService(pool)
-    service._log_usage = AsyncMock()
+    service._log_usage = AsyncMock(return_value=True)
     with (
         _patch_routing_session(session_factory),
         patch.object(bedrock_destination_signer, "get_credentials", AsyncMock(return_value=credentials)),
@@ -244,7 +244,7 @@ async def test_concurrent_openai_requests_do_not_share_signers_or_regions():
     with patch("src.proxy.mantle_service.resolve_routing_decision", decide):
         async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
             service = MantlePassthroughService(MagicMock(), "https://bedrock-runtime.us-east-1.amazonaws.com", http_client=client)
-            service._log_usage = AsyncMock()
+            service._log_usage = AsyncMock(return_value=True)
             await asyncio.gather(
                 *(
                     service.create_response(b'{"model":"openai.gpt-6-astra"}', _context(user_id=name), stream=False, model="openai.gpt-6-astra")

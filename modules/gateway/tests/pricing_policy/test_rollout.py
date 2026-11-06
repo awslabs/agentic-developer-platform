@@ -323,7 +323,11 @@ def test_workflows_serialize_and_pin_release_image():
     assert len({w["concurrency"]["group"] for w in workflows.values()}) == 1
     jobs = workflows["gateway-deploy.yml"]["jobs"]
     assert jobs["finalize-pricing"]["needs"] == ["deploy-backend", "run-migrations"]
-    assert "finalize-pricing" in jobs["smoke-test"]["needs"]
+    # The smoke test checks /access/status and /connections only; it runs beside the
+    # pricing chain, not behind it, so a slow pricing finalize no longer delays the
+    # release signal. Pricing finalize still fails the run on its own.
+    assert jobs["smoke-test"]["needs"] == ["deploy-backend", "deploy-frontend"]
+    assert "finalize-pricing" not in jobs["smoke-test"]["needs"]
     assert jobs["run-migrations"]["with"]["expected_image_digest"] == "${{ needs.deploy-backend.outputs.release_digest }}"
     assert "release_image" not in jobs["deploy-backend"].get("outputs", {})
     finalize = next(step for step in jobs["finalize-pricing"]["steps"] if step.get("name") == "Verify release pricing and enable the schedule")
@@ -335,6 +339,75 @@ def test_workflows_serialize_and_pin_release_image():
     assert context < execute
     assert "aws eks update-kubeconfig" in migrate_steps[context]["run"]
     assert "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_EXPECTED_IMAGE_TAG}" in migrate_steps[execute]["run"]
+
+
+@pytest.mark.parametrize(
+    "digest,gap,context_exit,expected_flag,passes",
+    [
+        ("sha256:" + "b" * 64, "", 0, None, True),
+        ("sha256:" + "b" * 64, "claude-widget-2026-09-24", 0, "--allow-known-claude-gap", True),
+        ("None", "", 0, None, False),
+        ("sha256:" + "b" * 64, "unreviewed-gap", 0, None, False),
+        ("sha256:" + "b" * 64, "", 1, None, False),
+    ],
+)
+def test_pricing_finalize_uses_deployment_context_and_release_digest(tmp_path, digest, gap, context_exit, expected_flag, passes):
+    import os
+
+    workflow = yaml.load(
+        (GATEWAY.parents[1] / ".github/workflows/pricing-finalize.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    step = next(s for s in workflow["jobs"]["finalize"]["steps"] if s.get("name") == "Verify release pricing and activate its schedule")
+    calls = tmp_path / "calls"
+    # Execute the actual workflow shell with external commands replaced. The
+    # fake rollout refuses the ARC context and captures the real helper args.
+    stubs = r"""
+git() { printf '%s\n' "$PRICING_RELEASE_SHA"; }
+aws() {
+  if [ "$1 $2" = "eks update-kubeconfig" ]; then
+    [ "$KUBECONFIG" = "$RUNNER_TEMP/pricing-finalize-kubeconfig" ] || return 90
+    printf 'context\n' >> "$PRICING_TEST_CALLS"
+    return "$PRICING_TEST_CONTEXT_EXIT"
+  fi
+  [ "$1 $2" = "ecr describe-images" ] || return 91
+  printf '%s\n' "$PRICING_TEST_DIGEST"
+}
+python3() {
+  [ "$KUBECONFIG" = "$RUNNER_TEMP/pricing-finalize-kubeconfig" ] || return 92
+  printf '%s\n' "$@" >> "$PRICING_TEST_CALLS"
+}
+"""
+    result = subprocess.run(
+        ["bash", "-eu", "-c", stubs + step["run"]],
+        env={
+            **os.environ,
+            "PRICING_RELEASE_SHA": "a" * 40,
+            "PRICING_ALLOW_PARTIAL": "false",
+            "ACCOUNT_ID": ACCOUNT,
+            "ENVIRONMENT": "dev",
+            "AWS_REGION": "us-east-1",
+            "RUNNER_TEMP": str(tmp_path),
+            "KUBECONFIG": "/arc/service-account-context",
+            "ADP_KNOWN_PRICING_GAP": gap,
+            "PRICING_TEST_CALLS": str(calls),
+            "PRICING_TEST_DIGEST": digest,
+            "PRICING_TEST_CONTEXT_EXIT": str(context_exit),
+        },
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    observed = calls.read_text().splitlines() if calls.exists() else []
+    assert (result.returncode == 0) is passes, result.stderr
+    if not passes:
+        assert "finalize" not in observed
+        return
+    assert observed[0] == "context"
+    assert observed[1:3] == ["modules/gateway/scripts/pricing-rollout.py", "finalize"]
+    assert observed[observed.index("--expected-image") + 1] == f"{ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@{digest}"
+    assert "--allow-partial-refresh" not in observed
+    assert ("--allow-known-claude-gap" in observed) is (expected_flag is not None)
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "fixture_class": "synthetic_not_provider_evidence",
+  "source_bytes": "synthetic repository snapshot",
+  "source_sha256": "1b88efadf8230922eb8da4dc9732571add3bf950c66a467ca9f115eee58c3175",
+  "input_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "clock_at": "2026-01-01T00:00:00Z",
+  "tenant_id": "example-team",
+  "cleanup": "none_created",
+  "cases": [
+    {
+      "id": "lost-acknowledgement",
+      "qualification": "current",
+      "readback": null,
+      "expected_status": "outcome_unknown"
+    },
+    {
+      "id": "restart-without-qualified-read",
+      "qualification": "current",
+      "readback": {"native_id": "example-native", "state": "running"},
+      "expected_status": "outcome_unknown"
+    },
+    {
+      "id": "synthetic-matching-read",
+      "qualification": "synthetic_read_only",
+      "readback": {"native_id": "example-native", "state": "running"},
+      "expected_status": "observed"
+    },
+    {
+      "id": "synthetic-foreign-session",
+      "qualification": "synthetic_read_only",
+      "readback": {"native_id": "example-native", "state": "running", "wrong_token": true},
+      "expected_status": "outcome_unknown"
+    },
+    {
+      "id": "synthetic-foreign-input",
+      "qualification": "synthetic_read_only",
+      "readback": {"native_id": "example-native", "state": "completed", "wrong_input_hash": true},
+      "expected_status": "outcome_unknown"
+    },
+    {
+      "id": "unsupported-remote-cancel",
+      "qualification": "synthetic_read_only",
+      "readback": {"native_id": "example-native", "state": "stopped"},
+      "expected_status": "observed"
+    }
+  ]
+}

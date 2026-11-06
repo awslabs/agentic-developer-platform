@@ -1,12 +1,16 @@
 """Recover actual SQL reviewer assignments without another development attempt."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.orchestration.dispatch_pass import DispatchPassReport
 from src.orchestration.lifecycle_recovery import RecoveryRefusedError, ResumeContinuationRequest, resume_continuation
-from src.orchestration.models import DecisionKind, OrchestrationDecision, OrchestrationNode, OrchestrationWorkClaim
+from src.orchestration.models import DecisionKind, OrchestrationDecision, OrchestrationNode, OrchestrationPullRequestBinding, OrchestrationWorkClaim
 from src.orchestration.report_dispatch import recover_pending_reports
 from src.orchestration.run_reports import OrchestrationRunReport
 from src.orchestration.stall import StallConfig, detect_stalls
@@ -52,11 +56,14 @@ async def recover(db, ctx, body, org=None):
     return await resume_continuation(db, org_id=org or protocol.ORG, node_id=ctx.node.id, actor_id="human", actor_role="owner", request=body)
 
 
-async def test_timeout_recovery_replays_same_assignment_and_preserves_evidence(shared, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("mutated_global", [False, True])
+async def test_timeout_recovery_replays_same_assignment_and_preserves_evidence(shared, monkeypatch, mutated_global):  # noqa: F811
     ctx = shared
     monkeypatch.setenv("ADP_SHARED_RUN_REPORTING_ENABLED", "true")
     run = await timeout(ctx)
     prior = await protocol.state(ctx)
+    if mutated_global:
+        ctx.service.config = replace(ctx.service.config, repo="fictional/global-a")
     async with ctx.factory() as db:
         original = await db.get(OrchestrationRunReport, run)
         metadata, credential_hash = original.dispatch_metadata, original.credential_hash
@@ -70,17 +77,73 @@ async def test_timeout_recovery_replays_same_assignment_and_preserves_evidence(s
         await recover_pending_reports(db, config=ctx.service.config, report=pending)
         assert len(pending.pending) == 1
         assert pending.pending[0].envelope == ctx.calls[-1]
+        assert pending.pending[0].envelope["source_ref"]["repo"] == ctx.binding.repo
+        assert pending.pending[0].envelope["source_ref"]["installation_id"] == ctx.binding.installation_id
         assert pending.pending[0].deduplication_id == run
         assert pending.pending[0].group_id == f"review-cycle-{ctx.claim.id}"
         row = await db.get(OrchestrationRunReport, run)
         assert row.dispatch_metadata == metadata and row.credential_hash == credential_hash
         assert row.worker_receipt is None and row.terminal_receipt is None
+        if mutated_global:
+            repeated = DispatchPassReport(enabled=True)
+            await recover_pending_reports(db, config=ctx.service.config, report=repeated)
+            assert len(repeated.pending) == 1 and repeated.pending[0].deduplication_id == pending.pending[0].deduplication_id
         await db.commit()
     after = await protocol.state(ctx)
     assert after[0].attempts == prior[0].attempts
     assert after[1].generation == prior[1].generation and after[1].active_run_id == run
     assert after[2].attempts == 1 and after[2].state == "running"
     assert len(after[3]) == len(prior[3])
+
+
+@pytest.mark.parametrize(
+    ("failure", "hold"),
+    [
+        ("superseded_revision", "repair_binding_changed"),
+        ("revoked_connection", "repository_connection_unavailable"),
+        ("exhausted_budget", "spend_limit_exceeded"),
+    ],
+)
+async def test_report_replay_retains_typed_authority_and_budget_holds(shared, monkeypatch, failure, hold):  # noqa: F811
+    from src.admin.installations.resolver import OwnerState
+
+    monkeypatch.setenv("ADP_SHARED_RUN_REPORTING_ENABLED", "true")
+    assert (await protocol.tick(shared)).effects_succeeded == 1
+    run = shared.calls[-1]["message_id"]
+    provider = AsyncMock()
+    monkeypatch.setattr("src.orchestration.pr_identity.resolve_pr_identity", provider)
+    if failure == "exhausted_budget":
+        shared.spend = Decimal(25)
+    async with shared.factory() as db:
+        node = await db.get(OrchestrationNode, shared.node.id)
+        if failure == "superseded_revision":
+            binding = await db.get(OrchestrationPullRequestBinding, shared.binding.id)
+            binding.revision += 1
+        elif failure == "revoked_connection":
+            connection = {"provider": "github", "installation_id": shared.binding.installation_id}
+            node.repository_identity = shared.binding.repo
+            node.provider_repository_id = shared.binding.provider_repository_id
+            node.repository_connection = connection
+            contract = SimpleNamespace(
+                node=SimpleNamespace(
+                    repository_identity=node.repository_identity,
+                    provider_repository_id=node.provider_repository_id,
+                    repository_connection=SimpleNamespace(model_dump=lambda **kwargs: connection),
+                )
+            )
+            monkeypatch.setattr("src.orchestration.accepted_node.accepted_node_contract", AsyncMock(return_value=contract))
+            monkeypatch.setattr("src.admin.installations.resolver.resolve_installation_owner", AsyncMock(return_value=(None, OwnerState.REVOKED)))
+        await db.commit()
+    for _ in range(2):
+        async with shared.factory() as db:
+            result = DispatchPassReport(enabled=True)
+            await recover_pending_reports(db, config=shared.service.config, report=result)
+            row = await db.get(OrchestrationRunReport, run)
+            assert result.pending == [] and result.publish_failed == 1
+            assert row.block_code == hold and row.retryable is False
+            assert node.attempts == 1 and len(shared.calls) == 1
+            await db.commit()
+    provider.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "a9c014f2537bf7956970e8484ce44f9b613104c8",
+  "adp_inspected_revision": "aeba89070ec685b41a4902a4441bfe47449e48ba",
+  "devlake_inspected_revision": "6502e549f58eb40c40ccbcd39aab9bc8eea6616f",
+  "status": "source inspected; seven-provider code fixtures available; live sources and auth grants unverified",
+  "authority": "ADP registered connection and current scoped broker grant; DevLake connection IDs are not authorization",
+  "provenance": ["tenant_id", "project_id", "source_connection_id", "record_type", "record_id", "record_revision"],
+  "observations": "Retain native namespace, actual source revision when supplied or an explicitly observation-only digest, observation time, coverage and field-map version; never infer source history.",
+  "providers": [
+    {
+      "provider": "github",
+      "current_profile_capability": "repository/pipeline discovery for owned GitHub installation; repository for approved credential",
+      "current_profile_source": "modules/gateway/src/product_onboarding/source_discovery.py",
+      "upstream_discovery_source": "backend/plugins/github/api/remote_api.go",
+      "upstream_entry": "listGithubRemoteScopes",
+      "upstream_path": "installation/repositories for APPKEY, separate user/owner traversal otherwise; page/per_page",
+      "auth": "ADP verifies installed mapping and mints installation authority or checks current owned credential; upstream app-key branch alone is not ADP authorization",
+      "registered_connection_ref": null,
+      "native_fixture_ref": null,
+      "native_auth_verification": "pending_source_owner",
+      "scope_model": "repository in registered installation/owner namespace",
+      "fields": [
+        {"native_model": "GithubRepo", "source": "backend/plugins/github/models/repo.go", "native": "GithubId", "type": "int", "nullable": false, "common": "repository.native_id", "rule": "stringify within registered connection and verified owner namespace; rename never changes ID"},
+        {"native_model": "GithubRepo", "source": "backend/plugins/github/models/repo.go", "native": "Name, FullName, HTMLUrl", "type": "string", "nullable": true, "common": "repository.display_name, namespace, url", "rule": "sourced suggestions; sanitize, retain native URL and namespace"},
+        {"native_model": "GithubRepo", "source": "backend/plugins/github/models/repo.go", "native": "Description, Language, CreatedDate, UpdatedDate", "type": "string, nullable timestamp", "nullable": true, "common": "repository.metadata", "rule": "do not replace confirmed Profile intent; absent timestamps stay unknown"},
+        {"native_model": "GithubIssue", "source": "backend/plugins/github/models/issue.go", "native": "GithubId, RepoId, Number, Title, Body, State, Type, GithubCreatedAt, GithubUpdatedAt", "type": "int, string, timestamp", "nullable": true, "common": "issue.native_id, native_resource_ref, display_number, title, description, original_status, original_type, created_at, updated_at", "rule": "historical collection only under explicit grant; number is not stable ID; no ADP acceptance inferred"}
+      ]
+    },
+    {
+      "provider": "jira",
+      "current_profile_capability": "not implemented for Profile source discovery at inspected revision",
+      "current_profile_source": "modules/gateway/src/product_onboarding/source_discovery.py",
+      "declared_oauth_source": "modules/gateway/src/shared/identity/oauth_providers.py",
+      "upstream_discovery_source": "backend/plugins/jira/api/remote_api.go",
+      "upstream_entry": "queryJiraAgileBoards, listJiraRemoteScopes",
+      "upstream_path": "agile/1.0/board with startAt/maxResults and optional name filter",
+      "auth": "Atlassian OAuth scopes read:jira-work, read:me, offline_access declared in ADP; live board endpoint, broker action, token refresh and grant compatibility unverified",
+      "registered_connection_ref": null,
+      "native_fixture_ref": null,
+      "native_auth_verification": "pending_source_owner",
+      "scope_model": "board under authorized Jira instance; native ProjectId is not ADP Project ID",
+      "fields": [
+        {"native_model": "JiraBoard", "source": "backend/plugins/jira/models/board.go", "native": "BoardId, Name, Type, ProjectId", "type": "uint64, string, uint", "nullable": true, "common": "board.native_id, display_name, original_type, native_project_ref", "rule": "native ProjectId stays provider-local; board SubQuery is restricted, not common Profile content"},
+        {"native_model": "JiraIssue", "source": "backend/plugins/jira/models/issue.go", "native": "IssueId, IssueKey, Summary, Description, StatusName, StatusKey, Type, Created, Updated, ResolutionDate", "type": "uint64, string, timestamp", "nullable": true, "common": "issue.native_id, display_key, title, description, original_status, original_type, created_at, updated_at, resolved_at", "rule": "historical collection only with explicit grant; preserve status key/name and missing resolution date"},
+        {"native_model": "JiraIssue", "source": "backend/plugins/jira/models/issue.go", "native": "StoryPoint, OriginalEstimateMinutes", "type": "nullable float64, nullable int64 minutes", "nullable": true, "common": "issue.native_points, native_estimate_minutes", "rule": "never infer actual work or cost"}
+      ]
+    },
+    {"provider": "sonarqube", "profile_kind": "quality_project", "profile_path": "/configuration/advanced/observability", "native_identity": "component.key", "domain": "code quality", "lineage": "current binding and observed component revision; missing source revision remains unknown"},
+    {"provider": "jenkins", "profile_kind": "ci_job", "profile_path": "/configuration/advanced/pipelines", "native_identity": "job.fullName including folder path", "domain": "cicd_pipelines", "lineage": "native build and job records under registered connection"},
+    {"provider": "argocd", "profile_kind": "deployment_application", "profile_path": "/configuration/advanced/deployments", "native_identity": "spec.project + metadata.namespace + metadata.name", "domain": "deployment source observations", "lineage": "sync status is not proof of deployed revision or acceptance"},
+    {"provider": "gitlab", "profile_kind": "repository", "profile_path": "/configuration/basic/repositories", "native_identity": "project.id in numeric or verified personal namespace", "domain": "cicd_pipelines", "lineage": "retain original pipeline status and raw-record reference"},
+    {"provider": "pagerduty", "profile_kind": "incident_service", "profile_path": "/configuration/advanced/support", "native_identity": "service.id", "domain": "incident observations", "lineage": "no inferred deployment or ownership join"},
+    {"provider": "linear", "profile_kind": "tracker_team", "profile_path": "/configuration/basic/trackers", "native_identity": "team.id", "domain": "issue observations", "lineage": "preserve native status; no title-based cross-tool join"},
+    {"provider": "slack", "profile_kind": "communication_channel", "profile_path": "/configuration/basic/collaboration", "native_identity": "channel.id in consented team", "domain": "tool-layer observations only", "lineage": "read-only test channel; no bulk import, posting or DMs"}
+  ],
+  "shared_concepts": [
+    {"concept": "issue", "providers": ["github", "jira"], "identity": "registered connection + native namespace + native issue ID + revision", "status": "preserve native status/type, map to common status/type with pinned mapper; unknown mapping unavailable", "policy": "conjunction of current source-reader and private evidence policies; no title-based cross-tool merge"},
+    {"concept": "resource_selection", "providers": ["github", "jira"], "identity": "registered connection + native repository/board ID + provider namespace", "status": "typed Profile suggestion, never inferred Product/Project binding", "policy": "keep private board query/JQL and repository content out of common Profile"}
+  ],
+  "excluded_inferences": ["DevLake local connection ID as ADP authority", "Jira ProjectId as ADP project_id", "cross-tool merge by equal title", "CI green run as test instance", "story points as actual cost", "missing timestamp as measured zero"],
+  "native_fixture_inventory": {"github": "pending_source_owner", "jira": "pending_source_owner", "sonarqube": "fixture_only", "jenkins": "fixture_only", "argocd": "fixture_only", "gitlab": "fixture_only", "pagerduty": "fixture_only", "linear": "fixture_only", "slack": "fixture_only"}
+}

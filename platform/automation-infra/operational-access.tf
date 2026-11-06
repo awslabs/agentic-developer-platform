@@ -126,6 +126,16 @@ variable "gitlab_checks_queue_arn" {
     error_message = "Supply the exact webhook queue ARN used by fleet diagnostics."
   }
 }
+variable "gitlab_checks_kms_key_arns" {
+  type        = list(string)
+  default     = []
+  description = "Exact customer-managed KMS keys encrypting the inventoried GitLab fixture secrets."
+  validation {
+    condition     = alltrue([for arn in var.gitlab_checks_kms_key_arns : can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$", arn))])
+    error_message = "Supply exact KMS key ARNs, never aliases or wildcard resources."
+  }
+}
+
 resource "aws_iam_role_policy" "gitlab_checks" {
   name = "gitlab-deployed-contract-checks"
   role = aws_iam_role.checks.id
@@ -137,6 +147,12 @@ resource "aws_iam_role_policy" "gitlab_checks" {
     ] : "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/${path}"] },
     ], [for _ in range(length(var.gitlab_checks_secret_arns) == 0 ? 0 : 1) : {
       Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = var.gitlab_checks_secret_arns
+      }], [for _ in range(length(var.gitlab_checks_kms_key_arns) == 0 ? 0 : 1) : {
+      Effect = "Allow", Action = ["kms:Decrypt"], Resource = var.gitlab_checks_kms_key_arns
+      Condition = { StringEquals = {
+        "kms:ViaService"                  = "secretsmanager.${var.aws_region}.amazonaws.com"
+        "kms:EncryptionContext:SecretARN" = var.gitlab_checks_secret_arns
+      } }
       }], [for _ in range(var.gitlab_checks_queue_arn == "" ? 0 : 1) : {
       Effect = "Allow", Action = ["sqs:GetQueueAttributes"], Resource = var.gitlab_checks_queue_arn
   }]) })

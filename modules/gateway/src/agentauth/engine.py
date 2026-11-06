@@ -21,7 +21,7 @@ from src.agentauth.grants import (
     DelegatedGrant,
     TargetRelationship,
 )
-from src.orchestration.developer_personas import DEVELOPER_PERSONAS
+from src.orchestration.developer_personas import DEVELOPER_PERSONAS, OPERATIONS_PERSONAS, operations_executor_enabled
 from src.orchestration.dispatch import GraphAttribution, graph_address
 from src.orchestration.genesis import EngineGenesis, resolve_engine_genesis
 from src.orchestration.models import (
@@ -153,8 +153,28 @@ class EngineAuthorityWriter:
             raise BootstrapRefusedError("engine dispatch identity mismatch")
         persona = envelope["persona"]
         allowed = {"operations"} if pending.node_kind == NodeKind.EVAL.value else DEVELOPER_PERSONAS | {"reviewer"}
+        operational = persona in OPERATIONS_PERSONAS and pending.node_kind == NodeKind.STORY.value
+        if operational and operations_executor_enabled() and graph.get("conclusion_authority") == "evidence":
+            allowed |= OPERATIONS_PERSONAS
         if pending.node_kind not in {NodeKind.STORY.value, NodeKind.EVAL.value} or persona not in allowed:
             raise BootstrapRefusedError("unsupported engine persona")
+        revision_metadata = {}
+        if operational:
+            import re
+
+            pins = graph.get("deployment_revisions")
+            if (
+                not isinstance(pins, dict)
+                or set(pins) != {"source_revision", "definition_revision", "default_branch"}
+                or any(
+                    not isinstance(pins.get(name), str) or re.fullmatch(r"[0-9a-f]{40}", pins[name]) is None
+                    for name in ("source_revision", "definition_revision")
+                )
+                or not isinstance(pins.get("default_branch"), str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", pins["default_branch"]) is None
+            ):
+                raise BootstrapRefusedError("accepted deployment revisions are unavailable")
+            revision_metadata = {key: {"S": value} for key, value in pins.items()}
         now = datetime.now(UTC)
         expiry, _ = ensure_engine_authority(store=self.store, genesis=genesis, now=now)
         source = envelope["source_ref"]
@@ -224,6 +244,7 @@ class EngineAuthorityWriter:
                 "issue_number": {"N": str(source["issue"])},
                 "installation_id": {"N": str(source["installation_id"])},
                 "chain_depth": {"N": str(chain_depth)},
+                **revision_metadata,
                 **correction_metadata,
                 "orchestration_node_id": {"S": pending.node_id},
                 "orchestration_node_attempt": {"N": str(pending.node_attempt)},
@@ -416,7 +437,18 @@ async def validate_engine_authority(
             )
         ).first()
         if newer_plan:
-            raise BootstrapRefusedError("workflow approval has been superseded")
+            # A later acceptance or amendment supersedes this approval unless the
+            # execution is bound to a node whose definition and prerequisites the
+            # amendments preserved; the running work keeps its authority (#7535).
+            node_ref = execution.get("orchestration_node_id", {}).get("S") if "coordinator_flow_id" not in execution else None
+            if not node_ref:
+                raise BootstrapRefusedError("workflow approval has been superseded")
+            from src.orchestration.plan_lineage import approval_authorizes_node
+
+            if not await approval_authorizes_node(
+                session, org_id=grant.tenant_id, flow_id=grant.flow_id, node_id=node_ref, decision_id=genesis.decision_id
+            ):
+                raise BootstrapRefusedError("workflow approval has been superseded")
         flow = (
             await session.execute(
                 select(OrchestrationFlow)

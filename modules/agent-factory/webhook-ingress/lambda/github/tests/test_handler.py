@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Add parent directories to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -59,7 +61,19 @@ def _mock_resolved_identity(tenant_id="acme", user_id="u_test1"):
         org_id=tenant_id,
         user_id=user_id,
         user_provisioning_mode="strict",
+        verification_method="org_placement",
     )
+
+
+@pytest.fixture
+def eligible_sender():
+    from common.github_actor_authority import ActorDecision
+
+    with patch(
+        "common.github_actor_authority.check_actor",
+        return_value=ActorDecision(True, "allowed", "writer", "write"),
+    ) as checked:
+        yield checked
 
 
 def _mock_rate_result(allowed=True, retry_after=0):
@@ -189,6 +203,7 @@ class TestIntentParsing:
         assert body["status"] == "no_op"
 
 
+@pytest.mark.usefixtures("eligible_sender")
 class TestSuccessfulPublish:
     @patch("handler._get_events_log")
     @patch("common.spawn_persona._capture_invocation_event")
@@ -205,6 +220,7 @@ class TestSuccessfulPublish:
             _mock_resolved_identity("acme", "u_jane"),
             "ok",
         )
+        mock_resolver.return_value.last_tenant_item = {"min_author_association": "NONE"}
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value = "msg-id-123"
         mock_log.return_value.log_event = MagicMock()
@@ -214,8 +230,8 @@ class TestSuccessfulPublish:
         payload = {
             "action": "labeled",
             "label": {"name": "developer"},
-            "issue": {"number": 42},
-            "repository": {"full_name": "acme/flagship-app"},
+            "issue": {"number": 42, "user": {"id": 999}},
+            "repository": {"id": 51, "full_name": "acme/flagship-app"},
             "sender": {"login": "jane", "id": 999, "type": "User"},
             "installation": {"id": 99887766},
         }
@@ -260,6 +276,7 @@ class TestSuccessfulPublish:
             _mock_resolved_identity("acme", "u_bob"),
             "ok",
         )
+        mock_resolver.return_value.last_tenant_item = {"min_author_association": "NONE"}
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value = "msg-id-456"
         mock_log.return_value.log_event = MagicMock()
@@ -268,13 +285,14 @@ class TestSuccessfulPublish:
 
         payload = {
             "action": "opened",
-            "pull_request": {"number": 15, "head": {"sha": "abc123", "ref": "agent/issue-42"}},
-            "repository": {"full_name": "acme/flagship-app"},
+            "pull_request": {"number": 15, "user": {"id": 1001}, "head": {"sha": "abc123", "ref": "agent/issue-42"}},
+            "repository": {"id": 51, "full_name": "acme/flagship-app"},
             "sender": {"login": "bob", "id": 1001, "type": "User"},
             "installation": {"id": 99887766},
         }
         event = _make_event("pull_request", payload)
-        result = handler(event, None)
+        with patch("handler._pr_marker_text_with_issue_fallback", return_value=(None, False)):
+            result = handler(event, None)
 
         assert result["statusCode"] == 202
         envelope = mock_sqs.call_args[0][0]
@@ -297,6 +315,7 @@ class TestSuccessfulPublish:
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value = None  # failure
+        mock_resolver.return_value.last_tenant_item = {"min_author_association": "NONE"}
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -304,8 +323,8 @@ class TestSuccessfulPublish:
         payload = {
             "action": "labeled",
             "label": {"name": "developer"},
-            "issue": {"number": 1},
-            "repository": {"full_name": "acme/repo"},
+            "issue": {"number": 1, "user": {"id": 1}},
+            "repository": {"id": 51, "full_name": "acme/repo"},
             "sender": {"login": "user", "id": 1, "type": "User"},
             "installation": {"id": 123},
         }
@@ -377,6 +396,7 @@ class TestSecretResolution:
             handler._webhook_secret = None
 
 
+@pytest.mark.usefixtures("eligible_sender")
 class TestMessageIdOnEnvelope:
     """Verify spawn_persona sets a unique message_id UUID on the envelope."""
 
@@ -397,6 +417,7 @@ class TestMessageIdOnEnvelope:
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value = "msg-id-100"
+        mock_resolver.return_value.last_tenant_item = {"min_author_association": "NONE"}
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -404,8 +425,8 @@ class TestMessageIdOnEnvelope:
         payload = {
             "action": "labeled",
             "label": {"name": "developer"},
-            "issue": {"number": 10},
-            "repository": {"full_name": "acme/repo"},
+            "issue": {"number": 10, "user": {"id": 1}},
+            "repository": {"id": 51, "full_name": "acme/repo"},
             "sender": {"login": "user", "id": 1, "type": "User"},
             "installation": {"id": 123},
         }
@@ -432,6 +453,7 @@ class TestMessageIdOnEnvelope:
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value = "msg-id-200"
+        mock_resolver.return_value.last_tenant_item = {"min_author_association": "NONE"}
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -439,8 +461,8 @@ class TestMessageIdOnEnvelope:
         payload = {
             "action": "labeled",
             "label": {"name": "developer"},
-            "issue": {"number": 10},
-            "repository": {"full_name": "acme/repo"},
+            "issue": {"number": 10, "user": {"id": 1}},
+            "repository": {"id": 51, "full_name": "acme/repo"},
             "sender": {"login": "user", "id": 1, "type": "User"},
             "installation": {"id": 123},
         }
@@ -460,6 +482,7 @@ class TestMessageIdOnEnvelope:
         uuid_mod.UUID(id_2, version=4)
 
 
+@pytest.mark.usefixtures("eligible_sender")
 class TestBase64Body:
     @patch("handler._get_events_log")
     @patch("common.spawn_persona._capture_invocation_event")
@@ -478,6 +501,7 @@ class TestBase64Body:
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value = "msg-id-789"
+        mock_resolver.return_value.last_tenant_item = {"min_author_association": "NONE"}
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -485,8 +509,8 @@ class TestBase64Body:
         payload = {
             "action": "labeled",
             "label": {"name": "pm"},
-            "issue": {"number": 5},
-            "repository": {"full_name": "acme/repo"},
+            "issue": {"number": 5, "user": {"id": 1}},
+            "repository": {"id": 51, "full_name": "acme/repo"},
             "sender": {"login": "user", "id": 1, "type": "User"},
             "installation": {"id": 123},
         }

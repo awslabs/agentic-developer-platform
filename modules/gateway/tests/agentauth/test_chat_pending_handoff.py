@@ -79,7 +79,7 @@ def buffer(runtime, transport, delivered, ingest):
             }
             if server_mode is not None:
                 final["session_mode"] = server_mode
-            provision_root(runtime[1].store, final, source="chat", human_id="human", now=datetime.fromtimestamp(runtime[-1], UTC))
+            provision_root(runtime[1].store, final, source="chat", human_id="human", team_id="team", now=datetime.fromtimestamp(runtime[-1], UTC))
             if register_failure == "after":
                 raise TimeoutError("root response lost")
             return canonical_json(final).decode()

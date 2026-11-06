@@ -1596,3 +1596,159 @@ def test_transport_pins_verified_snapshot_despite_source_replacement(
     assert not pinned.exists()
     with pytest.raises(BootstrapRefused, match="transport is closed"):
         access.custom_resource_definitions()
+
+
+_HEADER_TIMEOUT = (
+    "Unable to connect to the server: context deadline exceeded "
+    "(Client.Timeout exceeded while awaiting headers)"
+)
+_ROLE_BINDING = {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {"name": "controller-workspace", "namespace": NAMESPACE},
+}
+
+
+class _ReadRetryRunner(_Scripted):
+    def __init__(self, results):
+        super().__init__(
+            {
+                "config view": {
+                    "clusters": [
+                        {
+                            "cluster": {
+                                "server": ENDPOINT,
+                                "certificate-authority-data": CA_DATA,
+                            }
+                        }
+                    ]
+                }
+            }
+        )
+        self.results = iter(results)
+
+    def run(self, args, *, data=None, timeout=120):
+        if "config" in args:
+            return super().run(args, data=data, timeout=timeout)
+        self.calls.append((tuple(args), data))
+        result = next(self.results)
+        if isinstance(result, BaseException):
+            raise result
+        return CommandResult(args=tuple(args), **result)
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+@pytest.mark.parametrize(
+    "error",
+    [
+        _HEADER_TIMEOUT,
+        "Unable to connect to the server: net/http: request canceled while waiting "
+        "for connection (Client.Timeout exceeded while awaiting headers)",
+        "Unable to connect to the server: net/http: timeout awaiting response headers",
+        "Unable to connect to the server: net/http: TLS handshake timeout",
+    ],
+)
+def test_component_read_recovers_from_transient_transport_timeouts(failures, error):
+    observed = {**_ROLE_BINDING, "roleRef": {"kind": "Role", "name": "controller"}}
+    runner = _ReadRetryRunner(
+        [{"returncode": 1, "stderr": error}] * failures
+        + [{"returncode": 0, "stdout": json.dumps(observed)}]
+    )
+    assert _access(runner).read_component(_ROLE_BINDING) == observed
+    assert len(runner.calls) == failures + 1
+    assert all(call == runner.calls[0] for call in runner.calls)
+
+
+def test_component_read_timeout_exhaustion_keeps_existing_redacted_refusal():
+    runner = _ReadRetryRunner([{"returncode": 1, "stderr": _HEADER_TIMEOUT}] * 3)
+    with pytest.raises(BootstrapRefused, match="reading bootstrap component") as caught:
+        _access(runner).read_component(_ROLE_BINDING)
+    assert len(runner.calls) == 3
+    assert _HEADER_TIMEOUT not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"returncode": 1, "stderr": "Error from server (Forbidden): permission denied"},
+        {"returncode": 1, "stderr": "error: You must be logged in to the server"},
+        {"returncode": 1, "stderr": "Error from server (NotFound): missing"},
+        {"returncode": 1, "stderr": "Error from server (InternalError): retry later"},
+        {
+            "returncode": 1,
+            "stderr": "Unable to connect to the server: connection refused",
+        },
+        {
+            "returncode": 1,
+            "stderr": "Unable to connect to the server: x509: unknown authority",
+        },
+        {"returncode": 1, "stderr": "Forbidden\n" + _HEADER_TIMEOUT},
+        {"returncode": 1, "stderr": _HEADER_TIMEOUT, "stdout": "partial output"},
+        {"returncode": 2, "stderr": _HEADER_TIMEOUT},
+    ],
+)
+def test_component_read_does_not_retry_other_failures(failure):
+    runner = _ReadRetryRunner([failure])
+    with pytest.raises(BootstrapRefused):
+        _access(runner).read_component(_ROLE_BINDING)
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.parametrize("verb", ["create", "apply", "patch", "delete", "run", "exec"])
+def test_kubernetes_writes_are_not_retried_after_timeout(verb):
+    runner = _ReadRetryRunner([{"returncode": 1, "stderr": _HEADER_TIMEOUT}])
+    result = _access(runner)._kube(verb, "resource")
+    assert result.returncode == 1
+    assert len(runner.calls) == 1
+
+
+def test_get_with_input_is_not_retried():
+    runner = _ReadRetryRunner([{"returncode": 1, "stderr": _HEADER_TIMEOUT}])
+    assert _access(runner)._kube("get", "resource", data="input").returncode == 1
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "failure", [TimeoutError(), BootstrapRefused("revoked"), KeyboardInterrupt()]
+)
+def test_runner_exceptions_and_cancellation_are_not_retried(failure):
+    runner = _ReadRetryRunner([failure])
+    with pytest.raises(type(failure)):
+        _access(runner).read_component(_ROLE_BINDING)
+    assert len(runner.calls) == 1
+
+
+def test_read_retry_rechecks_binding_deadline(
+    binding, provider_identity, observed_cluster, expected_target, monkeypatch
+):
+    from datetime import timedelta
+
+    from superplane_bootstrap.target import verify_target
+
+    target = verify_target(
+        binding=binding,
+        provider=provider_identity,
+        observed=observed_cluster,
+        cluster_ownership="adp-created",
+        **expected_target,
+    )
+    runner = _ReadRetryRunner([{"returncode": 1, "stderr": _HEADER_TIMEOUT}])
+    access = _access(runner)
+    access.bind_target(target, binding)
+
+    class Clock:
+        @staticmethod
+        def now(_timezone):
+            return (
+                binding.expires_at + timedelta(seconds=1)
+                if runner.argv_containing("get RoleBinding")
+                else binding.expires_at - timedelta(seconds=1)
+            )
+
+    monkeypatch.setattr("superplane_bootstrap.target.datetime", Clock)
+    try:
+        with pytest.raises(BootstrapRefused, match="binding is expired"):
+            access.read_component(_ROLE_BINDING)
+        assert len(runner.argv_containing("get RoleBinding")) == 1
+    finally:
+        access.close()

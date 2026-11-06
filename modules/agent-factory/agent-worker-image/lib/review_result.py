@@ -845,6 +845,49 @@ def _stage_detail(report: dict, name: str, claim: object) -> str:
     )
 
 
+def _finding_summary(finding_id: str, summary: object) -> str:
+    if not isinstance(summary, str) or not summary.strip():
+        return "the reviewer recorded no description for this finding"
+    text = summary.strip()
+    if finding_id != "delivery-blocked" or len(text) <= _MAX_DETAIL_CHARS:
+        return text[:_MAX_DETAIL_CHARS]
+    # The harness puts its canonical CI observation in this field. Cutting JSON
+    # mid-string loses the failure classification and strands bounded recovery.
+    # Keep a small valid snapshot; the full observation remains in the review body.
+    try:
+        observation = json.loads(text)
+    except ValueError:
+        return text[:_MAX_DETAIL_CHARS]
+    evidence = observation.get("evidence") if isinstance(observation, dict) else None
+    if (not isinstance(evidence, dict) or observation.get("source") != "required-checks"
+            or not isinstance(evidence.get("state"), str) or evidence["state"] not in {"failed", "pending", "passed"}
+            or not isinstance(evidence.get("checks"), list)):
+        return text[:_MAX_DETAIL_CHARS]
+    failed_states = {"failure", "failed", "error", "timed_out", "cancelled", "action_required", "startup_failure", "stale"}
+    checks = evidence["checks"]
+    failures = [check for check in checks if isinstance(check, dict)
+                and isinstance(check.get("name"), str) and isinstance(check.get("state"), str) and check["state"] in failed_states]
+    compact = {key: evidence[key] for key in ("state", "head_sha", "base_repair_required") if key in evidence}
+    compact.update(checks=[], omitted_checks=len(checks), check_names_truncated=False)
+
+    def encode():
+        return json.dumps({"source": "required-checks", "evidence": compact}, separators=(",", ":"))
+
+    if len(encode()) > _MAX_DETAIL_CHARS:
+        return text[:_MAX_DETAIL_CHARS]
+    for check in failures:
+        previous_truncated = compact["check_names_truncated"]
+        compact["checks"].append({"name": check["name"][:80], "state": check["state"]})
+        compact["omitted_checks"] -= 1
+        compact["check_names_truncated"] |= len(check["name"]) > 80
+        if len(encode()) > _MAX_DETAIL_CHARS:
+            compact["checks"].pop()
+            compact["omitted_checks"] += 1
+            compact["check_names_truncated"] = previous_truncated
+            break
+    return encode()
+
+
 def findings_from_agent_report(report: dict) -> list[FindingReport]:
     """The findings the agent reported, normalised so an unknown value cannot clear one.
 
@@ -892,11 +935,7 @@ def findings_from_agent_report(report: dict) -> list[FindingReport]:
                 stage=stage if stage in {FUNCTIONAL_STAGE, SECURITY_STAGE} else FUNCTIONAL_STAGE,
                 severity=severity,
                 disposition=disposition,
-                summary=(
-                    summary.strip()[:_MAX_DETAIL_CHARS]
-                    if isinstance(summary, str) and summary.strip()
-                    else "the reviewer recorded no description for this finding"
-                ),
+                summary=_finding_summary(finding_id, summary),
                 evidence_refs=refs,
             )
         )

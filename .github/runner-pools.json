@@ -1,0 +1,27 @@
+{
+  "_comment": "Which workflows and exact jobs run on the dedicated deployment pool (modules/agent-factory/infra/modules/deploy-runner-pool). Unlisted jobs run on arc-runner-org. Read by platform/scripts/tests/test_release.py, platform/automation-infra/tests/test_trust_contract.py and .github/scripts/tests/test_ci_evidence_s3.py; deployment-pool entries must never be pull-request checks.",
+  "arc-runner-deploy": [
+    "_deploy-eks.yml",
+    "agent-context-deploy.yml",
+    "agent-gateway-deploy.yml",
+    "arc-runner-image-deploy.yml",
+    "chat-agent-deploy.yml",
+    "dev-box-controller-deploy.yml",
+    "dev-box-crew-image.yml",
+    "dev-box-deploy.yml",
+    "gateway-deploy.yml",
+    "gateway-smoke.yml",
+    "github-auth-broker-deploy.yml",
+    "insights-deploy.yml",
+    "platform-deploy-mgmt-infra-apply.yml",
+    "run-gateway-migrations.yml",
+    "tools-facade-deploy.yml"
+  ],
+  "arc-runner-deploy-jobs": {
+    "gateway-product-recovery.yml": [
+      "quiesce",
+      "baseline",
+      "restore"
+    ]
+  }
+}

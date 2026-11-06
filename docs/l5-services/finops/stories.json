@@ -1,0 +1,492 @@
+{
+  "revision": "F1",
+  "epic": "https://github.com/aws-e/adp/issues/9079",
+  "approval": "approved",
+  "stories": [
+    {
+      "alias": "FO01",
+      "title": "Qualify FinOps automation, billing isolation and shared typed contracts",
+      "sections": [
+        "qualification-and-billing-boundary",
+        "configuration-and-typed-interfaces",
+        "sql-entities-and-lifecycle"
+      ],
+      "deps": [],
+      "outcome": "Qualify a supported native cost-inquiry and read-only recovery path, and freeze the scoped request/result contract without inventing a provider API.",
+      "owned": "Existing shared contracts/v1, run_input.py, adapters/protocol.py, configuration registration and host discriminators; proposed FinOps qualification record and typed payload variant. Coordinate shared edits with DA09 #8874 / PR #9081 and SA01 #8683; do not replace sibling contracts.",
+      "io": "Input: current provider documentation, authorized view/data-role fixture and Product contract. Output: dated support/scope/recovery matrix, FinopsRunInput/FinopsCostResult schemas, capability-specific readiness, catalog mapping and compatible client/worker variants. Existing router accepts Security/DevOps, not FinOps.",
+      "deploy": "Contract preparation is independent of live access. A qualified provider path is required before its dependent native implementation/activation; FO07 integrates schema/host/worker release. No provider setup or paid inquiry is authorized by filing.",
+      "issue_url": "https://github.com/aws-e/adp/issues/9083",
+      "issue_number": 9083,
+      "approval": "approved",
+      "acceptance": [
+        {
+          "id": "AC-01",
+          "scenario_id": "SCN-01",
+          "epic_criteria": [
+            "EC-01",
+            "EC-04"
+          ],
+          "action": "Inspect the supported provider surface and use an authorized qualification fixture for identity/read-only recovery, including expiry.",
+          "expected": "Record versioned evidence of supported automation, agent/conversation/turn correlation, read-only resume and limits. Missing proof is explicit unsupported/blocked; no fabricated SDK or hidden endpoint. A native-ready declaration requires actual qualified observations.",
+          "evidence": "qualification record + private readbacks; unqualified native ECs remain incomplete",
+          "phase_owner": "live qualification; FO01",
+          "verification": "manual",
+          "test": "qualification"
+        },
+        {
+          "id": "AC-02",
+          "scenario_id": "SCN-02",
+          "epic_criteria": [
+            "EC-01",
+            "EC-06"
+          ],
+          "action": "Validate FinOps payloads through shared route/runtime schemas alongside unchanged Security/DevOps fixtures.",
+          "expected": "Accept scoped fixed-period cost queries without a repository; reject unknown fields, caller view/role, invalid dates and unsupported metrics. Same old fixtures retain their prior behavior.",
+          "evidence": "schema/host contract tests and independent error assertions",
+          "phase_owner": "pre-review; FO01",
+          "verification": "automatic-integration",
+          "test": "contract_variants"
+        },
+        {
+          "id": "AC-03",
+          "scenario_id": "SCN-03",
+          "epic_criteria": [
+            "EC-02"
+          ],
+          "action": "Inspect selected view contents and provider data-role policy; exercise owned and controlled foreign-view paths.",
+          "expected": "Only selected billing is readable; foreign view denied through actual provider/data-role execution, not merely a CE filter or IAM simulation. No default primary view or scope widening.",
+          "evidence": "scope matrix + permitted/denied native readbacks",
+          "phase_owner": "live qualification; FO01/FO07",
+          "verification": "manual",
+          "test": "billing_boundary"
+        },
+        {
+          "id": "AC-04",
+          "scenario_id": "SCN-04",
+          "epic_criteria": [
+            "EC-01"
+          ],
+          "action": "Resolve Product capability/catalog mapping with SA01 and inspect Profile inputs.",
+          "expected": "Registered Module/Feature IDs or owned unresolved status, not invented IDs; only inquiry-relevant prerequisites block readiness. Allocation proposals never become spending authority.",
+          "evidence": "catalog readback, Profile mapping and readiness counterexamples",
+          "phase_owner": "pre-review; FO01/coordinator",
+          "verification": "automatic-integration",
+          "test": "readiness"
+        }
+      ],
+      "accepted_revision": "30ca157aa68c7f3ceace28c5a118f4df7e87bb43",
+      "review_url": "https://github.com/aws-e/adp/pull/9097#pullrequestreview-5669812269"
+    },
+    {
+      "alias": "FO02",
+      "title": "Configure scoped FinOps bindings and owned setup or adoption",
+      "sections": [
+        "configuration-and-typed-interfaces",
+        "qualification-and-billing-boundary",
+        "sql-entities-and-lifecycle",
+        "rollout-verification-and-cleanup"
+      ],
+      "deps": [
+        "FO01"
+      ],
+      "outcome": "Let an entitled project select a billing scope and create or adopt its own native agent without widening access or losing resource ownership.",
+      "owned": "Existing configuration_population.py, configuration_readiness.py, models/binding.py, models/setup.py, binding APIs/workers and gateway l5_integration.py; proposed adapters/finops/setup.py and additive shared retained-agent scope uniqueness migration.",
+      "io": "Input: Product API Profile revision, explicit connection/region/view/data-role selections and create/adopt intent. Output: configuration ETag/readiness, persistent binding generation and durable setup/retirement receipts. Save/check have no provider effects; startBindingOperation is the shared setup interface.",
+      "deploy": "FO02 owns setup/cleanup semantics and migrations; FO07 deploys compatible batch. Setup is separate from inquiries; retain adopted agents/views/roles and all results. Unknown partial setup is reconciled, never blindly recreated.",
+      "issue_url": "https://github.com/aws-e/adp/issues/9084",
+      "issue_number": 9084,
+      "approval": "approved",
+      "acceptance": [
+        {
+          "id": "AC-01",
+          "scenario_id": "SCN-01",
+          "epic_criteria": [
+            "EC-01"
+          ],
+          "action": "Save/check/refresh a FinOps configuration with optional Profile fields absent and explicit choices present.",
+          "expected": "Keep authorized choices and immutable Profile provenance; stale ETag fails; no setup effect from save/check. Missing repository never blocks account inquiry; missing qualified billing does.",
+          "evidence": "API/SQL and provider-call-counter assertions",
+          "phase_owner": "pre-review + live; FO02",
+          "verification": "automatic-integration",
+          "test": "configuration"
+        },
+        {
+          "id": "AC-02",
+          "scenario_id": "SCN-02",
+          "epic_criteria": [
+            "EC-02"
+          ],
+          "action": "Create/adopt through startBindingOperation using two projects and concurrent claims on the same native agent.",
+          "expected": "Correct selected role/view bound and verified; foreign tenant/project/view denied. One context-bearing agent cannot bind to two project scopes, including cross-tenant attempts; masked conflict, no credential leak.",
+          "evidence": "PostgreSQL race test + private native scope readback",
+          "phase_owner": "pre-review + live; FO02/FO07",
+          "verification": "automatic-integration",
+          "test": "bindings"
+        },
+        {
+          "id": "AC-03",
+          "scenario_id": "SCN-03",
+          "epic_criteria": [
+            "EC-02",
+            "EC-05"
+          ],
+          "action": "Interrupt setup after each owned resource, replay intent, then retire owned and adopted fixtures.",
+          "expected": "Same intent reconciles without duplicate creation; only owned unreferenced resources are removed and absence verified. Adopted resources/results persist; cleanup uncertainty remains visible and repairable.",
+          "evidence": "fault-injection receipts + owned/adopted disposition report",
+          "phase_owner": "pre-review + live; FO02/FO07",
+          "verification": "automatic-integration",
+          "test": "setup_cleanup"
+        }
+      ],
+      "accepted_revision": "30ca157aa68c7f3ceace28c5a118f4df7e87bb43",
+      "review_url": "https://github.com/aws-e/adp/pull/9097#pullrequestreview-5669812269"
+    },
+    {
+      "alias": "FO03",
+      "title": "Execute native FinOps inquiries with durable identity and read-only recovery",
+      "sections": [
+        "components-and-request-flow",
+        "native-inquiry-and-recovery",
+        "sql-entities-and-lifecycle"
+      ],
+      "deps": [
+        "FO01",
+        "FO02"
+      ],
+      "outcome": "Submit an admitted native cost question once and recover its answer without automatically sending another turn after interruption or session expiry.",
+      "owned": "Existing admission.py, workers/execution.py, workers/recovery.py, work_store.py, models/attempt.py and gateway host; proposed adapters/finops/inquiry.py and qualified protected executor. Share manifest/dispatch extensions with DevOps DA09, not a second worker engine.",
+      "io": "Input: frozen FinopsRunInput plus pinned binding/configuration and current delegation/budget. Output: 202 run/receipt, durable attempt/question hash/native conversation-turn identity, observations and native answer. Existing AssessmentAdapter methods are reused; FinOps executor selection depends on FO01 qualification.",
+      "deploy": "FO03 owns private executor integration and bounded actions; FO07 packages/releases it with shared transport. No public Lambda URL or client-visible session. Preserve repair and native identity on rollback.",
+      "issue_url": "https://github.com/aws-e/adp/issues/9085",
+      "issue_number": 9085,
+      "approval": "approved",
+      "acceptance": [
+        {
+          "id": "AC-01",
+          "scenario_id": "SCN-01",
+          "epic_criteria": [
+            "EC-03",
+            "EC-04"
+          ],
+          "action": "Submit through the real L5 API, duplicate the request, lose queue acknowledgment and restart execution after native acceptance.",
+          "expected": "One run/receipt and at most one native submit; SQL attempt precedes effect. Reconcile the same native identity or expose outcome_unknown. Same key/different body conflicts.",
+          "evidence": "SQL/SQS fault trace + independent native turn count/readback",
+          "phase_owner": "pre-review + live; FO03/FO07",
+          "verification": "automatic-integration",
+          "test": "submit_recovery"
+        },
+        {
+          "id": "AC-02",
+          "scenario_id": "SCN-02",
+          "epic_criteria": [
+            "EC-04"
+          ],
+          "action": "Expire a session or revoke delegation between submit and observation; then restart or explicitly reconcile.",
+          "expected": "No new conversation/turn. Reauthorized refresh observes same inquiry; denied/ambiguous readback stays blocked/unknown. Persisted limits do not reset. No session material in public artifacts/logs.",
+          "evidence": "expiry/revocation trace, provider count and redaction checks",
+          "phase_owner": "pre-review + live; FO03/FO07",
+          "verification": "automatic-integration",
+          "test": "session_recovery"
+        },
+        {
+          "id": "AC-03",
+          "scenario_id": "SCN-03",
+          "epic_criteria": [
+            "EC-04",
+            "EC-05"
+          ],
+          "action": "Cancel/expire an active inquiry and inject lost answer-storage acknowledgment.",
+          "expected": "Local cancellation never claims unsupported native stop; saved answer reuses identity. Collection/publication repair cannot call submit; refusal is not automatically rephrased.",
+          "evidence": "worker transition tests + native status/answer readback",
+          "phase_owner": "pre-review + live; FO03/FO07",
+          "verification": "automatic-integration",
+          "test": "terminal_recovery"
+        }
+      ],
+      "accepted_revision": "30ca157aa68c7f3ceace28c5a118f4df7e87bb43",
+      "review_url": "https://github.com/aws-e/adp/pull/9097#pullrequestreview-5669812269"
+    },
+    {
+      "alias": "FO04",
+      "title": "Reconcile native answers with complete independent billing evidence",
+      "sections": [
+        "independent-reconciliation-and-provenance",
+        "sql-entities-and-lifecycle"
+      ],
+      "deps": [
+        "FO01",
+        "FO03"
+      ],
+      "outcome": "Return trustworthy native cost results with independent billing comparison, preserving precision, credits, scope and missing-data limitations.",
+      "owned": "Existing result/evidence models, api/results.py and collection worker transitions; proposed adapters/finops/billing.py, result normalizer and l5_service_cost_collections migration. Do not coerce cost data into Security findings.",
+      "io": "Input: original native answer/identity and exact pinned scope/query. Output: FinopsCostResult with separate native and CE provenance, complete page evidence, signed decimal strings, Estimated/freshness/coverage and comparison status. CE-only output is not a native answer.",
+      "deploy": "FO04 owns additive collection/result schema; FO07 deploys readers before producers. Native result survives billing/publication failures and owned cleanup; rollback retains immutable evidence/checkpoints.",
+      "issue_url": "https://github.com/aws-e/adp/issues/9086",
+      "issue_number": 9086,
+      "approval": "approved",
+      "acceptance": [
+        {
+          "id": "AC-01",
+          "scenario_id": "SCN-01",
+          "epic_criteria": [
+            "EC-03"
+          ],
+          "action": "Collect a native answer and all CE pages for identical scope/period/metric/currency/Estimated, including signed credit groups.",
+          "expected": "10.125 plus -0.125 equals 10.000 exactly; 0.00000001 stays nonzero. Every group and total reconciles with Decimal; rounded display is distinct from exact and mismatched dimensions never compare equal.",
+          "evidence": "independent fixed-value oracle + native/CE raw evidence",
+          "phase_owner": "pre-review + live; FO04/FO07",
+          "verification": "automatic-integration",
+          "test": "decimal_reconciliation"
+        },
+        {
+          "id": "AC-02",
+          "scenario_id": "SCN-02",
+          "epic_criteria": [
+            "EC-05"
+          ],
+          "action": "Feed missing/partial/stale billing, empty pages, unknown Estimated/freshness and account-only attribution.",
+          "expected": "Unavailable amount is null, not zero; complete explicit zero remains zero. Unknown freshness/Estimated stay unknown; account costs never labelled Product-attributed without proof. Results retain original scope/time.",
+          "evidence": "negative result/API assertions with independently defined fixtures",
+          "phase_owner": "pre-review + live; FO04/FO07",
+          "verification": "automatic-integration",
+          "test": "truthful_results"
+        },
+        {
+          "id": "AC-03",
+          "scenario_id": "SCN-03",
+          "epic_criteria": [
+            "EC-03",
+            "EC-04",
+            "EC-05"
+          ],
+          "action": "Lose a CE-page acknowledgment; repeat a token; exceed admitted limit; expire a cursor and resume collection.",
+          "expected": "Bounded calls/checkpointed pages, no cross-collection mixing or false completeness. New collection supersedes invalid cursor; native turn count unchanged; result/evidence survives provider cleanup.",
+          "evidence": "page-sequence fault report + request ledger/native count",
+          "phase_owner": "pre-review + live; FO04/FO07",
+          "verification": "automatic-integration",
+          "test": "collection_recovery"
+        }
+      ],
+      "accepted_revision": "30ca157aa68c7f3ceace28c5a118f4df7e87bb43",
+      "review_url": "https://github.com/aws-e/adp/pull/9097#pullrequestreview-5669812269"
+    },
+    {
+      "alias": "FO05",
+      "title": "Expose FinOps configuration, inquiries and answers consistently in UI CLI and MCP",
+      "sections": [
+        "client-parity",
+        "configuration-and-typed-interfaces"
+      ],
+      "deps": [
+        "FO01",
+        "FO04"
+      ],
+      "outcome": "Let users and agents configure, ask, observe and read the same scoped FinOps inquiry through the Product UI, installed CLI and authenticated MCP.",
+      "owned": "Existing gateway Product workspace, frontend/src/services/products.ts, CLI command manifest/install path and tools facade catalog; proposed shared adp service FinOps commands and l5___ operation registrations. Domain logic stays in L5.",
+      "io": "Input: explicit Product/project/service route scope and shared schema arguments. Output: identical configuration/setup/run/result/publication envelopes and errors. Show pending/blocked/partial/unknown honestly; no native session or direct provider client.",
+      "deploy": "FO05 owns host/UI/installed CLI/tool integration. Keep normal gateway/frontend auto-deploys; FO07 checks all installed artifacts against compatible worker/schema release. No per-project deployment.",
+      "issue_url": "https://github.com/aws-e/adp/issues/9087",
+      "issue_number": 9087,
+      "approval": "approved",
+      "acceptance": [
+        {
+          "id": "AC-01",
+          "scenario_id": "SCN-01",
+          "epic_criteria": [
+            "EC-06"
+          ],
+          "action": "Use served UI, installed CLI and authenticated MCP to configure, set up, submit and read one inquiry.",
+          "expected": "Same scoped state/ETag/receipt/run/result across clients; no direct provider calls or credentials in responses. 202 shown as accepted, not completed.",
+          "evidence": "three-client journeys + API and provider readback",
+          "phase_owner": "pre-review + live; FO05/FO07",
+          "verification": "automatic-e2e",
+          "test": "client_parity"
+        },
+        {
+          "id": "AC-02",
+          "scenario_id": "SCN-02",
+          "epic_criteria": [
+            "EC-02",
+            "EC-06"
+          ],
+          "action": "Switch to another project/tenant and replay IDs/cursors/keys; exercise stale ETag and invalid query.",
+          "expected": "Masked inaccessible resource/authorization failure; no cross-scope cache or artifact leak. 412/422/428/409 semantics match; idempotent replay remains reauthorized.",
+          "evidence": "host/client negative assertions and artifact access denial",
+          "phase_owner": "pre-review + live; FO05/FO07",
+          "verification": "automatic-e2e",
+          "test": "client_denial"
+        },
+        {
+          "id": "AC-03",
+          "scenario_id": "SCN-03",
+          "epic_criteria": [
+            "EC-05",
+            "EC-06"
+          ],
+          "action": "Read partial/unknown/refused results; request explicit wait and read-only recovery in installed clients.",
+          "expected": "Original answer and independent evidence remain distinct; null/Decimal preserved. Documented wait exit/error states; no hidden resubmit, rephrase or DevOps federation reuse.",
+          "evidence": "installed JSON/exit-code and UI/MCP response checks",
+          "phase_owner": "pre-review + live; FO05/FO07",
+          "verification": "automatic-e2e",
+          "test": "client_outcomes"
+        }
+      ],
+      "accepted_revision": "30ca157aa68c7f3ceace28c5a118f4df7e87bb43",
+      "review_url": "https://github.com/aws-e/adp/pull/9097#pullrequestreview-5669812269"
+    },
+    {
+      "alias": "FO06",
+      "title": "Publish reusable FinOps context and opt-in periodic cost reports",
+      "sections": [
+        "publication-and-periodic-reports",
+        "independent-reconciliation-and-provenance"
+      ],
+      "deps": [
+        "FO03",
+        "FO04"
+      ],
+      "outcome": "Publish cost results for later entitled work and issue explicitly enabled periodic reports without duplicating paid turns.",
+      "owned": "Existing events/schedules.py, event receipts/recovery and shared publication/peer contracts; proposed FinOps result contribution variant and scheduled cost-query snapshot. Coordinate SA11 #8693 and Context/Insights owners; no new scheduler/control plane.",
+      "io": "Input: immutable result/version/scope and enabled schedule with UTC tick/template. Output: independent consumer receipts and later authorized retrieval, or explicit retry/block; periodic tick freezes the same FinopsRunInput used by manual admission.",
+      "deploy": "FO06 owns producer/consumer contract integration with peer owners; FO07 wires/verifies actual schedule ingress and release. Result/publication repair never repeats native work; revoked destinations remain denied.",
+      "issue_url": "https://github.com/aws-e/adp/issues/9088",
+      "issue_number": 9088,
+      "approval": "approved",
+      "acceptance": [
+        {
+          "id": "AC-01",
+          "scenario_id": "SCN-01",
+          "epic_criteria": [
+            "EC-07"
+          ],
+          "action": "Publish a result, lose consumer acknowledgment, replay, then read consumer projection.",
+          "expected": "One semantic contribution per result/version/consumer; independent receipts/readback for Context and Insights. Stored result survives outage, no new provider turn.",
+          "evidence": "consumer receipts + projection and provider-count assertions",
+          "phase_owner": "pre-review + live; FO06/FO07",
+          "verification": "automatic-integration",
+          "test": "publication"
+        },
+        {
+          "id": "AC-02",
+          "scenario_id": "SCN-02",
+          "epic_criteria": [
+            "EC-07"
+          ],
+          "action": "Run a later distinct entitled task, then revoke source/Product access and repeat retrieval.",
+          "expected": "Later task retrieves and uses original cost scope/period/Estimated/freshness with citations; revoked/foreign task cannot retrieve indexed or artifact copies.",
+          "evidence": "later-task retrieval/use trace + controlled denial",
+          "phase_owner": "live; FO06/FO07",
+          "verification": "manual",
+          "test": "entitled_reuse"
+        },
+        {
+          "id": "AC-03",
+          "scenario_id": "SCN-03",
+          "epic_criteria": [
+            "EC-06",
+            "EC-07"
+          ],
+          "action": "Enable a monthly report; replay one tick across month boundary; disable/revoke before another tick.",
+          "expected": "One frozen closed interval and inquiry per scoped tick; no retry-time interval drift or catch-up burst. Disabled/revoked tick rejects; existing budget and dedup apply.",
+          "evidence": "fixed-clock schedule/API/worker integration + live replay",
+          "phase_owner": "pre-review + live; FO06/FO07",
+          "verification": "automatic-integration",
+          "test": "periodic_reports"
+        }
+      ],
+      "accepted_revision": "30ca157aa68c7f3ceace28c5a118f4df7e87bb43",
+      "review_url": "https://github.com/aws-e/adp/pull/9097#pullrequestreview-5669812269"
+    },
+    {
+      "alias": "FO07",
+      "title": "Release FinOps compatibly and prove portable scoped native acceptance",
+      "sections": [
+        "rollout-verification-and-cleanup",
+        "prerequisites-and-review-handoff"
+      ],
+      "deps": [
+        "FO01",
+        "FO02",
+        "FO03",
+        "FO04",
+        "FO05",
+        "FO06"
+      ],
+      "outcome": "Integrate one compatible FinOps release and prove its native results, recovery, reuse and cleanup on two non-ADP projects.",
+      "owned": "Existing L5 scripts/infra/tests, gateway migrations/packaging/workflows and platform launcher/release integration; proposed tests/live/FinOps cases and finops/runbook.md. Reuse Security SA15 #8698 / PR #8932; exact file lists are advisory, never node failure gates.",
+      "io": "Input: prior slices, selected private target/access/budget, compatible artifact identities and two distinct controlled cost scopes. Output: installed release identity, EC-to-AC evidence, costs/disposition and recovery/runbook. No new AWS authority from the issue.",
+      "deploy": "FO07 release implementer owns integration, allowed deployment, live tests and defect closure; PranavSharma1000 coordinates/accepts. Retain normal host auto-deploys, one coordinated L5 release per compatible batch; never equate CI/merge with live acceptance.",
+      "issue_url": "https://github.com/aws-e/adp/issues/9089",
+      "issue_number": 9089,
+      "approval": "approved",
+      "acceptance": [
+        {
+          "id": "AC-01",
+          "scenario_id": "SCN-01",
+          "epic_criteria": [
+            "EC-06",
+            "EC-08"
+          ],
+          "action": "Release additive schema, compatible package/workers/clients and enabled fixtures; test fresh/existing/pending work and rollback.",
+          "expected": "Installed components match manifest; queue/repair/schedule ingress work. Rollback disables new admissions but preserves observations/results/cleanup; no schema/evidence loss.",
+          "evidence": "release identity + migration/worker/rollback readbacks",
+          "phase_owner": "pre-review + live; FO07",
+          "verification": "automatic-integration",
+          "test": "release"
+        },
+        {
+          "id": "AC-02",
+          "scenario_id": "SCN-02",
+          "epic_criteria": [
+            "EC-01",
+            "EC-02",
+            "EC-03",
+            "EC-08"
+          ],
+          "action": "Use same release on two non-ADP projects with distinct effective billing scopes; ask fixed native inquiries and attempt controlled foreign access.",
+          "expected": "Both reconcile with complete CE evidence without platform edits/redeploy. Foreign view/tenant/project denied through real path; no unrequested enrollment or widening.",
+          "evidence": "two native answers, CE comparison, denial and unchanged artifact digests",
+          "phase_owner": "live; FO07",
+          "verification": "manual",
+          "test": "portable_native"
+        },
+        {
+          "id": "AC-03",
+          "scenario_id": "SCN-03",
+          "epic_criteria": [
+            "EC-04",
+            "EC-05",
+            "EC-06"
+          ],
+          "action": "Interrupt worker/submit acknowledgment/session, CE collection and publication; exercise installed clients and zero/missing/credit cases.",
+          "expected": "Same inquiry identity, no duplicate native turn; bounded repair; unknown/partial explicit. Clients retain scope, exact Decimal and original answer, not synthetic success.",
+          "evidence": "fault matrix + real queue/provider/client observations",
+          "phase_owner": "live; FO07",
+          "verification": "manual",
+          "test": "fault_acceptance"
+        },
+        {
+          "id": "AC-04",
+          "scenario_id": "SCN-04",
+          "epic_criteria": [
+            "EC-02",
+            "EC-05",
+            "EC-07",
+            "EC-08"
+          ],
+          "action": "Publish and reuse results, retire owned resources, verify adopted retention and attempt denied reuse.",
+          "expected": "Consumer acknowledgments and later entitled use proven; owned absence verified, adopted/result retention preserved; current denial enforced. Costs distinguish measured/estimated/unknown; every EC mapped to proof.",
+          "evidence": "consumer/task traces + cleanup/cost report at tested revision",
+          "phase_owner": "live; FO07",
+          "verification": "manual",
+          "test": "cleanup_reuse"
+        }
+      ],
+      "accepted_revision": "30ca157aa68c7f3ceace28c5a118f4df7e87bb43",
+      "review_url": "https://github.com/aws-e/adp/pull/9097#pullrequestreview-5669812269"
+    }
+  ],
+  "accepted_revision": "30ca157aa68c7f3ceace28c5a118f4df7e87bb43",
+  "review_url": "https://github.com/aws-e/adp/pull/9097#pullrequestreview-5669812269"
+}

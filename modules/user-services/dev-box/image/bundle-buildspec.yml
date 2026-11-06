@@ -1,0 +1,61 @@
+version: 0.2
+# Kiro Crew bundle build (#8054). Runs in the same CodeBuild project as the AMI
+# build (adp-<env>-dev-box-image) through a buildspec override set by
+# scripts/build-crew-bundle.sh --codebuild, so the operator box needs neither
+# Node, Python 3.12 nor the ~2 GB of pinned downloads. The build phase is the
+# same scripts/build-crew-bundle.sh --local a developer would run; this file
+# only supplies the runtime, the revision inputs and the publication:
+#   s3://adp-terraform-state-<acct>/dev-box/image-inputs/<bundle-sha>/crew.tar.gz
+#   s3://adp-terraform-state-<acct>/dev-box/image-inputs/<bundle-sha>/profile.json
+#   ${SSM_PREFIX}/crew-bundle-sha256     digest of the bundle just published
+#   ${SSM_PREFIX}/crew-bundle-revision   its profile revision (BUNDLE_REVISION)
+# Nothing secret enters the bundle: it is built from the source zip and pinned,
+# checksummed public downloads only (image/crew-bundle.pins).
+env:
+  variables:
+    BUNDLE_REVISION: ""
+    SOURCE_DATE_EPOCH: ""
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - |
+        set -euo pipefail
+        command -v xz >/dev/null || yum install -y -q xz
+        command -v sha256sum >/dev/null
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        : "${ADP_SOURCE_SHA:?codebuild-run.sh sets ADP_SOURCE_SHA}"
+        [[ "$ADP_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "ADP_SOURCE_SHA must be a full commit" >&2; exit 2; }
+        [ -n "$BUNDLE_REVISION" ] || BUNDLE_REVISION="crew-$(date -u +%Y%m%d)-${ADP_SOURCE_SHA:0:12}"
+        [[ "$BUNDLE_REVISION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo "BUNDLE_REVISION is not a valid revision" >&2; exit 2; }
+        [ -n "$SOURCE_DATE_EPOCH" ] || SOURCE_DATE_EPOCH=0
+        [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || { echo "SOURCE_DATE_EPOCH must be a number" >&2; exit 2; }
+        printf '%s\n' "BUNDLE_REVISION=$BUNDLE_REVISION" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" > /tmp/bundle.env
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        source /tmp/bundle.env
+        bash "$CODEBUILD_SRC_DIR/modules/user-services/dev-box/scripts/build-crew-bundle.sh" --local \
+          --env "$ENVIRONMENT" --region "$REGION" --revision "$BUNDLE_REVISION" --source-revision "$ADP_SOURCE_SHA" \
+          --source-date-epoch "$SOURCE_DATE_EPOCH" --output-dir /tmp/crew-bundle --work-dir /tmp/crew-bundle-work
+  post_build:
+    commands:
+      - |
+        set -euo pipefail
+        source /tmp/bundle.env
+        STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
+        BUNDLE_SHA=$(sha256sum /tmp/crew-bundle/crew.tar.gz | cut -d' ' -f1)
+        python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["bundle_sha256"]==sys.argv[2] and m["revision"]==sys.argv[3] and m["source_revision"]==sys.argv[4], "profile.json does not describe the bundle"' \
+          /tmp/crew-bundle/profile.json "$BUNDLE_SHA" "$BUNDLE_REVISION" "$ADP_SOURCE_SHA"
+        PREFIX="dev-box/image-inputs/${BUNDLE_SHA}"
+        aws s3 cp --region "$REGION" /tmp/crew-bundle/crew.tar.gz "s3://${STATE_BUCKET}/${PREFIX}/crew.tar.gz" >/dev/null
+        aws s3 cp --region "$REGION" /tmp/crew-bundle/profile.json "s3://${STATE_BUCKET}/${PREFIX}/profile.json" >/dev/null
+        put() { aws ssm put-parameter --region "$REGION" --name "${SSM_PREFIX}/$1" --type String --overwrite --value "$2" >/dev/null; }
+        put crew-bundle-sha256 "$BUNDLE_SHA"
+        put crew-bundle-revision "$BUNDLE_REVISION"
+        echo "crew bundle published: s3://${STATE_BUCKET}/${PREFIX}/ revision=$BUNDLE_REVISION sha256=$BUNDLE_SHA source=$ADP_SOURCE_SHA"

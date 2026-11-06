@@ -1,0 +1,36 @@
+{
+  "scenario": "test_optional_deployment_modes",
+  "scope": "offline-selection-intent-and-artifact-only",
+  "modes": {
+    "absent": ["false", "false"],
+    "connector-only": ["true", "false"],
+    "full": ["true", "true"]
+  },
+  "poll_seconds": 3600,
+  "deadline_seconds": 7200,
+  "pins": {
+    "mode": "c861f6debadbb6ce988f6a2f08ea1a3a4d123122822e9529e6d291080c14d600",
+    "collection_installer": "99f4c2c3b91edf1980c28e3c48e8e2719ec98c9e29449fe18f69df539e659c57",
+    "connector_installer": "0327f0804ac95881fecee67144eaea299b24d4502eb1998ef4e2dd7cb1aec655",
+    "intent_ledger": "db678b1c0d08881ba66b5ac090f2be68ed85949446a1fac4922769cbe7044b7d",
+    "artifact_finalizer": "c0f23fa564e6ee331e6456a4b4766ecfedc5b965a849c48bea59c6e834126ced",
+    "ordinary_deploy": "f250025e0ff756400c44814eacc75546d5deea9ad662b434c956d81a826305fb",
+    "mode_tests": "66f7dd61494b9857c06b5cc3f35b9616660a557d5736f4fa48e92bcb02b71499",
+    "intent_tests": "f259d66039b295350eb9caa070b6bb14c06c5d94e39bf4d69b3efd3edd10aacc",
+    "artifact_tests": "8c8a21ac31a12ff8351d7ad764796f5b9037c811cc39b3986aebc8052f3dbffb",
+    "finalizer_fixture": "7386a4dee452487a3c646c63bd03acc7ad0a57ea64a823d02c1b081640fdefcb",
+    "ordinary_tests": "148c43d2aa3ad652bcc42722a634b89cb797d43fd28ab9020a9472691e4337f0"
+  },
+  "checks": [
+    "modules.insights.tests.devlake_poc.test_s02_modes.OptionalModeTest.test_absent_and_false_defaults_create_no_selection",
+    "modules.insights.tests.devlake_poc.test_s02_modes.OptionalModeTest.test_connector_only_and_full_use_case_insensitive_canonical_flags",
+    "modules.insights.tests.devlake_poc.test_s02_modes.OptionalModeTest.test_invalid_or_collection_only_flags_fail_before_credentials",
+    "modules.insights.tests.devlake_poc.test_s02_modes.OptionalModeTest.test_invalid_environment_flags_reject_without_private_config",
+    "modules.insights.tests.test_deploy_script.DeployScriptTest.test_ordinary_plans_and_upgrades_ignore_optional_flags_and_state",
+    "modules.insights.tests.devlake_poc.test_s02_intent.OptionalIntentTest.test_collection_retry_keeps_one_protected_intent_and_retains_dependencies",
+    "modules.insights.tests.devlake_poc.test_s02_intent.OptionalIntentTest.test_conflict_and_terminal_request_refuse_registration",
+    "modules.insights.tests.devlake_poc.test_s02_intent.OptionalIntentTest.test_unqualified_cleanup_blocks_both_installer_apply_paths_before_terraform",
+    "modules.insights.tests.devlake_poc.test_s09_cleanup.ArtifactRecoveryTest.test_optional_intent_fences_scheduled_expiry_before_image_cleanup",
+    "modules.insights.tests.devlake_poc.test_s09_cleanup.ArtifactRecoveryTest.test_late_scheduler_cleanup_escalates_and_operator_acknowledges"
+  ]
+}

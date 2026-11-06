@@ -1,4 +1,5 @@
 vi.mock('@/components/budget/BudgetEnforcementControl', () => ({ BudgetEnforcementControl: () => <div data-testid="budget-enforcement-control" /> }));
+vi.mock('@/services/flowBudget', () => ({ getFlowBudget: vi.fn(() => new Promise(() => {})), getNodeBudget: vi.fn() }));
 /**
  * Tests for the delivery-journey graph view — issue #4212.
  *
@@ -11,12 +12,15 @@ vi.mock('@/components/budget/BudgetEnforcementControl', () => ({ BudgetEnforceme
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, within, act, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import GraphView from '@/pages/GraphView';
 import type { FlowGraph, GraphNode, NodeEngineState } from '@/types/orchestration';
+
+const authFixture = vi.hoisted(() => ({ orgId: 'tenant-a' }));
 
 vi.mock('@/services/orchestration', () => ({
   getFlowGraph: vi.fn(),
@@ -34,6 +38,8 @@ vi.mock('@/services/orchestration', () => ({
   // Declared rather than omitted: an absent export would make the hook throw
   // instead of simply having no data, which is a different code path.
   getFlowExecution: vi.fn(),
+  getFlowActivity: vi.fn(),
+  getFlowTimeline: vi.fn(),
 }));
 
 // Without a permission the controls render nothing, which is the correct
@@ -41,10 +47,14 @@ vi.mock('@/services/orchestration', () => ({
 vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: () => ({ hasPermission: () => false }),
 }));
+vi.mock('@/hooks/useAuth', () => ({
+  useAuth: () => ({ user: { id: 'reader', orgId: authFixture.orgId, role: 'member' }, isLoading: false }),
+}));
 
-import { getFlowGraph, getFlowExecution } from '@/services/orchestration';
+import { getFlowGraph, getFlowExecution, getFlowActivity, getFlowTimeline } from '@/services/orchestration';
 
 const mockGetFlowGraph = getFlowGraph as ReturnType<typeof vi.fn>;
+const mockGetFlowActivity = getFlowActivity as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -82,7 +92,7 @@ function makeGraph(overrides: Partial<FlowGraph> = {}): FlowGraph {
 }
 
 /** A fresh client per test. `retry: false` so an error test fails on the first try. */
-function renderGraph() {
+function renderGraph(navigation = false, flowsReturn?: string) {
   const client = new QueryClient({
     defaultOptions: {
       queries: {
@@ -94,24 +104,489 @@ function renderGraph() {
       },
     },
   });
-  return render(
+  const view = () => (
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/flows/flow-1']}>
+      <MemoryRouter initialEntries={[{ pathname: '/flows/flow-1', state: { flowsReturn } }]}>
+        {navigation && <Link to="/flows/flow-2">Switch flow</Link>}
         <Routes>
           <Route path="/flows/:flowId" element={<GraphView />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
   );
+  const result = render(view());
+  return { ...result, client, rerenderGraph: () => result.rerender(view()) };
 }
 
 beforeEach(() => {
+  authFixture.orgId = 'tenant-a';
   vi.clearAllMocks();
+  mockGetFlowActivity.mockImplementation(() => new Promise(() => {}));
   mockGetFlowGraph.mockResolvedValue(makeGraph());
   // A failing ledger read is the baseline for this suite, and it doubles as an
   // assertion by construction: every test below still passes, which is what
   // "a ledger failure must not blank the plan" means in practice.
   (getFlowExecution as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('no ledger in this suite'));
+});
+
+it.each([
+  ['/products/product-a/projects/project-b/flows?status=running&offset=25', '/products/product-a/projects/project-b/flows?status=running&offset=25'],
+  ['/flows?needs_me=true', '/flows?needs_me=true'],
+  ['//example.test/flows', '/flows'],
+  ['/products/product-a/projects/project-b/flows/other', '/flows'],
+])('returns from a flow to its scoped list, validating %s', async (returnPath, expected) => {
+  renderGraph(false, returnPath);
+  expect(await screen.findByRole('link', { name: '← Delivery flows' })).toHaveAttribute('href', expected);
+});
+
+it('renders Product, planning epic and each accepted story target before dispatch', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({
+    product_id: 'product-a', product_name: 'Checkout', product_status: 'accessible',
+    planning_epics: [{ scope: 'epic', address: 'delivery-loop/epic-1', issue: {
+      provider: 'github', repository_id: 30, repository: 'planning/epics', installation_id: 3, issue_number: 21,
+    } }],
+    nodes: [
+      makeNode({ id: 'api', title: 'API', issue_ref: '42', repository_identity: 'delivery/api', repository_status: 'verified', issue_url: 'https://github.com/delivery/api/issues/42' }),
+      makeNode({ id: 'web', node_ref: 'story-b', title: 'Web', issue_ref: '43', repository_identity: 'delivery/web', repository_status: 'verified', issue_url: 'https://github.com/delivery/web/issues/43' }),
+    ],
+  }));
+  renderGraph();
+  expect(await screen.findByTestId('plan-product')).toHaveTextContent('Checkout (product-a)');
+  fireEvent.click(screen.getByText('Plan structure, targets and permissions'));
+  expect(screen.getByText('Planning epic: planning/epics#21')).toBeVisible();
+  expect(within(screen.getByTestId('plan-summary')).getByRole('link', { name: 'delivery/api#42' })).toBeVisible();
+  expect(within(screen.getByTestId('plan-summary')).getByRole('link', { name: 'delivery/web#43' })).toBeVisible();
+});
+
+it('renders distinct server-qualified issue links in story cards without treating a registered draft as approved', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({
+    state: 'awaiting_gate', product_id: 'product-a', product_name: 'Checkout', product_status: 'accessible',
+    planning_epics: [{ scope: 'epic', address: 'delivery-loop/epic-1', issue: {
+      provider: 'github', repository_id: 30, repository: 'planning/epics', installation_id: 3, issue_number: 21,
+    } }],
+    nodes: [
+      makeNode({ id: 'api', node_ref: 'api', title: 'API', issue_ref: '42', repository_identity: 'delivery/api',
+        repository_status: 'verified', issue_url: 'https://github.com/delivery/api/issues/42' }),
+      makeNode({ id: 'web', node_ref: 'web', title: 'Web', issue_ref: '43', repository_identity: 'delivery/web',
+        repository_status: 'verified', issue_url: 'https://github.com/delivery/web/issues/43' }),
+      makeNode({ id: 'gate', node_ref: 'approval', kind: 'gate', title: 'Accept plan', state: 'awaiting_gate' }),
+    ],
+  }));
+  renderGraph();
+  expect(await screen.findByTestId('plan-product')).toHaveTextContent('Checkout (product-a)');
+  fireEvent.click(screen.getByText('Plan structure, targets and permissions'));
+  expect(screen.getByText('Planning epic: planning/epics#21')).toBeVisible();
+  for (const [ref, repo, number] of [['api', 'delivery/api', '42'], ['web', 'delivery/web', '43']]) {
+    const card = screen.getByTestId(`node-${ref}`);
+    expect(within(card).getByRole('link', { name: `${repo}#${number}` })).toHaveAttribute('href', `https://github.com/${repo}/issues/${number}`);
+    expect(within(card).getByTestId(`node-repository-${ref}`)).toHaveTextContent('Repository binding: verified binding');
+    expect(card).not.toHaveTextContent('accepted and verified');
+  }
+  expect(screen.getByTestId('node-approval')).toHaveAttribute('data-display-state', 'gate');
+});
+
+it('does not create a story issue link from a verified binding when the server provides no URL', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [makeNode({
+    issue_ref: '42', repository_identity: 'delivery/api', repository_status: 'verified', issue_url: null,
+  })] }));
+  renderGraph();
+  expect(await screen.findByTestId('node-story-a')).toHaveTextContent('delivery/api#42');
+  expect(within(screen.getByTestId('node-story-a')).queryByRole('link', { name: 'delivery/api#42' })).not.toBeInTheDocument();
+});
+
+it.each([
+  { label: 'direct issue without a planning epic', publication: 'issue_created', epic: false,
+    expected: 'issue created; no planning epic', hold: null, issueUrl: 'https://github.com/delivery/api/issues/42' },
+  { label: 'epic-linked issue still pending its native parent link', publication: 'issue_created_link_pending', epic: true,
+    expected: 'issue created; native epic link pending', hold: 'amendment_issue_link_unconfirmed', issueUrl: 'https://github.com/delivery/api/issues/42' },
+  { label: 'confirmed native parent link', publication: 'linked', epic: true,
+    expected: 'native epic link confirmed', hold: null, issueUrl: 'https://github.com/delivery/api/issues/42' },
+  { label: 'unconfirmed issue publication', publication: 'unconfirmed', epic: true,
+    expected: 'publication cannot be confirmed', hold: null, issueUrl: null },
+] as const)('carries $label from graph into card and approval summary', async ({ publication, epic, expected, hold, issueUrl }) => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({
+    product_id: 'product-a', product_name: 'Checkout', product_status: 'accessible',
+    planning_epics: epic ? [{ scope: 'epic', address: 'delivery-loop/epic-1', issue: {
+      provider: 'github', repository_id: 30, repository: 'planning/epics', installation_id: 3, issue_number: 21,
+    } }] : [],
+    nodes: [makeNode({ issue_ref: '42', repository_identity: 'delivery/api', provider_repository_id: 11,
+      repository_connection: { provider: 'github', installation_id: 3 }, repository_status: 'verified',
+      issue_publication_status: publication, readiness_hold: hold, issue_url: issueUrl,
+    }), makeNode({ id: 'gate', node_ref: 'accept', kind: 'gate', title: 'Accept plan', state: 'awaiting_gate' })],
+  }));
+  renderGraph();
+  const card = await screen.findByTestId('node-repository-story-a');
+  const summary = screen.getByTestId('plan-story-readiness-id-story-a');
+  expect(card).toHaveTextContent(`Issue publication: ${expected}`);
+  expect(summary).toHaveTextContent(`Issue publication: ${expected}`);
+  expect(screen.getByTestId('node-accept')).toHaveAttribute('data-display-state', 'gate');
+  if (publication !== 'linked') {
+    expect(card).not.toHaveTextContent('native epic link confirmed');
+    expect(summary).not.toHaveTextContent('native epic link confirmed');
+  }
+  if (publication === 'issue_created') {
+    expect(card).not.toHaveTextContent('native epic link unconfirmed');
+    expect(summary).not.toHaveTextContent('native epic link unconfirmed');
+    expect(screen.queryByText('Planning epic: planning/epics#21')).not.toBeInTheDocument();
+  }
+  if (hold) expect(summary).toHaveTextContent('Execution hold: native epic link unconfirmed');
+  if (issueUrl) {
+    expect(within(summary).getByRole('link', { name: 'delivery/api#42' })).toHaveAttribute('href', issueUrl);
+    expect(within(screen.getByTestId('node-story-a')).getByRole('link', { name: 'delivery/api#42' })).toHaveAttribute('href', issueUrl);
+  } else {
+    expect(within(summary).queryByRole('link', { name: 'delivery/api#42' })).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('node-story-a')).queryByRole('link', { name: 'delivery/api#42' })).not.toBeInTheDocument();
+  }
+});
+
+it('carries unavailable Product and pending native-link holds from the graph into the story card', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({
+    product_id: 'unavailable-id', product_name: null, product_status: 'unavailable',
+    nodes: [makeNode({ issue_ref: '42', repository_identity: 'delivery/api', provider_repository_id: 11,
+      repository_connection: { provider: 'github', installation_id: 3 }, repository_status: 'verified',
+      issue_publication_status: 'issue_created_link_pending', readiness_hold: 'amendment_issue_link_unconfirmed',
+      issue_url: 'https://github.com/delivery/api/issues/42' })],
+  }));
+  renderGraph();
+  expect(await screen.findByTestId('plan-product')).toHaveTextContent('unavailable or inaccessible');
+  const status = await screen.findByTestId('node-repository-story-a');
+  expect(status).toHaveTextContent('issue created; native epic link pending');
+  expect(status).toHaveTextContent('Execution hold: native epic link unconfirmed');
+  expect(status).not.toHaveTextContent('unavailable-id');
+});
+
+it.each([
+  { label: 'link pending', binding: 'verified', publication: 'issue_created_link_pending', hold: 'amendment_issue_link_unconfirmed',
+    expectedBinding: 'verified binding', expectedPublication: 'issue created; native epic link pending', expectedHold: 'native epic link unconfirmed' },
+  { label: 'unbound issue', binding: 'unbound', publication: 'issue_pending', hold: 'repository_verification_pending',
+    expectedBinding: 'unbound', expectedPublication: 'issue not yet confirmed', expectedHold: 'repository verification pending' },
+  { label: 'denied binding', binding: 'denied', publication: 'unconfirmed', hold: 'repository_verification_pending',
+    expectedBinding: 'denied by admission', expectedPublication: 'publication cannot be confirmed', expectedHold: 'repository verification pending' },
+  { label: 'stale binding', binding: 'stale', publication: 'unconfirmed', hold: 'repository_execution_withheld',
+    expectedBinding: 'stale; review required', expectedPublication: 'publication cannot be confirmed', expectedHold: 'compatible execution readers not enabled' },
+] as const)('shows graph-backed approval prerequisites with the open gate: $label', async ({ binding, publication, hold, expectedBinding, expectedPublication, expectedHold }) => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({
+    product_id: 'hidden-product', product_name: null, product_status: 'unavailable',
+    planning_epics: [{ scope: 'epic', address: 'delivery-loop/epic-1', issue: {
+      provider: 'github', repository_id: 30, repository: 'planning/epics', installation_id: 3, issue_number: 21,
+    } }],
+    nodes: [makeNode({ id: 'api', issue_ref: '42', repository_identity: 'delivery/api', repository_status: binding,
+      issue_publication_status: publication, readiness_hold: hold, issue_url: null,
+      delivery_progress: { stage: 'admission', actor: 'flow-owner', detail: 'Admission is on hold',
+        blocker: 'repository_not_permitted', blockers: ['repository_not_permitted'], automation: 'blocked' },
+    }), makeNode({ id: 'gate', node_ref: 'accept', kind: 'gate', title: 'Accept plan', state: 'awaiting_gate' })],
+  }));
+  renderGraph();
+  expect(await screen.findByTestId('open-gates')).toHaveTextContent('Accept plan');
+  expect(screen.getByTestId('plan-product')).toHaveTextContent('unavailable or inaccessible');
+  fireEvent.click(screen.getByText('Plan structure, targets and permissions'));
+  expect(screen.getByText('Planning epic: planning/epics#21')).toBeVisible();
+  const summary = screen.getByTestId('plan-story-readiness-api');
+  expect(summary).toHaveTextContent(`Repository binding: ${expectedBinding}`);
+  expect(summary).toHaveTextContent(`Issue publication: ${expectedPublication}`);
+  expect(summary).toHaveTextContent(`Execution hold: ${expectedHold}`);
+  expect(summary).toHaveTextContent('Current admission: Admission is on hold');
+  expect(summary).not.toHaveTextContent('native epic link confirmed');
+  expect(within(summary).queryByRole('link', { name: /delivery\/api#42/ })).not.toBeInTheDocument();
+  expect(screen.getByTestId('node-repository-story-a')).toHaveTextContent(`Execution hold: ${expectedHold}`);
+});
+
+it('preserves a legacy flow without a fabricated Product or target summary', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [makeNode({
+    issue_ref: '42', repository_identity: 'legacy/repo', issue_url: 'https://github.com/legacy/repo/issues/42',
+  })] }));
+  renderGraph();
+  expect(await screen.findByText('Story A')).toBeVisible();
+  expect(screen.queryByTestId('plan-product')).not.toBeInTheDocument();
+  expect(screen.getByTestId('plan-summary')).not.toHaveTextContent('Story A target: unbound');
+  expect(screen.getByRole('link', { name: 'View issue and evidence' })).toHaveAttribute('href', 'https://github.com/legacy/repo/issues/42');
+});
+
+it('announces graph loading and allows a keyboard-only retry after a read error', async () => {
+  const user = userEvent.setup();
+  mockGetFlowGraph.mockRejectedValueOnce(new Error('temporary read error')).mockResolvedValue(makeGraph());
+  renderGraph();
+  expect(screen.getByTestId('graph-loading')).toHaveAttribute('role', 'status');
+  expect(screen.getByTestId('graph-loading')).toHaveTextContent('Loading the delivery journey');
+  expect(await screen.findByRole('alert')).toHaveTextContent('temporary read error');
+  await user.tab();
+  const retry = screen.getByRole('button', { name: 'Retry loading flow' });
+  expect(retry).toHaveFocus();
+  await user.keyboard('{Enter}');
+  expect(await screen.findByText('Story A')).toBeVisible();
+  expect(screen.queryByTestId('graph-error')).not.toBeInTheDocument();
+});
+
+it('labels an older Product-bound response with unknown repository verification rather than verified', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ product_id: 'product-a', nodes: [makeNode({
+    issue_ref: '42', repository_identity: 'legacy/repo', issue_url: null,
+  })] }));
+  renderGraph();
+  expect(await screen.findByTestId('plan-product')).toHaveTextContent('product-a (status not verified)');
+  expect(screen.getByTestId('plan-summary')).toHaveTextContent('Story A target: verification unavailable');
+  expect(screen.queryByRole('link', { name: 'legacy/repo#42' })).not.toBeInTheDocument();
+});
+
+it.each([
+  { status: 'unavailable', expected: 'unavailable or inaccessible' },
+  { status: 'accessible', expected: 'identity not provided' },
+] as const)('keeps partially projected Product context visible without inventing an ID: $status', async ({ status, expected }) => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({
+    product_id: null, product_name: 'Unverified name', product_status: status, planning_epics: undefined,
+    nodes: [makeNode({ issue_ref: '42', repository_identity: 'legacy/repo',
+      issue_url: 'https://github.com/legacy/repo/issues/42' })],
+  }));
+  renderGraph();
+  expect(await screen.findByTestId('plan-product')).toHaveTextContent(expected);
+  expect(screen.getByTestId('plan-story-readiness-id-story-a')).toHaveTextContent('Story A target: verification unavailable');
+  expect(screen.getByTestId('plan-story-readiness-id-story-a')).toHaveTextContent('Repository binding: verification unavailable');
+  expect(screen.getByTestId('plan-story-readiness-id-story-a')).toHaveTextContent('Issue publication: status not reported');
+  expect(screen.queryByRole('link', { name: 'legacy/repo#42' })).not.toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'View issue and evidence' })).toHaveAttribute('href', 'https://github.com/legacy/repo/issues/42');
+  expect(screen.queryByTestId('graph-error')).not.toBeInTheDocument();
+});
+
+it('loads execution details only after matching core content is available', async () => {
+  let releaseCore!: (value: FlowGraph) => void;
+  mockGetFlowGraph.mockImplementation(() => new Promise((resolve) => { releaseCore = resolve; }));
+  renderGraph();
+  await waitFor(() => expect(mockGetFlowGraph).toHaveBeenCalledTimes(1));
+  expect(screen.getByTestId('graph-loading')).toBeVisible();
+  expect(getFlowExecution).not.toHaveBeenCalled();
+  await act(async () => { releaseCore(makeGraph()); });
+  expect(await screen.findByText('Story A')).toBeVisible();
+  await waitFor(() => expect(getFlowExecution).toHaveBeenCalledTimes(1));
+  expect(await screen.findByTestId('execution-unavailable')).toBeVisible();
+});
+
+it.each(['failed', 'foreign'])('does not load execution details for %s core content', async (mode) => {
+  if (mode === 'failed') mockGetFlowGraph.mockRejectedValue(new Error('denied'));
+  else mockGetFlowGraph.mockResolvedValue(makeGraph({ flow_id: 'another-flow' }));
+  renderGraph();
+  expect(await screen.findByTestId('graph-error')).toBeVisible();
+  expect(getFlowExecution).not.toHaveBeenCalled();
+});
+
+it('waits for the new core graph when navigating between flows', async () => {
+  let releaseNext!: (value: FlowGraph) => void;
+  mockGetFlowGraph.mockResolvedValueOnce(makeGraph());
+  mockGetFlowGraph.mockImplementationOnce(() => new Promise((resolve) => { releaseNext = resolve; }));
+  renderGraph(true);
+  await waitFor(() => expect(getFlowExecution).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole('link', { name: 'Switch flow' }));
+  await waitFor(() => expect(mockGetFlowGraph).toHaveBeenCalledTimes(2));
+  expect(getFlowExecution).toHaveBeenCalledTimes(1);
+  await act(async () => { releaseNext(makeGraph({ flow_id: 'flow-2' })); });
+  await waitFor(() => expect(getFlowExecution).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(getFlowExecution).mock.calls[1][0]).toBe('flow-2');
+});
+
+it('shows retained task progress when optional run history is unavailable', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ activity_included: false,
+    nodes: [makeNode({ state: 'running', attempts: 1, run_id: 'current-run' })] }));
+  mockGetFlowActivity.mockResolvedValue({ flow_id: 'flow-1', items: [{
+    node_id: 'id-story-a', attempt: 1, run_id: 'current-run', availability: 'unavailable', execution_history: null,
+    run_insight: { run_id: 'current-run', attempt: 1, persona: 'developer', outcome: null, failure: null,
+      board_access: 'available', task_board: { generation: 1, sequence: 2, observed_at: '2026-10-30T10:00:00Z',
+        text: '**1 of 2 tasks complete** (agent-reported)\n\n- ☑ Preserve branch\n- ☐ Verify restart' } },
+  }] });
+  renderGraph();
+  expect(await screen.findByText('Task board · 1/2 tasks complete')).toBeVisible();
+  expect(screen.getByTestId('activity-unavailable-id-story-a')).toBeVisible();
+  expect(screen.getByTestId('node-story-a')).not.toHaveAttribute('data-display-state', 'complete');
+});
+
+it.each([undefined, true])('AC-03 uses the returned enriched graph when activity_included is %s', async (marker) => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ activity_included: marker,
+    nodes: [makeNode({ state: 'running', attempts: 1, run_id: 'existing-run',
+      execution_history: { run_id: 'existing-run', activity: null, runs: [], history_complete: false },
+    })],
+  }));
+  renderGraph();
+  expect(await screen.findByText('Story A')).toBeVisible();
+  expect(mockGetFlowGraph).toHaveBeenCalledTimes(1);
+  expect(mockGetFlowActivity).not.toHaveBeenCalled();
+  expect(document.querySelector('a[href*="existing-run"]')).not.toBeNull();
+  expect(screen.queryByTestId('activity-loading-id-story-a')).not.toBeInTheDocument();
+});
+
+it.each(['404', '401', '403', '422', 'timeout'])('AC-03 keeps core visible when activity fails with %s', async (failure) => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ activity_included: false,
+    nodes: [makeNode({ state: 'running', attempts: 1, run_id: 'current-run' })],
+  }));
+  mockGetFlowActivity.mockRejectedValue(new Error(failure));
+  const { rerenderGraph } = renderGraph();
+  expect(await screen.findByTestId('activity-unavailable-id-story-a')).toBeVisible();
+  expect(screen.getByRole('heading', { name: 'Delivery loop' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Retry activity' })).toBeEnabled();
+  expect(screen.getByTestId('node-story-a')).not.toHaveAttribute('data-display-state', 'complete');
+  // Renders of the same graph revision must not loop on failed activity.
+  // A fresh graph revision may retry once (covered below and at hook level).
+  rerenderGraph();
+  expect(mockGetFlowActivity).toHaveBeenCalledTimes(1);
+  expect(mockGetFlowGraph).toHaveBeenCalledTimes(1);
+});
+
+it('AC-03 retries one unavailable activity item only after an explicit click', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ activity_included: false,
+    nodes: [makeNode({ state: 'running', attempts: 1, run_id: 'current-run' })],
+  }));
+  mockGetFlowActivity.mockResolvedValueOnce({ flow_id: 'flow-1', items: [{
+    node_id: 'id-story-a', attempt: 1, run_id: 'current-run', availability: 'unavailable', execution_history: null,
+  }] }).mockResolvedValueOnce({ flow_id: 'flow-1', items: [{
+    node_id: 'id-story-a', attempt: 1, run_id: 'current-run', availability: 'available',
+    execution_history: { run_id: 'current-run', activity: null, runs: [], history_complete: false },
+  }] });
+  renderGraph();
+  expect(await screen.findByTestId('activity-unavailable-id-story-a')).toBeVisible();
+  expect(mockGetFlowActivity).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Retry activity' }));
+  await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByTestId('activity-unavailable-id-story-a')).not.toBeInTheDocument());
+  expect(screen.getByRole('heading', { name: 'Delivery loop' })).toBeVisible();
+  expect(screen.getByTestId('node-story-a')).not.toHaveAttribute('data-display-state', 'complete');
+});
+
+it.each([null, false, { flow_id: 'flow-1', items: null }, { flow_id: 'flow-1', items: [{ node_id: 'other-node' }] }])(
+  'AC-03 treats malformed activity %j as local unavailability with manual and graph-refresh retry', async (response) => {
+    mockGetFlowGraph.mockResolvedValue(makeGraph({ activity_included: false, nodes: [makeNode({ state: 'running', attempts: 1, run_id: 'current-run' })] }));
+    mockGetFlowActivity.mockResolvedValue(response);
+    const { client, rerenderGraph } = renderGraph();
+    expect(await screen.findByTestId('activity-unavailable-id-story-a')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Delivery loop' })).toBeVisible();
+    expect(screen.queryByTestId('activity-loading-id-story-a')).not.toBeInTheDocument();
+    expect(screen.getByTestId('node-story-a')).not.toHaveAttribute('data-display-state', 'complete');
+    expect(mockGetFlowGraph).toHaveBeenCalledTimes(1);
+    expect(mockGetFlowActivity).toHaveBeenCalledTimes(1);
+    rerenderGraph();
+    expect(mockGetFlowActivity).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry activity' }));
+    await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(2));
+    expect(await screen.findByTestId('activity-unavailable-id-story-a')).toBeVisible();
+    rerenderGraph();
+    expect(mockGetFlowActivity).toHaveBeenCalledTimes(2);
+    mockGetFlowActivity.mockResolvedValue({ flow_id: 'flow-1', items: [{
+      node_id: 'id-story-a', attempt: 1, run_id: 'current-run', availability: 'available',
+      execution_history: { run_id: 'current-run', history_complete: false, runs: [], activity: null },
+    }] });
+    await act(async () => { await client.invalidateQueries({ queryKey: ['orchestration', 'flow-graph'] }); });
+    await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByTestId('activity-unavailable-id-story-a')).not.toBeInTheDocument());
+    expect(mockGetFlowActivity).toHaveBeenCalledTimes(3);
+    expect(mockGetFlowGraph).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('heading', { name: 'Delivery loop' })).toBeVisible();
+  },
+);
+
+it('AC-02 aborts old activity and ignores its late response after flow navigation', async () => {
+  mockGetFlowGraph.mockImplementation((id: string) => Promise.resolve(id === 'flow-1'
+    ? makeGraph({ activity_included: false, nodes: [makeNode({ state: 'running', attempts: 1, run_id: 'old-run' })] })
+    : makeGraph({ flow_id: 'flow-2', title: 'Second graph', activity_included: true })));
+  let releaseOld!: (value: unknown) => void;
+  mockGetFlowActivity.mockReturnValue(new Promise((resolve) => { releaseOld = resolve; }));
+  renderGraph(true);
+  await screen.findByTestId('activity-loading-id-story-a');
+  await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(1));
+  const oldSignal = mockGetFlowActivity.mock.calls[0][2] as AbortSignal;
+  fireEvent.click(screen.getByRole('link', { name: 'Switch flow' }));
+  await screen.findByRole('heading', { name: 'Second graph' });
+  expect(oldSignal.aborted).toBe(true);
+  await act(async () => { releaseOld({ flow_id: 'flow-1', items: [{ node_id: 'id-story-a', attempt: 1,
+    run_id: 'old-run', availability: 'available', execution_history: { run_id: 'old-run', activity: null, runs: [], history_complete: true } }] }); });
+  expect(screen.getByRole('heading', { name: 'Second graph' })).toBeVisible();
+  expect(screen.queryByRole('link', { name: 'View run' })).not.toBeInTheDocument();
+});
+
+it('AC-02 never shows the old workspace graph while the new workspace loads', async () => {
+  let releaseWorkspace!: (value: FlowGraph) => void;
+  mockGetFlowGraph.mockImplementation(() => authFixture.orgId === 'tenant-a'
+    ? Promise.resolve(makeGraph({ title: 'Workspace A', activity_included: false, nodes: [makeNode({ state: 'running', attempts: 1, run_id: 'current-run' })] }))
+    : new Promise<FlowGraph>((resolve) => { releaseWorkspace = resolve; }));
+  const view = renderGraph();
+  expect(await screen.findByRole('heading', { name: 'Workspace A' })).toBeVisible();
+  await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(1));
+  const oldSignal = mockGetFlowActivity.mock.calls[0][2] as AbortSignal;
+  act(() => { authFixture.orgId = 'tenant-b'; view.rerenderGraph(); });
+  await waitFor(() => expect(mockGetFlowGraph).toHaveBeenCalledTimes(2));
+  expect(screen.getByTestId('graph-loading')).toBeVisible();
+  expect(screen.queryByRole('heading', { name: 'Workspace A' })).not.toBeInTheDocument();
+  expect(oldSignal.aborted).toBe(true);
+  await act(async () => { releaseWorkspace(makeGraph({ title: 'Workspace B' })); });
+  expect(await screen.findByRole('heading', { name: 'Workspace B' })).toBeVisible();
+});
+
+it('AC-02 rejects late old-attempt activity after a same-flow core refresh', async () => {
+  let attempt = 1;
+  mockGetFlowGraph.mockImplementation(() => Promise.resolve(makeGraph({ activity_included: false,
+    nodes: [makeNode({ state: 'running', attempts: attempt, run_id: attempt === 1 ? 'old-run' : 'new-run' })],
+  })));
+  let releaseOld!: (value: unknown) => void;
+  mockGetFlowActivity.mockImplementationOnce(() => new Promise((resolve) => { releaseOld = resolve; }));
+  mockGetFlowActivity.mockImplementationOnce(() => Promise.resolve({ flow_id: 'flow-1', items: [{
+    node_id: 'id-story-a', attempt: 1, run_id: 'old-run', availability: 'available',
+    execution_history: { run_id: 'old-run', activity: null, runs: [], history_complete: true },
+  }] }));
+  const { client } = renderGraph();
+  await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(1));
+  const oldSignal = mockGetFlowActivity.mock.calls[0][2] as AbortSignal;
+  attempt = 2;
+  await act(async () => { await client.invalidateQueries({ queryKey: ['orchestration', 'flow-graph'] }); });
+  await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(2));
+  expect(oldSignal.aborted).toBe(true);
+  await act(async () => { releaseOld({ flow_id: 'flow-1', items: [{ node_id: 'id-story-a', attempt: 1,
+    run_id: 'old-run', availability: 'available', execution_history: { run_id: 'old-run', activity: null, runs: [], history_complete: true } }] }); });
+  expect(screen.getByTestId('node-attempts-story-a')).toHaveTextContent('2 attempts');
+  expect(await screen.findByTestId('activity-unavailable-id-story-a')).toBeVisible();
+  expect(document.querySelector('a[href*="old-run"]')).toBeNull();
+});
+
+it('AC-01 renders core and controls before activity and excludes collapsed wave stories', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({
+    activity_included: false,
+    nodes: [makeNode({ state: 'running', attempts: 1, run_id: 'current-run' }), makeNode({ id: 'id-story-b', node_ref: 'story-b', title: 'Collapsed story', wave_ref: 'wave-2', state: 'passed' })],
+  }));
+  renderGraph();
+  expect(await screen.findByText('Story A')).toBeInTheDocument();
+  expect(screen.getByTestId('node-story-a')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Expand all waves' })).toBeInTheDocument();
+  expect(screen.queryByTestId('graph-loading')).not.toBeInTheDocument();
+  expect(screen.getByTestId('activity-loading-id-story-a')).toBeInTheDocument();
+  await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(1));
+  expect(mockGetFlowActivity.mock.calls[0][1]).toEqual(['id-story-a']);
+  expect(screen.queryByTestId('activity-loading-id-story-b')).not.toBeInTheDocument();
+});
+
+it('AC-01 runs at most one 20-story batch at a time for an expanded wave', async () => {
+  const stories = Array.from({ length: 21 }, (_, index) => makeNode({
+    state: 'running', attempts: 1, run_id: `run-id-story-${String(index).padStart(2, '0')}`,
+    id: `id-story-${String(index).padStart(2, '0')}`,
+    node_ref: `story-${String(index).padStart(2, '0')}`,
+  }));
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ activity_included: false, nodes: stories }));
+  let releaseFirst: (() => void) | undefined;
+  mockGetFlowActivity.mockImplementation((_flowId: string, ids: string[]) => new Promise((resolve) => {
+    const finish = () => resolve({ flow_id: 'flow-1', observed_at: '2026-01-01T00:00:00Z', items: ids.map((id) => ({
+      node_id: id, attempt: 1, run_id: `run-${id}`, availability: 'available',
+      execution_history: { run_id: `run-${id}`, history_complete: false, runs: [], activity: null },
+    })) });
+    if (ids.length === 20) releaseFirst = finish;
+    else finish();
+  }));
+  renderGraph();
+  await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(1));
+  expect(mockGetFlowActivity.mock.calls[0][1]).toEqual(stories.slice(0, 20).map((node) => node.id));
+  await act(async () => { releaseFirst?.(); });
+  await waitFor(() => expect(mockGetFlowActivity).toHaveBeenCalledTimes(2));
+  expect(mockGetFlowActivity.mock.calls[1][1]).toEqual([stories[20].id]);
+});
+
+it('shows archive state and recovery guidance on the graph after archiving', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ archived_at: '2026-10-13T12:00:00Z' }));
+  renderGraph();
+  await screen.findByTestId('flow-status');
+  fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
+  expect(await screen.findByRole('region', { name: 'Flow archive' })).toHaveTextContent('Archived');
+  expect(screen.queryByRole('button', { name: 'Unarchive flow' })).not.toBeInTheDocument();
 });
 
 // ---------------------------------------------------------------------------
@@ -325,6 +800,35 @@ describe('AC-3: current position, and stalled/halted distinguishable from runnin
     expect(screen.getByTestId('node-a')).not.toHaveAttribute('aria-current');
   });
 
+  it('names each open gate, its wave and when it was presented, so a chained gate is not mistaken for the one just answered', async () => {
+    mockGetFlowGraph.mockResolvedValue({
+      ...makeGraph(),
+      wave_metadata: [{ epic_ref: 'epic-1', wave_ref: 'wave-1', title: 'Qualification' }],
+      nodes: [
+        makeNode({ node_ref: 'g1', kind: 'gate', title: 'Authorize live readiness', state: 'passed', updated_at: '2026-10-16T06:38:00Z' }),
+        makeNode({ node_ref: 'g2', kind: 'gate', title: 'Deploy integrated review release', state: 'awaiting_gate', updated_at: '2026-10-16T06:38:30Z' }),
+      ],
+    });
+    renderGraph();
+
+    await waitFor(() => expect(screen.getByTestId('open-gates')).toBeInTheDocument());
+    expect(screen.getByText('One decision is awaiting review')).toBeInTheDocument();
+    const item = screen.getByTestId('open-gate-g2');
+    expect(item).toHaveTextContent('Deploy integrated review release');
+    expect(item).toHaveTextContent('Qualification');
+    expect(item).toHaveTextContent('presented at');
+    expect(item.querySelector('a')).toHaveAttribute('href', '#flow-node-id-g2');
+    expect(screen.queryByTestId('open-gate-g1')).not.toBeInTheDocument();
+  });
+
+  it('shows no decision banner when nothing waits on a human', async () => {
+    mockGetFlowGraph.mockResolvedValue({ ...makeGraph(), nodes: [makeNode({ node_ref: 'a', state: 'running' })] });
+    renderGraph();
+
+    await waitFor(() => expect(screen.getByTestId('epic-epic-1')).toBeInTheDocument());
+    expect(screen.queryByTestId('open-gates')).not.toBeInTheDocument();
+  });
+
   it('treats a gate-waiting node as the current position too', async () => {
     // A flow parked on a gate has its position AT that gate; an operator asking
     // "where are we" needs that answered whether or not tokens are burning.
@@ -460,9 +964,9 @@ describe('AC-4/AC-22: cost is three-valued and unknown never renders $0.00', () 
     );
     renderGraph();
 
-    // Visible on the headline figure — the one most likely to be screenshotted
-    // into a budget conversation without its caveat.
-    expect(await screen.findByText(/agent run costs only; excludes build\/infra/)).toBeInTheDocument();
+    // The headline names the cost scope; each figure retains its full definition.
+    expect(await screen.findByText('Agent spend')).toBeVisible();
+    expect(screen.getAllByTestId('cost-figure')[0]).toHaveAttribute('title', expect.stringContaining('agent run costs only; excludes build/infra'));
     const node = screen.getByTestId('node-a');
     expect(within(node).getByTestId('cost-figure')).toHaveAttribute('title', expect.stringContaining('agent run costs only'));
   });
@@ -572,10 +1076,10 @@ describe('accessibility: the bar is described in render order (§9.4)', () => {
 
     const bar = await screen.findByTestId('rollup-bar');
     const label = bar.getAttribute('aria-label') ?? '';
-    // Render order is queued → in progress → complete, regardless of the order
+    // Render order is complete → in progress → queued, regardless of the order
     // the nodes arrived in. A hand-written label would drift from the segments.
-    expect(label.indexOf('Queued')).toBeLessThan(label.indexOf('In progress'));
-    expect(label.indexOf('In progress')).toBeLessThan(label.indexOf('Complete'));
+    expect(label.indexOf('Complete')).toBeLessThan(label.indexOf('In progress'));
+    expect(label.indexOf('In progress')).toBeLessThan(label.indexOf('Queued'));
     expect(label).toContain('3 work items');
   });
 
@@ -721,7 +1225,8 @@ describe('source-level guarantees', () => {
     // Asserted at source level as well as behaviourally: the behavioural test
     // above would also pass if someone reached the same cadence via a global
     // default, which is the thing §3.3.1 forbids.
-    expect(readCode('hooks/useFlowGraph.ts')).toMatch(/refetchInterval:\s*(FLOW_GRAPH_REFETCH_INTERVAL_MS|30_000)/);
+    expect(readCode('hooks/useFlowGraph.ts')).toContain('useFlowPollInterval(FLOW_GRAPH_REFETCH_INTERVAL_MS)');
+    expect(readCode('hooks/useFlowGraph.ts')).toMatch(/refetchInterval:\s*interval/);
   });
 
   it('never imports usePollingStatus (§3.3.1 MUST NOT)', () => {
@@ -738,7 +1243,8 @@ describe('source-level guarantees', () => {
 
   it('uses the named keepPreviousData import, not the v4 boolean', () => {
     const source = readCode('hooks/useFlowGraph.ts');
-    expect(source).toMatch(/placeholderData:\s*keepPreviousData/);
+    expect(source).toMatch(/placeholderData:\s*\(previous, previousQuery\)/);
+    expect(source).toMatch(/keepPreviousData\(previous\)/);
     // `keepPreviousData: true` is accepted silently and does nothing on 5.62.0.
     expect(source).not.toMatch(/keepPreviousData:\s*true/);
   });
@@ -854,6 +1360,9 @@ it('counts Task API evaluation issues as stories and keeps checkpoints and histo
     expect(within(wave).getByRole('heading')).toHaveTextContent('1 evaluation story');
     expect(within(wave).getByRole('heading')).not.toHaveTextContent('0 stories');
     expect(wave).toHaveTextContent(`${i === 1 ? 1 : 0} of 1 stories complete`);
+    if (within(wave).getByRole('button').getAttribute('aria-expanded') === 'false') {
+      fireEvent.click(within(wave).getByRole('button'));
+    }
     expect(within(wave).getByText('Evaluation story')).toBeInTheDocument();
   }
 });
@@ -889,7 +1398,7 @@ it('separates stories from controls and explains a persisted change request', as
   expect(changeRequest).toHaveTextContent('does not start an agent to revise the plan');
   expect(screen.getByTestId('gate-feedback')).toHaveTextContent('Clarify the migration plan');
   expect(screen.getByTestId('gate-feedback')).not.toHaveTextContent('input-path');
-  expect(screen.getByTestId('node-old-story')).not.toBeVisible();
+  expect(screen.queryByTestId('node-old-story')).not.toBeInTheDocument();
   expect(screen.getByText(/Superseded steps \(1\)/)).toBeVisible();
 });
 
@@ -917,7 +1426,7 @@ it('opens the first unfinished wave and supports collapse and expand all', async
   expect(within(done).getByRole('button')).toHaveAttribute('aria-expanded', 'false');
   expect(within(current).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
   expect(within(future).getByRole('button')).toHaveAttribute('aria-expanded', 'false');
-  expect(screen.getByTestId('node-future')).not.toBeVisible();
+  expect(screen.queryByTestId('node-future')).not.toBeInTheDocument();
   fireEvent.click(within(current).getByRole('button'));
   expect(screen.getByTestId('node-current')).not.toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Expand all waves' }));
@@ -969,6 +1478,7 @@ it('shows the persisted per-flow pause state alongside graph progress', async ()
   mockGetFlowGraph.mockResolvedValue(makeGraph({ execution_paused: true }));
   renderGraph();
   expect(await screen.findByText('Paused')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
   expect(screen.getByText(/Resume preserves progress and attempts/)).toBeInTheDocument();
 });
 
@@ -1008,4 +1518,104 @@ it('shows the epic purpose directly below its readable heading', async () => {
   expect(heading.nextElementSibling).toHaveTextContent('Services need to submit tasks without a GitHub issue.');
   expect(heading.nextElementSibling).toHaveTextContent('preserving tenant isolation.');
   expect(heading.nextElementSibling).toBeVisible();
+});
+
+describe('one expandable card per BOLT', () => {
+  function boltGraph(review = false) {
+    const nodes = [1, 2].flatMap((number) => {
+      const bolt = `b0${number}`;
+      return [
+        makeNode({ id: `${bolt}-build`, node_ref: `${bolt}-build`, wave_ref: `${bolt}-build`, issue_ref: String(number), title: `Build ${number}`, state: 'passed' }),
+        makeNode({ id: `${bolt}-run`, node_ref: `${bolt}-run`, wave_ref: `${bolt}-live`, issue_ref: String(number), title: `Run ${number}` }),
+        makeNode({ id: `${bolt}-review`, node_ref: `${bolt}-review`, wave_ref: `${bolt}-live`, kind: 'eval', issue_ref: null, title: `Evidence review ${number}`, state: review && number === 2 ? 'awaiting_gate' : 'pending' }),
+      ];
+    });
+    return makeGraph({ nodes, edges: [1, 2].flatMap((number) => [
+      { from_node_id: `b0${number}-build`, to_node_id: `b0${number}-run` },
+      { from_node_id: `b0${number}-run`, to_node_id: `b0${number}-review` },
+    ]), wave_metadata: [1, 2].flatMap((number) => [
+      { epic_ref: 'epic-1', wave_ref: `b0${number}-build`, title: `B0${number}: Build and review`, description: `Outcome ${number}; native BOLT #${number}` },
+      { epic_ref: 'epic-1', wave_ref: `b0${number}-live`, title: `B0${number}: Deploy and verify` },
+    ]) });
+  }
+
+  it('shows one toggle per BOLT with internal phases and counts each source story once', async () => {
+    mockGetFlowGraph.mockResolvedValue(boltGraph());
+    renderGraph();
+    expect(await screen.findByTestId('plan-summary')).toHaveTextContent('2 stories across 2 BOLTs');
+    expect(document.querySelectorAll('[data-container="bolt"]')).toHaveLength(2);
+    expect(document.querySelectorAll('[data-container="phase"]')).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^B01/ })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /^B01: Build/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId('node-b01-run')).toBeVisible();
+    expect(screen.queryByTestId('node-b02-run')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^B01/ }));
+    expect(screen.getByTestId('node-b01-run')).not.toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand all groups' }));
+    expect(screen.getByTestId('node-b01-run')).toBeVisible();
+    expect(screen.getByTestId('node-b02-run')).toBeVisible();
+    expect(screen.getAllByText('Build → Review/repair → Deploy → Verify → Human evidence review')).toHaveLength(2);
+  });
+
+  it('opens the enclosing BOLT when following an evidence-review link', async () => {
+    mockGetFlowGraph.mockResolvedValue(boltGraph(true));
+    renderGraph();
+    await screen.findByTestId('open-gates');
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse all groups' }));
+    expect(screen.getByTestId('node-b02-run')).not.toBeVisible();
+    fireEvent.click(screen.getByRole('link', { name: 'Evidence review 2' }));
+    expect(screen.getByTestId('node-b02-run')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Evidence review 2' })).toHaveAttribute('href', '#flow-node-b02-review');
+    const ids = [...document.querySelectorAll('[id]')].map((element) => element.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+it('mounts superseded history only when opened, and uses the latest graph', async () => {
+  const graph = makeGraph({ nodes: [makeNode(), makeNode({ node_ref: 'old', state: 'superseded', title: 'Old plan' })] });
+  mockGetFlowGraph.mockResolvedValue(graph);
+  const { client } = renderGraph();
+  const summary = await screen.findByText(/Superseded steps \(1\)/);
+  expect(screen.queryByTestId('node-old')).not.toBeInTheDocument();
+  mockGetFlowGraph.mockResolvedValue({ ...graph, nodes: [graph.nodes[0], { ...graph.nodes[1], title: 'Updated history' }] });
+  await act(async () => { await client.refetchQueries({ queryKey: ['orchestration', 'flow-graph'] }); });
+  const history = summary.closest('details')!;
+  history.open = true;
+  fireEvent(history, new Event('toggle'));
+  expect(await screen.findByTestId('node-old')).toHaveTextContent('Updated history');
+});
+
+
+it('loads timeline only when opened, keeps Overview mounted and returns to the exact step', async () => {
+  vi.mocked(getFlowTimeline).mockResolvedValue({ flow_id: 'flow-1', server_time: '2026-10-01T12:00:00Z', nodes: [{
+    node_id: 'id-story-a', state: 'passed', attempts: 2, started_at: '2026-10-01T10:00:00Z', finished_at: '2026-10-01T11:00:00Z', transitions: [], transitions_truncated: false,
+  }], total: 1, limit: 100, offset: 0 });
+  renderGraph();
+  const original = await screen.findByTestId('node-story-a');
+  expect(getFlowTimeline).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('tab', { name: 'Timeline' }));
+  expect(await screen.findByTestId('timeline-id-story-a')).toHaveTextContent('1h 0m');
+  expect(original).not.toBeVisible();
+  fireEvent.click(within(screen.getByTestId('timeline-id-story-a')).getByRole('button', { name: 'Story A' }));
+  expect(original).toBeVisible();
+  expect(original).toHaveFocus();
+  expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+});
+
+it('reports a completed delivery without leading with enablement controls', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [makeNode({ state: 'passed' })] }));
+  renderGraph();
+  expect(await screen.findByTestId('flow-status')).toHaveTextContent('Complete');
+  expect(screen.queryByText('Execution: Enabled')).not.toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'Settings' })).toBeVisible();
+});
+
+
+it('keeps accepted gates available in the Evidence view', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [makeNode({ kind: 'gate', state: 'passed', title: 'Final acceptance' })] }));
+  renderGraph();
+  fireEvent.click(await screen.findByRole('tab', { name: 'Evidence', exact: true }));
+  const panel = screen.getByRole('tabpanel', { name: 'Evidence' });
+  expect(within(panel).getByRole('button', { name: 'Final acceptance' })).toBeVisible();
+  expect(within(panel).getByText('Acceptance: Accepted')).toBeVisible();
 });

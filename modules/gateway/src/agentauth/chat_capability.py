@@ -23,6 +23,7 @@ MAX_TTL_SECONDS = 300
 Identifier = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")]
 Operation = Literal[
     "model.invoke",
+    "tools.invoke",
     "turn.next",
     "turn.result",
     "history.read",
@@ -55,6 +56,33 @@ class ChatCapabilityExpiredError(ChatAuthorizationRefusedError):
 
 class ChatAuthorizationUnavailableError(Exception):
     """Current authority could not be established; never use cached permission."""
+
+
+class ChatModelPolicyUnavailableError(ChatAuthorizationUnavailableError):
+    """The live model-policy decision for this turn was refused or could not be established.
+
+    Carries the stable policy reason (for example ``probing_disabled``,
+    ``evidence_stale`` or ``not_permitted``) so the sandbox can end the turn
+    with a message that names it, instead of an anonymous outage. ``retryable``
+    is true only for transient failures (store or verifier outage), never for a
+    policy refusal. No secrets or credentials travel on this error.
+    """
+
+    def __init__(self, reason: str, *, persona: str | None = None, model_id: str | None = None, retryable: bool = False) -> None:
+        super().__init__(f"chat model policy unavailable: {reason}")
+        self.reason = reason
+        self.persona = persona
+        self.model_id = model_id
+        self.retryable = retryable
+
+    def detail(self) -> dict:
+        return {
+            "error": "chat_model_policy_unavailable",
+            "reason": self.reason,
+            "persona": self.persona,
+            "model_id": self.model_id,
+            "retryable": self.retryable,
+        }
 
 
 class ChatLaunch(BaseModel):

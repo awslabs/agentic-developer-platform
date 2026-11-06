@@ -13,7 +13,7 @@ case "${GITHUB_EVENT_NAME:?}" in
     ;;
   push)
     changed=$(git diff --name-only HEAD^ HEAD)
-    if grep -qE '^modules/agent-factory/webhook-ingress/(lambda|common|scripts)/|^modules/agent-factory/webhook-ingress/requirements\.txt$' <<< "$changed"; then
+    if grep -qE '^modules/agent-factory/webhook-ingress/(lambda|common|scripts)/|^modules/agent-factory/webhook-ingress/requirements\.txt$|^\.github/(workflows/webhook-(ingress|code)-deploy\.yml|actions/trusted-webhook-code/)|^platform/automation-infra/([^/]*webhook[^/]*\.py|webhook-code-manifest\.json)$' <<< "$changed"; then
       code=true
     fi
     if grep -qE '^modules/agent-factory/webhook-ingress/infra/|^modules/domain-apps/superplane/infra/(provider-authority|shared-operation-authority)/|^environments/dev/modules/webhook-ingress\.tfvars(\.json)?$' <<< "$changed"; then

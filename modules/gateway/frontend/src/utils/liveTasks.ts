@@ -2,7 +2,7 @@ import type { LiveExplanation } from '@/services/agentExplanations';
 
 export interface LiveTask {
   id: string;
-  kind: 'code' | 'test' | 'infra';
+  kind: 'code' | 'test' | 'infra' | 'task';
   status: 'pending' | 'in_progress' | 'completed' | 'blocked';
   group: string;
   description: string;
@@ -12,6 +12,24 @@ export interface LiveTask {
 /** Recognize controller-authored board rows. Fall back to the original Markdown
  * if any task row is unfamiliar or ambiguous; never display partial totals. */
 export function parseLiveTasks(markdown: string): LiveTask[] | undefined {
+  // The live transport can shorten large boards. Partial rows must never turn
+  // into a misleading denominator on the Activity view or the story card.
+  if (markdown.includes('[Live preview truncated; see final transcript.]')) return;
+  const claude = /^\*\*(\d+) of (\d+) tasks complete\*\* \(agent-reported\)\n\n/.exec(markdown);
+  if (claude) {
+    const rows = markdown.slice(claude[0].length).split('\n');
+    const tasks: LiveTask[] = [];
+    for (const line of rows) {
+      const row = /^- ([☑☐]) (.+)$/.exec(line);
+      if (!row) return;
+      const active = row[2].endsWith(' (in progress)');
+      const description = active ? row[2].slice(0, -14) : row[2];
+      if (!description || tasks.some(task => task.description === description)) return;
+      tasks.push({ id: `todo:${description}`, kind: 'task', group: '', description,
+        status: row[1] === '☑' ? 'completed' : active ? 'in_progress' : 'pending' });
+    }
+    return tasks.length === Number(claude[2]) && tasks.filter(task => task.status === 'completed').length === Number(claude[1]) ? tasks : undefined;
+  }
   const tasks: LiveTask[] = [];
   let group = '';
   let planStep: LiveTask['planStep'];

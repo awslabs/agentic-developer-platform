@@ -1,0 +1,365 @@
+[
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "issue-42:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "story_revision",
+    "record_id": "issue-42",
+    "record_revision": "revision-1",
+    "title": "Invite a member",
+    "brief": "An organization administrator can invite a member.",
+    "source_url": "https://github.example.com/example/project/issues/42",
+    "source_updated_at": "2026-10-10T10:00:00Z",
+    "source_action": "created",
+    "story_state": "open",
+    "source_snapshot": {
+      "artifact_id": "artifact-example",
+      "version_id": "version-example",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "criteria_extraction_status": "complete"
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "issue-42/AC-001:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "acceptance_criterion",
+    "record_id": "issue-42/AC-001",
+    "record_revision": "revision-1",
+    "story_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "story_revision",
+      "record_id": "issue-42",
+      "record_revision": "revision-1"
+    },
+    "criterion_key": "AC-001",
+    "text": "An authorized administrator can send an invitation.",
+    "lifecycle_status": "active"
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "MOD-002:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "coverage_definition",
+    "record_id": "MOD-002",
+    "record_revision": "revision-1",
+    "definition_kind": "module",
+    "name": "Organizations",
+    "parent_ref": null,
+    "action": null,
+    "expected_result": null
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "MOD-002-F001:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "coverage_definition",
+    "record_id": "MOD-002-F001",
+    "record_revision": "revision-1",
+    "definition_kind": "feature",
+    "name": "Invitations",
+    "parent_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "coverage_definition",
+      "record_id": "MOD-002",
+      "record_revision": "revision-1"
+    },
+    "action": null,
+    "expected_result": null
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "MOD-002-F001-S001:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "coverage_definition",
+    "record_id": "MOD-002-F001-S001",
+    "record_revision": "revision-1",
+    "definition_kind": "scenario",
+    "name": "Send invitation",
+    "parent_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "coverage_definition",
+      "record_id": "MOD-002-F001",
+      "record_revision": "revision-1"
+    },
+    "action": "Administrator submits a valid invite.",
+    "expected_result": "An invitation is created."
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "TEST-001:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "test_definition",
+    "record_id": "TEST-001",
+    "record_revision": "revision-1",
+    "name": "Administrator invites member",
+    "source_path": "tests/invitations.py",
+    "selector": "test_invite",
+    "framework": "pytest",
+    "layer": "e2e",
+    "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "map-criterion-scenario:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "coverage_mapping",
+    "record_id": "map-criterion-scenario",
+    "record_revision": "revision-1",
+    "mapping_kind": "criterion_scenario",
+    "from_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "acceptance_criterion",
+      "record_id": "issue-42/AC-001",
+      "record_revision": "revision-1"
+    },
+    "to_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "coverage_definition",
+      "record_id": "MOD-002-F001-S001",
+      "record_revision": "revision-1"
+    },
+    "lifecycle_status": "active"
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "map-scenario-test:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "coverage_mapping",
+    "record_id": "map-scenario-test",
+    "record_revision": "revision-1",
+    "mapping_kind": "scenario_test",
+    "from_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "coverage_definition",
+      "record_id": "MOD-002-F001-S001",
+      "record_revision": "revision-1"
+    },
+    "to_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "test_definition",
+      "record_id": "TEST-001",
+      "record_revision": "revision-1"
+    },
+    "lifecycle_status": "active"
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "RUN-001:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "test_run",
+    "record_id": "RUN-001",
+    "record_revision": "revision-1",
+    "source_run_id": "build-42",
+    "source_attempt": 1,
+    "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "environment": "test",
+    "execution_status": "completed",
+    "started_at": "2026-10-10T09:59:00Z",
+    "ended_at": "2026-10-10T10:00:00Z",
+    "selection_status": "complete",
+    "catalog_snapshot": {
+      "artifact_id": "artifact-example",
+      "version_id": "version-example",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "requirements_snapshot": {
+      "artifact_id": "artifact-example",
+      "version_id": "version-example",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "selection_snapshot": {
+      "artifact_id": "artifact-example",
+      "version_id": "version-example",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "RUN-001/TEST-001/default:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "run_test",
+    "record_id": "RUN-001/TEST-001/default",
+    "record_revision": "revision-1",
+    "run_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "test_run",
+      "record_id": "RUN-001",
+      "record_revision": "revision-1"
+    },
+    "test_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "test_definition",
+      "record_id": "TEST-001",
+      "record_revision": "revision-1"
+    },
+    "instance_id": "default",
+    "parameter_digest": null,
+    "required": true,
+    "scenario_refs": [
+      {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "connection-example",
+        "record_type": "coverage_definition",
+        "record_id": "MOD-002-F001-S001",
+        "record_revision": "revision-1"
+      }
+    ],
+    "criterion_refs": [
+      {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "connection-example",
+        "record_type": "acceptance_criterion",
+        "record_id": "issue-42/AC-001",
+        "record_revision": "revision-1"
+      }
+    ],
+    "requirement_binding": "complete"
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "RUN-001/TEST-001/default/1:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "test_result",
+    "record_id": "RUN-001/TEST-001/default/1",
+    "record_revision": "revision-1",
+    "run_test_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "run_test",
+      "record_id": "RUN-001/TEST-001/default",
+      "record_revision": "revision-1"
+    },
+    "attempt": 1,
+    "outcome": "passed",
+    "started_at": "2026-10-10T09:59:00Z",
+    "ended_at": "2026-10-10T10:00:00Z",
+    "duration_ms": 60000,
+    "failure_category": null,
+    "artifact_refs": [
+      {
+        "artifact_id": "artifact-example",
+        "version_id": "version-example",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  },
+  {
+    "tenant_id": "tenant-example",
+    "project_id": "project-example",
+    "source_connection_id": "connection-example",
+    "source_system": "fixture",
+    "source_event_id": "assessment-001:revision-1",
+    "event_time": "2026-10-10T10:00:00Z",
+    "ingested_at": "2026-10-10T10:01:00Z",
+    "schema_version": "2.0",
+    "record_type": "acceptance_assessment",
+    "record_id": "assessment-001",
+    "record_revision": "revision-1",
+    "criterion_ref": {
+      "tenant_id": "tenant-example",
+      "project_id": "project-example",
+      "source_connection_id": "connection-example",
+      "record_type": "acceptance_criterion",
+      "record_id": "issue-42/AC-001",
+      "record_revision": "revision-1"
+    },
+    "result_refs": [
+      {
+        "tenant_id": "tenant-example",
+        "project_id": "project-example",
+        "source_connection_id": "connection-example",
+        "record_type": "test_result",
+        "record_id": "RUN-001/TEST-001/default/1",
+        "record_revision": "revision-1"
+      }
+    ],
+    "artifact_refs": [],
+    "verdict": "accepted",
+    "assessor_type": "policy",
+    "assessor_id": "evaluator-example",
+    "assessed_at": "2026-10-10T10:00:00Z",
+    "policy_snapshot": {
+      "artifact_id": "artifact-example",
+      "version_id": "version-example",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "rationale": "Illustrative assessment only; fixture is not live acceptance evidence."
+  }
+]

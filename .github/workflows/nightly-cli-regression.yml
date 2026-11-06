@@ -7,6 +7,11 @@ name: Nightly CLI Regression
 on:
   workflow_call:
     inputs:
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
       ec2_scope:
         type: string
         required: false
@@ -62,7 +67,7 @@ permissions:
 concurrency:
   # Must differ from cli-live-eval-dev: holding the child's lock in the parent
   # would deadlock reusable workflow calls. PR checks use a separate group.
-  group: nightly-cli-regression-${{ github.event_name == 'pull_request' && github.event.number || 'dev' }}
+  group: nightly-cli-regression-${{ github.event_name == 'pull_request' && github.event.number || inputs.target_environment || 'dev' }}
   cancel-in-progress: false
 
 jobs:
@@ -85,7 +90,7 @@ jobs:
     name: Resolve the deployed dev revision
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: guards
-    environment: dev
+    environment: ${{ inputs.target_environment || 'dev' }}
     permissions:
       contents: read
       id-token: write
@@ -146,6 +151,7 @@ jobs:
     uses: ./.github/workflows/eval-cli-onboarding.yml
     with:
       environment: dev
+      target_environment: ${{ inputs.target_environment }}
 
   budgets:
     name: Budget and rate-limit enforcement
@@ -159,6 +165,7 @@ jobs:
     uses: ./.github/workflows/eval-budget-ratelimit.yml
     with:
       environment: dev
+      target_environment: ${{ inputs.target_environment }}
 
   ec2:
     name: CLI regression on disposable EC2
@@ -171,6 +178,7 @@ jobs:
     secrets: inherit
     with:
       environment: dev
+      target_environment: ${{ inputs.target_environment }}
       expected_revision: ${{ needs.prepare.outputs.revision }}
       resolve_revision: true
       suites: ${{ inputs.ec2_scope || 'nightly' }}

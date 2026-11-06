@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 from agentcore_tools.browser_runtime.browser_guard import DEFAULT_REGION, GuardedBrowserSession
+from agentcore_tools.browser_runtime.denylist import check_url, scrub_url_credentials
 from agentcore_tools.browser_runtime.runtime_limits import LEASE_SECONDS, STARTUP_SECONDS
 
 
 class NativeBrowserSession(GuardedBrowserSession):
-    """Recorder facade; no request routes, pinned transport or offline context."""
+    """Recorder facade; native transport with pre-request policy."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -50,12 +52,12 @@ def open_native_browser(
     context_options=None,
     read_only=False,
     navigation_check=None,
+    deadline_at=None,
 ):
     """Start an ephemeral AWS-managed browser with native networking.
 
-    read_only/navigation_check remain recorder API compatibility arguments. Scope
-    is checked for analyst-selected actions, not imposed on page subrequests.
-    AWS session isolation is not a claim of per-request destination filtering.
+    Read-only methods and unapproved destinations are rejected before dispatch.
+    Native transport still does not pin the destination after DNS validation.
     """
     from agentcore_tools.browser_runtime.input_validation import validate_input as _validate_input
 
@@ -64,16 +66,48 @@ def open_native_browser(
         from bedrock_agentcore.tools.browser_client import BrowserClient
 
         client_factory = BrowserClient
+    if deadline_at is not None and deadline_at <= int(time.time()):
+        raise ValueError("Browser authority expired")
     client = client_factory(region=region)
     browser = context = page = None
     session_id = None
     try:
-        session_id = client.start(session_timeout_seconds=LEASE_SECONDS)
+        remaining = LEASE_SECONDS if deadline_at is None else int(deadline_at - time.time())
+        if remaining <= 0:
+            raise ValueError("Browser authority expired")
+        session_id = client.start(session_timeout_seconds=min(LEASE_SECONDS, remaining))
         ws_url, headers = client.generate_ws_headers()
         browser = playwright.chromium.connect_over_cdp(
             ws_url, headers=headers, timeout=STARTUP_SECONDS * 1000
         )
-        context = browser.new_context(**dict(context_options or {}))
+        options = dict(context_options or {})
+        if read_only:
+            options["service_workers"] = "block"
+        context = browser.new_context(**options)
+        guard = SimpleNamespace(refusals=[], connections=[], transport_errors=[], connections_dropped=0)
+
+        def on_request(route):
+            request = route.request
+            navigation = request.is_navigation_request()
+            if read_only and request.method not in {"GET", "HEAD", "OPTIONS"}:
+                result = SimpleNamespace(allowed=False, reason="State-changing HTTP methods are disabled",
+                                         reason_code="method_not_allowed")
+            else:
+                result = navigation_check(request.url) if navigation and navigation_check else check_url(request.url)
+                if result.allowed and navigation and navigation_check:
+                    result = check_url(request.url)
+            if not result.allowed:
+                if len(guard.refusals) < 200:
+                    guard.refusals.append({"url": scrub_url_credentials(request.url), "reason": result.reason,
+                                           "reason_code": result.reason_code, "navigation": navigation})
+                route.abort("blockedbyclient")
+                return
+            route.continue_()
+
+        context.route("**/*", on_request)
+        route_web_socket = getattr(context, "route_web_socket", None)
+        if read_only and route_web_socket is not None:
+            route_web_socket("**/*", lambda route: route.close())
         page = context.new_page()
         page.set_default_timeout(10000)
         return NativeBrowserSession(
@@ -82,10 +116,7 @@ def open_native_browser(
             browser=browser,
             context=context,
             page=page,
-            # Compatibility telemetry: native sockets have no broker peer log.
-            guard=SimpleNamespace(
-                refusals=[], connections=[], transport_errors=[], connections_dropped=0
-            ),
+            guard=guard,
         )
     except BaseException as error:
         for resource in (page, context, browser):

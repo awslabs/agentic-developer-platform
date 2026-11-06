@@ -121,10 +121,17 @@ def load_json_safe(path: Path) -> dict | list:
         return {}
 
 
-def _has_accepted_suppression(result: dict) -> bool:
+def _has_accepted_suppression(result: dict, *, semgrep: bool = False) -> bool:
     suppressions = result.get("suppressions", [])
     return isinstance(suppressions, list) and any(
-        isinstance(suppression, dict) and suppression.get("status") == "accepted"
+        isinstance(suppression, dict) and (
+            suppression.get("status") == "accepted"
+            # Semgrep emits a recognized nosemgrep directive as inSource with
+            # no status (SARIF status is optional). Do not apply that convention
+            # to other scanners or override explicit rejected/underReview/null.
+            or (semgrep and suppression.get("kind") == "inSource"
+                and "status" not in suppression)
+        )
         for suppression in suppressions
     )
 
@@ -169,11 +176,14 @@ def extract_sarif_fingerprints(
 
     for run in sarif_data.get("runs", []):
         rules = _sarif_rule_index(run)
+        semgrep = run.get("tool", {}).get("driver", {}).get("name") in {
+            "Semgrep", "Semgrep OSS",
+        }
         for result in run.get("results", []):
             # Accepted inline suppressions such as `nosemgrep` are not active
-            # findings. Rejected, under-review, missing, or malformed statuses
-            # have not been accepted and must remain visible to the gate.
-            if _has_accepted_suppression(result):
+            # findings. Only Semgrep's documented inSource representation may
+            # omit status; other ambiguous suppressions remain visible.
+            if _has_accepted_suppression(result, semgrep=semgrep):
                 continue
             rule_id = result.get("ruleId", "unknown")
             sev, sev_source = resolve_sarif_severity(result, rules)
@@ -355,6 +365,40 @@ def _match_legacy_grype_baseline(
     return matched
 
 
+def reviewed_sarif_baseline(data: dict, source_root: Path) -> dict:
+    def unchanged(result: dict) -> bool:
+        properties = result.get("properties", {})
+        if "review" not in properties:
+            return True
+        review = properties["review"]
+        if not isinstance(review, dict) or not review.get("justification"):
+            return False
+        sources = review.get("sources")
+        if not isinstance(sources, dict) or not sources:
+            return False
+        locations = result.get("locations", [])
+        if not locations or any(
+            location.get("physicalLocation", {}).get("artifactLocation", {}).get("uri")
+            not in sources for location in locations
+        ):
+            return False
+        try:
+            for name, digest in sources.items():
+                path = (source_root / name).resolve()
+                if not path.is_relative_to(source_root.resolve()):
+                    return False
+                if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                    return False
+        except (OSError, ValueError):
+            return False
+        return True
+
+    return {**data, "runs": [
+        {**run, "results": [result for result in run.get("results", []) if unchanged(result)]}
+        for run in data.get("runs", [])
+    ]}
+
+
 def process_tool_findings(
     tool: str, findings_dir: Path, baseline_dir: Path
 ) -> dict:
@@ -403,6 +447,10 @@ def process_tool_findings(
     if tool == "detect-secrets":
         baseline_fingerprints = extract_detect_secrets_fingerprints(baseline_data)
     elif isinstance(baseline_data, dict) and "runs" in baseline_data:
+        if tool == "semgrep":
+            baseline_data = reviewed_sarif_baseline(
+                baseline_data, Path(__file__).resolve().parents[2]
+            )
         baseline_fingerprints = extract_sarif_fingerprints(baseline_data)
         if tool == "grype":
             baseline_fingerprints = _match_legacy_grype_baseline(

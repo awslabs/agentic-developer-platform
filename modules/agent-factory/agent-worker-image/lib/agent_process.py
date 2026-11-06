@@ -52,7 +52,14 @@ def run_agent(command, *, timeout=None, grace=30,
               first_progress_timeout=None, progress_poll_seconds=30, progress_suspended=None, **options):
     env = options.get("env") if options.get("env") is not None else os.environ
     if timeout is None:
-        timeout = (DEVELOPMENT_TIMEOUT_SECONDS if env.get("AGENT_TYPE") in DEVELOPMENT_PERSONAS
+        # Admitted operations stories also own the repair, CI, merge, deployment
+        # and verification loop. Their process budget must match the six-hour
+        # delivery job instead of expiring while an Actions workflow is running.
+        operations_story = (
+            env.get("ADP_ENGINE_OPERATIONS_STORY") == "true"
+            and env.get("AGENT_TYPE") in {"operations", "agent-codex-operations"}
+        )
+        timeout = (DEVELOPMENT_TIMEOUT_SECONDS if env.get("AGENT_TYPE") in DEVELOPMENT_PERSONAS or operations_story
                    else DEFAULT_TIMEOUT_SECONDS)
     if first_progress_timeout is None and env.get("ADP_REQUIRE_IMPLEMENTATION_PROGRESS") == "true":
         first_progress_timeout = 30 * 60

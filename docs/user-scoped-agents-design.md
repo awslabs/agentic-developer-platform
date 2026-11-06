@@ -222,9 +222,11 @@ User-scoped agents run on the **same runtime** (Agent Factory), the **same LLM e
 
 ## Relationship to chief-of-staff
 
-Chief-of-staff is expected to be an **opinionated user-scoped agent** — a specific template that composes vault, knowledge, calendar bindings, and a particular persona optimized for goal/commitment tracking. In other words: once user-scoped agents exist, chief-of-staff is 80% a template + UI, not a new service. Same codepath, same infrastructure, new template.
-
-This is why the cluster's build order matters: vault → knowledge → user-scoped agents → chief-of-staff. Each step compounds.
+Chief of Staff is an opinionated user-scoped template on these shared services.
+Its product journey, execution targets, memory/Dev Box contracts, delivery order
+and outstanding design decisions are maintained in the
+[canonical Chief-of-Staff architecture](chief-of-staff/architecture.md).
+This shared service design remains applicable to other user-agent templates.
 
 ## Build order within this service
 

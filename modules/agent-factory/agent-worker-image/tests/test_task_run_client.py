@@ -199,6 +199,7 @@ def test_cyber_uses_configured_iam_service_with_host_credentials(transport, monk
 def test_invalid_or_missing_cyber_endpoint_never_falls_back(transport, monkeypatch, endpoint):
     calls, _ = transport
     monkeypatch.setenv(client.CYBER_TOOLS_ENDPOINT_ENV, endpoint)
+    monkeypatch.setenv('ADP_TASK_TOOL_CLEANUP', '[]')
     run = client.TaskRunClient()
     run._run_credential = 'opaque-run-credential'
     with pytest.raises(client.TaskRunClientError, match='cyber tools endpoint unavailable'):
@@ -230,6 +231,7 @@ def test_cyber_service_configuration_is_not_in_sdk_environment(monkeypatch, tmp_
     assert client.CYBER_TOOLS_ENDPOINT_ENV not in environment
     assert 'X_ADP_RUN_CREDENTIAL' not in environment
     assert 'AWS_SECRET_ACCESS_KEY' not in environment
+    assert 'ADP_TOOLS_VIA' not in environment
     assert environment['ADP_TASK_NETWORK'] == 'host-mediated-sdk'
 
 
@@ -283,42 +285,133 @@ def test_control_retry_does_not_extend_to_model_or_cyber_operations(transport, m
     assert calls == ['model', 'cyber']
 
 
-def test_generic_tool_registry_is_exact_and_host_owned(monkeypatch):
+def test_generic_tool_registry_refuses_unapproved_gateway_tool(monkeypatch):
     monkeypatch.setenv('ADP_TASK_TOOL_ROUTES', '{"archive.scan":"https://tools.example/dev/tools/archive"}')
-    monkeypatch.setenv('ADP_AGENT_CONTROL_ENDPOINT', 'https://gateway.example/internal/v1/agent')
-    # Use the existing module fixture constructor configuration.
     monkeypatch.setenv(client.CONTROL_ENDPOINT_ENV, 'https://gateway.example/internal/v1/agent')
-    instance = client.TaskRunClient()
-    calls = []
-    monkeypatch.setattr(instance, '_post', lambda action, body, **kw: calls.append((action, body, kw)) or {'ok': True})
-    body = {'operation': 'scan', 'payload': {'url': 'https://untrusted.example/other'}}
-    assert instance.tool('archive.scan', body) == {'ok': True}
-    assert calls[0][2]['tool_endpoint'] == 'https://tools.example/dev/tools/archive'
-    with pytest.raises(client.TaskRunClientError):
-        instance.tool('archive.other', body)
-    with pytest.raises(client.TaskRunClientError):
-        instance.tool('https://untrusted.example', body)
+    run = client.TaskRunClient()
+    posted = Mock()
+    monkeypatch.setattr(run, '_post', posted)
+    body = {'schema_version': '1.0', 'attempt': {'run': {'task_id': 'task-test'}},
+            'operation_id': '00000000-0000-4000-8000-000000000099', 'operation': 'scan', 'payload': {}}
+    with pytest.raises(client.TaskRunClientError, match='Gateway tool call unavailable'):
+        run.tool('archive.scan', body)
+    with pytest.raises(client.TaskRunClientError, match='Tool is not configured'):
+        run.tool('archive.other', body)
+    posted.assert_not_called()
+
+
+def test_gateway_facade_dispatch_preserves_result_and_human_receipt(transport, monkeypatch):
+    from lib import task_tool_artifacts
+
+    calls, proof = transport
+    endpoint = 'https://retired-tools.example/dev/tools/websearch'
+    monkeypatch.setenv('ADP_TASK_TOOL_ROUTES', json.dumps({'websearch.search': endpoint}))
+    run = client.TaskRunClient()
+    run._run_credential = 'host-only-credential'
+    operation_id = '00000000-0000-4000-8000-000000000099'
+    body = {'schema_version': '1.0', 'attempt': {'run': {'task_id': 'task-test'}},
+            'operation_id': operation_id, 'operation': 'search', 'payload': {'query': 'example'}}
+    facade_result = {'jsonrpc': '2.0', 'result': {'results': [{'title': 'found'}]}}
+    published = []
+    monkeypatch.setattr(task_tool_artifacts, 'publish_tool_result',
+                        lambda owner, *, attempt, result: published.append((owner, attempt, result)) or {'artifact_id': 'art_fixture'})
+    original_post = client.requests.Session.post
+
+    def fake_facade(self, url, **kwargs):
+        signed = {key.lower(): value for key, value in kwargs['headers'].items()}
+        assert signed['x-adp-run-credential'] == 'host-only-credential'
+        assert signed['x-adp-workload-token'] == proof
+        assert 'x-adp-run-credential;x-adp-workload-token' in signed['authorization']
+        assert url == 'https://gateway.execute-api.us-east-1.amazonaws.com/dev/agent/tools/call'
+        assert json.loads(kwargs['data']) == {'tool': 'websearch___search', 'arguments': {'query': 'example'},
+                                               'request_id': operation_id}
+        response = original_post(self, url, **kwargs)
+        response.raw.read.return_value = json.dumps({'request_id': operation_id, 'status': 'confirmed',
+            'root_human_id': 'person-one', 'receipt_id': 'audited-receipt', 'result': facade_result}).encode()
+        return response
+
+    monkeypatch.setattr(client.requests.Session, 'post', fake_facade)
+    assert run.tool('websearch.search', body) == {'schema_version': '1.0', 'task_id': 'task-test',
+        'operation_id': operation_id, 'operation_status': 'confirmed',
+        'result': facade_result['result'], 'artifact': {'artifact_id': 'art_fixture'}}
+    assert published == [(run, body['attempt'], facade_result['result'])]
+    assert len(calls) == 1
+
+
+def test_gateway_facade_missing_proof_unknown_and_default_task(transport, monkeypatch):
+    calls, _ = transport
+    monkeypatch.setenv('ADP_TASK_TOOL_ROUTES', '{"websearch.search":"https://gateway.example/tools/websearch"}')
+    monkeypatch.setenv('ADP_TOOLS_VIA', 'task')
+    run = client.TaskRunClient()
+    body = {'schema_version': '1.0', 'attempt': {'run': {'task_id': 'task-test'}},
+            'operation_id': '00000000-0000-4000-8000-000000000099', 'operation': 'search', 'payload': {}}
+    with pytest.raises(client.TaskRunClientError, match='run credential unavailable'):
+        run.tool('websearch.search', body)
+    assert not calls
+    run._run_credential = 'host-only-credential'
+    original_post = client.requests.Session.post
+
+    def fake_facade(self, url, **kwargs):
+        response = original_post(self, url, **kwargs)
+        response.status_code = 202
+        response.raw.read.return_value = json.dumps({'status': 'unknown', 'request_id': body['operation_id'],
+            'root_human_id': 'person-one', 'receipt_id': 'uncertain'}).encode()
+        return response
+
+    monkeypatch.setattr(client.requests.Session, 'post', fake_facade)
+    assert run.tool('websearch.search', body)['operation_status'] == 'unknown'
+    assert len(calls) == 1
+    with pytest.raises(client.TaskRunClientError, match='Tool is not configured'):
+        run.tool('archive.scan', body)
+    def refused(self, url, **kwargs):
+        response = original_post(self, url, **kwargs)
+        response.status_code = 403
+        return response
+    monkeypatch.setattr(client.requests.Session, 'post', refused)
+    with pytest.raises(client.TaskRunClientError, match='service refused'):
+        run.tool('websearch.search', body)
+    assert len(calls) == 2
+    assert all('/agent/tools/call' in url for url, _, _ in calls)
+    def unavailable(self, url, **kwargs):
+        response = original_post(self, url, **kwargs)
+        response.status_code = 503
+        return response
+    monkeypatch.setattr(client.requests.Session, 'post', unavailable)
+    with pytest.raises(client.TaskRunClientUnavailable, match='outcome unavailable'):
+        run.tool('websearch.search', body)
+    assert len(calls) == 3
+    assert all('/agent/tools/call' in url for url, _, _ in calls)
 
 
 def test_code_interpreter_host_uses_exact_signed_route(transport, monkeypatch):
+    from lib import task_tool_artifacts
+
     calls, proof = transport
     endpoint = 'https://gateway.execute-api.us-east-1.amazonaws.com/dev/tools/code-interpreter'
     monkeypatch.setenv('ADP_TASK_TOOL_ROUTES', json.dumps({'code_interpreter.start': endpoint}))
     run = client.TaskRunClient()
     run._run_credential = 'host-only-credential'
-    run.tool('code_interpreter.start', {'operation': 'start', 'payload': {}})
+    body = {'schema_version': '1.0', 'attempt': {'run': {'task_id': 'task-test'}},
+            'operation_id': '00000000-0000-4000-8000-000000000099', 'operation': 'start', 'payload': {}}
+    with pytest.raises(client.TaskRunClientError, match='Gateway tool call unavailable'):
+        run.tool('code_interpreter.start', {'operation': 'start', 'payload': {}})
+    assert calls == []
+    monkeypatch.setattr(task_tool_artifacts, 'publish_tool_result', lambda *args, **kwargs: {'artifact_id': 'test'})
+    original_post = client.requests.Session.post
+    def facade(self, url, **kwargs):
+        response = original_post(self, url, **kwargs)
+        response.raw.read.return_value = json.dumps({'request_id': body['operation_id'], 'status': 'confirmed',
+            'root_human_id': 'person-one', 'result': {'jsonrpc': '2.0', 'result': {'execution_id': 'test'}}}).encode()
+        return response
+    monkeypatch.setattr(client.requests.Session, 'post', facade)
+    assert run.tool('code_interpreter.start', body)['operation_status'] == 'confirmed'
     url, request, trusted = calls[-1]
-    assert url == endpoint and trusted is False
+    assert url == 'https://gateway.execute-api.us-east-1.amazonaws.com/dev/agent/tools/call' and trusted is False
     assert request['headers']['Authorization'].startswith('AWS4-HMAC-SHA256 ')
     assert request['headers']['X-Adp-Run-Credential'] == 'host-only-credential'
     assert request['headers']['X-Adp-Workload-Token'] == proof
-    with pytest.raises(client.TaskRunClientError):
-        run.tool('code_interpreter.execute', {'operation': 'execute', 'payload': {}})
-    run._bootstrap_body = {}
-    run._stopping = True
-    run._renew_for('cyber', {'operation': 'close'})
-    with pytest.raises(client.TaskRunClientError):
-        run._renew_for('cyber', {'operation': 'execute'})
+    with pytest.raises(client.TaskRunClientError, match='Tool is not configured'):
+        run.tool('code_interpreter.execute', body)
 
 
 @pytest.mark.parametrize("action", ["repository-publication", "repository-completion"])
@@ -372,7 +465,7 @@ def test_service_backend_does_not_add_dependencies_to_model_only_tasks(transport
     assert run._hosted_validation() is None
 
 
-def test_code_session_cleanup_is_automatically_routed_on_task_finalization(transport, monkeypatch):
+def test_code_session_cleanup_does_not_use_retired_task_endpoint(transport, monkeypatch):
     endpoint = "https://gateway.execute-api.us-east-1.amazonaws.com/dev/tools/code-interpreter"
     monkeypatch.setenv("ADP_TASK_TOOL_ROUTES", json.dumps({"code_interpreter.start": endpoint}))
     monkeypatch.setenv("ADP_TASK_TOOL_CLEANUP", "[]")
@@ -384,4 +477,4 @@ def test_code_session_cleanup_is_automatically_routed_on_task_finalization(trans
                 "operation_status": "confirmed", "result": {"status": "confirmed", "pending_jobs": []}}
     monkeypatch.setattr(run, "_post", post)
     assert run.cyber({"operation": "cancel_jobs", "payload": {}})["operation_status"] == "confirmed"
-    assert calls == [("cyber", endpoint), ("cyber", None)]
+    assert calls == [("cyber", None)]

@@ -128,6 +128,8 @@ async def _snapshot(session, org_id: str, flow_id: str, *, lock=False, require_p
     flow = await session.scalar(query.with_for_update() if lock else query)
     if flow is None:
         raise ContinuationRefusedError("flow_not_found", "No flow in this tenant.")
+    if lock and flow.archived_at is not None:
+        raise ContinuationRefusedError("flow_archived", "Unarchive this flow before admitting continuation work.")
     plan = await session.scalar(
         select(OrchestrationAcceptedPlan)
         .where(

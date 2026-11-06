@@ -1,6 +1,7 @@
 """Container scan inventory, including runtime images with no local Dockerfile."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ ORIGINAL_GAPS = {
 }
 
 ORIGINAL_COVERAGE = {"run": "37278531434/1", "expected": 41, "succeeded": 34, "failures": ORIGINAL_GAPS}
+RECIPE_INVENTORY = Path("codebuild/security-image-recipes.json")
 REQUIRED_CONTEXT_DOCKERFILES = {
     f"modules/agent-context/images/{name}/Dockerfile"
     for name in ("codegraph-context", "context-mcp", "ingestion", "ingestion/high-security", "litellm-proxy", "parser")
@@ -47,6 +49,39 @@ def non_runtime_fixtures(root: Path, scope: str = "all") -> list[dict]:
     }]
 
 
+def maintenance_recipes(root: Path, scope: str = "all") -> list[dict]:
+    """Account for qualified-build recipes without claiming they were scanned.
+
+    These explicit, content-bound entries require retained artifacts or historical
+    intermediate parents. They are not standalone release build targets. Unknown
+    Dockerfiles still enter the scan; changing a classified recipe requires review.
+    """
+    path = root / RECIPE_INVENTORY
+    if not path.is_file():
+        return []
+    document = json.loads(path.read_text())
+    if document.get("schema_version") != 1 or not isinstance(document.get("recipes"), list):
+        raise ValueError("Invalid maintenance recipe inventory")
+    result, seen = [], set()
+    for recipe in document["recipes"]:
+        dockerfile = recipe["dockerfile"]
+        relative = Path(dockerfile)
+        if (relative.is_absolute() or ".." in relative.parts or relative.name != "Dockerfile"
+                or dockerfile in seen or not recipe.get("reason")):
+            raise ValueError("Invalid or duplicate maintenance recipe")
+        seen.add(dockerfile)
+        if hashlib.sha256((root / relative).read_bytes()).hexdigest() != recipe["dockerfile_sha256"]:
+            raise ValueError(f"Maintenance recipe changed: review its scan classification: {dockerfile}")
+        if scope == "superplane" and not dockerfile.startswith(str(SUPERPLANE) + "/"):
+            continue
+        result.append({
+            "name": str(relative.parent).replace("/", "-"),
+            **recipe,
+            "status": "not_scanned",
+        })
+    return result
+
+
 BUILD_CONFIG = {
     # This detached-check fixture requires only POSIX sh/coreutils. Reuse the
     # reviewed scan Python base rather than leaving its required ARG empty.
@@ -54,6 +89,7 @@ BUILD_CONFIG = {
         "build_arg_env": {"BASE_IMAGE": "SECURITY_EXECUTOR_PYTHON_IMAGE"},
     },
     "modules/tools/agentcore/Dockerfile": {"context": "."},
+    "modules/tools/facade/Dockerfile": {"context": "."},
     "modules/tools/validation/Dockerfile": {"context": "."},
     "platform/security/openssh-high/Dockerfile": {"context": "."},
     "platform/security/skypilot-openssh/Dockerfile": {"context": "."},
@@ -94,7 +130,7 @@ BUILD_CONFIG = {
         "prepare": [["run", "bash", "modules/domain-apps/superplane/src/superplane-api/scripts/stage-domain-auth.sh"]],
     },
     "modules/gateway/Dockerfile": {
-        "prepare": [["run", "bash", "modules/gateway/scripts/stage-contracts.sh"]],
+        "prepare": [["run", "bash", "modules/gateway/scripts/stage-contracts.sh"], ["run", "bash", "modules/gateway/scripts/stage-l5-wheel.sh"]],
     },
     "modules/research/gbrain/docker/Dockerfile": {"context": "modules/research/gbrain"},
 }
@@ -117,6 +153,10 @@ def discover(root: Path, scope: str = "all") -> list[dict]:
     if scope == "all" and (root / "codebuild/security_image_targets.py").is_file():
         required.update(REQUIRED_CONTEXT_DOCKERFILES)
     excluded = {fixture["dockerfile"] for fixture in non_runtime_fixtures(root, scope)}
+    recipes = {recipe["dockerfile"] for recipe in maintenance_recipes(root, scope)}
+    if required & recipes:
+        raise ValueError("A maintained runtime cannot be classified as a maintenance recipe")
+    excluded.update(recipes)
     targets = []
     for directory, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules"]

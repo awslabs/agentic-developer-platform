@@ -3,6 +3,7 @@
 import pytest
 
 from src.agentauth.bootstrap import envelope_digest
+from src.agentauth.chat_crew_run import CrewRunStore
 from src.agentauth.chat_session_mailbox import AcceptedTurn, ChatSessionMailbox
 from tests.agentauth import test_chat_persistent_completion as completion
 from tests.agentauth.test_chat_sandbox_exit import supervisor
@@ -18,6 +19,15 @@ mailbox = completion.mailbox
 transport = completion.transport
 consumer = completion.consumer
 registered_owner = completion.registered_owner
+
+
+@pytest.fixture(autouse=True)
+def legacy_run_without_crew_binding(monkeypatch):
+    from types import SimpleNamespace
+
+    crew_store = SimpleNamespace(revoke_for_lease=lambda **_: False)
+    monkeypatch.setattr("src.agentauth.chat_supervisor_resume.current_crew_store", lambda: crew_store)
+    monkeypatch.setattr("src.agentauth.chat_data_routes.current_crew_store", lambda: crew_store)
 
 
 async def call(mailbox, operation, run_id="run-user", **extra):
@@ -143,3 +153,56 @@ async def test_expired_completed_turn_keeps_its_committed_output(mailbox, sts, m
     assert (await call(mailbox, "complete")).status_code == 200
     assert transport.client.send_message.call_count == 1
     assert consumer.ws_router._client.post_to_connection.call_count == 1
+
+
+def recorded_crew_run(mailbox, table_name):
+    import boto3
+
+    runtime = mailbox[1]
+    lease = runtime[2].get_item(Key={"PK": "session#session-a", "SK": "header"}, ConsistentRead=True)["Item"]["chatLease"]
+    registry = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName=table_name,
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+    )
+    crew_store = CrewRunStore(registry)
+    run_id = crew_store.mint(
+        tenant_id="tenant",
+        user_id="human",
+        session_id="session-a",
+        lease_generation=int(lease["generation"]),
+        lease_expires_at=int(lease["expires_at"]),
+        target_kind="eks-pod",
+        target_ref="chat-pod",
+        now=runtime[-1],
+    )
+    return crew_store, registry, run_id
+
+
+@pytest.mark.parametrize("mailbox", ["persistent"], indirect=True)
+async def test_expired_restart_revokes_crew_run_before_recovering_pod(mailbox, sts, monkeypatch):
+    _, runtime, _, _, _ = mailbox
+    supervisor(sts, monkeypatch)
+    crew_store, registry, run_id = recorded_crew_run(mailbox, "crew-run-recovery")
+    monkeypatch.setattr("src.agentauth.chat_supervisor_resume.current_crew_store", lambda: crew_store)
+    expire(mailbox)
+    result = await call(mailbox, "resume")
+    assert result.status_code == 200, result.text
+    assert result.json()["recovery_required"] is True
+    assert CrewRunStore(registry).read_run(run_id) is None
+
+
+@pytest.mark.parametrize("mailbox", ["persistent"], indirect=True)
+async def test_confirmed_pod_removal_revokes_crew_run(mailbox, sts, monkeypatch):
+    _, _, _, state, _ = mailbox
+    supervisor(sts, monkeypatch)
+    crew_store, registry, run_id = recorded_crew_run(mailbox, "crew-run-teardown")
+    monkeypatch.setattr("src.agentauth.chat_data_routes.current_crew_store", lambda: crew_store)
+    state["exited"] = True
+    assert (await call(mailbox, "exit")).json()["terminated"] is True
+    state["removed"] = True
+    removed = await call(mailbox, "teardown")
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["removed"] is True
+    assert CrewRunStore(registry).read_run(run_id) is None

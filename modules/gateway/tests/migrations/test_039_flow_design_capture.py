@@ -425,9 +425,15 @@ class TestModelMigrationParity:
             # 039 upgrade/downgrade assertions above remain pinned to 039.
             async with engine.begin() as conn:
                 await conn.run_sync(_run_migration, _load_migration("067_flow_execution_pause.py").upgrade)
+                await conn.run_sync(_run_migration, _load_migration("096_flow_archive.py").upgrade)
+                await conn.execute(sa.text("CREATE TABLE orchestration_nodes (org_id VARCHAR(255), issue_ref VARCHAR(64))"))
+                await conn.run_sync(_run_migration, _load_migration("124_flow_product_repo.py").upgrade)
+                await conn.run_sync(_run_migration, _load_migration("125_flow_planning_references.py").upgrade)
             async with engine.connect() as conn:
                 migrated = set(await conn.run_sync(_columns))
-            assert {column.name for column in OrchestrationFlow.__table__.columns} == migrated
+            # Full current-flow parity, including 146's cross-module Project
+            # migration, is checked on PostgreSQL in test_146_project_budgets.
+            assert {column.name for column in OrchestrationFlow.__table__.columns} - {"project_id"} == migrated
         finally:
             await engine.dispose()
 

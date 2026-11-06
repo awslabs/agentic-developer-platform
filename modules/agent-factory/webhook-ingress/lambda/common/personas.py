@@ -66,6 +66,11 @@ MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-codex-product": "agent-codex-product",
     "@agent-codex-pm": "agent-codex-pm",
     "@agent-codex-intent-refinement": "agent-codex-intent-refinement",
+    # Engine-dispatched operations story worker (executor role `operate`): owns a
+    # deployment through recovery. Registered here so dispatch admission can
+    # resolve its launch configuration; without this entry every operations story
+    # stayed `ready` with "Unknown persona key" (#7513).
+    "@agent-codex-operations": "agent-codex-operations",
     # Issue #2706: codex supervisor persona. Mention-triggered only (the
     # platform standard); intentionally NOT in LABEL_TO_PERSONA. Placed last so
     # it cannot shadow an earlier persona under the first-match dict-order
@@ -91,6 +96,7 @@ PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
     "agent-codex-product": "codex-sdk",
     "agent-codex-pm": "codex-sdk",
     "agent-codex-intent-refinement": "codex-sdk",
+    "agent-codex-operations": "codex-sdk",
     "aidlc": "claude-agent-sdk",
     "architect": "claude-agent-sdk",
     "codex": "claude-agent-sdk",

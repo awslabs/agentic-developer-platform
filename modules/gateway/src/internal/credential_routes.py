@@ -28,11 +28,13 @@ and updates UserCredential.last_used_at.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import ipaddress
 import logging
 import socket
+import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -43,16 +45,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.agentauth.broker_identity import user_credential_audit, verify_selected_user_credential, worker_tenant
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_authorization import require_credential_capability
-from src.internal.credential_binding import resolve_credential_binding
+from src.internal.credential_binding import broker_actor, resolve_broker_binding
 from src.internal.credential_egress import allowed_hosts_for, host_matches, is_binding_enforced
-from src.internal.credential_injector import FILE_CREDENTIAL_TYPES, inject_credential
+from src.internal.credential_injector import FILE_CREDENTIAL_TYPES, inject_credential, sanitize_proxy_response
+from src.internal.tools_credential_auth import assert_tools_credential_fresh
 from src.shared.config import Settings, get_settings
 from src.shared.database import get_db
+from src.shared.identity.oauth_providers import PROVIDER_SCOPES, approved_oauth_scopes
 from src.shared.models.audit import AuditLog
 from src.shared.models.organization import User
 from src.shared.models.vault import UserCredential
 from src.shared.services.canonical_user import resolve_canonical_user
 from src.shared.services.credential_resolver import CredentialNotFoundError, CredentialResolver
+from src.shared.services.github_pat_migration import github_pat_retired
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
 logger = logging.getLogger(__name__)
@@ -61,6 +66,12 @@ router = APIRouter(prefix="/internal/v1", tags=["internal-credentials"])
 
 # Module-level SM helper; replaced in tests via dependency injection.
 _sm_helper = SecretsManagerHelper()
+
+
+def get_identity_client():
+    import boto3
+
+    return boto3.client("bedrock-agentcore", region_name=get_settings().aws_region)
 
 
 def get_secrets_manager() -> SecretsManagerHelper:
@@ -101,9 +112,9 @@ class CredentialMetadata(BaseModel):
 class ProxyRequestBody(BaseModel):
     """Body for POST /internal/v1/proxy-request."""
 
-    user_id: str
-    agent_id: str
-    task_id: str
+    user_id: str | None = None
+    agent_id: str | None = None
+    task_id: str | None = None
     service: str
     label: str | None = None
     method: str
@@ -123,9 +134,9 @@ class ProxyResponse(BaseModel):
 class MaterializeBody(BaseModel):
     """Body for POST /internal/v1/credential-materialize."""
 
-    user_id: str
-    agent_id: str
-    task_id: str
+    user_id: str | None = None
+    agent_id: str | None = None
+    task_id: str | None = None
     service: str
     label: str | None = None
     invocation_id: str | None = None
@@ -201,6 +212,56 @@ async def _resolve_credential(
             status_code=404,
             detail={"error": "credential_not_found", "message": str(exc)},
         ) from exc
+
+
+async def _identity_access_token(cred: UserCredential, user: User, client) -> str:
+    """Exchange the owned pointer for a user token after broker authority and egress checks."""
+    provider = cred.secret_arn.rsplit(":", 1)[-1]
+    expected = PROVIDER_SCOPES.get(provider)
+    from src.internal.github_oauth import is_github_app_grant
+
+    app_grant = provider == "github" and is_github_app_grant(cred.scopes)
+    scopes = [] if app_grant else approved_oauth_scopes(provider, cred.scopes)
+    settings = get_settings()
+    workload_name = settings.oauth_workload_name
+    if (
+        expected is None
+        or cred.user_id != user.id
+        or cred.org_id != user.org_id
+        or cred.service != expected[0]
+        or cred.credential_type != "oauth_token"
+        or cred.agent_consent is not True
+        or cred.expires_at is not None
+        and cred.expires_at.replace(tzinfo=UTC) <= datetime.now(UTC)
+        or scopes is None
+        or not workload_name.endswith("-oauth-user")
+        or cred.secret_arn != f"agentcore-identity:{workload_name}:{provider}"
+    ):
+        raise HTTPException(status_code=403, detail={"error": "not_connected"})
+    scope_snapshot = tuple(scopes)
+    try:
+        workload = await asyncio.to_thread(
+            client.get_workload_access_token_for_user_id,
+            workloadName=workload_name,
+            userId=user.id,
+        )
+        result = await asyncio.to_thread(
+            client.get_resource_oauth2_token,
+            workloadIdentityToken=workload["workloadAccessToken"],
+            resourceCredentialProviderName=f"{workload_name.removesuffix('-oauth-user')}-{provider}-user",
+            scopes=list(scope_snapshot),
+            oauth2Flow="USER_FEDERATION",
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail={"error": "identity_unavailable"}) from None
+    if result.get("sessionStatus") == "FAILED":
+        raise HTTPException(status_code=502, detail={"error": "identity_unavailable"})
+    if result.get("sessionStatus") == "IN_PROGRESS":
+        raise HTTPException(status_code=403, detail={"error": "not_connected"})
+    token = result.get("accessToken")
+    if not isinstance(token, str) or not token or len(token) > 16384 or any(char.isspace() for char in token):
+        raise HTTPException(status_code=403, detail={"error": "not_connected"})
+    return token
 
 
 async def _fetch_secret(secret_arn: str, sm: SecretsManagerHelper) -> str:
@@ -323,8 +384,8 @@ def _validate_credential_host_binding(cred_service: str, url: str, settings: Set
 
     Raises HTTPException(403) when a bound service targets a host outside its set
     AND ``vault_enforce_credential_host_binding`` is True.  When the flag is
-    False (shadow mode, the default) the violation is logged and allowed, so
-    rollback is a config flip rather than a redeploy.
+    False (explicit shadow-mode override) the violation is logged and allowed.
+    Enforcement is the default; rollback requires an explicit config change.
     """
     hostname = httpx.URL(url).host
 
@@ -385,7 +446,7 @@ def _validate_credential_host_binding(cred_service: str, url: str, settings: Set
 )
 async def list_user_credentials(
     request: Request,
-    user_id: str = Query(..., description="Internal user UUID (cognito sub or shadow user id)"),
+    user_id: str | None = Query(None, description="Required only for a verified worker's existing user binding"),
     service: str | None = Query(None, description="Service name filter (optional). When omitted, returns all services."),
     invocation_id: str | None = Query(None, description="Run invocation ID for credential-authorization binding"),
     db: AsyncSession = Depends(get_db),
@@ -395,11 +456,11 @@ async def list_user_credentials(
 
     # Issue #3477: Credential-authorization binding.
     # Resolve the effective user from the webhook-events registry.
-    binding = await asyncio.to_thread(
-        resolve_credential_binding,
-        verified_binding=getattr(request.state, "agent_credential_binding", None),
+    binding = resolve_broker_binding(
+        request,
         invocation_id=invocation_id,
         body_user_id=user_id,
+        agent_id=None,
         settings=settings,
     )
     effective_user_id = binding.resolved_user_id
@@ -420,16 +481,21 @@ async def list_user_credentials(
     result = await db.execute(stmt)
     creds = result.scalars().all()
 
-    logger.debug(
-        "Listed %d credentials user=%s service=%s",
-        len(creds),
-        user_id,
-        service or "(all)",
-    )
+    logger.debug("Listed %d credentials", len(creds))
     authority = getattr(request.state, "agent_user_credential_authority", None)
+    gateway_authority = getattr(request.state, "agent_tools_credential_authority", None)
+    if gateway_authority is not None:
+        creds = [credential for credential in creds if credential.id in gateway_authority.credential_ids]
     if authority is not None:
         creds = [credential for credential in creds if credential.id in authority.credential_ids]
+    assert_tools_credential_fresh(request)
     return [CredentialMetadata.from_model(c) for c in creds]
+
+
+def _proxy_total_timeout(request: Request) -> float:
+    assert_tools_credential_fresh(request)
+    authority = getattr(request.state, "agent_tools_credential_authority", None)
+    return min(30.0, authority.assertion_expires_at - time.time() if authority is not None else 30.0)
 
 
 # ---------------------------------------------------------------------------
@@ -459,11 +525,12 @@ async def proxy_request(
 
     # Issue #3477: Credential-authorization binding — resolve BEFORE URL validation.
     # If the caller isn't authorized, don't reveal whether the URL is allowlisted.
-    binding = await asyncio.to_thread(
-        resolve_credential_binding,
-        verified_binding=getattr(request.state, "agent_credential_binding", None),
+    binding = resolve_broker_binding(
+        request,
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
+        agent_id=body.agent_id,
+        task_id=body.task_id,
         settings=settings,
     )
     effective_user_id = binding.resolved_user_id
@@ -478,9 +545,8 @@ async def proxy_request(
         """
         reason = exc.detail.get("error") if isinstance(exc.detail, dict) else str(exc.detail)
         logger.warning(
-            "Proxy request DENIED provenance_id=%s url=%s reason=%s",
+            "Proxy request DENIED provenance_id=%s reason=%s",
             provenance_id,
-            body.url,
             reason,
         )
         try:
@@ -489,7 +555,7 @@ async def proxy_request(
                 db,
                 event_type="vault_proxy_request_denied",
                 org_id=resolved.org_id,
-                actor_id=body.agent_id,
+                actor_id=broker_actor(request, body.agent_id),
                 details={
                     "provenance_id": provenance_id,
                     "user_id": body.user_id,
@@ -499,7 +565,6 @@ async def proxy_request(
                     "agent_id": body.agent_id,
                     "task_id": body.task_id,
                     "service": body.service,
-                    "url": body.url,
                     "reason": reason,
                 },
             )
@@ -517,15 +582,36 @@ async def proxy_request(
 
     user = await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request", expected_org=worker_tenant(request))
     # Issue #700: use canonical user's id and org_id for credential resolution.
-    cred = await _resolve_credential(
-        db=db,
-        org_id=user.org_id,
-        service=body.service,
-        label=body.label,
-        user_id=user.id,
-        team_id=user.team_id,
-    )
-    await verify_selected_user_credential(request, cred)
+    try:
+        cred = await _resolve_credential(
+            db=db,
+            org_id=user.org_id,
+            service=body.service,
+            label=body.label,
+            user_id=user.id,
+            team_id=user.team_id,
+        )
+    except HTTPException as exc:
+        if (
+            exc.status_code == 404
+            and body.service in {service for service, _ in PROVIDER_SCOPES.values()}
+            and body.label in (None, "AgentCore OAuth")
+        ):
+            denied = HTTPException(status_code=403, detail={"error": "not_connected"})
+            await _audit_denial(denied, user)
+            raise denied from exc
+        raise
+    try:
+        await verify_selected_user_credential(request, cred, db=db)
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get("error") == "not_consented":
+            await _audit_denial(exc, user=user)
+        raise
+
+    if await github_pat_retired(db, cred, grace_days=settings.github_pat_grace_days):
+        denied = HTTPException(status_code=403, detail={"error": "github_pat_retired", "message": "Connect GitHub in Settings > Credentials."})
+        await _audit_denial(denied, user)
+        raise denied
 
     # Issue #4076: credential->host binding. Runs on the RESOLVED cred.service
     # (never body.service — caller input must not decide this) and BEFORE
@@ -537,13 +623,47 @@ async def proxy_request(
         await _audit_denial(exc, user=user)
         raise
 
-    # Fetch secret and inject.
-    secret_value = await _fetch_secret(cred.secret_arn, sm)
-    await verify_selected_user_credential(request, cred, revalidate=True)
+    try:
+        await verify_selected_user_credential(request, cred, db=db, revalidate=True)
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get("error") == "not_consented":
+            await _audit_denial(exc, user=user)
+        raise
+
+    # Resolve only a validated user-owned Identity pointer; legacy PATs still use SM.
+    assert_tools_credential_fresh(request)
+    if cred.provider == "agentcore-identity":
+        secret_value = await _identity_access_token(cred, user, get_identity_client())
+    elif cred.secret_arn.startswith("agentcore-identity:"):
+        raise HTTPException(status_code=403, detail={"error": "not_connected"})
+    else:
+        secret_value = await _fetch_secret(cred.secret_arn, sm)
+    try:
+        await verify_selected_user_credential(request, cred, db=db, revalidate=True)
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get("error") == "not_consented":
+            await _audit_denial(exc, user=user)
+        raise
+    if cred.provider == "agentcore-identity":
+        still_connected = await db.scalar(
+            select(UserCredential.id).where(
+                UserCredential.id == cred.id,
+                UserCredential.org_id == user.org_id,
+                UserCredential.user_id == user.id,
+                UserCredential.provider == "agentcore-identity",
+            )
+        )
+        if not still_connected:
+            raise HTTPException(status_code=403, detail={"error": "not_connected"})
+    proxy_headers = {
+        key: value
+        for key, value in (body.headers or {}).items()
+        if key.lower() not in {"authorization", "proxy-authorization", "cookie", "host", "accept-encoding"}
+    }
     request_headers = inject_credential(
         cred.credential_type,
         secret_value,
-        body.headers or {},
+        proxy_headers,
     )
 
     # Preserve the authorized virtual host and TLS identity when connecting to
@@ -553,30 +673,56 @@ async def proxy_request(
     request_headers["Host"] = original_url.netloc.decode("ascii")
 
     # Environment proxies would bypass IP pinning; redirects must not escape it.
+    request_headers["Accept-Encoding"] = "identity"
     try:
-        async with httpx.AsyncClient(timeout=30.0, trust_env=False, follow_redirects=False) as client:
-            response = await client.request(
-                method=body.method.upper(),
-                url=target_url,
-                headers=request_headers,
-                extensions={"sni_hostname": original_url.host},
-                content=body.body.encode("utf-8") if body.body else None,
-            )
-    except httpx.RequestError as exc:
+        async with asyncio.timeout(_proxy_total_timeout(request)):
+            async with httpx.AsyncClient(timeout=30.0, trust_env=False, follow_redirects=False) as client:
+                async with client.stream(
+                    method=body.method.upper(),
+                    url=target_url,
+                    headers=request_headers,
+                    extensions={"sni_hostname": original_url.host},
+                    content=body.body.encode("utf-8") if body.body else None,
+                ) as response:
+                    if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                        raise HTTPException(502, "credential proxy response encoding unsupported")
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None and content_length.isdecimal() and (len(content_length) > 7 or int(content_length) > 1048576):
+                        raise HTTPException(502, "credential proxy response too large")
+                    received = 0
+                    decoded_size = 0
+                    chunks = []
+                    decoder = codecs.getincrementaldecoder(response.encoding or "utf-8")(errors="replace")
+                    async for chunk in response.aiter_raw():
+                        received += len(chunk)
+                        if received > 1048576:
+                            raise HTTPException(502, "credential proxy response too large")
+                        decoded = decoder.decode(chunk)
+                        decoded_size += len(decoded.encode("utf-8"))
+                        if decoded_size > 1048576:
+                            raise HTTPException(502, "credential proxy response too large")
+                        chunks.append(decoded)
+                    final = decoder.decode(b"", final=True)
+                    if decoded_size + len(final.encode("utf-8")) > 1048576:
+                        raise HTTPException(502, "credential proxy response too large")
+                    response_headers = dict(response.headers)
+                    response_body = "".join(chunks) + final
+    except (httpx.RequestError, TimeoutError):
         logger.error(
-            "Proxy request failed provenance_id=%s url=%s error=%s",
+            "Proxy request failed provenance_id=%s",
             provenance_id,
-            body.url,
-            exc,
         )
         raise HTTPException(
             status_code=502,
             detail={
                 "error": "upstream_error",
-                "message": f"HTTP request to upstream failed: {exc}",
+                "message": "HTTP request to upstream failed",
                 "provenance_id": provenance_id,
             },
-        ) from exc
+        ) from None
+
+    await verify_selected_user_credential(request, cred, db=db, revalidate=True)
+    assert_tools_credential_fresh(request)
 
     # Update last_used_at and write audit log.
     await _touch_last_used(cred.id, db)
@@ -584,7 +730,7 @@ async def proxy_request(
         db,
         event_type="vault_proxy_request",
         org_id=user.org_id,
-        actor_id=body.agent_id,
+        actor_id=broker_actor(request, body.agent_id),
         details={
             "provenance_id": provenance_id,
             "user_id": body.user_id,
@@ -596,7 +742,7 @@ async def proxy_request(
             "credential_id": cred.id,
             **user_credential_audit(request),
             "method": body.method.upper(),
-            "url": body.url,
+            "destination_host": original_url.host,
             "response_status": response.status_code,
             "invocation_id": body.invocation_id,
             "binding_from_registry": binding.from_registry,
@@ -606,16 +752,17 @@ async def proxy_request(
     await db.commit()
 
     logger.info(
-        "Proxy request completed provenance_id=%s service=%s url=%s status=%d",
+        "Proxy request completed provenance_id=%s status=%d",
         provenance_id,
-        body.service,
-        body.url,
         response.status_code,
     )
+    response_headers, response_body = sanitize_proxy_response(cred.credential_type, secret_value, response_headers, response_body)
+    await verify_selected_user_credential(request, cred, db=db, revalidate=True)
+    assert_tools_credential_fresh(request)
     return ProxyResponse(
         status=response.status_code,
-        headers=dict(response.headers),
-        body=response.text,
+        headers=response_headers,
+        body=response_body,
         provenance_id=provenance_id,
     )
 
@@ -629,12 +776,10 @@ async def proxy_request(
     "/credential-materialize",
     response_model=MaterializeResponse,
     status_code=201,
-    summary="Materialize a file-type credential as a presigned S3 URL (internal)",
+    summary="File credential materialization is unavailable (internal)",
     description=(
-        "Only valid for file-oriented credential types: ssh_key, certificate, config_file. "
-        "Fetches the credential from Secrets Manager, writes it to a short-lived S3 object, "
-        "and returns a presigned GET URL the agent can use to write the file to its tmpfs. "
-        "Requires registry-granted credential:materialize capability."
+        "Checks binding, credential:materialize capability and file credential selection, then returns 503. "
+        "No secret is fetched or uploaded until a private recipient and durable cleanup are available."
     ),
 )
 async def credential_materialize(
@@ -644,16 +789,15 @@ async def credential_materialize(
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
 ) -> MaterializeResponse:
-    provenance_id = str(uuid.uuid4())
     settings = get_settings()
 
     # Issue #3477: Credential-authorization binding — resolve BEFORE scope gate.
     # If the caller isn't bound to a valid run, fail fast before checking scopes.
-    binding = await asyncio.to_thread(
-        resolve_credential_binding,
-        verified_binding=getattr(request.state, "agent_credential_binding", None),
+    binding = resolve_broker_binding(
+        request,
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
+        agent_id=body.agent_id,
         settings=settings,
     )
     effective_user_id = binding.resolved_user_id
@@ -671,7 +815,7 @@ async def credential_materialize(
         user_id=user.id,
         team_id=user.team_id,
     )
-    await verify_selected_user_credential(request, cred)
+    await verify_selected_user_credential(request, cred, db=db)
 
     # Only file-type credentials are allowed through this path.
     if cred.credential_type not in FILE_CREDENTIAL_TYPES:
@@ -685,78 +829,12 @@ async def credential_materialize(
             },
         )
 
-    secret_value = await _fetch_secret(cred.secret_arn, sm)
-    await verify_selected_user_credential(request, cred, revalidate=True)
-
-    # Upload to S3 and generate presigned URL.
-    bucket = settings.vault_materialization_bucket
-    if not bucket:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "not_configured",
-                "message": "BG_VAULT_MATERIALIZATION_BUCKET is not configured.",
-            },
-        )
-
-    s3_key = f"vault/materialize/{provenance_id}/{body.service}"
-    expiry_seconds = 300  # 5-minute window
-    expires_at = datetime.now(UTC) + timedelta(seconds=expiry_seconds)
-
-    def _upload_and_sign() -> str:
-        import boto3
-
-        s3 = boto3.client("s3", region_name=settings.aws_region)
-        s3.put_object(
-            Bucket=bucket,
-            Key=s3_key,
-            Body=secret_value.encode("utf-8"),
-            ContentType="application/octet-stream",
-        )
-        return s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": s3_key},
-            ExpiresIn=expiry_seconds,
-        )
-
-    materialize_url = await asyncio.to_thread(_upload_and_sign)
-
-    await _touch_last_used(cred.id, db)
-    await _write_audit(
-        db,
-        event_type="vault_credential_materialized",
-        org_id=user.org_id,
-        actor_id=body.agent_id,
-        details={
-            "provenance_id": provenance_id,
-            "user_id": body.user_id,
-            "authorized_user_id": effective_user_id,
-            "agent_id": body.agent_id,
-            "task_id": body.task_id,
-            "service": body.service,
-            "label": body.label,
-            "credential_id": cred.id,
-            **user_credential_audit(request),
-            "credential_type": cred.credential_type,
-            "s3_key": s3_key,
-            "invocation_id": body.invocation_id,
-            "binding_from_registry": binding.from_registry,
-            "binding_drift_detected": binding.drift_detected,
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "error": "credential_materialization_cleanup_unavailable",
+            "message": "Private file delivery requires a bound recipient and durable cleanup.",
         },
-    )
-    await db.commit()
-
-    logger.info(
-        "Credential materialized provenance_id=%s service=%s credential_type=%s",
-        provenance_id,
-        body.service,
-        cred.credential_type,
-    )
-    await verify_selected_user_credential(request, cred, revalidate=True)
-    return MaterializeResponse(
-        materialize_url=materialize_url,
-        expires_at=expires_at,
-        provenance_id=provenance_id,
     )
 
 
@@ -802,11 +880,11 @@ async def credential_raw_read(
 
     # Issue #3175: Credential-authorization binding (S2).
     # Resolve the effective user from the webhook-events registry.
-    binding = await asyncio.to_thread(
-        resolve_credential_binding,
-        verified_binding=getattr(request.state, "agent_credential_binding", None),
+    binding = resolve_broker_binding(
+        request,
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
+        agent_id=body.agent_id,
         settings=settings,
     )
     effective_user_id = binding.resolved_user_id
@@ -821,10 +899,12 @@ async def credential_raw_read(
         user_id=user.id,
         team_id=user.team_id,
     )
-    await verify_selected_user_credential(request, cred)
+    await verify_selected_user_credential(request, cred, db=db)
+    if await github_pat_retired(db, cred, grace_days=settings.github_pat_grace_days):
+        raise HTTPException(status_code=403, detail={"error": "github_pat_retired", "message": "Connect GitHub in Settings > Credentials."})
 
     secret_value = await _fetch_secret(cred.secret_arn, sm)
-    await verify_selected_user_credential(request, cred, revalidate=True)
+    await verify_selected_user_credential(request, cred, db=db, revalidate=True)
 
     await _touch_last_used(cred.id, db)
     await _write_audit(
@@ -858,7 +938,7 @@ async def credential_raw_read(
         body.agent_id,
         binding.from_registry,
     )
-    await verify_selected_user_credential(request, cred, revalidate=True)
+    await verify_selected_user_credential(request, cred, db=db, revalidate=True)
     return RawReadResponse(
         value=secret_value,
         credential_type=cred.credential_type,

@@ -1217,6 +1217,81 @@
       "capability_source": "/activity/invocations/{invocation_id}/agent/state"
     },
     {
+      "command": "adp agent recover-exit",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--audit-at",
+        "--audit-id",
+        "--dry-run",
+        "--expected-attempt",
+        "--expected-credential-epoch",
+        "--expected-workload-uid",
+        "--json",
+        "--operation-id",
+        "--run",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/reconcile-exit/**"
+        ],
+        "schema": "ExitRecoveryRequest; protected launch owner, unchanged attempt/epoch/workload and server-verified Kubernetes exit evidence"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; durable operation receipt preserves failed outcome and provider audit digest"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/activity/test_exit_recovery_routes.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": "/activity/invocations/{invocation_id}/reconcile-exit/preview"
+    },
+    {
+      "command": "adp agent recovery-status",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--operation-id",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/reconcile-exit/{operation_id}"
+        ],
+        "schema": "ExitRecoveryRequest; protected launch owner, unchanged attempt/epoch/workload and server-verified Kubernetes exit evidence"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; durable operation receipt preserves failed outcome and provider audit digest"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/activity/test_exit_recovery_routes.py"
+      ],
+      "required_capabilities": []
+    },
+    {
       "command": "adp agent state",
       "helper": "adp-agent.py",
       "status": "shipped",
@@ -1839,6 +1914,32 @@
       "required_capabilities": []
     },
     {
+      "command": "adp claude-desktop setup",
+      "helper": "adp",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--check",
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "local CLI contract"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope or documented local output"
+      },
+      "tests": [
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
       "command": "adp codex",
       "helper": "adp",
       "status": "shipped",
@@ -2286,6 +2387,42 @@
       ]
     },
     {
+      "command": "adp flow archive",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.approve.write",
+      "flags": [
+        "--json",
+        "--reason"
+      ],
+      "arguments": [
+        "flow_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "flows.approve.write"
+      ]
+    },
+    {
       "command": "adp flow cost",
       "helper": "adp-flow.py",
       "status": "shipped",
@@ -2554,6 +2691,7 @@
       "mutates": false,
       "operation": "flows.read",
       "flags": [
+        "--include-archived",
         "--json",
         "--limit",
         "--needs-me",
@@ -2663,6 +2801,8 @@
         "--issue",
         "--json",
         "--plan",
+        "--product",
+        "--project",
         "--reason",
         "--refine-only",
         "--repo",
@@ -2694,6 +2834,42 @@
       ],
       "required_capabilities": [
         "flows.draft.write"
+      ]
+    },
+    {
+      "command": "adp flow unarchive",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.approve.write",
+      "flags": [
+        "--json",
+        "--reason"
+      ],
+      "arguments": [
+        "flow_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "flows.approve.write"
       ]
     },
     {
@@ -2832,6 +3008,70 @@
       "response": {
         "stream": "single-json",
         "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_github.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "github.connection.read"
+      ]
+    },
+    {
+      "command": "adp github token",
+      "helper": "adp-github.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "github.connection.read",
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/auth/connections/oauth/github/token"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "bare token, or the adp_common JSON envelope with --json"
+      },
+      "tests": [
+        "tests/cli/test_adp_github.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "github.connection.read"
+      ]
+    },
+    {
+      "command": "adp github credential-helper",
+      "helper": "adp-github.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "github.connection.read",
+      "flags": [],
+      "arguments": [
+        "action"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/auth/connections/oauth/github/token"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "git credential protocol username/password lines, or nothing"
       },
       "tests": [
         "tests/cli/test_adp_github.py",
@@ -4608,6 +4848,8 @@
         "--json",
         "--key",
         "--max-events",
+        "--product",
+        "--project",
         "--seconds",
         "--timeout",
         "--token-file",
@@ -8858,6 +9100,278 @@
       ]
     },
     {
+      "command": "adp flow amendment accept",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.approve.write",
+      "flags": [
+        "--expect-base-hash",
+        "--expect-base-version",
+        "--expect-revision",
+        "--json",
+        "--reason",
+        "--yes"
+      ],
+      "arguments": [
+        "flow_id",
+        "draft_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "flows.approve.write"
+      ]
+    },
+    {
+      "command": "adp flow amendment edit",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.approve.write",
+      "flags": [
+        "--file",
+        "--json",
+        "--reason"
+      ],
+      "arguments": [
+        "flow_id",
+        "draft_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "flows.approve.write"
+      ]
+    },
+    {
+      "command": "adp flow amendment list",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "flows.read",
+      "flags": [
+        "--json",
+        "--state"
+      ],
+      "arguments": [
+        "flow_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/orchestration/**"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "flows.read"
+      ]
+    },
+    {
+      "command": "adp flow amendment preview",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "flows.read",
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "flow_id",
+        "draft_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "flows.read"
+      ]
+    },
+    {
+      "command": "adp flow amendment propose",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.approve.write",
+      "flags": [
+        "--anchor",
+        "--epic-ref",
+        "--file",
+        "--issue",
+        "--json",
+        "--kind",
+        "--placement",
+        "--precedes",
+        "--purpose",
+        "--ref",
+        "--rejoin-at",
+        "--request-text",
+        "--requires",
+        "--title",
+        "--wave-ref"
+      ],
+      "arguments": [
+        "flow_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "flows.approve.write"
+      ]
+    },
+    {
+      "command": "adp flow amendment reject",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.approve.write",
+      "flags": [
+        "--json",
+        "--reason",
+        "--yes"
+      ],
+      "arguments": [
+        "flow_id",
+        "draft_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "flows.approve.write"
+      ]
+    },
+    {
+      "command": "adp flow amendment show",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "flows.read",
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "flow_id",
+        "draft_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/orchestration/**"
+        ],
+        "schema": "helper parser and server route schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "flows.read"
+      ]
+    },
+    {
       "command": "adp admin gitlab configure",
       "helper": "adp-gitlab.py",
       "status": "shipped",
@@ -9046,6 +9560,36 @@
       ],
       "required_capabilities": [
         "gitlab.connection.write"
+      ]
+    },
+    {
+      "command": "adp gitlab setup",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "auth.session.read",
+      "flags": [],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/auth/gitlab-cli"
+        ],
+        "schema": "ADP purpose-bound assertion; native GitLab OAuth exchange"
+      },
+      "response": {
+        "stream": "human-text",
+        "schema": "Local setup result; credentials are never printed"
+      },
+      "tests": [
+        "tests/cli/test_gitlab_native_auth.py",
+        "tests/auth/test_gitlab_sso.py"
+      ],
+      "required_capabilities": [
+        "auth.session.read"
       ]
     },
     {
@@ -10183,6 +10727,2459 @@
       "tests": [
         "tests/cli/test_adp_chat.py",
         "tests/orchestration/test_chat_history.py"
+      ]
+    }
+    ,{
+      "command": "adp mcp",
+      "helper": "adp-mcp.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "tools.call",
+      "flags": ["--help"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET", "POST"], "paths": ["/agent/tools", "/agent/tools/call"], "schema": "Gateway tools façade"},
+      "response": {"stream": "json-rpc-stdio", "schema": "MCP initialize, tools/list and tools/call"},
+      "tests": ["tests/cli/test_adp_mcp.py"],
+      "required_capabilities": []
+    }
+    ,{
+      "command": "adp tools logout",
+      "helper": "adp",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "auth.cli.revoke",
+      "flags": [],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["POST"], "paths": ["/auth/cli/revoke"], "schema": "CLI refresh-token revocation"},
+      "response": {"stream": "human-text", "schema": "Logout confirmation or retryable failure"},
+      "tests": ["tests/cli/test_adp_mcp.py", "modules/gateway/tests/auth/test_cli_login.py"],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp tools status",
+      "helper": "adp",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": ["--json"],
+      "arguments": [],
+      "request": {"kind": "local", "methods": [], "paths": [], "schema": "Selected deployment CLI session"},
+      "response": {"stream": "human-text", "schema": "Token expiry"},
+      "tests": ["tests/cli/test_adp_mcp.py"],
+      "required_capabilities": []
+    }
+    ,{
+      "command": "adp mcp operations",
+      "helper": "adp-mcp.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [],
+      "arguments": [],
+      "request": {"kind": "local", "methods": [], "paths": [], "schema": "Private operation records"},
+      "response": {"stream": "single-json", "schema": "Stored operation references without tool inputs"},
+      "tests": ["tests/cli/test_adp_mcp.py"],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp devbox ssh",
+      "helper": "adp-devbox.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "devbox.ssh.access",
+      "flags": [],
+      "arguments": ["box"],
+      "request": {
+        "kind": "http",
+        "methods": ["GET", "POST"],
+        "paths": ["/cloud-desktops", "/cloud-desktops/{desktop_id}/ssh-access"],
+        "schema": "Owner-scoped box selection and temporary grant"
+      },
+      "response": {"stream": "human-text", "schema": "Interactive SSH session via alias"},
+      "tests": ["tests/cli/test_adp_devbox.py", "tests/cloud_desktop/test_routes.py"],
+      "required_capabilities": ["devbox.ssh.access"]
+    },
+    {
+      "command": "adp devbox ssh-config",
+      "helper": "adp-devbox.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "devbox.ssh.access",
+      "flags": [],
+      "arguments": ["box"],
+      "request": {
+        "kind": "http",
+        "methods": ["GET"],
+        "paths": ["/cloud-desktops"],
+        "schema": "Owner-scoped box selection, then local SSH configuration"
+      },
+      "response": {"stream": "human-text", "schema": "SSH host alias"},
+      "tests": ["tests/cli/test_adp_devbox.py"],
+      "required_capabilities": ["devbox.ssh.access"]
+    },
+    {
+      "command": "adp credential host-setup",
+      "helper": "adp-native-credentials.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Dedicated native-human issuer routes; browser-only selection approval"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Nonsecret original delivery IDs/status in adp_common envelope; no credentials or encrypted envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_native_credentials.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "authentication": "native-cli-human-with-separate-browser-selection",
+      "capability_source": "/auth/native-credentials/config"
+    },
+    {
+      "command": "adp credential delivery-status",
+      "helper": "adp-native-credentials.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--json",
+        "--request-id"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/auth/native-credentials/**"
+        ],
+        "schema": "Dedicated native-human issuer routes; browser-only selection approval"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Nonsecret original delivery IDs/status in adp_common envelope; no credentials or encrypted envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_native_credentials.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "authentication": "native-cli-human-with-separate-browser-selection",
+      "capability_source": "/auth/native-credentials/config"
+    },
+    {
+      "command": "adp credential use",
+      "helper": "adp-native-credentials.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--credential-id",
+        "--cwd",
+        "--json",
+        "--label",
+        "--no-browser",
+        "--operation",
+        "--purpose",
+        "--request-id",
+        "--service",
+        "--use-seconds"
+      ],
+      "arguments": [
+        "command"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/auth/native-credentials/**"
+        ],
+        "schema": "Dedicated native-human issuer routes; browser-only selection approval"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Nonsecret original delivery IDs/status in adp_common envelope; no credentials or encrypted envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_native_credentials.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "authentication": "native-cli-human-with-separate-browser-selection",
+      "capability_source": "/auth/native-credentials/config"
+    },
+    {
+      "command": "adp credential host-register",
+      "helper": "adp-native-credential-host.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--profile",
+        "--credential-id",
+        "--service",
+        "--label",
+        "--operation",
+        "--cwd",
+        "--use-seconds",
+        "--json"
+      ],
+      "arguments": [
+        "command"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/auth/native-credentials/**"
+        ],
+        "schema": "Human-selected immutable recipient profile and native authenticated Unix coordinator"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Nonsecret profile metadata or coordinator readiness; private delivery requires browser approval"
+      },
+      "tests": [
+        "tests/cli/test_native_credential_handoff.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "authentication": "native-cli-human-with-separate-browser-selection",
+      "capability_source": "/auth/native-credentials/config"
+    },
+    {
+      "command": "adp credential host-serve",
+      "helper": "adp-native-credential-host.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--profile",
+        "--no-browser"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/auth/native-credentials/**"
+        ],
+        "schema": "Human-selected immutable recipient profile and native authenticated Unix coordinator"
+      },
+      "response": {
+        "stream": "human-text",
+        "schema": "Nonsecret profile metadata or coordinator readiness; private delivery requires browser approval"
+      },
+      "tests": [
+        "tests/cli/test_native_credential_handoff.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "authentication": "native-cli-human-with-separate-browser-selection",
+      "capability_source": "/auth/native-credentials/config"
+    },
+    {
+      "command": "adp insights context show",
+      "helper": "adp-insights.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "insights.context.read",
+      "flags": [
+        "--as-of",
+        "--cursor",
+        "--json",
+        "--portfolio",
+        "--product",
+        "--project"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/engineering-insights/v1/projects/{project_id}/results"
+        ],
+        "schema": "results/1.0 business_context"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope containing results/1.0"
+      },
+      "required_capabilities": [
+        "insights.context.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_insights.py",
+        "tests/cli/test_command_manifest.py"
+      ]
+    },
+    {
+      "command": "adp onboard start",
+      "helper": "adp-onboard.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "onboard.start",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--revision"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST",
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/onboarding-sessions",
+          "/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}"
+        ],
+        "schema": "Scoped Product onboarding Session and revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Saved session in CLI envelope"
+      },
+      "required_capabilities": [
+        "product.update"
+      ],
+      "tests": [
+        "tests/products/test_i07_cli.py"
+      ]
+    },
+    {
+      "command": "adp onboard resume",
+      "helper": "adp-onboard.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "onboard.resume",
+      "flags": [
+        "--idempotency-key",
+        "--json",
+        "--product",
+        "--project",
+        "--revision",
+        "--session"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}",
+          "/v1/products/{product_id}/projects/{project_id}/onboarding-sessions"
+        ],
+        "schema": "Scoped Product onboarding Session and revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Saved session in CLI envelope"
+      },
+      "required_capabilities": [
+        "product.update"
+      ],
+      "tests": [
+        "tests/products/test_i07_cli.py"
+      ]
+    },
+    {
+      "command": "adp onboard retry",
+      "helper": "adp-onboard.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "onboard.retry",
+      "flags": ["--idempotency-key", "--json", "--product", "--project", "--revision", "--session", "--operation"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET", "POST"], "paths": ["/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}", "/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}/discoveries"], "schema": "Scoped session readback and revision-safe recovery"},
+      "response": {"stream": "single-json", "schema": "Saved session in CLI envelope"},
+      "required_capabilities": ["product.update"],
+      "tests": ["tests/products/test_i07_cli.py"]
+    },
+    {
+      "command": "adp onboard unlink",
+      "helper": "adp-onboard.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "onboard.unlink",
+      "flags": ["--idempotency-key", "--json", "--product", "--project", "--revision", "--session", "--binding"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET", "DELETE"], "paths": ["/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}", "/v1/products/{product_id}/projects/{project_id}/bindings/{binding_id}"], "schema": "Scoped session readback and revision-safe recovery"},
+      "response": {"stream": "single-json", "schema": "Saved session in CLI envelope"},
+      "required_capabilities": ["product.update"],
+      "tests": ["tests/products/test_i07_cli.py"]
+    },
+    {
+      "command": "adp onboard guide",
+      "helper": "adp-onboard.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "onboard.guide",
+      "flags": ["--idempotency-key", "--input", "--json", "--mode", "--product", "--project", "--revision", "--session"],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": ["POST"],
+        "paths": ["/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}/guidance"],
+        "schema": "GuidanceRequest"
+      },
+      "response": {"stream": "single-json", "schema": "Guidance in CLI envelope"},
+      "required_capabilities": ["product.update"],
+      "tests": ["tests/products/test_i11.py", "tests/cli/test_command_manifest.py"]
+    },
+    {
+      "command": "adp onboard step",
+      "helper": "adp-onboard.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "onboard.step",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--revision",
+        "--section",
+        "--session"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "PUT"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}/steps/{step_id}"
+        ],
+        "schema": "Scoped Product onboarding Session and revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Saved session in CLI envelope"
+      },
+      "required_capabilities": [
+        "product.update"
+      ],
+      "tests": [
+        "tests/products/test_i07_cli.py"
+      ]
+    },
+    {
+      "command": "adp product list",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "product.list",
+      "flags": ["--cursor", "--json", "--limit"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET"], "paths": ["/v1/products"], "schema": "Tenant-scoped Product list and cursor"},
+      "response": {"stream": "single-json", "schema": "Product summaries and next cursor in CLI envelope"},
+      "required_capabilities": ["product.list"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp product budget show",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": ["--json", "--product", "--project"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET"], "paths": ["/v1/projects/{project_id}/budget"], "schema": "Owner-visible Project budget and per-flow spend"},
+      "response": {"stream": "single-json", "schema": "Budget, accounting, and cap status in CLI envelope"},
+      "required_capabilities": [],
+      "tests": ["tests/cli/test_adp_product_budget.py"]
+    },
+    {
+      "command": "adp product budget set",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": ["--budget-usd", "--json", "--product", "--project", "--reason"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["PUT"], "paths": ["/v1/projects/{project_id}/budget"], "schema": "Project cap and audited reason header"},
+      "response": {"stream": "single-json", "schema": "Saved Project budget in CLI envelope"},
+      "authentication": "project-budget-owner",
+      "required_capabilities": [],
+      "tests": ["tests/cli/test_adp_product_budget.py"]
+    },
+    {
+      "command": "adp product create",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "product.create",
+      "flags": ["--existing-project", "--idempotency-key", "--input", "--intended-user", "--json", "--name", "--new-project", "--owner", "--purpose", "--starting-point", "--team"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["POST"], "paths": ["/v1/products"], "schema": "Typed Product create and Idempotency-Key"},
+      "response": {"stream": "single-json", "schema": "Created Product and Project IDs and profile in CLI envelope"},
+      "required_capabilities": ["product.create"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp product sources",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "product.show",
+      "flags": ["--connection-id", "--connection-kind", "--cursor", "--json", "--limit", "--product", "--project", "--resource-cursor"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET"], "paths": ["/v1/products/{product_id}/projects/{project_id}/sources"], "schema": "Authorized source listing or selected connection's bounded resources"},
+      "response": {"stream": "single-json", "schema": "Coverage, available native references and next prerequisite in CLI envelope"},
+      "required_capabilities": ["product.show"],
+      "tests": ["tests/products/test_i10.py"]
+    },
+    {
+      "command": "adp product source-bindings",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "product.show",
+      "flags": ["--cursor", "--json", "--limit", "--product", "--project"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET"], "paths": ["/v1/products/{product_id}/projects/{project_id}/bindings"], "schema": "Project-scoped accessible and restricted source bindings"},
+      "response": {"stream": "single-json", "schema": "Current selection and status or redacted restricted binding in CLI envelope"},
+      "required_capabilities": ["product.show"],
+      "tests": ["tests/products/test_i10.py"]
+    },
+    {
+      "command": "adp product source-bind",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "product.update",
+      "flags": ["--idempotency-key", "--input", "--json", "--product", "--project", "--revision"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["POST"], "paths": ["/v1/products/{product_id}/projects/{project_id}/bindings"], "schema": "Selected native binding, Idempotency-Key and If-Profile-Revision"},
+      "response": {"stream": "single-json", "schema": "Project-scoped source binding in CLI envelope"},
+      "required_capabilities": ["product.update"],
+      "tests": ["tests/products/test_i10.py"]
+    },
+    {
+      "command": "adp product source-verify",
+      "helper": "adp-product.py", "status": "shipped", "mutates": true,
+      "operation": "product.update",
+      "flags": ["--binding", "--idempotency-key", "--json", "--product", "--project", "--revision"], "arguments": [],
+      "request": {"kind": "http", "methods": ["POST"], "paths": ["/v1/products/{product_id}/projects/{project_id}/bindings/{binding_id}/verify"], "schema": "Selected binding verification with revision and idempotency key"},
+      "response": {"stream": "single-json", "schema": "Verification operation receipt; read the operation and binding to confirm health"},
+      "required_capabilities": ["product.update"], "tests": ["tests/cli/test_adp_product_profile_providers.py"]
+    },
+    {
+      "command": "adp product source-session",
+      "helper": "adp-product.py", "status": "shipped", "mutates": true,
+      "operation": "product.update",
+      "flags": ["--idempotency-key", "--json", "--product", "--project", "--revision", "--session"], "arguments": [],
+      "request": {"kind": "http", "methods": ["GET", "POST"], "paths": ["/v1/products/{product_id}/projects/{project_id}/onboarding-sessions", "/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}"], "schema": "Start or read an authorized Profile onboarding session"},
+      "response": {"stream": "single-json", "schema": "Saved session and current Profile revision"},
+      "required_capabilities": ["product.update"], "tests": ["tests/cli/test_adp_product_profile_providers.py"]
+    },
+    {
+      "command": "adp product source-discover",
+      "helper": "adp-product.py", "status": "shipped", "mutates": true,
+      "operation": "product.update",
+      "flags": ["--binding", "--cursor", "--idempotency-key", "--json", "--product", "--project", "--revision", "--session"], "arguments": [],
+      "request": {"kind": "http", "methods": ["GET", "POST"], "paths": ["/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}", "/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}/discoveries"], "schema": "Selected binding IDs and optional continuation through the DevLake adapter"},
+      "response": {"stream": "single-json", "schema": "Scoped discovery operation with coverage, typed resources and optional cursor"},
+      "required_capabilities": ["product.update"], "tests": ["tests/cli/test_adp_product_profile_providers.py"]
+    },
+    {
+      "command": "adp product source-operation",
+      "helper": "adp-product.py", "status": "shipped", "mutates": false,
+      "operation": "product.show",
+      "flags": ["--json", "--operation", "--product", "--project"], "arguments": [],
+      "request": {"kind": "http", "methods": ["GET"], "paths": ["/v1/products/{product_id}/projects/{project_id}/operations/{operation_id}"], "schema": "Read back a scoped verification or discovery operation"},
+      "response": {"stream": "single-json", "schema": "Current operation state and coverage"},
+      "required_capabilities": ["product.show"], "tests": ["tests/cli/test_adp_product_profile_providers.py"]
+    },
+    {
+      "command": "adp product source-apply",
+      "helper": "adp-product.py", "status": "shipped", "mutates": true,
+      "operation": "product.update",
+      "flags": ["--idempotency-key", "--json", "--operation", "--product", "--project", "--revision", "--session"], "arguments": [],
+      "request": {"kind": "http", "methods": ["GET", "POST"], "paths": ["/v1/products/{product_id}/projects/{project_id}/operations/{operation_id}", "/v1/products/{product_id}/projects/{project_id}/onboarding-sessions/{session_id}/source-enrichment", "/v1/products/{product_id}/projects/{project_id}"], "schema": "Apply completed served discovery under current Profile revision"},
+      "response": {"stream": "single-json", "schema": "Apply receipt checked against saved Profile references"},
+      "required_capabilities": ["product.update"], "tests": ["tests/cli/test_adp_product_profile_providers.py"]
+    },
+    {
+      "command": "adp product show",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "product.show",
+      "flags": ["--json", "--product", "--project", "--revision"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET"], "paths": ["/v1/products/{product_id}/projects/{project_id}", "/v1/products/{product_id}/projects/{project_id}/revisions/{revision}"], "schema": "Exact Product and Project scope"},
+      "response": {"stream": "single-json", "schema": "Scoped Product profile in CLI envelope"},
+      "required_capabilities": ["product.show"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp product history",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "product.history",
+      "flags": ["--cursor", "--json", "--limit", "--product", "--project"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET"], "paths": ["/v1/products/{product_id}/projects/{project_id}/changes"], "schema": "Scoped Product change feed and opaque cursor"},
+      "response": {"stream": "single-json", "schema": "Authorized immutable change references and next cursor in CLI envelope"},
+      "required_capabilities": ["product.history"],
+      "tests": ["tests/products/test_i04.py", "tests/products/test_i16.py"]
+    },
+    {
+      "command": "adp product update",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "product.update",
+      "flags": ["--idempotency-key", "--input", "--json", "--product", "--project", "--revision"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["PATCH"], "paths": ["/v1/products/{product_id}/projects/{project_id}"], "schema": "Typed Product patch, Idempotency-Key and If-Profile-Revision"},
+      "response": {"stream": "single-json", "schema": "Updated Product profile in CLI envelope"},
+      "required_capabilities": ["product.update"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp product lifecycle",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "product.lifecycle",
+      "flags": ["--action", "--idempotency-key", "--json", "--product", "--project", "--reason", "--revision", "--yes"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["POST"], "paths": ["/v1/products/{product_id}/projects/{project_id}/lifecycle"], "schema": "Archive or restore, Idempotency-Key and If-Profile-Revision"},
+      "response": {"stream": "single-json", "schema": "Archived or restored Product profile in CLI envelope"},
+      "required_capabilities": ["product.lifecycle"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp product project bindings",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "product.project.bindings",
+      "flags": ["--json", "--product", "--project"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET"], "paths": ["/v1/products/{product_id}/projects/{project_id}/bindings"], "schema": "Authorized dated Project binding history"},
+      "response": {"stream": "single-json", "schema": "Binding version IDs in CLI envelope"},
+      "required_capabilities": ["product.project.bindings"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp product project list",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "product.project.list",
+      "flags": ["--cursor","--json","--limit"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["GET"], "paths": ["/v1/projects"], "schema": "Authorized governed Projects and pagination cursor"},
+      "response": {"stream": "single-json", "schema": "Authorized governed Projects and pagination cursor in CLI envelope"},
+      "required_capabilities": ["product.project.list"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp product project bind",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "product.project.bind",
+      "flags": ["--idempotency-key","--input","--json","--product","--revision"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["POST"], "paths": ["/v1/products/{product_id}/projects"], "schema": "Bound Product and Project IDs with profile revision"},
+      "response": {"stream": "single-json", "schema": "Bound Product and Project IDs with profile revision in CLI envelope"},
+      "required_capabilities": ["product.project.bind"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp product project update",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "product.project.update",
+      "flags": ["--idempotency-key","--input","--json","--product","--project","--revision"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["PATCH"], "paths": ["/v1/products/{product_id}/projects/{project_id}/configuration"], "schema": "Updated Project configuration and profile revision"},
+      "response": {"stream": "single-json", "schema": "Updated Project configuration and profile revision in CLI envelope"},
+      "required_capabilities": ["product.project.update"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp product project unbind",
+      "helper": "adp-product.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "product.project.unbind",
+      "flags": ["--idempotency-key","--json","--product","--project","--revision","--yes"],
+      "arguments": [],
+      "request": {"kind": "http", "methods": ["DELETE"], "paths": ["/v1/products/{product_id}/projects/{project_id}"], "schema": "Remaining scoped Product profile; unlinked Project is retained"},
+      "response": {"stream": "single-json", "schema": "Remaining scoped Product profile; unlinked Project is retained in CLI envelope"},
+      "required_capabilities": ["product.project.unbind"],
+      "tests": ["tests/products/test_i04.py"]
+    },
+    {
+      "command": "adp service list",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service options",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/configuration/options"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service check",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--observation-effect",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/configuration/check"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service config show",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/configuration"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service config history",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/configuration/versions"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service config version",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--revision",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/configuration/versions/{revision}"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service config update",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--if-match",
+        "--if-none-match",
+        "--input",
+        "--json",
+        "--observation-effect",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "PUT"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/configuration"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service config refresh",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--if-match",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/configuration/refresh"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding list",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/bindings"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding show",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--binding-id",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/bindings/{binding_id}"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding status",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--operation-id",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations/{operation_id}"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding create",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py",
+        "tests/cli/test_devops_service.py"
+      ]
+    },
+    {
+      "command": "adp service binding link",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding check",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--if-match",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding update",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--if-match",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding suspend",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--if-match",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding resume",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--if-match",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding unlink",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--if-match",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding cleanup",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--if-match",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service binding reconcile",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--operation-id",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/binding-operations/{operation_id}/reconcile"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service run",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--observation-effect",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/runs"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service runs",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--cursor",
+        "--json",
+        "--limit",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/runs"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service status",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--run-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/runs/{run_id}"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service results",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--cursor",
+        "--json",
+        "--limit",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/results"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service findings",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--result-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/results/{result_id}/findings"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service wait",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--poll-seconds",
+        "--product",
+        "--project",
+        "--run-id",
+        "--service",
+        "--wait-seconds"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/runs/{run_id}",
+          "/v1/products/{product_id}/projects/{project_id}/services/transform/results",
+          "/v1/products/{product_id}/projects/{project_id}/services/transform/results/{result_id}"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service cancel",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--run-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/runs/{run_id}/cancel"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service reconcile",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--run-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/runs/{run_id}/reconcile"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service retry",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--run-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/runs/{run_id}/retry"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service result show",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--result-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/results/{result_id}"
+        ],
+        "schema": "Scoped L5 service v1; keyed mutation and bounded readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or run receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service result publication",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--result-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/results/{result_id}",
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/results/{result_id}/publication-status"
+        ],
+        "schema": "Scoped L5 service v1; authorized result and revision-bound publication status readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Revision-bound result publication status in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_well_architected_service.py"
+      ]
+    },
+    {
+      "command": "adp service binding events",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--binding-id",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/bindings/{binding_id}/events"
+        ],
+        "schema": "Scoped L5 service v1; conditional mutation and authorized readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or local artifact receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service triage set",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--finding-id",
+        "--if-match",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--result-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "PUT"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/results/{result_id}/findings/{finding_id}/triage"
+        ],
+        "schema": "Scoped L5 service v1; conditional mutation and authorized readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or local artifact receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service triage history",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--finding-id",
+        "--json",
+        "--product",
+        "--project",
+        "--result-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/results/{result_id}/findings/{finding_id}/triage"
+        ],
+        "schema": "Scoped L5 service v1; conditional mutation and authorized readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or local artifact receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service compare",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/comparisons"
+        ],
+        "schema": "Scoped L5 service v1; conditional mutation and authorized readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or local artifact receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service publication show",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--publication-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/publications/{publication_id}"
+        ],
+        "schema": "Scoped L5 service v1; conditional mutation and authorized readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or local artifact receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py",
+        "tests/cli/test_devops_service.py"
+      ]
+    },
+    {
+      "command": "adp service publication retry",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--idempotency-key",
+        "--input",
+        "--json",
+        "--product",
+        "--project",
+        "--publication-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/publications/{publication_id}/retry"
+        ],
+        "schema": "Scoped L5 service v1; conditional mutation and authorized readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or local artifact receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service prevention status",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": ["--binding-id", "--json", "--product", "--project", "--service"],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": ["GET"],
+        "paths": ["/v1/products/{product_id}/projects/{project_id}/services/{service_id}/bindings/{binding_id}/prevention"],
+        "schema": "Scoped DevOps prevention status"
+      },
+      "response": {"stream": "single-json", "schema": "Prevention status in CLI JSON envelope"},
+      "required_capabilities": ["service.read"],
+      "tests": ["tests/cli/test_devops_service.py"]
+    },
+    {
+      "command": "adp service prevention configure",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": ["--binding-id", "--idempotency-key", "--if-match", "--input", "--json", "--product", "--project", "--service"],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": ["POST"],
+        "paths": ["/v1/products/{product_id}/projects/{project_id}/services/{service_id}/bindings/{binding_id}/prevention"],
+        "schema": "Scoped DevOps prevention input with conditional headers"
+      },
+      "response": {"stream": "single-json", "schema": "Prevention status in CLI JSON envelope"},
+      "required_capabilities": ["service.mutate"],
+      "tests": ["tests/cli/test_devops_service.py"]
+    },
+    {
+      "command": "adp service artifact show",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--artifact-id",
+        "--json",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/artifacts/{artifact_id}"
+        ],
+        "schema": "Scoped L5 service v1; conditional mutation and authorized readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or local artifact receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service artifact download",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--artifact-id",
+        "--json",
+        "--output",
+        "--product",
+        "--project",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/artifacts/{artifact_id}",
+          "/v1/products/{product_id}/projects/{project_id}/services/{service_id}/artifacts/{artifact_id}/content"
+        ],
+        "schema": "Scoped L5 service v1; conditional mutation and authorized readback"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response or local artifact receipt in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service evidence-receipt",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "service.read",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--receipt-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/security/release-evidence/edits/{receipt_id}"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.read"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp service evidence-register",
+      "helper": "adp-service.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "service.mutate",
+      "flags": [
+        "--json",
+        "--product",
+        "--project",
+        "--request-id",
+        "--service"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/products/{product_id}/projects/{project_id}/services/security/release-evidence/requests/{request_id}/credentials"
+        ],
+        "schema": "Scoped L5 service v1; conditional headers and input JSON for mutations"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "Service response in CLI JSON envelope"
+      },
+      "required_capabilities": [
+        "service.mutate"
+      ],
+      "tests": [
+        "tests/cli/test_l5_security.py"
+      ]
+    },
+    {
+      "command": "adp knowledge storage show",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--product"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/agent-context/products/{product_id}/storage"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_context_storage.py"
+      ]
+    },
+    {
+      "command": "adp knowledge storage configure",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--encryption",
+        "--json",
+        "--kms-key-arn",
+        "--product",
+        "--revision",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/agent-context/products/{product_id}/storage",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_context_storage.py"
+      ]
+    },
+    {
+      "command": "adp knowledge storage upload",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--file",
+        "--json",
+        "--product",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PUT"
+        ],
+        "paths": [
+          "/agent-context/products/{product_id}/storage/uploads",
+          "/agent-context/products/{product_id}/storage/uploads/{upload_id}/complete",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_context_storage.py"
+      ]
+    },
+    {
+      "command": "adp knowledge storage complete",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--product",
+        "--upload-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/agent-context/products/{product_id}/storage/uploads/{upload_id}/complete",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_context_storage.py"
+      ]
+    },
+    {
+      "command": "adp knowledge storage download",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--asset-id",
+        "--json",
+        "--output",
+        "--product"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST",
+          "GET"
+        ],
+        "paths": [
+          "/agent-context/products/{product_id}/storage/assets/{asset_id}/download"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_context_storage.py"
       ]
     }
   ]

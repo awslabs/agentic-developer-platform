@@ -51,6 +51,16 @@ output "oidc_issuer_url" {
 }
 
 # Gateway Service IRSA Role
+output "tools_reconciler_irsa_role_arn" {
+  description = "IRSA role for the independently scheduled tools deadline fence"
+  value       = aws_iam_role.tools_reconciler_irsa.arn
+}
+
+output "tools_facade_irsa_role_arn" {
+  description = "Dedicated tools façade service account role ARN."
+  value       = aws_iam_role.tools_facade_irsa.arn
+}
+
 output "gateway_service_irsa_role_arn" {
   description = "ARN of the gateway service IRSA role (for Bedrock access)"
   value       = aws_iam_role.gateway_service_irsa.arn

@@ -4,7 +4,7 @@ from tests.migrations.conftest_postgres import downgrade, upgrade
 
 
 def test_audit_survives_code_rollback_and_reupgrade(pg_url, connect):
-    upgrade(pg_url, "head")
+    upgrade(pg_url, "079_budget_pricing_corrections")
     connection = connect()
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -19,4 +19,8 @@ def test_audit_survives_code_rollback_and_reupgrade(pg_url, connect):
         cursor.execute("SELECT org_id,request_id,credit_usd,actor FROM budget_pricing_corrections")
         from decimal import Decimal
 
+        assert cursor.fetchall() == [("tenant", "request", Decimal("0.500000"), "operator")]
+    upgrade(pg_url, "head")
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT org_id,request_id,credit_usd,actor FROM budget_pricing_corrections")
         assert cursor.fetchall() == [("tenant", "request", Decimal("0.500000"), "operator")]

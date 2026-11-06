@@ -42,7 +42,7 @@ DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
 ADP_SCRIPT="adp"
 CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py adp-machine.py adp-knowledge.py adp-gitlab.py adp-superplane-research.py adp-platform.py adp-superplane-lifecycle.py adp-chat.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py adp-machine.py adp-knowledge.py adp_context_storage.py adp-product.py adp-onboard.py adp-insights.py adp-service.py adp-gitlab.py adp_gitlab_auth.py adp-superplane-research.py adp-platform.py adp-superplane-lifecycle.py adp-chat.py adp-mcp.py adp_mcp_config.py adp_skills.py adp_native_test.py adp-devbox.py adp-native-credentials.py adp_private_credentials.py native-host-requirements.txt adp-native-credential-host.py adp_native_credential_handoff.py"
 
 # The auth store this install writes its gateway URL into.
 #
@@ -62,6 +62,9 @@ CONFIG_FILE="${CONFIG_DIR}/config.json"
 # `--rollback --to <v>` can be version-explicit rather than "one generation back".
 VERSION_PIN="${ADP_VERSION_PIN:-}"
 MANIFEST_FILE_NAME=".adp-manifest.json"
+SKILLS_ARCHIVE="adp-skills.tar.gz"
+SKILLS_SHA=""
+SKILLS_VERSION=""
 
 INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
 GATEWAY_URL="${ADP_GATEWAY_URL:-}"
@@ -243,6 +246,7 @@ cleanup_staged() {
     for f in ${STAGED_TMPS}; do
         rm -f "${f}"
     done
+    [ -z "${SKILLS_STAGE:-}" ] || rm -rf "${SKILLS_STAGE}"
 }
 
 # Reject a "download" that isn't actually one of our artifacts. A misrouted request
@@ -270,6 +274,14 @@ validate_staged() {
         return 0
     fi
     first_line=$(head -n 1 "${tmp}" 2>/dev/null || true)
+    if [ "${name}" = "native-host-requirements.txt" ]; then
+        if ! python3 -I -c 'import hashlib, pathlib, sys; sys.exit(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest() != sys.argv[2])' \
+            "${tmp}" "47a3239cee60375dec62f1c29165cff9c65f288f5bb578557a42fabd83bbb21a"; then
+            log_error "Downloaded ${name} is not a pinned native runtime. Nothing was installed."
+            exit 1
+        fi
+        return 0
+    fi
     case "${first_line}" in
         "#!"*) : ;;
         *)
@@ -326,6 +338,90 @@ staged_adp_version() {
     sed -n 's/^readonly ADP_VERSION="\([^"]*\)".*/\1/p' "${INSTALL_DIR}/.${ADP_SCRIPT}.tmp.$$" 2>/dev/null | head -n 1
 }
 
+stage_skills() {
+    case "${INSTALL_DIR}" in
+        */bin) SKILLS_ROOT="${INSTALL_DIR%/bin}/skills" ;;
+        *) SKILLS_ROOT="${INSTALL_DIR}/skills" ;;
+    esac
+    archive_tmp="${INSTALL_DIR}/.${SKILLS_ARCHIVE}.tmp.$$"
+    checksum_tmp="${INSTALL_DIR}/.${SKILLS_ARCHIVE}.sha256.tmp.$$"
+    STAGED_TMPS="${STAGED_TMPS} ${archive_tmp} ${checksum_tmp}"
+    src_dir=$(script_dir)
+    if [ -f "${src_dir}/${SKILLS_ARCHIVE}" ] && [ -f "${src_dir}/${SKILLS_ARCHIVE}.sha256" ]; then
+        cp -f "${src_dir}/${SKILLS_ARCHIVE}" "${archive_tmp}"
+        cp -f "${src_dir}/${SKILLS_ARCHIVE}.sha256" "${checksum_tmp}"
+    else
+        if ! curl -fsSL --connect-timeout 3 --max-time 8 "${GATEWAY_URL}/cli/${SKILLS_ARCHIVE}.sha256" -o "${checksum_tmp}" 2>/dev/null; then
+            log_warn "Skills archive not served by this deployment; CLI setup will continue without bundled skills."
+            return 0
+        fi
+        if ! curl -fsSL --connect-timeout 3 --max-time 8 "${GATEWAY_URL}/cli/${SKILLS_ARCHIVE}" -o "${archive_tmp}"; then
+            log_error "Could not download ${SKILLS_ARCHIVE}; nothing was installed."
+            exit 1
+        fi
+    fi
+
+    SKILLS_STAGE="${SKILLS_ROOT}.tmp.$$"
+    mkdir -p "${SKILLS_STAGE}"
+    if ! SKILLS_SHA=$(python3 -I - "${archive_tmp}" "${checksum_tmp}" "${SKILLS_STAGE}" <<'VERIFY_SKILLS'
+import hashlib
+import json
+import pathlib
+import re
+import shutil
+import sys
+import tarfile
+
+archive, checksum_file, destination = map(pathlib.Path, sys.argv[1:])
+match = re.fullmatch(r"([0-9a-f]{64})(?:  adp-skills\.tar\.gz)?", checksum_file.read_text().strip())
+if not match:
+    raise SystemExit("invalid skills archive checksum file")
+if archive.stat().st_size > 1024 * 1024:
+    raise SystemExit("skills archive exceeds 1 MiB")
+digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+if digest != match.group(1):
+    raise SystemExit("skills archive checksum mismatch")
+
+seen = set()
+size = 0
+with tarfile.open(archive, "r:gz") as contents:
+    for member in contents:
+        path = pathlib.PurePosixPath(member.name)
+        if member.name.startswith("/") or not path.parts or any(part in (".", "..") for part in path.parts):
+            raise SystemExit("unsafe skills archive path")
+        if member.isdir():
+            continue
+        if not member.isfile() or member.name in seen:
+            raise SystemExit("unsafe skills archive entry")
+        seen.add(member.name)
+        size += member.size
+        if size > 4 * 1024 * 1024:
+            raise SystemExit("skills archive exceeds unpacked limit")
+        target = destination.joinpath(*(path.parts[1:] if path.parts[0] == "skills" else path.parts))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with contents.extractfile(member) as source, target.open("wb") as output:
+            shutil.copyfileobj(source, output)
+
+manifest = json.loads((destination / "MANIFEST.json").read_text())
+if not isinstance(manifest.get("version"), str) or not manifest["version"]:
+    raise SystemExit("skills archive has no version")
+if not isinstance(manifest.get("skills"), list):
+    raise SystemExit("skills archive has no skills list")
+for skill in manifest["skills"]:
+    name = skill.get("name")
+    if not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*", name):
+        raise SystemExit("skills archive has an invalid skill name")
+    if not (destination / name / "SKILL.md").is_file():
+        raise SystemExit("skills archive is missing a skill")
+print(digest)
+VERIFY_SKILLS
+    ); then
+        log_error "Could not verify or unpack skills archive; nothing was installed."
+        exit 1
+    fi
+    SKILLS_VERSION=$(jq -r '.version' "${SKILLS_STAGE}/MANIFEST.json")
+}
+
 # Record what this install actually landed, so a later `adp update --to <v>` /
 # `--rollback --to <v>` can verify a version rather than trusting a filename.
 # Not a secret and not a session: plain metadata beside the binaries.
@@ -337,7 +433,9 @@ write_manifest() {
     fi
     tmp=$(mktemp "${INSTALL_DIR}/${MANIFEST_FILE_NAME}.XXXXXX")
     jq -n --arg v "${installed_version}" --arg p "${previous_version}" --arg url "${GATEWAY_URL}" \
-        '{version: $v, previous_version: $p, gateway_url: $url}' > "${tmp}"
+        --arg sv "${SKILLS_VERSION}" --arg ss "${SKILLS_SHA}" \
+        '{version: $v, previous_version: $p, gateway_url: $url}
+         + (if $ss == "" then {} else {skills: {version: $sv, sha256: $ss}} end)' > "${tmp}"
     chmod 644 "${tmp}"
     mv -f "${tmp}" "${INSTALL_DIR}/${MANIFEST_FILE_NAME}"
 }
@@ -368,8 +466,32 @@ do_install() {
         exit 1
     fi
 
+    stage_skills
+
+    if [ "${KEEP_PREVIOUS}" = "1" ]; then
+        rm -rf "${SKILLS_ROOT}.prev"
+        rm -f "${SKILLS_ROOT}.prev.absent"
+        if [ -d "${SKILLS_ROOT}" ]; then
+            cp -RP "${SKILLS_ROOT}" "${SKILLS_ROOT}.prev"
+        else
+            : > "${SKILLS_ROOT}.prev.absent"
+        fi
+    fi
+
     for name in ${CLI_FILES}; do commit_file "${name}"; done
 
+    if [ -n "${SKILLS_SHA}" ]; then
+        mkdir -p "$(dirname "${SKILLS_ROOT}")"
+        rm -rf "${SKILLS_ROOT}"
+        mv -f "${SKILLS_STAGE}" "${SKILLS_ROOT}"
+        rm -f "${archive_tmp}" "${checksum_tmp}"
+        SKILLS_STAGE=""
+        log_success "Installed ${SKILLS_ROOT} (${SKILLS_VERSION})"
+    fi
+
+    if [ "${KEEP_PREVIOUS}" = "1" ] && [ -f "${INSTALL_DIR}/${MANIFEST_FILE_NAME}" ]; then
+        cp -f "${INSTALL_DIR}/${MANIFEST_FILE_NAME}" "${INSTALL_DIR}/${MANIFEST_FILE_NAME}.prev"
+    fi
     write_manifest "${staged_version}"
 
     trap - EXIT INT TERM

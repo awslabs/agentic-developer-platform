@@ -605,6 +605,10 @@ class TestSearchDefinitionBoostIntegration:
             patch("door.server._apply_acl", side_effect=lambda hits, _: hits),
         ):
             mock_state.zoekt = fake_zoekt
+            mock_state.db_pool = MagicMock()
+            mock_state.db_pool.getconn.return_value.cursor.return_value.__enter__.return_value.fetchall.return_value = [
+                ("volatilityfoundation/volatility3", "verified")
+            ]
             mock_state.s3_client = fake_s3_client
             mock_state.acl_store = None
             mock_config.s3_bucket = "test-bucket"
@@ -618,6 +622,8 @@ class TestSearchDefinitionBoostIntegration:
             )
 
         results = result["results"]
+        assert mock_state.db_pool.getconn.call_count == 1
+        assert mock_state.db_pool.putconn.call_count == 1
         assert results[0]["file"] == "framework/interfaces/layers.py"
 
 

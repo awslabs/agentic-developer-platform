@@ -85,7 +85,9 @@ def test_wired_queue_paths_reach_gateway_authority_and_blocked_paths_stay_visibl
     engine = (ROOT / "modules/gateway/src/orchestration/dispatch_pass.py").read_text()
     bootstrap = (ROOT / "modules/gateway/src/agentauth/routes.py").read_text()
     assert "publish_envelope(envelope)" in spawn
-    assert "admit_issue_work(envelope)" in publisher
+    # #9541: the publisher admits through the tri-state outcome API (owned
+    # refusals are retried briefly); the gateway call is still the only gate.
+    assert "admit_issue_work_outcome(envelope)" in publisher
     assert "get_engine_authority_writer().provision(pending)" in engine
     # The gateway signs a report-only decision inside the bootstrap boundary,
     # which is where live admission runs against the stored snapshot.

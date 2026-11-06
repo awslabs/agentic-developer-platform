@@ -117,6 +117,64 @@ class TestModelResolver:
             assert "created" in model
             assert "owned_by" in model
 
+    def test_models_desktop_ids_are_distinct_ordered_resolvable_and_allowed(self, token_context: TokenContext) -> None:
+        allowed_ids = [
+            "global.anthropic.claude-sonnet-5",
+            "global.anthropic.claude-opus-5-5",
+            "eu.anthropic.claude-sonnet-4-20250514-v1:0",
+            "apac.anthropic.claude-haiku-4-5-20251001-v1:0",
+        ]
+        resolver = ModelResolver(
+            custom_aliases={"same-sonnet": allowed_ids[0]},
+            allowed_models_config={token_context.org_id: allowed_ids},
+        )
+
+        models = resolver.get_claude_desktop_models(token_context)
+
+        assert [model["id"] for model in models] == [allowed_ids[1], allowed_ids[0], allowed_ids[3], allowed_ids[2]]
+        for model in models:
+            assert model["object"] == "model"
+            assert isinstance(model["created"], int)
+            assert model["owned_by"] == "anthropic"
+            assert resolver.resolve_model(model["id"], token_context.org_id) == model["id"]
+            assert resolver.is_model_allowed(model["id"], token_context)
+
+    def test_models_desktop_ignores_alias_only_bare_and_wildcard_policy(self, token_context: TokenContext) -> None:
+        resolver = ModelResolver(
+            allowed_models_config={
+                token_context.org_id: [
+                    "opus55",
+                    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    "global.anthropic.claude-unmatched-*",
+                    "global.anthropic.claude-sonnet-5",
+                ]
+            }
+        )
+        resolver.add_alias("wildcard-target", "global.anthropic.claude-*")
+
+        models = resolver.get_claude_desktop_models(token_context)
+
+        assert [model["id"] for model in models] == ["global.anthropic.claude-sonnet-5"]
+
+    def test_models_desktop_ignores_shadowed_full_id(self, token_context: TokenContext) -> None:
+        resolver = ModelResolver(
+            custom_aliases={"global.anthropic.claude-sonnet-5": "global.anthropic.claude-opus-5-5"},
+            allowed_models_config={token_context.org_id: ["global.anthropic.claude-opus-5-5"]},
+        )
+        resolver.add_alias("global.anthropic.claude-opus-5-5", "global.anthropic.claude-haiku-4-5")
+
+        assert resolver.get_claude_desktop_models(token_context) == []
+
+    def test_models_desktop_empty_team_policy_denies_all(self, token_context: TokenContext) -> None:
+        resolver = ModelResolver(
+            allowed_models_config={
+                token_context.org_id: ["global.anthropic.claude-*"],
+                f"{token_context.org_id}:{token_context.team_id}": [],
+            }
+        )
+
+        assert resolver.get_claude_desktop_models(token_context) == []
+
     def test_add_custom_alias(self, model_resolver: ModelResolver) -> None:
         """Test adding a custom model alias."""
         model_resolver.add_alias("my-custom-model", "anthropic.custom-model-v1")
@@ -287,3 +345,27 @@ class TestModelResolverEdgeCases:
 
         # But not non-Claude Anthropic models (if they existed)
         # This tests the pattern specificity
+
+
+class TestClaudeCodeSpellings:
+    """Claude Code and the Claude ACP adapter name models `claude-<family>-<major>-<minor>`; each resolves to the
+    same inference profile as the compact alias, so entitlement is decided on the profile, not the spelling."""
+
+    def test_claude_code_spellings_resolve_to_the_compact_alias_targets(self, model_resolver: ModelResolver) -> None:
+        pairs = {
+            "claude-opus-5-5": "opus55",
+            "claude-opus-5": "opus5",
+            "claude-opus-4-8": "opus48",
+            "claude-opus-4-7": "opus47",
+            "claude-opus-4-6": "opus46",
+            "claude-sonnet-5": "sonnet5",
+            "claude-sonnet-4-6": "sonnet46",
+            "claude-haiku-4-5-20251001": "haiku45",
+            "claude-haiku-4-5": "haiku45",
+        }
+        for spelling, compact in pairs.items():
+            assert model_resolver.resolve_model(spelling) == model_resolver.resolve_model(compact), spelling
+            assert model_resolver.resolve_model(spelling).startswith("global.anthropic.claude-")
+        # No bare family alias: a /model choice must still name a version.
+        for bare in ("opus", "sonnet", "haiku", "claude-opus", "claude-sonnet"):
+            assert model_resolver.resolve_model(bare) == bare

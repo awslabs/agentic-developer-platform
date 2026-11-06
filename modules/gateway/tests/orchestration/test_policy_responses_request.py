@@ -57,6 +57,11 @@ healthy_policy_reservations, policy_budget_initializers = reservations_fixture, 
 MODEL = "openai.gpt-5.6-luna"
 
 
+@pytest.fixture(autouse=True)
+def full_context_contract(monkeypatch):
+    monkeypatch.setenv("BG_RESPONSES_REQUEST_ESTIMATES_ENABLED", "false")
+
+
 def responses_body(**overrides) -> bytes:
     document = {"model": MODEL, "input": "hello", "max_output_tokens": 16}
     document.update(overrides)
@@ -66,7 +71,7 @@ def responses_body(**overrides) -> bytes:
 @pytest.fixture
 async def model_path(session, assignment, monkeypatch):
     @asynccontextmanager
-    async def sessions():
+    async def sessions(**_kwargs):
         yield session
 
     caller = SimpleNamespace(tenant_id=assignment.grant.tenant_id, invocation_id="worker")

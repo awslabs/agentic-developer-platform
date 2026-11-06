@@ -6,27 +6,17 @@ adapter claimed the route, so ``quote_request`` answered ``NO_ADAPTER`` and ever
 policy-governed Responses call — including a small, ordinary, perfectly bounded
 text one — was refused before reaching the provider.
 
-The bound here is deliberately pessimistic, for a reason specific to the deployed
-endpoint. The gateway forwards this route to **AWS Bedrock's OpenAI-compatible
-endpoint** (``bedrock-runtime.<region>.amazonaws.com``; see ``mantle_base_url``),
-not to ``api.openai.com``, and that endpoint publishes no token-counting API. So
-there is no trustworthy exact input count available before submission, and a
-client-supplied count is not evidence — a caller must never price its own
-request. What IS published, per model, is a provider-enforced full-context
-ceiling and a rate table. This adapter therefore reserves the model's ENTIRE
-published context window at the dearest published input-side rate, plus the
-caller's requested ``max_output_tokens`` at the dearest published output rate.
+Admission uses a conservative estimate from the actual request: one token per
+UTF-8 byte of normalized JSON, plus provider framing overhead. Output is always
+reserved at the requested maximum, with no assumed prompt-cache discount. The
+provider's full-context cost ceiling is retained separately for unknown outcomes
+and receipt validation. This is explicitly an estimate, not a zero-overshoot
+guarantee: Bedrock does not expose a token-count endpoint for these models.
 
-That over-reserves for a small request. It is the safe direction: settlement
-returns the difference as soon as the provider reports real usage, whereas a
-bound below the true cost would admit an overspend that cannot be undone. A
-model with no published ceiling (the ``gpt-oss`` family publishes none) is a
-named capability block, not an occasion to estimate one.
-
-Scope includes self-contained text and inline encrypted reasoning with an
-explicit positive output maximum. Server-retained history, hosted tools, media and
-background execution are refused BEFORE submission with the reason naming what
-is missing; #5227 owns admitting them.
+Inline media retains the full-context reservation. Operators needing that same
+reservation for text can set BG_RESPONSES_REQUEST_ESTIMATES_ENABLED=false.
+Server-retained history and hosted tools remain subject to their existing
+capability checks. Final trusted provider usage always settles at actual cost.
 
 Two Responses-specific details drive the code below and differ from the
 Anthropic adapter, so they are not shared with it:
@@ -96,7 +86,7 @@ _CLIENT_TOOL_TYPES = frozenset({"function", "custom"})
 
 
 class OpenAIResponsesQuoteAdapter:
-    """Full-context upper bound for bounded OpenAI-family Responses text calls.
+    """Request-sized reservations with a retained full-context cost ceiling.
 
     Implements ``ProviderQuoteAdapter`` for ``RESPONSES``. Every method may raise
     ``QuoteRefusedError``: anything this cannot bound from published evidence is
@@ -178,7 +168,18 @@ class OpenAIResponsesQuoteAdapter:
             for row in rows
         )
         output_rate = max(row.output_price_per_1k_tokens for row in rows)
-        total = (Decimal(context_limit) * input_rate + Decimal(output) * output_rate) / 1000
+        from src.shared.config import get_settings
+
+        input_limit = context_limit
+        input_count_method = "full_context"
+        # Inspect server-received content, never a caller-supplied token count.
+        # Media can expand to tokens independently of its encoded size.
+        if get_settings().responses_request_estimates_enabled and Capability.MEDIA not in exercised:
+            input_limit = min(context_limit, _request_input_estimate(document))
+            if input_limit < context_limit:
+                input_count_method = "request_bytes_with_margin"
+        full_total = (Decimal(context_limit) * input_rate + Decimal(output) * output_rate) / 1000
+        total = (Decimal(input_limit) * input_rate + Decimal(output) * output_rate) / 1000
         if not total.is_finite() or total <= 0:
             raise refuse(QuoteReason.UNPUBLISHED_MODEL_PRICE, self.capability, "model price unavailable")
 
@@ -196,10 +197,9 @@ class OpenAIResponsesQuoteAdapter:
             currency="USD",
             issued_at=issued_at,
             expires_at=issued_at + timedelta(seconds=QUOTE_TTL_SECONDS),
-            # The whole window may arrive as fresh input OR as cache writes, and
-            # the rate above already takes the dearer of the two, so both maxima
-            # are the full window rather than a split that could understate one.
-            max_input_tokens=context_limit,
+            # No cache-hit discount is assumed. Actual provider usage is always
+            # charged in full, even when it exceeds the request estimate.
+            max_input_tokens=input_limit,
             # Reasoning tokens bill as output and sit under this same cap, so the
             # caller's requested maximum covers them.
             max_output_tokens=output,
@@ -207,9 +207,11 @@ class OpenAIResponsesQuoteAdapter:
             # admitted. Client function declarations are ordinary input, already
             # inside the context bound.
             max_tool_tokens=0,
-            max_cache_write_tokens=context_limit,
+            max_cache_write_tokens=input_limit,
             total_usd=total.quantize(LEDGER_QUANTUM, rounding=ROUND_UP),
             evidence_source=state.source,
+            input_count_method=input_count_method,
+            upper_bound_usd=full_total.quantize(LEDGER_QUANTUM, rounding=ROUND_UP),
         )
 
     def current_pricing_revision(self) -> str:
@@ -603,6 +605,30 @@ class OpenAIResponsesQuoteAdapter:
             # here put a reference into a forwarded request under an allowlisted key.
             raise refuse(QuoteReason.MUTABLE_MEDIA_REFERENCE, Capability.MEDIA, "media filename is not a plain file name")
         exercised.add(Capability.MEDIA)
+
+
+def _request_input_estimate(document: dict[str, Any]) -> int:
+    """Conservative local estimate, not a provider-certified token count.
+
+    One token per UTF-8 byte deliberately overcounts ordinary text/code. Include
+    every field (instructions, tool schemas/results, structured output schemas,
+    inline reasoning), then allow 4096 tokens for provider framing plus 64 per
+    structured element. Re-encode decoded JSON so whitespace/escaping cannot
+    change the estimate. Opaque reasoning and provider framing mean this remains
+    an estimate: retain the independent full-context ceiling for unknown usage.
+    """
+    pending = [document]
+    elements = 0
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            elements += 1
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            elements += len(value)
+            pending.extend(value)
+    encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return len(encoded) + 4096 + 64 * elements
 
 
 def _published_context_ceiling(model_entry: dict[str, Any], rows: tuple[Any, ...]) -> int | None:

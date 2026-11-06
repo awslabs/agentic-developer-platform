@@ -97,6 +97,7 @@ def capture_system_baseline(grants, journal, components, *, previous=None):
     provider_roots = {
         ("Service", "default", "kubernetes"),
         ("Service", "kube-system", "kube-dns"),
+        ("Service", "kube-system", "eks-extension-metrics-api"),
         ("Deployment", "kube-system", "coredns"),
         ("DaemonSet", "kube-system", "aws-node"),
         ("DaemonSet", "kube-system", "kube-proxy"),

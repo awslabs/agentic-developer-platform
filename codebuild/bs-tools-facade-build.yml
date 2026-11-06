@@ -1,0 +1,7 @@
+version: 0.2
+# Publishes the tools façade image from a reviewed source archive. Immutable
+# source-SHA tag only; an existing tag is reused, never rebuilt.
+phases:
+  build:
+    commands:
+      - bash platform/scripts/publish-shared-image.sh adp-tools-facade

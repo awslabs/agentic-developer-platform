@@ -173,7 +173,7 @@ def test_real_pytest_selection_tags_parameter_variants_and_excludes_untagged(tmp
         },
     }
     (tmp_path / "conftest.py").write_text(
-        "from pathlib import Path\nfrom tests.regression import catalog\n"
+        "from pathlib import Path\nfrom _adp_regression_registry import catalog\n"
         "catalog.ROOT = Path(__file__).parent\n"
         f"catalog.load = lambda: {data!r}\n"
     )

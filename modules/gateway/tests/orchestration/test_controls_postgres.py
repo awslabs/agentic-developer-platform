@@ -25,20 +25,24 @@ from src.orchestration.adapters.github_comments import (
     apply_gate_answer_for_context,
 )
 from src.orchestration.amend import AmendmentContext, amend_plan
-from src.orchestration.compile import ApprovalContext, compile_proposal
+from src.orchestration.compile import ApprovalContext
 from src.orchestration.models import (
     DecisionKind,
     OrchestrationAcceptedPlan,
     OrchestrationDecision,
     OrchestrationEdge,
+    OrchestrationExecution,
     OrchestrationFlow,
     OrchestrationNode,
+    OrchestrationPullRequestBinding,
+    OrchestrationWorkClaim,
 )
 from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode
 from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.state import NodeState
 from src.shared.schemas.auth import TokenContext
 from tests.migrations.conftest_postgres import pg_server, pg_url, to_async_url  # noqa: F401
+from tests.orchestration.legacy_plan import persist_legacy_plan
 
 ORG_ID = "org-revision-lock"
 USER_ID = "human-approver"
@@ -82,6 +86,9 @@ async def pg_engine(pg_url):  # noqa: F811
         await conn.run_sync(OrchestrationNode.__table__.create)
         await conn.run_sync(OrchestrationEdge.__table__.create)
         await conn.run_sync(OrchestrationDecision.__table__.create)
+        await conn.run_sync(OrchestrationExecution.__table__.create)
+        await conn.run_sync(OrchestrationPullRequestBinding.__table__.create)
+        await conn.run_sync(OrchestrationWorkClaim.__table__.create)
     yield engine
     await engine.dispose()
 
@@ -111,7 +118,7 @@ def _access() -> AccessControl:
 
 async def _seed(session_factory) -> tuple[str, str, str]:
     async with session_factory() as session:
-        result = await compile_proposal(
+        result = await persist_legacy_plan(
             session,
             _proposal(),
             ApprovalContext(

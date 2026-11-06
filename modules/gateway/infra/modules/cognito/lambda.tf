@@ -94,6 +94,20 @@ resource "aws_iam_role_policy" "pre_token_generation_dynamodb" {
   })
 }
 
+resource "aws_iam_role_policy" "pre_token_generation_user_read" {
+  name = "${var.name_prefix}-pre-token-generation-user-read"
+  role = aws_iam_role.pre_token_generation.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["cognito-idp:AdminGetUser"]
+      Resource = aws_cognito_user_pool.main.arn
+    }]
+  })
+}
+
 # Lambda Function
 resource "aws_lambda_function" "pre_token_generation" {
   function_name                  = "${var.name_prefix}-pre-token-generation"

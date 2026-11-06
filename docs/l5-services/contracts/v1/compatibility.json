@@ -1,0 +1,155 @@
+[
+  {
+    "id": "profile",
+    "component": "host",
+    "source": "modules/gateway/src/products/configuration.py",
+    "evidence": "configuration_ref: RecordRef",
+    "target": "modules/L5-services/src/l5_services/configuration.py",
+    "owner": "SA03 / #8141",
+    "checkpoint": "Conditional Profile ETag handoff and six-field reference; no full epic dependency"
+  },
+  {
+    "id": "product",
+    "component": "host",
+    "source": "modules/gateway/src/products/routes.py",
+    "evidence": "unavailable",
+    "target": "modules/L5-services/src/l5_services/product_client.py",
+    "owner": "SA02 / #8148",
+    "checkpoint": "Scoped current/revision/source reads and selected connection delegation before setup or run"
+  },
+  {
+    "id": "broker",
+    "component": "host",
+    "source": "modules/gateway/src/internal/assume_role_routes.py",
+    "evidence": "async def assume_bound_role",
+    "target": "modules/L5-services/src/l5_services/product_client.py",
+    "owner": "SA02 / #7245",
+    "checkpoint": "Lambda work identity to verified gateway broker, selected connection and scoped STS session; no ambient role"
+  },
+  {
+    "id": "task",
+    "component": "host",
+    "source": "modules/gateway/src/tasks/routes.py",
+    "evidence": "router",
+    "target": "modules/L5-services/src/l5_services/task_bridge.py",
+    "owner": "SA10",
+    "checkpoint": "Task reference and artifact access reuse; Task storage never owns paid-job state"
+  },
+  {
+    "id": "core",
+    "component": "core",
+    "source": "modules/gateway/alembic/env.py",
+    "evidence": "target_metadata",
+    "target": "modules/L5-services/src/l5_services/",
+    "owner": "SA05 / SA06",
+    "checkpoint": "Install one versioned core wheel in gateway and worker; API imports without Security SDK"
+  },
+  {
+    "id": "adapter",
+    "component": "adapter",
+    "source": ".github/scripts/code_review_request.py",
+    "evidence": "UpdateAgentSpace",
+    "target": "modules/L5-services/src/l5_services/adapters/security.py",
+    "owner": "SA04 / SA07 / SA08",
+    "checkpoint": "Worker-only Security extra; register space role and bucket before code-review submit"
+  },
+  {
+    "id": "archive",
+    "component": "adapter",
+    "source": ".github/scripts/code_review_request.py",
+    "evidence": "ARCHIVE_SUFFIX = \".zip\"",
+    "target": "modules/L5-services/src/l5_services/adapters/security.py",
+    "owner": "SA08",
+    "checkpoint": "Use immutable bounded ZIP for repository content; source access must be qualified before enablement"
+  },
+  {
+    "id": "sdk-host",
+    "component": "adapter",
+    "source": "modules/gateway/pyproject.toml",
+    "evidence": "boto3==1.43.111",
+    "target": "modules/L5-services/pyproject.toml",
+    "owner": "SA07 / SA08",
+    "checkpoint": "Keep gateway pin separate; boto3 1.43.114 is worker candidate, not an approved SDK or qualified live model"
+  },
+  {
+    "id": "provider-gap",
+    "component": "adapter",
+    "source": "docs/l5-services/architecture.md",
+    "evidence": "Code-review source access remains unproven",
+    "target": "modules/L5-services/src/l5_services/adapters/security.py",
+    "owner": "SA04 / SA08",
+    "checkpoint": "Qualify source registration, role grants, model digest and region in private target before capability enablement"
+  },
+  {
+    "id": "migrations",
+    "component": "migrations",
+    "source": "modules/gateway/alembic/env.py",
+    "evidence": "target_metadata = [Base.metadata, L5Work.metadata]",
+    "target": "modules/L5-services/migrations/",
+    "owner": "SA05 / SA15",
+    "checkpoint": "Additive tables and explicit Alembic version location; upgrade heads with admissions disabled"
+  },
+  {
+    "id": "build",
+    "component": "build",
+    "source": "platform/scripts/publish-shared-image.sh",
+    "evidence": "bash modules/gateway/scripts/stage-contracts.sh",
+    "target": "modules/L5-services/scripts/build-package.sh",
+    "owner": "SA15",
+    "checkpoint": "Digest-verified wheel staged into exact-case modules/gateway Docker context and worker artifact; test isolated installs"
+  },
+  {
+    "id": "lambda-grant",
+    "component": "infra",
+    "source": "modules/gateway/infra/main.tf",
+    "evidence": "base IRSA role",
+    "target": "modules/L5-services/infra/",
+    "owner": "SA15",
+    "checkpoint": "Gateway send-only SQS grant; worker/relay roles get own DB, broker, artifact and queue grants via reviewed child module"
+  },
+  {
+    "id": "dispatch",
+    "component": "infra",
+    "source": "modules/agent-factory/webhook-ingress/infra/task-recovery.tf",
+    "evidence": "aws_cloudwatch_event_rule",
+    "target": "modules/L5-services/infra/",
+    "owner": "SA05 / SA15",
+    "checkpoint": "Reuse EventBridge repair pattern, not Task queue or Task tables; immediate publish after SQL commit"
+  },
+  {
+    "id": "router",
+    "component": "host",
+    "source": "modules/gateway/src/app.py",
+    "evidence": "include_router",
+    "target": "modules/L5-services/src/l5_services/api/",
+    "owner": "SA05 / SA12",
+    "checkpoint": "Register installed L5 router under existing authenticated middleware with admissions flag off"
+  },
+  {
+    "id": "cli",
+    "component": "host",
+    "source": "modules/gateway/cli/command-manifest.json",
+    "evidence": "commands",
+    "target": "modules/gateway/cli/adp",
+    "owner": "SA13",
+    "checkpoint": "Install/distribute version-matched CLI service command; use same API operation matrix"
+  },
+  {
+    "id": "mcp",
+    "component": "host",
+    "source": "modules/gateway/src/internal/tools_discovery.py",
+    "evidence": "tool",
+    "target": "docs/l5-services/contracts/v1/mcp-tools.json",
+    "owner": "SA14",
+    "checkpoint": "Register same API operations in authenticated MCP host; preserve exact ETags"
+  },
+  {
+    "id": "release",
+    "component": "build",
+    "source": ".github/workflows/gateway-deploy.yml",
+    "evidence": "paths:",
+    "target": ".github/workflows/gateway-deploy.yml",
+    "owner": "SA15",
+    "checkpoint": "Exact-case modules/L5-services/** and consumed docs/l5-services/contracts/v1/** select gateway, worker and migrations in both filters and internal predicates"
+  }
+]

@@ -1,0 +1,77 @@
+{
+  "record_type": "sanitized-current-image-derivation",
+  "review_date": "2026-10-25",
+  "image_index_digest": "sha256:d2b7faa6aec4e30aa206aca801d02ab0ba0657c0cca0df5ca36ba90a8b823e32",
+  "platform_digest": "sha256:d2b7faa6aec4e30aa206aca801d02ab0ba0657c0cca0df5ca36ba90a8b823e32",
+  "config_digest": "sha256:b7f3b2649d949d44c9b9aa74d2a72dd19847dc35f630e6133ffad82697e2c5b4",
+  "reference_type": "single-platform manifest; image_index_digest retains the historical schema field name",
+  "previous_image_digest": "sha256:1c759ad92f46a2db57797d111685e06ed66036e76fc0fe4f454da039907cf6a6",
+  "previous_source_inventory": "docs/security/runs/2026-10-20/runtime-refresh/startup-source-preservation.json",
+  "all_skypilot_python_files_identical": true,
+  "file_count": 555,
+  "canonical_source_map_sha256": "e8dc60ed0eae763b824fba9495fe7b9110f314b69856363d9514f284d5fa8c3c",
+  "source_map_encoding": "JSON object of paths relative to site-packages/sky to file SHA256; sorted keys and compact separators",
+  "passwd_content_sha256": "50ea38474218c7b1cc39ec1bebf3bc123d6b60982a5bfd0524f384ad5d8d1e55",
+  "uid1000_observed": true,
+  "python_version": "3.10.22",
+  "runtime_facts_sha256": "937220dd60949ceb423d74cf6d3edd6a7743d3c376b27488be1c4e69aea0223a",
+  "collector_sha256": "8e3b644ab4f7a3f0ea3b64d99be85e4e4064294b7745b80bd014cd49a4a1685c",
+  "startup_facts_sha256": "1e589e607b606050580828d62c094f7cc0ea398bd7de960d55993c39bb58250a",
+  "containing_distributions": {
+    "setuptools": "81.0.0",
+    "ray": "2.58.0"
+  },
+  "observed_packages": {
+    "jaraco-context": {
+      "version": "6.1.0",
+      "locations": [
+        "/usr/local/lib/python3.10/site-packages/setuptools/_vendor/jaraco_context-6.1.0.dist-info/METADATA"
+      ],
+      "metadata_sha256": "0435ebfc52055c5a9974ed20c171b6454383eaf9dbb1508814ba7ad97c59d712"
+    },
+    "wheel": {
+      "version": "0.46.3",
+      "locations": [
+        "/usr/local/lib/python3.10/site-packages/setuptools/_vendor/wheel-0.46.3.dist-info/METADATA"
+      ],
+      "metadata_sha256": "22910aa97ca89cbcc20a019e27fe31360b7929a4bd66ca0d310f99a44f6ccd35"
+    },
+    "cryptography": {
+      "version": "46.0.7+adp1",
+      "locations": [
+        "/usr/local/lib/python3.10/site-packages/cryptography-46.0.7+adp1.dist-info/METADATA"
+      ],
+      "metadata_sha256": "b2bd26c1e60b112b9ee5f893eb900f68ab93ec41e6711434ea7989361a9fb6aa"
+    },
+    "jackson-core": {
+      "version": "2.18.11",
+      "locations": [
+        "/usr/local/lib/python3.10/site-packages/ray/jars/ray_dist.jar"
+      ],
+      "version_entry": "META-INF/maven/com.fasterxml.jackson.core/jackson-core/pom.properties",
+      "version_entry_sha256": "99a4ef7571521a9d7f565c77b2d53e5e6e27e445245eb06f6296f53674f2bd42",
+      "jar_sha256": "c1c83bf1d15a2c8982166ef3e87bff9e0adba4c3f1fe8dfd0b7a3efe8735e675"
+    },
+    "python": {
+      "version": "3.10.22",
+      "locations": [
+        "/usr/local/bin/python3.10",
+        "/usr/local/lib/libpython3.10.so.1.0"
+      ],
+      "file_sha256": {
+        "/usr/local/bin/python3.10": "590a8c6d6f33dd13991b43285f0acb8999f4ce338eacbdda2faec0f25ca2a0b6",
+        "/usr/local/lib/libpython3.10.so.1.0": "d0b2127303112bb561b6173aa5b3c812f498e03f4a3d7fd14923f79ea78a2eb2"
+      }
+    }
+  },
+  "scan_receipt": {
+    "tool": "trivy",
+    "version": "0.74.0-adp-security1",
+    "created_at": "2026-10-24T20:44:31.285655515Z",
+    "raw_scan_sha256": "54d025dbd0938207912436cb9305b21dd754fefc48c3c404512981541c03eddd",
+    "scanned_image_id": "sha256:b23d8ccf77ddf4a13c83e0e809c2b23047909b9d0e9932a98c86977fd9f6f381",
+    "publication_receipt": "docs/security/runs/2026-10-24/critical-packages/skypilot-publication.json",
+    "scan_scope": "Trivy library packages in the tested candidate; published content has identical filesystem layers and runtime configuration. These five historical advisories are a subset, not an image-wide clearance. Python interpreter CVEs are outside this library-only scan."
+  },
+  "scope": "Fresh inspection of the published immutable runtime and previous locked image in read-only, network-isolated containers. All 555 SkyPilot Python files matched, allowing retention of source-derived startup facts. Package metadata, embedded Jackson version and interpreter files were freshly observed. Raw inventories and registry identities remain private; no live deployment claim."
+}

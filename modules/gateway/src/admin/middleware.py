@@ -4,6 +4,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -11,6 +12,7 @@ from starlette.types import ASGIApp
 
 from src.admin.models import RequestLog
 from src.shared.database import get_session_factory
+from src.shared.middleware.logging_middleware import redacted_query_items
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     DEFAULT_EXCLUDED_HEADERS: set[str] = {
         "authorization",
         "x-api-key",
+        "x-forge-oauth-system",
+        "x-forge-oauth-user",
         "cookie",
         "set-cookie",
     }
@@ -121,11 +125,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # Get user agent
         user_agent = request.headers.get("user-agent")
 
-        # Get query params (sanitized)
-        query_params = dict(request.query_params) if request.query_params else None
+        # Get query params (sanitized: credential-bearing keys are redacted)
+        query_params = dict(redacted_query_items(request)) if request.query_params else None
 
         # Log the request asynchronously
         await self._log_request(
+            writer=getattr(request.app.state, "request_log_queue", None),
             request_id=request_id,
             user_id=user_id or "anonymous",
             org_id=org_id or "unknown",
@@ -197,32 +202,42 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         client_ip: str | None,
         user_agent: str | None,
         error_message: str | None,
+        writer=None,
     ) -> None:
         """
         Log a request to the database.
 
-        This is done asynchronously to not block the response.
+        Queue when a lifespan-owned writer is available, otherwise persist here.
         """
         try:
+            record = dict(
+                id=str(uuid.uuid4()),
+                timestamp=datetime.now(UTC),
+                request_id=request_id,
+                user_id=user_id,
+                org_id=org_id,
+                department_id=department_id,
+                team_id=team_id,
+                method=method,
+                path=path,
+                query_params=query_params,
+                status_code=status_code,
+                response_time_ms=response_time_ms,
+                request_body_size=request_body_size,
+                response_body_size=response_body_size,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                error_message=error_message,
+            )
+            # Bound caller-controlled metadata to the persisted schema.
+            for key, limit in {"request_id": 255, "user_agent": 512, "path": 2048, "client_ip": 45, "method": 10}.items():
+                if isinstance(record[key], str):
+                    record[key] = record[key][:limit]
+            if writer is not None and await writer.enqueue(record):
+                return
             session_factory = get_session_factory()
             async with session_factory() as session:
-                log_entry = RequestLog(
-                    request_id=request_id,
-                    user_id=user_id,
-                    org_id=org_id,
-                    department_id=department_id,
-                    team_id=team_id,
-                    method=method,
-                    path=path,
-                    query_params=query_params,
-                    status_code=status_code,
-                    response_time_ms=response_time_ms,
-                    request_body_size=request_body_size,
-                    response_body_size=response_body_size,
-                    client_ip=client_ip,
-                    user_agent=user_agent,
-                    error_message=error_message,
-                )
+                log_entry = RequestLog(**record)
                 session.add(log_entry)
                 await session.commit()
         except Exception:

@@ -1,0 +1,21 @@
+{
+  "record_type": "sanitized-runtime-preservation-summary",
+  "base_digest": "sha256:d2b7faa6aec4e30aa206aca801d02ab0ba0657c0cca0df5ca36ba90a8b823e32",
+  "digest": "sha256:398c9bf405f449c9fcc51a2752e830c329e02c211cbc8bdf114b67c76a100851",
+  "source_revision": "d6d040f86c1580959954ec4398d73cb9f0f858fb",
+  "sky_python_file_count": 555,
+  "all_sky_python_files_identical": true,
+  "sky_source_manifest_sha256": "d82d78144cfd483db7f636964845aa184f3b423f0e51907cc97f99c486e36f54",
+  "startup_and_identity_configuration_preserved": true,
+  "observed_versions": {
+    "jaraco-context": "6.1.0",
+    "setuptools": "81.0.0",
+    "wheel": "0.46.3",
+    "jackson-core": "2.18.11",
+    "ray": "2.58.0",
+    "cryptography": "46.0.7+adp1",
+    "python": "3.10.22"
+  },
+  "skypilot_version": "0.12.3",
+  "scope": "Facts read from both immutable images in network-isolated, read-only containers. Application source equality preserves the recorded startup contract; live deployment evidence remains private."
+}

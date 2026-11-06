@@ -25,7 +25,6 @@ from harness_jobs import (
 )
 from harness_jobs.execution_rpc import ExecutionGrant
 from harness_jobs.leases import lock_lease
-from superplane_bootstrap.access import ProviderIdentity
 from superplane_bootstrap.adapters import (
     AwsObserver,
     IamNodeRoleFacts,
@@ -76,7 +75,7 @@ def bootstrap_harness(tmp_path_factory, request):
         yield harness
 
 
-@pytest.mark.parametrize("public_api", [False, True])
+@pytest.mark.parametrize("public_api", [False, True, "regional"])
 def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_grants(
     bootstrap_harness, tmp_path, monkeypatch, public_api
 ):
@@ -122,6 +121,8 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
             "vpc_id": "vpc-0123456789abcdef0",
             "nat_gateway_ids": ["nat-0123456789abcdef0"],
         }
+        if public_api == "regional":
+            config["management_public_access"]["region"] = "eu-west-1"
         outputs.update(
             cluster_endpoint_public_access=True,
             cluster_endpoint_public_access_cidrs=["52.22.137.37/32"],
@@ -287,8 +288,44 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
                 self._superplane_external_id = None
 
             def client(self, service, **kwargs):
-                assert service in ({"eks", "ec2", "sts"} if public_api else {"eks"})
-                return cloud
+                if service == "sts":
+                    return SimpleNamespace(
+                        get_caller_identity=lambda: {
+                            "Account": identities.ACCOUNT_ID,
+                            "UserId": "immutable-" + self.actor + ":session",
+                        }
+                    )
+                if service == "iam":
+                    assert self.actor == "provider"
+                    return SimpleNamespace(
+                        get_role=lambda RoleName: {
+                            "Role": {
+                                "Arn": f"arn:aws:iam::{identities.ACCOUNT_ID}:role/{RoleName}",
+                                "RoleId": "immutable-" + RoleName,
+                            }
+                        }
+                    )
+                assert service in ({"eks", "ec2"} if public_api else {"eks"})
+                region = kwargs.get("region_name", identities.REGION)
+
+                class RegionalClient:
+                    def __getattr__(self, method):
+                        attribute = getattr(cloud, method)
+                        if not callable(attribute):
+                            return attribute
+
+                        def invoke(*args, **arguments):
+                            expected = identities.REGION
+                            if service == "ec2" and method == "describe_nat_gateways":
+                                expected = config["management_public_access"].get(
+                                    "region", expected
+                                )
+                            assert region == expected
+                            return getattr(cloud, method)(*args, **arguments)
+
+                        return invoke
+
+                return RegionalClient()
 
         provider = Session("provider")
         actors, credentials, requests = [], [], []
@@ -300,11 +337,6 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
             verify()
             actors.append(actor)
             return Session(actor)
-
-        def identity(session, source, role_arn, *, verify):
-            assert source is provider and role_arn.endswith("/" + session.actor)
-            verify()
-            return ProviderIdentity(identities.ACCOUNT_ID, role_arn)
 
         class Process:
             def __init__(self, *, binaries, directory, session, region, verify):
@@ -369,7 +401,6 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
                 )
 
         monkeypatch.setattr(bootstrap_runtime, "assume_session", assume)
-        monkeypatch.setattr(bootstrap_runtime, "canonical_role_identity", identity)
         monkeypatch.setattr(bootstrap_runtime, "WorkerProcesses", Process)
         monkeypatch.setattr(bootstrap_runtime, "kubernetes_client", dynamic)
         monkeypatch.setattr(bootstrap_runtime, "scoped_entry_client", scoped)
@@ -420,10 +451,10 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
         )
         assert outcome.ready, repr(outcome.refusal)
         endpoint_kinds = {item.kind for item in outcome.inventory.prerequisites}
-        assert ("EksPublicEndpoint" in endpoint_kinds) is public_api
-        assert (
-            "SecurityGroupRule/cluster-endpoint" in endpoint_kinds
-        ) is not public_api
+        assert ("EksPublicEndpoint" in endpoint_kinds) is bool(public_api)
+        assert ("SecurityGroupRule/cluster-endpoint" in endpoint_kinds) is not bool(
+            public_api
+        )
         anchor = await bootstrap_result_anchor(operation, context, outcome)
         assert (
             anchor["registration"]["namespace_uid"]

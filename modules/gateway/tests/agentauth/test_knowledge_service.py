@@ -55,6 +55,7 @@ async def bridge(monkeypatch):
         identity_calls.append((record, grant))
         yield {
             "x-github-login": "actual-user",
+            "x-asset-owner-id": "human-one",
             "x-owner-sub": "00000000-0000-0000-0000-000000000001",
             "x-tenant-id": "tenant-one",
             "x-adp-run-service": "true",
@@ -98,8 +99,9 @@ async def test_caller_cannot_forward_auth_or_another_users_identity(bridge):
     assert claims["github_login"] == "actual-user"
     assert claims["tenant_id"] == RECORD.tenant_id
     assert claims["sub"] == GRANT.principal
+    assert claims["asset_owner_id"] == "human-one"
     assert claims["owner_sub"] == "00000000-0000-0000-0000-000000000001"
-    for name in ("x-github-login", "x-tenant-id", "x-owner-sub", "x-adp-run-service", "x-internal-api-key"):
+    for name in ("x-github-login", "x-tenant-id", "x-owner-sub", "x-asset-owner-id", "x-adp-run-service", "x-internal-api-key"):
         assert name not in request.headers
     for name in ("x-github-teams", "x-adp-run-credential", "x-adp-workload-token", "cookie", "mcp-session-id", "authorization"):
         assert name not in request.headers

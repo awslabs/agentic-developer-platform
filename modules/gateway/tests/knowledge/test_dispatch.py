@@ -185,7 +185,7 @@ class TestDispatchIngestion:
         assert body["source"] == "acme/my-service"
         assert body["content_type"] == "repo"
         assert body["registry_asset_id"] == "asset-001"
-        assert body["steps"] == ["s3_upload", "cgc", "deepwiki", "graphrag"]
+        assert body["steps"] == ["embed_vectors"]
         assert body["triggered_by"] == "self_serve"
         assert body["scope"]["visibility"] == "personal"
         assert msg["MessageAttributes"]["content_type"]["StringValue"] == "repo"

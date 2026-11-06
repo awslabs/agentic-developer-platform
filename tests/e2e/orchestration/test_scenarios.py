@@ -59,7 +59,12 @@ def manifest_document(valid_config):
 
 
 def test_fixed_matrix_is_registered_without_paid_execution():
-    assert list(REGISTRY) == ["autonomous-delivery"]
+    assert list(REGISTRY) == [
+        "autonomous-delivery",
+        "product-epic-delivery",
+        "product-epic-recovery",
+        "legacy-attribution",
+    ]
     assert len({c.id for c in CRITERIA}) == len(CRITERIA) == 24
     assert set(CASES) == {c.id for c in FAULTS + CONTROLS} - {"A6-4.tenant"}
     assert DEFINITION_HASH == digest(definition())

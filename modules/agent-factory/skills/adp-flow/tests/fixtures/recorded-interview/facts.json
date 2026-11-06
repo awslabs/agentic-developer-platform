@@ -1,0 +1,12 @@
+{
+  "home_repository": "example/home",
+  "repositories": {
+    "example/home": {"provider_repository_id": 101, "installation_id": 201},
+    "example/component": {"provider_repository_id": 102, "installation_id": 202}
+  },
+  "product_id": "example-product",
+  "org_id": "example-org",
+  "spec_revision": "example-revision-1",
+  "emitted_at": "2026-11-03T00:00:00Z",
+  "project_budget": {"available_usd": null}
+}

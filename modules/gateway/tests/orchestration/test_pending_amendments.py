@@ -44,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from src.orchestration.amend import AmendmentContext, FlowNotFoundError
-from src.orchestration.compile import ApprovalContext, ProposalRejectedError, compile_proposal, plan_hash
+from src.orchestration.compile import ApprovalContext, ProposalRejectedError, plan_hash
 from src.orchestration.models import (
     AmendmentRequestState,
     DecisionKind,
@@ -72,6 +72,7 @@ from src.orchestration.pending_amendments import (
 from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode
 from src.orchestration.state import ActorKind
 from src.shared.models.base import Base
+from tests.orchestration.legacy_plan import persist_legacy_plan
 
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
@@ -148,7 +149,7 @@ def amended_proposal(*, org_id: str = ORG_A, flow: str = FLOW, extra_gate: bool 
     """
     nodes = [
         ProposedNode(address=address("story-a", flow=flow), kind="story", title="Story A"),
-        ProposedNode(address=address("story-b", flow=flow), kind="story", title="Story B"),
+        ProposedNode(address=address("story-b", flow=flow), kind="story", title="Story B", issue_ref="5329"),
         ProposedNode(address=address("eval", flow=flow), kind="eval", title="Wave 1 eval"),
         ProposedNode(address=address("deploy-gate", flow=flow, wave="wave-2"), kind="gate", title="Deploy?"),
     ]
@@ -200,7 +201,7 @@ def amender(org_id: str = ORG_A, actor_id: str = "cognito-sub-accepter") -> Amen
 
 async def accepted_flow(session, *, org_id: str = ORG_A, proposal: LoopProposal | None = None) -> str:
     """A flow with one accepted plan version in force. Returns its flow id."""
-    result = await compile_proposal(session, proposal or base_proposal(org_id=org_id), approval(org_id))
+    result = await persist_legacy_plan(session, proposal or base_proposal(org_id=org_id), approval(org_id))
     await session.commit()
     return result.flow_id
 

@@ -61,6 +61,18 @@ def test_explicit_database_settings_are_preserved_without_aws_call(tmp_path):
     assert not calls.exists()
 
 
+def test_rendered_vector_settings_activate_semantic_reader(tmp_path, monkeypatch):
+    from door.config import ServerConfig
+
+    result, _ = render_config(tmp_path, overrides={"S3_VECTORS_BUCKET_NAME": "fixture-vectors"})
+    assert result.returncode == 0, result.stderr
+    for key, value in yaml.safe_load(result.stdout)["data"].items():
+        monkeypatch.setenv(key, value)
+    reader = ServerConfig()
+    assert reader.semantic_enabled
+    assert reader.s3_vectors_bucket == "fixture-vectors"
+
+
 @pytest.mark.parametrize(("endpoint", "aws_exit"), [("", 0), ("None", 0), ("null", 0), ("", 1)])
 def test_missing_database_refuses_configmap_render(tmp_path, endpoint, aws_exit):
     result, _ = render_config(tmp_path, endpoint=endpoint, aws_exit=aws_exit)

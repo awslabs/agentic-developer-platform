@@ -82,6 +82,7 @@ class EntityType(str, Enum):
     # delivery is not a month, and rolling the allowance over on the 1st would hand a
     # long-running flow a second full allowance it was never granted.
     FLOW = "flow"
+    PROJECT = "project"
 
 
 class EnforcementMode(str, Enum):
@@ -177,6 +178,8 @@ class EnforcementResult(BaseModel):
     exceeded_entity_id: str | None = None
     budget_amount_usd: Decimal | None = None
     current_spend_usd: Decimal | None = None
+    current_total_usd: Decimal | None = None
+    request_estimate_usd: Decimal | None = None
     enforcement_mode: EnforcementMode | None = None
     warnings: list[str] = []
 

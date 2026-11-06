@@ -34,8 +34,12 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, select
@@ -60,8 +64,10 @@ from src.orchestration.diagnose import (
 from src.orchestration.models import (
     DecisionKind,
     OrchestrationDecision,
+    OrchestrationExecution,
     OrchestrationFlow,
     OrchestrationNode,
+    OrchestrationPullRequestBinding,
 )
 from src.orchestration.state import ActorKind, NodeState, transition
 from src.shared.models.base import Base
@@ -118,13 +124,13 @@ async def session(session_factory):
 
 @pytest.fixture
 def config():
-    """Enabled and fully wired, so tests exercise the real path by default.
+    """Enabled without a global repository, so tests exercise bound targets.
 
     Enabled explicitly rather than via the env var: the fail-closed default is
     asserted on its own in `TestFailsClosed`, and every other test wants the
     feature actually running.
     """
-    return DiagnosisConfig(enabled=True, repo=REPO)
+    return DiagnosisConfig(enabled=True, repo="")
 
 
 async def _make_org(session: AsyncSession, *, org_id: str = ORG_A, installations: list[int] | None = None) -> Organization:
@@ -173,6 +179,31 @@ async def _make_node(
     session.add(node)
     await session.flush()
     return node
+
+
+async def _bind_started_node(session: AsyncSession, node: OrchestrationNode) -> None:
+    session.add(
+        OrchestrationPullRequestBinding(
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            attempt=node.attempts,
+            run_id="saved-run",
+            provider_repository_id=987,
+            provider_pr_node_id=f"PR_{node.id}",
+            repo=REPO,
+            pr_number=77,
+            installation_id=INSTALLATION_A,
+            head_sha="a" * 40,
+            revision=1,
+            role="implementation",
+            state="active",
+            registered_by="saved-run",
+            registered_by_kind="service",
+            accepted_scope=json.dumps({"node": {"kind": node.kind, "issue_ref": node.issue_ref, "title": node.title}}),
+        )
+    )
+    await session.flush()
 
 
 async def _record_trigger(
@@ -495,6 +526,142 @@ class TestSummonBoundIsACostGuard:
         # And the suppression is visible, not merely an absence of spend.
         assert [r.suppressed_by_bound for r in reports[1:]] == [1, 1, 1, 1]
 
+    @pytest.mark.parametrize("legacy", [False, True])
+    async def test_product_story_diagnosis_restart_preserves_accepted_repository(self, session, session_factory, config, monkeypatch, legacy):
+        await _make_org(session, installations=[INSTALLATION_A, 222])
+        flow = await _make_flow(session)
+        flow.product_id = None if legacy else "fictional-product"
+        node = await _make_node(session, flow, state=NodeState.HALTED)
+        node.repository_identity = "fictional/story-b"
+        node.provider_repository_id = 987
+        node.repository_connection = None if legacy else {"installation_id": 222}
+        await _record_trigger(session, node)
+        connection = SimpleNamespace(installation_id=222, model_dump=lambda **kwargs: node.repository_connection)
+        contract = SimpleNamespace(
+            node=SimpleNamespace(
+                repository_identity=node.repository_identity,
+                provider_repository_id=987,
+                repository_connection=None if legacy else connection,
+                issue_ref=node.issue_ref,
+            ),
+            repository_ids={node.repository_identity},
+        )
+        monkeypatch.setattr("src.orchestration.accepted_node.accepted_node_contract", AsyncMock(return_value=contract))
+        verify = AsyncMock(return_value=SimpleNamespace(installation_id=222, full_name=node.repository_identity, repository_id=987))
+        monkeypatch.setattr("src.orchestration.repository_binding.resolve_story_repository", verify)
+
+        first = await run_diagnosis_pass(session, config)
+        assert first.diagnoses_recorded == 1 and len(first.pending) == 1
+        saved = first.pending[0]
+        assert saved.envelope["source_ref"] == {
+            "installation_id": 222,
+            "repo": node.repository_identity,
+            "issue": 4214,
+            "provider_repository_id": 987,
+        }
+        await session.commit()
+        async with session_factory() as restarted:
+            changed_global = replace(config, repo="fictional/global-c")
+            repeated = await run_diagnosis_pass(restarted, changed_global)
+            assert repeated.diagnoses_recorded == 0 and repeated.pending == []
+            (diagnosis,) = await _diagnoses(restarted, node.id)
+            await _record_trigger(restarted, node, created_at=_as_utc(diagnosis.created_at) + timedelta(hours=1))
+            next_incident = await run_diagnosis_pass(restarted, changed_global)
+            assert next_incident.diagnoses_recorded == 1 and len(next_incident.pending) == 1
+            assert next_incident.pending[0].envelope["source_ref"] == saved.envelope["source_ref"]
+            assert next_incident.pending[0].envelope["orchestration"]["flow_id"] == flow.id
+            assert next_incident.pending[0].deduplication_id != saved.deduplication_id
+            assert verify.await_count == 2
+
+    @pytest.mark.parametrize("failure", ["superseded", "revoked", "exhausted"])
+    async def test_product_diagnosis_keeps_typed_hold_without_dispatching_stale_work(self, session, config, monkeypatch, failure):
+        from src.admin.installations.resolver import OwnerState
+
+        await _make_org(session, installations=[INSTALLATION_A, 222])
+        flow = await _make_flow(session)
+        flow.product_id = "fictional-product"
+        node = await _make_node(session, flow, state=NodeState.HALTED)
+        node.repository_identity = "fictional/story-b"
+        node.provider_repository_id = 987
+        node.repository_connection = {"provider": "github", "installation_id": 222}
+        await _record_trigger(session, node)
+        binding = OrchestrationPullRequestBinding(
+            org_id=node.org_id,
+            flow_id=flow.id,
+            node_id=node.id,
+            attempt=node.attempts,
+            run_id="saved-run",
+            provider_repository_id=987,
+            provider_pr_node_id="PR_story_b",
+            repo=node.repository_identity,
+            pr_number=77,
+            installation_id=222,
+            head_sha="a" * 40,
+            revision=1,
+            role="implementation",
+            state="superseded" if failure == "superseded" else "active",
+            registered_by="saved-run",
+            registered_by_kind="service",
+            accepted_scope=json.dumps({"node": {"kind": node.kind, "issue_ref": node.issue_ref, "title": node.title}}),
+        )
+        session.add(binding)
+        if failure == "exhausted":
+            session.add(
+                OrchestrationExecution(
+                    org_id=node.org_id,
+                    flow_id=flow.id,
+                    node_id=node.id,
+                    cycle=node.attempts,
+                    phase="review",
+                    status="blocked",
+                    accepted_plan_version=1,
+                    claim_id="saved-claim",
+                    claim_generation=5,
+                    block_code="budget_exhausted",
+                    block_owner="flow-owner",
+                    block_required_input="Increase the accepted flow budget.",
+                )
+            )
+        await session.flush()
+        contract = SimpleNamespace(
+            node=SimpleNamespace(
+                repository_identity=node.repository_identity,
+                provider_repository_id=987,
+                repository_connection=SimpleNamespace(installation_id=222, model_dump=lambda **kwargs: node.repository_connection),
+                issue_ref=node.issue_ref,
+            ),
+            repository_ids={node.repository_identity},
+        )
+        monkeypatch.setattr("src.orchestration.accepted_node.accepted_node_contract", AsyncMock(return_value=contract))
+        owner = AsyncMock(return_value=(None, OwnerState.REVOKED))
+        provider = AsyncMock()
+        monkeypatch.setattr("src.admin.installations.resolver.resolve_installation_owner", owner)
+        monkeypatch.setattr("src.orchestration.repository_binding.resolve_story_repository", provider)
+
+        first = await run_diagnosis_pass(session, config)
+        second = await run_diagnosis_pass(session, replace(config, repo="fictional/global-c"))
+        assert first.diagnoses_recorded == 1 and first.undispatchable == 1 and first.pending == []
+        assert second.diagnoses_recorded == 0 and second.pending == []
+        assert len(await _diagnoses(session, node.id)) == 1
+        provider.assert_not_awaited()
+        if failure == "revoked":
+            owner.assert_awaited_once()
+        else:
+            owner.assert_not_awaited()
+        if failure == "exhausted":
+            execution = await session.scalar(select(OrchestrationExecution).where(OrchestrationExecution.node_id == node.id))
+            assert execution.block_code == "budget_exhausted" and execution.block_owner == "flow-owner"
+            assert execution.block_required_input == "Increase the accepted flow budget."
+
+    async def test_product_story_without_accepted_repository_does_not_use_global_default(self, session, config):
+        await _make_org(session)
+        flow = await _make_flow(session)
+        flow.product_id = "fictional-product"
+        node = await _make_node(session, flow, state=NodeState.HALTED)
+        await _record_trigger(session, node)
+        result = await run_diagnosis_pass(session, config)
+        assert result.diagnoses_recorded == 1 and result.undispatchable == 1 and result.pending == []
+
     async def test_a_node_with_no_stall_or_halt_event_is_never_diagnosed(self, session, config):
         """A node failed by hand is in a diagnosable state but nothing asked for a diagnosis.
 
@@ -774,6 +941,7 @@ class TestTenantIsolation:
         await _make_org(session)
         flow = await _make_flow(session)
         node = await _make_node(session, flow, state=NodeState.HALTED)
+        await _bind_started_node(session, node)
         await _record_trigger(session, node)
 
         report = await run_diagnosis_pass(session, config)
@@ -835,7 +1003,7 @@ class TestCutSafety:
         imported = {alias.name for node in from_dispatch for alias in node.names}
 
         assert {"message_group_id", "message_deduplication_id"} <= imported, "diagnose.py must reuse the dispatch story's FIFO key shapes"
-        assert "resolve_installation_id" in imported, "diagnose.py must reuse the dispatch story's fail-closed installation check"
+        assert "resolve_installation_id" not in imported, "a saved binding, not a tenant-wide installation, routes a diagnoser"
 
     def test_the_vocabulary_comes_from_the_single_declared_module(self):
         """R-N2a: a local copy of the state vocabulary would be a requirement violation."""
@@ -872,6 +1040,11 @@ class TestFailsClosed:
     def test_explicit_true_enables_it(self, monkeypatch, value):
         monkeypatch.setenv(FEATURE_FLAG_ENV, value)
         assert DiagnosisConfig.from_env().enabled is True
+
+    def test_global_repository_does_not_route_advisory_work(self, monkeypatch):
+        monkeypatch.setenv(FEATURE_FLAG_ENV, "true")
+        monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "fictional/wrong-target")
+        assert DiagnosisConfig.from_env().repo == ""
 
     def test_the_flag_semantics_match_the_gateway_s_strict_helper(self, monkeypatch):
         """Pinned against `_is_enabled_strict` so the two cannot drift.
@@ -1007,6 +1180,7 @@ class TestDispatchIsAdvisoryToo:
         await _make_org(session)
         flow = await _make_flow(session)
         node = await _make_node(session, flow, state=NodeState.HALTED)
+        await _bind_started_node(session, node)
         await _record_trigger(session, node)
 
         report = await run_diagnosis_pass(session, config)
@@ -1021,6 +1195,7 @@ class TestDispatchIsAdvisoryToo:
         await _make_org(session)
         flow = await _make_flow(session)
         node = await _make_node(session, flow, state=NodeState.HALTED)
+        await _bind_started_node(session, node)
         await _record_trigger(session, node)
 
         report = await run_diagnosis_pass(session, config)
@@ -1034,6 +1209,7 @@ class TestDispatchIsAdvisoryToo:
         await _make_org(session)
         flow = await _make_flow(session)
         node = await _make_node(session, flow, state=NodeState.HALTED)
+        await _bind_started_node(session, node)
         await _record_trigger(session, node)
 
         report = await run_diagnosis_pass(session, config)
@@ -1050,6 +1226,7 @@ class TestDispatchIsAdvisoryToo:
         await _make_org(session)
         flow = await _make_flow(session)
         node = await _make_node(session, flow, state=NodeState.HALTED)
+        await _bind_started_node(session, node)
         await _record_trigger(session, node)
 
         report = await run_diagnosis_pass(session, config)
@@ -1068,6 +1245,7 @@ class TestDispatchIsAdvisoryToo:
         await _make_org(session)
         flow = await _make_flow(session)
         node = await _make_node(session, flow, state=NodeState.HALTED)
+        await _bind_started_node(session, node)
         await _record_trigger(session, node)
 
         report = await run_diagnosis_pass(session, config)
@@ -1142,6 +1320,7 @@ class TestDispatchIsAdvisoryToo:
         await _make_org(session)
         flow = await _make_flow(session)
         node = await _make_node(session, flow, state=NodeState.HALTED, issue_ref="#4214")
+        await _bind_started_node(session, node)
         await _record_trigger(session, node)
 
         report = await run_diagnosis_pass(session, config)

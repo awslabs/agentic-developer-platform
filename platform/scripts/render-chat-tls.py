@@ -27,6 +27,14 @@ GATEWAY_NS = "adp-gateway"
 SANDBOX_NS = "adp-gateway-agents"
 
 
+def _validity(cert, attribute):
+    # cryptography >= 42 exposes timezone-aware `*_utc` properties; the operator's
+    # system interpreter (deploy-all.sh runs this through apply-chat-tls.sh) may
+    # still carry an older release whose naive datetimes are UTC by definition.
+    aware = getattr(cert, attribute + "_utc", None)
+    return aware if aware is not None else getattr(cert, attribute).replace(tzinfo=UTC)
+
+
 def validate_certificate(certificate, key, ca, now=None):
     now = now or datetime.now(UTC)
     pem = rb"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?"
@@ -57,8 +65,8 @@ def validate_certificate(certificate, key, ca, now=None):
         raise ValueError("TLS certificate signature does not match issuer") from error
     for cert in (leaf, root):
         if (
-            cert.not_valid_before_utc > now
-            or cert.not_valid_after_utc < now + timedelta(hours=48)
+            _validity(cert, "not_valid_before") > now
+            or _validity(cert, "not_valid_after") < now + timedelta(hours=48)
         ):
             raise ValueError("TLS certificate must be valid for at least 48 hours")
     if not root.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
@@ -191,7 +199,19 @@ def render(deployment, certificate, key, ca, now=None):
                     "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1},
                 },
                 "selector": {"matchLabels": labels},
-                "template": {"metadata": {"labels": labels}, "spec": spec},
+                "template": {
+                    "metadata": {
+                        "labels": labels,
+                        "annotations": {
+                            # Match the ordinary Python gateway: the CloudWatch
+                            # controller otherwise enables Java injection, whose
+                            # init container fails restricted Pod Security.
+                            "cloudwatch.aws.amazon.com/auto-annotate-java": "false",
+                            "instrumentation.opentelemetry.io/inject-java": "false",
+                        },
+                    },
+                    "spec": spec,
+                },
             },
         },
         {

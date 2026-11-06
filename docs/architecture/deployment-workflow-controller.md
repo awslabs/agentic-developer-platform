@@ -62,6 +62,30 @@ decisions. A reviewed documentation-only selection creates a separate durable
 path. An all-entries-verified handoff likewise preserves the final acceptance
 boundary.
 
+## Agent-initiated correlated dispatch
+
+A flagged delivery-flow story with an accepted `operate` executor can observe
+Actions runs and masked, bounded logs through the repository-bound gateway. Only
+the named workflows in its accepted required inputs can be dispatched or re-run;
+workflow definitions containing `adp_approved_revision` cannot be dispatched by
+the worker, so the human deploy-boundary approval is unchanged. The gateway
+supplies the accepted source and workflow-definition SHAs and run correlation as
+`adp_source_revision`, `adp_definition_revision` and `adp_correlation` on dispatch.
+The workflow, not the worker, holds any deployment AWS role. D2 observation can
+adopt a matching run through its existing correlated-context path when the D1
+manifest entry and other D2 prerequisites permit it; this does not enable any
+D1 entry or replace D3 runtime verification.
+
+An operational story can separately conclude from a successful correlated run
+and its verified context artifact plus an authenticated bounded operations
+report, or from a matching engine-observed D3 runtime receipt and the same
+report. The gateway checks repository, workflow, attempt, accepted revision pins
+and claim before recording the context artifact reference. A green run alone
+cannot produce a D3 verified-runtime receipt, and a report alone cannot satisfy
+an evidence expectation. The evidence IDs and typed hold reasons appear in
+engine decisions; this story conclusion does not assert deployment-controller
+runtime acceptance or live qualification.
+
 Code merge, deployed revision readback and live qualification are separate.
 No authority activation, infrastructure apply, worker drain, credential
 projection or qualification run is performed by this implementation.

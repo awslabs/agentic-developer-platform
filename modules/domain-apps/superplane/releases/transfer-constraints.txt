@@ -59,6 +59,12 @@
 fastapi==0.115.6
 starlette==0.41.3
 
+# pytest 9.2 loses existing Starlette State attributes during MonkeyPatch.undo(),
+# deleting shared domain_policy/current_identity_reader fixtures and cascading
+# into unrelated authorization failures. 9.1.1 restores the original values.
+# Keep the API test lane on the verified version; runtime images do not use pytest.
+pytest==9.1.1
+
 # Shared credential consumer/renewal integration runs in the API dependency lane.
 # Exercise the SDK major used by workspace-provisioning[worker], not an unrelated
 # newest API-compatible version. This is CI resolution, not an image release.

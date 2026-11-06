@@ -55,6 +55,27 @@ async def test_parallel_descendants_and_new_run_ids_share_one_remaining_allowanc
     assert (await meter.store.snapshot(meter.target)).total_usd == 50
 
 
+async def test_settled_spend_survives_a_long_flow_and_later_window_extension(meter):
+    from src.orchestration.execution_policy import MAX_WALL_CLOCK_SECONDS
+
+    assert (await meter.store.reserve("early-call", Decimal(40), [meter.target])).admitted
+    await meter.store.reconcile("early-call", Decimal(40), [meter.target])
+    # The initial policy can be short, then renewed to the maximum allowed
+    # shared window. Both snapshot and Lua admission must keep the first charge.
+    meter.clock[0] += MAX_WALL_CLOCK_SECONDS
+    assert (await meter.store.snapshot(meter.target)).total_usd == 40
+    assert not (await meter.store.reserve("renewed-worker", Decimal(11), [meter.target])).admitted
+    assert (await meter.store.reserve("fits", Decimal(10), [meter.target])).admitted
+    assert (await meter.store.snapshot(meter.target)).total_usd == 50
+    assert await meter.client.ttl(meter.target.key()) >= MAX_WALL_CLOCK_SECONDS
+
+
+def test_meter_retention_covers_policy_accepted_before_work_can_start():
+    policy = _policy(expires_at=datetime.now(UTC) + timedelta(days=60))
+    target = flow_meter.meter_target(org_id=policy.org_id, flow_id="future", policy=policy)
+    assert target.ttl_seconds >= 60 * 86400
+
+
 async def test_redis_loss_cannot_reinitialize_an_existing_flow(meter):
     assert (await meter.store.reserve("spent-run", Decimal(20), [meter.target])).admitted
     await meter.client.flushdb()
@@ -68,6 +89,24 @@ async def test_redis_loss_cannot_reinitialize_an_existing_flow(meter):
 async def test_existing_work_without_a_meter_requires_reconciliation(meter):
     assert not await flow_meter.prepare_flow_meter(
         org_id=meter.policy.org_id, flow_id="old-flow", policy=meter.policy, nodes=[SimpleNamespace(attempts=1, kind="story", state="running")]
+    )
+
+
+async def test_a_node_superseded_before_its_first_attempt_does_not_block_meter_creation(meter):
+    """A plan revision approved before anything ran must not strand the flow (#7408).
+
+    The superseded node never dispatched, so nothing was spent; the meter can start
+    at zero exactly as it would for a flow of only pending nodes.
+    """
+    never_ran = SimpleNamespace(attempts=0, kind="story", state="superseded")
+    pending = SimpleNamespace(attempts=0, kind="story", state="pending")
+    assert await flow_meter.prepare_flow_meter(org_id=meter.policy.org_id, flow_id="revised-flow", policy=meter.policy, nodes=[never_ran, pending])
+
+
+async def test_a_superseded_node_that_did_run_still_requires_reconciliation(meter):
+    ran_then_superseded = SimpleNamespace(attempts=1, kind="story", state="superseded")
+    assert not await flow_meter.prepare_flow_meter(
+        org_id=meter.policy.org_id, flow_id="revised-old-flow", policy=meter.policy, nodes=[ran_then_superseded]
     )
 
 
@@ -122,7 +161,10 @@ async def test_budget_service_enforces_flow_when_legacy_run_caps_are_disabled(me
 
     @asynccontextmanager
     async def session():
-        yield _no_budget_session()
+        db = _no_budget_session()
+        # The verified run belongs to an existing legacy flow without Product scope.
+        db.scalar = AsyncMock(return_value=SimpleNamespace(product_id=None, project_id=None))
+        yield db
 
     monkeypatch.setattr(service, "_get_session", session)
     monkeypatch.setattr(service, "_note_check_succeeded", AsyncMock())
@@ -236,3 +278,77 @@ def test_quote_prices_requested_output_and_refuses_unbounded_provider_features()
     for changes in ({"max_tokens": None}, {"model": "unknown"}, {"mcp_servers": ["remote"]}, {"messages": [{"content": [{"type": "image"}]}]}):
         with pytest.raises(ValueError):
             quote(dict(body, **changes))
+
+
+# --- An unreported request must not strand the flow (#7451) ----------------------
+
+
+async def _expired_marker(meter, request_id="lost-call", amount=Decimal(20)):
+    """A strict reservation whose usage never arrived: marker expired, reservation live."""
+    await meter.store.reserve(request_id, amount, [meter.target])
+    assert await meter.store.snapshot(meter.target) is not None  # live marker: pending, but readable
+    meter.clock[0] += 3661  # the strict marker lasts 61 minutes; the reservation itself 48 hours
+    assert await meter.store.expired_pending_requests(meter.target) == []  # recently expired: a receipt may still be on its way
+    meter.clock[0] += 301  # expired for the settlement grace: abandoned
+    assert await meter.store.snapshot(meter.target) is None
+    assert await meter.store.reserve("next-call", Decimal(1), [meter.target]) is None
+
+
+async def test_expired_unreported_request_is_settled_at_its_bound_and_recorded(meter, db_session_factory):
+    from src.budget.enforcement_settings import BudgetAccountingGap
+
+    await _expired_marker(meter)
+    assert await meter.store.expired_pending_requests(meter.target) == ["lost-call"]
+    async with db_session_factory() as session:
+        snapshot = await flow_meter.reconcile_flow_meter(session, org_id=meter.policy.org_id, flow_id="flow", policy=meter.policy)
+        assert snapshot is not None and snapshot.total_usd == Decimal(20) and not snapshot.has_pending
+        gap = await session.get(BudgetAccountingGap, "lost-call")
+        assert gap is not None and gap.scope_key == meter.target.key()
+    # The flow can spend again; the bound stays charged and is never lowered.
+    assert (await meter.store.reserve("next-call", Decimal(1), [meter.target])).admitted
+    assert (await meter.store.snapshot(meter.target)).total_usd == Decimal(21)
+
+
+async def test_live_marker_is_never_settled_early(meter, db_session_factory):
+    await meter.store.reserve("in-flight", Decimal(5), [meter.target])
+    assert await meter.store.expired_pending_requests(meter.target) == []
+    assert await meter.store.settle_expired_pending("in-flight", meter.target) is False
+    async with db_session_factory() as session:
+        snapshot = await flow_meter.reconcile_flow_meter(session, org_id=meter.policy.org_id, flow_id="flow", policy=meter.policy)
+    assert snapshot is not None and snapshot.has_pending
+
+
+async def test_receipt_still_wins_over_settlement_at_bound(meter, db_session_factory):
+    from src.budget.enforcement_settings import BudgetAccountingGap
+    from src.shared.models.budget import BudgetSettlementReceipt
+
+    await _expired_marker(meter, "late-receipt", Decimal(20))
+    async with db_session_factory() as session:
+        session.add(
+            BudgetSettlementReceipt(
+                org_id=meter.policy.org_id,
+                request_id="late-receipt",
+                allocation_key="test",
+                user_id="worker",
+                total_tokens=0,
+                cost_usd=Decimal("0.25"),
+                reservation_scope_keys=[meter.target.key()],
+            )
+        )
+        await session.commit()
+        snapshot = await flow_meter.reconcile_flow_meter(session, org_id=meter.policy.org_id, flow_id="flow", policy=meter.policy)
+        assert snapshot is not None and snapshot.total_usd == Decimal("0.25")
+        assert await session.get(BudgetAccountingGap, "late-receipt") is None
+
+
+async def test_unknown_usage_waits_the_settlement_grace_for_its_receipt(meter, db_session_factory):
+    await meter.store.reserve("unknown-usage", Decimal(5), [meter.target])
+    await meter.store.mark_unknown("unknown-usage", meter.target)
+    assert await meter.store.snapshot(meter.target) is None
+    meter.clock[0] += 240
+    assert await meter.store.expired_pending_requests(meter.target) == []
+    assert await meter.store.settle_expired_pending("unknown-usage", meter.target) is False
+    async with db_session_factory() as session:
+        assert await flow_meter.reconcile_flow_meter(session, org_id=meter.policy.org_id, flow_id="flow", policy=meter.policy) is None
+    meter.clock[0] += 61
+    assert await meter.store.expired_pending_requests(meter.target) == ["unknown-usage"]

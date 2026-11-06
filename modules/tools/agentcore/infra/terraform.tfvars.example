@@ -6,12 +6,13 @@ code_interpreter_enabled  = false
 websearch_enabled         = false
 aws_account_id            = "123456789012"
 aws_region                = "us-east-1"
+# The protected shared release requires both values from the reviewed tools bootstrap.
+# tools_reconciler_key_arn  = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
+# tools_reconciler_role_arn = "arn:aws:iam::123456789012:role/adp-dev-role-tools-reconciler"
 name                      = "REPLACE-existing-cyber-tools-name"
 image_uri                 = ""
 rest_api_id               = ""
-tools_parent_resource_id  = ""
 api_execution_arn         = ""
 stage_name                = ""
-worker_role_arns          = []
 authority_endpoint        = ""
 authority_invoke_arns     = []

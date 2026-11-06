@@ -1,0 +1,24 @@
+{
+  "flow_id": "9a67bcca-0cb1-4fe1-aa20-ff5b834e45e5",
+  "base_plan_version": 5,
+  "base_plan_hash": "390a460ee708a2db03d6d2327e1cabb57979609492f3a9bc844827532ed51ffc",
+  "plan_version": 6,
+  "plan_hash": "7723b67171ec4e8db8bd3b208436578a1a00b9356476b811778f3aa38d16473f",
+  "proposal_hash": "8f60142a4d4c782a2929c897f94ebce09398a041f13c384dd7eb56a226a2eafd",
+  "acceptance_gate_id": "9e1bb036-e247-4855-986c-2ff907340061",
+  "acceptance_gate_address": "cos-runtime-7197/epic-7197/runtime/accept",
+  "execution_paused": true,
+  "execution_authorized": false,
+  "status": "registered_inert_not_accepted",
+  "effective_nodes": 48,
+  "effective_edges": 153,
+  "product_review_gates": 5,
+  "deployment_handoff_gates": 5,
+  "new_evaluation_issues": {
+    "chat": 7400,
+    "memory": 7401,
+    "container": 7402,
+    "ec2": 7403
+  },
+  "note": "Original acceptance/history preserved. No deployment, live run, product acceptance or engine dispatch performed."
+}

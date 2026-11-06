@@ -132,8 +132,8 @@ def _navigation_refusal(session) -> None:
 
 NATIVE_LIMITATIONS = [
     "Only the recorded profile, time and AgentCore Browser egress were tested.",
-    "Page networking, scripts, service workers, WebSockets and popups use native Chromium behavior.",
-    "AgentCore isolates browser sessions; this collector does not filter every page request or pin DNS destinations.",
+    "Native requests are checked before dispatch; service workers and WebSockets are blocked in read-only sessions.",
+    "AgentCore isolates browser sessions; native network connections do not pin DNS destinations.",
     *LIMITATIONS[1:2],
     *LIMITATIONS[4:],
 ]
@@ -187,6 +187,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
         else:
             dropped[kind] += 1
 
+    deadline_options = ({"deadline_at": request["deadline_at"]} if "deadline_at" in request else {})
     session = opener(
         request["url"],
         playwright,
@@ -198,6 +199,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
         },
         read_only=True,
         navigation_check=request.get("_navigation_check"),
+        **deadline_options,
     )
 
     def on_response(response):

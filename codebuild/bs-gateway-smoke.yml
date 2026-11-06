@@ -10,13 +10,19 @@ version: 0.2
 # daemon, so docker builds run here — the platform convention.
 
 phases:
+  install:
+    runtime-versions:
+      python: 3.12
   build:
     commands:
       # Issue #5146: stage the shared review-result contract into the build context
       # before building, exactly as bs-gateway-build.yml does. A smoke build that
       # skipped this would pass while the deploy build's selfcheck failed — the PR
       # gate would then be green on an image that cannot ship.
+      - python3 -m pip install uv==0.13.5
       - modules/gateway/scripts/stage-contracts.sh
+      - bash modules/L5-services/scripts/stage-gateway.sh
+      - bash modules/gateway/scripts/build-skills-archive.sh --stage
       - cd modules/gateway
       - docker build --pull -t adp-gateway:pr-smoke .
   post_build:

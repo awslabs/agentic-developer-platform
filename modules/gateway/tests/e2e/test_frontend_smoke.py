@@ -9,7 +9,7 @@ Markers:
 - @pytest.mark.live_only — only runs against a deployed environment
 """
 
-import re
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -65,21 +65,9 @@ class TestFrontendSmoke:
         page = playwright_page
         page.goto(base_url, wait_until="networkidle")
 
-        # Look for a sign-in / login link or button
-        sign_in = page.locator("text=/sign.?in|log.?in/i").first
-        if sign_in.is_visible():
-            with page.expect_navigation(wait_until="commit"):
-                sign_in.click()
-
-            nav_url = page.url
-            assert "amazoncognito.com" in nav_url or cognito_auth_domain in nav_url, f"Expected redirect to Cognito auth domain, got {nav_url}"
-        else:
-            # If there's no visible sign-in button, check if the page is
-            # already showing a Cognito redirect or an auth-required state
-            page_content = page.content()
-            assert "login" in page_content.lower() or "sign" in page_content.lower() or "cognito" in page.url.lower(), (
-                "Could not find sign-in mechanism on the page"
-            )
+        page.get_by_test_id("email-login-btn").click(timeout=15000)
+        page.wait_for_url(lambda url: (urlsplit(url).hostname or "").endswith(".amazoncognito.com"), timeout=15000)
+        assert (urlsplit(page.url).hostname or "").endswith(".amazoncognito.com")
 
     def test_authenticated_view_renders(self, playwright_page, base_url):
         """Complete sign-in with test user and verify authenticated view (live only).
@@ -87,29 +75,31 @@ class TestFrontendSmoke:
         This test requires TEST_USER_EMAIL and TEST_USER_PASSWORD to be set.
         """
         cfg = load_live_config()
-        if not cfg.test_user_email or not cfg.test_user_password:
-            pytest.skip("TEST_USER_EMAIL and TEST_USER_PASSWORD required for authenticated frontend test")
-
+        assert cfg.test_user_email and cfg.test_user_password, "Native browser fixture credentials are required"
         page = playwright_page
-        page.goto(base_url, wait_until="networkidle")
+        page.goto(base_url, wait_until="domcontentloaded")
+        page.get_by_test_id("email-login-btn").click(timeout=15000)
+        page.wait_for_url(lambda url: (urlsplit(url).hostname or "").endswith(".amazoncognito.com"), timeout=15000)
 
-        # Try to find and click sign-in
-        sign_in = page.locator("text=/sign.?in|log.?in/i").first
-        if not sign_in.is_visible():
-            pytest.skip("No sign-in button found on page")
-
-        sign_in.click()
-        page.wait_for_url(re.compile(r"amazoncognito\.com|auth\."), timeout=10000)
-
-        # Fill in Cognito hosted UI credentials
-        page.fill("input[name='username'], input[name='email'], #signInFormUsername", cfg.test_user_email)
-        page.fill("input[name='password'], #signInFormPassword", cfg.test_user_password)
-        page.click("input[type='submit'], button[type='submit']")
-
-        # Wait for redirect back to the SPA
-        page.wait_for_url(re.compile(re.escape(cfg.cloudfront_domain)), timeout=15000)
-
-        # Authenticated view should render (look for dashboard-like content)
-        page.wait_for_load_state("networkidle")
-        body_text = page.inner_text("body")
-        assert len(body_text) > 50, "Authenticated view should have substantial content"
+        # Cognito renders hidden desktop/mobile copies; fill only the visible form.
+        page.locator('input[name="username"]:visible').fill(cfg.test_user_email)
+        page.locator('input[name="password"]:visible').fill(cfg.test_user_password)
+        page.locator('input[name="signInSubmitButton"]:visible').click()
+        target = urlsplit(base_url)
+        page.wait_for_url(
+            lambda url: (
+                (urlsplit(url).scheme, urlsplit(url).netloc) == (target.scheme, target.netloc)
+                and urlsplit(url).path not in ("/login", "/auth/callback")
+            ),
+            timeout=30000,
+        )
+        page.wait_for_function(
+            """() => Boolean(sessionStorage.getItem('cognito_access_token'))
+                && Number(sessionStorage.getItem('cognito_token_expiry')) > Date.now()""",
+            timeout=15000,
+        )
+        page.get_by_role("navigation", name="Main navigation", exact=True).wait_for(
+            state="visible",
+            timeout=30000,
+        )
+        assert len(page.inner_text("body")) > 50, "Authenticated view should have substantial content"

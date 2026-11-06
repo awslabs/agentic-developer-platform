@@ -197,6 +197,7 @@ def test_the_session_token_is_the_only_credential_path(monkeypatch) -> None:
             raise AssertionError("stop after inspecting the header")
 
     api = cli.Api.__new__(cli.Api)
+    api.binding = None
     api.base = "https://gateway.example.test/api"
     api.opener = RecordingOpener()
 

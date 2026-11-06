@@ -24,6 +24,7 @@ import { workerAwsCredentialProvider, workerIdentityHeaders, readIdentityToken, 
 import { handleKnowledgeBridge } from './lib/knowledgeBridge';
 import { proxyPort } from './lib/proxyPort';
 import { responsesOutputDefault, withResponsesOutputBound } from './lib/responsesOutputBound';
+import { modelAdmissionProgress, AdmissionStatus } from './lib/modelAdmissionProgress';
 
 const args = process.argv.slice(2);
 const get = (flag: string, def: string) => {
@@ -37,11 +38,36 @@ const TENANT_ID = process.env.TENANT_ID || '';
 const AGENT_RUN_ID = process.env.ADP_MESSAGE_ID || '';
 const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';
 const RESPONSES_OUTPUT_DEFAULT = responsesOutputDefault();
+const BUDGET_WAIT_MAX_SECONDS = Number(process.env.ADP_BUDGET_WAIT_MAX_SECONDS ?? '4200');
 
 if (!TARGET) { console.error('ERROR: --target is required'); process.exit(1); }
+if (!Number.isFinite(BUDGET_WAIT_MAX_SECONDS) || BUDGET_WAIT_MAX_SECONDS <= 0) {
+  console.error('ERROR: ADP_BUDGET_WAIT_MAX_SECONDS must be a positive number'); process.exit(1);
+}
 
 const targetUrl = new URL(TARGET);
+const toolsTargetUrl = (() => {
+  const configured = process.env.ADP_TOOLS_GATEWAY_URL;
+  if (!configured) return null;
+  try {
+    const url = new URL(configured);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
+        !url.pathname.endsWith('/agent/tools')) throw new Error('invalid tools gateway');
+    return url;
+  } catch { console.error('ERROR: ADP_TOOLS_GATEWAY_URL must be an HTTPS /agent/tools URL'); process.exit(1); }
+})();
 const REGION = get('--region', gatewaySigningRegion(TARGET));
+const progressPath = (() => {
+  if (process.env.ADP_AGENT_AUTHORITY_ENABLED !== 'true') return null;
+  try {
+    const control = new URL(process.env.ADP_AGENT_CONTROL_ENDPOINT || '');
+    const prefix = targetUrl.pathname.slice(0, -'/agent'.length);
+    if (!targetUrl.pathname.endsWith('/agent') || control.origin !== targetUrl.origin ||
+        control.protocol !== 'https:' || control.pathname !== prefix + '/internal/v1/agent' ||
+        control.search || control.hash || control.username || control.password) return null;
+    return control.pathname + '/self/status';
+  } catch { return null; }
+})();
 
 const STRIP = new Set([
   'authorization', 'x-amz-security-token', 'x-amz-date',
@@ -60,6 +86,63 @@ const signer = new SignatureV4({
   sha256: Hash.bind(null, 'sha256'),
 });
 
+const toolsSigner = toolsTargetUrl ? new SignatureV4({
+  credentials: async () => {
+    platformCredentials ??= await workerAwsCredentialProvider();
+    return platformCredentials();
+  },
+  region: gatewaySigningRegion(toolsTargetUrl.href), service: 'execute-api', sha256: Hash.bind(null, 'sha256'),
+}) : null;
+
+// 503 execution_policy_refused reasons the gateway itself classifies as unavailable
+// rather than denied (gateway model_identity.py): the meter heals within minutes.
+const RETRYABLE_POLICY_REASONS = new Set(['spend_unknown', 'budget_unavailable', 'budget_enforcement_unavailable']);
+
+let admissionSequence = 0;
+const reportModelAdmission = (status: AdmissionStatus, remaining: number): Promise<void> => {
+  if (!progressPath) return Promise.resolve();
+  admissionSequence = Math.max(Date.now(), admissionSequence + 1);
+  const body = JSON.stringify({
+    status: 'in_progress',
+    model_admission_status: status,
+    model_admission_sequence: String(admissionSequence),
+    summary: status === 'not_waiting' ? 'Model admission is no longer waiting for budget.'
+      : `Waiting for budget holds to settle; retrying model admission (up to ${Math.ceil(remaining / 1000)}s remaining)`,
+  });
+  return new Promise(resolve => {
+    let finished = false;
+    let request: http.ClientRequest | undefined;
+    const finish = (failed: boolean) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      request?.destroy();
+      if (failed) console.error('[proxy] budget wait progress unavailable');
+      resolve();
+    };
+    const timer = setTimeout(() => finish(true), 5000);
+    void (async () => {
+      try {
+        const signed = await signer.sign({
+          method: 'POST', hostname: targetUrl.hostname, protocol: targetUrl.protocol,
+          path: progressPath, headers: {
+            host: targetUrl.host, 'content-type': 'application/json',
+            'content-length': String(Buffer.byteLength(body)), ...workerIdentityHeaders(),
+          }, body,
+        });
+        if (finished) return;
+        request = https.request({
+          hostname: targetUrl.hostname, port: targetUrl.port || 443,
+          path: progressPath, method: 'POST', headers: signed.headers,
+        }, response => { response.resume(); finish(response.statusCode !== 200); });
+        request.once('error', () => finish(true));
+        request.end(body);
+      } catch { finish(true); }
+    })();
+  });
+};
+const admissionProgress = modelAdmissionProgress(reportModelAdmission);
+
 const server = http.createServer(async (req, res) => {
   if (await handleKnowledgeBridge(req, res)) return;
   // Health-check endpoint for entrypoint readiness probe (issue #747)
@@ -70,8 +153,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   const method = req.method || 'GET';
-  const upstreamPath = targetUrl.pathname.replace(/\/$/, '') + (req.url || '/');
-  const upstreamUrl  = `${targetUrl.protocol}//${targetUrl.host}${upstreamPath}`;
+  const toolsRoute = /^\/tools(?:\/|\?|$)/.test(req.url || '');
+  if (toolsRoute && (!toolsTargetUrl || process.env.ADP_AGENT_AUTHORITY_ENABLED !== 'true' ||
+      !/^\/tools(?:\/[A-Za-z0-9_-]+)*$/.test((req.url || '').split('?')[0]))) {
+    res.writeHead(404); res.end(); return;
+  }
+  const upstream = toolsRoute ? toolsTargetUrl! : targetUrl;
+  const upstreamPath = toolsRoute
+    ? upstream.pathname + (req.url || '').slice('/tools'.length)
+    : targetUrl.pathname.replace(/\/$/, '') + (req.url || '/');
+  const upstreamUrl = `${upstream.protocol}//${upstream.host}${upstreamPath}`;
 
   // Collect body
   const chunks: Buffer[] = [];
@@ -84,7 +175,7 @@ const server = http.createServer(async (req, res) => {
     : originalBody;
 
   // Clean headers — strip old auth
-  const headers: Record<string, string> = { host: targetUrl.host };
+  const headers: Record<string, string> = { host: upstream.host };
   for (const [k, v] of Object.entries(req.headers)) {
     if (!STRIP.has(k.toLowerCase()) && typeof v === 'string') {
       headers[k.toLowerCase()] = v;
@@ -109,34 +200,6 @@ const server = http.createServer(async (req, res) => {
     headers['x-agent-correlationid'] = AGENT_CORRELATION_ID;
   }
 
-  // Re-sign with execute-api
-  let signed: { headers: Record<string, string> };
-  try {
-    if (process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true') {
-      // Read refreshed identity per call; local clients cannot select a run.
-      for (const [name, value] of Object.entries(workerIdentityHeaders())) {
-        headers[name.toLowerCase()] = value;
-      }
-    } else if (process.env.ADP_RUN_REPORT_CREDENTIAL_FILE) {
-      // Shared-role dispatch uses the same server-owned run assignment for
-      // model attribution. Never forward a local client's chosen capability.
-      headers['x-adp-report-credential'] = readIdentityToken(process.env.ADP_RUN_REPORT_CREDENTIAL_FILE);
-    }
-    signed = await signer.sign({
-      method,
-      hostname: targetUrl.hostname,
-      path: upstreamPath,
-      protocol: targetUrl.protocol,
-      headers,
-      body: body.length ? body : undefined,
-    });
-  } catch (err) {
-    console.error('[proxy] signing error:', err);
-    res.writeHead(502); res.end('Proxy signing error'); return;
-  }
-
-  console.log(`[proxy] → ${method} ${upstreamUrl} (${body.length}b)`);
-
   // Response-body idle timeout: if upstream sends headers then stalls mid-stream,
   // destroy the connection so the SDK sees a broken stream and retries.
   //
@@ -153,75 +216,216 @@ const server = http.createServer(async (req, res) => {
   const RESP_IDLE_MS = 600_000; // 10 minutes
 
   const parsed = new URL(upstreamUrl);
-  const proxyReq = https.request({
-    hostname: parsed.hostname,
-    port: parsed.port || 443,
-    path: parsed.pathname + (parsed.search || ''),
-    method,
-    headers: signed.headers,
-    timeout: 3600_000, // 1 hour — match Bedrock's maximum response time
-  }, (proxyRes) => {
-    if (res.destroyed) { proxyRes.destroy(); return; }
-    console.log(`[proxy] ← ${proxyRes.statusCode}`);
-    res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+  const query: Record<string, string[]> = Object.create(null);
+  parsed.searchParams.forEach((value, name) => { (query[name] ??= []).push(value); });
+  const expiry = (value: string | undefined) => {
+    const parsedExpiry = Date.parse(value || '');
+    return Number.isFinite(parsedExpiry) ? parsedExpiry : value ? 0 : Infinity;
+  };
+  const deadline = Math.min(Date.now() + BUDGET_WAIT_MAX_SECONDS * 1000,
+    expiry(process.env.ADP_POD_DEADLINE_AT), expiry(process.env.ADP_ACCEPTED_POLICY_EXPIRES_AT));
+  let proxyReq: http.ClientRequest | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let attempt = 0;
+  const admissionKey = Symbol();
+  res.once('close', () => {
+    admissionProgress.clear(admissionKey);
+    if (!res.writableFinished) {
+      if (retryTimer) clearTimeout(retryTimer);
+      proxyReq?.destroy();
+    }
+  });
 
-    // Idle watchdog on the response body — upstream can send headers then stall.
-    let idleTimeout = setTimeout(() => {
-      console.error(`[proxy] response idle timeout: no data for ${RESP_IDLE_MS / 1000}s — destroying stream`);
-      proxyRes.destroy(new Error('response idle timeout'));
-    }, RESP_IDLE_MS);
-    const bumpIdle = () => {
-      clearTimeout(idleTimeout);
-      idleTimeout = setTimeout(() => {
+  const exhausted = () => {
+    admissionProgress.clear(admissionKey);
+    if (res.destroyed) return;
+    res.writeHead(409, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'budget_wait_exhausted', retryable: false }));
+  };
+  const retryAfterMs = (value: string | string[] | undefined) => {
+    if (typeof value !== 'string') return 0;
+    const seconds = Number(value);
+    if (value.trim() && Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const date = Date.parse(value);
+    return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
+  };
+
+  const dispatch = async (): Promise<void> => {
+    if (res.destroyed) return;
+    if (attempt && Date.now() >= deadline) { exhausted(); return; }
+    let signed: { headers: Record<string, string> };
+    try {
+      if (process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true') {
+        for (const [name, value] of Object.entries(workerIdentityHeaders())) {
+          headers[name.toLowerCase()] = value;
+        }
+      } else if (process.env.ADP_RUN_REPORT_CREDENTIAL_FILE) {
+        headers['x-adp-report-credential'] = readIdentityToken(process.env.ADP_RUN_REPORT_CREDENTIAL_FILE);
+      }
+      signed = await (toolsRoute ? toolsSigner! : signer).sign({
+        method, hostname: upstream.hostname, path: parsed.pathname, query,
+        protocol: upstream.protocol, headers, body: body.length ? body : undefined,
+      });
+    } catch (err) {
+      if (res.destroyed) return;
+      console.error('[proxy] signing error:', err);
+      res.writeHead(502); res.end('Proxy signing error'); return;
+    }
+    if (res.destroyed) return;
+    if (attempt && Date.now() >= deadline) { exhausted(); return; }
+    console.log(`[proxy] → ${method} ${upstreamUrl} (${body.length}b)`);
+
+    const upstreamRequest = https.request({
+      hostname: parsed.hostname,
+      port: parsed.port || 443,
+      path: parsed.pathname + (parsed.search || ''),
+      method,
+      headers: signed.headers,
+      timeout: 3600_000, // 1 hour — match Bedrock's maximum response time
+    }, (proxyRes) => {
+      if (res.destroyed) { proxyRes.destroy(); return; }
+      console.log(`[proxy] ← ${proxyRes.statusCode}`);
+
+      if (!toolsRoute && (proxyRes.statusCode === 429 || proxyRes.statusCode === 502 || proxyRes.statusCode === 503) &&
+          /\bapplication\/json\b/i.test(String(proxyRes.headers['content-type'] || ''))) {
+        const chunks: Buffer[] = [];
+        let length = 0;
+        let forwarded = false;
+        const forward = () => {
+          if (forwarded || res.destroyed) return;
+          admissionProgress.clear(admissionKey);
+          forwarded = true;
+          res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+          for (const chunk of chunks) res.write(chunk);
+        };
+        const bodyTimeout = setTimeout(() => proxyRes.destroy(new Error('budget response timeout')), 30_000);
+        proxyRes.once('close', () => clearTimeout(bodyTimeout));
+        proxyRes.once('end', () => clearTimeout(bodyTimeout));
+        proxyRes.on('data', (chunk: Buffer) => {
+          if (forwarded) { res.write(chunk); return; }
+          length += chunk.length;
+          chunks.push(chunk);
+          if (length > 8192) forward();
+        });
+        proxyRes.once('end', () => {
+          if (res.destroyed) return;
+          if (forwarded) { res.end(); return; }
+          let payload: Record<string, unknown> | undefined;
+          try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+          catch { payload = undefined; }
+          const error = payload?.error;
+          const settlement = typeof payload?.detail === 'object' && payload.detail !== null
+            ? payload.detail as Record<string, unknown> : payload;
+          const settlementError = settlement?.error;
+          const details = settlement?.details;
+          const retryable = settlement?.retryable ?? (typeof details === 'object' && details !== null
+            ? (details as Record<string, unknown>).retryable : undefined);
+          if (proxyRes.statusCode === 502 &&
+              ((settlementError === 'usage_settlement_unconfirmed' && retryable === false) ||
+               (typeof settlementError === 'object' && settlementError !== null &&
+                (settlementError as Record<string, unknown>).type === 'usage_settlement_unconfirmed' &&
+                (settlementError as Record<string, unknown>).retryable === false))) {
+            res.writeHead(409, { ...proxyRes.headers, 'x-should-retry': 'false' });
+            res.end(Buffer.concat(chunks));
+            return;
+          }
+          // The gateway answers 503 execution_policy_refused when the flow's spend is
+          // momentarily unreadable (an in-flight pending marker during a gateway
+          // rollout) or the budget meter is unavailable. It classifies those reasons as
+          // retryable (#7711); the worker must wait for the meter to heal like it waits
+          // for pending reservations, not end the run and burn the attempt.
+          const policyReason = typeof payload?.reason === 'string' ? payload.reason : undefined;
+          const unavailablePolicy = proxyRes.statusCode === 503 && error === 'execution_policy_refused' &&
+            policyReason !== undefined && RETRYABLE_POLICY_REASONS.has(policyReason);
+          const pendingHold = proxyRes.statusCode === 429 && error === 'budget_reservations_pending';
+          if (!pendingHold && !unavailablePolicy) {
+            forward(); res.end(); return;
+          }
+          attempt += 1;
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) { exhausted(); return; }
+          const backoff = Math.min(30_000, 1000 * 2 ** Math.min(attempt - 1, 5));
+          const wait = Math.max(retryAfterMs(proxyRes.headers['retry-after']), backoff + Math.random() * backoff * 0.2);
+          console.log(`[proxy] waiting for budget holds (${unavailablePolicy ? policyReason : 'budget_reservations_pending'}, attempt ${attempt}, up to ${Math.ceil(remaining / 1000)}s remaining)`);
+          admissionProgress.wait(admissionKey, unavailablePolicy ? 'budget_unavailable' : 'budget_reservations_pending', deadline);
+          retryTimer = setTimeout(() => {
+            const elapsedTimer = retryTimer;
+            retryTimer = undefined;
+            if (elapsedTimer) clearTimeout(elapsedTimer);
+            if (wait >= remaining || Date.now() >= deadline) exhausted();
+            else void dispatch();
+          }, Math.min(wait, remaining));
+        });
+        proxyRes.once('error', (err) => {
+          if (res.destroyed) return;
+          if (forwarded) res.destroy(err);
+          else { res.writeHead(502); res.end('Upstream error'); }
+        });
+        proxyRes.once('close', () => {
+          if (!proxyRes.complete && !res.destroyed && !res.writableEnded) {
+            if (forwarded) res.destroy();
+            else { res.writeHead(502); res.end('Upstream error'); }
+          }
+        });
+        return;
+      }
+
+      admissionProgress.clear(admissionKey);
+      res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+
+      // Idle watchdog on the response body — upstream can send headers then stall.
+      let idleTimeout = setTimeout(() => {
         console.error(`[proxy] response idle timeout: no data for ${RESP_IDLE_MS / 1000}s — destroying stream`);
         proxyRes.destroy(new Error('response idle timeout'));
       }, RESP_IDLE_MS);
-    };
-    proxyRes.on('data', bumpIdle);
-    const clearIdle = () => {
-      clearTimeout(idleTimeout);
-      proxyRes.removeListener('data', bumpIdle);
-    };
-    proxyRes.once('end', clearIdle);
-    proxyRes.once('close', clearIdle);
+      const bumpIdle = () => {
+        clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+          console.error(`[proxy] response idle timeout: no data for ${RESP_IDLE_MS / 1000}s — destroying stream`);
+          proxyRes.destroy(new Error('response idle timeout'));
+        }, RESP_IDLE_MS);
+      };
+      proxyRes.on('data', bumpIdle);
+      const clearIdle = () => {
+        clearTimeout(idleTimeout);
+        proxyRes.removeListener('data', bumpIdle);
+      };
+      proxyRes.once('end', clearIdle);
+      proxyRes.once('close', clearIdle);
 
-    // Handle errors on the response stream (e.g. from idle-timeout destroy).
-    // Without this handler, a destroyed proxyRes emits an unhandled 'error'
-    // which would crash the proxy process.
-    proxyRes.on('error', (err) => {
+      // Handle errors on the response stream (e.g. from idle-timeout destroy).
+      // Without this handler, a destroyed proxyRes emits an unhandled 'error'
+      // which would crash the proxy process.
+      proxyRes.on('error', (err) => {
+        if (res.destroyed) return;
+        console.error('[proxy] response stream error:', err.message);
+        if (!res.headersSent) { res.writeHead(502); res.end('Upstream error'); }
+        else if (!res.destroyed) res.destroy();
+      });
+
+      proxyRes.pipe(res);
+    });
+
+    // Enforce the request-level timeout — the declared `timeout` option only
+    // emits a 'timeout' event; without this handler the socket is never aborted.
+    upstreamRequest.on('timeout', () => {
+      console.error('[proxy] upstream request timeout — destroying connection');
+      upstreamRequest.destroy(new Error('upstream request timeout'));
+    });
+
+    upstreamRequest.on('error', (err) => {
       if (res.destroyed) return;
-      console.error('[proxy] response stream error:', err.message);
+      console.error('[proxy] upstream error:', err.message);
       if (!res.headersSent) { res.writeHead(502); res.end('Upstream error'); }
       else if (!res.destroyed) res.destroy();
     });
 
-    proxyRes.pipe(res);
-  });
-
-  // Enforce the request-level timeout — the declared `timeout` option only
-  // emits a 'timeout' event; without this handler the socket is never aborted.
-  proxyReq.on('timeout', () => {
-    console.error('[proxy] upstream request timeout — destroying connection');
-    proxyReq.destroy(new Error('upstream request timeout'));
-  });
-
-  proxyReq.on('error', (err) => {
-    if (res.destroyed) return;
-    console.error('[proxy] upstream error:', err.message);
-    if (!res.headersSent) { res.writeHead(502); res.end('Upstream error'); }
-    else if (!res.destroyed) res.destroy();
-  });
-
-  // SDKs can stop reading at their terminal SSE event before upstream EOF.
-  // Cancel that upstream request when its consumer leaves, including a client
-  // that disconnected while credentials were being resolved above.
-  res.once('close', () => {
-    if (!res.writableFinished) proxyReq.destroy();
-  });
-  if (res.destroyed) { proxyReq.destroy(); return; }
-
-  if (body.length) proxyReq.write(body);
-  proxyReq.end();
+    proxyReq = upstreamRequest;
+    if (res.destroyed) { upstreamRequest.destroy(); return; }
+    if (body.length) upstreamRequest.write(body);
+    upstreamRequest.end();
+  };
+  await dispatch();
 });
 
 server.listen(PORT, '127.0.0.1', () => {
@@ -229,8 +433,8 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`[sigv4-proxy] target: ${TARGET} | region: ${REGION}`);
 });
 
-// Set server-level timeouts to match Bedrock's maximum response time.
-// Default Node.js socket timeout would disconnect before large model responses complete.
-// API Gateway integration timeout is 900s, Bedrock can take up to 3600s for large contexts.
-server.setTimeout(3600_000);        // 1 hour socket timeout
-server.keepAliveTimeout = 3600_000; // 1 hour keep-alive
+// A budget denial can keep the downstream socket quiet for 4200s before the
+// admitted provider request begins. Leave another response-idle interval for
+// the first provider byte so this ceiling cannot cancel a healthy budget wait.
+server.setTimeout(Math.max(3600_000, BUDGET_WAIT_MAX_SECONDS * 1000 + 660_000));
+server.keepAliveTimeout = 3600_000;

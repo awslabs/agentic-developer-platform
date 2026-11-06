@@ -40,6 +40,7 @@ vi.mock('@/hooks/usePermissions', () => ({
     canViewOrganizations: () => false,
     canViewBudgets: () => false,
     canViewRateLimits: () => false,
+    hasPermission: () => false,
     canViewLogs: () => false,
     canViewPool: () => false,
     canViewMetrics: () => false,

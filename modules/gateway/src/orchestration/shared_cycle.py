@@ -82,11 +82,30 @@ async def validate_current_report_assignment(session, row):
     claim = await session.get(OrchestrationWorkClaim, identity.claim_id)
     if claim.active_run_id != row.run_id:
         raise RunReportError("execution_assignment_superseded")
-    plan, _ = await shared_marker(session, org_id=row.org_id, flow_id=row.flow_id)
-    from .plan_lineage import ancestor_plan
+    from .shared_policy import is_protected_assignment
 
-    if await ancestor_plan(session, plan, identity.accepted_plan_version, node_id=identity.node_id) is None:
-        raise RunReportError("execution_assignment_superseded")
+    if not await is_protected_assignment(session, row):
+        plan, _ = await shared_marker(session, org_id=row.org_id, flow_id=row.flow_id)
+        from .plan_lineage import ancestor_plan
+
+        if await ancestor_plan(session, plan, identity.accepted_plan_version, node_id=identity.node_id) is None:
+            raise RunReportError("execution_assignment_superseded")
+    else:
+        # A protected dispatch has no continuation marker (#7419). Its fence is the
+        # in-force plan the execution record was admitted under; an amendment that
+        # supersedes that version supersedes the assignment with it, unless the
+        # amendment verifiably preserved this node (#7535).
+        from .plan_lineage import ancestor_plan
+
+        plan = await session.scalar(
+            select(OrchestrationAcceptedPlan).where(
+                OrchestrationAcceptedPlan.org_id == row.org_id,
+                OrchestrationAcceptedPlan.flow_id == row.flow_id,
+                OrchestrationAcceptedPlan.superseded_at.is_(None),
+            )
+        )
+        if plan is None or await ancestor_plan(session, plan, identity.accepted_plan_version, node_id=identity.node_id) is None:
+            raise RunReportError("execution_assignment_superseded")
     operation = (metadata.get("review_cycle_input") or {}).get("operation_key")
     if operation:
         receipt = await session.get(OrchestrationDecision, receipt_id(operation))
@@ -235,6 +254,7 @@ async def registration_target_for_report(session, row):
         issue=int(str(node.issue_ref).lstrip("#")),
         installation_id=row.installation_id,
         accepted_scope=binding.accepted_scope,
+        provider_repository_id=row.provider_repository_id,
     )
 
 
@@ -247,6 +267,11 @@ class SharedCycleServices(ReviewCycleServices):
         from .review_recovery import recovery_snapshot
 
         return await recovery_snapshot(session, context, node, binding, self, dispatches)
+
+    async def recheck(self, session, context, node, binding, facts):
+        if facts.get("developer_recovery_decision_id"):
+            raise CycleBlockedError("protected_recovery_requires_protected_transport", BlockCode.AUTHORITY_UNVERIFIABLE)
+        await super().recheck(session, context, node, binding, facts)
 
     async def protected(self, org_id, run_id):
         # The historical method name is the controller interface. This projection
@@ -428,7 +453,7 @@ class SharedCycleServices(ReviewCycleServices):
 
         detail, run_id = effect.intent.detail, continuation_run_id(effect.intent.operation_key)
         cfg = self.config or DispatchPassConfig.from_env()
-        if not cfg.configured or cfg.repo != detail["repo"]:
+        if not cfg.configured:
             raise CycleBlockedError("dispatch_configuration_unavailable", BlockCode.CREDENTIAL_UNAVAILABLE)
         async with self.factory() as session:
             # Report mutations also lock the node. Serialize the claim transfer
@@ -460,11 +485,16 @@ class SharedCycleServices(ReviewCycleServices):
                 or binding.id != detail["binding_id"]
                 or binding.revision != detail["binding_revision"]
                 or binding.accepted_scope != detail["accepted_scope"]
+                or binding.repo != detail["repo"]
                 or not binding_scope_matches(binding, node)
             ):
                 raise CycleBlockedError("bound_pr_or_scope_changed", BlockCode.HUMAN_INPUT_REQUIRED)
             old = await session.get(OrchestrationDecision, receipt_id(action.operation_key))
             if old is not None:
+                claim = await session.get(OrchestrationWorkClaim, context.identity.claim_id, populate_existing=True)
+                if claim is None or claim.active_run_id not in {detail["active_run_id"], run_id}:
+                    raise CycleBlockedError("active_claim_changed", BlockCode.OWNERSHIP_LOST)
+                await self.authorize(session, context, node, binding, claim.active_run_id, effect.action)
                 saved = json.loads(old.reason)
                 if old.org_id != node.org_id or old.actor_id != ACTOR or saved.get("run_id") != run_id:
                     raise CycleBlockedError("dispatch_receipt_conflict", BlockCode.AUTHORITY_UNVERIFIABLE)
@@ -515,7 +545,7 @@ class SharedCycleServices(ReviewCycleServices):
                 graph_address=graph_address(node, flow_slug=flow.slug),
                 installation_id=binding.installation_id,
                 issue=int(str(node.issue_ref).lstrip("#")),
-                config=replace(cfg, persona="agent-codex-reviewer"),
+                config=replace(cfg, repo=binding.repo, persona="agent-codex-reviewer"),
                 user_id=principal,
                 cognito_sub=await resolve_user_entity_id(session, node.org_id, principal),
             )

@@ -1,15 +1,23 @@
 """Durable sandbox outcomes, not terminal delivery or proof of teardown."""
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from src.agentauth.chat_admission import _encoded
+from src.agentauth.chat_answer_evidence import AnswerEvidence
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, Identifier
 from src.agentauth.chat_history_write import ChatHistoryConflictError, ChatHistoryWriter
 from src.agentauth.chat_session_mailbox import ChatSessionMailbox
+
+# Owner-visible text for a failed turn, written by the sandbox in place of the generic
+# "could not complete" sentence (for example a refused model-policy decision naming its
+# reason). Bounded like any assistant content and free of control characters; it is the
+# same trust level as a recorded reply, never a private exception.
+ERROR_MESSAGE_MAX_LENGTH = 1024
+ErrorMessage = Annotated[str, StringConstraints(min_length=1, max_length=ERROR_MESSAGE_MAX_LENGTH, pattern=r"^[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+$")]
 
 
 class TurnResult(BaseModel):
@@ -17,11 +25,25 @@ class TurnResult(BaseModel):
 
     outcome: Literal["completed", "failed"]
     message_id: Identifier | None = None
+    error_class: Literal["executor_not_wired", "executor_down"] | None = None
+    error_message: ErrorMessage | None = None
+    reply_granularity: Literal["row"] | None = None
+    # Source coverage behind a completed answer (#8113): which platform tools the sandbox
+    # consulted, over what window, and where they fell short. Recorded, never inferred.
+    evidence: AnswerEvidence | None = None
 
     @model_validator(mode="after")
     def consistent_outcome(self):
         if (self.outcome == "completed") != (self.message_id is not None):
             raise ValueError("only successful outcomes reference an assistant message")
+        if self.error_class is not None and self.outcome != "failed":
+            raise ValueError("only failed outcomes have an error class")
+        if self.error_message is not None and self.outcome != "failed":
+            raise ValueError("only failed outcomes carry an owner-visible error message")
+        if self.reply_granularity is not None and self.outcome != "completed":
+            raise ValueError("only successful outcomes have reply granularity")
+        if self.evidence is not None and self.outcome != "completed":
+            raise ValueError("only successful outcomes carry answer evidence")
         return self
 
 
@@ -46,6 +68,14 @@ class ChatTurnResultWriter(ChatHistoryWriter):
             "message_id": result.message_id,
             "terminal": False,
         }
+        if result.error_class is not None:
+            candidate["error_class"] = result.error_class
+        if result.error_message is not None:
+            candidate["error_message"] = result.error_message
+        if result.reply_granularity is not None:
+            candidate["reply_granularity"] = result.reply_granularity
+        if result.evidence is not None:
+            candidate["evidence"] = result.evidence.document()
         if receipt.get("status") != "accepted":
             raise ChatAuthorizationRefusedError("chat result turn ended")
         existing = receipt.get("result_candidate")

@@ -72,6 +72,23 @@ async def test_success_requires_saved_assistant_and_records_nonterminal_result(c
     assert turn(runtime) == before
 
 
+async def test_crew_row_granularity_is_recorded_only_for_success(client, runtime, capability):
+    response = await fixtures.append(client, capability)
+    assert response.status_code == 200
+    message_id = response.json()["message_id"]
+    row = await commit(client, capability, outcome="completed", message_id=message_id, reply_granularity="row")
+    assert row.status_code == 200, row.text
+    assert row.json()["reply_granularity"] == "row"
+    assert turn(runtime)["result_candidate"]["reply_granularity"] == "row"
+    assert (await commit(client, capability, outcome="completed", message_id=message_id, reply_granularity="row")).json() == row.json()
+    assert (await commit(client, capability, outcome="completed", message_id=message_id)).status_code == 409
+
+
+async def test_failure_cannot_claim_row_granularity(client, runtime, capability):
+    assert (await commit(client, capability, reply_granularity="row")).status_code == 422
+    assert "result_candidate" not in turn(runtime)
+
+
 async def test_failure_can_be_recorded_without_reply_and_cannot_be_overwritten(client, runtime, capability):
     first = await commit(client, capability)
     assert first.status_code == 200 and first.json()["outcome"] == "failed" and first.json()["message_id"] is None
@@ -80,6 +97,61 @@ async def test_failure_can_be_recorded_without_reply_and_cannot_be_overwritten(c
     message_id = (await fixtures.append(client, capability)).json()["message_id"]
     assert (await commit(client, capability, outcome="completed", message_id=message_id)).status_code == 409
     assert turn(runtime)["result_candidate"] == first.json()
+
+
+MODEL_POLICY_MESSAGE = (
+    "The assistant cannot run this turn: the model policy decision was unavailable (probing_disabled). "
+    "Ask the platform operator to enable model invocability probing."
+)
+
+
+async def test_failure_can_name_its_owner_visible_reason_and_cannot_be_rewritten(client, runtime, capability):
+    first = await commit(client, capability, error_message=MODEL_POLICY_MESSAGE)
+    assert first.status_code == 200, first.text
+    assert first.json()["outcome"] == "failed" and first.json()["message_id"] is None
+    assert first.json()["error_message"] == MODEL_POLICY_MESSAGE
+    assert turn(runtime)["result_candidate"]["error_message"] == MODEL_POLICY_MESSAGE
+    assert (await commit(client, capability, error_message=MODEL_POLICY_MESSAGE)).json() == first.json()
+    assert (await commit(client, capability, error_message="a different story")).status_code == 409
+    assert (await commit(client, capability)).status_code == 409
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"error_message": ""},
+        {"error_message": "x" * 1025},
+        {"error_message": "line\x00break"},
+        {"error_message": 7},
+        {"outcome": "completed", "message_id": "msg-reply", "error_message": "not for success"},
+    ],
+)
+async def test_error_message_is_bounded_text_for_failed_outcomes_only(client, runtime, capability, changes):
+    response = await commit(client, capability, **changes)
+    assert response.status_code == 422, response.text
+    assert "result_candidate" not in turn(runtime)
+
+
+@pytest.mark.parametrize("error_class", ["executor_not_wired", "executor_down"])
+async def test_named_crew_failure_is_fenced_and_idempotent(client, runtime, capability, error_class):
+    first = await commit(client, capability, error_class=error_class)
+    assert first.status_code == 200, first.text
+    assert first.json()["error_class"] == error_class
+    assert turn(runtime)["result_candidate"] == first.json()
+    assert (await commit(client, capability, error_class=error_class)).json() == first.json()
+    assert (await commit(client, capability)).status_code == 409
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"error_class": "private exception"},
+        {"outcome": "completed", "message_id": "msg-reply", "error_class": "executor_not_wired"},
+    ],
+)
+async def test_untrusted_failure_classes_are_rejected(client, runtime, capability, changes):
+    assert (await commit(client, capability, **changes)).status_code == 422
+    assert "result_candidate" not in turn(runtime)
 
 
 @pytest.mark.parametrize(
@@ -234,3 +306,37 @@ async def test_valid_history_capability_does_not_imply_result_permission(client,
     assert (await commit(client, token)).status_code == 404
     assert (await fixtures.append(client, token)).status_code == 200
     assert "result_candidate" not in turn(runtime)
+
+
+EVIDENCE = {
+    "status": "ok",
+    "from": "2026-09-04T12:00:00Z",
+    "to": "2026-10-04T12:00:00Z",
+    "timezone": "UTC",
+    "observed_at": "2026-10-04T12:00:00Z",
+    "coverage": [{"source": "platform___my_work_items:github.work_items", "status": "available"}],
+    "sources": [{"label": "acme/widgets#14", "url": "https://github.com/acme/widgets/issues/14"}],
+    "has_more": False,
+}
+
+
+async def test_completed_result_records_the_answer_evidence_and_refuses_it_elsewhere(client, runtime, capability):
+    """#8113: the sources an answer rested on are part of the durable turn result."""
+    message_id = (await fixtures.append(client, capability)).json()["message_id"]
+    assert (await commit(client, capability, evidence=EVIDENCE)).status_code == 422
+    assert (
+        await commit(client, capability, outcome="completed", message_id=message_id, evidence={**EVIDENCE, "status": "guessed"})
+    ).status_code == 422
+    assert (
+        await commit(
+            client, capability, outcome="completed", message_id=message_id, evidence={**EVIDENCE, "sources": [{"label": "x", "url": "javascript:1"}]}
+        )
+    ).status_code == 422
+    assert "result_candidate" not in turn(runtime)
+    first = await commit(client, capability, outcome="completed", message_id=message_id, evidence=EVIDENCE)
+    assert first.status_code == 200, first.text
+    assert first.json()["evidence"] == EVIDENCE
+    assert turn(runtime)["result_candidate"]["evidence"] == EVIDENCE
+    assert (await commit(client, capability, outcome="completed", message_id=message_id, evidence=EVIDENCE)).json() == first.json()
+    changed = await commit(client, capability, outcome="completed", message_id=message_id, evidence={**EVIDENCE, "has_more": True})
+    assert changed.status_code == 409

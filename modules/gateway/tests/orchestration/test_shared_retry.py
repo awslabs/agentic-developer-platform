@@ -86,6 +86,25 @@ async def test_increase_preserves_live_plan_claims_consumed_attempts_and_meter(r
     assert not replay["created"] and replay["decision_id"] == receipt["decision_id"]
 
 
+async def test_historical_policy_uses_only_supplements_existing_at_the_repair(retry):
+    from src.orchestration.shared_retry import effective_shared_retry
+
+    before = (await effective(retry)).policy
+    first, _ = await accept(retry)
+    row = await retry.s.session.get(OrchestrationDecision, first["decision_id"])
+    cutoff = row.created_at
+    retry.request = retry.request.model_copy(update={"max_attempts_per_node": 21})
+    second, _ = await accept(retry)
+    historical = await effective_shared_retry(retry.s.session, retry.s.plan, before, as_of=cutoff)
+    current = await effective_shared_retry(retry.s.session, retry.s.plan, before)
+    initial = await effective_shared_retry(retry.s.session, retry.s.plan, before, as_of=cutoff - timedelta(microseconds=1))
+    assert historical.limits.max_attempts_per_node == 20
+    assert historical._shared_retry_decision_id == first["decision_id"]
+    assert current.limits.max_attempts_per_node == 21
+    assert current._shared_retry_decision_id == second["decision_id"]
+    assert initial.policy_hash == before.policy_hash
+
+
 @pytest.mark.parametrize("budget_first", [True, False])
 async def test_financial_and_retry_supplements_compose_in_either_order(retry, budget_first):
     b = retry

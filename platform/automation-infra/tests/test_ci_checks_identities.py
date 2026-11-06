@@ -8,7 +8,14 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def test_model_readiness_is_required_before_build_authority():
     jobs = yaml.safe_load((ROOT / '.github/workflows/agent-worker-image.yml').read_text())['jobs']
-    assert set(jobs['build']['needs']) == {'model-readiness', 'installation-boundary-tests', 'codex-tests', 'task-investigator-tests'}
+    # `deploy` rolls every tested worker image out automatically (#6923), and the
+    # Claude request-shape manifest is baked into that image: an image whose
+    # manifest drifted from what its pinned SDK emits fails every Claude probe and
+    # takes delegated chat down, so the build authority also requires the
+    # manifest drift check (#7993). Readiness remains a hard prerequisite.
+    assert set(jobs['build']['needs']) == {
+        'model-readiness', 'installation-boundary-tests', 'invocability-manifest-drift', 'codex-tests', 'task-investigator-tests',
+    }
     assert jobs['deploy']['needs'] == 'build'
     check = jobs['model-readiness']
     assert check['environment'].startswith('adp-model-checks-')

@@ -1,0 +1,154 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: adp-crew-restore-helper-template
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+        scope: Namespaced
+  matchConditions:
+    - name: checkpoint-helper-only
+      expression: >-
+        ((has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'adp-crew-restore-helper') ||
+         (has(object.metadata.labels) && 'adp.io/crew-restore-helper' in object.metadata.labels))
+  validations:
+    - expression: >-
+        request.userInfo.username == 'system:serviceaccount:adp-gateway-agents:adp-chat-supervisor' &&
+        object.spec.serviceAccountName == 'adp-crew-restore-helper' &&
+        has(object.metadata.labels) &&
+        object.metadata.labels['adp.io/crew-restore-helper'] == 'true' &&
+        !('adp.io/crew-pod' in object.metadata.labels) &&
+        !('adp.io/chat-sandbox' in object.metadata.labels) &&
+        has(object.metadata.annotations) &&
+        object.metadata.annotations['adp.io/session-hash'].matches('^[a-f0-9]{64}$') &&
+        object.metadata.labels['adp.io/owner-key'].matches('^[a-f0-9]{52}$') &&
+        object.metadata.annotations['adp.io/checkpoint-hash'].matches('^[a-f0-9]{64}$') &&
+        has(object.metadata.generateName) &&
+        object.metadata.generateName.matches('^chat-restore-[a-f0-9]{12}-$')
+      message: Only the trusted supervisor may select the checkpoint helper class
+    - expression: >-
+        object.spec.automountServiceAccountToken == false &&
+        object.spec.enableServiceLinks == false &&
+        object.spec.shareProcessNamespace == false &&
+        object.spec.dnsPolicy == 'ClusterFirst' &&
+        !has(object.spec.dnsConfig) &&
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false) &&
+        object.spec.restartPolicy == 'Never' &&
+        object.spec.activeDeadlineSeconds == 900 &&
+        object.spec.terminationGracePeriodSeconds == 30 &&
+        !has(object.spec.initContainers) &&
+        !has(object.spec.ephemeralContainers) &&
+        !has(object.spec.imagePullSecrets)
+      message: Checkpoint helper cannot use host namespaces or extra containers
+    - expression: >-
+        has(object.spec.securityContext) &&
+        object.spec.securityContext.runAsNonRoot == true &&
+        object.spec.securityContext.runAsUser == 10001 &&
+        object.spec.securityContext.fsGroup == 10001 &&
+        object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
+      message: Checkpoint helper must run without root privileges
+    - expression: "!has(object.spec.affinity)"
+      message: Restore placement follows the owner claim's volume zone
+    # resource.Quantity has no CEL type in the apiserver's Pod schema (OpenAPI oneOf
+    # string|number), so the type checker drops those fields and a direct reference is
+    # reported in status.typeChecking as "undefined field". Read them through dyn() and
+    # compare as quantities (Kubernetes CEL quantity library).
+    - expression: >-
+        size(object.spec.volumes) == 4 &&
+        object.spec.volumes.exists_one(v, v.name == 'gateway-ca' && has(v.configMap) &&
+          v.configMap.name.matches('^chat-sandbox-gateway-ca-[a-f0-9]{16}$') &&
+          v.configMap.defaultMode == 292 && size(v.configMap.items) == 1 &&
+          v.configMap.items[0].key == 'ca.crt' && v.configMap.items[0].path == 'ca.crt') &&
+        object.spec.volumes.exists_one(v, v.name == 'scratch' && has(v.emptyDir) && has(dyn(v.emptyDir).sizeLimit) &&
+          quantity(dyn(v.emptyDir).sizeLimit) == quantity('512Mi')) &&
+        object.spec.volumes.exists_one(v, v.name == 'crew-home' && has(v.persistentVolumeClaim) &&
+          v.persistentVolumeClaim.claimName == 'crew-home-' + object.metadata.labels['adp.io/owner-key'] &&
+          v.persistentVolumeClaim.readOnly == false) &&
+        object.spec.volumes.exists_one(v, v.name == 'checkpoint-identity' && has(v.projected) &&
+          v.projected.defaultMode == 292 && size(v.projected.sources) == 1 &&
+          has(v.projected.sources[0].serviceAccountToken) &&
+          v.projected.sources[0].serviceAccountToken.audience == 'adp-checkpoint-restore' &&
+          v.projected.sources[0].serviceAccountToken.expirationSeconds == 600 &&
+          v.projected.sources[0].serviceAccountToken.path == 'token')
+      message: Helper may mount only its scoped identity, public gateway CA and bounded scratch
+    - expression: >-
+        size(object.spec.containers) == 1 &&
+        object.spec.containers[0].name == 'restore-helper' &&
+        object.spec.containers[0].image.matches('^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$') &&
+        object.spec.containers[0].imagePullPolicy == 'IfNotPresent' &&
+        object.spec.containers[0].command == ['/app/chat-checkpoint-restore'] &&
+        object.spec.containers[0].workingDir == '/tmp' &&
+        !has(object.spec.containers[0].args) &&
+        !has(object.spec.containers[0].envFrom)
+      message: Helper image and entrypoint must be pinned
+    - expression: >-
+        size(object.spec.containers[0].env) == 6 &&
+        object.spec.containers[0].env.all(e, has(e.value) && !has(e.valueFrom) &&
+          e.name in ['ADP_WORKLOAD_TOKEN_FILE', 'ADP_CHAT_DATA_URL', 'NODE_EXTRA_CA_CERTS',
+            'ADP_CHECKPOINT_ID', 'ADP_OWNER_KEY', 'KIROCREW_HOME']) &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_WORKLOAD_TOKEN_FILE' &&
+          e.value == '/var/run/adp-checkpoint/token') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CHAT_DATA_URL' &&
+          e.value == 'https://chat-sandbox-gateway.adp-gateway.svc:8443') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'NODE_EXTRA_CA_CERTS' &&
+          e.value == '/var/run/adp-chat-ca/ca.crt') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CHECKPOINT_ID' &&
+          e.value.matches('^[a-f0-9-]{36}$')) &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_OWNER_KEY' &&
+          e.value == object.metadata.labels['adp.io/owner-key']) &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'KIROCREW_HOME' &&
+          e.value == '/mnt/crew')
+      message: Helper cannot inherit credentials or unscoped upload authority
+    - expression: >-
+        size(object.spec.containers[0].volumeMounts) == 4 &&
+        object.spec.containers[0].volumeMounts.exists_one(m, m.name == 'checkpoint-identity' &&
+          m.mountPath == '/var/run/adp-checkpoint' && m.readOnly == true &&
+          !has(m.subPath) && !has(m.subPathExpr)) &&
+        object.spec.containers[0].volumeMounts.exists_one(m, m.name == 'gateway-ca' &&
+          m.mountPath == '/var/run/adp-chat-ca' && m.readOnly == true &&
+          !has(m.subPath) && !has(m.subPathExpr)) &&
+        object.spec.containers[0].volumeMounts.exists_one(m, m.name == 'scratch' &&
+          m.mountPath == '/tmp' && !has(m.subPath) && !has(m.subPathExpr)) &&
+        object.spec.containers[0].volumeMounts.exists_one(m, m.name == 'crew-home' &&
+          m.mountPath == '/mnt/crew' && m.readOnly == false &&
+          !has(m.subPath) && !has(m.subPathExpr))
+      message: Helper identity and scratch mounts must not be substituted
+    - expression: >-
+        has(object.spec.containers[0].securityContext) &&
+        object.spec.containers[0].securityContext.runAsNonRoot == true &&
+        object.spec.containers[0].securityContext.runAsUser == 10001 &&
+        object.spec.containers[0].securityContext.readOnlyRootFilesystem == true &&
+        object.spec.containers[0].securityContext.allowPrivilegeEscalation == false &&
+        !has(object.spec.containers[0].securityContext.privileged) &&
+        object.spec.containers[0].securityContext.capabilities.drop == ['ALL'] &&
+        object.spec.containers[0].securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        !has(object.spec.containers[0].ports) &&
+        !has(object.spec.containers[0].volumeDevices)
+      message: Helper process must not gain privileges
+    - expression: >-
+        has(object.spec.hostAliases) && size(object.spec.hostAliases) == 1 &&
+        object.spec.hostAliases[0].hostnames == ['chat-sandbox-gateway.adp-gateway.svc'] &&
+        object.spec.hostAliases[0].ip.matches('^(10[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])') &&
+        size(object.spec.hostAliases[0].ip.split('.')) == 4 &&
+        object.spec.hostAliases[0].ip.split('.').all(octet,
+          octet.matches('^(0|[1-9][0-9]{0,2})$') && int(octet) <= 255)
+      message: Helper can reach only its pinned private gateway address
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: adp-crew-restore-helper-template
+spec:
+  policyName: adp-crew-restore-helper-template
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: adp-gateway-agents

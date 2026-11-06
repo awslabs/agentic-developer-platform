@@ -233,7 +233,10 @@ def test_contract_reuses_actual_worker_validator_and_fixed_gateway_binding(
     paid_worker.project(projected, lock, documents)
     scaled = next(doc for doc in documents if doc.get("kind") == "ScaledJob")
     assert scaled["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
-    assert scaled["spec"]["maxReplicaCount"] == 0
+    assert (
+        scaled["spec"]["maxReplicaCount"]
+        == projected["paid_worker"]["max_replica_count"]
+    )
 
 
 @pytest.mark.parametrize(

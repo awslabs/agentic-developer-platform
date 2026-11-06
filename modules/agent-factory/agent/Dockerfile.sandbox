@@ -1,18 +1,58 @@
-FROM public.ecr.aws/docker/library/node:22-alpine AS builder
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim AS builder
 WORKDIR /app
 COPY agent/package*.json ./
 RUN npm ci
 COPY agent/src/ ./src/
 RUN npm run build:sandbox && npm prune --omit=dev
 
-FROM public.ecr.aws/docker/library/node:22-alpine
-RUN addgroup -g 10001 agent && adduser -u 10001 -G agent -s /bin/sh -D agent
-RUN apk upgrade --no-cache && apk add --no-cache bash curl aws-cli
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim AS clients
+WORKDIR /opt/kirocrew/clients
+COPY agent/kirocrew-clients/package*.json ./
+RUN npm ci --omit=dev --no-audit --no-fund \
+    && ./node_modules/.bin/claude --version \
+    && ./node_modules/.bin/claude-agent-acp --version
+
+FROM public.ecr.aws/docker/library/python:3.12-slim-trixie AS wheel
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 --fail --location --retry 3 --max-time 1800 \
+      --output /tmp/kirocrew-0.11.2-py3-none-any.whl \
+      https://download.crew.kiro.dev/cli/stable/0.11.2/kirocrew-0.11.2-py3-none-any.whl \
+    && echo '76f280e1716e0eb9b4b6b590d60f3cee4bed364b19ac636af1ceee5dd2fbe750  /tmp/kirocrew-0.11.2-py3-none-any.whl' | sha256sum -c - \
+    && python -m venv /opt/kirocrew/venv \
+    && /opt/kirocrew/venv/bin/pip install --no-cache-dir /tmp/kirocrew-0.11.2-py3-none-any.whl awscli==1.46.1 \
+    && /opt/kirocrew/venv/bin/kirocrew --version \
+    && /opt/kirocrew/venv/bin/python -c 'import kiro_crew.cli; from importlib.resources import files; from shutil import copyfile; copyfile(files("kiro_crew.config").joinpath("defaults.json"), "/opt/kirocrew/default-agent.json")'
+
+FROM public.ecr.aws/docker/library/node:22-alpine AS embedding
+RUN apk add --no-cache curl && mkdir -p /opt/kirocrew/models \
+    && curl --proto '=https' --tlsv1.2 --fail --location --retry 3 --max-time 1800 \
+      --output /opt/kirocrew/models/qwen3-embedding-0.6b-q8_0.gguf \
+      https://d3j0sthz5doyui.cloudfront.net/models/qwen3-embedding-0.6b.gguf \
+    && echo '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439  /opt/kirocrew/models/qwen3-embedding-0.6b-q8_0.gguf' | sha256sum -c -
+
+FROM public.ecr.aws/docker/library/python:3.12-slim-trixie
+RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /tmp/workspace -M -s /bin/sh agent \
+    && apt-get update && apt-get install -y --no-install-recommends bash curl ca-certificates libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+COPY --from=wheel /opt/kirocrew/venv /opt/kirocrew/venv
+COPY --from=wheel /opt/kirocrew/default-agent.json /opt/kirocrew/default-agent.json
+COPY --from=clients /usr/local/bin/node /usr/local/bin/node
+COPY --from=clients /opt/kirocrew/clients /opt/kirocrew/clients
+COPY --from=embedding /opt/kirocrew/models/ /opt/kirocrew/models/
 COPY --from=builder --chown=agent:agent /app/dist/chat-sandbox-entrypoint.js ./dist/chat-sandbox-entrypoint.js
 COPY --from=builder --chown=agent:agent /app/node_modules ./node_modules
 COPY --chown=agent:agent agent/chat-sandbox-entrypoint ./chat-sandbox-entrypoint
 COPY --chown=agent:agent agent/scripts/chat-sandbox-probe.sh ./chat-sandbox-probe
-RUN chmod +x ./chat-sandbox-entrypoint ./chat-sandbox-probe
+COPY --from=adp-cli adp /opt/adp/adp
+COPY --from=adp-cli adp-mcp.py /opt/adp/adp-mcp.py
+COPY --from=adp-cli adp_common.py /opt/adp/adp_common.py
+RUN ln -s /opt/adp/adp /usr/local/bin/adp && chmod +x /opt/adp/adp
+RUN chmod +x ./chat-sandbox-entrypoint ./chat-sandbox-probe \
+    && /usr/local/bin/node --version \
+    && /opt/kirocrew/venv/bin/kirocrew --version \
+    && /opt/kirocrew/clients/node_modules/.bin/claude --version
+ENV PATH="/opt/kirocrew/venv/bin:/opt/kirocrew/clients/node_modules/.bin:${PATH}"
 USER agent:agent
 ENTRYPOINT ["/app/chat-sandbox-entrypoint"]

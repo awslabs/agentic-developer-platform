@@ -3,6 +3,9 @@ import { IssueContext, CodeResult } from '../types';
 import { Logger } from './Logger';
 import { GitHubClient } from './GitHubClient';
 import { ApprovalService } from '../services/ApprovalService';
+import { bindPostedApproval } from '../services/posted-approval';
+import { randomUUID } from 'crypto';
+import { wrapUntrusted } from '../utils/trust-boundary';
 
 /**
  * FixOrchestrator handles /fixPR requests on pull requests.
@@ -56,13 +59,16 @@ export class FixOrchestrator {
       // Step 2: Post proposal and wait for approval.
       // The request id must be named in the answer so a stale `/approve` on a
       // busy PR cannot authorize this fix (issue #4181).
-      const requestId = `fix-${prNumber}`;
-      await this.githubClient.createComment(prNumber,
-        `## 📋 Proposed Fix\n\n${proposal}\n\n---\n**To approve:** Comment \`/approve ${requestId}\`\n**To reject:** Comment \`/reject ${requestId} <feedback>\`\n\n_The request id is required. You need write access to this repository to approve._`
-      );
+      const requestId = randomUUID();
+      const planBody = `## 📋 Proposed Fix\n\n${proposal}\n\n---\n**To approve:** Comment \`/approve ${requestId}\`\n**To reject:** Comment \`/reject ${requestId} <feedback>\`\n\n_The request id is required. You need write access to this repository to approve._`;
+      const receipt = await this.githubClient.postApprovalPlan(prNumber, planBody);
+      const scope = this.githubClient.getRepository();
+      const request = bindPostedApproval(requestId, randomUUID(), scope.owner, scope.repo,
+        prNumber, planBody, receipt, 30 * 60_000);
+      if (!request) throw new Error('Fix approval plan could not be verified');
 
       console.log(`\n⏳ Waiting for \`/approve ${requestId}\` or \`/reject ${requestId}\`...\n`);
-      const approval = await this.approvalService.pollForApproval(prNumber, new Date(), requestId);
+      const approval = await this.approvalService.pollForApproval(prNumber, request);
 
       // Fail-closed: only 'allowed-once' proceeds.
       if (approval.outcome !== 'allowed-once') {
@@ -164,7 +170,7 @@ export class FixOrchestrator {
       prompt: `You are analyzing a PR branch to propose a targeted fix.
 
 ## Fix Instructions:
-${instructions}
+${wrapUntrusted(instructions)}
 
 ## Your task:
 1. Read the relevant files that need to change
@@ -206,7 +212,7 @@ Do NOT reimplement the entire feature. Only propose changes related to the fix i
       prompt: `You are applying a targeted fix to an existing PR.
 
 ## Fix Instructions:
-${instructions}
+${wrapUntrusted(instructions)}
 
 ## Rules:
 - ONLY modify files related to the fix instructions

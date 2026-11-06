@@ -32,6 +32,13 @@ const AMOUNT_CLASS = 'text-sm text-gray-900 dark:text-white font-mono';
  * `formatRunCost` owns the decision of which case applies; this only styles it.
  */
 export function CostBadge({ item }: { item: InvocationItem }) {
+  if (item.channel === 'tool') {
+    return (
+      <span className={AMOUNT_CLASS} title="Conservative authorization estimate; not a settled provider charge">
+        Est. {formatCost(item.estimated_cost_usd)}
+      </span>
+    );
+  }
   const formatted = formatRunCost(item.total_cost_usd, item.status);
 
   if (formatted === NO_DATA_INDICATOR) {

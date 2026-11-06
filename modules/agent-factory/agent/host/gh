@@ -1,0 +1,28 @@
+#!/bin/bash
+# `gh` as the Dev Box owner (#8555): the real GitHub CLI with GH_TOKEN served per call by the
+# loopback adapter from the owner's consented ADP GitHub connection. Nothing is written to
+# ~/.config/gh; a refused token prints the one step that fixes it and runs gh unauthenticated,
+# so `gh auth status` reports "not logged in" with the reason above it.
+set -u
+here="$(dirname -- "$(readlink -f -- "$0")")"
+real="$here/gh-cli/gh"
+if [ ! -x "$real" ]; then
+  printf '%s\n' 'gh is not installed in this Dev Box Crew bundle' >&2
+  exit 127
+fi
+# #8748: a manual login writes a long-lived token to ~/.config/gh on an agent-controlled disk,
+# outside ADP's consent, audit and revocation. Say so once, then let gh run as asked.
+case "${1:-} ${2:-}" in
+  "auth login"|"auth setup-git"|"auth token"|"auth refresh")
+    printf '%s\n' 'Dev Box notice: GitHub access on this box comes from your ADP connection (Settings → Dev Box → "Use GitHub as you on this box"). A manual gh login stores a token on this machine outside ADP consent, audit and revocation and is unsupported.' >&2 ;;
+esac
+if [ -f "${GH_CONFIG_DIR:-$HOME/.config/gh}/hosts.yml" ]; then
+  printf '%s\n' 'Dev Box notice: a manual gh login (hosts.yml) exists on this box; ADP-issued tokens take precedence while your connection is active.' >&2
+fi
+if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
+  exec "$real" "$@"
+fi
+if token=$("$here/adp-github-token"); then
+  GH_TOKEN="$token" exec "$real" "$@"
+fi
+exec "$real" "$@"

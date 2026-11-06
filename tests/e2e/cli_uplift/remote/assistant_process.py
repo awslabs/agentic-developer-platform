@@ -368,18 +368,27 @@ def worker():
                 path = urllib.parse.urlunsplit(
                     ("", "", parsed.path or "/", parsed.query, "")
                 )
+                method = request.get("method", "GET")
+                body = request.get("document")
+                assistant_client.validate_http(parsed.geturl(), method, body)
                 client.request(
-                    "GET",
+                    method,
                     path,
+                    body=json.dumps(body) if body is not None else None,
                     headers={
                         "Authorization": "Bearer " + session.token(),
                         "Accept": "application/json",
+                        **(
+                            {"Content-Type": "application/json"}
+                            if body is not None
+                            else {}
+                        ),
                     },
                 )
                 response = client.getresponse()
-                if response.status != 200:
-                    raise assistant_client.ClientError(
-                        f"Assistant HTTP request returned {response.status}"
+                if response.status != request.get("expected_status", 200):
+                    raise assistant_client.http_failure(
+                        response.status, response.read(8192)
                     )
                 data = response.read(1024 * 1024 + 1)
                 if len(data) > 1024 * 1024:

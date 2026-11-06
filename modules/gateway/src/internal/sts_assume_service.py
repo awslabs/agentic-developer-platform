@@ -70,7 +70,7 @@ def _assume_role(
     external_id : str | None
         Required ExternalId for confused-deputy protection.
     session_duration_seconds : int
-        Requested session duration (capped by role's max).
+        Requested session duration (capped at 15 minutes).
     default_region : str
         Region hint for the caller.
     user_id, agent_id, task_id : str
@@ -114,7 +114,7 @@ def _assume_role(
     kwargs: dict[str, Any] = {
         "RoleArn": role_arn,
         "RoleSessionName": session_name,
-        "DurationSeconds": session_duration_seconds,
+        "DurationSeconds": min(session_duration_seconds, 900),
     }
     if session_policy is not None:
         kwargs["Policy"] = session_policy

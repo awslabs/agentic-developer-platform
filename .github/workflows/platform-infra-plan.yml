@@ -184,8 +184,11 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.14.2
+          terraform_wrapper: false
       - name: Validate without state or deployment credentials
         working-directory: platform/infra
         run: |
           terraform init -backend=false -input=false
           terraform validate -no-color
+          terraform test -no-color -filter=tests/tools_release_rbac.tftest.hcl
+          python3 tests/test_tools_release_plan_scope.py

@@ -376,3 +376,62 @@ class TestAuthMiddlewareEnforcedPaths:
         from src.shared.enforced_paths import ENFORCED_PATHS
 
         assert auth_mw.ENFORCED_PATHS is ENFORCED_PATHS
+
+
+class TestGetTokenContextAcceptsEdgeVerifiedIamIdentity:
+    """``get_token_context`` is the dependency of the Crew host routes (``/crew/host-restore/*``,
+    ``/crew/model-token/refresh``), which TokenContextMiddleware does not enforce (not in
+    ENFORCED_PATHS). A Crew host reaches them only through the AWS_IAM ``/agent/{proxy+}`` route,
+    so the edge-verified X-Caller-Identity must authenticate here too — dev 2026-10-19 (#8223):
+    every host bootstrap got 401 missing_token because this dependency only knew bearer tokens."""
+
+    @staticmethod
+    def _request(headers):
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = headers
+
+        class MockState:
+            pass
+
+        mock_request.state = MockState()
+        return mock_request
+
+    @pytest.mark.asyncio
+    async def test_edge_verified_iam_identity_authenticates_without_a_bearer_token(self):
+        from src.proxy.routes import get_token_context
+
+        identity = MagicMock()
+        request = self._request(
+            {API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::111122223333:assumed-role/adp-dev-box-guest-abc/i-0123456789abcdef0"}
+        )
+        with patch("src.proxy.routes.extract_iam_identity_from_headers", return_value=identity) as extract:
+            assert await get_token_context(request, authorization=None, x_api_key=None) is identity
+        extract.assert_called_once_with(request)
+        assert request.state.token_context is identity, "later dependencies (run id, host binding) read request.state"
+
+    @pytest.mark.asyncio
+    async def test_unregistered_iam_role_is_refused_not_passed_to_bearer_auth(self):
+        from fastapi import HTTPException
+
+        from src.proxy.routes import get_token_context
+        from src.shared.exceptions import UnregisteredServiceAccountError
+
+        request = self._request({API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::111122223333:assumed-role/unknown/i-0123456789abcdef0"})
+        with patch("src.proxy.routes.extract_iam_identity_from_headers", side_effect=UnregisteredServiceAccountError("arn")):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_token_context(request, authorization=None, x_api_key=None)
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail["error"] == "agent_not_registered"
+
+    @pytest.mark.asyncio
+    async def test_assertion_that_fails_provenance_still_requires_a_bearer_token(self):
+        from fastapi import HTTPException
+
+        from src.proxy.routes import get_token_context
+
+        request = self._request({API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::111122223333:assumed-role/forged/session"})
+        with patch("src.proxy.routes.extract_iam_identity_from_headers", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_token_context(request, authorization=None, x_api_key=None)
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail["error"] == "missing_token"

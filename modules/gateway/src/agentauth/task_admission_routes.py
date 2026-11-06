@@ -42,6 +42,8 @@ class SubmitRequest(BaseModel):
         default_factory=list, max_length=4
     )
     external_reference: Annotated[StrictStr, Field(max_length=256)] = ""
+    product_id: Annotated[StrictStr, Field(min_length=1, max_length=36)] | None = None
+    project_id: Annotated[StrictStr, Field(min_length=1, max_length=255)] | None = None
     acceptance_criteria: list[Annotated[StrictStr, Field(min_length=1, max_length=1000)]] = Field(default_factory=list, max_length=10)
 
     @field_validator("artifact_ids")

@@ -149,3 +149,17 @@ def test_private_mode_cannot_silently_select_public_transport():
         validate_public_management(
             {"workspace_variables": {"cluster_endpoint_public_access": True}}
         )
+
+
+@pytest.mark.parametrize(
+    "region",
+    ["us-east-1", "us-west-2", "eu-central-1", "bad", "us-west-2/override", None, 42],
+)
+def test_explicit_management_region_is_validated(region):
+    config, *_ = fixture()
+    config["management_public_access"]["region"] = region
+    if region in {"us-east-1", "us-west-2", "eu-central-1"}:
+        validate_public_management(config)
+    else:
+        with pytest.raises(LifecycleRefused):
+            validate_public_management(config)

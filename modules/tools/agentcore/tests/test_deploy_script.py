@@ -49,3 +49,34 @@ if 'show' in sys.argv: print(os.environ['PLAN_JSON'])
     assert (result.returncode == 0) == allowed
     applied = any('apply' in json.loads(line) for line in calls.read_text().splitlines())
     assert applied == allowed
+
+
+def test_provider_plan_binds_separate_cleanup_key_only_from_selected_environment(tmp_path):
+    account = '123456789012'
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    (bin_dir / 'aws').write_text('''#!/bin/sh
+if [ "$1" = sts ]; then echo 123456789012
+elif [ "$1" = ssm ]; then echo arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000003
+else exit 1; fi
+''')
+    (bin_dir / 'terraform').write_text('''#!/usr/bin/env python3
+import json,os,sys
+with open(os.environ['CALLS'], 'a') as file: file.write(json.dumps(sys.argv[1:])+'\\n')
+if 'show' in sys.argv: print(os.environ['PLAN_JSON'])
+''')
+    for path in bin_dir.iterdir():
+        path.chmod(0o755)
+    backend, tfvars, saved = (tmp_path / name for name in ('backend.hcl', 'review.tfvars', 'saved.plan'))
+    for path in (backend, tfvars, saved):
+        path.touch()
+    calls = tmp_path / 'calls'
+    env = {**os.environ, 'PATH': str(bin_dir)+':'+os.environ['PATH'], 'EXPECTED_AWS_ACCOUNT_ID': account,
+           'AWS_REGION': 'us-east-1', 'ADP_TOOLS_ENVIRONMENT': 'dev', 'CALLS': str(calls),
+           'PLAN_JSON': json.dumps({'resource_changes': [], 'variables': {}})}
+    result = subprocess.run(['bash', str(SCRIPT), 'plan', str(backend), str(tfvars), str(saved)],
+                            env=env, capture_output=True)
+    assert result.returncode == 0, result.stderr.decode()
+    plan = next(json.loads(line) for line in calls.read_text().splitlines() if '"plan"' in line)
+    assert '-var=tools_reconciler_key_arn=arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000003' in plan
+    assert '-var=tools_reconciler_role_arn=arn:aws:iam::123456789012:role/adp-dev-role-tools-reconciler' in plan

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "org_id": "<resolved tenant id>",
+  "team_ids": [],
+  "repository_ids": ["<owner>/<repository>"],
+  "environment_connection_ids": [],
+  "allowed_actions": ["develop", "review", "repair", "merge"],
+  "human_gates": [],
+  "evaluation_acceptance": {},
+  "expires_at": "<UTC timestamp 14 days after emission>",
+  "limits": {
+    "max_spend_usd": "600",
+    "max_wall_clock_seconds": 1209600,
+    "max_attempts_per_node": 3,
+    "max_concurrent_actions": 2
+  }
+}

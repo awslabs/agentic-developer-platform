@@ -86,20 +86,68 @@ async def test_delivery_completion_atomically_unlocks_only_its_thread(client, ru
     assert transport.client.send_message.call_count == consumer.ws_router._client.post_to_connection.call_count == 1
 
 
-@pytest.mark.parametrize("phase", ["unfinalized", "queued", "persisted"])
-async def test_missing_terminal_or_confirmed_delivery_never_unlocks(client, runtime, ready, transport, consumer, monkeypatch, phase):
+@pytest.mark.parametrize("phase", ["unfinalized", "queued"])
+async def test_missing_terminal_or_owner_receipt_never_unlocks(client, runtime, ready, transport, consumer, phase):
     assert (await fixtures.finalization.request(client, runtime, "/internal/v1/agent/chat/data/teardown")).status_code == 200
-    if phase != "unfinalized":
+    if phase == "queued":
         assert (await fixtures.finalization.request(client, runtime)).status_code == 200
-    if phase == "persisted":
+    before = publication.session(transport)
+    result = await complete(client, runtime)
+    assert result.status_code == 409, result.text
+    assert result.json() == {"detail": {"error": "chat_history_conflict"}}
+    assert publication.session(transport) == before
+    assert not (fixtures.outbox(runtime) or {}).get("completion_receipt")
+
+
+@pytest.mark.parametrize("connection", ["absent", "push-failed"])
+async def test_persisted_owner_receipt_completes_without_a_websocket_push(client, runtime, ready, transport, consumer, monkeypatch, connection):
+    """The sessions row is the delivery boundary (#8047). Dev never completed a delegated turn
+    because the REST-polling client holds no WebSocket: the Lambda left the receipt ``persisted``
+    and completion insisted on ``sent``."""
+    assert (await fixtures.finalization.request(client, runtime, "/internal/v1/agent/chat/data/teardown")).status_code == 200
+    assert (await fixtures.finalization.request(client, runtime)).status_code == 200
+    if connection == "absent":
+        row = publication.session(transport)
+        row["connection_id"] = ""
+        transport.sessions.put_item(Item=row)
+        consumer._process_response(publication.payload(transport))
+        consumer.ws_router._client.post_to_connection.assert_not_called()
+    else:
         monkeypatch.setattr(consumer.ws_router, "route", lambda *args: False)
         with pytest.raises(RuntimeError):
             consumer._process_response(publication.payload(transport))
     before = publication.session(transport)
+    assert before["threads"]["thread-a"]["terminal_delivery"]["status"] == "persisted"
+    assert before["last_response"] and len(before["messages"]) == 1
+    result = await complete(client, runtime)
+    assert result.status_code == 200, result.text
+    assert result.json()["processing_lock_released"] is True
+    after = publication.session(transport)
+    assert after["threads"]["thread-a"]["processing_task_id"] == ""
+    assert after["messages"] == before["messages"] and after["last_response"] == before["last_response"]
+    assert after["completed_terminal_deliveries"][result.json()["delivery_id"]] == {
+        **before["threads"]["thread-a"]["terminal_delivery"],
+        "thread_id": "thread-a",
+        "status": "completed",
+    }
+    assert receipt(runtime) is not None
+    assert (await complete(client, runtime)).json() == result.json()
+    assert publication.session(transport) == after
+    # A redelivered Lambda record finds the archived receipt and neither re-appends nor pushes.
+    consumer._process_response(publication.payload(transport))
+    assert publication.session(transport) == after
+    consumer.ws_router._client.post_to_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("status", ["queued", "failed", "pending"])
+async def test_other_owner_receipt_statuses_do_not_unlock(client, runtime, delivered, transport, status):
+    row = publication.session(transport)
+    row["threads"]["thread-a"]["terminal_delivery"]["status"] = status
+    transport.sessions.put_item(Item=row)
+    before = publication.session(transport)
     result = await complete(client, runtime)
     assert result.status_code == 409, result.text
-    assert publication.session(transport) == before
-    assert not (fixtures.outbox(runtime) or {}).get("completion_receipt")
+    assert publication.session(transport) == before and receipt(runtime) is None
 
 
 async def test_retry_and_duplicate_delivery_do_not_touch_a_subsequent_turn(client, runtime, delivered, transport, consumer):

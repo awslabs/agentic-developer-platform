@@ -61,7 +61,7 @@ describe('ClaudeSetup', () => {
   it('renders the page heading', () => {
     render(<ClaudeSetup />);
 
-    expect(screen.getByRole('heading', { name: 'CLI Setup' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Apps & CLI Setup' })).toBeInTheDocument();
   });
 
   it('names all supported tools in the subtitle', () => {
@@ -72,7 +72,7 @@ describe('ClaudeSetup', () => {
     expect(
       screen.queryByRole('heading', { name: 'Claude Code Setup' })
     ).not.toBeInTheDocument();
-    expect(document.body.textContent ?? '').toContain('Use Claude Code, Codex, Hermes or Kimi Code on your machine');
+    expect(document.body.textContent ?? '').toContain('Connect Claude App and compatible ChatGPT App builds on macOS');
   });
 
   it('shows the approval note explaining the 409', () => {
@@ -169,7 +169,7 @@ describe('ClaudeSetup', () => {
     render(<ClaudeSetup />);
 
     expect(document.body.textContent ?? '').toContain(
-      'Code, Codex, Hermes and Kimi Code'
+      'Code, Codex, Hermes, Kimi Code and configured desktop apps'
     );
   });
 
@@ -179,6 +179,15 @@ describe('ClaudeSetup', () => {
 
     expect(troubleshooting.getByText('Kimi ADP adapter is not installed')).toBeInTheDocument();
     expect(troubleshooting.getByText('adp kimi --version')).toBeInTheDocument();
+  });
+
+  it('explains missing desktop credentials and stale local proxy addresses', () => {
+    render(<ClaudeSetup />);
+    const troubleshooting = within(getTroubleshootingCard());
+
+    expect(troubleshooting.getByText(/Missing environment variable: ADP_GATEWAY_DUMMY/)).toBeInTheDocument();
+    expect(troubleshooting.getByText(/Do not set this variable to a placeholder value/)).toBeInTheDocument();
+    expect(troubleshooting.getByText(/A port saved from an earlier session may no longer be active/)).toBeInTheDocument();
   });
 
   it('no longer references the deprecated bg-auth script', async () => {

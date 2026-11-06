@@ -16,6 +16,9 @@ A missing adapter, unsupported injection, missing provenance or mandatory
 
 Q2 implementation status and remaining native fixture gaps are tracked in
 [SCENARIOS.md](SCENARIOS.md). This checkpoint is not live qualification evidence.
+Product-bound resume and cleanup across separate runs use the versioned
+[manual recovery procedure](PRODUCT_EPIC_RECOVERY.md); offline tests do not
+authorize or execute that procedure.
 
 ## Commands
 
@@ -197,8 +200,10 @@ The upload follows `artifacts.directory` from the config rather than a hardcoded
 path, since that artifact is exactly what a later cleanup restores.
 
 To clean up after a failed run, dispatch with `mode=cleanup`, the
-`qualification_id` from the run output, and `source_run_id` set to the original
-run's id. The failure summary prints both.
+`qualification_id` from the run output, and `source_run_id` set to the latest
+run that uploaded an updated inventory (initially the original run). After
+`mode=resume` or an interrupted cleanup, use that attempt's run ID instead of
+the original; see the [Product epic recovery procedure](PRODUCT_EPIC_RECOVERY.md).
 
 ## Running the tests
 

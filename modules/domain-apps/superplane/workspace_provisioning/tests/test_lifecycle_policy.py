@@ -123,6 +123,66 @@ def test_raw_file_and_api_model_hash_the_same_defaults_and_set_order():
     assert policy_document(raw)["permitted_organizational_units"] == []
 
 
+def test_organization_policy_keeps_its_existing_serialized_digest():
+    # Recorded from the unchanged organization-backed fixture before standalone support.
+    assert policy_digest(policy()) == (
+        "54917b77a6b312eed09937cfc7beeb31fb60417d3761e157992541923ea1804c"
+    )
+
+
+def standalone_policy():
+    value = policy()
+    value["aws_organization_id"] = "standalone"
+    account = value["management_account_id"]
+    value["permitted_target_accounts"] = [account]
+    value["credential_references"] = {
+        account: value["credential_references"]["000000000002"]
+    }
+    return value
+
+
+def test_explicit_standalone_policy_roundtrips_without_organization_invention():
+    raw = standalone_policy()
+    parsed = LifecyclePolicy.model_validate(raw)
+    assert policy_document(parsed)["aws_organization_id"] == "standalone"
+    assert policy_digest(parsed) == policy_digest(raw)
+    organization_backed = deepcopy(raw)
+    organization_backed["aws_organization_id"] = "o-fixture1234"
+    assert policy_digest(parsed) != policy_digest(organization_backed)
+
+
+@pytest.mark.parametrize(
+    "change", ["new-account", "other-target", "extra-target", "ou", "credential"]
+)
+def test_standalone_policy_cannot_expand_beyond_existing_management_account(change):
+    raw = standalone_policy()
+    if change == "new-account":
+        raw["permitted_modes"].append("new-account-managed")
+    elif change == "other-target":
+        raw["permitted_target_accounts"] = ["000000000002"]
+    elif change == "extra-target":
+        raw["permitted_target_accounts"].append("000000000002")
+    elif change == "ou":
+        raw["permitted_organizational_units"] = ["ou-test-fixture01"]
+    else:
+        raw["credential_references"]["000000000002"] = deepcopy(
+            raw["credential_references"]["000000000001"]
+        )
+    with pytest.raises(ValidationError, match="standalone policy"):
+        LifecyclePolicy.model_validate(raw)
+
+
+@pytest.mark.parametrize("value", [None, "", "Standalone", "org-fixture", "o-invalid"])
+def test_missing_or_malformed_organization_does_not_opt_into_standalone(value):
+    raw = standalone_policy()
+    raw["aws_organization_id"] = value
+    with pytest.raises(ValidationError):
+        LifecyclePolicy.model_validate(raw)
+    del raw["aws_organization_id"]
+    with pytest.raises(ValidationError):
+        LifecyclePolicy.model_validate(raw)
+
+
 @pytest.mark.parametrize(
     "field", ["runtime", "credential_references", "workspace_defaults", "adp_org_id"]
 )
@@ -297,3 +357,52 @@ def test_installation_provider_cannot_admit_without_owned_network_and_boundary(
         match="reviewed same-account role boundary and owned networking",
     ):
         LifecyclePolicy.model_validate(configured)
+
+
+def test_workspace_policy_selection_preserves_original_digest_and_isolation(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from workspace_provisioning.lifecycle_policy import select_policy
+    from workspace_provisioning.authority import load_policy
+
+    original = policy()
+    prior_digest = policy_digest(original)
+    workspace = "00000000-0000-5000-8000-000000000002"
+    alternate = deepcopy(original)
+    alternate["permitted_regions"] = ["us-east-2"]
+    alternate["workspace_defaults"] = {
+        "availability_zones": ["us-east-2a", "us-east-2b"]
+    }
+    doc = {
+        "version": 1,
+        "tenants": {"org": original},
+        "workspace_policies": {"org": {workspace: alternate}},
+    }
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(doc))
+    context = SimpleNamespace(policy_file=path)
+    assert policy_digest(load_policy(context, "org", "another")) == prior_digest
+    assert policy_digest(load_policy(context, "org", workspace)) == policy_digest(
+        alternate
+    )
+    assert select_policy(doc, "org", workspace).permitted_regions == {"us-east-2"}
+    with pytest.raises(ValueError):
+        select_policy(doc, "foreign-org", workspace)
+    doc["workspace_policies"]["org"][workspace]["management_account_id"] = (
+        "000000000003"
+    )
+    with pytest.raises(ValueError, match="management identity"):
+        select_policy(doc, "org", workspace)
+
+
+@pytest.mark.parametrize(
+    "bad", [None, [], {"foreign": {}}, {"org": {"not-a-uuid": {}}}]
+)
+def test_malformed_workspace_policy_refuses(bad):
+    from workspace_provisioning.lifecycle_policy import select_policy
+
+    with pytest.raises((ValueError, TypeError)):
+        select_policy(
+            {"version": 1, "tenants": {"org": policy()}, "workspace_policies": bad},
+            "org",
+        )

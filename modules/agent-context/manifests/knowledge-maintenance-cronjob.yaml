@@ -1,0 +1,136 @@
+# Trusted platform maintenance; repository refresh is handled by the isolated scheduler.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: knowledge-maintenance
+  namespace: ${NAMESPACE}
+  labels:
+    app: knowledge-maintenance
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: ingestion
+spec:
+  schedule: ${INGESTION_REFRESH_SCHEDULE}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 21600
+      ttlSecondsAfterFinished: 259200
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: knowledge-maintenance
+        spec:
+          serviceAccountName: ${SERVICE_ACCOUNT}
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: refresh
+            image: ${INGESTION_IMAGE}
+            securityContext:
+              runAsNonRoot: true
+              readOnlyRootFilesystem: true
+              allowPrivilegeEscalation: false
+              privileged: false
+              capabilities:
+                drop:
+                - ALL
+            command:
+            - /bin/bash
+            - -c
+            args:
+            - |
+              set -euo pipefail
+              # Step 2: Infrastructure discovery
+              echo ""
+              echo "--- Step 2: Infrastructure discovery ---"
+              python /app/discover-infra.py \
+                --accounts-file /config/accounts.txt \
+                || echo "WARNING: discover-infra.py had errors (non-fatal)"
+
+              # Step 3: Correlate code <-> infrastructure
+              echo ""
+              echo "--- Step 3: Correlation ---"
+              python /app/correlate.py \
+                || echo "WARNING: correlate.py had errors (non-fatal)"
+
+              # Step 4: Knowledge base lint
+              echo ""
+              echo "--- Step 4: Knowledge base lint ---"
+              python /app/lint-wiki.py \
+                --repos-file /config/repos.txt \
+                || echo "WARNING: lint-wiki.py had errors (non-fatal)"
+
+              # Step 5: Topic index generation
+              echo ""
+              echo "--- Step 5: Topic index generation ---"
+              python /app/generate-indexes.py \
+                || echo "WARNING: generate-indexes.py had errors (non-fatal)"
+
+              # Step 6: Learning artifact generation (per-repo)
+              echo ""
+              echo "--- Step 6: Learning artifact generation ---"
+              python /app/generate-learning-artifacts.py \
+                --all --repos-file /config/repos.txt --max-repos 20 \
+                || echo "WARNING: generate-learning-artifacts.py had errors (non-fatal)"
+
+              # Step 7: Cross-repo curricula generation
+              echo ""
+              echo "--- Step 7: Cross-repo curricula ---"
+              python /app/generate-curricula.py \
+                --repos-file /config/repos.txt \
+                || echo "WARNING: generate-curricula.py had errors (non-fatal)"
+
+              echo ""
+              echo "=== Refresh complete $(date -u) ==="
+            envFrom:
+            - configMapRef:
+                name: agent-context-config
+            - secretRef:
+                name: agent-context-secrets
+                optional: true
+            env:
+            - name: OPENVIKING_ROOT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-context-secrets
+                  key: openviking-root-key
+                  optional: true
+            volumeMounts:
+            - name: platform-data
+              mountPath: /platform-data
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/appuser
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+              limits:
+                cpu: '2'
+                memory: 4Gi
+          restartPolicy: OnFailure
+          volumes:
+          - name: platform-data
+            persistentVolumeClaim:
+              claimName: platform-data
+          - name: config
+            configMap:
+              name: ingestion-content-config
+          - name: tmp
+            emptyDir:
+              sizeLimit: 10Gi
+          - name: home
+            emptyDir:
+              sizeLimit: 512Mi

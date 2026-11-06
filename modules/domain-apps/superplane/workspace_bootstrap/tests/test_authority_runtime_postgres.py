@@ -398,9 +398,31 @@ class Cloud:
                     del cloud.objects[key]
                 cloud.event("delete-kube", name)
 
+        def self_subject_access_review(body, *, target):
+            assert target == cloud.target
+            assert body["kind"] == "SelfSubjectAccessReview"
+            attrs = body["spec"]["resourceAttributes"]
+            resource = attrs["resource"]
+            if attrs.get("subresource"):
+                resource += "/" + attrs["subresource"]
+            if attrs.get("group"):
+                resource += "." + attrs["group"]
+            return {
+                "status": {
+                    "allowed": cloud.allowed(
+                        principal,
+                        verb=attrs["verb"],
+                        resource=resource,
+                        namespace=attrs.get("namespace"),
+                        name=attrs.get("name"),
+                    )
+                }
+            }
+
         return SimpleNamespace(
             client=SimpleNamespace(configuration=config),
             resources=SimpleNamespace(get=lambda **args: Resource(args["kind"])),
+            self_subject_access_review=self_subject_access_review,
         )
 
 
@@ -577,6 +599,41 @@ def test_wrong_credential_identity_refuses_before_any_grant(runtime):
     result = runtime.run()
     assert result.refusal
     assert runtime.cloud.events == []
+
+
+def test_identity_snapshot_cannot_hide_a_recreated_actor(runtime):
+    from dataclasses import replace
+    from superplane_bootstrap.errors import BootstrapRefused
+
+    snapshot = {a: read() for a, read in runtime.clients.identity_readers.items()}
+    snapshot["installer"] = ProviderIdentity(
+        ACCOUNT_ID, "arn:aws:iam::000000000000:role/recreated"
+    )
+    clients = replace(runtime.clients, identity_snapshot=lambda: snapshot)
+    with pytest.raises(BootstrapRefused, match="different role"):
+        clients.verify()
+    assert runtime.cloud.events == []
+
+
+def test_identity_verification_rechecks_the_live_binding(runtime):
+    from dataclasses import replace
+    from superplane_bootstrap.errors import BootstrapRefused
+
+    current = runtime.clients.binding
+    resolutions = []
+
+    def resolve(*args, **kwargs):
+        resolutions.append(True)
+        return (
+            current
+            if len(resolutions) == 1
+            else replace(current, operation_id="withdrawn")
+        )
+
+    clients = replace(runtime.clients, binding_resolver=resolve)
+    with pytest.raises(BootstrapRefused, match="changed during"):
+        clients.verify()
+    assert len(resolutions) == 2 and runtime.cloud.events == []
 
 
 @pytest.mark.parametrize(

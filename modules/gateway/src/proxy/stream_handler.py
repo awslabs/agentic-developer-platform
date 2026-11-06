@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 import anyio
 
+from src.proxy.exceptions import BedrockInvocationError
 from src.proxy.format_translator import FormatTranslator
 from src.shared.exceptions import BedrockGatewayError
 
@@ -159,14 +160,25 @@ class StreamHandler:
         """
         response_id = response_id or str(uuid.uuid4())
         chunk_index = 0
+        upstream_finished = False
+        pending_finish: bytes | None = None
 
         try:
             async for chunk in stream:
                 try:
                     # Parse the Bedrock chunk
                     bedrock_chunk = self._parse_bedrock_chunk(chunk)
-                    if bedrock_chunk is None:
-                        continue
+                    if not isinstance(bedrock_chunk, dict):
+                        raise StreamingError("Malformed provider stream chunk", chunk_index)
+
+                    chunk_type = bedrock_chunk.get("type")
+                    if chunk_type == "error" and api_format != "anthropic":
+                        raise StreamingError("Provider reported a stream error", chunk_index)
+
+                    if chunk_type == "message_stop":
+                        upstream_finished = True
+                        if api_format == "openai":
+                            continue
 
                     # Convert and format based on target API format
                     if api_format == "openai":
@@ -176,25 +188,37 @@ class StreamHandler:
                     else:  # bedrock
                         formatted = await self._format_bedrock_sse(bedrock_chunk)
 
-                    if formatted:
+                    if api_format == "openai" and chunk_type == "message_delta" and formatted:
+                        pending_finish = formatted
+                    elif formatted:
                         yield formatted
+
+                    if chunk_type == "error":
+                        return
+                    if chunk_type == "message_stop" and api_format == "anthropic":
+                        break
 
                     chunk_index += 1
 
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse chunk {chunk_index}: {e}")
-                    continue
+                except json.JSONDecodeError as exc:
+                    raise StreamingError("Malformed provider stream chunk", chunk_index) from exc
 
-            # Send final SSE based on format
-            final = await self._create_final_sse(api_format, model, response_id)
-            if final:
-                yield final
+            if not upstream_finished:
+                if api_format == "bedrock":
+                    raise BedrockInvocationError("Bedrock returned an incomplete stream")
+                raise StreamingError("Provider stream ended without message_stop", chunk_index)
+            if api_format == "openai":
+                if pending_finish is not None:
+                    yield pending_finish
+                yield b"data: [DONE]\n\n"
 
         except asyncio.CancelledError:
             logger.info("Stream cancelled by client")
             raise
         except BedrockGatewayError:
             # Preserve mapped-account status, scope and remediation at the route.
+            raise
+        except StreamingError:
             raise
         except Exception as e:
             logger.error(f"Error during streaming: {e}")

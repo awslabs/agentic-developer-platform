@@ -13,9 +13,10 @@ from sqlalchemy.exc import DBAPIError
 from .compile import ApprovalContext
 from .dispatch import graph_address
 from .evaluation_authority import evaluation_inputs
+from .evaluation_contract import MULTI_REPOSITORY_SCHEMA, specification
 from .execution_policy import _STAMPED_FIELDS, Action, ExecutionPolicy, stamp_policy
 from .models import OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationEdge, OrchestrationFlow, OrchestrationNode
-from .repository_evaluation_contract import canonical, harness_digest, native_specification
+from .repository_evaluation_contract import canonical, harness_digest, native_harness_compatible, native_specification
 from .review_cycle import CycleBlockedError
 from .state import ActorKind
 
@@ -64,7 +65,14 @@ def evaluation_policy(base, *, actor_id, address, acceptance_mode="machine"):
     """
     raw = base.model_dump(mode="json", exclude=_STAMPED_FIELDS)
     raw.update(
-        allowed_actions=["evaluate"], human_gates=[], evaluation_acceptance={address: acceptance_mode}, user_credentials=None, coordination=None
+        allowed_actions=["evaluate"],
+        human_gates=[],
+        evaluation_acceptance={address: acceptance_mode},
+        user_credentials=None,
+        coordination=None,
+        repair_scope=None,
+        repair_paths=[],
+        repair_required_checks=[],
     )
     return stamp_policy(ExecutionPolicy.model_validate(raw), principal_id=actor_id, org_id=base.org_id)
 
@@ -101,7 +109,7 @@ async def accepted_contract(session, *, node, plan):
         address = data["address"]
         flow = await session.get(OrchestrationFlow, node.flow_id)
         require(flow is not None and address == graph_address(node, flow_slug=flow.slug), "evaluation_address_changed")
-        spec = native_specification(data["specification"])
+        spec = specification(data["specification"])
         policy = evaluation_policy(base, actor_id=decision.actor_id, address=address, acceptance_mode=spec.acceptance_mode)
         require(
             decision.actor_kind == ActorKind.HUMAN.value
@@ -119,7 +127,13 @@ async def accepted_contract(session, *, node, plan):
         )
         is_cli = spec.evidence_schema == "cli-live-evaluation/v1"
         grant = "authorize_cli_qualification_dispatch" if is_cli else "authorize_workflow_dispatch"
-        require(spec.producer is None or data.get(grant) is True, "producer_authorization_required")
+        if spec.evidence_schema == MULTI_REPOSITORY_SCHEMA:
+            require(
+                not data.get("authorize_workflow_dispatch") and not data.get("authorize_cli_qualification_dispatch"),
+                "wrong_producer_dispatch_grant",
+            )
+        else:
+            require(spec.producer is None or data.get(grant) is True, "producer_authorization_required")
         # Renewal supplements change time/attempt bounds, not accepted scope.
         from .policy_admission import load_in_force_policy
 
@@ -178,6 +192,11 @@ async def current_target(session, *, flow_id, actor, request, lock=False):
 
 
 async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, request: EvaluationAcceptanceRequest, lock=False):
+    version = request.specification.get("evidence_schema")
+    require(
+        version == MULTI_REPOSITORY_SCHEMA or not isinstance(version, str) or not version.startswith("multi-repository-evaluation/"),
+        "evaluation_contract_version_unsupported",
+    )
     flow, plan, node = await current_target(session, flow_id=flow_id, actor=actor, request=request, lock=lock)
     require(flow.state in {"pending", "running"}, "flow_not_active")
     require(node.state in {"pending", "ready"}, "evaluation_not_pending")
@@ -187,15 +206,25 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
     require(len(nodes) == 1 and {key: nodes[0].get(key) for key in node_scope(node)} == node_scope(node), "accepted_node_changed")
     original = nodes[0].get("evaluation")
     require(
-        original is None or original.get("evidence_schema") in {"repository-evaluation/v1", "cli-live-evaluation/v1", "workflow-evaluation/v1"},
+        original is None
+        or original.get("evidence_schema") == MULTI_REPOSITORY_SCHEMA
+        or not str(original.get("evidence_schema", "")).startswith("multi-repository-evaluation/"),
+        "evaluation_contract_version_unsupported",
+    )
+    require(
+        original is None
+        or original.get("evidence_schema")
+        in {
+            "repository-evaluation/v1",
+            "cli-live-evaluation/v1",
+            "workflow-evaluation/v1",
+            MULTI_REPOSITORY_SCHEMA,
+        },
         "live_contract_cannot_be_replaced",
     )
     base = ExecutionPolicy.model_validate(plan.plan_document["execution_policy"])
-    spec = native_specification(request.specification)
-    require(base.evaluation_acceptance.get(address) == spec.acceptance_mode, "evaluation_acceptance_mode_changed")
-    require(Action.EVALUATE not in base.human_gates, "explicit_human_gate_preserved")
-    require(Action.EVALUATE in base.allowed_actions or request.authorize_evaluate, "explicit_evaluate_authorization_required")
-    spec = native_specification(request.specification)
+    is_multi = version == MULTI_REPOSITORY_SCHEMA
+    spec = specification(request.specification) if is_multi else native_specification(request.specification)
     attached = await accepted_contract(session, node=node, plan=plan)
     require(
         not (
@@ -205,14 +234,53 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
         or spec.evidence_schema == "cli-live-evaluation/v1",
         "live_contract_cannot_be_replaced",
     )
-    is_cli = spec.evidence_schema == "cli-live-evaluation/v1"
-    require(not is_cli or node.issue_ref == str(spec.qualification.owner_issue), "cli_qualification_owner_changed")
-    grant = request.authorize_cli_qualification_dispatch if is_cli else request.authorize_workflow_dispatch
-    require(not (request.authorize_workflow_dispatch if is_cli else request.authorize_cli_qualification_dispatch), "wrong_producer_dispatch_grant")
-    require(spec.producer is None or grant, "explicit_producer_authorization_required")
-    require(spec.producer is not None or not grant, "producer_specification_required")
-    require(spec.runner.repository in base.repository_ids, "repository_not_permitted")
-    require(spec.runner.harness_sha256 == harness_digest(), "evaluation_harness_mismatch")
+    require(base.evaluation_acceptance.get(address) == spec.acceptance_mode, "evaluation_acceptance_mode_changed")
+    require(Action.EVALUATE not in base.human_gates, "explicit_human_gate_preserved")
+    require(Action.EVALUATE in base.allowed_actions or request.authorize_evaluate, "explicit_evaluate_authorization_required")
+    if is_multi:
+        from .repository_evaluation import repository_mode_supported
+
+        require(repository_mode_supported(spec), "evaluation_adapter_unavailable")
+        require(
+            node.issue_ref is not None
+            and node.issue_ref.isdecimal()
+            and node.repository_identity == spec.harness.repository
+            and node.provider_repository_id == spec.harness.repository_id
+            and (node.repository_connection or {}).get("installation_id") == spec.harness.installation_id,
+            "evaluation_harness_issue_required",
+        )
+        require(
+            not request.authorize_workflow_dispatch and not request.authorize_cli_qualification_dispatch,
+            "wrong_producer_dispatch_grant",
+        )
+        require(flow.product_id is not None and flow.product_id == plan.plan_document.get("product_id"), "evaluation_product_changed")
+        require(spec.harness.repository in base.repository_ids, "repository_not_permitted")
+        from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+        try:
+            await resolve_story_repository(
+                session,
+                tenant_id=actor.org_id,
+                name=spec.harness.repository,
+                issue=int(node.issue_ref),
+                operation="accept",
+                repository_id=spec.harness.repository_id,
+                installation_id=spec.harness.installation_id,
+            )
+        except RepositoryBindingError as error:
+            raise EvaluationAcceptanceError("evaluation_harness_" + error.code) from None
+    else:
+        is_cli = spec.evidence_schema == "cli-live-evaluation/v1"
+        require(not is_cli or node.issue_ref == str(spec.qualification.owner_issue), "cli_qualification_owner_changed")
+        grant = request.authorize_cli_qualification_dispatch if is_cli else request.authorize_workflow_dispatch
+        require(
+            not (request.authorize_workflow_dispatch if is_cli else request.authorize_cli_qualification_dispatch),
+            "wrong_producer_dispatch_grant",
+        )
+        require(spec.producer is None or grant, "explicit_producer_authorization_required")
+        require(spec.producer is not None or not grant, "producer_specification_required")
+        require(spec.runner.repository in base.repository_ids, "repository_not_permitted")
+        require(native_harness_compatible(spec, harness_digest()), "evaluation_harness_mismatch")
     require(len(canonical(spec.model_dump(mode="json"))) <= 256 * 1024, "evaluation_specification_too_large")
     parents = list(
         await session.scalars(
@@ -231,6 +299,30 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
     require(
         {graph_address(parent, flow_slug=flow.slug) for parent in parents} == {item.address for item in spec.predecessors}, "predecessor_set_changed"
     )
+    if is_multi:
+        declarations = {item.address: item for item in spec.predecessors}
+        for parent in parents:
+            expected = declarations[graph_address(parent, flow_slug=flow.slug)]
+            require(
+                parent.issue_ref is not None
+                and parent.issue_ref.isdecimal()
+                and parent.repository_identity in base.repository_ids
+                and parent.provider_repository_id == expected.repository_id
+                and (parent.repository_connection or {}).get("installation_id") is not None,
+                "evaluation_source_binding_required",
+            )
+            try:
+                await resolve_story_repository(
+                    session,
+                    tenant_id=actor.org_id,
+                    name=parent.repository_identity,
+                    issue=int(parent.issue_ref),
+                    operation="accept",
+                    repository_id=expected.repository_id,
+                    installation_id=parent.repository_connection["installation_id"],
+                )
+            except RepositoryBindingError as error:
+                raise EvaluationAcceptanceError("evaluation_source_" + error.code) from None
     policy = evaluation_policy(base, actor_id=actor.actor_id, address=address, acceptance_mode=spec.acceptance_mode)
     previous = await latest_acceptance(session, node=node, plan=plan)
     content = dict(
@@ -297,7 +389,7 @@ async def _accept_evaluation_locked(session, *, flow_id, actor, request):
         require(latest is not None and latest[0].id == existing.id, "evaluation_contract_superseded")
         content = json.loads(existing.reason)
         require(
-            content["specification"] == native_specification(request.specification).model_dump(mode="json")
+            content["specification"] == specification(request.specification).model_dump(mode="json")
             and content["authorize_evaluate"] == request.authorize_evaluate
             and content.get("authorize_workflow_dispatch", False) == request.authorize_workflow_dispatch
             and content.get("authorize_cli_qualification_dispatch", False) == request.authorize_cli_qualification_dispatch

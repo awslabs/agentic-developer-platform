@@ -77,10 +77,9 @@ UNVERIFIED_DEST = "dest-unverified"
 
 
 @pytest.fixture
-async def engine():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def engine(sqlite_schemas):
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False, connect_args={"check_same_thread": False})
+    await sqlite_schemas.create_all(engine, Base.metadata)
     yield engine
     await engine.dispose()
 

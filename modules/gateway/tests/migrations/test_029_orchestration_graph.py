@@ -75,7 +75,14 @@ MIG_029 = _load_migration("029_orchestration_graph.py")
 # Append to this list when a migration touches an orchestration table; that is
 # cheaper than the alternative (running the whole alembic chain here), which would
 # couple this file to every unrelated migration in the repo.
-MIGRATIONS_AFTER_029 = [_load_migration("039_flow_design_capture.py"), _load_migration("067_flow_execution_pause.py")]
+MIGRATIONS_AFTER_029 = [
+    _load_migration("039_flow_design_capture.py"),
+    _load_migration("067_flow_execution_pause.py"),
+    _load_migration("086_orchestration_node_metadata.py"),
+    _load_migration("096_flow_archive.py"),
+    _load_migration("124_flow_product_repo.py"),
+    _load_migration("125_flow_planning_references.py"),
+]
 
 
 def _run_migration(sync_conn, fn):
@@ -492,6 +499,10 @@ class TestModelMigrationParity:
     )
     async def test_model_columns_match_migration(self, migrated_columns, model):
         model_cols = {c.name for c in model.__table__.columns}
+        if model is OrchestrationFlow:
+            # 146 spans Product and spend tables; its real PostgreSQL test checks
+            # full current-flow parity. This fixture runs orchestration-only DDL.
+            model_cols -= {"project_id"}
         assert model_cols == migrated_columns[model.__tablename__], (
             f"{model.__tablename__}: model/migration column drift — "
             f"only in model: {model_cols - migrated_columns[model.__tablename__]}, "

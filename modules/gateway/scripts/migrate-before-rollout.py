@@ -38,7 +38,17 @@ def migration_job(deployment, image, namespace, name):
             "backoffLimit": 0,
             "activeDeadlineSeconds": 900,
             "ttlSecondsAfterFinished": 3600,
-            "template": {"metadata": {"labels": {"adp-task": "gateway-migration"}}, "spec": spec},
+            "template": {
+                "metadata": {
+                    "labels": {"adp-task": "gateway-migration"},
+                    # The Job has backoffLimit 0 so a failed migration never retries on its
+                    # own; that also means a node consolidation that evicts the pod
+                    # ("Evicted pod: Underutilized", gateway-deploy 38879894256) fails the
+                    # whole release. Keep Karpenter from disrupting it while it runs.
+                    "annotations": {"karpenter.sh/do-not-disrupt": "true"},
+                },
+                "spec": spec,
+            },
         },
     }
 

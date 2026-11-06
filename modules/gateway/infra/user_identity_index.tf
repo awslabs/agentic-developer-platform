@@ -52,37 +52,21 @@ resource "aws_ssm_parameter" "user_identity_index_table" {
   tags = local.common_tags
 }
 
-# IAM: Grant gateway IRSA role PutItem/GetItem/DeleteItem on new table.
-# Matches the `aws_iam_role_policy.gateway_identity_index` pattern in main.tf
-# (inline role policy, not a standalone aws_iam_policy + attachment) so the
-# permissions actually land on the role.
-resource "aws_iam_role_policy" "gateway_user_identity_index" {
-  name = "${local.name_prefix}-policy-gateway-user-identity-index"
-  role = local.gateway_service_irsa_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "UserIdentityIndexAccess"
-        Effect = "Allow"
-        Action = [
-          "dynamodb:PutItem",
-          "dynamodb:GetItem",
-          "dynamodb:DeleteItem"
-        ]
-        Resource = aws_dynamodb_table.user_identity_index.arn
-      },
-      {
-        Sid    = "DynamoDBKMSAccess"
-        Effect = "Allow"
-        Action = [
-          "kms:Decrypt",
-          "kms:GenerateDataKey*",
-          "kms:DescribeKey"
-        ]
-        Resource = [aws_kms_key.dynamodb.arn]
-      }
-    ]
-  })
+# IAM: the gateway service role gets PutItem/GetItem/DeleteItem on this table
+# through the consolidated identity policy in gateway-role-policies.tf
+# (aws_iam_policy.gateway_role["identity"]). The table's KMS grant is the shared
+# "DynamoDBKMSAccess" statement there.
+locals {
+  gateway_user_identity_index_statements = [
+    {
+      Sid    = "UserIdentityIndexAccess"
+      Effect = "Allow"
+      Action = [
+        "dynamodb:PutItem",
+        "dynamodb:GetItem",
+        "dynamodb:DeleteItem"
+      ]
+      Resource = aws_dynamodb_table.user_identity_index.arn
+    }
+  ]
 }

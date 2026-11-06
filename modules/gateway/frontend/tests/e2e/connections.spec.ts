@@ -110,11 +110,254 @@ const sampleConnection = {
   configure_url: 'https://github.com/organizations/test-org/settings/installations/12345',
 };
 
+type AtlassianReadiness = 'ready' | 'setup_required' | 'policy_blocked' | 'unavailable';
+
+async function mockAtlassianJourney(page: Page, initialReadiness: AtlassianReadiness = 'ready', withLegacy = false) {
+  const originalRecords = [
+    { id: 'jira-legacy', scope: 'user', service: 'jira', credential_type: 'oauth_token', provider: 'agentcore-identity', agent_consent: true, scopes: { oauth_scopes: ['read:jira-work'] } },
+    { id: 'github-owner', scope: 'user', service: 'github', credential_type: 'oauth_token', provider: 'agentcore-identity', agent_consent: true, scopes: { oauth_scopes: ['read:user'] } },
+    { id: 'slack-owner', scope: 'user', service: 'slack', credential_type: 'oauth_token', provider: 'agentcore-identity', agent_consent: true, scopes: { oauth_scopes: ['users:read'] } },
+  ];
+  const state: {
+    readiness: AtlassianReadiness;
+    revision: number;
+    selectedSite: string | null;
+    connected: boolean;
+    pending: boolean;
+    statusReads: number;
+    prepares: number;
+    records: typeof originalRecords;
+    legacyVersion: number;
+    failComplete: boolean;
+    starts: Array<{ capability_set: string; reconnect_revision?: string }>;
+  } = { readiness: initialReadiness, revision: initialReadiness === 'policy_blocked' || initialReadiness === 'unavailable' ? 1 : 0,
+    selectedSite: initialReadiness === 'policy_blocked' || initialReadiness === 'unavailable' ? 'site-one' : null,
+    connected: initialReadiness === 'policy_blocked' || initialReadiness === 'unavailable', pending: false, statusReads: 0, prepares: 0,
+    records: withLegacy ? [...originalRecords] : [], legacyVersion: 1, failComplete: false, starts: [] };
+  const sites = ['site-one', 'site-two'];
+  const actions = {
+    ready: { owner: null, action: null },
+    setup_required: { owner: 'platform_admin', action: 'Ask a platform administrator to complete and verify the deployment setup.' },
+    policy_blocked: { owner: 'atlassian_organization_admin', action: 'Ask the Atlassian organization administrator to allow this deployment client.' },
+    unavailable: { owner: 'platform_admin', action: 'Ask a platform administrator to reconcile the deployment configuration.' },
+  };
+  const reply = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+  await page.route('**/api/**', (route) => reply(route, {}));
+  await page.route('**/api/admin/connections', (route) => reply(route, { connections: [] }));
+  await page.route('**/api/admin/connections/github/app', (route) => reply(route, { registered: true, app_slug: 'example', app_id: 'app-1' }));
+  await page.route('**/api/auth/credentials', (route) => reply(route, state.records));
+  await page.route('**/api/auth/connections/oauth/providers', (route) => reply(route, { providers: [
+    { service: 'github', provider: 'github', status: 'registered' },
+    { service: 'slack', provider: 'slack', status: 'registered' },
+  ] }));
+  await page.route('**/api/admin/connections/atlassian-mcp/prepare', (route) => {
+    if (state.readiness !== 'setup_required' || route.request().method() !== 'POST') return reply(route, { detail: 'not_ready' }, 409);
+    state.prepares++;
+    state.readiness = 'ready';
+    return reply(route, { status: 'prepared' });
+  });
+  await page.route('**/api/auth/connections/oauth/atlassian', (route) => {
+    if (route.request().method() !== 'DELETE' || !state.connected || !state.selectedSite) return reply(route, { detail: 'replacement_not_ready' }, 409);
+    state.records = state.records.filter((record) => record.service !== 'jira');
+    state.legacyVersion++;
+    return reply(route, { status: 'disconnected' });
+  });
+  await page.route('**/api/auth/connections/atlassian-mcp**', (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const method = route.request().method();
+    if (method === 'GET' && path.endsWith('/status')) {
+      state.statusReads++;
+      return reply(route, { status: state.readiness, ...actions[state.readiness],
+        ...(state.connected ? { connection: { id: 'binding-1', revision: `rev-${state.revision}`, sites, selected_site_id: state.selectedSite } } : {}),
+      });
+    }
+    if (method === 'POST' && path.endsWith('/start')) {
+      const body = route.request().postDataJSON() as { capability_set: string; reconnect_revision?: string };
+      if (body.reconnect_revision !== (state.connected ? `rev-${state.revision}` : undefined)) return reply(route, { detail: 'connection_changed' }, 409);
+      state.starts.push(body);
+      state.pending = true;
+      return reply(route, { authorization_url: 'https://atlassian.example.test/authorize', state: 'fixture-state', session_uri: 'opaque-session' });
+    }
+    if (method === 'POST' && path.endsWith('/complete')) {
+      const body = route.request().postDataJSON() as { state: string; session_uri: string };
+      if (state.failComplete) return reply(route, { detail: { error: 'identity_unavailable' } }, 503);
+      if (!state.pending || body.state !== 'fixture-state' || body.session_uri !== 'opaque-session') return reply(route, { detail: 'invalid_consent' }, 403);
+      state.pending = false;
+      state.connected = true;
+      state.revision++;
+      return reply(route, { id: 'binding-1', revision: `rev-${state.revision}`, service: 'atlassian-mcp' }, 201);
+    }
+    if (method === 'POST' && path.endsWith('/select-site')) {
+      const body = route.request().postDataJSON() as { connection_revision: string; site_id: string };
+      if (!state.connected || body.connection_revision !== `rev-${state.revision}` || !sites.includes(body.site_id)) return reply(route, { detail: 'connection_changed' }, 409);
+      state.selectedSite = body.site_id;
+      state.revision++;
+      return reply(route, { revision: `rev-${state.revision}`, selected_site_id: body.site_id });
+    }
+    if (method === 'DELETE' && path.endsWith('/atlassian-mcp')) {
+      const body = route.request().postDataJSON() as { connection_revision: string };
+      if (!state.connected || body.connection_revision !== `rev-${state.revision}`) return reply(route, { detail: 'connection_changed' }, 409);
+      state.connected = false;
+      state.selectedSite = null;
+      state.pending = false;
+      return reply(route, { status: 'disconnected', revocation_pending: true });
+    }
+    return reply(route, { detail: 'Not found' }, 404);
+  });
+  await page.route('https://atlassian.example.test/authorize', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>Fixture provider consent</h1>' }));
+  return Object.assign(state, { restore: () => {
+    state.records = [...originalRecords];
+    state.connected = false;
+    state.selectedSite = null;
+    state.pending = false;
+    state.failComplete = false;
+  } });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 test.describe('Connections page', () => {
+  test('atlassian_user_journey', async ({ page }) => {
+    await injectAuth(page, 'member');
+    const server = await mockAtlassianJourney(page);
+    await page.goto(`${BASE_URL}/settings/connections`);
+    const card = page.getByLabel('Atlassian — Jira & Confluence');
+    await expect(card.getByRole('status')).toHaveText('Not connected');
+    await expect(card.getByRole('button', { name: 'Request Jira write access' })).toHaveCount(0);
+
+    await card.getByRole('button', { name: 'Connect Atlassian' }).click();
+    await expect(page.getByRole('heading', { name: 'Fixture provider consent' })).toBeVisible();
+    expect(server.connected).toBe(false);
+    expect(server.starts).toEqual([{ capability_set: 'reads' }]);
+    await page.goto(`${BASE_URL}/settings/connections?oauth_consent=returned`);
+    await expect(card.getByRole('status')).toHaveText('Choose a site');
+    expect(server.connected).toBe(true);
+    expect(server.selectedSite).toBeNull();
+    await card.getByRole('combobox', { name: 'Atlassian site' }).selectOption('site-two');
+    await expect(card.getByRole('status')).toHaveText('Site selected');
+    await expect(card.getByRole('combobox', { name: 'Atlassian site' })).toHaveValue('site-two');
+    expect(server.selectedSite).toBe('site-two');
+
+    await card.getByRole('button', { name: 'Reconnect Atlassian' }).click();
+    await expect(page.getByRole('heading', { name: 'Fixture provider consent' })).toBeVisible();
+    expect(server.starts).toEqual([{ capability_set: 'reads' }, { capability_set: 'reads', reconnect_revision: 'rev-2' }]);
+    await page.goto(`${BASE_URL}/settings/connections?oauth_consent=returned`);
+    await expect(card.getByRole('status')).toHaveText('Site selected');
+    expect(server.revision).toBe(3);
+    page.once('dialog', (dialog) => dialog.accept());
+    await card.getByRole('button', { name: 'Disconnect Atlassian' }).click();
+    await expect(card.getByRole('status')).toHaveText('Not connected');
+    expect(server.connected).toBe(false);
+    expect(server.statusReads).toBeGreaterThanOrEqual(4);
+    expect(server.statusReads).toBeLessThanOrEqual(12);
+  });
+
+  test('atlassian_admin_states', async ({ browser }) => {
+    const cases = [
+      { readiness: 'setup_required', badge: 'Admin setup needed', userAction: 'Ask a platform administrator to complete and verify the deployment setup.', adminAction: 'Complete and verify the deployment setup before users connect.' },
+      { readiness: 'policy_blocked', badge: 'Policy approval needed', userAction: 'Ask the Atlassian organization administrator to allow this deployment client.', adminAction: 'Ask the Atlassian organization administrator to allow this deployment client.' },
+      { readiness: 'unavailable', badge: 'Unavailable', userAction: 'Ask a platform administrator to reconcile the deployment configuration.', adminAction: 'Reconcile the deployment configuration before trying setup again.' },
+    ] as const;
+    for (const scenario of cases) {
+      for (const role of ['member', 'admin'] as const) {
+        const context = await browser.newContext();
+        try {
+          const page = await context.newPage();
+          await page.clock.install({ time: new Date('2026-10-25T12:00:00Z') });
+          await injectAuth(page, role);
+          const server = await mockAtlassianJourney(page, scenario.readiness);
+          await page.goto(`${BASE_URL}/settings/connections`);
+          const card = page.getByLabel('Atlassian — Jira & Confluence');
+          await expect(card.getByRole('status')).toHaveText(scenario.badge);
+          await expect(card.getByRole('alert')).toHaveText(role === 'admin' ? scenario.adminAction : scenario.userAction);
+          await expect(card.locator('input')).toHaveCount(0);
+          await expect(card.getByRole('button', { name: /Connect Atlassian|Reconnect Atlassian|Disconnect Atlassian/ })).toHaveCount(0);
+          await expect(card.getByRole('heading', { name: 'Atlassian — Jira & Confluence' })).toHaveCount(1);
+          expect(await page.evaluate(() => JSON.parse(atob(window.sessionStorage.getItem('cognito_id_token')!.split('.')[1]))['custom:role'])).toBe(role);
+          expect(server.connected).toBe(scenario.readiness !== 'setup_required');
+          if (role === 'admin' && scenario.readiness === 'setup_required') {
+            await card.getByRole('button', { name: 'Prepare Atlassian connection' }).click();
+            await expect(card.getByRole('button', { name: 'Connect Atlassian' })).toBeVisible();
+            expect(server.prepares).toBe(1);
+          } else {
+            await expect(card.getByRole('button', { name: 'Prepare Atlassian connection' })).toHaveCount(0);
+            expect(server.prepares).toBe(0);
+          }
+          if (scenario.readiness !== 'setup_required') {
+            server.readiness = 'ready';
+            await card.getByRole('button', { name: 'Refresh Atlassian status' }).click();
+            await expect(card.getByRole('status')).toHaveText('Site selected');
+            expect(server.connected).toBe(true);
+          }
+          expect(server.statusReads).toBeLessThanOrEqual(3);
+        } finally {
+          await context.close();
+        }
+      }
+    }
+  });
+
+  test('atlassian_legacy_migration', async ({ page }) => {
+    await injectAuth(page, 'member');
+    const server = await mockAtlassianJourney(page, 'ready', true);
+    const originalIds = ['jira-legacy', 'github-owner', 'slack-owner'];
+    const card = page.getByLabel('Atlassian — Jira & Confluence');
+    try {
+      await page.goto(`${BASE_URL}/settings/connections`);
+      await expect(card.getByText(/Your existing Jira connection is unchanged/)).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Atlassian — Jira & Confluence' })).toHaveCount(1);
+      await expect(page.getByRole('heading', { name: /Atlassian \(Jira\)/ })).toHaveCount(0);
+      await expect(card.getByRole('button', { name: 'Disconnect old Jira connection' })).toHaveCount(0);
+
+      await card.getByRole('button', { name: 'Connect Atlassian' }).click();
+      await expect(page.getByRole('heading', { name: 'Fixture provider consent' })).toBeVisible();
+      await page.goto(`${BASE_URL}/settings/connections?oauth_consent=error`);
+      await expect(page.getByText(/Consent was cancelled or expired/)).toBeVisible();
+      expect(server.records.map((record) => record.id)).toEqual(originalIds);
+      expect(server.legacyVersion).toBe(1);
+      await page.reload();
+      await expect(card.getByRole('status')).toHaveText('Not connected');
+      await expect(card.getByText(/Your existing Jira connection is unchanged/)).toBeVisible();
+
+      server.failComplete = true;
+      await card.getByRole('button', { name: 'Connect Atlassian' }).click();
+      await expect(page.getByRole('heading', { name: 'Fixture provider consent' })).toBeVisible();
+      await page.goto(`${BASE_URL}/settings/connections?oauth_consent=returned`);
+      await expect(card.getByRole('status')).toHaveText('Not connected');
+      expect(server.records.map((record) => record.id)).toEqual(originalIds);
+      expect(server.revision).toBe(0);
+      await page.reload();
+      await expect(card.getByRole('button', { name: 'Connect Atlassian' })).toBeVisible();
+      expect(server.revision).toBe(0);
+
+      server.failComplete = false;
+      await card.getByRole('button', { name: 'Connect Atlassian' }).click();
+      await expect(page.getByRole('heading', { name: 'Fixture provider consent' })).toBeVisible();
+      await page.goto(`${BASE_URL}/settings/connections?oauth_consent=returned`);
+      await expect(card.getByRole('status')).toHaveText('Choose a site');
+      expect(server.records.map((record) => record.id)).toEqual(originalIds);
+      await expect(card.getByRole('button', { name: 'Disconnect old Jira connection' })).toHaveCount(0);
+      await card.getByRole('combobox', { name: 'Atlassian site' }).selectOption('site-one');
+      await expect(card.getByRole('button', { name: 'Disconnect old Jira connection' })).toBeVisible();
+      page.once('dialog', (dialog) => dialog.accept());
+      await card.getByRole('button', { name: 'Disconnect old Jira connection' }).click();
+      await expect(card.getByText(/Your existing Jira connection is unchanged/)).toHaveCount(0);
+      expect(server.records.map((record) => record.id)).toEqual(['github-owner', 'slack-owner']);
+      expect(server.legacyVersion).toBe(2);
+      expect(server.selectedSite).toBe('site-one');
+      await page.reload();
+      await expect(card.getByRole('status')).toHaveText('Site selected');
+      expect(server.records.map((record) => record.id)).toEqual(['github-owner', 'slack-owner']);
+      expect(server.statusReads).toBeLessThanOrEqual(24);
+    } finally {
+      server.restore();
+      expect(server.records.map((record) => record.id)).toEqual(originalIds);
+      expect(server.connected).toBe(false);
+    }
+  });
   test('empty state renders Install button and Coming soon tiles', async ({ page }) => {
     await injectAuth(page);
     await mockConnectionsApi(page, []);

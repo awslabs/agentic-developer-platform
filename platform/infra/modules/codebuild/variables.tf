@@ -38,3 +38,9 @@ variable "ecr_registry" {
   description = "ECR registry URL e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com (passed as REGISTRY env var to CodeBuild projects)"
   type        = string
 }
+
+variable "enable_gitlab_runner_build" {
+  description = "Create the separately approved, scoped GitLab runner bootstrap build project."
+  type        = bool
+  default     = false
+}

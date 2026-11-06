@@ -19,10 +19,13 @@
  * `tests/test_abort_authorization.py` (worker, Python) and
  * `tests/agentauth/test_abort_receipt.py` (gateway), both against per-run keys.
  */
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { applyControlCommand } from './control-command-apply';
+import { revalidateQueuedCommand } from './control-revalidation';
+import * as runIdentity from './lib/runIdentity';
 import { ControlStateStore } from './control-state';
 import { IMPLEMENTED_CONTROL_VERBS } from './control-runtime';
 import type { ControlAction } from './control-state';
@@ -384,9 +387,10 @@ describe('an abort cannot be delivered without live authorization', () => {
  * The review asked whether a run on the legacy (non-authority) path can accept an
  * abort, and required that if it cannot, the refusal be proven through the actual
  * entrypoint/control flow rather than asserted. It cannot, and the refusal is
- * structural at three independent points. The first two are checked here; the
- * third is an environment gate in `control-revalidation.ts` and is checked by the
- * assertion on its source, because exercising it would require a live endpoint.
+ * structural at three independent points. The third is an environment gate in
+ * `control-revalidation.ts`, exercised with mocked transport and valid signing
+ * prerequisites: refusal must occur before credential resolution or a request,
+ * and an enabled, trusted endpoint provides the positive control.
  */
 describe('a legacy run cannot accept an abort', () => {
   it('requires an envelope for abort BECAUSE abort is implemented', () => {
@@ -444,16 +448,49 @@ describe('a legacy run cannot accept an abort', () => {
     expect(store.lookup(COMMAND).status).toBe('rejected');
   });
 
-  it('gates the authority call on ADP_AGENT_AUTHORITY_ENABLED', () => {
-    // The third refusal. `postRevalidation` throws unless the flag is exactly
-    // 'true' AND the endpoint matches the API Gateway pattern, and
-    // `revalidateQueuedCommand` catches that into `false`. Asserted on the source
-    // because reaching it needs a live signed endpoint; what must not regress is
-    // that the flag is compared, not merely read with a default.
-    const source = readFileSync(join(__dirname, 'control-revalidation.ts'), 'utf8');
-
-    expect(source).toContain("process.env.ADP_AGENT_AUTHORITY_ENABLED !== 'true'");
-    // Fails closed into a refusal, never into an approval.
-    expect(source).toContain('catch { return false; }');
+  it.each([
+    [undefined, 'https://example.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent', false],
+    ['false', 'https://example.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent', false],
+    ['TRUE', 'https://example.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent', false],
+    ['true', 'http://169.254.169.254/latest/meta-data/', false],
+    ['true', 'https://example.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent', true],
+  ] as const)('requires exact authority opt-in and trusted endpoint (%s, %s)', async (flag, endpoint, permitted) => {
+    // Supply valid deterministic signing and token prerequisites even to the
+    // refusal cases. Removing the authority/endpoint guard must cause a real
+    // transport attempt and fail these assertions, not fail later on missing
+    // credentials and accidentally keep the test green.
+    const previous = { ...process.env };
+    const directory = mkdtempSync(join(tmpdir(), 'adp-abort-authority-'));
+    const credentials = jest.spyOn(runIdentity, 'workerAwsCredentialProvider').mockResolvedValue(async () => ({
+      accessKeyId: 'TEST_ACCESS_KEY', secretAccessKey: 'test-only-secret', sessionToken: 'test-session',
+    }));
+    const send = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({
+      allowed: true, command_id: COMMAND, generation: 4, max_round_trip_ms: 1000, abort_receipt: RECEIPT,
+    }) } as Response);
+    try {
+      if (flag === undefined) delete process.env.ADP_AGENT_AUTHORITY_ENABLED;
+      else process.env.ADP_AGENT_AUTHORITY_ENABLED = flag;
+      process.env.ADP_AGENT_CONTROL_ENDPOINT = endpoint;
+      process.env.ADP_RUN_CREDENTIAL_FILE = join(directory, 'credential');
+      process.env.ADP_WORKLOAD_TOKEN_FILE = join(directory, 'workload');
+      writeFileSync(process.env.ADP_RUN_CREDENTIAL_FILE, 'test-run-credential');
+      writeFileSync(process.env.ADP_WORKLOAD_TOKEN_FILE, 'test-workload-proof');
+      const result = await revalidateQueuedCommand({ envelope: ENVELOPE, action: 'abort',
+        command_id: COMMAND, body_base64: SIGNED_BODY }, 4);
+      if (permitted) {
+        expect(result).toMatchObject({ allowed: true, abortReceipt: RECEIPT });
+        expect(credentials).toHaveBeenCalledTimes(1);
+        expect(send).toHaveBeenCalledTimes(1);
+      } else {
+        expect(result).toBe(false);
+        expect(credentials).not.toHaveBeenCalled();
+        expect(send).not.toHaveBeenCalled();
+      }
+    } finally {
+      send.mockRestore();
+      credentials.mockRestore();
+      process.env = previous;
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

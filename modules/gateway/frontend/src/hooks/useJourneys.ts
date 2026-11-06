@@ -22,6 +22,7 @@ import { useCallback, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useFeatures } from '@/hooks/useFeatures';
 import { usePermissions } from '@/hooks/usePermissions';
+import { Permission } from '@/types';
 import { useJourneyMemory } from '@/hooks/useJourneyMemory';
 import {
   buildJourneys,
@@ -61,6 +62,7 @@ export function useJourneys(): UseJourneysResult {
     canViewOrganizations,
     canViewBudgets,
     canViewRateLimits,
+    hasPermission,
     canViewLogs,
     canViewPool,
     canViewMetrics,
@@ -79,6 +81,7 @@ export function useJourneys(): UseJourneysResult {
         canViewOrganizations: canViewOrganizations(),
         canViewBudgets: canViewBudgets(),
         canViewRateLimits: canViewRateLimits(),
+        canManageTools: hasPermission(Permission.TOOLS_MANAGE),
         canViewLogs: canViewLogs(),
         canViewPool: canViewPool(),
         canViewMetrics: canViewMetrics(),
@@ -93,6 +96,7 @@ export function useJourneys(): UseJourneysResult {
       canViewOrganizations,
       canViewBudgets,
       canViewRateLimits,
+      hasPermission,
       canViewLogs,
       canViewPool,
       canViewMetrics,

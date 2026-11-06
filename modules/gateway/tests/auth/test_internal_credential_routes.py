@@ -69,11 +69,13 @@ from src.internal.credential_injector import (
     inject_credential,
 )
 from src.internal.credential_routes import _validate_proxy_url, get_secrets_manager, router
+from src.shared.config import Settings
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import UserCredential
+from tests.auth.proxy_stream import stream_from_request
 
 # ---------------------------------------------------------------------------
 # Test infrastructure
@@ -207,7 +209,7 @@ def _settings_mock(
     bucket: str = "test-bucket",
     proxy_host_allowlist: str = "api.github.com,api.openai.com,*.atlassian.net,api.stripe.com,slack.com,jira.example.com,bad.host.invalid",
     proxy_require_https: bool = True,
-    enforce_host_binding: bool = False,
+    enforce_host_binding: bool = True,
 ) -> MagicMock:
     s = MagicMock()
     s.internal_api_key = _VALID_KEY
@@ -216,8 +218,7 @@ def _settings_mock(
     s.aws_region = "us-east-1"
     s.vault_proxy_host_allowlist = proxy_host_allowlist
     s.vault_proxy_require_https = proxy_require_https
-    # Issue #4076: credential->host egress binding defaults to shadow mode (off),
-    # matching the production default in config.py.
+    # Match the enforcing application default; shadow tests opt out explicitly.
     s.vault_enforce_credential_host_binding = enforce_host_binding
     # Issue #3175: credential binding defaults to shadow mode (off).
     s.enforce_credential_binding = False
@@ -235,6 +236,7 @@ async def _seed_credential(
     secret_arn: str = "arn:aws:secretsmanager:us-east-1:123:secret:adp/users/alice/github-abc123",
 ) -> UserCredential:
     cred = UserCredential(
+        agent_consent=True,
         id=cred_id,
         org_id="org-test",
         user_id="user-alice",
@@ -389,6 +391,7 @@ class TestProxyRequest:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client.request = AsyncMock(return_value=mock_response)
+            mock_client.stream = lambda **kwargs: stream_from_request(mock_client, **kwargs)
             mock_client_cls.return_value = mock_client
 
             client = _make_app(db, mock_sm=mock_sm)
@@ -447,6 +450,7 @@ class TestProxyRequest:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client.request = _fake_request
+            mock_client.stream = lambda **kwargs: stream_from_request(mock_client, **kwargs)
             mock_client_cls.return_value = mock_client
 
             client = _make_app(db, mock_sm=mock_sm)
@@ -502,6 +506,7 @@ class TestProxyRequest:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client.request = _fake_request
+            mock_client.stream = lambda **kwargs: stream_from_request(mock_client, **kwargs)
             mock_client_cls.return_value = mock_client
 
             client = _make_app(db, mock_sm=mock_sm)
@@ -551,6 +556,7 @@ class TestProxyRequest:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client.request = AsyncMock(return_value=r)
+            mock_client.stream = lambda **kwargs: stream_from_request(mock_client, **kwargs)
             mock_client_cls.return_value = mock_client
 
             client = _make_app(db, mock_sm=mock_sm)
@@ -604,6 +610,7 @@ class TestProxyRequest:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client.request = AsyncMock(return_value=r)
+            mock_client.stream = lambda **kwargs: stream_from_request(mock_client, **kwargs)
             mock_client_cls.return_value = mock_client
 
             client = _make_app(db, mock_sm=mock_sm)
@@ -661,6 +668,7 @@ class TestProxyRequest:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client.request = AsyncMock(side_effect=_httpx.ConnectError("Connection refused"))
+            mock_client.stream = lambda **kwargs: stream_from_request(mock_client, **kwargs)
             mock_client_cls.return_value = mock_client
 
             client = _make_app(db, mock_sm=mock_sm)
@@ -717,6 +725,7 @@ class TestProxyRequestAllowlist:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client.request = AsyncMock(return_value=r)
+            mock_client.stream = lambda **kwargs: stream_from_request(mock_client, **kwargs)
             mock_client_cls.return_value = mock_client
 
             client = _make_app(db, mock_sm=mock_sm)
@@ -902,6 +911,7 @@ class TestProxyRequestAllowlist:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client.request = AsyncMock(return_value=r)
+            mock_client.stream = lambda **kwargs: stream_from_request(mock_client, **kwargs)
             mock_client_cls.return_value = mock_client
 
             client = _make_app(db, mock_sm=mock_sm)
@@ -1033,7 +1043,7 @@ class TestCredentialHostBinding:
         db: AsyncSession,
         *,
         mock_sm: MagicMock,
-        settings: MagicMock,
+        settings: Settings | MagicMock,
         body_service: str,
         url: str,
         task_id: str,
@@ -1052,6 +1062,7 @@ class TestCredentialHostBinding:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client.request = AsyncMock(return_value=r)
+            mock_client.stream = lambda **kwargs: stream_from_request(mock_client, **kwargs)
             mock_client_cls.return_value = mock_client
 
             client = _make_app(db, mock_sm=mock_sm)
@@ -1068,6 +1079,50 @@ class TestCredentialHostBinding:
                 },
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
+
+    @pytest.mark.parametrize(
+        "service,host,expected_status",
+        [
+            ("github", "api.github.com", 200),
+            ("openai", "api.openai.com", 200),
+            ("anthropic", "api.anthropic.com", 200),
+            ("stripe", "api.stripe.com", 200),
+            ("slack", "slack.com", 200),
+            ("jira", "jira.example.com", 200),
+            ("github", "slack.com", 403),
+            ("openai", "slack.com", 403),
+            ("anthropic", "slack.com", 403),
+            ("stripe", "slack.com", 403),
+            ("slack", "api.github.com", 403),
+        ],
+    )
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    def test_default_configuration_binds_credentials(self, db, monkeypatch, service, host, expected_status):
+        """Exercise the real default, including refusal before secret retrieval."""
+        monkeypatch.delenv("BG_VAULT_ENFORCE_CREDENTIAL_HOST_BINDING", raising=False)
+        settings = Settings(
+            _env_file=None,
+            internal_api_key=_VALID_KEY,
+            vault_proxy_host_allowlist="api.github.com,api.openai.com,api.anthropic.com,api.stripe.com,slack.com,jira.example.com",
+        )
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, service=service))
+        mock_sm = self._mock_sm()
+
+        resp = self._post(
+            db,
+            mock_sm=mock_sm,
+            settings=settings,
+            body_service=service,
+            url=f"https://{host}/test",
+            task_id="task-default-binding",
+        )
+
+        assert resp.status_code == expected_status
+        if expected_status == 403:
+            assert resp.json()["detail"]["error"] == "credential_host_binding_denied"
+            mock_sm.get_secret.assert_not_called()
+        else:
+            mock_sm.get_secret.assert_called_once()
 
     @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
     @patch("src.internal.credential_routes.get_settings")
@@ -1283,7 +1338,7 @@ class TestCredentialMaterialize:
         return sm
 
     @patch("src.internal.credential_routes.get_settings")
-    def test_ssh_key_returns_presigned_url(self, mock_settings, db: AsyncSession):
+    def test_file_delivery_refuses_before_secret_or_upload(self, mock_settings, db: AsyncSession):
         mock_settings.return_value = _settings_mock(bucket="test-bucket")
 
         asyncio.get_event_loop().run_until_complete(
@@ -1297,22 +1352,7 @@ class TestCredentialMaterialize:
         )
         mock_sm = self._mock_sm("-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----")
 
-        fake_url = "https://s3.amazonaws.com/test-bucket/vault/materialize/xyz?X-Amz-Signature=abc"
-
-        def _mock_upload_and_sign():
-            return fake_url
-
-        from src.internal.credential_binding import resolve_credential_binding
-
-        async def _selective_to_thread(fn, *args, **kwargs):
-            """Run binding resolution normally; mock S3 upload."""
-            if fn is resolve_credential_binding:
-                return fn(*args, **kwargs)
-            return fake_url
-
-        with (
-            patch("asyncio.to_thread", new=_selective_to_thread),
-        ):
+        with patch("boto3.client") as aws:
             client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
@@ -1329,11 +1369,11 @@ class TestCredentialMaterialize:
                 },
             )
 
-        assert resp.status_code == 201
-        body = resp.json()
-        assert "materialize_url" in body
-        assert "expires_at" in body
-        assert "provenance_id" in body
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error"] == "credential_materialization_cleanup_unavailable"
+        assert "materialize_url" not in resp.text
+        mock_sm.get_secret.assert_not_called()
+        aws.assert_not_called()
 
     @patch("src.internal.credential_routes.get_settings")
     def test_non_file_type_returns_400(self, mock_settings, db: AsyncSession):
@@ -1473,7 +1513,7 @@ class TestCredentialMaterialize:
         assert resp.status_code == 503
 
     @patch("src.internal.credential_routes.get_settings")
-    def test_last_used_at_updated_on_materialize(self, mock_settings, db: AsyncSession):
+    def test_refused_materialization_does_not_mark_last_used(self, mock_settings, db: AsyncSession):
         mock_settings.return_value = _settings_mock(bucket="test-bucket")
 
         asyncio.get_event_loop().run_until_complete(
@@ -1487,18 +1527,7 @@ class TestCredentialMaterialize:
         )
         mock_sm = self._mock_sm("-----BEGIN RSA PRIVATE KEY-----\n...\n-----END")
 
-        fake_url = "https://s3.amazonaws.com/test-bucket/vault/materialize/xyz"
-
-        from src.internal.credential_binding import resolve_credential_binding
-
-        async def _selective_to_thread(fn, *args, **kwargs):
-            if fn is resolve_credential_binding:
-                return fn(*args, **kwargs)
-            return fake_url
-
-        with (
-            patch("asyncio.to_thread", new=_selective_to_thread),
-        ):
+        with patch("boto3.client") as aws:
             client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
@@ -1515,13 +1544,16 @@ class TestCredentialMaterialize:
                 },
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error"] == "credential_materialization_cleanup_unavailable"
+        mock_sm.get_secret.assert_not_called()
+        aws.assert_not_called()
 
         async def _check():
             stmt = select(UserCredential).where(UserCredential.id == "cred-mat-lastused")
             result = await db.execute(stmt)
             cred = result.scalar_one()
-            assert cred.last_used_at is not None
+            assert cred.last_used_at is None
 
         asyncio.get_event_loop().run_until_complete(_check())
 
@@ -1773,3 +1805,382 @@ async def test_pinned_transport_preserves_tls_identity_without_resolving_again(a
         assert stream.start_tls.call_args.kwargs["server_hostname"] == "api.github.com"
         assert b"Host: api.github.com:8443" in stream.write.call_args_list[0].args[0]
         dns.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_identity_pointer_proxies_jira_as_user_without_exposing_token(db):
+    credential = await _seed_credential(
+        db,
+        cred_id="jira-oauth",
+        service="jira",
+        label="AgentCore OAuth",
+        credential_type="oauth_token",
+        secret_arn="agentcore-identity:adp-tools-dev-oauth-user:atlassian",
+    )
+    credential.provider = "agentcore-identity"
+    credential.scopes = {"oauth_scopes": ["read:jira-work"]}
+    credential.agent_consent = True
+    await db.commit()
+    identity = MagicMock()
+    identity.get_workload_access_token_for_user_id.return_value = {"workloadAccessToken": "private-workload"}
+    identity.get_resource_oauth2_token.return_value = {"accessToken": "private-jira-token"}
+    response = MagicMock(status_code=200, headers={"x-upstream": "private-jira-token"}, text='{"user":"alice","echo":"private-jira-token"}')
+    sm = MagicMock()
+    client = _make_app(db, sm)
+    settings = _settings_mock()
+    settings.oauth_workload_name = "adp-tools-dev-oauth-user"
+    with (
+        patch("src.internal.credential_routes.get_settings", return_value=settings),
+        patch("src.internal.credential_routes.get_identity_client", return_value=identity),
+        patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public),
+        patch("httpx.AsyncClient") as http_client,
+    ):
+        upstream = AsyncMock()
+        upstream.__aenter__ = AsyncMock(return_value=upstream)
+        upstream.__aexit__ = AsyncMock(return_value=None)
+        upstream.request = AsyncMock(return_value=response)
+        upstream.stream = lambda **kwargs: stream_from_request(upstream, **kwargs)
+        http_client.return_value = upstream
+        result = client.post(
+            "/internal/v1/proxy-request",
+            json={
+                "user_id": "user-alice",
+                "invocation_id": "delivery-run",
+                "agent_id": "agent-001",
+                "task_id": "task-001",
+                "service": "jira",
+                "method": "GET",
+                "url": "https://team.atlassian.net/rest/api/3/myself",
+                "headers": {"authorization": "Bearer attacker"},
+            },
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+    assert result.status_code == 200, result.text
+    assert result.json()["status"] == 200
+    assert "private-jira-token" not in result.text
+    forwarded = upstream.request.call_args.kwargs
+    assert forwarded["headers"]["Authorization"] == "Bearer private-jira-token"
+    assert "authorization" not in forwarded["headers"]
+    assert forwarded["headers"]["Host"] == "team.atlassian.net"
+    assert forwarded["extensions"] == {"sni_hostname": "team.atlassian.net"}
+    assert identity.get_resource_oauth2_token.call_args.kwargs["oauth2Flow"] == "USER_FEDERATION"
+    assert identity.get_resource_oauth2_token.call_args.kwargs["scopes"] == ["read:jira-work"]
+    sm.get_secret.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scopes,allowed",
+    [
+        ({"oauth_scopes": ["users:read"]}, True),
+        ({"oauth_scopes": ["users:read", "chat:write"]}, True),
+        ({"oauth_scopes": ["chat:write", "users:read"]}, True),
+        ({"oauth_scopes": ["users:read", "admin"]}, False),
+        ({"oauth_scopes": ["read:user"]}, False),
+        ({"oauth_scopes": ["users:read", "users:read"]}, False),
+        ({"oauth_scopes": ["users:read", ["chat:write"]]}, False),
+        ({"oauth_scopes": "users:read"}, False),
+        ({"oauth_scopes": []}, False),
+        ({"oauth_scopes": ["users:read"], "requested_scopes": ["chat:write"]}, False),
+        ({}, False),
+    ],
+)
+async def test_slack_broker_uses_only_actual_allowlisted_grants(db, scopes, allowed):
+    """Combined approved grants retain read; defaults or malformed grants cannot add authority."""
+    credential = await _seed_credential(
+        db,
+        cred_id="slack-scopes",
+        service="slack",
+        label="AgentCore OAuth",
+        credential_type="oauth_token",
+        secret_arn="agentcore-identity:adp-tools-dev-oauth-user:slack",
+    )
+    credential.provider = "agentcore-identity"
+    credential.scopes = scopes
+    credential.agent_consent = True
+    await db.commit()
+    identity = MagicMock()
+    identity.get_workload_access_token_for_user_id.return_value = {"workloadAccessToken": "private-workload"}
+    identity.get_resource_oauth2_token.return_value = {"accessToken": "private-slack-token"}
+    sm = MagicMock()
+    upstream = AsyncMock()
+    upstream.__aenter__ = AsyncMock(return_value=upstream)
+    upstream.__aexit__ = AsyncMock(return_value=None)
+    upstream.request = AsyncMock(return_value=MagicMock(status_code=200, headers={}, text='{"ok":true}'))
+    upstream.stream = lambda **kwargs: stream_from_request(upstream, **kwargs)
+    settings = _settings_mock(enforce_host_binding=True)
+    settings.oauth_workload_name = "adp-tools-dev-oauth-user"
+    client = _make_app(db, sm)
+    with (
+        patch("src.internal.credential_routes.get_settings", return_value=settings),
+        patch("src.internal.credential_routes.get_identity_client", return_value=identity),
+        patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public),
+        patch("httpx.AsyncClient", return_value=upstream),
+        # A future consent default change must never expand an existing grant.
+        patch.dict("src.internal.credential_routes.PROVIDER_SCOPES", {"slack": ("slack", ["users:read", "chat:write"])}),
+    ):
+        result = client.post(
+            "/internal/v1/proxy-request",
+            json={
+                "user_id": "user-alice",
+                "invocation_id": "delivery-run",
+                "agent_id": "agent-001",
+                "task_id": "task-001",
+                "service": "slack",
+                "method": "GET",
+                "url": "https://slack.com/api/users.info?user=U001",
+            },
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+    assert result.status_code == (200 if allowed else 403), result.text
+    if allowed:
+        identity.get_workload_access_token_for_user_id.assert_called_once_with(workloadName="adp-tools-dev-oauth-user", userId="user-alice")
+        identity.get_resource_oauth2_token.assert_called_once_with(
+            workloadIdentityToken="private-workload",
+            resourceCredentialProviderName="adp-tools-dev-slack-user",
+            scopes=scopes["oauth_scopes"],
+            oauth2Flow="USER_FEDERATION",
+        )
+        assert upstream.request.call_args.kwargs["headers"]["Authorization"] == "Bearer private-slack-token"
+    else:
+        assert result.json()["detail"]["error"] == "not_connected"
+        identity.get_workload_access_token_for_user_id.assert_not_called()
+        identity.get_resource_oauth2_token.assert_not_called()
+        upstream.request.assert_not_awaited()
+    assert "private-slack-token" not in result.text
+    sm.get_secret.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_identity_pointer_cannot_fetch_token_before_egress_or_owner_checks(db):
+    credential = await _seed_credential(
+        db,
+        cred_id="untrusted-oauth",
+        service="slack",
+        credential_type="oauth_token",
+        secret_arn="agentcore-identity:adp-tools-dev-oauth-user:slack",
+    )
+    credential.provider = "agentcore-identity"
+    credential.scopes = {"oauth_scopes": ["users:read"]}
+    await db.commit()
+    identity = MagicMock()
+    sm = MagicMock()
+    client = _make_app(db, sm)
+    settings = _settings_mock(enforce_host_binding=True)
+    settings.oauth_workload_name = "adp-tools-dev-oauth-user"
+    with (
+        patch("src.internal.credential_routes.get_settings", return_value=settings),
+        patch("src.internal.credential_routes.get_identity_client", return_value=identity),
+        patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public),
+    ):
+        payload = {
+            "user_id": "user-alice",
+            "invocation_id": "delivery-run",
+            "agent_id": "agent-001",
+            "task_id": "task-001",
+            "service": "slack",
+            "method": "GET",
+            "url": "https://api.github.com/user",
+        }
+        denied = client.post("/internal/v1/proxy-request", json=payload, headers={"X-Internal-Api-Key": _VALID_KEY})
+        assert denied.status_code == 403
+        payload["url"] = "https://slack.com/api/users.info"
+        credential.user_id = "user-bob"
+        await db.commit()
+        denied_owner = client.post("/internal/v1/proxy-request", json=payload, headers={"X-Internal-Api-Key": _VALID_KEY})
+        assert denied_owner.status_code in {403, 404}
+    identity.get_resource_oauth2_token.assert_not_called()
+    sm.get_secret.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_jira_proxy_after_pointer_deletion_returns_not_connected(db):
+    pointer = await _seed_credential(
+        db,
+        cred_id="oauth-disconnected",
+        service="jira",
+        label="AgentCore OAuth",
+        credential_type="oauth_token",
+        secret_arn="agentcore-identity:adp-tools-dev-oauth-user:atlassian",
+    )
+    pointer.provider = "agentcore-identity"
+    await db.commit()
+    await db.delete(pointer)
+    await db.commit()
+    sm = MagicMock()
+    client = _make_app(db, sm)
+    settings = _settings_mock()
+    settings.oauth_workload_name = "adp-tools-dev-oauth-user"
+    with (
+        patch("src.internal.credential_routes.get_settings", return_value=settings),
+        patch("src.internal.credential_routes.get_identity_client") as identity,
+        patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public),
+    ):
+        response = client.post(
+            "/internal/v1/proxy-request",
+            json={
+                "user_id": "user-alice",
+                "invocation_id": "delivery-run",
+                "agent_id": "agent-001",
+                "task_id": "task-001",
+                "service": "jira",
+                "label": "AgentCore OAuth",
+                "method": "GET",
+                "url": "https://team.atlassian.net/rest/api/3/myself",
+            },
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+    assert response.status_code == 403 and response.json()["detail"]["error"] == "not_connected"
+    identity.assert_not_called()
+    sm.get_secret.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_expired_identity_token_refreshes_without_user_action_or_cached_fallback(db):
+    pointer = await _seed_credential(
+        db,
+        cred_id="jira-refresh",
+        service="jira",
+        label="AgentCore OAuth",
+        credential_type="oauth_token",
+        secret_arn="agentcore-identity:adp-tools-dev-oauth-user:atlassian",
+    )
+    pointer.provider = "agentcore-identity"
+    pointer.scopes = {"oauth_scopes": ["read:jira-work"]}
+    pointer.agent_consent = True
+    await db.commit()
+    sm = MagicMock()
+    identity = MagicMock()
+    identity.get_workload_access_token_for_user_id.return_value = {"workloadAccessToken": "user-bound-workload"}
+    identity.get_resource_oauth2_token.side_effect = [
+        {"accessToken": "before-expiry"},
+        {"accessToken": "identity-refreshed"},
+        {"authorizationUrl": "https://identity.example.com/consent", "sessionStatus": "IN_PROGRESS"},
+    ]
+    upstream = AsyncMock()
+    upstream.__aenter__ = AsyncMock(return_value=upstream)
+    upstream.__aexit__ = AsyncMock(return_value=None)
+    upstream.request = AsyncMock(return_value=MagicMock(status_code=200, headers={}, text='{"ok":true}'))
+    upstream.stream = lambda **kwargs: stream_from_request(upstream, **kwargs)
+    settings = _settings_mock()
+    settings.oauth_workload_name = "adp-tools-dev-oauth-user"
+    client = _make_app(db, sm)
+    payload = {
+        "user_id": "user-alice",
+        "invocation_id": "delivery-run",
+        "agent_id": "agent-001",
+        "task_id": "task-001",
+        "service": "jira",
+        "label": "AgentCore OAuth",
+        "method": "GET",
+        "url": "https://team.atlassian.net/rest/api/3/myself",
+    }
+    with (
+        patch("src.internal.credential_routes.get_settings", return_value=settings),
+        patch("src.internal.credential_routes.get_identity_client", return_value=identity),
+        patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public),
+        patch("httpx.AsyncClient", return_value=upstream),
+    ):
+        first = client.post("/internal/v1/proxy-request", json=payload, headers={"X-Internal-Api-Key": _VALID_KEY})
+        first_header = upstream.request.call_args.kwargs["headers"]["Authorization"]
+        second = client.post("/internal/v1/proxy-request", json=payload, headers={"X-Internal-Api-Key": _VALID_KEY})
+        second_header = upstream.request.call_args.kwargs["headers"]["Authorization"]
+        third = client.post("/internal/v1/proxy-request", json=payload, headers={"X-Internal-Api-Key": _VALID_KEY})
+    assert first.status_code == 200 and second.status_code == 200
+    assert first_header == "Bearer before-expiry"
+    assert second_header == "Bearer identity-refreshed"
+    assert "before-expiry" not in first.text and "identity-refreshed" not in second.text
+    assert third.status_code == 403 and third.json()["detail"]["error"] == "not_connected"
+    assert "consent" not in third.text
+    assert upstream.request.await_count == 2
+    assert identity.get_workload_access_token_for_user_id.call_count == 3
+    assert identity.get_resource_oauth2_token.call_count == 3
+    sm.get_secret.assert_not_called()
+
+
+@pytest.mark.parametrize("case", ["wire", "decoded", "compressed", "declared"])
+def test_proxy_stream_caps_response_before_generic_receipt_or_further_chunks(case, db, monkeypatch):
+    class Upstream(httpx.AsyncByteStream):
+        def __init__(self):
+            self.chunks = 0
+            self.closed = False
+
+        async def __aiter__(self):
+            for _ in range(17 if case == "decoded" else 64):
+                self.chunks += 1
+                yield (b"\xe9" * 32768) if case == "decoded" else (b"x" * 65536)
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = Upstream()
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        headers = {"content-type": "text/plain; charset=iso-8859-1" if case == "decoded" else "text/plain"}
+        if case == "compressed":
+            headers["content-encoding"] = "gzip"
+        if case == "declared":
+            headers["content-length"] = str(4 * 1048576)
+        return httpx.Response(200, headers=headers, stream=stream)
+
+    actual_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: actual_client(transport=httpx.MockTransport(handler), **kwargs))
+    monkeypatch.setattr("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    monkeypatch.setattr("src.internal.credential_routes.get_settings", lambda: _settings_mock())
+    asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id=f"proxy-stream-{case}"))
+    secret = MagicMock()
+    secret.get_secret.return_value = "synthetic-private-value"
+    client = _make_app(db, mock_sm=secret)
+    result = client.post(
+        "/internal/v1/proxy-request",
+        json={
+            "user_id": "user-alice",
+            "invocation_id": "delivery-run",
+            "agent_id": "agent-001",
+            "task_id": "task-001",
+            "service": "github",
+            "method": "GET",
+            "url": "https://api.github.com/user",
+        },
+        headers={"X-Internal-Api-Key": _VALID_KEY},
+    )
+
+    assert result.status_code == 502
+    assert result.json()["detail"] == (
+        "credential proxy response encoding unsupported" if case == "compressed" else "credential proxy response too large"
+    )
+    assert stream.chunks == {"wire": 17, "decoded": 17, "compressed": 0, "declared": 0}[case]
+    assert stream.closed
+    assert len(calls) == 1
+    assert calls[0].headers["accept-encoding"] == "identity"
+    assert "synthetic-private-value" not in result.text
+
+
+def test_proxy_deadline_never_outlives_verified_assertion(monkeypatch):
+    from types import SimpleNamespace
+
+    from src.internal.credential_binding import GatewayCredentialAuthority
+    from src.internal.credential_routes import _proxy_total_timeout
+
+    monkeypatch.setattr("src.internal.credential_routes.time.time", lambda: 100.0)
+    authority = GatewayCredentialAuthority(
+        user_id="user-alice",
+        tenant_id="org-test",
+        agent_id="tools-facade",
+        credential_ids=frozenset({"fixture"}),
+        assertion_expires_at=107,
+    )
+    request = SimpleNamespace(state=SimpleNamespace(agent_tools_credential_authority=authority))
+    assert _proxy_total_timeout(request) == 7.0
+    assert _proxy_total_timeout(SimpleNamespace(state=SimpleNamespace())) == 30.0
+    expired = GatewayCredentialAuthority(
+        user_id="user-alice",
+        tenant_id="org-test",
+        agent_id="tools-facade",
+        credential_ids=frozenset({"fixture"}),
+        assertion_expires_at=100,
+    )
+    with pytest.raises(HTTPException, match="expired tools assertion"):
+        _proxy_total_timeout(SimpleNamespace(state=SimpleNamespace(agent_tools_credential_authority=expired)))

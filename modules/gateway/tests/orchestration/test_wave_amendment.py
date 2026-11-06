@@ -314,6 +314,11 @@ async def test_all_policy_supplements_and_budget_posture_are_preserved(session, 
     session.add(BudgetEnforcementSetting(scope_key=flow_key(ctx.actor.org_id, ctx.flow.id), enabled=False, revision=3, updated_by=ctx.actor.actor_id))
     await session.commit()
     monkeypatch.setattr("src.orchestration.shared_policy.read_flow_meter", ctx.meter)
+
+    async def reconcile(session, **kwargs):
+        return await ctx.meter(**kwargs)
+
+    monkeypatch.setattr("src.orchestration.shared_policy.reconcile_flow_meter", reconcile)
     common = dict(expected_plan_version=1, expected_plan_hash=ctx.plan.plan_hash, reason="Owner approves the existing operating allowance")
     supplements = [
         (

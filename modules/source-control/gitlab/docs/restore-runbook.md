@@ -6,7 +6,8 @@ Restore a GitLab CE instance from an S3 backup. Target: RTO 4 hours.
 
 - AWS CLI configured with access to the backup bucket
 - SSH/SSM access to the target GitLab instance
-- The target instance has GitLab CE installed (same major version as backup)
+- The target instance has the exact GitLab CE version recorded in the backup
+  metadata installed (including the patch version)
 
 ## Identify Available Backups
 

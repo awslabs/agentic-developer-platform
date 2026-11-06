@@ -22,11 +22,16 @@ Phase 6 additions (issue #1461):
 """
 
 import base64
+import csv
+import io
 import json
 import logging
 import os
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -113,6 +118,251 @@ class ActivityService:
         self._table_name = table_name or _get_table_name()
         self._dynamodb = dynamodb_resource or boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "us-east-1"))
         self._table = self._dynamodb.Table(self._table_name)
+
+    def record_tool_call(
+        self,
+        *,
+        receipt_id: str,
+        user_id: str,
+        tenant_id: str,
+        tool: str,
+        estimated_cost_usd: Decimal,
+        run_id: str | None,
+        task_id: str | None = None,
+        story_id: str | None = None,
+        team_id: str | None = None,
+        request_id: str | None = None,
+        execution_id: str | None = None,
+        consent_source: str | None = None,
+    ) -> None:
+        item = {
+            "event_id": f"tool#{receipt_id}",
+            "arrived_at": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "user_id": user_id,
+            "tenant_id": tenant_id,
+            "channel": "tool",
+            "status": "tool_authorized",
+            "topic": tool.replace("___", ".", 1),
+            "tool_name": tool,
+            "receipt_id": receipt_id,
+            "call_id": receipt_id,
+            "estimated_cost_usd": estimated_cost_usd,
+            "settled_cost_usd": None,
+            "accounting_status": "estimate_only",
+            "observed_usage_status": "not_observed",
+            "reservation_status": "estimated_hold",
+        }
+        if request_id:
+            item["request_id"] = request_id
+        if execution_id:
+            item["execution_id"] = execution_id
+        if run_id:
+            item["run_id"] = run_id
+        if team_id:
+            item["team_id"] = team_id
+        if task_id:
+            item["task_id"] = task_id
+        if story_id:
+            item["story_id"] = story_id
+        if consent_source:
+            # #8387: whether the owner ticked the tool ("explicit") or the tenant posture granted it ("default").
+            item["consent_source"] = consent_source
+        self._table.put_item(Item=item, ConditionExpression="attribute_not_exists(event_id)")
+
+    def record_tool_outcome(
+        self,
+        *,
+        receipt_id: str,
+        tenant_id: str,
+        user_id: str,
+        team_id: str,
+        run_id: str | None,
+        tool: str,
+        request_id: str,
+        execution_id: str,
+        result_status: str,
+        cleanup_status: str | None = None,
+    ) -> None:
+        response = self._table.query(
+            KeyConditionExpression=Key("event_id").eq(f"tool#{receipt_id}"),
+            ConsistentRead=True,
+            Limit=2,
+        )
+        items = response.get("Items", [])
+        if len(items) != 1:
+            raise ValueError("tool activity not found")
+        item = items[0]
+        identity = {
+            "channel": "tool",
+            "status": "tool_authorized",
+            "receipt_id": receipt_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "team_id": team_id,
+            "run_id": run_id,
+            "tool_name": tool,
+            "request_id": request_id,
+        }
+        if any(item.get(key) != value for key, value in identity.items()):
+            raise ValueError("tool activity not found")
+        if item.get("execution_id") not in (None, execution_id):
+            raise ValueError("tool activity not found")
+
+        previous_result = item.get("result_status")
+        previous_cleanup = item.get("cleanup_status")
+        terminal = {"confirmed", "failed"}
+        if previous_result in terminal and result_status != previous_result:
+            result_status = previous_result
+        if previous_cleanup == "confirmed":
+            cleanup_status = "confirmed"
+        if cleanup_status is None:
+            cleanup_status = previous_cleanup
+        condition = Attr("event_id").exists()
+        for key, value in identity.items():
+            condition &= Attr(key).eq(value) if value is not None else Attr(key).not_exists()
+        condition &= Attr("execution_id").eq(execution_id) if item.get("execution_id") else Attr("execution_id").not_exists()
+        for key, value in (("result_status", previous_result), ("cleanup_status", previous_cleanup)):
+            condition &= Attr(key).eq(value) if value is not None else Attr(key).not_exists()
+
+        updates = {"execution_id": execution_id, "result_status": result_status}
+        if cleanup_status is not None:
+            updates["cleanup_status"] = cleanup_status
+        try:
+            self._table.update_item(
+                Key={"event_id": item["event_id"], "arrived_at": item["arrived_at"]},
+                UpdateExpression="SET " + ", ".join(f"#{key} = :{key}" for key in updates),
+                ExpressionAttributeNames={f"#{key}": key for key in updates},
+                ExpressionAttributeValues={f":{key}": value for key, value in updates.items()},
+                ConditionExpression=condition,
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                raise ValueError("tool activity changed") from None
+            raise
+
+    def record_tool_accounting(self, *, receipt_id, tenant_id, user_id, tool, status, decision=None):
+        """Attach trusted usage settlement; uncertain calls keep their original bound.
+
+        This is an internal writer, never a client-provided outcome. The normal
+        SQL usage transaction must commit before a caller reports settlement.
+        """
+        if status not in {"pending", "settled", "not_started"}:
+            raise ValueError("invalid accounting status")
+        items = self._table.query(KeyConditionExpression=Key("event_id").eq(f"tool#{receipt_id}"), ConsistentRead=True, Limit=2).get("Items", [])
+        identity = {"receipt_id": receipt_id, "tenant_id": tenant_id, "user_id": user_id, "tool_name": tool, "channel": "tool"}
+        if len(items) != 1 or any(items[0].get(key) != value for key, value in identity.items()):
+            raise ValueError("tool activity not found")
+        item = items[0]
+        if item.get("accounting_status") in {"settled", "not_started"}:
+            return
+        updates = {"accounting_status": status, "observed_usage_status": "unknown", "reservation_status": "estimated_hold"}
+        if status != "pending":
+            if not isinstance(decision, dict) or decision.get("request_id") != receipt_id or decision.get("org_id") != tenant_id:
+                raise ValueError("tool settlement identity mismatch")
+            amount = Decimal(decision["ledger_cost_usd"])
+            if not amount.is_finite() or amount < 0 or (status == "not_started" and amount != 0):
+                raise ValueError("invalid tool settlement")
+            updates.update(
+                settled_cost_usd=amount,
+                observed_usage_status="provider_reported" if status == "settled" else "not_started",
+                reservation_status="settled_overlap" if status == "settled" else "released",
+                pricing_decision=decision,
+            )
+        condition = Attr("accounting_status").eq(item["accounting_status"])
+        for key, value in identity.items():
+            condition &= Attr(key).eq(value)
+        self._table.update_item(
+            Key={"event_id": item["event_id"], "arrived_at": item["arrived_at"]},
+            UpdateExpression="SET " + ", ".join(f"#{key} = :{key}" for key in updates),
+            ExpressionAttributeNames={f"#{key}": key for key in updates},
+            ExpressionAttributeValues={f":{key}": value for key, value in updates.items()},
+            ConditionExpression=condition,
+        )
+
+    def export_tool_calls(self, *, tenant_id: str, since: date, until: date, format: str) -> bytes:
+        if until < since:
+            raise ValueError("end date precedes start date")
+        if format not in {"csv", "parquet"}:
+            raise ValueError("unsupported export format")
+        fields = (
+            "call_id",
+            "task_id",
+            "story_id",
+            "tenant_id",
+            "user_id",
+            "team_id",
+            "tool",
+            "estimated_cost_usd",
+            "receipt_id",
+            "run_id",
+            "occurred_at",
+            "decision",
+            "settled_cost_usd",
+            "accounting_status",
+            "observed_usage_status",
+            "reservation_status",
+            "request_id",
+            "execution_id",
+            "result_status",
+            "cleanup_status",
+        )
+        rows = []
+        query = {
+            "IndexName": "tenant-index",
+            "KeyConditionExpression": Key("tenant_id").eq(tenant_id)
+            & Key("arrived_at").between(
+                f"{since.isoformat()}T00:00:00.000Z",
+                f"{until.isoformat()}T23:59:59.999Z",
+            ),
+            "FilterExpression": Attr("channel").eq("tool") & Attr("status").eq("tool_authorized"),
+        }
+        while True:
+            page = self._table.query(**query)
+            for item in page.get("Items", []):
+                rows.append(
+                    {
+                        "call_id": item.get("call_id") or item.get("receipt_id"),
+                        "task_id": item.get("task_id"),
+                        "story_id": item.get("story_id"),
+                        "tenant_id": item["tenant_id"],
+                        "user_id": item["user_id"],
+                        "team_id": item.get("team_id"),
+                        "tool": item["tool_name"],
+                        "estimated_cost_usd": item.get("estimated_cost_usd"),
+                        "settled_cost_usd": item.get("settled_cost_usd"),
+                        "accounting_status": item.get("accounting_status", "unknown"),
+                        "observed_usage_status": item.get("observed_usage_status", "unknown"),
+                        "reservation_status": item.get("reservation_status", "unknown"),
+                        "request_id": item.get("request_id"),
+                        "execution_id": item.get("execution_id"),
+                        "result_status": item.get("result_status", "unknown"),
+                        "cleanup_status": item.get("cleanup_status", "unknown"),
+                        "receipt_id": item["receipt_id"],
+                        "run_id": item.get("run_id"),
+                        "occurred_at": item["arrived_at"],
+                        "decision": "allow",
+                    }
+                )
+            if "LastEvaluatedKey" not in page:
+                break
+            query["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+        if format == "csv":
+            stream = io.StringIO(newline="")
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+            return stream.getvalue().encode("utf-8")
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        schema = pa.schema(
+            [pa.field(name, pa.decimal128(20, 10) if name in {"estimated_cost_usd", "settled_cost_usd"} else pa.string()) for name in fields]
+        )
+        stream = io.BytesIO()
+        pq.write_table(pa.Table.from_pylist(rows, schema=schema), stream)
+        return stream.getvalue()
 
     def query_by_user(
         self,
@@ -474,11 +724,24 @@ class ActivityService:
             invoked_at=arrived_at,
             channel=item.get("channel"),
             status=status,
+            tool_name=item.get("tool_name") if item.get("channel") == "tool" else None,
+            receipt_id=item.get("receipt_id") if item.get("channel") == "tool" else None,
+            estimated_cost_usd=item.get("estimated_cost_usd") if item.get("channel") == "tool" else None,
+            settled_cost_usd=item.get("settled_cost_usd") if item.get("channel") == "tool" else None,
+            accounting_status=item.get("accounting_status", "unknown") if item.get("channel") == "tool" else None,
+            observed_usage_status=item.get("observed_usage_status", "unknown") if item.get("channel") == "tool" else None,
+            reservation_status=item.get("reservation_status", "unknown") if item.get("channel") == "tool" else None,
+            request_id=item.get("request_id") if item.get("channel") == "tool" else None,
+            execution_id=item.get("execution_id") if item.get("channel") == "tool" else None,
+            result_status=item.get("result_status", "unknown") if item.get("channel") == "tool" else None,
+            cleanup_status=item.get("cleanup_status", "unknown") if item.get("channel") == "tool" else None,
             # Issue #4176: derived, not stored. "unverifiable" means we could not
             # learn whether this run is alive — it is NOT a claim that it exited.
             # Issue #4235: dated from `status_updated_at` (last signal) so a
             # healthy multi-day run is not called unverifiable for its age alone.
-            liveness=compute_liveness(
+            liveness=None
+            if item.get("channel") == "tool"
+            else compute_liveness(
                 status,
                 arrived_at,
                 datetime.now(UTC),
@@ -511,6 +774,23 @@ class ActivityService:
             is_human_rooted=item.get("is_human_rooted", True),
         )
 
+    def get_chain_bounded(
+        self,
+        correlation_id: str,
+        *,
+        tenant_id: str,
+        deadline: float,
+        cancelled: Callable[[], bool],
+    ) -> InvocationChainResponse:
+        return self.get_chain(
+            correlation_id,
+            tenant_id=tenant_id,
+            deadline=deadline,
+            cancelled=cancelled,
+            page_cap=20,
+            preserve_errors=True,
+        )
+
     def get_chain(
         self,
         correlation_id: str,
@@ -519,6 +799,10 @@ class ActivityService:
         tenant_id: str | None = None,
         depth_cap: int = _CHAIN_DEPTH_CAP,
         include_non_triggering: bool = False,
+        deadline: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        page_cap: int | None = None,
+        preserve_errors: bool = False,
     ) -> InvocationChainResponse:
         """Retrieve all invocations sharing a correlation_id and build a tree.
 
@@ -582,8 +866,18 @@ class ActivityService:
             if filter_expr is not None:
                 query_kwargs["FilterExpression"] = filter_expr
 
+            pages_read = 0
             while True:
+                if cancelled is not None and cancelled():
+                    raise TimeoutError("chain read cancelled")
+                if deadline is not None and time.monotonic() + 2 >= deadline:
+                    raise TimeoutError("chain read deadline exceeded")
                 response = self._table.query(**query_kwargs)
+                pages_read += 1
+                if cancelled is not None and cancelled():
+                    raise TimeoutError("chain read cancelled")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("chain read deadline exceeded")
                 all_items.extend(item for item in response.get("Items", []) if _row_in_read_scope(item, user_id=user_id, tenant_id=tenant_id))
 
                 if len(all_items) >= depth_cap:
@@ -593,9 +887,14 @@ class ActivityService:
 
                 if "LastEvaluatedKey" not in response:
                     break
+                if page_cap is not None and pages_read >= page_cap:
+                    depth_capped = True
+                    break
                 query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
         except ClientError as exc:
+            if preserve_errors:
+                raise
             error_code = exc.response.get("Error", {}).get("Code", "")
             # Degrade gracefully on any access/availability error (GSI missing
             # before the migration applies, IAM gap, etc.) — never surface a 500
@@ -901,6 +1200,9 @@ class ActivityService:
                             invoked_at=item_arrived_at,
                             channel=item.get("channel"),
                             status=item_status,
+                            stop_reason=item.get("stop_reason"),
+                            model_admission_status=item.get("model_admission_status"),
+                            model_admission_updated_at=item.get("model_admission_updated_at"),
                             # Issue #4176: derived liveness verdict. Issue #4235:
                             # dated from the last signal, not the start time.
                             liveness=compute_liveness(
@@ -981,6 +1283,25 @@ class ActivityService:
             raise
 
         return None
+
+    def get_chain_member(self, invocation_id: str, *, tenant_id: str, correlation_id: str) -> InvocationChainItem | None:
+        """Read one server-bound continuation without expanding its correlation."""
+        if not tenant_id or not invocation_id or not correlation_id:
+            return None
+        response = self._table.query(
+            KeyConditionExpression=Key("event_id").eq(invocation_id),
+            ScanIndexForward=False,
+            Limit=1,
+            ConsistentRead=True,
+        )
+        rows = response.get("Items", [])
+        if not rows:
+            return None
+        row = rows[0]
+        if row.get("tenant_id") != tenant_id or row.get("correlation_id") != correlation_id:
+            return None
+        members = _build_chain_tree([row])
+        return members[0] if len(members) == 1 and members[0].invocation_id == invocation_id else None
 
     def get_invocation(
         self,
@@ -1083,6 +1404,9 @@ def _build_chain_tree(items: list[dict]) -> list[InvocationChainItem]:
             invoked_at=arrived_at,
             channel=item.get("channel"),
             status=item.get("status"),
+            stop_reason=item.get("stop_reason"),
+            model_admission_status=item.get("model_admission_status"),
+            model_admission_updated_at=item.get("model_admission_updated_at"),
             # Issue #4176: derived liveness verdict. `now` is hoisted out of the
             # loop so every node in one tree is judged against the same instant —
             # otherwise a run near the cutoff could read `live` while its sibling

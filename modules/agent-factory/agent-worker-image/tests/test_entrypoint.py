@@ -62,6 +62,9 @@ def ready_gateway_proxy(monkeypatch):
     monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint._stop_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint.BootstrapLogger", MagicMock())
+    # Real repository reconciliation is exercised with Git histories separately.
+    monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", MagicMock(return_value={"status": "up_to_date"}))
+    monkeypatch.setattr("lib.branch_reconciliation.reconcile_mediated_branch", MagicMock(return_value={"status": "up_to_date", "head_revision": "a" * 40}))
     # Real durable-receipt behavior is covered in test_invocation_completion.py.
     monkeypatch.setattr("entrypoint.is_delivery_completed", MagicMock(return_value=False))
     monkeypatch.setattr("entrypoint.record_delivery_completed", MagicMock())
@@ -416,6 +419,9 @@ class TestEntrypointMain:
         assert main() == 0
 
         # Vault was called for github-app creds
+        from lib import branch_reconciliation
+        branch_reconciliation.reconcile_git_branch.assert_called_once_with(work_dir)
+        branch_reconciliation.reconcile_mediated_branch.assert_not_called()
         mock_vault.get_secret.assert_called_with("tenants/acme-corp/github-app")
         # Token was minted
         mock_mint.assert_called_once_with("123", "fake-key", 99887766)
@@ -4837,6 +4843,9 @@ def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, t
     monkeypatch.setattr(entrypoint, "update_invocation_status", MagicMock())
     assert entrypoint.main() == agent_exit
     assert events == ["agent", "upload", "terminal"]
+    from lib import branch_reconciliation
+    branch_reconciliation.reconcile_git_branch.assert_not_called()
+    branch_reconciliation.reconcile_mediated_branch.assert_not_called()
 
 
 def test_developer_cause_is_in_the_first_terminal_status_write(monkeypatch):
@@ -4855,6 +4864,34 @@ def test_developer_cause_is_in_the_first_terminal_status_write(monkeypatch):
 def test_shared_codex_persona_uses_packaged_host(persona):
     from entrypoint import worker_command
     assert worker_command(f"agent-codex-{persona}") == ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]
+
+
+def test_only_flagged_operational_story_uses_packaged_worker_without_customer_role():
+    from entrypoint import engine_operations_story, worker_command
+
+    envelope = {"persona": "agent-codex-operations", "orchestration": {"node_id": "node-1", "executor_role": "operate"}}
+    assert engine_operations_story(envelope, {"ADP_ENGINE_OPERATIONS_EXECUTOR": "true"})
+    assert worker_command("agent-codex-operations", operations_story=True) == ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]
+    assert worker_command("operations", operations_story=True) == ["node", "/app/dist/operations-story-entry.js"]
+    assert engine_operations_story({**envelope, "persona": "operations"}, {"ADP_ENGINE_OPERATIONS_EXECUTOR": "true"})
+    for excluded in ({}, {"ADP_ENGINE_OPERATIONS_EXECUTOR": "false"}):
+        assert not engine_operations_story(envelope, excluded)
+    assert not engine_operations_story({**envelope, "persona": "developer"}, {"ADP_ENGINE_OPERATIONS_EXECUTOR": "true"})
+    assert not engine_operations_story({**envelope, "orchestration": {"node_id": "node-1"}}, {"ADP_ENGINE_OPERATIONS_EXECUTOR": "true"})
+    with pytest.raises(ValueError, match="not packaged"):
+        worker_command("agent-codex-operations")
+
+
+def test_operations_report_rejects_missing_oversized_and_foreign_run():
+    from entrypoint import validated_operations_report
+
+    assert validated_operations_report(json.dumps({"report": "Observed run 42", "run_id": "run-1"}),
+        persona="agent-codex-operations", run_id="run-1") == "Observed run 42"
+    for report in ("", json.dumps({"report": "", "run_id": "run-1"}),
+                   json.dumps({"report": "a" * 12001, "run_id": "run-1"}),
+                   json.dumps({"report": "Observed run 42", "run_id": "another-run"})):
+        with pytest.raises((ValueError, json.JSONDecodeError)):
+            validated_operations_report(report, persona="agent-codex-operations", run_id="run-1")
 
 
 @pytest.mark.parametrize("mode", ["complete", "missing", "wrong-run", "wrong-issue", "unpublished"])
@@ -4899,3 +4936,270 @@ def test_codex_architect_uses_native_workspace_and_pr_lifecycle():
     import entrypoint
     assert entrypoint.worker_command("agent-codex-architect") == entrypoint.worker_command("agent-codex-developer")
     assert "agent-codex-architect" not in entrypoint.SHARED_CODEX_PERSONAS
+
+
+class TestOperationsFailureDetails:
+    """The operations finish path reports failures in the shape the gateway accepts."""
+
+    ACCEPTED_CATEGORIES = {
+        "unknown", "cancelled", "deadline", "signal", "policy", "provider_refusal", "authentication",
+        "transport", "stale_head", "git_validation", "inspection", "contract",
+    }
+
+    def _check_shape(self, failure):
+        assert set(failure) == {"category", "exit_code"}
+        assert failure["category"] in self.ACCEPTED_CATEGORIES
+        assert isinstance(failure["exit_code"], int) and -255 <= failure["exit_code"] <= 255
+
+    def test_missing_report_after_clean_exit_is_a_contract_failure(self):
+        import entrypoint
+
+        failure = entrypoint.operations_failure_details(MagicMock(returncode=0), aborted=False)
+        self._check_shape(failure)
+        assert failure == {"category": "contract", "exit_code": 1}
+
+    def test_nonzero_worker_exit_keeps_its_exit_code(self):
+        import entrypoint
+
+        failure = entrypoint.operations_failure_details(MagicMock(returncode=3, stdout="", stderr=""), aborted=False)
+        self._check_shape(failure)
+        assert failure["exit_code"] == 3
+
+    def test_aborted_worker_is_reported_as_cancelled(self):
+        import entrypoint
+
+        failure = entrypoint.operations_failure_details(MagicMock(returncode=0, stdout="", stderr=""), aborted=True)
+        self._check_shape(failure)
+        assert failure["category"] == "cancelled"
+
+
+def test_failed_story_report_is_recorded_before_the_terminal_failure():
+    from types import SimpleNamespace
+
+    from entrypoint import record_failed_operations_report
+
+    recorded = []
+
+    class RunReportError(Exception):
+        code = "deferred"
+
+    run_report = SimpleNamespace(operations_report=lambda text: recorded.append(text), RunReportError=RunReportError)
+    body = json.dumps({"report": "Operations story ended without a success result (error_max_turns). Last assistant text: dispatching"})
+    assert record_failed_operations_report(run_report, body, persona="operations", run_id="run-1") is True
+    assert recorded == [json.loads(body)["report"]]
+    assert record_failed_operations_report(run_report, None, persona="operations", run_id="run-1") is False
+    assert record_failed_operations_report(run_report, "not json", persona="operations", run_id="run-1") is False
+    assert record_failed_operations_report(run_report, json.dumps({"report": "x" * 12001}), persona="operations", run_id="run-1") is False
+    assert recorded == [json.loads(body)["report"]]
+
+
+@pytest.mark.parametrize("mode", ["failed", "aborted", "missing", "invalid", "oversized", "unreadable", "report-refused", "terminal-refused", "complete"])
+def test_operations_main_captures_report_before_cleanup(monkeypatch, tmp_path, mode):
+    """A real runtime report survives a nonzero exit and remains a failed attempt."""
+    import entrypoint
+    from lib import mediated_github
+
+    envelope = {**SAMPLE_ENVELOPE, "persona": "operations",
+                "orchestration": {"node_id": "node-1", "executor_role": "operate"}}
+    monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    monkeypatch.setattr(entrypoint, "_receive_one_message", lambda *_: (json.dumps(envelope), "receipt"))
+    monkeypatch.setattr(entrypoint, "_protected_worker", lambda: True)
+    monkeypatch.setattr(entrypoint, "_already_completed", lambda *a, **kw: False)
+    monkeypatch.setattr(entrypoint, "VisibilityHeartbeat", MagicMock())
+    monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path / "repo")
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="", stderr="", returncode=0)))
+    monkeypatch.setattr(mediated_github, "materialize_repository", MagicMock(return_value={"remote_head": "a" * 40}))
+    monkeypatch.setattr(entrypoint.subprocess, "run", _subprocess_side_effect_fresh_branch)
+    monkeypatch.setattr(entrypoint, "_resolve_abort_outcome", lambda *a: "aborted" if mode == "aborted" else None)
+    monkeypatch.setattr(entrypoint.run_report, "begin_delivery", MagicMock())
+    status = MagicMock(return_value=True)
+    monkeypatch.setattr(entrypoint, "update_invocation_status", status)
+    events = []
+    report_paths = []
+    report = "Operations story ended without a success result (error_max_turns). Last assistant text: waiting for workflow"
+
+    def execute(command, **options):
+        assert command == ["node", "/app/dist/operations-story-entry.js"]
+        from lib import branch_reconciliation
+        branch_reconciliation.reconcile_mediated_branch.assert_called_once_with()
+        branch_reconciliation.reconcile_git_branch.assert_not_called()
+        path = Path(options["env"]["ADP_OPERATIONS_REPORT_FILE"])
+        report_paths.append(path)
+        assert path.stat().st_mode & 0o777 == 0o600
+        if mode == "missing":
+            path.unlink()
+        elif mode == "unreadable":
+            path.write_bytes(b"\xff")
+        else:
+            path.write_text("not json" if mode == "invalid" else json.dumps({"report": "x" * 12001 if mode == "oversized" else report}))
+        return MagicMock(returncode=0 if mode in {"complete", "aborted"} else 1, stdout="", stderr="")
+
+    def record(text):
+        assert not report_paths[0].exists(), "capture must survive temporary directory cleanup"
+        events.append(("report", text))
+        if mode == "report-refused":
+            raise entrypoint.run_report.RunReportError("run_report_http_503")
+
+    def terminal(outcome, **fields):
+        events.append(("terminal", outcome, fields))
+        if mode == "terminal-refused":
+            raise entrypoint.run_report.RunReportError("run_report_http_503")
+
+    monkeypatch.setattr("lib.agent_process.run_agent", execute)
+    monkeypatch.setattr(entrypoint.run_report, "operations_report", record)
+    monkeypatch.setattr(entrypoint.run_report, "terminal", terminal)
+    monkeypatch.setattr(entrypoint, "_delete_message", lambda *a: events.append(("ack",)))
+    exit_code = entrypoint.main()
+    has_report = mode not in {"missing", "invalid", "oversized", "unreadable"}
+    expected = [("report", report)] if has_report else []
+    if mode == "complete":
+        expected += [("terminal", "complete", {}), ("ack",)]
+    else:
+        expected += [("terminal", "failed", {"failure": {"category": "cancelled" if mode == "aborted" else "unknown", "exit_code": 0 if mode == "aborted" else 1}})]
+        if mode != "terminal-refused":
+            expected.append(("ack",))
+    assert events == expected
+    assert exit_code == (entrypoint.AGENT_EXIT_RETRYABLE if mode == "terminal-refused" else 0 if mode == "complete" else 1)
+    terminal_status = [c for c in status.call_args_list if c.args[2] in {"complete", "failed"}]
+    if mode == "terminal-refused":
+        assert terminal_status == []
+    elif mode == "complete":
+        assert len(terminal_status) == 1 and terminal_status[0].args[2] == "complete"
+    else:
+        assert len(terminal_status) == 1 and terminal_status[0].args[2] == "failed"
+        assert terminal_status[0].kwargs["error_message"] == (
+            "Operations worker did not complete; report recorded" if has_report and mode != "report-refused"
+            else "Operations report unavailable"
+        )
+
+
+@pytest.mark.parametrize("persona,binary", [
+    ("operations", "/app/dist/operations-story-entry.js"),
+    ("agent-codex-operations", "/app/codex-harness/dist/github-entry.mjs"),
+])
+def test_both_operations_stacks_reconcile_before_model_start(monkeypatch, tmp_path, persona, binary):
+    import entrypoint
+    from lib import branch_reconciliation, mediated_github
+
+    envelope = {**SAMPLE_ENVELOPE, "persona": persona,
+                "orchestration": {"node_id": "node-1", "executor_role": "operate"}}
+    monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    monkeypatch.setattr(entrypoint, "_receive_one_message", lambda *_: (json.dumps(envelope), "receipt"))
+    monkeypatch.setattr(entrypoint, "_protected_worker", lambda: True)
+    monkeypatch.setattr(entrypoint, "_already_completed", lambda *a, **kw: False)
+    monkeypatch.setattr(entrypoint, "VisibilityHeartbeat", MagicMock())
+    monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path / "repo")
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="", stderr="", returncode=0)))
+    monkeypatch.setattr(mediated_github, "materialize_repository", MagicMock(return_value={"remote_head": "a" * 40}))
+    monkeypatch.setattr(entrypoint, "update_invocation_status", MagicMock())
+    monkeypatch.setattr(entrypoint.run_report, "begin_delivery", MagicMock())
+
+    class ReachedModel(Exception):
+        pass
+
+    def execute(command, **options):
+        assert command[:2] == ["node", binary]
+        branch_reconciliation.reconcile_mediated_branch.assert_called_once_with()
+        branch_reconciliation.reconcile_git_branch.assert_not_called()
+        assert not options["env"].get("GITHUB_TOKEN")
+        raise ReachedModel()
+
+    monkeypatch.setattr("lib.agent_process.run_agent", execute)
+    with pytest.raises(ReachedModel):
+        entrypoint.main()
+
+
+@pytest.mark.parametrize("persona", ["agent-codex-developer", "agent-codex-architect"])
+@pytest.mark.parametrize("budget,recorded", [(True, True), (True, False), (False, True)])
+def test_native_codex_failure_selects_first_terminal_outcome(monkeypatch, tmp_path, persona, budget, recorded):
+    """Execute main with a real private diagnostic and mocked external effects.
+
+    A protected terminal writer cannot change failed into budget_stopped later.
+    Assert the complete write sequence, not a copied selection expression.
+    """
+    import entrypoint
+
+    message = (
+        'unexpected status 402 Payment Required: {"error":"budget_exceeded",'
+        '"details":{"scope":"chain","scope_cap_usd":150.0}}, '
+        'url: http://127.0.0.1:9090/openai/v1/responses, request id: fixture'
+        if budget else "SDK transport failed"
+    )
+    envelope = json.dumps({**SAMPLE_ENVELOPE, "persona": persona})
+    monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+    monkeypatch.setattr(entrypoint, "_receive_one_message", lambda *_: (envelope, "receipt"))
+    monkeypatch.setattr(entrypoint, "VisibilityHeartbeat", MagicMock())
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    work_dir = tmp_path / "repo"
+    work_dir.mkdir()
+    monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+    monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+    monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+    monkeypatch.setattr(entrypoint, "RESULT_METADATA_PATH", str(tmp_path / "no-claude-metadata.json"))
+    vault = MagicMock()
+    vault.return_value.get_secret.return_value = {"app_id": "123", "private_key": "fake-key"}
+    monkeypatch.setattr(entrypoint, "VaultClient", vault)
+    monkeypatch.setattr(entrypoint, "mint_installation_token", MagicMock(return_value="test-token"))
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="", stderr="", returncode=0)))
+    monkeypatch.setattr(entrypoint, "create_check_run", MagicMock(return_value={}))
+    monkeypatch.setattr(entrypoint, "_post_comment", MagicMock())
+    monkeypatch.setattr(entrypoint, "_upload_transcript_to_s3", MagicMock(return_value=None))
+    monkeypatch.setattr(entrypoint, "_delete_message", MagicMock())
+    status = MagicMock(return_value=recorded)
+    monkeypatch.setattr(entrypoint, "update_invocation_status", status)
+
+    def execute(command, **options):
+        if command[0] == "node":
+            assert command[1] == "/app/codex-reviewer/dist/developer-entry.js"
+            Path(options["env"]["ADP_FAILURE_REPORT_FILE"]).write_text(
+                json.dumps({"status": "agent_failed", "error": {"message": message}})
+            )
+            return MagicMock(returncode=1, stdout=None, stderr=None)
+        return _subprocess_side_effect_fresh_branch(command, **options)
+
+    monkeypatch.setattr(entrypoint.subprocess, "run", execute)
+    exit_code = entrypoint.main()
+    terminal = [call for call in status.call_args_list if call.args[2] in {"failed", "budget_stopped", "complete"}]
+    assert len(terminal) == 1
+    assert terminal[0].args[2] == ("budget_stopped" if budget else "failed")
+    assert terminal[0].kwargs.get("stop_reason") == ("chain_cap_exceeded" if budget else None)
+    assert message in terminal[0].kwargs["error_message"]
+    assert exit_code == (entrypoint.AGENT_EXIT_RETRYABLE if budget and not recorded else 1)
+    if budget and not recorded:
+        entrypoint._delete_message.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [None, "report", "ack"])
+def test_protected_pr_bootstrap_refusal_reports_before_acknowledging(monkeypatch, failure):
+    import entrypoint
+    from lib import status_gateway_client
+
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+    calls = []
+
+    def report(status, fields):
+        calls.append(("report", status, fields))
+        if failure == "report":
+            raise RuntimeError("terminal receipt unavailable")
+
+    def acknowledge():
+        calls.append(("ack",))
+        if failure == "ack":
+            raise RuntimeError("acknowledgement unavailable")
+
+    monkeypatch.setattr(status_gateway_client, "record_status", report)
+    legacy = MagicMock(side_effect=AssertionError("protected refusal must use authenticated status client"))
+    monkeypatch.setattr(entrypoint, "_fail_bootstrap_status", legacy)
+    bootstrap_log = MagicMock()
+    result = entrypoint._refuse_codex_pr_bootstrap("run", "arrived", bootstrap_log, acknowledge)
+
+    assert calls[0][0:2] == ("report", "failed")
+    assert bool([call for call in calls if call[0] == "ack"]) is (failure != "report")
+    assert result == (entrypoint.AGENT_EXIT_RETRYABLE if failure else 1)
+    bootstrap_log.step_error.assert_called_once()
+    bootstrap_log.close.assert_called_once()
+    legacy.assert_not_called()

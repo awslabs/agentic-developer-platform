@@ -97,6 +97,7 @@ from .execution_state import BlockCode, BlockRecord
 from .handoff import outstanding_block
 from .lifecycle_recovery import RecoveryRefusedError, ResumeContinuationRequest, resume_continuation
 from .models import DecisionKind, OrchestrationNode
+from .operations_agent_recovery import OperationsAgentRecoveryRequest
 from .repository import OrchestrationRepository
 from .review_recovery import ReviewRecoveryRequest, request_review_recovery
 from .state import ActorKind, NodeState, transition
@@ -210,22 +211,20 @@ async def _adopt_lane_for_resume(
     if await db.scalar(candidates.with_only_columns(OrchestrationWorkClaim.id).limit(1)) is None:
         return None
 
-    # Claims are unique per repository, not per tenant-wide issue number. Use
-    # the same trusted configured repository and tenant installation as dispatch.
-    from .dispatch_pass import DispatchPassConfig, resolve_installation_id
-    from .work_admission import resolve_repository_id
+    # Resolve this story under the same accepted connection as dispatch.
+    from .accepted_node import accepted_node_contract
+    from .work_admission import resolve_accepted_repository
 
     try:
-        repository = DispatchPassConfig.from_env().repo
-        installation = await resolve_installation_id(db, org_id=org_id)
-        if not repository or installation is None:
-            raise WorkClaimError("repository_unresolved", "No trusted repository/installation binding is available.")
-        repository_id = await resolve_repository_id(org_id=org_id, installation_id=installation, repo=repository)
+        contract = await accepted_node_contract(db, node)
+        if contract is None or not contract.node.repository_identity:
+            raise WorkClaimError("repository_unresolved", "No accepted repository is available for this story.")
+        _, repository_id, _ = await resolve_accepted_repository(db, node=node, contract=contract, repo=contract.node.repository_identity)
     except (WorkClaimError, ValueError, HTTPError) as exc:
         return outstanding_block(
             BlockCode.AUTHORITY_UNVERIFIABLE,
             owner="platform-operator",
-            required_input="resolve this tenant's configured repository identity before adopting its lane",
+            required_input="resolve this story's accepted repository identity before adopting its lane",
             detail=f"repository identity unavailable ({exc.code if isinstance(exc, WorkClaimError) else type(exc).__name__})",
         )
     claim = await db.scalar(candidates.where(OrchestrationWorkClaim.provider_repository_id == repository_id).with_for_update())
@@ -518,6 +517,7 @@ _GATE_STATUS_CODES: dict[GateAnswerStatus, int] = {
     GateAnswerStatus.ALREADY_ANSWERED: 409,
     GateAnswerStatus.REFUSED_ILLEGAL_TRANSITION: 409,
     GateAnswerStatus.REFUSED_NO_PERMISSION: 403,
+    GateAnswerStatus.REFUSED_PRODUCT: 422,
     # 409, like the other two "the state is not what you thought" refusals: the
     # request was well-formed and authorized, and the plan of record moved. A 412
     # would also be defensible, but these three are the same class of answer to a
@@ -775,6 +775,54 @@ async def read_node_recovery(
     await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=current_user.org_id)
     _, result = await snapshot(db, org_id=current_user.org_id, node_id=node_id, flow_id=flow_id)
     return result
+
+
+async def _operations_agent_recovery(node_id, body, current_user, access, db, *, accept):
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+
+    from .compile import ApprovalContext
+    from .operations_agent_recovery import recover
+    from .review_cycle import CycleBlockedError
+
+    access.require_platform_admin(current_user)
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    try:
+        human = await authorize_human_session(current_user, db)
+    except BootstrapRefusedError:
+        raise HTTPException(403, "An authenticated operations recovery owner is required.") from None
+    actor = ApprovalContext(
+        org_id=human.tenant_id, actor_id=human.user_id, actor_role=(await access.get_user_role(current_user))[0].value, reason=body.reason
+    )
+    try:
+        result = await recover(db, node_id=node_id, actor=actor, request=body, accept=accept)
+        await (db.commit() if accept else db.rollback())
+        return result
+    except CycleBlockedError as error:
+        await db.rollback()
+        raise HTTPException(404 if error.reason == "node_not_found" else 409, error.reason) from None
+
+
+@router.post("/nodes/{node_id}/operations-agent-recovery/preview")
+async def preview_operations_agent_recovery(
+    node_id: Annotated[str, Path(min_length=1, max_length=36)],
+    body: OperationsAgentRecoveryRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    return await _operations_agent_recovery(node_id, body, current_user, access, db, accept=False)
+
+
+@router.post("/nodes/{node_id}/operations-agent-recovery/accept")
+async def accept_operations_agent_recovery(
+    node_id: Annotated[str, Path(min_length=1, max_length=36)],
+    body: OperationsAgentRecoveryRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    return await _operations_agent_recovery(node_id, body, current_user, access, db, accept=True)
 
 
 @router.post("/nodes/{node_id}/resume", response_model=ResumeResponse)
@@ -1217,6 +1265,7 @@ async def gate_execution_preview(
     from ..agentauth.bootstrap import BootstrapRefusedError
     from ..agentauth.human_control import authorize_human_session
     from .compile import ApprovalContext
+    from .draft_revision import preview_product_binding
     from .evaluation_acceptance import EvaluationAcceptanceError
     from .gate_execution import prepare_gate_execution
     from .review_cycle import CycleBlockedError
@@ -1231,9 +1280,19 @@ async def gate_execution_preview(
         human = await authorize_human_session(current_user, db)
     except BootstrapRefusedError:
         raise HTTPException(403, "An authenticated human plan approver is required.") from None
-    actor = ApprovalContext(org_id=human.tenant_id, actor_id=human.user_id, actor_role=await _resolve_actor_role(access, current_user))
+    actor = ApprovalContext(
+        org_id=human.tenant_id,
+        actor_id=human.user_id,
+        actor_role=await _resolve_actor_role(access, current_user),
+        username=current_user.cognito_username,
+    )
     try:
         result = await prepare_gate_execution(db, gate=node, actor=actor)
+        product = await preview_product_binding(db, node.flow_id, actor)
+        result["product"] = product
+        if not product["ready"]:
+            result["ready"] = False
+            result["problems"] = [*result.get("problems", []), product["problem"]]
         return {key: value for key, value in result.items() if key != "grants"}
     except (EvaluationAcceptanceError, WindowRenewalError, CycleBlockedError, PolicyNotAcceptableError) as error:
         raise HTTPException(409, {"message": "The next step is not executable: " + str(error)}) from None

@@ -28,6 +28,7 @@ from src.shared.database import get_db
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import UserCredential
+from tests.auth.proxy_stream import stream_from_request
 
 # ---------------------------------------------------------------------------
 # Test infrastructure
@@ -101,6 +102,7 @@ async def db(engine) -> AsyncSession:
 
         # Seed credentials for alice.
         bearer_cred = UserCredential(
+            agent_consent=True,
             id="cred-ext-bearer",
             org_id="org-binding-ext",
             user_id=_USER_ALICE_ID,
@@ -110,6 +112,7 @@ async def db(engine) -> AsyncSession:
             secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:ext-bearer",
         )
         ssh_cred = UserCredential(
+            agent_consent=True,
             id="cred-ext-ssh",
             org_id="org-binding-ext",
             user_id=_USER_ALICE_ID,
@@ -277,6 +280,7 @@ class TestProxyRequestBinding:
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
             patch("httpx.AsyncClient.request") as mock_http,
+            patch("httpx.AsyncClient.stream", new=stream_from_request),
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
@@ -322,6 +326,7 @@ class TestProxyRequestBinding:
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("httpx.AsyncClient.request") as mock_http,
+            patch("httpx.AsyncClient.stream", new=stream_from_request),
         ):
             mock_response = MagicMock()
             mock_response.status_code = 200
@@ -424,8 +429,8 @@ class TestMaterializeBinding:
         assert detail["error"] == "credential_authorization_drift"
 
     @pytest.mark.asyncio
-    async def test_enforce_valid_invocation_returns_201(self, db):
-        """Enforce mode: valid invocation_id -> 201, materialize succeeds."""
+    async def test_enforce_valid_invocation_requires_private_cleanup(self, db):
+        """A valid invocation still cannot create an unowned S3 secret object."""
         mock_sm = MagicMock()
         mock_sm.get_secret.return_value = "ssh-rsa AAAA..."
 
@@ -462,10 +467,10 @@ class TestMaterializeBinding:
                 },
             )
 
-        assert resp.status_code == 201
-        data = resp.json()
-        assert "materialize_url" in data
-        assert "provenance_id" in data
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error"] == "credential_materialization_cleanup_unavailable"
+        mock_sm.get_secret.assert_not_called()
+        mock_boto3.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_shadow_mode_fallback_uses_body(self, db):

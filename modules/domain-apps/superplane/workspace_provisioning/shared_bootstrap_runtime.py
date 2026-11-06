@@ -242,6 +242,7 @@ def bootstrap(
 
             return PollingObservation(
                 origin=config["management_api_origin"],
+                ca_pem=config.get("management_ca_pem"),
                 credential=credential,
                 binding=binding,
                 target=authority.journal.target,

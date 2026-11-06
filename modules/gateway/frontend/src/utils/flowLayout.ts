@@ -12,6 +12,8 @@ export interface WaveGroup {
   /** Malformed dependencies stay visible, without suggesting execution order. */
   unordered: GraphNode[];
   dependsOn: { epicRef: string; waveRef: string }[];
+  /** Presentation only: the original build/live waves of one BOLT. */
+  phases?: WaveGroup[];
 }
 
 export interface EpicGroup {
@@ -61,7 +63,56 @@ function dependencyStages(nodes: GraphNode[], graph: FlowGraph): Pick<WaveGroup,
   return { stages, unordered: remaining };
 }
 
-/** Preserve the plan's wave order; sort steps by dependency, not creation time. */
+/**
+ * Order one EPIC's waves for display (#7226).
+ *
+ * The server lists nodes by `wave_ref, node_ref`, so first appearance is name
+ * order — `dashboard` before `runtime`. The plan's declared order is
+ * `graph.wave_metadata`, in declaration order, and dependency edges between
+ * waves are the ground truth of what runs after what. So: a topological order
+ * over wave-to-wave edges inside the EPIC, with ties broken by the declared
+ * order, then by first appearance. Waves caught in a cycle keep their fallback
+ * order rather than vanishing.
+ */
+function orderWaves(epicRef: string, waveRefs: string[], graph: FlowGraph, byId: Map<string, GraphNode>): string[] {
+  const declared = new Map<string, number>();
+  (graph.wave_metadata ?? []).forEach((wave, index) => {
+    if (wave.epic_ref === epicRef) declared.set(wave.wave_ref, index);
+  });
+  const appearance = new Map(waveRefs.map((ref, index) => [ref, index]));
+  const rank = (ref: string) => [declared.get(ref) ?? Number.POSITIVE_INFINITY, appearance.get(ref) ?? Number.POSITIVE_INFINITY] as const;
+  const compare = (a: string, b: string) => {
+    const [da, aa] = rank(a);
+    const [db, ab] = rank(b);
+    return da === db ? aa - ab : da - db;
+  };
+  const predecessors = new Map<string, Set<string>>(waveRefs.map((ref) => [ref, new Set<string>()]));
+  for (const edge of graph.edges) {
+    const from = byId.get(edge.from_node_id);
+    const to = byId.get(edge.to_node_id);
+    if (!from || !to || from.epic_ref !== epicRef || to.epic_ref !== epicRef) continue;
+    if (from.wave_ref === to.wave_ref || !predecessors.has(to.wave_ref) || !predecessors.has(from.wave_ref)) continue;
+    predecessors.get(to.wave_ref)!.add(from.wave_ref);
+  }
+  const ordered: string[] = [];
+  const placed = new Set<string>();
+  let remaining = [...waveRefs];
+  while (remaining.length > 0) {
+    const ready = remaining.filter((ref) => [...predecessors.get(ref)!].every((dep) => placed.has(dep))).sort(compare);
+    if (ready.length === 0) {
+      // A cycle between waves: nothing is ready. Keep what is left in fallback order.
+      ordered.push(...remaining.sort(compare));
+      break;
+    }
+    const next = ready[0];
+    ordered.push(next);
+    placed.add(next);
+    remaining = remaining.filter((ref) => ref !== next);
+  }
+  return ordered;
+}
+
+/** Waves in plan order (declared metadata, then dependencies); steps by dependency, not creation time. */
 export function groupIntoEpics(graph: FlowGraph): EpicGroup[] {
   const epicMetadata = new Map((graph.epic_metadata ?? []).map((epic) => [epic.epic_ref, epic]));
   const metadata = new Map((graph.wave_metadata ?? []).map((wave) => [JSON.stringify([wave.epic_ref, wave.wave_ref]), wave]));
@@ -81,7 +132,8 @@ export function groupIntoEpics(graph: FlowGraph): EpicGroup[] {
     epicRef,
     title: epicMetadata.get(epicRef)?.title,
     description: epicMetadata.get(epicRef)?.description,
-    waves: [...waves.entries()].map(([waveRef, nodes]) => {
+    waves: groupBoltPhases(orderWaves(epicRef, [...waves.keys()], graph, byId).map((waveRef) => {
+      const nodes = waves.get(waveRef)!;
       const ids = new Set(nodes.map((node) => node.id));
       const external = new Map<string, { epicRef: string; waveRef: string }>();
       for (const edge of graph.edges) {
@@ -91,8 +143,47 @@ export function groupIntoEpics(graph: FlowGraph): EpicGroup[] {
       }
       const display = metadata.get(JSON.stringify([epicRef, waveRef]));
       return { waveRef, title: display?.title, description: display?.description, nodes, ...dependencyStages(nodes, graph), dependsOn: [...external.values()] };
-    }),
+    }), epicRef, graph),
   }));
+}
+
+/**
+ * The authored BOLT convention is bNN-build + bNN-live in the same epic.
+ * Keep unmatched/ordinary waves intact, and never rewrite node identities or
+ * edges. A card groups presentation; it is not a new scheduling barrier.
+ */
+function groupBoltPhases(waves: WaveGroup[], epicRef: string, graph: FlowGraph): WaveGroup[] {
+  const paired = new Set<string>();
+  const byRef = new Map(waves.map((wave) => [wave.waveRef, wave]));
+  const result: WaveGroup[] = [];
+  for (const wave of waves) {
+    if (paired.has(wave.waveRef)) continue;
+    const match = /^(b\d+)-(build|live)$/.exec(wave.waveRef);
+    const bolt = match?.[1];
+    const build = bolt && byRef.get(`${bolt}-build`);
+    const live = bolt && byRef.get(`${bolt}-live`);
+    const ref = `bolt-${bolt}`;
+    if (!build || !live || byRef.has(ref)) {
+      result.push(wave);
+      continue;
+    }
+    paired.add(build.waveRef);
+    paired.add(live.waveRef);
+    const nodes = [...build.nodes, ...live.nodes];
+    const ownWaves = new Set([build.waveRef, live.waveRef]);
+    const external = new Map<string, { epicRef: string; waveRef: string }>();
+    for (const dependency of [...build.dependsOn, ...live.dependsOn]) {
+      if (dependency.epicRef === epicRef && ownWaves.has(dependency.waveRef)) continue;
+      external.set(JSON.stringify([dependency.epicRef, dependency.waveRef]), dependency);
+    }
+    result.push({
+      waveRef: ref, title: bolt!.toUpperCase(),
+      description: build.description?.replace(/; native BOLT #\d+$/, ''),
+      nodes, ...dependencyStages(nodes, graph), dependsOn: [...external.values()],
+      phases: [build, live],
+    });
+  }
+  return result;
 }
 
 export function nodeDependencies(graph: FlowGraph, node: GraphNode): GraphNode[] {

@@ -46,8 +46,10 @@ export interface AccessRequestListResponse {
 /**
  * Get the current user's onboarding access status.
  */
-export async function getAccessStatus(): Promise<AccessStatusResponse> {
-  return apiClient.get<AccessStatusResponse>('/access/status');
+export async function getAccessStatus(syncMemberships = true, signal?: AbortSignal): Promise<AccessStatusResponse> {
+  return apiClient.get<AccessStatusResponse>(
+    syncMemberships ? '/access/status' : '/access/status?sync_memberships=false', signal
+  );
 }
 
 /**

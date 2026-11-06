@@ -71,11 +71,36 @@ for (const changed of ["head", "base", "checks", "permission", "publication"] as
     if (changed === "publication") {
       await assert.rejects(deliverEngineReview(f.github, f.result, f.envelope, async () => { throw new Error("upload failed"); }, f.checks));
     } else {
-      assert.equal((await f.deliver()).state, changed === "base" || changed === "checks" ? "repair" : "blocked");
+      assert.equal((await f.deliver()).state, changed === "base" ? "pending" : changed === "checks" ? "repair" : "blocked");
     }
     assert.ok(!f.events.includes("merge"));
   });
 }
+
+for (const reason of ["conflict", "base_outdated"]) {
+  test(`canonical ${reason} still requires repair when the base also advances`, async () => {
+    const f = fixture();
+    f.observation.base_sha = "e".repeat(40);
+    f.observation.base_repair_required = true;
+    f.observation.merge_state = "blocked";
+    f.observation.merge_reasons = [reason];
+    assert.equal((await f.deliver()).state, "repair");
+    assert.ok(!f.events.includes("merge"));
+  });
+}
+
+test("a recovery draft waits for clean-base revalidation before becoming ready", async () => {
+  const f = fixture();
+  f.pr.draft = true;
+  f.envelope.cycle.recovery = { source: "checkpoint", prior_run_id: "old-run", checkpoint_sha: f.result.sha };
+  f.observation.base_sha = "e".repeat(40);
+  f.observation.merge_state = "blocked";
+  f.observation.merge_reasons = ["draft"];
+  const github = { ...f.github, markReady: async () => assert.fail("New base has not been reviewed") };
+  assert.equal((await deliverEngineReview(github, f.result, f.envelope, f.publish, f.checks)).state, "pending");
+  assert.ok(f.pr.draft);
+  assert.ok(!f.events.includes("merge"));
+});
 
 test("merge queue admission waits for actual merge and is not repeated", async () => {
   const f = fixture(); f.observation.merge_method = "queue";
@@ -92,21 +117,25 @@ test("GitHub permission refusal is an explicit blocker", async () => {
   assert.deepEqual(await f.deliver(), { state: "blocked", reason: "GitHub refused merge (403)" });
 });
 
-test("a recovery draft becomes ready only after recorded review and checks", async () => {
-  const f = fixture();
-  f.pr.draft = true;
-  f.envelope.cycle.recovery = { source: "checkpoint", prior_run_id: "old-run", checkpoint_sha: f.result.sha };
-  f.observation.merge_state = "blocked";
-  f.observation.merge_reasons = ["draft"];
-  const github = { ...f.github, markReady: async (node: string) => {
-    assert.equal(node, "PR_7"); f.events.push("ready"); f.pr.draft = false;
-    f.observation.merge_state = "eligible"; f.observation.merge_reasons = [];
-  } };
-  assert.equal((await deliverEngineReview(github, f.result, f.envelope, f.publish, f.checks)).state, "merged");
-  assert.deepEqual(f.events, ["publish", "authorize", "ready", "authorize", "merge"]);
-});
+for (const optional of [false, true]) {
+  test(`a recovery draft becomes ready after recorded review and checks (optional notes: ${optional})`, async () => {
+    const f = fixture();
+    f.pr.draft = true;
+    f.envelope.cycle.recovery = { source: "checkpoint", prior_run_id: "old-run", checkpoint_sha: f.result.sha };
+    f.observation.merge_state = "blocked";
+    f.observation.merge_reasons = ["draft"];
+    if (optional) f.result.report.findings.push({ finding_id: "optional", stage: "functional",
+      severity: "minor", disposition: "open", summary: "Optional probe hardening" });
+    const github = { ...f.github, markReady: async (node: string) => {
+      assert.equal(node, "PR_7"); f.events.push("ready"); f.pr.draft = false;
+      f.observation.merge_state = "eligible"; f.observation.merge_reasons = [];
+    } };
+    assert.equal((await deliverEngineReview(github, f.result, f.envelope, f.publish, f.checks)).state, "merged");
+    assert.deepEqual(f.events, ["publish", "authorize", "ready", "authorize", "merge"]);
+  });
+}
 
-for (const condition of ["permission", "checks", "verdict", "incomplete_review"] as const) {
+for (const condition of ["permission", "checks", "verdict", "incomplete_review", "blocking_finding"] as const) {
   test(`recovery draft remains draft when ${condition} is blocked`, async () => {
     const f = fixture(); f.pr.draft = true;
     f.envelope.cycle.recovery = { source: "checkpoint", prior_run_id: "old-run", checkpoint_sha: f.result.sha };
@@ -114,6 +143,8 @@ for (const condition of ["permission", "checks", "verdict", "incomplete_review"]
     if (condition === "incomplete_review") f.result.report.stages.security = "failed";
     if (condition === "checks") f.observation.state = "failed";
     if (condition === "verdict") f.result.report.verdict = "request_changes";
+    if (condition === "blocking_finding") f.result.report.findings.push({ finding_id: "defect", stage: "functional",
+      severity: "blocking", disposition: "open", summary: "Required behavior is broken" });
     const github = { ...f.github, markReady: async () => { throw new Error("must not mark ready"); } };
     assert.equal((await deliverEngineReview(github, f.result, f.envelope, f.publish, f.checks)).state, "blocked");
     assert.ok(f.pr.draft);

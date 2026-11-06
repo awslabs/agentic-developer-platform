@@ -66,10 +66,13 @@ class Lambda:
         self.digest = "old-digest"
         self.fail_update = False
         self.readback_drift = False
+        self.reads = 0
 
     def get_function_configuration(self, **kwargs):
         assert kwargs["FunctionName"] == FUNCTION
+        self.reads += 1
         return {
+            "ResponseMetadata": {"RequestId": f"request-{self.reads}", "HTTPStatusCode": 200},
             "Role": self.role,
             "RevisionId": self.revision,
             "CodeSha256": "drift"
@@ -221,19 +224,20 @@ def test_unbound_manifest_refused_before_any_write(setup):
     assert not s3.calls
 
 
-def test_concurrent_revision_change_prevents_completion(setup):
+def test_service_settlement_can_change_revision_with_identical_code_and_configuration(setup):
     _, _, lambdas, run = setup
     original = lambdas.get_function_configuration
 
     def changed(**kwargs):
         result = original(**kwargs)
         if lambdas.calls:
-            result["RevisionId"] = "competing-writer-revision"
+            result["RevisionId"] = "service-settled-revision"
         return result
 
     lambdas.get_function_configuration = changed
-    with pytest.raises(AssertionError, match="Concurrent revision"):
-        run()
+    result = run()
+    assert result["complete"] is True
+    assert result["operations"][0]["settled_revision"] == "service-settled-revision"
     assert len(lambdas.calls) == 1
 
 
@@ -254,3 +258,52 @@ def test_bad_update_hash_stops_before_poll_or_second_mutation(setup):
         s3.objects[f"{MANIFEST['archive_prefix']}/receipts/{SHA}.json"]["body"]
     )
     assert not remote["complete"] and "update_response" not in remote["operations"][0]
+
+
+@pytest.mark.parametrize("event,ref,attempt,accepted", [
+    ("push", "refs/heads/main", "1", True),
+    ("workflow_dispatch", "refs/heads/main", "1", True),
+    ("workflow_call", "refs/heads/main", "1", True),
+    ("pull_request", "refs/heads/main", "1", False),
+    ("pull_request_target", "refs/heads/main", "1", False),
+    ("push", "refs/heads/feature", "1", False),
+    ("push", "refs/tags/main", "1", False),
+    ("push", "refs/heads/main", "2", False),
+])
+def test_driver_main_context_and_replay_guard(event, ref, attempt, accepted):
+    environment = {"GITHUB_EVENT_NAME": event, "GITHUB_REF": ref, "GITHUB_RUN_ATTEMPT": attempt}
+    if accepted:
+        driver.validate_execution_context(environment)
+    else:
+        with pytest.raises(AssertionError):
+            driver.validate_execution_context(environment)
+
+
+@pytest.mark.parametrize("field,value", [("MemorySize", 1024), ("Environment", {"Variables": {"AUTH_DISABLED": "true"}})])
+def test_configuration_drift_prevents_completion(setup, field, value):
+    _, _, lambdas, run = setup
+    original = lambdas.get_function_configuration
+    def changed(**kwargs):
+        result = original(**kwargs)
+        if lambdas.calls:
+            result[field] = value
+        return result
+    lambdas.get_function_configuration = changed
+    with pytest.raises(AssertionError, match="Configuration drift"):
+        run()
+
+
+def test_revision_must_remain_stable_after_success(setup):
+    _, _, lambdas, run = setup
+    original = lambdas.get_function_configuration
+    reads = 0
+    def changed(**kwargs):
+        nonlocal reads
+        result = original(**kwargs)
+        if lambdas.calls:
+            reads += 1
+            result["RevisionId"] = f"changing-{reads}"
+        return result
+    lambdas.get_function_configuration = changed
+    with pytest.raises(AssertionError, match="Concurrent revision change after completion"):
+        run()

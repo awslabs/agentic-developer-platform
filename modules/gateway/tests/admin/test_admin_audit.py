@@ -174,6 +174,9 @@ class TestWriteAdminAuditOnRefusal:
 
     async def test_sink_failure_swallowed(self, session: AsyncSession):
         """A broken audit sink must not crash the caller."""
+        from src.shared.accounting_health import AUDIT_WRITE_FAILURES
+
+        failures = AUDIT_WRITE_FAILURES._value.get()
         ctx = _regular_user_ctx()
 
         with patch.object(session, "commit", side_effect=RuntimeError("db down")):
@@ -186,6 +189,7 @@ class TestWriteAdminAuditOnRefusal:
                 target_id="1",
                 reason="test",
             )
+        assert AUDIT_WRITE_FAILURES._value.get() == failures + 1
 
 
 # ---------------------------------------------------------------------------

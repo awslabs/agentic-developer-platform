@@ -213,6 +213,8 @@ export function formatWireMoney(value: string | null | undefined): string {
  */
 export function describeUnknownReason(reason: string | null | undefined): string {
   switch (reason) {
+    case 'cost_refresh_unavailable':
+      return 'Spend is temporarily unavailable. It will refresh automatically.';
     case 'no_usage_rows':
       return 'No metered usage recorded for this work.';
     case 'not_started':

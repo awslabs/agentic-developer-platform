@@ -8,7 +8,7 @@ CloudFront -> ALB -> EKS pods -> RDS database -> Bedrock API
 Uses pytest + httpx against the explicitly configured GATEWAY_URL.
 
 Requirements:
-- AWS credentials with access to Secrets Manager (for M2M token)
+- AWS credentials with access to the reviewed machine and native-admin secrets
 - pip install httpx boto3
 
 Run:
@@ -23,6 +23,7 @@ import os
 import time
 import uuid
 from collections.abc import Generator
+from decimal import Decimal
 
 import boto3
 import httpx
@@ -42,10 +43,6 @@ BASE_URL = os.environ.get("GATEWAY_URL", "").rstrip("/") + "/api"
 SECRET_ID = os.environ.get("GATEWAY_M2M_SECRET", "")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
-# Model to use for Bedrock tests - using inference profile
-TEST_MODEL = "us.anthropic.claude-sonnet-4-20250514-v1:0"
-TEST_MODEL_GLOBAL = "global.anthropic.claude-opus-4-5-20251101-v1:0"
-
 # Timeout for requests (Bedrock can be slow)
 REQUEST_TIMEOUT = 120.0
 STREAM_TIMEOUT = 180.0
@@ -54,6 +51,15 @@ STREAM_TIMEOUT = 180.0
 # =============================================================================
 # Fixtures
 # =============================================================================
+
+
+@pytest.fixture(scope="session")
+def test_model() -> str:
+    """Use the model selected by the reviewed regression target resolver."""
+    model = os.environ.get("TEST_BEDROCK_MODEL", "")
+    if not model:
+        pytest.fail("Live model tests require TEST_BEDROCK_MODEL from regression_gateway_config.py")
+    return model
 
 
 @pytest.fixture(scope="session")
@@ -81,6 +87,42 @@ def auth_token() -> str:
     )
     response.raise_for_status()
     return response.json()["access_token"]
+
+
+@pytest.fixture(scope="session")
+def admin_auth_token() -> str:
+    """Authenticate the owned native administrator; machines stay non-admin."""
+    secret_id = os.environ.get("GATEWAY_ADMIN_SECRET", "")
+    if not secret_id or not os.environ.get("GATEWAY_URL"):
+        pytest.fail("Administrative live tests require reviewed GATEWAY_ADMIN_SECRET and GATEWAY_URL bindings")
+    sm = boto3.client("secretsmanager", region_name=AWS_REGION)
+    creds = json.loads(sm.get_secret_value(SecretId=secret_id)["SecretString"])
+    # Compare the fixture pool with the tested deployment before authenticating.
+    discovery = httpx.get(BASE_URL + "/.well-known/cognito-config", timeout=30.0)
+    discovery.raise_for_status()
+    target = discovery.json()
+    if not creds.get("cognito_user_pool_id") or creds["cognito_user_pool_id"] != target.get("user_pool_id") or target.get("region") != AWS_REGION:
+        pytest.fail("Native administrator fixture belongs to another deployment")
+    result = boto3.client("cognito-idp", region_name=AWS_REGION).admin_initiate_auth(
+        UserPoolId=creds["cognito_user_pool_id"],
+        ClientId=creds["cognito_client_id"],
+        AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": creds["username"], "PASSWORD": creds["password"]},
+    )
+    token = result.get("AuthenticationResult", {}).get("AccessToken")
+    if not token:
+        pytest.fail("Native administrator fixture must complete its password challenge before live tests")
+    return token
+
+
+@pytest.fixture(scope="session")
+def admin_client(admin_auth_token: str) -> Generator[httpx.Client, None, None]:
+    with httpx.Client(
+        base_url=BASE_URL,
+        headers={"Authorization": f"Bearer {admin_auth_token}"},
+        timeout=REQUEST_TIMEOUT,
+    ) as client:
+        yield client
 
 
 @pytest.fixture(scope="session")
@@ -120,7 +162,7 @@ def unauthenticated_client() -> Generator[httpx.Client, None, None]:
 
 
 @pytest.fixture(scope="module")
-def test_org_id(client: httpx.Client) -> str:
+def test_org_id(admin_client: httpx.Client) -> str:
     """
     Verify the explicitly owned fixture; never select an arbitrary first tenant.
     """
@@ -128,7 +170,7 @@ def test_org_id(client: httpx.Client) -> str:
     organization_name = os.environ.get("GATEWAY_TEST_ORG_NAME", "")
     if not organization_id or not organization_name.startswith("eval-regression-"):
         pytest.fail("Configure an owned eval-regression-* organization before live tests")
-    response = client.get(f"/admin/organizations/{organization_id}")
+    response = admin_client.get(f"/admin/organizations/{organization_id}")
     response.raise_for_status()
     organization = response.json()
     assert organization["id"] == organization_id
@@ -153,6 +195,7 @@ class _TestDataTracker:
     def __init__(self):
         self.budgets_to_delete: list[tuple[str, str, str, str]] = []  # (org_id, entity_type, entity_id, period_type)
         self.ratelimits_to_delete: list[tuple[str, str, str]] = []  # (org_id, entity_type, entity_id)
+        self.hierarchy_to_delete: list[str] = []
 
     def add_budget(self, org_id: str, entity_type: str, entity_id: str, period_type: str):
         self.budgets_to_delete.append((org_id, entity_type, entity_id, period_type))
@@ -167,9 +210,25 @@ def data_tracker() -> _TestDataTracker:
     return _TestDataTracker()
 
 
+@pytest.fixture(scope="module")
+def test_team_id(admin_client: httpx.Client, test_org_id: str, unique_id: str, data_tracker: _TestDataTracker) -> str:
+    """Create a real, owned team so budget reads validate its tenant membership."""
+    department_id, team_id = f"dept-{unique_id}", f"team-{unique_id}"
+    base = f"/admin/organizations/{test_org_id}"
+    data_tracker.hierarchy_to_delete.append(f"{base}/departments/{department_id}")
+    response = admin_client.post(f"{base}/departments", json={"id": department_id, "name": department_id})
+    assert response.status_code == 201, response.text
+    assert response.json()["id"] == department_id
+    data_tracker.hierarchy_to_delete.append(f"{base}/teams/{team_id}")
+    response = admin_client.post(f"{base}/departments/{department_id}/teams", json={"id": team_id, "name": team_id})
+    assert response.status_code == 201, response.text
+    assert response.json()["id"] == team_id
+    return team_id
+
+
 @pytest.fixture(scope="module", autouse=True)
 def cleanup_test_data(
-    client: httpx.Client,
+    admin_client: httpx.Client,
     data_tracker: _TestDataTracker,
 ) -> Generator[None, None, None]:
     """Clean up test data after all tests in the module."""
@@ -179,7 +238,7 @@ def cleanup_test_data(
     # Sweep every recorded intent, including mutations whose response was lost.
     for org_id, entity_type, entity_id, period_type in data_tracker.budgets_to_delete:
         try:
-            response = client.delete(f"/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}")
+            response = admin_client.delete(f"/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}")
             if response.status_code not in {200, 204, 404}:
                 errors.append("budget cleanup failed")
         except Exception:
@@ -188,11 +247,19 @@ def cleanup_test_data(
     # Clean up rate limits
     for org_id, entity_type, entity_id in data_tracker.ratelimits_to_delete:
         try:
-            response = client.delete(f"/admin/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}")
+            response = admin_client.delete(f"/admin/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}")
             if response.status_code not in {200, 204, 404}:
                 errors.append("rate-limit cleanup failed")
         except Exception:
             errors.append("rate-limit cleanup unavailable")
+    # Children follow their configurations; parents follow their children.
+    for path in reversed(data_tracker.hierarchy_to_delete):
+        try:
+            response = admin_client.delete(path)
+            if response.status_code not in {200, 204, 404}:
+                errors.append("hierarchy cleanup failed")
+        except Exception:
+            errors.append("hierarchy cleanup unavailable")
     if errors:
         pytest.fail("; ".join(errors))
 
@@ -233,14 +300,14 @@ class TestHealthConnectivity:
 class TestProxyBedrock:
     """Test proxy endpoints with real Bedrock calls."""
 
-    def test_v1_messages_anthropic_format(self, client: httpx.Client):
+    def test_v1_messages_anthropic_format(self, client: httpx.Client, test_model: str):
         """
         POST /v1/messages (Anthropic format) -> verify content, usage, stop_reason.
         """
         response = client.post(
             "/v1/messages",
             json={
-                "model": TEST_MODEL,
+                "model": test_model,
                 "max_tokens": 100,
                 "messages": [{"role": "user", "content": "Say hello in exactly 3 words."}],
             },
@@ -260,7 +327,7 @@ class TestProxyBedrock:
         assert "input_tokens" in usage
         assert "output_tokens" in usage
 
-    def test_v1_messages_streaming(self, client: httpx.Client):
+    def test_v1_messages_streaming(self, client: httpx.Client, test_model: str):
         """
         POST /v1/messages with stream: true -> verify SSE events.
         """
@@ -268,7 +335,7 @@ class TestProxyBedrock:
             "POST",
             "/v1/messages",
             json={
-                "model": TEST_MODEL,
+                "model": test_model,
                 "max_tokens": 100,
                 "stream": True,
                 "messages": [{"role": "user", "content": "Count from 1 to 5."}],
@@ -290,11 +357,11 @@ class TestProxyBedrock:
             has_message_start = any("message_start" in event for event in events)
             assert has_message_start, f"No message_start event found in: {events[:5]}"
 
-    def test_model_invoke_bedrock_format(self, client: httpx.Client):
+    def test_model_invoke_bedrock_format(self, client: httpx.Client, test_model: str):
         """
         POST /model/{model_id}/invoke -> verify Bedrock format response.
         """
-        model_id = TEST_MODEL.replace("/", "%2F")  # URL encode if needed
+        model_id = test_model.replace("/", "%2F")  # URL encode if needed
 
         response = client.post(
             f"/model/{model_id}/invoke",
@@ -311,11 +378,11 @@ class TestProxyBedrock:
         # Verify Bedrock response structure
         assert "content" in data or "completion" in data, f"Unexpected response: {data}"
 
-    def test_model_invoke_with_response_stream(self, client: httpx.Client):
+    def test_model_invoke_with_response_stream(self, client: httpx.Client, test_model: str):
         """
         POST /model/{model_id}/invoke-with-response-stream -> verify streaming SSE.
         """
-        model_id = TEST_MODEL.replace("/", "%2F")
+        model_id = test_model.replace("/", "%2F")
 
         with client.stream(
             "POST",
@@ -332,14 +399,14 @@ class TestProxyBedrock:
             chunks = list(response.iter_lines())
             assert len(chunks) > 0, "No streaming chunks received"
 
-    def test_bedrock_invoke_passthrough(self, client: httpx.Client):
+    def test_bedrock_invoke_passthrough(self, client: httpx.Client, test_model: str):
         """
         POST /bedrock/invoke -> verify pass-through works.
         """
         response = client.post(
             "/bedrock/invoke",
             json={
-                "modelId": TEST_MODEL,
+                "modelId": test_model,
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": 100,
                 "messages": [{"role": "user", "content": "Respond with OK."}],
@@ -348,14 +415,14 @@ class TestProxyBedrock:
         )
         assert response.status_code == 200, f"Response: {response.text}"
 
-    def test_v1_chat_completions_openai_format(self, client: httpx.Client):
+    def test_v1_chat_completions_openai_format(self, client: httpx.Client, test_model: str):
         """
         POST /v1/chat/completions (OpenAI format) -> verify OpenAI format response.
         """
         response = client.post(
             "/v1/chat/completions",
             json={
-                "model": TEST_MODEL,
+                "model": test_model,
                 "max_tokens": 100,
                 "messages": [{"role": "user", "content": "Say hi."}],
             },
@@ -380,20 +447,21 @@ class TestProxyBedrock:
         # Verify response structure (OpenAI format)
         assert "data" in data or isinstance(data, list), f"Unexpected response: {data}"
 
-    def test_v1_messages_count_tokens(self, client: httpx.Client):
+    def test_v1_messages_count_tokens(self, client: httpx.Client, test_model: str):
         """
         POST /v1/messages/count_tokens -> verify token counting.
         """
         response = client.post(
             "/v1/messages/count_tokens",
             json={
-                "model": TEST_MODEL,
+                "model": test_model,
                 "messages": [{"role": "user", "content": "Hello, world!"}],
             },
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
         assert "input_tokens" in data
+        assert data["input_tokens"] > 0
 
 
 # =============================================================================
@@ -404,11 +472,11 @@ class TestProxyBedrock:
 class TestAdminAPI:
     """Test admin API endpoints with real database calls."""
 
-    def test_list_organizations(self, client: httpx.Client):
+    def test_list_organizations(self, admin_client: httpx.Client):
         """
         GET /admin/organizations -> verify returns list (tests DB connection).
         """
-        response = client.get("/admin/organizations")
+        response = admin_client.get("/admin/organizations")
         assert response.status_code == 200
         data = response.json()
 
@@ -420,21 +488,21 @@ class TestAdminAPI:
         else:
             pytest.fail(f"Unexpected response format: {data}")
 
-    def test_get_organization(self, client: httpx.Client, test_org_id: str):
+    def test_get_organization(self, admin_client: httpx.Client, test_org_id: str):
         """
         GET /admin/organizations/{org_id} -> verify organization details.
         """
-        response = client.get(f"/admin/organizations/{test_org_id}")
+        response = admin_client.get(f"/admin/organizations/{test_org_id}")
         assert response.status_code == 200
         data = response.json()
         assert "id" in data
         assert data["id"] == test_org_id
 
-    def test_list_departments(self, client: httpx.Client, test_org_id: str):
+    def test_list_departments(self, admin_client: httpx.Client, test_org_id: str):
         """
         GET /admin/organizations/{org_id}/departments -> verify returns list.
         """
-        response = client.get(f"/admin/organizations/{test_org_id}/departments")
+        response = admin_client.get(f"/admin/organizations/{test_org_id}/departments")
         assert response.status_code == 200
         data = response.json()
 
@@ -446,49 +514,49 @@ class TestAdminAPI:
         else:
             pytest.fail(f"Unexpected response format: {data}")
 
-    def test_get_usage_timeseries(self, client: httpx.Client, test_org_id: str):
+    def test_get_usage_timeseries(self, admin_client: httpx.Client, test_org_id: str):
         """
         GET /admin/organizations/{org_id}/usage/timeseries -> verify response structure.
         """
-        response = client.get(f"/admin/organizations/{test_org_id}/usage/timeseries")
+        response = admin_client.get(f"/admin/organizations/{test_org_id}/usage/timeseries")
         assert response.status_code == 200
         # Response structure varies - just verify it's valid JSON
         response.json()
 
-    def test_get_user_roles(self, client: httpx.Client):
+    def test_get_user_roles(self, admin_client: httpx.Client):
         """
         GET /admin/users/roles -> verify returns role list.
         """
-        response = client.get("/admin/users/roles")
+        response = admin_client.get("/admin/users/roles")
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list) or "roles" in data
 
-    def test_get_my_chats(self, client: httpx.Client):
+    def test_get_my_chats(self, admin_client: httpx.Client):
         """
         GET /admin/users/me/chats -> verify returns chat list.
         """
-        response = client.get("/admin/users/me/chats")
+        response = admin_client.get("/admin/users/me/chats")
         assert response.status_code == 200
         data = response.json()
         # Response should be a list or paginated response
         assert isinstance(data, list) or isinstance(data, dict)
 
-    def test_get_org_dashboard(self, client: httpx.Client, test_org_id: str):
+    def test_get_org_dashboard(self, admin_client: httpx.Client, test_org_id: str):
         """
         GET /admin/dashboard/org/{org_id} -> verify dashboard data.
         """
-        response = client.get(f"/admin/dashboard/org/{test_org_id}")
+        response = admin_client.get(f"/admin/dashboard/org/{test_org_id}")
         assert response.status_code == 200
         data = response.json()
         # Dashboard should have some structure
         assert isinstance(data, dict)
 
-    def test_list_budgets(self, client: httpx.Client, test_org_id: str):
+    def test_list_budgets(self, admin_client: httpx.Client, test_org_id: str):
         """
         GET /admin/organizations/{org_id}/budgets -> verify returns list.
         """
-        response = client.get(f"/admin/organizations/{test_org_id}/budgets")
+        response = admin_client.get(f"/admin/organizations/{test_org_id}/budgets")
         assert response.status_code == 200
         data = response.json()
 
@@ -499,11 +567,11 @@ class TestAdminAPI:
         else:
             pytest.fail(f"Unexpected response format: {data}")
 
-    def test_list_ratelimits(self, client: httpx.Client, test_org_id: str):
+    def test_list_ratelimits(self, admin_client: httpx.Client, test_org_id: str):
         """
         GET /admin/organizations/{org_id}/ratelimits -> verify returns list.
         """
-        response = client.get(f"/admin/organizations/{test_org_id}/ratelimits")
+        response = admin_client.get(f"/admin/organizations/{test_org_id}/ratelimits")
         assert response.status_code == 200
         data = response.json()
 
@@ -520,60 +588,63 @@ class TestBudgetCRUD:
 
     def test_budget_crud_cycle(
         self,
-        client: httpx.Client,
+        admin_client: httpx.Client,
         test_org_id: str,
-        unique_id: str,
+        test_team_id: str,
         data_tracker: _TestDataTracker,
     ):
         """
         Full CRUD cycle for budgets: create -> read -> update -> delete.
         """
-        entity_id = f"test-entity-{unique_id}"
+        entity_id = test_team_id
         entity_type = "team"
         period_type = "monthly"
 
         # Record cleanup intent before the mutation, not after its response.
         data_tracker.add_budget(test_org_id, entity_type, entity_id, period_type)
         # CREATE
-        create_response = client.post(
+        create_response = admin_client.post(
             f"/admin/organizations/{test_org_id}/budgets",
             json={
                 "entity_type": entity_type,
                 "entity_id": entity_id,
                 "period_type": period_type,
-                "budget_amount": 1000.0,
-                "warning_threshold": 0.8,
-                "hard_limit": True,
+                "budget_amount_usd": 1000.0,
+                "enforcement_mode": "hard",
             },
         )
         assert create_response.status_code == 201, f"Create failed: {create_response.text}"
         created = create_response.json()
         assert created["entity_id"] == entity_id
+        assert Decimal(str(created["budget_amount_usd"])) == Decimal("1000")
 
         # READ
-        read_response = client.get(f"/admin/organizations/{test_org_id}/budget/{entity_type}/{entity_id}")
+        read_response = admin_client.get(f"/admin/organizations/{test_org_id}/budget/{entity_type}/{entity_id}")
         assert read_response.status_code == 200, f"Read failed: {read_response.text}"
         read_data = read_response.json()
-        # Handle potentially null response or list
-        if read_data:
-            if isinstance(read_data, list):
-                assert len(read_data) > 0
-            else:
-                assert read_data.get("entity_id") == entity_id or "budget_amount" in read_data
+        assert read_data["entity_id"] == entity_id
+        assert Decimal(str(read_data["budget_amount_usd"])) == Decimal("1000")
 
         # UPDATE
-        update_response = client.put(
+        update_response = admin_client.put(
             f"/admin/organizations/{test_org_id}/budget/{entity_type}/{entity_id}",
             json={
-                "budget_amount": 2000.0,
-                "warning_threshold": 0.9,
+                "budget_amount_usd": 2000.0,
+                "enforcement_mode": "soft",
             },
         )
         assert update_response.status_code == 200, f"Update failed: {update_response.text}"
+        read_response = admin_client.get(f"/admin/organizations/{test_org_id}/budget/{entity_type}/{entity_id}")
+        assert read_response.status_code == 200, read_response.text
+        assert Decimal(str(read_response.json()["budget_amount_usd"])) == Decimal("2000")
+        assert read_response.json()["enforcement_mode"] == "soft"
 
         # DELETE
-        delete_response = client.delete(f"/admin/organizations/{test_org_id}/budget/{entity_type}/{entity_id}/{period_type}")
+        delete_response = admin_client.delete(f"/admin/organizations/{test_org_id}/budget/{entity_type}/{entity_id}/{period_type}")
         assert delete_response.status_code == 204, f"Delete failed: {delete_response.text}"
+        read_response = admin_client.get(f"/admin/organizations/{test_org_id}/budget/{entity_type}/{entity_id}")
+        assert read_response.status_code == 200, read_response.text
+        assert read_response.json() is None
 
 
 class TestRateLimitCRUD:
@@ -581,26 +652,26 @@ class TestRateLimitCRUD:
 
     def test_ratelimit_crud_cycle(
         self,
-        client: httpx.Client,
+        admin_client: httpx.Client,
         test_org_id: str,
-        unique_id: str,
+        test_team_id: str,
         data_tracker: _TestDataTracker,
     ):
         """
         Full CRUD cycle for rate limits: create -> read -> update -> delete.
         """
-        entity_id = f"test-entity-{unique_id}"
+        entity_id = test_team_id
         entity_type = "team"
 
         data_tracker.add_ratelimit(test_org_id, entity_type, entity_id)
         # CREATE
-        create_response = client.post(
+        create_response = admin_client.post(
             f"/admin/organizations/{test_org_id}/ratelimits",
             json={
                 "entity_type": entity_type,
                 "entity_id": entity_id,
-                "requests_per_minute": 100,
-                "tokens_per_minute": 10000,
+                "rpm": 100,
+                "tpm": 10000,
                 "concurrent_requests": 10,
             },
         )
@@ -609,25 +680,33 @@ class TestRateLimitCRUD:
         assert created["entity_id"] == entity_id
 
         # READ
-        read_response = client.get(f"/admin/organizations/{test_org_id}/ratelimit/{entity_type}/{entity_id}")
+        read_response = admin_client.get(f"/admin/organizations/{test_org_id}/ratelimit/{entity_type}/{entity_id}")
         assert read_response.status_code == 200, f"Read failed: {read_response.text}"
         read_data = read_response.json()
-        if read_data:
-            assert read_data.get("entity_id") == entity_id or "requests_per_minute" in read_data
+        assert read_data["entity_id"] == entity_id
+        assert read_data["rpm"] == 100
+        assert read_data["tpm"] == 10000
 
         # UPDATE
-        update_response = client.put(
+        update_response = admin_client.put(
             f"/admin/organizations/{test_org_id}/ratelimit/{entity_type}/{entity_id}",
             json={
-                "requests_per_minute": 200,
-                "tokens_per_minute": 20000,
+                "rpm": 200,
+                "tpm": 20000,
             },
         )
         assert update_response.status_code == 200, f"Update failed: {update_response.text}"
+        read_response = admin_client.get(f"/admin/organizations/{test_org_id}/ratelimit/{entity_type}/{entity_id}")
+        assert read_response.status_code == 200, read_response.text
+        assert read_response.json()["rpm"] == 200
+        assert read_response.json()["tpm"] == 20000
 
         # DELETE
-        delete_response = client.delete(f"/admin/organizations/{test_org_id}/ratelimit/{entity_type}/{entity_id}")
+        delete_response = admin_client.delete(f"/admin/organizations/{test_org_id}/ratelimit/{entity_type}/{entity_id}")
         assert delete_response.status_code == 204, f"Delete failed: {delete_response.text}"
+        read_response = admin_client.get(f"/admin/organizations/{test_org_id}/ratelimit/{entity_type}/{entity_id}")
+        assert read_response.status_code == 200, read_response.text
+        assert read_response.json() is None
 
 
 # =============================================================================
@@ -637,6 +716,10 @@ class TestRateLimitCRUD:
 
 class TestAuthentication:
     """Test authentication and authorization."""
+
+    def test_machine_cannot_read_administrator_organizations(self, client: httpx.Client):
+        response = client.get("/admin/organizations")
+        assert response.status_code == 403
 
     def test_request_without_token_returns_401(self, unauthenticated_client: httpx.Client):
         """Request without token -> 401."""
@@ -697,14 +780,14 @@ class TestDatabaseConnectivity:
     These verify the RDS IAM auth connection doesn't fail under load.
     """
 
-    def test_sequential_admin_calls_with_gaps(self, client: httpx.Client):
+    def test_sequential_admin_calls_with_gaps(self, admin_client: httpx.Client):
         """
         Make 10 sequential admin API calls with 2-second gaps.
 
         All should return 200 - tests connection pool stability.
         """
         for i in range(10):
-            response = client.get("/admin/organizations")
+            response = admin_client.get("/admin/organizations")
             assert response.status_code == 200, f"Request {i + 1} failed: {response.text}"
 
             # Check for PAM authentication errors in response
@@ -715,7 +798,7 @@ class TestDatabaseConnectivity:
                 time.sleep(2)
 
     @pytest.mark.asyncio
-    async def test_concurrent_requests(self, auth_token: str):
+    async def test_concurrent_requests(self, admin_auth_token: str):
         """
         Make 20 concurrent requests using asyncio.
 
@@ -723,12 +806,12 @@ class TestDatabaseConnectivity:
         """
         async with httpx.AsyncClient(
             base_url=BASE_URL,
-            headers={"Authorization": f"Bearer {auth_token}"},
+            headers={"Authorization": f"Bearer {admin_auth_token}"},
             timeout=REQUEST_TIMEOUT,
-        ) as client:
+        ) as admin_client:
 
             async def make_request(i: int) -> tuple[int, int, str]:
-                response = await client.get("/admin/organizations")
+                response = await admin_client.get("/admin/organizations")
                 return i, response.status_code, response.text
 
             # Launch 20 concurrent requests
@@ -772,17 +855,17 @@ class TestValidation:
 
     def test_invalid_entity_type_returns_422(
         self,
-        client: httpx.Client,
+        admin_client: httpx.Client,
         test_org_id: str,
     ):
         """Invalid entity_type values -> 422 or 400."""
-        response = client.get(f"/admin/organizations/{test_org_id}/budget/invalid_type/some-id")
+        response = admin_client.get(f"/admin/organizations/{test_org_id}/budget/invalid_type/some-id")
         # Should be 422 (validation error) or 400 (bad request)
         assert response.status_code in [400, 422, 404], f"Unexpected status: {response.status_code}"
 
     def test_negative_budget_amount_returns_422(
         self,
-        client: httpx.Client,
+        admin_client: httpx.Client,
         test_org_id: str,
         unique_id: str,
         data_tracker: _TestDataTracker,
@@ -790,26 +873,26 @@ class TestValidation:
         """Negative budget amounts -> 422."""
         entity_id = f"test-validation-{unique_id}"
         data_tracker.add_budget(test_org_id, "team", entity_id, "monthly")
-        response = client.post(
+        response = admin_client.post(
             f"/admin/organizations/{test_org_id}/budgets",
             json={
                 "entity_type": "team",
                 "entity_id": entity_id,
                 "period_type": "monthly",
-                "budget_amount": -100.0,  # Negative amount
+                "budget_amount_usd": -100.0,  # Negative amount
             },
         )
         # Should reject negative amounts
         assert response.status_code in [400, 422], f"Unexpected status: {response.status_code}"
 
-    def test_nonexistent_org_id_handling(self, client: httpx.Client):
+    def test_nonexistent_org_id_handling(self, admin_client: httpx.Client):
         """
         Non-existent org_id handling.
 
         The API should return 404 for non-existent orgs.
         Note: CloudFront may return 200 with HTML (SPA fallback) for some paths.
         """
-        response = client.get("/admin/organizations/nonexistent-org-12345")
+        response = admin_client.get("/admin/organizations/nonexistent-org-12345")
 
         # API should return 404, but CloudFront may return 200 with HTML fallback
         if response.status_code == 200:
@@ -835,26 +918,26 @@ class TestValidation:
 class TestUsageAPI:
     """Test usage tracking endpoints."""
 
-    def test_get_usage_summary(self, client: httpx.Client):
+    def test_get_usage_summary(self, admin_client: httpx.Client):
         """GET /usage/summary -> verify response structure."""
-        response = client.get("/usage/summary")
+        response = admin_client.get("/usage/summary")
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, dict)
 
-    def test_get_usage_by_model(self, client: httpx.Client):
+    def test_get_usage_by_model(self, admin_client: httpx.Client):
         """GET /usage/models -> verify returns model usage."""
-        response = client.get("/usage/models")
+        response = admin_client.get("/usage/models")
         assert response.status_code == 200
 
-    def test_get_usage_timeline(self, client: httpx.Client):
+    def test_get_usage_timeline(self, admin_client: httpx.Client):
         """GET /usage/timeline -> verify timeline data."""
-        response = client.get("/usage/timeline")
+        response = admin_client.get("/usage/timeline")
         assert response.status_code == 200
 
-    def test_get_usage_logs(self, client: httpx.Client, test_org_id: str):
+    def test_get_usage_logs(self, admin_client: httpx.Client, test_org_id: str):
         """GET /usage/logs -> verify returns logs (requires org_id param)."""
-        response = client.get(f"/usage/logs?org_id={test_org_id}")
+        response = admin_client.get(f"/usage/logs?org_id={test_org_id}")
         assert response.status_code == 200
 
 
@@ -866,14 +949,14 @@ class TestUsageAPI:
 class TestBudgetsAPI:
     """Test budgets API direct routes."""
 
-    def test_get_organization_budget_overview(self, client: httpx.Client):
+    def test_get_organization_budget_overview(self, admin_client: httpx.Client):
         """GET /budgets/organization/overview -> verify response."""
-        response = client.get("/budgets/organization/overview")
+        response = admin_client.get("/budgets/organization/overview")
         assert response.status_code == 200
 
-    def test_get_budget_alerts(self, client: httpx.Client):
+    def test_get_budget_alerts(self, admin_client: httpx.Client):
         """GET /budgets/organization/alerts -> verify returns alerts."""
-        response = client.get("/budgets/organization/alerts")
+        response = admin_client.get("/budgets/organization/alerts")
         assert response.status_code == 200
 
 
@@ -885,9 +968,9 @@ class TestBudgetsAPI:
 class TestRateLimitsAPI:
     """Test rate limits API direct routes."""
 
-    def test_list_rate_limits(self, client: httpx.Client):
+    def test_list_rate_limits(self, admin_client: httpx.Client):
         """GET /ratelimits -> verify returns list."""
-        response = client.get("/ratelimits")
+        response = admin_client.get("/ratelimits")
         assert response.status_code == 200
 
 
@@ -899,14 +982,14 @@ class TestRateLimitsAPI:
 class TestServiceAccounts:
     """Test service account endpoints."""
 
-    def test_list_service_accounts(self, client: httpx.Client):
+    def test_list_service_accounts(self, admin_client: httpx.Client):
         """GET /auth/service-accounts -> verify returns list."""
-        response = client.get("/auth/service-accounts")
+        response = admin_client.get("/auth/service-accounts")
         assert response.status_code == 200
 
-    def test_list_org_service_accounts(self, client: httpx.Client, test_org_id: str):
+    def test_list_org_service_accounts(self, admin_client: httpx.Client, test_org_id: str):
         """GET /admin/organizations/{org_id}/service-accounts -> verify returns list."""
-        response = client.get(f"/admin/organizations/{test_org_id}/service-accounts")
+        response = admin_client.get(f"/admin/organizations/{test_org_id}/service-accounts")
         assert response.status_code == 200
 
 
@@ -918,9 +1001,9 @@ class TestServiceAccounts:
 class TestAgentsAPI:
     """Test agent management endpoints."""
 
-    def test_list_agents(self, client: httpx.Client):
+    def test_list_agents(self, admin_client: httpx.Client):
         """GET /admin/agents -> verify returns list or appropriate error."""
-        response = client.get("/admin/agents")
+        response = admin_client.get("/admin/agents")
         # May return 200 with list, or 500 if Cognito integration not configured
         if response.status_code == 500:
             # Check if it's a Cognito configuration issue
@@ -942,9 +1025,9 @@ class TestAgentsAPI:
 class TestPoolStatus:
     """Test account pool status endpoints."""
 
-    def test_get_pool_status(self, client: httpx.Client):
+    def test_get_pool_status(self, admin_client: httpx.Client):
         """GET /admin/pool/status -> verify returns status."""
-        response = client.get("/admin/pool/status")
+        response = admin_client.get("/admin/pool/status")
         assert response.status_code == 200
 
 
@@ -956,9 +1039,9 @@ class TestPoolStatus:
 class TestAdminLogs:
     """Test admin log query endpoints."""
 
-    def test_query_logs(self, client: httpx.Client):
+    def test_query_logs(self, admin_client: httpx.Client):
         """GET /admin/logs -> verify returns logs or handles errors gracefully."""
-        response = client.get("/admin/logs")
+        response = admin_client.get("/admin/logs")
         # May return 200 with logs, or 500 if log storage not configured
         if response.status_code == 500:
             # Skip if there's a backend configuration issue

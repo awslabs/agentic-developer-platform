@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task (section 3.4)",
+  "allOf": [{"$ref": "envelope.schema.json"}],
+  "type": "object",
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "story_id": {"type": "string", "minLength": 1},
+    "executor_type": {"type": "string"},
+    "executor_id": {"type": "string"},
+    "session_id": {"type": "string"},
+    "agent_run_id": {"type": "string"},
+    "model_ids": {"type": "array", "items": {"type": "string"}},
+    "started_at": {"type": "string", "format": "date-time"},
+    "ended_at": {"type": "string", "format": "date-time"},
+    "active_minutes": {"type": "number", "minimum": 0},
+    "outcome": {"type": "string"},
+    "transcript_ref": {"type": "string"}
+  },
+  "required": ["task_id", "story_id"],
+  "unevaluatedProperties": false
+}

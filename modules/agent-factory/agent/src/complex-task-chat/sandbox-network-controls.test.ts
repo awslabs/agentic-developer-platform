@@ -1,11 +1,19 @@
-import { InClusterSandboxPodApi, SUPERVISOR_POD_EXPRESSION } from './sandbox-launcher';
+import {
+  InClusterSandboxPodApi, SUPERVISOR_POD_EXPRESSION, SANDBOX_ADMISSION_FINGERPRINT, CREW_ADMISSION_FINGERPRINT,
+  sandboxAdmissionFingerprint,
+} from './sandbox-launcher';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { type NetworkPolicySpec } from './sandbox-gateway-network';
 
 const yaml = require('js-yaml');
 const sandboxAdmission = yaml.loadAll(readFileSync(resolve(__dirname, '../../k8s/chat-sandbox-admission.yaml'), 'utf8'))[0];
+const crewAdmission = yaml.loadAll(readFileSync(resolve(__dirname, '../../k8s/chat-crew-pod-admission.yaml'), 'utf8'))[0];
 const gatewayEgress = yaml.load(readFileSync(resolve(__dirname, '../../k8s/chat-sandbox-gateway-egress.yaml'), 'utf8'));
+const crewIngress = yaml.load(readFileSync(resolve(__dirname, '../../k8s/chat-crew-pod-dashboard-ingress.yaml'), 'utf8'));
+const crewEgress = yaml.loadAll(readFileSync(resolve(__dirname, '../../k8s/chat-crew-pod-egress.yaml'), 'utf8'));
+const helperEgress = yaml.loadAll(readFileSync(resolve(__dirname, '../../k8s/chat-crew-helper-egress.yaml'), 'utf8'));
+const helperS3 = yaml.load(readFileSync(resolve(__dirname, '../../k8s/chat-crew-helper-s3-egress.yaml'), 'utf8'));
 import { buildSandboxPod } from './sandbox-pod';
 import { gatewayBinding, gatewayCa } from './sandbox-gateway.fixture';
 
@@ -15,6 +23,7 @@ const assignment = {
   gatewayUrl: 'https://gateway.example.test',
 };
 const template = buildSandboxPod(assignment, gatewayBinding);
+const crewTemplate = buildSandboxPod({ ...assignment, sessionId: 'session-a', sessionMode: 'persistent', ownerKey: 'a'.repeat(52), runBindingId: '00000000-0000-4000-8000-000000000001' }, gatewayBinding);
 
 type Policy = { metadata: { name: string }; spec: NetworkPolicySpec };
 
@@ -22,6 +31,10 @@ function controls() {
   return {
     controller: { data: { 'enable-network-policy-controller': 'true' } },
     admission: { spec: structuredClone(sandboxAdmission.spec) },
+    crewAdmission: { spec: structuredClone(crewAdmission.spec) },
+    crewBinding: { spec: { policyName: 'adp-crew-pod-template', validationActions: ['Deny'], matchResources: {
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'adp-gateway-agents' } },
+    } } },
     binding: { spec: { policyName: 'adp-chat-sandbox-template', validationActions: ['Deny'], matchResources: {
       namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'adp-gateway-agents' } },
     } } },
@@ -37,6 +50,8 @@ function controls() {
     policies: { items: [
       { metadata: { name: 'chat-sandbox-deny' }, spec: { podSelector: { matchLabels: { 'adp.io/chat-sandbox': 'true' } }, policyTypes: ['Ingress', 'Egress'], egress: [], ingress: [] } },
       structuredClone(gatewayEgress),
+      ...structuredClone(crewEgress),
+      structuredClone(crewIngress),
     ] as Policy[] },
     gateway: {
       metadata: { name: 'chat-sandbox-gateway', namespace: 'adp-gateway' },
@@ -60,6 +75,8 @@ class FakeApi extends InClusterSandboxPodApi {
     if (path.endsWith('/configmaps/amazon-vpc-cni')) return this.state.controller;
     if (path.endsWith('/validatingadmissionpolicies/adp-chat-sandbox-template')) return this.state.admission;
     if (path.endsWith('/validatingadmissionpolicybindings/adp-chat-sandbox-template')) return this.state.binding;
+    if (path.endsWith('/validatingadmissionpolicies/adp-crew-pod-template')) return this.state.crewAdmission;
+    if (path.endsWith('/validatingadmissionpolicybindings/adp-crew-pod-template')) return this.state.crewBinding;
     if (path.endsWith('/validatingadmissionpolicies/adp-chat-supervisor-pods')) return this.state.supervisorAdmission;
     if (path.endsWith('/validatingadmissionpolicybindings/adp-chat-supervisor-pods')) return this.state.supervisorBinding;
     if (path.endsWith('/networkpolicies/chat-sandbox-deny')) return this.state.network;
@@ -75,6 +92,136 @@ test('launch requires admission, default deny, exact gateway egress and a dedica
   expect(api.calls).toContain('POST /api/v1/namespaces/adp-gateway-agents/pods');
   expect(api.calls.filter(call => call.startsWith('GET '))).toHaveLength(9);
   expect(api.calls.at(-1)).toBe('POST /api/v1/namespaces/adp-gateway-agents/pods');
+});
+
+test('pinned admission fingerprints are computed from the checked-in policy manifests', () => {
+  expect(sandboxAdmissionFingerprint(sandboxAdmission.spec)).toBe(SANDBOX_ADMISSION_FINGERPRINT);
+  expect(sandboxAdmissionFingerprint(crewAdmission.spec)).toBe(CREW_ADMISSION_FINGERPRINT);
+});
+
+// Kubernetes 1.35 reads policies and bindings applied without selectors back with
+// objectSelector/namespaceSelector set to {}; older servers omit the fields entirely.
+test.each([
+  { name: 'empty objects (Kubernetes 1.35 GET)', selector: {} },
+  { name: 'null', selector: null },
+])('accepts policy and binding selectors the API server defaulted to $name', async ({ selector }) => {
+  const state = controls();
+  for (const policy of [state.admission, state.supervisorAdmission, state.crewAdmission]) {
+    Object.assign(policy.spec.matchConstraints, { objectSelector: selector, namespaceSelector: selector, matchPolicy: 'Equivalent' });
+  }
+  for (const binding of [state.binding, state.supervisorBinding, state.crewBinding]) {
+    Object.assign(binding.spec.matchResources, { objectSelector: selector, matchPolicy: 'Equivalent' });
+  }
+  const api = new FakeApi(state);
+  await api.create(template);
+  await api.create(crewTemplate);
+  expect(api.calls.filter(call => call.startsWith('POST '))).toHaveLength(2);
+});
+
+test.each([
+  { name: 'object selector with labels', selector: { matchLabels: { app: 'not-crew' } } },
+  { name: 'object selector with an empty matchLabels key', selector: { matchLabels: {} } },
+  { name: 'object selector with matchExpressions', selector: { matchExpressions: [{ key: 'adp.io/crew-pod', operator: 'DoesNotExist' }] } },
+])('refuses a Crew admission policy whose $name narrows the match', async ({ selector }) => {
+  const state = controls();
+  state.crewAdmission.spec.matchConstraints.objectSelector = selector;
+  const api = new FakeApi(state);
+  await expect(api.create(crewTemplate)).rejects.toThrow('Chat Crew admission is not configured');
+  expect(api.calls).not.toContain('POST /api/v1/namespaces/adp-gateway-agents/pods');
+});
+
+test('Crew creation requires both pinned admission templates before POST', async () => {
+  const api = new FakeApi(controls());
+  await api.create(crewTemplate);
+  expect(api.calls).toContain('GET /apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies/adp-crew-pod-template');
+  expect(api.calls.at(-1)).toBe('POST /api/v1/namespaces/adp-gateway-agents/pods');
+});
+
+test.each([
+  { name: 'Crew admission fail-open', mutate: (state: Controls) => { state.crewAdmission.spec.failurePolicy = 'Ignore'; } },
+  { name: 'Crew admission relaxed', mutate: (state: Controls) => { state.crewAdmission.spec.validations[0].expression = 'true'; } },
+  { name: 'Crew binding is not Deny', mutate: (state: Controls) => { state.crewBinding.spec.validationActions = ['Warn']; } },
+  { name: 'Crew binding selects another namespace', mutate: (state: Controls) => {
+    state.crewBinding.spec.matchResources.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] = 'other';
+  } },
+])('Crew creation refuses $name', async ({ mutate }) => {
+  const state = controls();
+  mutate(state);
+  const api = new FakeApi(state);
+  await expect(api.create(crewTemplate)).rejects.toThrow('Chat Crew admission is not configured');
+  expect(api.calls.some(call => call.startsWith('POST '))).toBe(false);
+});
+
+test.each([
+  { original: template, labels: { 'adp.io/crew-pod': 'true' } },
+  { original: template, serviceAccountName: 'adp-crew-pod' },
+  { original: crewTemplate, labels: { 'adp.io/chat-sandbox': 'true' } },
+  { original: crewTemplate, serviceAccountName: 'adp-chat-sandbox' },
+])('refuses substituted class identity %# before POST', async substitution => {
+  const pod = structuredClone(substitution.original);
+  Object.assign(pod.metadata.labels, substitution.labels);
+  Object.assign(pod.spec, substitution.serviceAccountName ? { serviceAccountName: substitution.serviceAccountName } : {});
+  const api = new FakeApi(controls());
+  await expect(api.create(pod)).rejects.toThrow('Chat pod workload class refused');
+  expect(api.calls.some(call => call.startsWith('POST '))).toBe(false);
+});
+
+test.each([
+  { name: 'Crew default deny removed', mutate: (state: Controls) => {
+    state.policies.items = state.policies.items.filter(policy => policy.metadata.name !== 'chat-crew-deny');
+  } },
+  { name: 'Crew gateway broadened to the internet', mutate: (state: Controls) => {
+    state.policies.items[3].spec.egress = [{ to: [{ ipBlock: { cidr: '0.0.0.0/0' } }] }];
+  } },
+  { name: 'Crew gateway port changed', mutate: (state: Controls) => {
+    state.policies.items[3].spec.egress = [{ ...crewEgress[1].spec.egress[0], ports: [{ protocol: 'TCP', port: 443 }] }];
+  } },
+  { name: 'Crew dashboard permits a foreign namespace', mutate: (state: Controls) => {
+    const rule = state.policies.items[4].spec.ingress as Array<{ from: Array<{ namespaceSelector: { matchLabels: Record<string, string> } }> }>;
+    rule[0].from[0].namespaceSelector.matchLabels['kubernetes.io/metadata.name'] = 'foreign';
+  } },
+  { name: 'Crew dashboard permits another port', mutate: (state: Controls) => {
+    const rule = state.policies.items[4].spec.ingress as Array<{ ports: Array<{ protocol: string; port: number }> }>;
+    rule[0].ports.push({ protocol: 'TCP', port: 9999 });
+  } },
+  { name: 'another policy widens Crew egress', mutate: (state: Controls) => {
+    state.policies.items.push({ metadata: { name: 'widen-crew' }, spec: {
+      podSelector: { matchLabels: { 'adp.io/crew-pod': 'true' } }, egress: [{}],
+    } });
+  } },
+  { name: 'another policy widens all egress', mutate: (state: Controls) => {
+    state.policies.items.push({ metadata: { name: 'widen-all' }, spec: { podSelector: {}, egress: [{}] } });
+  } },
+])('Crew creation refuses $name before POST', async ({ mutate }) => {
+  const state = controls();
+  mutate(state);
+  const api = new FakeApi(state);
+  await expect(api.create(crewTemplate)).rejects.toThrow('not configured');
+  expect(api.calls.some(call => call.startsWith('POST '))).toBe(false);
+});
+
+test('helper policy defaults to deny with scoped gateway, cluster DNS and opt-in private S3 egress', () => {
+  expect(helperEgress).toHaveLength(3);
+  expect(helperEgress[0].spec).toEqual({
+    podSelector: { matchLabels: { 'adp.io/crew-checkpoint-helper': 'true' } },
+    policyTypes: ['Ingress', 'Egress'], ingress: [], egress: [],
+  });
+  expect(helperEgress[1].spec).toEqual({
+    podSelector: helperEgress[0].spec.podSelector, policyTypes: ['Egress'],
+    egress: [{ to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'adp-gateway' } },
+      podSelector: { matchLabels: { 'app.kubernetes.io/name': 'chat-sandbox-gateway' } } }],
+    ports: [{ protocol: 'TCP', port: 8443 }] }],
+  });
+  expect(helperEgress[2].spec).toEqual({
+    podSelector: helperEgress[0].spec.podSelector, policyTypes: ['Egress'],
+    egress: [{ to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+      podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } } }],
+    ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] }],
+  });
+  expect(helperS3.spec).toEqual({ podSelector: helperEgress[0].spec.podSelector, policyTypes: ['Egress'],
+    egress: [{ to: [{ ipBlock: { cidr: 'REPLACE_WITH_APPROVED_S3_INTERFACE_IP/32' } }],
+      ports: [{ protocol: 'TCP', port: 443 }] }],
+  });
 });
 
 test('refuses a hollow sandbox admission policy before creating a pod', async () => {
@@ -98,9 +245,15 @@ test.each([
   { name: 'sandbox admission skips pod updates', mutate: (state: Controls) => { state.admission.spec.matchConstraints.resourceRules[0].operations = ['CREATE']; } },
   { name: 'sandbox admission excludes sandbox pods', mutate: (state: Controls) => { state.admission.spec.matchConstraints.excludeResourceRules = [{ apiGroups: [''], apiVersions: ['v1'], operations: ['CREATE'], resources: ['pods'] }]; } },
   { name: 'binding selectors omit sandbox pods', mutate: (state: Controls) => { (state.binding.spec.matchResources as Record<string, unknown>).objectSelector = { matchLabels: { app: 'not-sandbox' } }; } },
+  { name: 'binding object selector has an empty matchLabels key', mutate: (state: Controls) => { (state.binding.spec.matchResources as Record<string, unknown>).objectSelector = { matchLabels: {} }; } },
+  { name: 'sandbox admission namespace selector narrows the match', mutate: (state: Controls) => { state.admission.spec.matchConstraints.namespaceSelector = { matchLabels: { 'kubernetes.io/metadata.name': 'other' } }; } },
+  { name: 'sandbox admission object selector narrows the match', mutate: (state: Controls) => { state.admission.spec.matchConstraints.objectSelector = { matchExpressions: [{ key: 'adp.io/chat-sandbox', operator: 'DoesNotExist' }] }; } },
+  { name: 'supervisor admission object selector has keys', mutate: (state: Controls) => { Object.assign(state.supervisorAdmission.spec.matchConstraints, { objectSelector: { matchLabels: {} } }); } },
+  { name: 'supervisor admission namespace selector narrows the match', mutate: (state: Controls) => { Object.assign(state.supervisorAdmission.spec.matchConstraints, { namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'other' } } }); } },
   { name: 'supervisor binding selectors omit supervisor pods', mutate: (state: Controls) => { (state.supervisorBinding.spec.matchResources as Record<string, unknown>).objectSelector = { matchLabels: { app: 'not-sandbox' } }; } },
   { name: 'sandbox admission excludes its service account', mutate: (state: Controls) => { state.admission.spec.matchConditions.push({ name: 'skip', expression: 'false' }); } },
   { name: 'sandbox admission permits foreign identities', mutate: (state: Controls) => { state.admission.spec.validations[0].expression = 'true'; } },
+  { name: 'sandbox admission changes the reviewed deadline', mutate: (state: Controls) => { state.admission.spec.validations[1].expression = state.admission.spec.validations[1].expression.replace('activeDeadlineSeconds == 900', 'activeDeadlineSeconds == 901'); } },
   { name: 'sandbox admission permits foreign mounts', mutate: (state: Controls) => { state.admission.spec.validations[3].expression = 'true'; } },
   { name: 'sandbox admission permits injected environment', mutate: (state: Controls) => { state.admission.spec.validations[5].expression = 'true'; } },
   { name: 'binding does not deny', mutate: (state: Controls) => { state.binding.spec.validationActions = ['Audit']; } },
@@ -112,7 +265,7 @@ test.each([
   { name: 'another policy widens ingress', mutate: (state: Controls) => { state.policies.items.push({ metadata: { name: 'widen-inbound' }, spec: { podSelector: { matchLabels: {} }, ingress: [{}] } }); } },
   { name: 'deny policy not installed', mutate: (state: Controls) => { state.policies.items = []; } },
   { name: 'policy list is incomplete', mutate: (state: Controls) => { Object.assign(state.policies, { metadata: { continue: 'next-page' } }); } },
-  { name: 'gateway egress not installed', mutate: (state: Controls) => { state.policies.items.pop(); } },
+  { name: 'gateway egress not installed', mutate: (state: Controls) => { state.policies.items = state.policies.items.filter(policy => policy.metadata.name !== 'chat-sandbox-gateway-egress'); } },
   { name: 'gateway egress selects other pods', mutate: (state: Controls) => { state.policies.items[1].spec.podSelector = { matchLabels: { app: 'other' } }; } },
   { name: 'gateway egress does not enforce egress', mutate: (state: Controls) => { state.policies.items[1].spec.policyTypes = ['Ingress']; } },
   { name: 'gateway egress widens ingress', mutate: (state: Controls) => { state.policies.items[1].spec.ingress = [{}]; } },

@@ -74,6 +74,54 @@ def test_legacy_bold_scope_and_combined_geography_rows():
     assert len(parse_model_card(content, "openai.gpt-6-astra", templates, source_url="https://aws.example", verified_at=VERIFIED)) == 2
 
 
+@pytest.mark.parametrize("family,short_rate,long_rate", [("terra", "0.0027", "0.0054"), ("luna", "0.00027", "0.00054")])
+def test_govcloud_mantle_and_geo_rows_refresh_without_crossing_commercial_scope(family, short_rate, long_rate):
+    model = "openai.gpt-5.6-" + family
+    content = (FIXTURES / f"gpt-56-{family}-govcloud.md").read_bytes()
+    templates = tuple(
+        template(model, geography, context, region)
+        for geography, region in [("in_region", "us-east-1"), ("geo_cris", "us-east-1"), ("govcloud", "us-gov-east-1"), ("govcloud", "us-gov-west-1")]
+        for context in ("short", "long")
+    )
+    rows = parse_model_card(content, model, templates, source_url="https://aws.example", verified_at=VERIFIED)
+    assert len(rows) == len(templates)
+    assert {row.variant_key for row in rows} == {row.variant_key for row in templates}
+    for row in rows:
+        if row.geography == "govcloud":
+            expected = Decimal(short_rate if row.context_tier == "short" else long_rate)
+            assert row.input_price_per_1k_tokens == expected
+            assert row.cache_write_price_per_1k_tokens == expected * Decimal("1.25")
+            assert row.cache_read_price_per_1k_tokens == expected * Decimal("0.10")
+        else:
+            commercial = Decimal("0.0022" if family == "terra" else "0.00022")
+            assert row.input_price_per_1k_tokens == commercial * (1 if row.context_tier == "short" else 2)
+        assert row.verified_at == VERIFIED and row.source == "model_card"
+
+
+@pytest.mark.parametrize(
+    "mutation,message",
+    [
+        (
+            lambda text: text.replace("| Geo CRIS | $2.70 | $3.375 | $0.27 | $16.20 |", "| Geo CRIS | $3.00 | $3.75 | $0.30 | $18.00 |"),
+            "conflicting duplicate",
+        ),
+        (lambda text: text.replace("In-Region (bedrock-mantle)", "In-Region (unknown-endpoint)"), "unrecognized inference option"),
+        (lambda text: text.replace("| Geo CRIS | $2.70", "| Global CRIS | $2.70"), "unrecognized GovCloud inference mode"),
+    ],
+)
+def test_govcloud_endpoint_disagreement_or_unknown_mode_rejects_whole_source(mutation, message):
+    model = "openai.gpt-5.6-terra"
+    content = (FIXTURES / "gpt-56-terra-govcloud.md").read_text()
+    with pytest.raises(SourceValidationError, match=message):
+        parse_model_card(
+            mutation(content).encode(),
+            model,
+            (template(model, "govcloud", region="us-gov-east-1"),),
+            source_url="https://aws.example",
+            verified_at=VERIFIED,
+        )
+
+
 @pytest.mark.parametrize(
     "corruption",
     [
@@ -208,6 +256,26 @@ def test_astra_multi_tier_card_keeps_standard_rates_separate(global_label):
     with pytest.raises(SourceValidationError):
         parse_model_card(
             content.replace(b"$82.50 | $6.60", b"$82.51 | $6.60"),
+            "openai.gpt-6-astra",
+            templates,
+            source_url="https://aws.example",
+            verified_at=VERIFIED,
+        )
+
+
+def test_astra_card_accepts_30_minute_cache_write_heading():
+    content = (FIXTURES / "astra-multiple-tiers.md").read_bytes()
+    assert b"Input \xe2\x80\x94 30m cache write" in content
+    templates = tuple(template("openai.gpt-6-astra", g, c) for g in ("in_region", "geo_cris", "global_cris") for c in ("short", "long"))
+    renamed = content.replace(b"30m cache write", b"30-minute cache write")
+    rows = parse_model_card(renamed, "openai.gpt-6-astra", templates, source_url="https://aws.example", verified_at=VERIFIED)
+    baseline = parse_model_card(content, "openai.gpt-6-astra", templates, source_url="https://aws.example", verified_at=VERIFIED)
+    assert [(r.geography, r.context_tier, r.input_price_per_1k_tokens, r.cache_write_price_per_1k_tokens) for r in rows] == [
+        (r.geography, r.context_tier, r.input_price_per_1k_tokens, r.cache_write_price_per_1k_tokens) for r in baseline
+    ]
+    with pytest.raises(SourceValidationError, match="unrecognized pricing table columns"):
+        parse_model_card(
+            content.replace(b"30m cache write", b"5-minute cache write"),
             "openai.gpt-6-astra",
             templates,
             source_url="https://aws.example",

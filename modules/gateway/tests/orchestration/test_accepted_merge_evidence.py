@@ -104,6 +104,7 @@ async def test_owner_acceptance_preserves_provenance_and_observes_evidence(repos
     assert (state, attempts) == ("passed", 1)
     source = json.loads(decisions[-1].reason)["receipt"]["pull_requests"][0]
     assert source["accepted_merge_decision_id"] == identity
+    assert datetime.fromisoformat(source["accepted_merge_at"]).tzinfo is not None
     assert source["merge_operation_key"] is None and source["review_ref"] is None
     assert source["head_sha"] == ctx.head and source["merge_sha"] == "c" * 40
     ctx.provider.observe.assert_awaited_once()

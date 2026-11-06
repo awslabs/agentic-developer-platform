@@ -3,6 +3,13 @@ import { mentionsTask, parseLiveTasks } from '@/utils/liveTasks';
 import type { LiveExplanation } from '@/services/agentExplanations';
 const board = '**Workspace**\n- ☑ `code` WS-c1 — Create workspace\n- ▶ `test` WS-t1 — Check readiness (covers WS-c1)\n- ⛔ `infra` WS-i1 — Live check — Waiting for an account\n- ☐ `test` WS-t2 — Check membership';
 describe('live task board', () => {
+  it('reads the existing Claude TodoWrite board without fabricating IDs or partial totals', () => {
+    const text = '**1 of 3 tasks complete** (agent-reported)\n\n- ☑ Read source\n- ☐ Repair (in progress)\n- ☐ Verify';
+    expect(parseLiveTasks(text)?.map(task => task.status)).toEqual(['completed', 'in_progress', 'pending']);
+    expect(parseLiveTasks(text + '\nUnrecognized continuation')).toBeUndefined();
+    expect(parseLiveTasks(text.replace('of 3', 'of 4'))).toBeUndefined();
+    expect(parseLiveTasks(text + '\n[Live preview truncated; see final transcript.]')).toBeUndefined();
+  });
   it('keeps blocked tasks in totals and preserves their explanation', () => {
     const tasks = parseLiveTasks(board)!;
     expect(tasks).toHaveLength(4);

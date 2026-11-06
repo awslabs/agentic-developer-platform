@@ -285,8 +285,8 @@ async def test_the_server_tool_row_refuses_on_the_responses_route(tool):
 async def test_the_bound_is_independent_of_media_size_and_content():
     """The property that makes media admittable, and that reframes the reference refusal.
 
-    The bound counts nothing: it reserves the whole published context window. So a
-    tiny image, a 200KB image and plain text all price identically. This is worth
+    Media reserves the whole published context window. A tiny image and a 200KB
+    image retain the same ceiling as text, whose reservation may be smaller. This is worth
     pinning because it is the premise of two separate claims in the matrix — that
     admitting media adds no unbounded cost, and that the media_by_reference row is
     refused on authorization/fetcher grounds rather than on cost.
@@ -298,8 +298,9 @@ async def test_the_bound_is_independent_of_media_size_and_content():
     tiny = await quote_request(media("A" * 8), RESPONSES_PATH, now=NOW)
     huge = await quote_request(media("A" * 200_000), RESPONSES_PATH, now=NOW)
     text = await quote_request(responses(), RESPONSES_PATH, now=NOW)
-    assert tiny.total_usd == huge.total_usd == text.total_usd
-    assert tiny.max_input_tokens == huge.max_input_tokens == text.max_input_tokens
+    assert tiny.total_usd == huge.total_usd == text.maximum_cost_usd
+    assert text.total_usd <= text.maximum_cost_usd
+    assert tiny.max_input_tokens == huge.max_input_tokens >= text.max_input_tokens
 
 
 def test_the_reference_refusal_does_not_claim_a_cost_reason():

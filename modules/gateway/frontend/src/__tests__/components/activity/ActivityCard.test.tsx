@@ -63,6 +63,18 @@ function renderCard(props: Partial<ActivityCardProps> = {}) {
 // ---------------------------------------------------------------------------
 
 describe('ActivityCard', () => {
+  it('shows an authorized tool estimate and its receipt without a run cost', async () => {
+    const user = userEvent.setup();
+    renderCard({ item: makeItem({
+      channel: 'tool', status: 'tool_authorized', topic: 'websearch.search', total_cost_usd: null,
+      estimated_cost_usd: 0.05, receipt_id: 'receipt-one', transcript_key: null,
+    }) });
+    expect(screen.getByText('Tool authorized')).toBeInTheDocument();
+    expect(screen.getByText('Est. $0.05')).toBeInTheDocument();
+    await user.click(screen.getByTestId('activity-card-toggle-inv-test-001'));
+    expect(screen.getByText('receipt-one')).toBeInTheDocument();
+  });
+
   it('renders primary info: topic, status, time, cost', () => {
     renderCard();
 

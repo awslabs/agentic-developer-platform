@@ -1,0 +1,18 @@
+openapi: 3.0.3
+info:
+  title: GitHub user connection tools
+  version: '1.0'
+servers:
+  - url: https://api.github.com
+paths:
+  /user:
+    get:
+      operationId: get_user
+      description: Read the connected GitHub user's profile.
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                type: object

@@ -83,7 +83,12 @@ from uuid import uuid4
 
 from .admission import DELIVERABLE_RESERVATION_STATES
 from .execution_plan import PlanProgress, confirmed_plan_progress
-from .identity import TERMINAL_STATES, ContractViolation, OperationState
+from .identity import (
+    TERMINAL_STATES,
+    ContractViolation,
+    OperationRefused,
+    OperationState,
+)
 from .store import Connection
 
 __all__ = [
@@ -515,15 +520,24 @@ async def _acquire(
     # The approved runtime ceiling for this attempt. Read from the consumption row
     # rather than taken as a parameter: the limit that matters is the one a human
     # approved, and a caller-supplied ceiling would let the executor grant itself more
-    # runtime than the envelope allows.
-    max_runtime = await connection.fetchval(
+    # runtime than the envelope allows. A separately authorized bootstrap retry
+    # may have an immutable runtime amendment; it never edits this consumption.
+    paid = await connection.fetchrow(
         """
-        SELECT max_runtime_seconds FROM harness_approval_consumption
+        SELECT * FROM harness_approval_consumption
          WHERE operation_id = $1 AND reservation_state = ANY($2::text[])
         """,
         operation_id,
         list(DELIVERABLE_RESERVATION_STATES),
     )
+    from .bootstrap_runtime_authorization import execution_runtime
+
+    try:
+        max_runtime, runtime_authority_deadline = await execution_runtime(
+            connection, paid
+        )
+    except OperationRefused as error:
+        raise LeaseRefused(LeaseRefusal.RECOVERY_REQUIRED, str(error)) from error
 
     # (4) Serialize the capacity check per tenant, then count. Excludes this operation,
     # so re-acquiring a lapsed lease for work already in flight is never refused for
@@ -571,8 +585,10 @@ async def _acquire(
         )
         VALUES (
             $1, $2, $3, 1, $4, $5,
-            clock_timestamp() + ($6 || ' seconds')::interval, clock_timestamp(),
-            clock_timestamp() + ($7 || ' seconds')::interval, 1, $8
+            LEAST(clock_timestamp() + ($6 || ' seconds')::interval,
+                  $9::timestamptz), clock_timestamp(),
+            LEAST(clock_timestamp() + ($7 || ' seconds')::interval,
+                  $9::timestamptz), 1, $8
         )
         ON CONFLICT (operation_id) DO UPDATE
            SET fence_token = harness_operation_leases.fence_token + 1,
@@ -596,6 +612,7 @@ async def _acquire(
         str(seconds),
         str(int(max_runtime)),
         int(max_attempts),
+        runtime_authority_deadline,
     )
     if granted is None:
         # Zero rows means the ON CONFLICT predicate failed. Re-read to say WHICH of the
@@ -708,7 +725,7 @@ async def renew(
 
 
 async def release(connection: Connection, lease: ExecutionLease) -> bool:
-    """Release only a live, uncancelled attempt with no provider-call history.
+    """Release a live, uncancelled attempt with no unretried provider-call history.
 
     Effect-bearing attempts must settle or reconcile; clearing their holder would
     permit a second mutation. Lock operation then lease so cancellation and intent
@@ -718,13 +735,22 @@ async def release(connection: Connection, lease: ExecutionLease) -> bool:
         if not await lock_lease(connection, lease):
             return False
         safe = await connection.fetchval(
-            "SELECT cancel_requested_at IS NULL AND NOT cleanup_required AND "
-            "NOT EXISTS(SELECT 1 FROM harness_provider_call_intent WHERE "
-            "operation_id=$1) "
+            "SELECT cancel_requested_at IS NULL AND NOT cleanup_required "
             "FROM harness_operations WHERE operation_id=$1",
             lease.operation_id,
         )
         if not safe:
+            return False
+        from .provider_retry import active_call_rows
+
+        calls = await connection.fetch(
+            (
+                "SELECT idempotency_key FROM "
+                "harness_provider_call_intent WHERE operation_id=$1"
+            ),
+            lease.operation_id,
+        )
+        if await active_call_rows(connection, lease.operation_id, calls):
             return False
         tag = await connection.execute(
             "UPDATE harness_operation_leases SET holder=NULL, expires_at=NULL, "

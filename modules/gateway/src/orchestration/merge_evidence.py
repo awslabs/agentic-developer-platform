@@ -29,7 +29,16 @@ from .review_evidence import ReviewEvidence
 
 async def _app_review_opinion(
     client: httpx.AsyncClient, *, token: str, repo: str, pr_number: int, app_id: int, head: str
-) -> tuple[bool | None, str | None]:
+) -> tuple[bool | None, str | None, str | None]:
+    approval, state, updated_at, _login = await _app_review_opinion_with_login(
+        client, token=token, repo=repo, pr_number=pr_number, app_id=app_id, head=head
+    )
+    return approval, state, updated_at
+
+
+async def _app_review_opinion_with_login(
+    client: httpx.AsyncClient, *, token: str, repo: str, pr_number: int, app_id: int, head: str
+) -> tuple[bool | None, str | None, str | None, str | None]:
     """Latest Codex verdict published by the tenant's App, including a shared author.
 
     GitHub disallows formal self-approval. Authenticate the existing reviewer
@@ -39,6 +48,7 @@ async def _app_review_opinion(
     """
     latest = None
     latest_state = None
+    latest_login = None
     latest_key = ("", 0)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     for page in range(1, 11):
@@ -66,6 +76,7 @@ async def _app_review_opinion(
             if key <= latest_key:
                 continue
             latest_key = key
+            latest_login = (comment.get("user") or {}).get("login")
             match = re.match(
                 r"\A## agent-codex-reviewer — (APPROVE|FIXES PUSHED AND APPROVED)\n\n"
                 r"\*\*Reviewed head:\*\* `([0-9a-f]{40})`\n\*\*Blockers:\*\* 0\n\*\*Engine:\*\* [^\n]+\n",
@@ -82,8 +93,44 @@ async def _app_review_opinion(
                 else "unverified"
             )
         if "next" not in response.links:
-            return latest, latest_state
+            return latest, latest_state, latest_key[0] or None, latest_login
     raise RuntimeError("GitHub reviewer comment pagination exceeded the evidence bound")
+
+
+def own_reviewer_identities(*, approved_on_head, bot_authors, app_actor) -> set[str]:
+    """The logins that stand for the tenant's own reviewer harness on this head.
+
+    Either the App identified through its verdict comments (``app_actor``) or, when
+    it only reviews, a Bot author that formally approved this exact head.
+    """
+    own = {author for author in bot_authors if author in approved_on_head}
+    if app_actor:
+        own.add(app_actor)
+    return own
+
+
+def own_approval_on_head(*, approved_on_head, bot_authors, app_actor) -> bool:
+    """Whether the tenant's own reviewer identity formally approved this exact head."""
+    return bool(own_reviewer_identities(approved_on_head=approved_on_head, bot_authors=bot_authors, app_actor=app_actor) & set(approved_on_head))
+
+
+def foreign_change_requests(latest, *, approved_on_head, bot_authors, app_actor, review_decision, app_review_state) -> bool:
+    """Whether anyone other than the engine's own reviewer requested changes on the head.
+
+    The reviewer harness publishes its verdicts as Bot reviews and, when a required
+    check is red at that instant, records the merge controller's CI snapshot as a
+    later "changes requested" from the same identity. That identity is recognised
+    either through the App's verdict comments (``app_actor``) or, when it only
+    reviews, as a Bot author that also approved this exact head. A change request
+    from anyone else, or a provider decision no own request explains, is foreign.
+    """
+    own = own_reviewer_identities(approved_on_head=approved_on_head, bot_authors=bot_authors, app_actor=app_actor)
+    own_requested = any(state == "CHANGES_REQUESTED" and author in own for author, state in latest.items()) or (
+        app_review_state == "changes_requested"
+    )
+    if any(state == "CHANGES_REQUESTED" and author not in own for author, state in latest.items()):
+        return True
+    return review_decision == "CHANGES_REQUESTED" and not own_requested
 
 
 class GitHubEvidenceSource:
@@ -147,7 +194,7 @@ class GitHubEvidenceSource:
                 id url merged mergedAt headRefOid reviewDecision isDraft mergeable mergeStateStatus mergeCommit { oid }
                 author { login }
                 commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
-                reviews(last:100) { pageInfo { hasPreviousPage } nodes { state submittedAt commit { oid } author { login } } }
+                reviews(last:100) { pageInfo { hasPreviousPage } nodes { state submittedAt commit { oid } author { login __typename } } }
               } }
             }"""
             async with AsyncExitStack() as stack:
@@ -162,8 +209,10 @@ class GitHubEvidenceSource:
                 record = (payload.get("data", {}).get("repository") or {}).get("pullRequest") or {}
                 app_approval = None
                 app_review_state = None
+                app_review_updated_at = None
+                app_login = None
                 if record and not payload.get("errors"):
-                    app_approval, app_review_state = await _app_review_opinion(
+                    app_approval, app_review_state, app_review_updated_at, app_login = await _app_review_opinion_with_login(
                         client, token=token, repo=repo, pr_number=pr_number, app_id=app_id, head=record.get("headRefOid") or ""
                     )
             if payload.get("errors"):
@@ -177,13 +226,38 @@ class GitHubEvidenceSource:
             pr_author = ((record.get("author") or {}).get("login") or "").lower()
             reviews = record.get("reviews") or {}
             latest: dict[str, str] = {}
+            approved_on_head: set[str] = set()
+            bot_authors: set[str] = set()
+            review_times = [app_review_updated_at] if app_review_updated_at else []
+            review_times_complete = True
             for review in sorted(reviews.get("nodes", []), key=lambda item: item.get("submittedAt") or ""):
                 author = ((review.get("author") or {}).get("login") or "").lower()
                 state = review.get("state")
+                if author and (review.get("author") or {}).get("__typename") == "Bot":
+                    bot_authors.add(author)
+                if author and state == "APPROVED" and ((review.get("commit") or {}).get("oid") or "") == head:
+                    approved_on_head.add(author)
                 if author not in {"", pr_author} and state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+                    if review.get("submittedAt"):
+                        review_times.append(review["submittedAt"])
+                    else:
+                        review_times_complete = False
                     # A later contrary opinion withdraws an earlier approval,
                     # including when the later review describes another head.
                     latest[author] = state if ((review.get("commit") or {}).get("oid") or "") == head else "STALE"
+            # Which current-head change requests come from someone other than the
+            # tenant's own reviewer App. GitHub refuses to dismiss a review on a
+            # merged PR, so the App's standing CI snapshot would otherwise outlive the
+            # engine's recorded approval of the exact merged head forever (#7639).
+            app_actor = (app_login or "").lower().removesuffix("[bot]")
+            foreign_changes_requested = foreign_change_requests(
+                latest,
+                approved_on_head=approved_on_head,
+                bot_authors=bot_authors,
+                app_actor=app_actor,
+                review_decision=record.get("reviewDecision"),
+                app_review_state=app_review_state,
+            )
             review_approved = (
                 not (reviews.get("pageInfo") or {}).get("hasPreviousPage", False)
                 and (app_approval is True or "APPROVED" in latest.values())
@@ -221,6 +295,13 @@ class GitHubEvidenceSource:
                 provider_pr_node_id=record.get("id"),
                 checks_state=rollup.get("state") or "MISSING",
                 review_state=review_state,
+                foreign_changes_requested=foreign_changes_requested,
+                own_approval_on_head=own_approval_on_head(approved_on_head=approved_on_head, bot_authors=bot_authors, app_actor=app_actor),
+                review_updated_at=(
+                    max(review_times, default=None)
+                    if review_times_complete and not (reviews.get("pageInfo") or {}).get("hasPreviousPage", False)
+                    else None
+                ),
                 draft=bool(record.get("isDraft")),
                 mergeable=record.get("mergeable"),
                 merge_state=record.get("mergeStateStatus"),
@@ -323,6 +404,7 @@ class CheckEvidence:
     state: str
     provider_id: int
     source: str
+    check_suite_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -355,6 +437,8 @@ class SourceEvidence:
     url: str
     observed_at: datetime
     payload_sha256: str
+    # A typed comparison projection may accompany, never replace, the raw audit digest.
+    semantic_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -419,6 +503,61 @@ _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 MAX_PAGES = 10
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 READ_PERMISSIONS = {"contents": "read", "pull_requests": "read", "checks": "read", "statuses": "read", "administration": "read", "metadata": "read"}
+SEMANTIC_SOURCE_KINDS = frozenset(
+    {
+        "repository_settings",
+        "pull_request",
+        "pull_request_recheck",
+        "base_branch",
+        "base_branch_recheck",
+        "branch_rules",
+        "branch_protection",
+        "rules_capability_verification",
+        "check_runs",
+        "statuses",
+        "reviews",
+        "review_requirements",
+    }
+)
+
+# GitHub embeds live repository metadata in both PR refs. These exact leaves
+# describe a temporary clone credential or unrelated repository activity, not
+# the PR's identity or merge authority. Keep every other field, including unknown
+# fields, permissions, visibility, merge settings and branch/commit identities.
+_REPOSITORY_ACTIVITY_FIELDS = frozenset(
+    {
+        "temp_clone_token",
+        "pushed_at",
+        "updated_at",
+        "size",
+        "open_issues",
+        "open_issues_count",
+        "stargazers_count",
+        "watchers",
+        "watchers_count",
+        "forks",
+        "forks_count",
+        "network_count",
+        "subscribers_count",
+    }
+)
+
+
+def _canonical_digest(payload):
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _pull_request_semantic_digest(payload):
+    """Canonical PR evidence, excluding only known embedded repository noise."""
+    contract = dict(_object(payload))
+    for side in ("head", "base"):
+        ref = contract.get(side)
+        if isinstance(ref, dict) and isinstance(ref.get("repo"), dict):
+            contract[side] = {
+                **ref,
+                "repo": {key: value for key, value in ref["repo"].items() if key not in _REPOSITORY_ACTIVITY_FIELDS},
+            }
+    return _canonical_digest(contract)
 
 
 def _refuse(reason=EligibilityReason.INCOMPLETE_OBSERVATION):
@@ -672,7 +811,8 @@ class GitHubMergeObserver:
         if response.status_code != 200:
             if rules and response.status_code == 403 and len(response.content) <= MAX_RESPONSE_BYTES:
                 try:
-                    message = response.json().get("message")
+                    body = response.json()
+                    message = body.get("message")
                 except (ValueError, AttributeError):
                     message = None
                 if message in {
@@ -680,7 +820,9 @@ class GitHubMergeObserver:
                     "Upgrade to GitHub Team or make this repository public to enable this feature.",
                 }:
                     self.rules_capability_unavailable = True
-                    self.sources.append(SourceEvidence(kind, url, self.clock(), hashlib.sha256(response.content).hexdigest()))
+                    self.sources.append(
+                        SourceEvidence(kind, url, self.clock(), hashlib.sha256(response.content).hexdigest(), _canonical_digest(body))
+                    )
             _refuse(EligibilityReason.RULES_UNAVAILABLE if rules else EligibilityReason.PROVIDER_UNAVAILABLE)
         if len(response.content) > MAX_RESPONSE_BYTES:
             _refuse()
@@ -688,7 +830,15 @@ class GitHubMergeObserver:
             body = response.json()
         except ValueError:
             _refuse()
-        self.sources.append(SourceEvidence(kind, url, self.clock(), hashlib.sha256(response.content).hexdigest()))
+        self.sources.append(
+            SourceEvidence(
+                kind,
+                url,
+                self.clock(),
+                hashlib.sha256(response.content).hexdigest(),
+                _pull_request_semantic_digest(body) if kind in {"pull_request", "pull_request_recheck"} else _canonical_digest(body),
+            )
+        )
         return body
 
     async def get(self, path, *, kind, params=None, rules=False, absent=False):
@@ -696,7 +846,13 @@ class GitHubMergeObserver:
         response = await self.client.get(url, headers=self.headers, params=params, follow_redirects=False)
         self.has_next_page = "next" in response.links
         if absent and response.status_code == 404:
-            self.sources.append(SourceEvidence(kind, url, self.clock(), hashlib.sha256(response.content).hexdigest()))
+            if len(response.content) > MAX_RESPONSE_BYTES:
+                _refuse()
+            try:
+                body = response.json()
+            except ValueError:
+                _refuse()
+            self.sources.append(SourceEvidence(kind, url, self.clock(), hashlib.sha256(response.content).hexdigest(), _canonical_digest(body)))
             return None
         return self._decode(response, kind=kind, url=url, rules=rules)
 
@@ -787,6 +943,20 @@ class GitHubMergeObserver:
         repository_settings = _object(await self.get(root, kind="repository_settings"))
         if repository_settings.get("id") != repository_id or _text(repository_settings.get("full_name")).lower() != repo.lower():
             _refuse(EligibilityReason.SCOPE_CHANGED)
+        # The full repository response contains unrelated mutable metadata and
+        # ephemeral credential fields. Bind the settings consumed below while
+        # retaining the original response digest as independent audit provenance.
+        # Presence matters: a read-only token may omit the optional REST flags.
+        repository_contract = {
+            key: repository_settings[key]
+            for key in ("id", "full_name", "allow_merge_commit", "allow_squash_merge", "allow_rebase_merge")
+            if key in repository_settings
+        }
+        repository_contract["full_name"] = repo.lower()
+        self.sources[-1] = replace(
+            self.sources[-1],
+            semantic_sha256=_canonical_digest(repository_contract),
+        )
         check_runs = await self.pages(f"{root}/commits/{head}/check-runs", kind="check_runs", key="check_runs", params={"filter": "latest"})
         statuses = await self.pages(f"{root}/commits/{head}/statuses", kind="statuses")
         reviews = await self.pages(f"{path}/reviews", kind="reviews")
@@ -889,7 +1059,8 @@ class GitHubMergeObserver:
 
     @staticmethod
     def _checks(check_runs, statuses, head):
-        latest: dict[tuple[str, int | None, str], CheckEvidence] = {}
+        checks: list[CheckEvidence] = []
+        latest_statuses: dict[str, CheckEvidence] = {}
         seen_checks = set()
         seen_statuses = set()
         for raw in check_runs:
@@ -898,6 +1069,7 @@ class GitHubMergeObserver:
                 _refuse(EligibilityReason.HEAD_CHANGED)
             name = _text(raw.get("name"))
             app_id = _integer(_object(raw.get("app")).get("id"), minimum=1)
+            suite_id = _integer(_object(raw.get("check_suite")).get("id"), minimum=1)
             provider_id = _integer(raw.get("id"), minimum=1)
             if provider_id in seen_checks:
                 _refuse()
@@ -906,10 +1078,12 @@ class GitHubMergeObserver:
             if status not in {"queued", "in_progress", "completed", "waiting", "pending", "requested"}:
                 _refuse()
             state = _text(raw.get("conclusion")) if status == "completed" else "pending"
-            item = CheckEvidence(name, app_id, state, provider_id, "check_run")
-            key = (name, app_id, "check_run")
-            if key not in latest or latest[key].provider_id < provider_id:
-                latest[key] = item
+            # #8173: the provider already answered filter=latest. A display name is not
+            # a check identity: different workflows, or two jobs in one suite,
+            # may use the same name. A larger ID proves neither a rerun nor
+            # supersession. Preserve every returned record so an unrelated green
+            # job cannot erase a failed or pending requirement.
+            checks.append(CheckEvidence(name, app_id, state, provider_id, "check_run", suite_id))
         for raw in statuses:
             raw = _object(raw)
             name = _text(raw.get("context"))
@@ -920,10 +1094,9 @@ class GitHubMergeObserver:
             if provider_id in seen_statuses:
                 _refuse()
             seen_statuses.add(provider_id)
-            key = (name, None, "status")
-            if key not in latest or latest[key].provider_id < provider_id:
-                latest[key] = CheckEvidence(name, None, state, provider_id, "status")
-        return tuple(latest.values())
+            if name not in latest_statuses or latest_statuses[name].provider_id < provider_id:
+                latest_statuses[name] = CheckEvidence(name, None, state, provider_id, "status")
+        return (*checks, *latest_statuses.values())
 
     @staticmethod
     def _reviews(reviews):
@@ -1009,6 +1182,14 @@ async def observe_merge_eligibility(
         binding = await active_binding_for_node(session, org_id=identity.org_id, node_id=identity.node_id, attempt=node.attempts)
         if completion_candidate(binding) is not None or not binding_scope_matches(binding, node):
             _refuse(EligibilityReason.SCOPE_CHANGED)
+        from .accepted_node import requires_verified_repository_connection
+
+        requires_connection = await requires_verified_repository_connection(session, node)
+        if (node.repository_identity or requires_connection) and (
+            node.provider_repository_id != binding.provider_repository_id
+            or (requires_connection and (node.repository_connection or {}).get("installation_id") != binding.installation_id)
+        ):
+            _refuse(EligibilityReason.SCOPE_CHANGED)
         inputs = await load_in_force_policy(session, org_id=identity.org_id, flow_id=execution.flow_id)
         if inputs.refusal or inputs.policy is None or inputs.plan_version != identity.accepted_plan_version:
             _refuse(EligibilityReason.AUTHORITY_UNAVAILABLE)
@@ -1044,7 +1225,9 @@ async def observe_merge_eligibility(
             or result.authority.claim_generation != identity.claim_generation
             or result.authority.accepted_plan_version != identity.accepted_plan_version
             or result.repository.provider_repository_id != binding.provider_repository_id
+            or result.repository.repo.casefold() != binding.repo.casefold()
             or result.subject.provider_pr_node_id != binding.provider_pr_node_id
+            or result.subject.pr_number != binding.pr_number
             or review.repo != binding.repo
             or review.pr_number != binding.pr_number
         ):
@@ -1056,9 +1239,63 @@ async def observe_merge_eligibility(
         decision = await authorized(execution, node, flow, binding, inputs)
         if not decision.permitted:
             return blocked(EligibilityReason.AUTHORITY_DENIED, decision.reason.value)
-        installation = await resolve_installation_id(session, org_id=identity.org_id)
-        if not installation or binding.installation_id != installation:
-            _refuse(EligibilityReason.SCOPE_CHANGED)
+        from .accepted_node import accepted_node_contract, requires_verified_repository_connection
+
+        if await requires_verified_repository_connection(session, node):
+            from .evaluation_correction_state import validate_correction
+            from .repository_binding import RepositoryBindingError, resolve_story_repository
+            from .review_cycle import CycleBlockedError
+
+            try:
+                correction = await validate_correction(session, node)
+            except (CycleBlockedError, KeyError, TypeError, ValueError):
+                _refuse(EligibilityReason.SCOPE_CHANGED)
+            source = correction.detail.get("source_authorization") if correction is not None else None
+            if source is not None:
+                if (binding.repo, binding.provider_repository_id, binding.installation_id) != (
+                    source["repository"],
+                    source["provider_repository_id"],
+                    source["installation_id"],
+                ):
+                    _refuse(EligibilityReason.SCOPE_CHANGED)
+                repository_name = source["repository"]
+                permitted_names = None
+            else:
+                contract = await accepted_node_contract(session, node)
+                if (
+                    contract is None
+                    or contract.node.repository_identity != node.repository_identity
+                    or contract.node.provider_repository_id != binding.provider_repository_id
+                    or contract.node.repository_connection is None
+                    or contract.node.repository_connection.model_dump(mode="json") != node.repository_connection
+                ):
+                    _refuse(EligibilityReason.SCOPE_CHANGED)
+                repository_name = contract.node.repository_identity
+                permitted_names = tuple(contract.repository_ids) if contract.repository_ids else None
+            try:
+                verified = await resolve_story_repository(
+                    session,
+                    tenant_id=identity.org_id,
+                    name=repository_name,
+                    repository_id=binding.provider_repository_id,
+                    installation_id=binding.installation_id,
+                    issue=int(str(node.issue_ref).lstrip("#")),
+                    operation="merge",
+                    permitted_names=permitted_names,
+                )
+            except RepositoryBindingError:
+                _refuse(EligibilityReason.AUTHORITY_UNAVAILABLE)
+            if (
+                verified.full_name.casefold() != binding.repo.casefold()
+                or verified.repository_id != binding.provider_repository_id
+                or verified.installation_id != binding.installation_id
+            ):
+                _refuse(EligibilityReason.SCOPE_CHANGED)
+            installation = verified.installation_id
+        else:
+            installation = await resolve_installation_id(session, org_id=identity.org_id)
+            if not installation or binding.installation_id != installation:
+                _refuse(EligibilityReason.SCOPE_CHANGED)
         try:
             app_id, key = await resolve_tenant_app_credentials(identity.org_id)
             token, expires_at = await mint_installation_token_with_expiry(

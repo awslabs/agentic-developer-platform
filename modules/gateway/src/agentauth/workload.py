@@ -47,12 +47,17 @@ class VerifiedPod:
     image_digest: str | None = field(default=None, compare=False)
     run_hash: str | None = field(default=None, compare=False)
     session_hash: str | None = None
+    owner_key: str | None = None
 
 
 def _approved_chat_sandbox(metadata: dict, spec: dict, worker: dict, image_digest: str) -> bool:
     try:
         name = metadata.get("name", "")
-        label = metadata.get("labels", {}).get("adp.io/run-hash", "")
+        labels = metadata.get("labels", {})
+        # Full sha256 digests exceed the 63-byte label limit, so the trusted template carries them
+        # as annotations; the label form is refused so no pod can present a second identity.
+        annotations = metadata.get("annotations", {})
+        run_hash = annotations.get("adp.io/run-hash", "")
         gateway_url = os.environ.get("ADP_CHAT_DATA_URL", "")
         ca_configmap = os.environ.get("ADP_CHAT_SANDBOX_CA_CONFIGMAP", "")
         aliases = spec["hostAliases"]
@@ -78,9 +83,11 @@ def _approved_chat_sandbox(metadata: dict, spec: dict, worker: dict, image_diges
         pod_security = spec["securityContext"]
         return (
             bool(re.fullmatch(r"chat-turn-[a-f0-9]{12}-[a-z0-9]{1,20}", name))
-            and re.fullmatch(r"[a-f0-9]{64}", label) is not None
-            and name.startswith(f"chat-turn-{label[:12]}-")
-            and metadata.get("labels", {}).get("adp.io/chat-sandbox") == "true"
+            and re.fullmatch(r"[a-f0-9]{64}", run_hash) is not None
+            and name.startswith(f"chat-turn-{run_hash[:12]}-")
+            and "adp.io/run-hash" not in labels
+            and "adp.io/session-hash" not in labels
+            and labels.get("adp.io/chat-sandbox") == "true"
             and gateway_url == "https://chat-sandbox-gateway.adp-gateway.svc:8443"
             and re.fullmatch(r"chat-sandbox-gateway-ca-[a-f0-9]{16}", ca_configmap) is not None
             and any(gateway_ip in IPv4Network(network) for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
@@ -98,11 +105,8 @@ def _approved_chat_sandbox(metadata: dict, spec: dict, worker: dict, image_diges
             and spec.get("hostIPC", False) is False
             and spec.get("restartPolicy") == "Never"
             and (
-                (metadata.get("labels", {}).get("adp.io/session-hash") is None and spec.get("activeDeadlineSeconds") == 900)
-                or (
-                    re.fullmatch(r"[a-f0-9]{64}", metadata.get("labels", {}).get("adp.io/session-hash", "")) is not None
-                    and "activeDeadlineSeconds" not in spec
-                )
+                (annotations.get("adp.io/session-hash") is None and spec.get("activeDeadlineSeconds") == 900)
+                or (re.fullmatch(r"[a-f0-9]{64}", annotations.get("adp.io/session-hash", "")) is not None and "activeDeadlineSeconds" not in spec)
             )
             and not spec.get("initContainers")
             and not spec.get("ephemeralContainers")
@@ -167,6 +171,150 @@ def _approved_chat_sandbox(metadata: dict, spec: dict, worker: dict, image_diges
         return False
 
 
+def _approved_chat_crew(metadata: dict, spec: dict, worker: dict, image_digest: str) -> bool:
+    try:
+        labels = metadata["labels"]
+        annotations = metadata["annotations"]
+        owner_key = labels["adp.io/owner-key"]
+        run_hash = annotations["adp.io/run-hash"]
+        volumes = {volume["name"]: volume for volume in spec["volumes"]}
+        mounts = {mount["name"]: mount for mount in worker["volumeMounts"]}
+        env = {entry["name"]: entry for entry in worker["env"]}
+        ca_configmap = os.environ["ADP_CHAT_SANDBOX_CA_CONFIGMAP"]
+        aliases = spec["hostAliases"]
+        gateway_ip = IPv4Address(aliases[0]["ip"])
+        expected_env = {
+            "ADP_CHAT_MODEL_POLICY_ENABLED": "true",
+            "ADP_CHAT_DATA_ENABLED": "true",
+            "ADP_CHAT_DATA_URL": "https://chat-sandbox-gateway.adp-gateway.svc:8443",
+            "NODE_EXTRA_CA_CERTS": "/var/run/adp-chat-ca/ca.crt",
+            "CONTEXT_STRATEGY": "gateway",
+            "MEMORY_STRATEGY": "gateway",
+            "ARTIFACT_STRATEGY": "gateway",
+            "ADP_WORKLOAD_TOKEN_FILE": "/var/run/adp-model/token",
+            "CLAUDE_CONFIG_DIR": "/tmp/workspace/.claude",
+            "HOME": "/tmp/workspace",
+            "ADP_EXECUTOR": "kirocrew",
+            "KIROCREW_HOME": "/tmp/workspace",
+            "ADP_CREW_CUSTODY_PORT": "5477",
+            "ADP_CREW_SESSION_MAP": "/tmp/workspace/adp-crew-session-map",
+        }
+        if "ADP_CREW_SCOPE" in env:
+            expected_env["ADP_CREW_SCOPE"] = "user"
+        if "ADP_CREW_DASHBOARD_ORIGIN" in env:
+            origin = env["ADP_CREW_DASHBOARD_ORIGIN"].get("value", "")
+            parsed = urlsplit(origin)
+            if parsed.scheme != "https" or origin != f"https://{parsed.hostname}" or parsed.username or parsed.password:
+                return False
+            expected_env["ADP_CREW_DASHBOARD_ORIGIN"] = origin
+        return (
+            re.fullmatch(r"[a-f0-9]{52}", owner_key) is not None
+            and re.fullmatch(r"[a-f0-9]{64}", run_hash) is not None
+            and re.fullmatch(r"[a-f0-9]{64}", annotations["adp.io/session-hash"]) is not None
+            and "adp.io/run-hash" not in labels
+            and "adp.io/session-hash" not in labels
+            and metadata["name"].startswith(f"chat-turn-{run_hash[:12]}-")
+            and re.fullmatch(r"chat-turn-[a-f0-9]{12}-[a-z0-9]{1,20}", metadata["name"]) is not None
+            and labels["adp.io/crew-pod"] == "true"
+            and "adp.io/chat-sandbox" not in labels
+            and re.fullmatch(r"chat-sandbox-gateway-ca-[a-f0-9]{16}", ca_configmap) is not None
+            and spec["serviceAccountName"] == "adp-crew-pod"
+            and spec["automountServiceAccountToken"] is False
+            and spec["enableServiceLinks"] is False
+            and spec["shareProcessNamespace"] is False
+            and not any(spec.get(field, False) for field in ("hostNetwork", "hostPID", "hostIPC"))
+            and spec["restartPolicy"] == "Never"
+            and any(gateway_ip in IPv4Network(network) for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+            and aliases == [{"ip": str(gateway_ip), "hostnames": ["chat-sandbox-gateway.adp-gateway.svc"]}]
+            and "activeDeadlineSeconds" not in spec
+            and spec["terminationGracePeriodSeconds"] == 120
+            and not any(field in spec for field in ("initContainers", "ephemeralContainers", "imagePullSecrets"))
+            and spec["securityContext"]
+            == {
+                "runAsNonRoot": True,
+                "runAsUser": 10001,
+                "fsGroup": 10001,
+                "seccompProfile": {"type": "RuntimeDefault"},
+            }
+            and len(volumes) == len(spec["volumes"]) == 4
+            and volumes["crew-home"] == {"name": "crew-home", "persistentVolumeClaim": {"claimName": f"crew-home-{owner_key}"}}
+            and volumes["scratch"] == {"name": "scratch", "emptyDir": {"sizeLimit": "2Gi"}}
+            and volumes["sandbox-identity"]
+            == {
+                "name": "sandbox-identity",
+                "projected": {
+                    "defaultMode": 292,
+                    "sources": [
+                        {
+                            "serviceAccountToken": {
+                                "audience": BOOTSTRAP_AUDIENCE,
+                                "expirationSeconds": 600,
+                                "path": "token",
+                            }
+                        }
+                    ],
+                },
+            }
+            and volumes["gateway-ca"]
+            == {
+                "name": "gateway-ca",
+                "configMap": {
+                    "name": ca_configmap,
+                    "defaultMode": 292,
+                    "items": [{"key": "ca.crt", "path": "ca.crt"}],
+                },
+            }
+            and len(mounts) == len(worker["volumeMounts"]) == 4
+            and mounts
+            == {
+                "sandbox-identity": {"name": "sandbox-identity", "mountPath": "/var/run/adp-model", "readOnly": True},
+                "scratch": {"name": "scratch", "mountPath": "/tmp"},
+                "crew-home": {"name": "crew-home", "mountPath": "/tmp/workspace"},
+                "gateway-ca": {"name": "gateway-ca", "mountPath": "/var/run/adp-chat-ca", "readOnly": True},
+            }
+            and len(env) == len(worker["env"])
+            and set(env) == set(expected_env) | {"ADP_RUN_ID", "ADP_CREW_POD_IP"}
+            and all(env[name] == {"name": name, "value": value} for name, value in expected_env.items())
+            and env["ADP_CREW_POD_IP"] == {"name": "ADP_CREW_POD_IP", "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}}}
+            and env["ADP_RUN_ID"]["value"]
+            and re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", env["ADP_RUN_ID"]["value"]) is not None
+            and worker["image"].endswith("@" + image_digest)
+            and worker["imagePullPolicy"] == "IfNotPresent"
+            and worker["command"] == ["/app/chat-sandbox-entrypoint"]
+            and worker["lifecycle"]
+            == {
+                "preStop": {
+                    "exec": {
+                        "command": [
+                            "/bin/sh",
+                            "-c",
+                            "kill -TERM 1; while kill -0 1 2>/dev/null; do sleep 1; done",
+                        ]
+                    }
+                }
+            }
+            and worker["workingDir"] == "/tmp"
+            and worker["ports"] == [{"containerPort": 5476, "protocol": "TCP"}, {"containerPort": 5477, "protocol": "TCP"}]
+            and worker["resources"]
+            == {
+                "requests": {"cpu": "500m", "memory": "1Gi", "ephemeral-storage": "256Mi"},
+                "limits": {"cpu": "2", "memory": "6Gi", "ephemeral-storage": "4Gi"},
+            }
+            and not any(worker.get(field) for field in ("args", "envFrom", "volumeDevices"))
+            and worker["securityContext"]
+            == {
+                "runAsNonRoot": True,
+                "runAsUser": 10001,
+                "readOnlyRootFilesystem": True,
+                "allowPrivilegeEscalation": False,
+                "capabilities": {"drop": ["ALL"]},
+                "seccompProfile": {"type": "RuntimeDefault"},
+            }
+        )
+    except (KeyError, IndexError, TypeError, AttributeError, ValueError):
+        return False
+
+
 class KubernetesWorkloadVerifier:
     def __init__(
         self,
@@ -179,6 +327,7 @@ class KubernetesWorkloadVerifier:
         authority_flag: str = "ADP_AGENT_AUTHORITY_ENABLED",
         gateway_token_path: Path = _SA_DIRECTORY / "token",
         chat_sandbox: bool = False,
+        chat_crew: bool = False,
     ) -> None:
         if not image_digests or any(not _DIGEST.fullmatch(d) for d in image_digests):
             raise WorkloadRefusedError("approved worker image digests are required")
@@ -198,6 +347,7 @@ class KubernetesWorkloadVerifier:
         self._authority_flag = authority_flag
         self._gateway_token_path = gateway_token_path
         self._chat_sandbox = chat_sandbox
+        self._chat_crew = chat_crew
 
     @property
     def exit_retention(self):
@@ -210,13 +360,29 @@ class KubernetesWorkloadVerifier:
             token_path=self._gateway_token_path,
         )
 
+    @property
+    def campaign_recovery(self):
+        from src.agentauth.campaign_pod_recovery import CampaignPodRecovery
+
+        return CampaignPodRecovery(
+            client=self._client,
+            namespace=self._namespace,
+            service_account=self._service_account,
+            token_path=self._gateway_token_path,
+        )
+
     @classmethod
-    def in_cluster(cls, *, chat: bool = False, task_api: bool = False, chat_sandbox: bool = False) -> KubernetesWorkloadVerifier:
+    def in_cluster(
+        cls, *, chat: bool = False, task_api: bool = False, chat_sandbox: bool = False, chat_crew: bool = False
+    ) -> KubernetesWorkloadVerifier:
         # Fixed service DNS and the mounted cluster CA; neither comes from a
         # request. Do not inherit HTTP proxy settings for this credential path.
-        if sum((chat, task_api, chat_sandbox)) > 1:
+        if sum((chat, task_api, chat_sandbox, chat_crew)) > 1:
             raise WorkloadRefusedError("ambiguous workload configuration")
-        if chat_sandbox:
+        if chat_crew:
+            digest_env = "ADP_CHAT_CREW_IMAGE_DIGESTS"
+            service_account = "adp-crew-pod"
+        elif chat_sandbox:
             digest_env = "ADP_CHAT_SANDBOX_IMAGE_DIGESTS"
             service_account = "adp-chat-sandbox"
         elif task_api:
@@ -242,17 +408,18 @@ class KubernetesWorkloadVerifier:
                 os.environ.get("ADP_TASK_WORKER_NAMESPACE", "adp-agents")
                 if task_api
                 else os.environ.get("ADP_CHAT_WORKER_NAMESPACE", "adp-gateway-agents")
-                if chat or chat_sandbox
+                if chat or chat_sandbox or chat_crew
                 else os.environ.get("AGENT_WORKER_NAMESPACE", "adp-agents")
             ),
             service_account=service_account,
-            container_name="chat-agent" if chat or chat_sandbox else "agent-worker",
+            container_name="chat-agent" if chat or chat_sandbox or chat_crew else "agent-worker",
             chat_sandbox=chat_sandbox,
+            chat_crew=chat_crew,
             authority_flag=(
                 "ADP_TASK_API_WORKER_ENABLED"
                 if task_api
                 else "ADP_CHAT_MODEL_POLICY_ENABLED"
-                if chat or chat_sandbox
+                if chat or chat_sandbox or chat_crew
                 else "ADP_AGENT_AUTHORITY_ENABLED"
             ),
         )
@@ -324,7 +491,7 @@ class KubernetesWorkloadVerifier:
                 or pod_status.get("phase") != "Running"
                 or len(containers) != 1
                 or len(worker_specs) != 1
-                or (not self._chat_sandbox and (worker_specs[0].get("command") or worker_specs[0].get("args")))
+                or (not self._chat_sandbox and not self._chat_crew and (worker_specs[0].get("command") or worker_specs[0].get("args")))
                 or (
                     self._chat_sandbox
                     and not _approved_chat_sandbox(
@@ -334,6 +501,7 @@ class KubernetesWorkloadVerifier:
                         containers[0].get("imageID", "").rsplit("@", 1)[-1],
                     )
                 )
+                or (self._chat_crew and not _approved_chat_crew(metadata, spec, worker_specs[0], containers[0].get("imageID", "").rsplit("@", 1)[-1]))
                 or enabled != [{"name": self._authority_flag, "value": "true"}]
                 or "running" not in containers[0].get("state", {})
                 or containers[0].get("imageID", "").rsplit("@", 1)[-1] not in self._digests
@@ -348,8 +516,9 @@ class KubernetesWorkloadVerifier:
                 pod_status["podIP"],
                 self._deadline(pod, headers),
                 containers[0]["imageID"].rsplit("@", 1)[-1],
-                metadata.get("labels", {}).get("adp.io/run-hash") if self._chat_sandbox else None,
-                metadata.get("labels", {}).get("adp.io/session-hash") if self._chat_sandbox else None,
+                metadata.get("annotations", {}).get("adp.io/run-hash") if self._chat_sandbox or self._chat_crew else None,
+                metadata.get("annotations", {}).get("adp.io/session-hash") if self._chat_sandbox or self._chat_crew else None,
+                metadata.get("labels", {}).get("adp.io/owner-key") if self._chat_crew else None,
             )
         except WorkloadRefusedError:
             raise
@@ -401,7 +570,12 @@ class KubernetesWorkloadVerifier:
         return {"api_server": str(self._client.base_url), "namespace": self._namespace, "service_account": self._service_account}
 
     def is_absent(self, *, name: str) -> bool:
-        """Confirm deletion only after the caller durably recorded UID-bound exit."""
+        """Confirm deletion only after the caller durably recorded UID-bound exit.
+
+        The one exception is a reserved sandbox that was never admitted (no LAUNCH, no POD
+        binding): nothing was ever issued to it, so its absence is the only exit evidence a pod
+        that never ran can give (#8061, ``chat_pre_admission_cleanup``).
+        """
         if not _NAME.fullmatch(name):
             return False
         try:
@@ -421,16 +595,43 @@ class KubernetesWorkloadVerifier:
         except (OSError, httpx.HTTPError, ValueError, TypeError, AttributeError):
             return False
 
+    def is_terminating(self, *, name: str, uid: str) -> bool:
+        """The API server still returns the pod, but only because the kubelet has not yet confirmed
+        the delete: ``metadata.deletionTimestamp`` is set and the phase is terminal (Succeeded or
+        Failed), so the container cannot run again under restartPolicy Never. For completion this is
+        as good as absence (#8047); a terminating pod whose container is still running is not.
+        """
+        if not _NAME.fullmatch(name) or not uid:
+            return False
+        try:
+            response = self._client.get(
+                f"/api/v1/namespaces/{self._namespace}/pods/{name}",
+                headers={"Authorization": f"Bearer {self._gateway_token_path.read_text().strip()}"},
+            )
+            if response.status_code != 200:
+                return False
+            pod = response.json()
+            metadata, status = pod.get("metadata", {}), pod.get("status", {})
+            return (
+                metadata.get("name") == name
+                and metadata.get("namespace") == self._namespace
+                and metadata.get("uid") == uid
+                and bool(metadata.get("deletionTimestamp"))
+                and status.get("phase") in {"Succeeded", "Failed"}
+            )
+        except (OSError, httpx.HTTPError, ValueError, TypeError, AttributeError):
+            return False
+
     def has_exited(self, *, name: str, uid: str, image_digest: str | None = None) -> bool:
         """Positive container-exit evidence for a previously verified workload.
 
         A timeout, missing pod or reused name cannot prove the original worker
         stopped. Lease expiry is deliberately absent from this decision.
         """
-        if self._chat_sandbox and not image_digest:
+        if (self._chat_sandbox or self._chat_crew) and not image_digest:
             return False
         details = self._exit_details(name=name, uid=uid)
-        return details is not None and (not self._chat_sandbox or details[0] == image_digest)
+        return details is not None and (not (self._chat_sandbox or self._chat_crew) or details[0] == image_digest)
 
     def exited_sandbox_image(self, *, name: str, uid: str, run_hash: str) -> str | None:
         if not self._chat_sandbox:
@@ -439,7 +640,7 @@ class KubernetesWorkloadVerifier:
         return details[0] if details is not None and details[1] == run_hash else None
 
     def approved_sandbox_image(self, image_digest: str) -> bool:
-        return self._chat_sandbox and image_digest in self._digests
+        return (self._chat_sandbox or self._chat_crew) and image_digest in self._digests
 
     def find_exited_sandbox(self, *, name: str, run_hash: str, image_digest: str) -> str | None:
         if not self.approved_sandbox_image(image_digest):
@@ -491,23 +692,23 @@ class KubernetesWorkloadVerifier:
             metadata, spec, status = pod.get("metadata", {}), pod.get("spec", {}), pod.get("status", {})
             if (uid is not None and metadata.get("uid") != uid) or spec.get("serviceAccountName") != self._service_account:
                 return None
-            if self._chat_sandbox and (metadata.get("name") != name or metadata.get("namespace") != self._namespace):
+            if (self._chat_sandbox or self._chat_crew) and (metadata.get("name") != name or metadata.get("namespace") != self._namespace):
                 return None
-            container_name = "chat-agent" if self._chat_sandbox else "agent-worker"
+            container_name = "chat-agent" if self._chat_sandbox or self._chat_crew else "agent-worker"
             workers = [c for c in status.get("containerStatuses", []) if c.get("name") == container_name]
             resolved = workers[0].get("imageID", "").rsplit("@", 1)[-1] if len(workers) == 1 else ""
-            if self._chat_sandbox:
+            if self._chat_sandbox or self._chat_crew:
                 containers = [c for c in spec.get("containers", []) if c.get("name") == container_name]
                 if (
                     len(containers) != 1
                     or not re.fullmatch(r"[a-z0-9-]{1,128}", metadata.get("uid", ""))
                     or resolved not in self._digests
-                    or not _approved_chat_sandbox(metadata, spec, containers[0], resolved)
+                    or not (_approved_chat_crew if self._chat_crew else _approved_chat_sandbox)(metadata, spec, containers[0], resolved)
                 ):
                     return None
             terminated = workers[0].get("state", {}).get("terminated") if len(workers) == 1 else None
             if isinstance(terminated, dict) and type(terminated.get("exitCode")) is int and status.get("phase") in {"Succeeded", "Failed"}:
-                return resolved, metadata.get("labels", {}).get("adp.io/run-hash"), metadata.get("uid", "")
+                return resolved, metadata.get("annotations", {}).get("adp.io/run-hash"), metadata.get("uid", "")
             return None
         except (OSError, httpx.HTTPError, ValueError, TypeError, AttributeError):
             return None

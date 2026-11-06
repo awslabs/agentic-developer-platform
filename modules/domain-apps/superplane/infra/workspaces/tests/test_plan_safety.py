@@ -3182,9 +3182,7 @@ def test_an_extended_support_cluster_is_priced_at_the_extended_rate(tmp_path) ->
     )
 
 
-@pytest.mark.parametrize(
-    "region", ["us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-2"]
-)
+@pytest.mark.parametrize("region", ["eu-west-1", "eu-central-1", "ap-southeast-2"])
 def test_unverified_regional_prices_cannot_emit_a_bound(tmp_path, region) -> None:
     estimate = tmp_path / "estimate.json"
     result = _run(
@@ -3201,7 +3199,7 @@ def test_unverified_regional_prices_cannot_emit_a_bound(tmp_path, region) -> Non
         str(estimate),
         region=region,
     )
-    _assert_denied(result, because="bounded pricing is supported only for us-east-1")
+    _assert_denied(result, because="bounded pricing is unavailable for")
     assert not estimate.exists()
 
 
@@ -3573,3 +3571,95 @@ def test_default_security_group_import_requires_separate_migration(tmp_path):
     assert result.returncode != 0
     assert "aws_default_security_group.workspace[0]" in result.stdout + result.stderr
     assert "IMPORTED" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("version", "expected_hourly"),
+    [(STANDARD_VERSION, 0.10), (EXTENDED_VERSION, 0.60)],
+)
+def test_oregon_saved_plan_prices_its_own_region_and_support_tier(
+    tmp_path, version, expected_hourly
+):
+    plan = _plan(
+        _cluster(["create"], version=version),
+        _vpc(["create"]),
+        _node_group(instance_types=["t3.large"], max_size=2),
+        region="us-west-2",
+    )
+    # Move the complete plan's regional identities, including its KMS key.
+    plan = json.loads(json.dumps(plan).replace("us-east-1", "us-west-2"))
+    estimate_path = tmp_path / "oregon.json"
+    result = _run(
+        _write(tmp_path, plan), "--estimate", str(estimate_path), region="us-west-2"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    estimate = json.loads(estimate_path.read_text())
+    assert estimate["rate_table_region"] == estimate["priced_for_region"] == "us-west-2"
+    assert estimate["rate_table_as_of"] == "2026-10-12"
+    assert estimate["region_price_multiplier"] == 1
+    assert "region_multiplier_basis" not in estimate
+    components = {v["component"]: v["monthly_usd"] for v in estimate["components"]}
+    assert next(
+        v for k, v in components.items() if k.startswith("EKS control plane")
+    ) == pytest.approx(expected_hourly * 730)
+    assert next(
+        v for k, v in components.items() if k.startswith("Node group compute")
+    ) == pytest.approx(2 * 0.0832 * 730, abs=0.01)
+    assert next(
+        v for k, v in components.items() if k.startswith("Node root EBS")
+    ) == pytest.approx(2 * 50 * 0.08)
+    assert all(q["region"] == "us-west-2" for q in estimate["pricing_quotes"])
+
+
+def test_oregon_fixed_services_have_independent_regional_quotes():
+    from check_workspace_plan import _estimate
+
+    changes = [
+        {"address": name, "change": {"actions": ["create"], "after": values}}
+        for name, values in [
+            ("aws_nat_gateway.workspace[0]", {}),
+            ("aws_eip.nat[0]", {}),
+            ("aws_kms_key.workspace", {}),
+            (
+                "aws_vpc_endpoint.sts",
+                {
+                    "vpc_endpoint_type": "Interface",
+                    "subnet_ids": ["subnet-a", "subnet-b"],
+                },
+            ),
+        ]
+    ]
+    estimate = _estimate({"resource_changes": changes}, aws_region="us-west-2")
+    assert estimate["bounded_monthly_usd"] == pytest.approx(
+        0.045 * 730 + 0.005 * 730 + 1 + 2 * 0.01 * 730
+    )
+    quotes = {q["usage_type"]: q for q in estimate["pricing_quotes"]}
+    expected = {
+        "USW2-NatGateway-Hours": "0.0450000000",
+        "USW2-PublicIPv4:InUseAddress": "0.0050000000",
+        "us-west-2-KMS-Keys": "1.0000000000",
+        "USW2-VpcEndpoint-Hours": "0.0100000000",
+    }
+    assert {k: quotes[k]["usd"] for k in expected} == expected
+
+
+def test_regional_service_price_is_not_an_ec2_multiplier(monkeypatch):
+    import check_workspace_plan as guard
+
+    catalog = json.loads((WORKSPACES / "regional-pricing.json").read_text())
+    catalog["regions"]["us-west-2"]["rates"]["nat_gateway_hourly_usd"] = 0.095
+    monkeypatch.setattr(guard, "_load_json", lambda *args: catalog)
+    plan = {
+        "resource_changes": [
+            {
+                "address": "aws_nat_gateway.workspace[0]",
+                "change": {"actions": ["create"], "after": {}},
+            }
+        ]
+    }
+    assert guard._estimate(plan, aws_region="us-west-2")[
+        "bounded_monthly_usd"
+    ] == pytest.approx(0.095 * 730)
+    assert guard._estimate(plan, aws_region="us-east-1")[
+        "bounded_monthly_usd"
+    ] == pytest.approx(0.045 * 730)

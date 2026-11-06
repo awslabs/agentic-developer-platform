@@ -1,0 +1,37 @@
+{
+  "bundle_sha256": "b393e3d57c4a998c760c7f94e19b281368aefe65d2d4ac7ef08143f4f0de3b4d",
+  "commands": [
+    {
+      "argv": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "transform_fixture_dependencies"
+      ],
+      "cwd": ".",
+      "environment": {
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "PYTHONPATH": "/opt/transform-check-plugins",
+        "TRANSFORM_FIXTURE_DEPENDENCIES": "/opt/transform-check-dependencies"
+      },
+      "minimum_test_count": 6,
+      "timeout_seconds": 120
+    },
+    {
+      "argv": [
+        "node",
+        "--test",
+        "--test-reporter=tap",
+        "index.test.mjs"
+      ],
+      "cwd": ".",
+      "environment": {},
+      "minimum_test_count": 3,
+      "timeout_seconds": 120
+    }
+  ],
+  "lock_sha256": "91a231da9d7442713ab9984b0802b90e39b8e0460dfefdf48d70d6cc6cdb5466",
+  "oracle_version": "pytest-9.0.3-node-tap-v1"
+}

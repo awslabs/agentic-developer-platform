@@ -1,8 +1,13 @@
 {
-  "version": "0.12.19",
-  "url": "https://files.pythonhosted.org/packages/76/71/b47cec536d8ee7b09017c1d9db211dfc2e7ce5c87d0482918d8b3411ec48/uv-0.12.19-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
-  "wheel_sha256": "a63d18a0aa38ee9f21a5406afbbaeb41303bcd954be9d6b7c1b95ac275e53958",
+  "version": "0.13.4",
+  "url": "https://files.pythonhosted.org/packages/4b/a1/de02c0913726728eca56ee258875cbba9c7b0572c63f494fd9f55c7852e3/uv-0.13.4-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
   "binary_sha256": {
+    "uv": "5b2a2df4ef04c5d778d50702d6e1d1ff22909fc883086b4ef406a4f115e3c4fb",
+    "uvx": "2044b4dd5a37d593c0d6ab279777dfec833f4d4e81c0aa74b05098f595a849c7"
+  },
+  "wheel_sha256": "05e4332791b4d55b6dde8695b7fa6079b26991519f44760887c5dfbd5ca4fe53",
+  "previous_version": "0.12.19",
+  "previous_binary_sha256": {
     "uv": "242e462a63f5a3c0421d68557006193ecbfb61321cba0fe8542213ac62d92563",
     "uvx": "34a435129d938dca2f22300764aca33e69e038485ee3e27ab62d321fc71e0a6c"
   },

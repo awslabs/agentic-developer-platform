@@ -69,7 +69,12 @@ async def read_enforcement(session, *, org_id: str | None = None, flow_id: str |
     keys = ["global"] + ([key] if key else [])
     rows = {row.scope_key: row for row in await session.scalars(select(BudgetEnforcementSetting).where(BudgetEnforcementSetting.scope_key.in_(keys)))}
     global_row, flow_row = rows.get("global"), rows.get(key)
-    gap = await session.scalar(select(BudgetAccountingGap.request_id).where(BudgetAccountingGap.scope_key.in_(keys)).limit(1))
+    # Only a gap against THIS flow's accumulator makes its spend unknowable, so only
+    # that fails the flow closed. A "global" gap is written for requests with no flow
+    # binding; it has no accumulator behind it and stays an audit record. Gating on
+    # it blocked every request on the deployment the moment one unbound chat turn was
+    # cancelled by a pod restart, with no code path that ever cleared the row.
+    gap = await session.scalar(select(BudgetAccountingGap.request_id).where(BudgetAccountingGap.scope_key == key).limit(1)) if key else None
     return EnforcementPosture(
         global_enabled=global_row.enabled if global_row else environment_default(),
         flow_enabled=flow_row.enabled if flow_row else None,

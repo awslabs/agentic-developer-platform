@@ -258,10 +258,12 @@ def test_legacy_complete_asset_can_be_discovered_without_claiming_usability(clie
     assert observed["detail"]["usable"] is False
 
 
-def test_worker_complete_run_contract_is_usable_only_with_verified_stages():
+def test_worker_complete_run_contract_is_usable_only_with_verified_stages(monkeypatch):
     # Execute the actual ingestion run finalizer against a fake cursor: its
     # persisted status must be accepted by the CLI, not an invented synonym.
     path = CLI.parents[1] / "agent-context/images/ingestion/db.py"
+    # Match the ingestion image's /app import path for its local RPC adapter.
+    monkeypatch.syspath_prepend(str(path.parent))
     spec = importlib.util.spec_from_file_location("knowledge_worker_db", path)
     worker_db = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(worker_db)

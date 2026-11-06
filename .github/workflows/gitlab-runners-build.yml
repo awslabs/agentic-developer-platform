@@ -1,0 +1,81 @@
+name: GitLab Runners Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: 'Exact reviewed main commit (40 hex characters)'
+        required: true
+        type: string
+      account_id:
+        description: 'Exact build account (12 digits)'
+        required: true
+        type: string
+      region:
+        description: 'Region of the pinned dev host AMI and build project'
+        required: true
+        type: string
+
+concurrency:
+  group: gitlab-runners-build-${{ inputs.account_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    environment: adp-build-dev
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      EXPECTED_ACCOUNT: ${{ inputs.account_id }}
+      AWS_REGION: ${{ inputs.region }}
+      EXPECTED_ROLE: ${{ vars.ADP_BUILD_ROLE_ARN }}
+      PROJECT: ${{ vars.GITLAB_RUNNERS_BUILD_PROJECT }}
+      SOURCE_BUCKET: ${{ vars.GITLAB_RUNNERS_BUILD_SOURCE_BUCKET }}
+    steps:
+      - name: Bind dispatch to the reviewed source before AWS authentication
+        env:
+          APPROVED_REVISION: ${{ inputs.source_revision }}
+          DISPATCH_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Reviewed source revision missing'; exit 1; }
+          test "$DISPATCH_REVISION" = "$APPROVED_REVISION" || { echo '::error::Dispatch source differs from the reviewed revision'; exit 1; }
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/trusted-build
+        with:
+          role_arn: ${{ vars.ADP_BUILD_ROLE_ARN }}
+          region: ${{ inputs.region }}
+      - name: Require reviewed release inputs and a scoped build project
+        run: |
+          set -euo pipefail
+          test -f modules/source-control/gitlab/runners/versions.lock.json || { echo '::error::Missing reviewed S2 release lock'; exit 1; }
+          test -f codebuild/bs-gitlab-runner-bootstrap.yml || { echo '::error::Missing reviewed runner host/plugin build recipe'; exit 1; }
+          [[ "$EXPECTED_ACCOUNT" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]]
+          [[ "$PROJECT" =~ ^adp-dev-gitlab-runner-bootstrap$ ]]
+          test "$SOURCE_BUCKET" = "adp-terraform-state-$EXPECTED_ACCOUNT" || { echo '::error::Wrong reviewed build source bucket'; exit 1; }
+          [[ "$SOURCE_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]
+          test "$EXPECTED_ACCOUNT" = "${EXPECTED_ROLE:13:12}"
+          aws sts get-caller-identity --output json | python3 modules/source-control/gitlab/runners/scripts/deployment_guard.py identity --expected-role "$EXPECTED_ROLE"
+          test "$(aws codebuild batch-get-projects --names "$PROJECT" --query 'projects[0].source.buildspec' --output text)" = codebuild/bs-gitlab-runner-bootstrap.yml || { echo '::error::Missing scoped reviewed CodeBuild project'; exit 1; }
+          test "$(aws codebuild batch-get-projects --names "$PROJECT" --query 'projects[0].source.type' --output text)" = S3
+          test "$(aws codebuild batch-get-projects --names "$PROJECT" --query 'projects[0].serviceRole' --output text)" = "arn:aws:iam::$EXPECTED_ACCOUNT:role/adp-dev-codebuild-gitlab-runner-bootstrap" || { echo '::error::Unexpected CodeBuild service role'; exit 1; }
+          test "$(aws codebuild batch-get-projects --names "$PROJECT" --query 'projects[0].source.location' --output text)" = "$SOURCE_BUCKET/codebuild/src/$PROJECT/explicit-source-required.zip" || { echo '::error::Unexpected CodeBuild source prefix'; exit 1; }
+      - name: Build from this reviewed commit with an isolated source key
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: ${{ vars.GITLAB_RUNNERS_BUILD_PROJECT }}
+          region: ${{ inputs.region }}
+          state_bucket: ${{ vars.GITLAB_RUNNERS_BUILD_SOURCE_BUCKET }}
+          source_revision: ${{ github.sha }}
+          environment_variables: >-
+            "name=RUNNER_SOURCE_BUCKET,value=${{ vars.GITLAB_RUNNERS_BUILD_SOURCE_BUCKET }}"
+            "name=EXPECTED_ACCOUNT,value=${{ inputs.account_id }}"

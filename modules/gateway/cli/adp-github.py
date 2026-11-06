@@ -27,6 +27,11 @@ CliError = common.CliError
 NAME = "github"
 CONNECTIONS = "/admin/connections"
 INSTALL_START = CONNECTIONS + "/github/install-start"
+# #8555: the signed-in owner's own GitHub token with repository access, from the GitHub
+# account they connected in Settings → Connections. Works on any machine with `adp login`;
+# a Dev Box gets the same token through its host identity instead.
+OWNER_TOKEN = "/auth/connections/oauth/github/token"
+CREDENTIAL_HOST = "github.com"
 
 # owner/name as GitHub accepts it. Rejecting the shape locally is a UX nicety;
 # authorization is always the server's decision.
@@ -62,7 +67,7 @@ def connections(api, org=None):
     argument at all, and the server scopes the response to the caller's own
     memberships.
     """
-    rows = api.request("GET", CONNECTIONS).get("connections") or []
+    rows = api.request("GET", "/github/status" if common.crew_binding() else CONNECTIONS).get("connections") or []
     if org:
         rows = [row for row in rows if org in {row.get("tenant_id"), row.get("tenant_name")}]
     return rows
@@ -105,6 +110,7 @@ def detail_of(connection, owner=None, repo=None):
         "account_type": connection.get("account_type"),
         "repository_selection": connection.get("repository_selection"),
         "repository_count": connection.get("repository_count"),
+        "repository_details": connection.get("repository_details") or [],
         "repositories_verified_live": repositories_proven(connection),
         "can_manage": connection.get("can_manage"),
         "tenant_id": connection.get("tenant_id"),
@@ -113,6 +119,10 @@ def detail_of(connection, owner=None, repo=None):
     if owner and repo:
         detail["requested_repository"] = f"{owner}/{repo}"
         detail["repository_access"] = repository_access(connection, owner, repo)
+        detail["repository_id"] = next(
+            (item["repository_id"] for item in connection.get("repository_details") or []
+             if item.get("full_name", "").casefold() == f"{owner}/{repo}".casefold()), None,
+        ) if repositories_proven(connection) else None
     return detail
 
 
@@ -316,7 +326,8 @@ def status(args, api):
                 "pending",
                 "github status",
                 detail,
-                "No repository is connected yet. Run adp github connect --repo owner/name.",
+                "No repository is connected yet. Use the laptop CLI or dashboard to connect one."
+                if common.crew_binding() else "No repository is connected yet. Run adp github connect --repo owner/name.",
             )
         return common.envelope("configured", "github status", detail)
 
@@ -342,10 +353,16 @@ def status(args, api):
                 "pending",
                 "github status",
                 detail,
-                f"{owner} is connected, but {owner}/{repo} is not among its authorized repositories. "
-                f"Add it at {detail['manage_url']}, or run adp github connect --repo {owner}/{repo}.",
+                f"{owner} is connected, but {owner}/{repo} is not among its authorized repositories. " +
+                ("Use the laptop CLI or dashboard to manage this installation." if common.crew_binding() else
+                 f"Add it at {detail['manage_url']}, or run adp github connect --repo {owner}/{repo}."),
             )
 
+    if common.crew_binding():
+        return common.envelope(
+            "pending", "github status", detail,
+            f"{owner}/{repo} is not connected. Use the laptop CLI or dashboard to connect it.",
+        )
     saved = pending_request(api, owner, repo)
     if saved.get("install_url"):
         return common.envelope("pending", "github status", detail, approval_next_action(owner, repo, saved["install_url"]))
@@ -406,9 +423,71 @@ def disconnect(args, api):
     return common.envelope("ok" if complete else "pending", command, result, "Local denial, provider uninstall and cleanup are separate outcomes.")
 
 
+TOKEN_NEXT_ACTIONS = {
+    "github_not_connected": "Connect your GitHub account with repository access in Settings → Connections, then retry.",
+    "github_consent_required": "Turn on 'Allow agents to use this account' for GitHub in Settings → Connections, then retry.",
+    "github_repository_consent_required": "Grant repository access to your GitHub connection in Settings → Connections, then retry.",
+    "github_reconnect_required": "Reconnect GitHub in Settings → Connections (the account or its grant changed), then retry.",
+    "github_user_access_disabled": "A platform administrator has not enabled GitHub access for owner tools on this deployment.",
+}
+
+
+def owner_token(api):
+    """The owner's GitHub token for this session; refusals name the one step that fixes them."""
+    try:
+        result = api.request("POST", OWNER_TOKEN, {})
+    except CliError as exc:
+        hint = TOKEN_NEXT_ACTIONS.get(exc.code)
+        if hint is None:
+            raise
+        raise CliError(hint, exc.code, exc.exit_code, status_code=exc.status_code, server_message=exc.server_message) from None
+    token, login, expires_at = result.get("token"), result.get("login"), result.get("expires_at")
+    usable_token = isinstance(token, str) and token and not any(char.isspace() for char in token)
+    if not usable_token or not isinstance(login, str) or not isinstance(expires_at, int):
+        raise CliError("The gateway returned an unusable GitHub token response.", "invalid_response")
+    return token, login, expires_at
+
+
+def token(args, api):
+    value, login, expires_at = owner_token(api)
+    if args.json:
+        return common.envelope("issued", "github token", {"token": value, "login": login, "expires_at": expires_at})
+    # Plain mode prints the bare token so it pipes: `gh auth login --with-token < <(adp github token)`.
+    print(value)
+    return None
+
+
+def credential_helper(args, api, stdin=sys.stdin, stdout=sys.stdout):
+    """`git credential` helper: answer `get` for github.com from the owner's connection, store nothing.
+
+    Configure once: `git config --global credential.https://github.com.helper '!adp github credential-helper'`.
+    `store` and `erase` are accepted and ignored — ADP never writes a token to disk.
+    """
+    if args.action != "get":
+        return None
+    attributes = {}
+    for line in stdin:
+        line = line.rstrip("\n")
+        if not line:
+            break
+        key, _, value = line.partition("=")
+        attributes[key] = value
+    if attributes.get("protocol") != "https" or attributes.get("host") != CREDENTIAL_HOST:
+        return None
+    value, _, _ = owner_token(api)
+    stdout.write(f"username=x-access-token\npassword={value}\n")
+    stdout.flush()
+    return None
+
+
 def parser():
     root = common.Parser(prog="adp github", description="Connect an authorized GitHub repository to ADP.")
     commands = root.add_subparsers(dest="command", required=True)
+
+    token_command = commands.add_parser("token", help="Print your GitHub token with repository access (from your connected account)")
+    token_command.add_argument("--json", action="store_true", help="Print machine-readable output (token, login, expires_at)")
+    helper = commands.add_parser("credential-helper", help="git credential helper for github.com backed by your connected account")
+    helper.add_argument("action", choices=["get", "store", "erase"])
 
     connect_command = commands.add_parser("connect", help="Connect a repository using this deployment's existing GitHub App")
     connect_command.add_argument("--repo", required=True, metavar="OWNER/NAME", help="The repository to connect, for example SOPHOS-IT/project")
@@ -431,6 +510,10 @@ def parser():
 
 
 def run(args, api):
+    if args.command == "token":
+        return token(args, api)
+    if args.command == "credential-helper":
+        return credential_helper(args, api)
     if args.command == "disconnect":
         if args.installation <= 0:
             raise CliError("Installation must be positive.", "usage_error", 1)
@@ -452,7 +535,8 @@ def main(argv=None):
         # which sends the user to reinstall the CLI over a fixable typo.
         if getattr(args, "repo", None):
             parse_repo(args.repo)
-        return common.emit(run(args, Api()), args.json)
+        result = run(args, Api())
+        return 0 if result is None else common.emit(result, args.json)
     except (CliError, OSError, ValueError, KeyError, TypeError) as exc:
         return common.report_error(exc, command, as_json)
     except KeyboardInterrupt:

@@ -45,6 +45,20 @@ source, target, input, release digest and runtime-health checks are unchanged.
 Historical definitions without the marker continue to read their GitHub
 artifacts. Invalid or inaccessible S3 evidence never falls back to GitHub.
 
+Version-2 delivery workflows separately opt in with workflow-level
+`ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1`. This keeps existing workflows that
+use S3 context and GitHub delivery receipts compatible. The signed delivery
+payload is stored under `delivery/<contract.evidence_artifact>.json`; the engine
+still verifies the accepted contract digest, exact source/run/attempt, required
+checks and cleanup. No product or repository name is registered in the engine.
+
+The publisher's `workflow-artifact` command retains a bounded ZIP plus a signed
+descriptor for other workflow evidence. Readers verify the descriptor's source,
+workflow, run and attempt before retrieving its exact S3 version and checking
+the archive digest. Product Profile uses this for the shared manifest and release
+observations. Its regression workflows read that signed manifest using the
+explicit release run and attempt, including when a later rerun was cancelled.
+
 Rollout order: provision/review storage and IAM, ship the compatible reader in a
 scoped Gateway release, then use the reviewed S3 workflow definition. An older
 Gateway cannot consume new S3 receipts, so workflow success alone is not proof

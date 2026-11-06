@@ -31,6 +31,8 @@ RDS_CA_BUNDLE_PATH = "/etc/ssl/certs/rds-global-bundle.pem"
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+_accounting_engine: AsyncEngine | None = None
+_accounting_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 # Cache IAM token for 10 minutes (tokens valid for 15 min)
 _iam_token_cache: dict[str, tuple[str, float]] = {}
@@ -103,88 +105,134 @@ def _is_sqlite_url(url: str) -> bool:
     return url.startswith("sqlite")
 
 
-def get_engine() -> AsyncEngine:
-    """Get or create the async database engine.
+def _split_enabled(settings, database_url: str) -> bool:
+    return settings.rds_split_pool_enabled is True and settings.rds_pool_enabled is True and not _is_sqlite_url(database_url)
 
-    IAM connections resolve their password at connection time, including
-    connections made by background tasks holding a long-lived session factory.
-    """
+
+def _create_engine(database_url: str, settings, *, accounting: bool = False) -> AsyncEngine:
+    if _is_sqlite_url(database_url):
+        from sqlalchemy.pool import StaticPool
+
+        return create_async_engine(
+            database_url,
+            echo=False,
+            poolclass=StaticPool,
+            connect_args={"check_same_thread": False},
+        )
+
+    engine_kwargs: dict = {"echo": False, "pool_pre_ping": True}
+    split = _split_enabled(settings, database_url)
+    if split:
+        engine_kwargs.update(
+            pool_size=settings.rds_accounting_pool_size if accounting else settings.rds_request_pool_size,
+            max_overflow=0,
+            pool_timeout=settings.rds_pool_timeout_seconds,
+            pool_recycle=settings.rds_pool_recycle_seconds,
+        )
+
+    if settings.rds_iam_auth and settings.rds_host:
+        if not split:
+            if settings.rds_pool_enabled is True:
+                engine_kwargs.update(
+                    pool_size=settings.rds_pool_size,
+                    max_overflow=settings.rds_pool_max_overflow,
+                    pool_timeout=settings.rds_pool_timeout_seconds,
+                    pool_recycle=settings.rds_pool_recycle_seconds,
+                )
+            else:
+                from sqlalchemy.pool import NullPool
+
+                engine_kwargs["poolclass"] = NullPool
+
+        if settings.rds_tls_verify:
+            ssl_ctx = ssl.create_default_context(cafile=RDS_CA_BUNDLE_PATH)
+        else:
+            logger.warning("RDS TLS verification disabled (BG_RDS_TLS_VERIFY=false). MITM risk!")
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+        engine_kwargs["connect_args"] = {
+            "ssl": ssl_ctx,
+            "password": lambda: get_rds_auth_token(settings.rds_host, settings.rds_port, settings.rds_username, settings.aws_region),
+        }
+    elif not split:
+        engine_kwargs["pool_size"] = 20
+        engine_kwargs["max_overflow"] = 10
+
+    if split:
+        engine_kwargs.setdefault("connect_args", {})["timeout"] = settings.rds_connect_timeout_seconds
+
+    engine = create_async_engine(database_url, **engine_kwargs)
+    if split:
+        from sqlalchemy import event
+
+        @event.listens_for(engine.sync_engine, "begin")
+        def set_transaction_limits(connection):
+            connection.exec_driver_sql(f"SET LOCAL lock_timeout = '{settings.rds_lock_timeout_ms}ms'")
+            connection.exec_driver_sql(f"SET LOCAL statement_timeout = '{settings.rds_statement_timeout_ms}ms'")
+
+    return engine
+
+
+def get_engine() -> AsyncEngine:
+    """Get or create the request-serving engine."""
     global _engine
     if _engine is None:
-        settings = get_settings()
-        database_url = get_database_url()
-
-        if _is_sqlite_url(database_url):
-            from sqlalchemy.pool import StaticPool
-
-            _engine = create_async_engine(
-                database_url,
-                echo=False,
-                poolclass=StaticPool,
-                connect_args={"check_same_thread": False},
-            )
-        else:
-            engine_kwargs: dict = {
-                "echo": False,
-                "pool_pre_ping": True,
-            }
-
-            if settings.rds_iam_auth and settings.rds_host:
-                # NullPool alone cannot refresh the password stored in the URL.
-                # asyncpg calls this password provider for each new connection.
-                if settings.rds_pool_enabled is True:
-                    # Authentication is checked when a connection is established,
-                    # not on each query. The callable password provider below
-                    # renews IAM tokens for replacement/recycled connections.
-                    engine_kwargs.update(
-                        pool_size=settings.rds_pool_size,
-                        max_overflow=settings.rds_pool_max_overflow,
-                        pool_timeout=settings.rds_pool_timeout_seconds,
-                        pool_recycle=settings.rds_pool_recycle_seconds,
-                    )
-                else:
-                    from sqlalchemy.pool import NullPool
-
-                    engine_kwargs["poolclass"] = NullPool
-
-                if settings.rds_tls_verify:
-                    ssl_ctx = ssl.create_default_context(cafile=RDS_CA_BUNDLE_PATH)
-                    # default context: check_hostname=True, verify_mode=CERT_REQUIRED
-                else:
-                    logger.warning("RDS TLS verification disabled (BG_RDS_TLS_VERIFY=false). MITM risk!")
-                    ssl_ctx = ssl.create_default_context()
-                    ssl_ctx.check_hostname = False
-                    ssl_ctx.verify_mode = ssl.CERT_NONE
-                engine_kwargs["connect_args"] = {
-                    "ssl": ssl_ctx,
-                    "password": lambda: get_rds_auth_token(settings.rds_host, settings.rds_port, settings.rds_username, settings.aws_region),
-                }
-            else:
-                engine_kwargs["pool_size"] = 20
-                engine_kwargs["max_overflow"] = 10
-
-            _engine = create_async_engine(database_url, **engine_kwargs)
-
+        _engine = _create_engine(get_database_url(), get_settings())
     return _engine
 
 
+def get_accounting_engine() -> AsyncEngine:
+    """Keep settlement off request connections only when split mode is enabled."""
+    global _accounting_engine
+    settings = get_settings()
+    if settings.rds_split_pool_enabled is not True:
+        return get_engine()
+    if not _split_enabled(settings, get_database_url()):
+        return get_engine()
+    if _accounting_engine is None:
+        _accounting_engine = _create_engine(get_database_url(), settings, accounting=True)
+    return _accounting_engine
+
+
 def reset_engine() -> None:
-    """Reset the database engine (useful for testing and token refresh)."""
-    global _engine, _session_factory
+    """Reset cached engines and session factories (useful for testing and token refresh)."""
+    global _engine, _session_factory, _accounting_engine, _accounting_session_factory
     _engine = None
     _session_factory = None
+    _accounting_engine = None
+    _accounting_session_factory = None
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
-    """Get or create the async session factory."""
+    """Get or create the request session factory."""
     global _session_factory
     if _session_factory is None:
         _session_factory = async_sessionmaker(get_engine(), expire_on_commit=False)
     return _session_factory
 
 
+def get_accounting_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Use the original factory unless split mode is explicitly enabled."""
+    global _accounting_session_factory
+    if get_settings().rds_split_pool_enabled is not True:
+        return get_session_factory()
+    if not _split_enabled(get_settings(), get_database_url()):
+        return get_session_factory()
+    if _accounting_session_factory is None:
+        _accounting_session_factory = async_sessionmaker(get_accounting_engine(), expire_on_commit=False)
+    return _accounting_session_factory
+
+
 async def get_db() -> AsyncSession:
-    """FastAPI dependency that yields a database session."""
-    factory = get_session_factory()
-    async with factory() as session:
-        yield session
+    """FastAPI dependency that releases failed or cancelled transactions."""
+    async with get_session_factory()() as session:
+        session.info["http_request_session"] = True
+        try:
+            yield session
+        except BaseException:
+            try:
+                await session.rollback()
+            except BaseException:
+                await session.invalidate()
+            raise

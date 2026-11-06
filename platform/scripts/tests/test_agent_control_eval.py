@@ -8563,7 +8563,7 @@ class TestWave2PreflightIsDiscriminating:
         Asserted from the workflow file rather than described in a runbook, because the
         evaluation's `checked_out_revision` contract depends on the workflow actually
         publishing that value. Checked here: the dispatch input exists and is required,
-        every one of the three required jobs waits on the validation job and checks out
+        every test job waits on the validation job and checks out
         its ref, and each verifies `git rev-parse HEAD` against the expected SHA rather
         than assuming the checkout obeyed.
         """
@@ -8579,22 +8579,24 @@ class TestWave2PreflightIsDiscriminating:
         assert "pull_request:" in workflow
         assert "- main" in workflow
 
-        assert workflow.count("needs: resolve-source") == len(_mod.WAVE2_REQUIRED_CI_GATES)
-        assert workflow.count("ref: ${{ needs.resolve-source.outputs.ref }}") == len(
-            _mod.WAVE2_REQUIRED_CI_GATES
-        )
-        # Each job asks git what it actually has and fails on a mismatch. Trusting the
-        # checkout would make the recorded revision an assumption again.
-        assert workflow.count('ACTUAL="$(git rev-parse HEAD)"') == len(
-            _mod.WAVE2_REQUIRED_CI_GATES
-        )
-        assert workflow.count('[ "$ACTUAL" != "$EXPECTED" ]') == len(
-            _mod.WAVE2_REQUIRED_CI_GATES
-        )
-        # And archives it machine-readably, under the field name the harness reads.
-        assert workflow.count('"checked_out_revision": "${ACTUAL}"') == len(
-            _mod.WAVE2_REQUIRED_CI_GATES
-        )
+        import yaml
+
+        jobs = yaml.safe_load(workflow)["jobs"]
+        tested_jobs = {"control-contract-tests", "agent-authority-tests", "worker-control-tests", "control-evaluation-harness-tests"}
+        for job_id in tested_jobs:
+            job = jobs[job_id]
+            assert job["needs"] == "resolve-source"
+            checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+            assert checkout["with"]["ref"] == "${{ needs.resolve-source.outputs.ref }}"
+            verifier = next(step for step in job["steps"] if step.get("name") == "Verify and record the checked-out revision")
+            assert verifier["env"]["EXPECTED"] == "${{ needs.resolve-source.outputs.expected }}"
+            assert 'ACTUAL="$(git rev-parse HEAD)"' in verifier["run"]
+            assert '[ "$ACTUAL" != "$EXPECTED" ]' in verifier["run"]
+            assert '"checked_out_revision": "${ACTUAL}"' in verifier["run"]
+        # The stable logical gate includes both independently verified branches.
+        gate = jobs["agent-control-tests"]
+        assert set(gate["needs"]) == {"control-contract-tests", "agent-authority-tests"}
+        assert gate["if"] == "always()"
         # github.sha is recorded as the workflow ref, never as the tested source.
         assert '"workflow_ref_sha": "${GITHUB_SHA}"' in workflow
         assert '"checked_out_revision": "${GITHUB_SHA}"' not in workflow

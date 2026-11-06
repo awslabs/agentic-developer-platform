@@ -45,7 +45,7 @@ async def runtime(store, db_session_factory, tmp_path):
         "source_ref": {"repo": "chat/session-a"},
         "arrived_at": datetime.fromtimestamp(now, UTC).isoformat(),
     }
-    provision_root(store, envelope, source="chat", human_id="human", now=datetime.fromtimestamp(now, UTC))
+    provision_root(store, envelope, source="chat", human_id="human", team_id="team", now=datetime.fromtimestamp(now, UTC))
     store.bind(invocation_id="run-a", digest=envelope_digest(envelope), pod=POD, now=datetime.fromtimestamp(now, UTC))
     table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
         TableName="context",
@@ -250,6 +250,26 @@ async def test_membership_requires_canonical_human_and_current_team(runtime, db_
         await db.execute(update(User).where(User.id == "human").values(user_kind="bot"))
         await db.commit()
         assert not await current_chat_member(db, "tenant", "human", "")
+
+
+async def test_membership_follows_live_tenant_membership_not_the_users_own_org(runtime, db_session_factory):
+    """A GitHub-login human's users.org_id is a personal org; the chat tenant is
+    held only through tenant_memberships (is_active False, revoked_at null)."""
+    async with db_session_factory() as db:
+        db.add_all(
+            [
+                Organization(id="personal", name="Personal"),
+                User(id="guest", org_id="personal", team_id="", email="guest@example.test"),
+                TenantMembership(id="guest-tenant", tenant_id="tenant", user_id="guest", role="org_admin", is_active=False, joined_via="app_install"),
+            ]
+        )
+        await db.commit()
+        assert await current_chat_member(db, "tenant", "guest", "")
+        assert not await current_chat_member(db, "tenant", "guest", "team")
+        assert not await current_chat_member(db, "personal", "human", "")
+        await db.execute(update(TenantMembership).where(TenantMembership.id == "guest-tenant").values(revoked_at=datetime.now(UTC)))
+        await db.commit()
+        assert not await current_chat_member(db, "tenant", "guest", "")
 
 
 async def test_directory_outage_does_not_reuse_previous_membership(runtime, db_session_factory):

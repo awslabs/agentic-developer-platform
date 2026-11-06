@@ -13,7 +13,7 @@ const refs = z.array(z.string().min(1).max(200)).max(50);
 export const REPORT_SCHEMA = {
   summary: text,
   findings: z.array(z.object({ statement: z.string().min(1).max(2000), evidence_refs: refs, confidence: z.enum(['low', 'medium', 'high']).optional() }).strict()).max(50),
-  uncertainties: z.array(z.string().min(1).max(1000)).max(50).default([]), recommendations: z.array(z.string().min(1).max(1000)).max(50).default([]),
+  uncertainties: z.array(z.string().min(1).max(1000)).max(50).optional(), recommendations: z.array(z.string().min(1).max(1000)).max(50).optional(),
   evidence_refs: z.array(z.object({ ref: z.string().max(200), source: z.enum(['instructions', 'inputs', 'artifact', 'follow_up_input']), artifact_id: z.string().optional() }).strict()).max(100).optional(),
 };
 const SAMPLE_SCHEMA = { sample_s3_uri: z.string().min(1).max(2000), focus: z.array(z.string().max(500)).max(20).optional(), yara_rules: z.array(z.string().max(200)).max(20).optional() };
@@ -37,7 +37,10 @@ const reply = value => ({ content: [{ type: 'text', text: JSON.stringify(value) 
 export const TOOL_NAMES = ['read_skill', 'progress', 'request_input', 'submit_report', ...OPERATIONS].map(name => 'mcp__cyber__' + name);
 
 export function groundedReport(value, evidence) {
-  const report = z.object(REPORT_SCHEMA).strict().parse(value);
+  const parsed = z.object(REPORT_SCHEMA).strict().parse(value);
+  // The SDK's bundled Zod object parser predates the new default-input marker.
+  // Keep its inputs optional and normalize omitted lists after our own validation.
+  const report = { ...parsed, uncertainties: parsed.uncertainties ?? [], recommendations: parsed.recommendations ?? [] };
   const cited = new Set(report.findings.flatMap(finding => finding.evidence_refs));
   const declared = report.evidence_refs ?? [...evidence.values()].filter(record => cited.has(record.ref));
   const accepted = declared.filter(record => {

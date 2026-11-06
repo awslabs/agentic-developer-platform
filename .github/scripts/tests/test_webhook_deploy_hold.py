@@ -159,7 +159,7 @@ def test_workflow_uses_guard_before_all_mutating_jobs():
     assert changes["outputs"]["code"] == "${{ steps.filter.outputs.code }}"
     assert jobs["package"]["needs"] == "changes"
     assert jobs["package"]["if"] == (
-        "github.ref == 'refs/heads/main' && (needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true')"
+        "github.ref == 'refs/heads/main' && needs.changes.outputs.infra == 'true'"
     )
     for job in ("deploy-infra", "update-code"):
         assert "package" in jobs[job]["needs"]
@@ -171,3 +171,36 @@ def test_other_environment_overlay_does_not_trigger_default_dev_deploy(repo):
     result, outputs, _ = detect(repo)
     assert result.returncode == 0, result.stderr
     assert outputs == {"code": "false", "infra": "false", "infra_held": "false"}
+
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows/webhook-code-deploy.yml",
+    ".github/actions/trusted-webhook-code/action.yml",
+    "platform/automation-infra/deploy-webhook-code.py",
+    "platform/automation-infra/webhook-code-manifest.json",
+])
+def test_code_delivery_changes_use_scoped_lane(repo, path):
+    change(repo, path)
+    result, outputs, _ = detect(repo)
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"code": "true", "infra": "false", "infra_held": "false"}
+
+
+def test_code_only_release_uses_dedicated_reusable_workflow():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/webhook-ingress-deploy.yml").read_text())
+    job = workflow["jobs"]["deploy-code"]
+    assert job["uses"] == "./.github/workflows/webhook-code-deploy.yml"
+    assert job["needs"] == "changes"
+    assert "needs.changes.outputs.code == 'true'" in job["if"]
+    assert "needs.changes.outputs.infra == 'false'" in job["if"]
+    child = yaml.safe_load((ROOT / ".github/workflows/webhook-code-deploy.yml").read_text())
+    assert "workflow_call" in child.get("on", child.get(True))
+    assert workflow["concurrency"]["group"] != child["concurrency"]["group"]
+
+
+def test_scoped_delivery_requires_live_webhook_verification():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/webhook-code-deploy.yml").read_text())
+    verification = workflow["jobs"]["verify-webhooks"]
+    assert verification["needs"] == "deploy-code"
+    assert verification["uses"] == "./.github/workflows/gitlab-integration-tests.yml"
+    assert not verification.get("continue-on-error", False)

@@ -168,3 +168,15 @@ def test_hardlinked_host_file_cannot_be_read_or_replaced(workspace, tmp_path):
 def test_file_listing_preserves_leading_spaces(workspace):
     workspace.write_file(" leading.txt", "content", expected_sha256=None)
     assert " leading.txt" in workspace.list_files()["paths"]
+
+
+def test_listing_bound_applies_to_the_requested_subtree(workspace, monkeypatch):
+    """#7828: aws-e/adp has more tracked paths than MAX_SOURCE_ENTRIES, so counting the
+    whole tree before the prefix refused every listing (`limit:1`, any prefix). The bound
+    now applies to the narrowed listing; an over-bound subtree is still refused."""
+    import lib.codex_workspace as module
+
+    monkeypatch.setattr(module, "MAX_SOURCE_ENTRIES", 1)
+    assert workspace.list_files(prefix="src")["paths"] == ["src/main.py"]
+    with pytest.raises(WorkspaceError, match="Workspace listing exceeds bound"):
+        workspace.list_files()

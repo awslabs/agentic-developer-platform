@@ -23,12 +23,16 @@ WRAPPERS = {
 async def lifecycle_providers(connect, lease, allocation_id):
     async with connect() as connection:
         rows = await connection.fetch(
-            "SELECT provider,operation_kind,provider_ref,outcome,stage FROM harness_provider_call_intent "
+            "SELECT * FROM harness_provider_call_intent "
             "WHERE org_id=$1 AND workspace_id=$2 AND allocation_id=$3 LIMIT 1024",
             lease.org_id,
             lease.workspace_id,
             allocation_id,
         )
+        if any(row.get("operation_id") == lease.operation_id for row in rows):
+            from harness_jobs.provider_retry import active_call_rows
+
+            rows = await active_call_rows(connection, lease.operation_id, rows)
     if not rows or len(rows) >= 1024:
         raise OperationRefused(
             "lifecycle provider journal is unavailable or exceeds its bound"

@@ -360,19 +360,21 @@ def _query_vulnerabilities_by_package(pool: Any, package_name: str) -> list[dict
         pool.putconn(conn)
 
 
-def _query_dependencies_by_package(pool: Any, package_name: str) -> list[dict]:
+def _query_dependencies_by_package(
+    pool: Any, package_name: str, allowed_repos: set[str]
+) -> list[dict]:
     """Query dependencies table for repos using a given package name."""
     query = """
         SELECT d.repo_id, d.package_coordinate, d.version, r.repo_name
         FROM dependencies d
         JOIN repositories r ON d.repo_id = r.id
-        WHERE d.package_coordinate LIKE %s
+        WHERE d.package_coordinate LIKE %s AND r.repo_name = ANY(%s)
     """
     pattern = f"pkg:%/{package_name}@%"
     conn = pool.getconn()
     try:
         with conn.cursor() as cur:
-            cur.execute(query, (pattern,))
+            cur.execute(query, (pattern, sorted(allowed_repos)))
             rows = cur.fetchall()
             return [
                 {
@@ -442,7 +444,7 @@ def _check_cve_exists(pool: Any, cve_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_by_cve(pool: Any, cve_id: str) -> list[AffectedTuple]:
+def _resolve_by_cve(pool: Any, cve_id: str, allowed_repos: set[str]) -> list[AffectedTuple]:
     """CVE → vulnerabilities → packages → reverse-lookup dependencies."""
     vulns = _query_vulnerabilities_by_cve(pool, cve_id)
     if not vulns:
@@ -456,7 +458,7 @@ def _resolve_by_cve(pool: Any, cve_id: str) -> list[AffectedTuple]:
         if not package_name:
             continue
 
-        deps = _query_dependencies_by_package(pool, package_name)
+        deps = _query_dependencies_by_package(pool, package_name, allowed_repos)
         for dep in deps:
             dep_version = dep["version"]
             if not dep_version:
@@ -526,9 +528,11 @@ def _resolve_by_repo(pool: Any, repo_name: str) -> list[AffectedTuple]:
     return results
 
 
-def _resolve_by_package(pool: Any, package_name: str) -> list[AffectedTuple]:
+def _resolve_by_package(
+    pool: Any, package_name: str, allowed_repos: set[str]
+) -> list[AffectedTuple]:
     """Package → dependencies (all repos) → check vulnerabilities."""
-    deps = _query_dependencies_by_package(pool, package_name)
+    deps = _query_dependencies_by_package(pool, package_name, allowed_repos)
     if not deps:
         return []
 
@@ -575,29 +579,9 @@ def _intersect_findings(
 def _filter_by_acl(
     findings: list[AffectedTuple],
     caller: CallerPrincipal,
-    acl_store: PostgresACLStore | None,
+    allowed_lookup: set[str],
 ) -> list[AffectedTuple]:
-    """Filter findings to repos the caller can see. Fail-closed.
-
-    No ACL store means no results (#5658). This previously returned ``findings``
-    unfiltered "in dev mode", which disclosed every tenant's unpatched
-    dependency inventory in any environment without a database connection —
-    the state the shipped manifest produced.
-    """
-    if not caller.is_resolved:
-        return []
-    if acl_store is None:
-        log.warning("secure_backend: no ACL store available, returning empty (fail-closed)")
-        record_acl_denial(caller=caller, requested=[], reason="acl_store_unavailable")
-        return []
-    try:
-        allowed_repos = acl_store.get_allowed_repos(caller)
-    except Exception:
-        log.warning("secure_backend: ACL store raised, returning empty", exc_info=True)
-        return []
-    # Normalise both sides so a domain-qualified finding matches the catalogue
-    # form, while a bare short name still fails to match another tenant's repo.
-    allowed_lookup = _build_allowed_lookup(allowed_repos)
+    """Keep the ACL check even when dependency SQL has already scoped its rows."""
     permitted = [f for f in findings if _repo_is_allowed(f.repo_name, allowed_lookup)]
     if len(permitted) < len(findings):
         record_acl_denial(
@@ -622,21 +606,57 @@ def resolve_input(
 
     Returns (findings, cve_known, repo_indexed).
     """
+    if not caller.is_resolved or acl_store is None:
+        record_acl_denial(
+            caller=caller, requested=[repo] if repo else [], reason="secure_repo_acl_unavailable"
+        )
+        return [], False, not bool(repo)
+    try:
+        allowed_repos = acl_store.get_allowed_repos(caller)
+    except Exception:
+        log.warning("secure_backend: ACL lookup failed", exc_info=True)
+        record_acl_denial(
+            caller=caller, requested=[repo] if repo else [], reason="secure_repo_acl_unavailable"
+        )
+        return [], False, not bool(repo)
+
+    allowed_lookup = _build_allowed_lookup(allowed_repos)
+    if repo:
+        candidates = [
+            name
+            for name in allowed_repos
+            if _repo_is_allowed(repo, {_normalize_repo_name(name).casefold()})
+        ]
+        if repo in allowed_repos:
+            catalogue_repo = repo
+        elif len(candidates) == 1:
+            catalogue_repo = candidates[0]
+        else:
+            record_acl_denial(
+                caller=caller,
+                requested=[repo],
+                reason="secure_repo_not_permitted",
+                allowed_sample=sorted(allowed_lookup)[:10],
+            )
+            return [], False, False
+    elif not allowed_repos:
+        return [], False, True
+
     cve_known = True
     repo_indexed = True
 
     if cve and not _check_cve_exists(db_pool, cve):
         cve_known = False
-    if repo and not _check_repo_exists(db_pool, repo):
+    if repo and not _check_repo_exists(db_pool, catalogue_repo):
         repo_indexed = False
 
     finding_sets: list[list[AffectedTuple]] = []
     if cve and cve_known:
-        finding_sets.append(_resolve_by_cve(db_pool, cve))
+        finding_sets.append(_resolve_by_cve(db_pool, cve, allowed_repos))
     if repo and repo_indexed:
-        finding_sets.append(_resolve_by_repo(db_pool, repo))
+        finding_sets.append(_resolve_by_repo(db_pool, catalogue_repo))
     if package:
-        finding_sets.append(_resolve_by_package(db_pool, package))
+        finding_sets.append(_resolve_by_package(db_pool, package, allowed_repos))
 
     if not finding_sets:
         findings: list[AffectedTuple] = []
@@ -647,7 +667,7 @@ def resolve_input(
         for other_set in finding_sets[1:]:
             findings = _intersect_findings(findings, other_set)
 
-    findings = _filter_by_acl(findings, caller, acl_store)
+    findings = _filter_by_acl(findings, caller, allowed_lookup)
     return findings, cve_known, repo_indexed
 
 
@@ -974,7 +994,9 @@ async def get_sbom_freshness(repo_name: str, s3_client: Any, bucket: str) -> dic
         }
     except Exception:
         log.debug("SBOM freshness check failed for %s (key=%s)", repo_name, key)
-        return {"sbom_age_hours": None, "repo_indexed": False}
+        # Object availability cannot override the authorized catalogue lookup.
+        # A missing or unreadable SBOM means its freshness is unknown.
+        return {"sbom_age_hours": None}
 
 
 # ---------------------------------------------------------------------------

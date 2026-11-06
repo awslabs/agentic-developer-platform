@@ -14,6 +14,7 @@ on:
     paths:
       - 'modules/gateway/lambda/github-auth-broker/**'
       - '.github/workflows/github-auth-broker-deploy.yml'
+      - 'modules/gateway/scripts/prepare-broker-state.py'
       # Documentation-only changes do not start this workflow.
       - '!docs/**'
       - '!**/docs/**'
@@ -60,7 +61,7 @@ jobs:
   deploy:
     name: Package and Deploy Broker Lambda
     if: github.ref == 'refs/heads/main'
-    runs-on: arc-runner-org
+    runs-on: arc-runner-deploy
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       id-token: write
@@ -140,6 +141,11 @@ jobs:
             "s3://${STATE_BUCKET}/lambda-artifacts/github-auth-broker/broker.zip" \
             --metadata "commit=${{ github.sha }}"
           echo "Uploaded to s3://${STATE_BUCKET}/lambda-artifacts/github-auth-broker/broker.zip"
+
+      - name: Validate dedicated state signing before publishing
+        run: |
+          python3 modules/gateway/scripts/prepare-broker-state.py \
+            --function-name "${FUNCTION_NAME}" --region "${AWS_REGION}"
 
       - name: Update Lambda function code
         run: |

@@ -42,12 +42,15 @@ import logging
 import os
 from typing import Any
 
+from sqlalchemy import func, select
+
 from src.admin.persona_models.retirement import RetirementAlertReport, run_retirement_alert_pass
 from src.orchestration.dispatch_pass import DispatchPassReport, prepare_pending, publish_pending, run_dispatch_pass
 from src.orchestration.engine_commands import EngineCommandReport, flush_engine_commands, run_engine_command_pass
 from src.orchestration.execution_runner import RunnerReport, run_execution_runner
 from src.orchestration.stall import StallConfig, StallReport, detect_stalls
 from src.orchestration.tick import TickReport, run_tick
+from src.orchestration.tracker_outbox import stage_tracker_publications
 from src.orchestration.tracker_projection import TrackerProjectionReport, flush_tracker_projections, run_tracker_projection_pass
 from src.shared.database import get_session_factory, reset_engine
 
@@ -507,6 +510,38 @@ async def _run() -> TickReport:
     reset_engine()
 
     factory = get_session_factory()
+    async with factory() as lock_session:
+        if not await acquire_tick_lock(lock_session):
+            # Reserved concurrency 2 on a one-minute schedule with 50-90 s invocations
+            # meant two ticks routinely overlapped and waited on each other's row
+            # locks (#7889). One holder at a time; the other invocation does nothing.
+            logger.warning("orchestration tick: another tick holds the engine lock; skipping this invocation")
+            return TickReport(skipped_overlap=True)
+        try:
+            return await _run_locked(factory)
+        finally:
+            # The transaction-scoped advisory lock ends with this transaction.
+            await lock_session.rollback()
+
+
+TICK_ADVISORY_LOCK_KEY = 78890001
+
+
+async def acquire_tick_lock(session) -> bool:
+    """Try to become the one running tick; the lock lasts for this session's transaction (#7889).
+
+    Transaction-scoped on purpose: a pooled connection returned after rollback carries
+    no lock, whereas a session-level advisory lock would leak to the next borrower.
+    Advisory locks are a PostgreSQL feature; on any other dialect (the SQLite test
+    suites) there is one process and the tick simply runs.
+    """
+    bind = session.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", None) != "postgresql":
+        return True
+    return bool(await session.scalar(select(func.pg_try_advisory_xact_lock(TICK_ADVISORY_LOCK_KEY))))
+
+
+async def _run_locked(factory) -> TickReport:
     async with factory() as session:
         try:
             # First: what humans asked for in GitHub comments. `from_env` is
@@ -560,7 +595,12 @@ async def _run() -> TickReport:
             # covers what surrounds it (the flow query, an unforeseen bug) so the
             # engine's durability never depends on a display feature being correct.
             try:
-                projection_report = await run_tracker_projection_pass(session)
+                async with session.begin_nested():
+                    projection_report = await run_tracker_projection_pass(session)
+                    await stage_tracker_publications(session, projection_report)
+                    # A per-flow handler may have caught a SQL error. Detect it
+                    # before RELEASE so only projection work rolls back.
+                    await session.execute(select(1))
             except Exception:
                 logger.exception("orchestration tracker projection: pass failed; engine state and dispatch are unaffected")
                 projection_report = TrackerProjectionReport()
@@ -608,8 +648,8 @@ async def _run() -> TickReport:
         # engine actually decided. Like the flushes above it mutates its report in
         # place and never raises, so a GitHub outage cannot fail the tick, change a
         # node's state, bypass a gate or dispatch an agent (#5284 AC3). The region is
-        # re-rendered from current state on the next tick, so a failure converges
-        # rather than being lost.
+        # stored in the outbox before commit and recovered on the next tick;
+        # a failed write is never retargeted from a later render.
         await flush_tracker_projections(projection_report, session_factory=factory)
 
         # Independent-session outbox pass. Each claim is committed before SNS
@@ -676,7 +716,10 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
         # it has to be visible in the one line the smoke check reads. Note this is
         # about *delivery*, not content — a refused or stale-declined projection is
         # a correct outcome and leaves the report successful.
-        "status": "ok"
+        # `getattr`: `_TickReportStub` in tests/orchestration/test_tick.py predates the field.
+        "status": "skipped_overlap"
+        if getattr(report, "skipped_overlap", False)
+        else "ok"
         if report.success
         and (stall_report is None or stall_report.success)
         and (dispatch_report is None or dispatch_report.success)
@@ -860,14 +903,14 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
     if projection_report is not None and not projection_report.success:
         # States the consequence and the recovery, because neither is obvious: no
         # engine state is affected (the flush runs after the transition commit and
-        # its lock session touches no engine rows), and the region is re-rendered
-        # from current state next wake, so a transient outage self-heals. What a
+        # its lock session touches no engine rows), and the queued operation is
+        # retried on the next wake without moving its approved target. What a
         # reader must know is that until then the EPIC issue understates progress —
         # the exact condition #5284 was filed for.
         logger.error(
             "orchestration tracker projection completed with %d error(s) and %d undelivered update(s) — "
             "no node state, gate or dispatch is affected; the affected EPIC tracker regions remain stale "
-            "and are re-rendered from current engine state on the next tick",
+            "and are retried against their original approved target on the next tick",
             projection_report.errors,
             projection_report.projections_failed,
         )

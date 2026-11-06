@@ -114,6 +114,7 @@ class OperationDispatcher:
         policy_for=None,
         interval=5,
         enabled=True,
+        settlement_delivery=None,
     ):
         self.connect, self.transport, self.policy_for = connect, transport, policy_for
         self.domain_connect = domain_connect
@@ -122,6 +123,7 @@ class OperationDispatcher:
             raise ValueError("operation dispatch enabled must be a boolean")
         self.enabled = enabled
         self.interval = interval
+        self.settlement_delivery = settlement_delivery
         self._task = None
         self._recovery_cursor = ""
         self._dispatch_cursor = ""
@@ -158,6 +160,26 @@ class OperationDispatcher:
             ) or (
                 row["action"] == "teardown"
                 and workspace["teardown_operation_id"] == row["operation_id"]
+            ):
+                return workspace
+            if (
+                row["action"] == "provision"
+                and decode_payload(row["request_payload"]).parameters.get(
+                    "lifecycle_phase"
+                )
+                == "prepare-partial-apply"
+                and workspace["status"] == "Provisioning"
+                and workspace["cluster_id"] is None
+                and not workspace["is_default"]
+                and await connection.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM workspace_partial_apply_preparations "
+                    "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3 AND plan_digest=$4 AND source_operation_id=$5)",
+                    row["operation_id"],
+                    row["org_id"],
+                    row["workspace_id"],
+                    row["plan_digest"],
+                    workspace["provisioning_operation_id"],
+                )
             ):
                 return workspace
             if await connection.fetchval(
@@ -218,6 +240,18 @@ class OperationDispatcher:
 
     async def _registration(self, row):
         request = decode_payload(row["request_payload"])
+        if request.parameters.get("lifecycle_phase") == "prepare-partial-apply":
+            from workspace_provisioning.partial_apply_request import registration_values
+
+            async with self.connect() as connection, self.domain_connect() as domain:
+                await registration_values(
+                    connection,
+                    domain,
+                    operation_id=row["operation_id"],
+                    org_id=row["org_id"],
+                    workspace_id=row["workspace_id"],
+                )
+            return True
         if request.parameters.get("lifecycle_phase") == "prepare-retirement-access":
             from workspace_provisioning.control_registry import registration_values
 
@@ -320,13 +354,15 @@ class OperationDispatcher:
             return False
 
     async def _lifecycle_ready(self, row):
+        from workspace_provisioning.artifacts import native_lifecycle_phase
+        from workspace_provisioning.runtime_config import LifecycleRefused
+
         parameters = decode_payload(row["request_payload"]).parameters
-        if (
-            "runtime_config_sha256" in parameters
-            and "lifecycle_phase" not in parameters
-        ):
+        try:
+            phase = native_lifecycle_phase(parameters)
+        except LifecycleRefused:
             return False
-        if "lifecycle_phase" not in parameters:
+        if phase is None:
             return True
         from app.operation_activation import (
             expected_lifecycle_binding,
@@ -515,9 +551,18 @@ class OperationDispatcher:
                 self._run(), name="superplane-operation-outbox"
             )
 
+    async def settle_once(self):
+        if (
+            not self.enabled
+            or not dispatch_enabled()
+            or self.settlement_delivery is None
+        ):
+            return ()
+        return await self.settlement_delivery.drain_once()
+
     async def _run(self):
         while True:
-            for deliver in (self.drain_once, self.recover_once):
+            for deliver in (self.drain_once, self.recover_once, self.settle_once):
                 try:
                     await deliver()
                 except asyncio.CancelledError:

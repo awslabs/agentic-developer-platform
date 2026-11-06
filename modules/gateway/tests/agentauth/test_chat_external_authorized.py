@@ -15,11 +15,18 @@ from src.activity.service import WorkActivityPage
 from src.agentauth import chat_data_routes
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import UserCredential, UserIdentity
-from tests.agentauth.chat_activity_fixtures import HEADERS, workload_runtime
+from tests.agentauth.chat_activity_fixtures import HEADERS, pin_activity_query_clock, workload_runtime
 
 WINDOW = {"run_id": "run-a", "from": "2026-10-01T00:00:00Z", "to": "2026-10-04T00:00:00Z", "timezone": "UTC"}
 INSTANCE = "https://gitlab.example.invalid"
 TIME = "2026-10-02T11:00:00Z"
+
+
+@pytest.fixture(autouse=True)
+def query_clock(monkeypatch):
+    # Provider outages must not acquire partial coverage just because these
+    # fixed fixtures age past Activity's 30-day retention window.
+    pin_activity_query_clock(monkeypatch)
 
 
 @pytest.fixture

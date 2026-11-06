@@ -1,22 +1,32 @@
 {
   "syft": {
     "revision": "02ba369d13b4248395b20a504eca94b0cab564d8",
-    "go_mod_sha256": "f1db5a8f2feeb1a725b14c9b33d910a214008d3f1fd2d3c433f35b01af3c881d",
-    "go_sum_sha256": "913b405c61335871b2998f8ad03ae68b286ae5278d6cbe0fa6a5867588daf39a"
+    "go_mod_sha256": "7b0a3e1b337949054857ea7f6090442133af5c710e3523a1b4044a9e64186d43",
+    "go_sum_sha256": "77baf98d72c4ffc86f484a7966a55deae08d240f1b6a3f0a65b0caffecc9909e",
+    "toolchain": "go1.26.9"
   },
   "trivy": {
     "revision": "e1fd17a0ea4a8cf24bc4b4dd7e2cfbf4bb31b994",
-    "go_mod_sha256": "4a79173e5bfc9fe3a2c223b8044a7a408b3fd3773fb7880afb4516a55aa4995f",
-    "go_sum_sha256": "4493bbed3343c8feef2ae602d31fe9eec05221dca60d5e608ae2922271034215"
+    "go_mod_sha256": "50478198fb77d6958b00830aaeda8ef9b23f8598f81ac98acdcea60d76d45815",
+    "go_sum_sha256": "4d4f851e4a80c7fb04e42a2a9da28baf3f09c83a756f0b7236ea21b4efd7a018",
+    "toolchain": "go1.26.9"
   },
   "scip": {
     "revision": "2e9ff3c2603a85daabe125c9f20075ec52df0731",
     "go_mod_sha256": "5e02b0b8310eec8971adde2565056c5c41f79f1467b7e3629bca2ba56628da8e",
-    "go_sum_sha256": "7da0012f1c073611ef28fa06803153306f475aabef85075020f4fb7f80ac2919"
+    "go_sum_sha256": "7da0012f1c073611ef28fa06803153306f475aabef85075020f4fb7f80ac2919",
+    "toolchain": "go1.26.9"
   },
   "tsgo": {
     "revision": "2bd066d87f5bafd315be9f40889d0a60b9e58e0b",
     "go_mod_sha256": "dfbf0e9ce94a7b18bca10e78b21dcd3659330afef4df03b25e88133d012aa3c8",
-    "go_sum_sha256": "bac2ec5f6496c316e497c7bc8b2103ee3effc5a14d313c97bf23c64df083df33"
+    "go_sum_sha256": "bac2ec5f6496c316e497c7bc8b2103ee3effc5a14d313c97bf23c64df083df33",
+    "toolchain": "go1.26.9"
+  },
+  "osv": {
+    "revision": "e840a6e8adb14b7777c78e26cfbf6e2abc1d1fc6",
+    "toolchain": "go1.27.2",
+    "go_mod_sha256": "7ed4a45955b67a4b28d38ad1f834778ffd9979524032514b9c343165dd980271",
+    "go_sum_sha256": "d89ac8ea219e18828f9f01346111e5ab36c71b3556c1739d158e97e5eaa566e0"
   }
 }

@@ -122,6 +122,8 @@ class _Ledger:
         self._settled = settled or {}
         self.usage_queries: list[tuple[str, str]] = []
         self.session = MagicMock()
+        self.session.get = AsyncMock(return_value=None)
+        self.session.commit = AsyncMock()
         self.session.execute = AsyncMock(side_effect=self._execute)
 
     async def _execute(self, statement):

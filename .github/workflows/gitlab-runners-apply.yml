@@ -1,0 +1,176 @@
+name: GitLab Runners Apply
+run-name: ADP deployment ${{ inputs.adp_correlation }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Exact target AWS account'
+        required: true
+        type: string
+      region:
+        description: 'Exact reviewed region'
+        required: true
+        type: string
+      environment:
+        description: 'Reviewed environment'
+        required: true
+        default: dev
+        type: string
+      source_revision:
+        description: 'Optional lifecycle binding; must equal protected configuration when supplied'
+        required: false
+        type: string
+      activation_operation_id:
+        description: 'Optional lifecycle binding; must equal protected configuration when supplied'
+        required: false
+        type: string
+      activation_group_id:
+        description: 'Optional lifecycle binding; must equal protected configuration when supplied'
+        required: false
+        type: string
+      approved_plan_sha256:
+        description: 'Optional lifecycle binding; must equal protected configuration when supplied'
+        required: false
+        type: string
+      adp_correlation:
+        description: 'Accepted operational release correlation'
+        required: true
+        type: string
+      adp_source_revision:
+        description: 'Accepted immutable source revision'
+        required: true
+        type: string
+      adp_definition_revision:
+        description: 'Accepted workflow definition revision'
+        required: true
+        type: string
+      adp_contract_digest:
+        description: 'Accepted delivery contract digest'
+        required: true
+        type: string
+
+concurrency:
+  group: gitlab-runners-${{ inputs.account_id }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+  ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1
+  ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+
+jobs:
+  apply:
+    if: github.ref == 'refs/heads/main' && inputs.environment == 'dev'
+    runs-on: arc-runner-org
+    environment: adp-gitlab-deploy-dev
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      ACCOUNT_ID: ${{ inputs.account_id }}
+      AWS_REGION: ${{ inputs.region }}
+      ADP_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_RUNNER_CONFIG_JSON: ${{ vars.GITLAB_RUNNER_CONFIG_JSON }}
+      LIFECYCLE_SOURCE: ${{ inputs.source_revision }}
+      LIFECYCLE_OPERATION: ${{ inputs.activation_operation_id }}
+      LIFECYCLE_GROUP: ${{ inputs.activation_group_id }}
+      LIFECYCLE_PLAN: ${{ inputs.approved_plan_sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind dispatch to the reviewed source before AWS authentication
+        id: source
+        env:
+          ACCEPTED_REVISION: ${{ inputs.adp_source_revision }}
+          ACCEPTED_DEFINITION: ${{ inputs.adp_definition_revision }}
+          WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCEPTED_DIGEST: ${{ inputs.adp_contract_digest }}
+          PROTECTED_DIGEST: ${{ vars.GITLAB_RUNNERS_DELIVERY_CONTRACT_DIGEST }}
+          PROTECTED_REGION: ${{ vars.ADP_DEPLOY_REGION }}
+        run: |
+          set -euo pipefail
+          [[ "$ACCEPTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$ACCEPTED_REVISION"
+          git merge-base --is-ancestor "$ACCEPTED_REVISION" refs/remotes/origin/main
+          [[ "$ACCEPTED_DEFINITION" =~ ^[0-9a-f]{40}$ ]]
+          test "$WORKFLOW_REVISION" = "$ACCEPTED_DEFINITION"
+          [[ "$ACCEPTED_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          test "$ACCEPTED_DIGEST" = "$PROTECTED_DIGEST"
+          test "$AWS_REGION" = "$PROTECTED_REGION"
+      - name: Validate protected runtime inputs
+        id: inputs
+        run: |
+          set -euo pipefail
+          [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]]
+          test -n "$ADP_RUNNER_CONFIG_JSON"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ inputs.region }}
+      - name: Confirm exact account and role
+        id: identity
+        run: |
+          set -euo pipefail
+          test "$ACCOUNT_ID" = "${ADP_DEPLOY_ROLE_ARN:13:12}"
+          aws sts get-caller-identity --output json | python3 modules/source-control/gitlab/runners/scripts/deployment_guard.py identity --expected-role "$ADP_DEPLOY_ROLE_ARN"
+      - name: Load reviewed runtime tools
+        id: config
+        run: |
+          set -euo pipefail
+          for tool in aws terraform kubectl python3; do command -v "$tool" >/dev/null; done
+          python3 -m venv "$RUNNER_TEMP/gitlab-runner-venv"
+          "$RUNNER_TEMP/gitlab-runner-venv/bin/pip" install --quiet ./modules/gateway boto3 httpx cryptography
+          echo "$RUNNER_TEMP/gitlab-runner-venv/bin" >> "$GITHUB_PATH"
+      - name: Publish authenticated deployment context
+        env:
+          ADP_DELIVERY_CONTRACT_JSON: ${{ vars.GITLAB_RUNNERS_DELIVERY_CONTRACT_JSON }}
+          ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+          ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ADP_DELIVERY_WORKFLOW: gitlab-runners-apply.yml
+          ADP_DELIVERY_ACCOUNT_ID: ${{ inputs.account_id }}
+          ADP_DELIVERY_RESOURCE_KIND: ${{ vars.GITLAB_RUNNERS_DELIVERY_RESOURCE_KIND }}
+          ADP_DELIVERY_RESOURCE_ID: ${{ vars.GITLAB_RUNNERS_DELIVERY_RESOURCE_ID }}
+          ADP_DELIVERY_INPUTS_JSON: ${{ toJSON(inputs) }}
+        run: |
+          set -euo pipefail
+          python3 modules/source-control/gitlab/scripts/delivery_evidence.py --context
+          python3 modules/gateway/scripts/publish-deployment-evidence.py context gitlab-runners-apply.yml "$RUNNER_TEMP/gitlab-delivery/deployment-context.json"
+      - name: Apply reviewed manager plan and verify real product CI
+        id: apply
+        run: python3 modules/source-control/gitlab/scripts/runner_workflow.py
+      - name: Publish verified operational delivery
+        env:
+          ADP_DELIVERY_CONTRACT_JSON: ${{ vars.GITLAB_RUNNERS_DELIVERY_CONTRACT_JSON }}
+          ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+          ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          ADP_DELIVERY_WORKFLOW: gitlab-runners-apply.yml
+          ADP_DELIVERY_COMPONENT: ${{ vars.GITLAB_RUNNERS_DELIVERY_COMPONENT }}
+          ADP_DELIVERY_ACCOUNT_ID: ${{ inputs.account_id }}
+          ADP_DELIVERY_RESOURCE_KIND: ${{ vars.GITLAB_RUNNERS_DELIVERY_RESOURCE_KIND }}
+          ADP_DELIVERY_RESOURCE_ID: ${{ vars.GITLAB_RUNNERS_DELIVERY_RESOURCE_ID }}
+          ADP_DELIVERY_STEP_OUTCOMES: '{"source":"${{ steps.source.outcome }}","inputs":"${{ steps.inputs.outcome }}","identity":"${{ steps.identity.outcome }}","config":"${{ steps.config.outcome }}","apply":"${{ steps.apply.outcome }}"}'
+        run: |
+          set -euo pipefail
+          python3 modules/source-control/gitlab/scripts/delivery_evidence.py
+          python3 modules/gateway/scripts/publish-deployment-evidence.py delivery delivery-evidence "$RUNNER_TEMP/gitlab-delivery/delivery.json"
+      - name: Remove private runner files
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/gitlab-runner-activation" "$RUNNER_TEMP/gitlab-runner-venv" modules/source-control/gitlab/runners/.terraform/runners-release-lock.json

@@ -1,0 +1,453 @@
+{
+  "status": "registered_inert_draft_mapping",
+  "bolts": [
+    {
+      "bolt": "B01",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8229",
+      "owning_epic": 8141,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8141/b01-build/i01",
+        "product-onboarding-8141/epic-8141/b01-build/i02",
+        "product-onboarding-8141/epic-8141/b01-build/d01",
+        "product-onboarding-8141/epic-8141/b01-build/v01",
+        "product-onboarding-8141/epic-8141/b01-build/i04",
+        "product-onboarding-8141/epic-8141/b01-build/v03"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8141/b01-live/d01",
+        "product-onboarding-8141/epic-8141/b01-live/v01",
+        "product-onboarding-8141/epic-8141/b01-live/v03"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8141/b01-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8141/b01-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8242",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8242#AC-01",
+        "https://github.com/aws-e/adp/issues/8242#AC-02",
+        "https://github.com/aws-e/adp/issues/8242#AC-03",
+        "https://github.com/aws-e/adp/issues/8243#AC-01",
+        "https://github.com/aws-e/adp/issues/8243#AC-02",
+        "https://github.com/aws-e/adp/issues/8243#AC-03",
+        "https://github.com/aws-e/adp/issues/8247#AC-01",
+        "https://github.com/aws-e/adp/issues/8247#AC-02",
+        "https://github.com/aws-e/adp/issues/8247#AC-03",
+        "https://github.com/aws-e/adp/issues/8243#AC-04",
+        "https://github.com/aws-e/adp/issues/8247#AC-04",
+        "https://github.com/aws-e/adp/issues/8242#AC-04"
+      ],
+      "checkpoint": "Create, list, read, edit and archive a Product from the clean installed CLI; independent API readback matches.",
+      "evaluation_criterion_sources": {
+        "B01-EC-01": "https://github.com/aws-e/adp/issues/8229#EC-01",
+        "B01-EC-02": "https://github.com/aws-e/adp/issues/8229#EC-02",
+        "B01-EC-03": "https://github.com/aws-e/adp/issues/8229#EC-03",
+        "B01-EC-04": "https://github.com/aws-e/adp/issues/8229#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8243",
+        "https://github.com/aws-e/adp/issues/8247"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8243#AC-04",
+        "https://github.com/aws-e/adp/issues/8247#AC-04"
+      ],
+      "automatic_external_preconditions": []
+    },
+    {
+      "bolt": "B02",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8230",
+      "owning_epic": 8141,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8141/b02-build/i03",
+        "product-onboarding-8141/epic-8141/b02-build/v02"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8141/b02-live/v02"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8141/b02-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8141/b02-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8246",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8246#AC-01",
+        "https://github.com/aws-e/adp/issues/8246#AC-02",
+        "https://github.com/aws-e/adp/issues/8246#AC-03",
+        "https://github.com/aws-e/adp/issues/8246#AC-04"
+      ],
+      "checkpoint": "Create and edit the three-field Product in the served browser, reload, and verify saved values independently.",
+      "evaluation_criterion_sources": {
+        "B02-EC-01": "https://github.com/aws-e/adp/issues/8230#EC-01",
+        "B02-EC-02": "https://github.com/aws-e/adp/issues/8230#EC-02",
+        "B02-EC-03": "https://github.com/aws-e/adp/issues/8230#EC-03",
+        "B02-EC-04": "https://github.com/aws-e/adp/issues/8230#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8246"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8246#AC-04"
+      ],
+      "automatic_external_preconditions": []
+    },
+    {
+      "bolt": "B03",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8231",
+      "owning_epic": 8141,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8141/b03-build/i05",
+        "product-onboarding-8141/epic-8141/b03-build/i06",
+        "product-onboarding-8141/epic-8141/b03-build/v04"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8141/b03-live/v04"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8141/b03-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8141/b03-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8250",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8250#AC-01",
+        "https://github.com/aws-e/adp/issues/8250#AC-02",
+        "https://github.com/aws-e/adp/issues/8250#AC-03",
+        "https://github.com/aws-e/adp/issues/8250#AC-04"
+      ],
+      "checkpoint": "Switch delivery scopes and inspect the shared Product/team; both clients show isolated scoped configuration and common Product identity.",
+      "evaluation_criterion_sources": {
+        "B03-EC-01": "https://github.com/aws-e/adp/issues/8231#EC-01",
+        "B03-EC-02": "https://github.com/aws-e/adp/issues/8231#EC-02",
+        "B03-EC-03": "https://github.com/aws-e/adp/issues/8231#EC-03",
+        "B03-EC-04": "https://github.com/aws-e/adp/issues/8231#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8250"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8250#AC-04"
+      ],
+      "automatic_external_preconditions": []
+    },
+    {
+      "bolt": "B04",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8232",
+      "owning_epic": 8141,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8141/b04-build/i07",
+        "product-onboarding-8141/epic-8141/b04-build/v05"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8141/b04-live/v05"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8141/b04-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8141/b04-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8252",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8252#AC-01",
+        "https://github.com/aws-e/adp/issues/8252#AC-02",
+        "https://github.com/aws-e/adp/issues/8252#AC-03",
+        "https://github.com/aws-e/adp/issues/8252#AC-04"
+      ],
+      "checkpoint": "Start onboarding in either client, interrupt and resume in the other with the same saved session and progress.",
+      "evaluation_criterion_sources": {
+        "B04-EC-01": "https://github.com/aws-e/adp/issues/8232#EC-01",
+        "B04-EC-02": "https://github.com/aws-e/adp/issues/8232#EC-02",
+        "B04-EC-03": "https://github.com/aws-e/adp/issues/8232#EC-03",
+        "B04-EC-04": "https://github.com/aws-e/adp/issues/8232#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8252"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8252#AC-04"
+      ],
+      "automatic_external_preconditions": []
+    },
+    {
+      "bolt": "B05",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8233",
+      "owning_epic": 8141,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8141/b05-build/i08",
+        "product-onboarding-8141/epic-8141/b05-build/i09",
+        "product-onboarding-8141/epic-8141/b05-build/i10",
+        "product-onboarding-8141/epic-8141/b05-build/v06"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8141/b05-live/v06"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8141/b05-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8141/b05-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8256",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8256#AC-01",
+        "https://github.com/aws-e/adp/issues/8256#AC-02",
+        "https://github.com/aws-e/adp/issues/8256#AC-03",
+        "https://github.com/aws-e/adp/issues/8256#AC-04"
+      ],
+      "checkpoint": "Discover/select repository and environment connections, verify them, then observe expiry/revocation through the clients.",
+      "evaluation_criterion_sources": {
+        "B05-EC-01": "https://github.com/aws-e/adp/issues/8233#EC-01",
+        "B05-EC-02": "https://github.com/aws-e/adp/issues/8233#EC-02",
+        "B05-EC-03": "https://github.com/aws-e/adp/issues/8233#EC-03",
+        "B05-EC-04": "https://github.com/aws-e/adp/issues/8233#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8256"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8256#AC-04"
+      ],
+      "automatic_external_preconditions": []
+    },
+    {
+      "bolt": "B06",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8234",
+      "owning_epic": 8141,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8141/b06-build/i11",
+        "product-onboarding-8141/epic-8141/b06-build/v07"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8141/b06-live/v07"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8141/b06-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8141/b06-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8258",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8258#AC-01",
+        "https://github.com/aws-e/adp/issues/8258#AC-02",
+        "https://github.com/aws-e/adp/issues/8258#AC-03",
+        "https://github.com/aws-e/adp/issues/8258#AC-04"
+      ],
+      "checkpoint": "Use guidance and direct forms with and without model access; only authorized reviewable suggestions appear.",
+      "evaluation_criterion_sources": {
+        "B06-EC-01": "https://github.com/aws-e/adp/issues/8234#EC-01",
+        "B06-EC-02": "https://github.com/aws-e/adp/issues/8234#EC-02",
+        "B06-EC-03": "https://github.com/aws-e/adp/issues/8234#EC-03",
+        "B06-EC-04": "https://github.com/aws-e/adp/issues/8234#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8258"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8258#AC-04"
+      ],
+      "automatic_external_preconditions": []
+    },
+    {
+      "bolt": "B07",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8235",
+      "owning_epic": 8141,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8141/b07-build/i12",
+        "product-onboarding-8141/epic-8141/b07-build/i13",
+        "product-onboarding-8141/epic-8141/b07-build/v08"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8141/b07-live/v08"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8141/b07-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8141/b07-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8261",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8261#AC-01",
+        "https://github.com/aws-e/adp/issues/8261#AC-02",
+        "https://github.com/aws-e/adp/issues/8261#AC-03",
+        "https://github.com/aws-e/adp/issues/8261#AC-04"
+      ],
+      "checkpoint": "Start a connection/admin handoff or explicitly create the selected repository, then resume and see the actual outcome.",
+      "evaluation_criterion_sources": {
+        "B07-EC-01": "https://github.com/aws-e/adp/issues/8235#EC-01",
+        "B07-EC-02": "https://github.com/aws-e/adp/issues/8235#EC-02",
+        "B07-EC-03": "https://github.com/aws-e/adp/issues/8235#EC-03",
+        "B07-EC-04": "https://github.com/aws-e/adp/issues/8235#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8261"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8261#AC-04"
+      ],
+      "automatic_external_preconditions": []
+    },
+    {
+      "bolt": "B08",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8236",
+      "owning_epic": 8141,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8141/b08-build/i14",
+        "product-onboarding-8141/epic-8141/b08-build/i15",
+        "product-onboarding-8141/epic-8141/b08-build/v09"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8141/b08-live/v09"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8141/b08-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8141/b08-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8264",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8264#AC-01",
+        "https://github.com/aws-e/adp/issues/8264#AC-02",
+        "https://github.com/aws-e/adp/issues/8264#AC-03",
+        "https://github.com/aws-e/adp/issues/8264#AC-04"
+      ],
+      "checkpoint": "Save a budget and accept only a suggested release date; the saved amount and its manual provenance remain unchanged.",
+      "evaluation_criterion_sources": {
+        "B08-EC-01": "https://github.com/aws-e/adp/issues/8236#EC-01",
+        "B08-EC-02": "https://github.com/aws-e/adp/issues/8236#EC-02",
+        "B08-EC-03": "https://github.com/aws-e/adp/issues/8236#EC-03",
+        "B08-EC-04": "https://github.com/aws-e/adp/issues/8236#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8264"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8264#AC-04"
+      ],
+      "automatic_external_preconditions": []
+    },
+    {
+      "bolt": "B09",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8237",
+      "owning_epic": 8141,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8141/b09-build/i16",
+        "product-onboarding-8141/epic-8141/b09-build/i17",
+        "product-onboarding-8141/epic-8141/b09-build/v10",
+        "product-onboarding-8141/epic-8141/b09-build/v11"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8141/b09-live/v10",
+        "product-onboarding-8141/epic-8141/b09-live/v11"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8141/b09-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8141/b09-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8267",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8267#AC-01",
+        "https://github.com/aws-e/adp/issues/8267#AC-02",
+        "https://github.com/aws-e/adp/issues/8267#AC-03",
+        "https://github.com/aws-e/adp/issues/8268#AC-01",
+        "https://github.com/aws-e/adp/issues/8268#AC-02",
+        "https://github.com/aws-e/adp/issues/8268#AC-03",
+        "https://github.com/aws-e/adp/issues/8267#AC-04",
+        "https://github.com/aws-e/adp/issues/8268#AC-04"
+      ],
+      "checkpoint": "Complete onboarding, resume between clients and inspect actual downstream handoff/result status.",
+      "evaluation_criterion_sources": {
+        "B09-EC-01": "https://github.com/aws-e/adp/issues/8237#EC-01",
+        "B09-EC-02": "https://github.com/aws-e/adp/issues/8237#EC-02",
+        "B09-EC-03": "https://github.com/aws-e/adp/issues/8237#EC-03",
+        "B09-EC-04": "https://github.com/aws-e/adp/issues/8237#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8267",
+        "https://github.com/aws-e/adp/issues/8268"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8267#AC-04",
+        "https://github.com/aws-e/adp/issues/8268#AC-04"
+      ],
+      "automatic_external_preconditions": [
+        "Actual scoped Context #8149 and L5 #8150 handoff services, contracts and fixtures; I17/V10 verify before successful integration acceptance."
+      ]
+    },
+    {
+      "bolt": "B10",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8238",
+      "owning_epic": 8149,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-8149/b10-build/c01",
+        "product-onboarding-8141/epic-8149/b10-build/i18",
+        "product-onboarding-8141/epic-8149/b10-build/i19",
+        "product-onboarding-8141/epic-8149/b10-build/i20",
+        "product-onboarding-8141/epic-8149/b10-build/v12"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-8149/b10-live/v12"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-8149/b10-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-8149/b10-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8273",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8273#AC-01",
+        "https://github.com/aws-e/adp/issues/8273#AC-02",
+        "https://github.com/aws-e/adp/issues/8273#AC-03",
+        "https://github.com/aws-e/adp/issues/8273#AC-04"
+      ],
+      "checkpoint": "Manage optional Portfolio memberships and view existing Initiative/Contribution relationships while first save stays unchanged.",
+      "evaluation_criterion_sources": {
+        "B10-EC-01": "https://github.com/aws-e/adp/issues/8238#EC-01",
+        "B10-EC-02": "https://github.com/aws-e/adp/issues/8238#EC-02",
+        "B10-EC-03": "https://github.com/aws-e/adp/issues/8238#EC-03",
+        "B10-EC-04": "https://github.com/aws-e/adp/issues/8238#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8273"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8273#AC-04"
+      ],
+      "automatic_external_preconditions": []
+    },
+    {
+      "bolt": "B11",
+      "native_bolt_issue": "https://github.com/aws-e/adp/issues/8239",
+      "owning_epic": 7295,
+      "build_story_nodes": [
+        "product-onboarding-8141/epic-7295/b11-build/i21",
+        "product-onboarding-8141/epic-7295/b11-build/i22",
+        "product-onboarding-8141/epic-7295/b11-build/v13",
+        "product-onboarding-8141/epic-7295/b11-build/i23"
+      ],
+      "operations_story_nodes": [
+        "product-onboarding-8141/epic-7295/b11-live/v13"
+      ],
+      "repository_evaluation": "product-onboarding-8141/epic-7295/b11-build/code-evidence",
+      "live_evaluation": "product-onboarding-8141/epic-7295/b11-live/live-acceptance",
+      "rollout_owner_issue": "https://github.com/aws-e/adp/issues/8276",
+      "verification_criteria": [
+        "https://github.com/aws-e/adp/issues/8276#AC-01",
+        "https://github.com/aws-e/adp/issues/8276#AC-02",
+        "https://github.com/aws-e/adp/issues/8276#AC-03",
+        "https://github.com/aws-e/adp/issues/8276#AC-04",
+        "https://github.com/aws-e/adp/issues/8276#AC-05"
+      ],
+      "checkpoint": "Run installed Insights context readback; inspect source lineage, effective-time membership, coverage and deduplicated cost.",
+      "evaluation_criterion_sources": {
+        "B11-EC-01": "https://github.com/aws-e/adp/issues/8239#EC-01",
+        "B11-EC-02": "https://github.com/aws-e/adp/issues/8239#EC-02",
+        "B11-EC-03": "https://github.com/aws-e/adp/issues/8239#EC-03",
+        "B11-EC-04": "https://github.com/aws-e/adp/issues/8239#EC-04"
+      },
+      "evaluation_handling": "One human decision on the combined packet from these existing verification stories, recorded in ADP against the plan/evidence revision. Agents execute the required journeys; reviewer reruns are optional. Code evaluation and deployment prerequisites are automatic; no additional review issues.",
+      "automatic_deployment": "Repository evaluation -> rollout/observation -> runtime verification -> agent-executed checks. Bind the automatic receipt handoff in automatic-deployment.md before activation; no human release gate.",
+      "evidence_review_story_issues": [
+        "https://github.com/aws-e/adp/issues/8276"
+      ],
+      "evidence_review_criteria": [
+        "https://github.com/aws-e/adp/issues/8276#AC-05"
+      ],
+      "automatic_external_preconditions": [
+        "Project attribution #7298, emitter #7299 and infrastructure #7304 capabilities with their prerequisites; I21/V13 verify actual runtime/lineage, and I23 supplies the installed read path."
+      ]
+    }
+  ],
+  "flow_id": "52c055f7-2892-4e7a-a662-b037eacea222"
+}

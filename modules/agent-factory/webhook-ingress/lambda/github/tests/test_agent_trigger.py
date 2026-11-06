@@ -1,23 +1,14 @@
-"""Tests for POST /agent/trigger handler — Issue #2152.
-
-Covers:
-  - Body → chain resolution (happy path)
-  - Missing correlation_id → 400 missing_lineage
-  - Unknown/expired correlation_id → 422 unknown_chain
-  - Cross-tenant mismatch → 403 cross_tenant
-  - Guard rejections → 422 guard_rejected
-  - GSI retry path (empty-then-present)
-  - Missing required fields → 400 invalid_body
-  - Dispatch from handler.py routing
-"""
+"""Retired trigger routing, no-side-effect refusals, and shared GSI lookups."""
 
 import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-# Add lambda root to path for imports
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent_trigger import handle_agent_trigger
@@ -76,289 +67,6 @@ def _chain_record(**overrides) -> dict:
     }
     defaults.update(overrides)
     return defaults
-
-
-# =============================================================================
-# Missing / Invalid Body
-# =============================================================================
-
-
-class TestBodyValidation:
-    """Request body validation."""
-
-    def test_missing_correlation_id_returns_400_missing_lineage(self):
-        body = _valid_body()
-        del body["correlation_id"]
-        event = _make_event(body)
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 400
-        result = json.loads(resp["body"])
-        assert result["error"] == "missing_lineage"
-
-    def test_empty_correlation_id_returns_400_missing_lineage(self):
-        body = _valid_body(correlation_id="")
-        event = _make_event(body)
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 400
-        result = json.loads(resp["body"])
-        assert result["error"] == "missing_lineage"
-
-    def test_missing_persona_returns_400_invalid_body(self):
-        body = _valid_body()
-        del body["persona"]
-        event = _make_event(body)
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 400
-        result = json.loads(resp["body"])
-        assert result["error"] == "invalid_body"
-
-    def test_missing_target_returns_400_invalid_body(self):
-        body = _valid_body()
-        del body["target"]
-        event = _make_event(body)
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 400
-        result = json.loads(resp["body"])
-        assert result["error"] == "invalid_body"
-
-    def test_invalid_target_no_repo_returns_400(self):
-        body = _valid_body(target={"issue": 1})
-        event = _make_event(body)
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 400
-        result = json.loads(resp["body"])
-        assert result["error"] == "invalid_body"
-        assert "target" in result["detail"]
-
-    def test_invalid_target_no_issue_returns_400(self):
-        body = _valid_body(target={"repo": "org/repo"})
-        event = _make_event(body)
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 400
-        result = json.loads(resp["body"])
-        assert result["error"] == "invalid_body"
-
-    def test_invalid_json_returns_400(self):
-        event = {
-            "resource": "/agent/trigger",
-            "body": "not-json{{{",
-            "isBase64Encoded": False,
-            "headers": {},
-            "requestContext": {"identity": {"userArn": "arn:aws:sts::123:role/x"}},
-        }
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 400
-        assert json.loads(resp["body"])["error"] == "invalid_json"
-
-
-# =============================================================================
-# Chain Resolution
-# =============================================================================
-
-
-class TestChainResolution:
-    """Chain resolution from correlation-index GSI."""
-
-    @patch("agent_trigger._resolve_chain", return_value=None)
-    def test_unknown_chain_returns_422(self, mock_resolve):
-        """Unknown/expired correlation_id returns 422 unknown_chain."""
-        event = _make_event(_valid_body())
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 422
-        result = json.loads(resp["body"])
-        assert result["error"] == "unknown_chain"
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
-    @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._resolve_chain")
-    def test_valid_chain_calls_spawn_persona(self, mock_resolve, mock_spawn, mock_install):
-        """Valid chain record leads to spawn_persona call."""
-        mock_resolve.return_value = _chain_record()
-        mock_spawn.return_value = MagicMock(success=True, message_id="msg-123", block_reason=None)
-
-        event = _make_event(_valid_body())
-        resp = handle_agent_trigger(event, None)
-
-        assert resp["statusCode"] == 202
-        result = json.loads(resp["body"])
-        assert result["status"] == "accepted"
-        assert result["message_id"] == "msg-123"
-        mock_spawn.assert_called_once()
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
-    @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._resolve_chain")
-    def test_chain_depth_passed_through_for_spawn_to_increment(
-        self, mock_resolve, mock_spawn, mock_install
-    ):
-        """The CALLER's depth reaches correlation_ctx un-incremented (#4268).
-
-        This route used to add its own +1 here. The increment now happens once, in
-        ``spawn_persona``, at the point the dispatch is authorised — so adding one
-        here as well would double-count every hop through /agent/trigger.
-        ``spawn_persona`` is mocked in this test, so what is asserted is the
-        pre-increment context it receives: the depth of the run that is asking.
-        """
-        mock_resolve.return_value = _chain_record(chain_depth=3)
-        mock_spawn.return_value = MagicMock(success=True, message_id="msg-456", block_reason=None)
-
-        event = _make_event(_valid_body())
-        handle_agent_trigger(event, None)
-
-        call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["correlation_ctx"]["chain_depth"] == 3
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
-    @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._resolve_chain")
-    def test_root_human_from_chain_not_body(self, mock_resolve, mock_spawn, mock_install):
-        """root_human_id comes from the chain record, not the request body."""
-        mock_resolve.return_value = _chain_record(root_human_id="real-human-999")
-        mock_spawn.return_value = MagicMock(success=True, message_id="msg-789", block_reason=None)
-
-        # Body does NOT contain root_human_id — it's server-resolved
-        event = _make_event(_valid_body())
-        handle_agent_trigger(event, None)
-
-        call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["correlation_ctx"]["root_human_id"] == "real-human-999"
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
-    @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._resolve_chain")
-    def test_parent_invocation_id_from_body(self, mock_resolve, mock_spawn, mock_install):
-        """parent_invocation_id comes from the body, but must be IN the chain.
-
-        Issue #4128: the caller still declares its own invocation id — that is
-        how the lineage edge is drawn — but the id must resolve to a real event
-        of this chain. The declared value flowing through unchanged is the
-        happy path; the forged-parent rejection is covered in
-        test_agent_trigger_provenance.py.
-        """
-        mock_resolve.return_value = _chain_record(event_id="my-inv-id-555")
-        mock_spawn.return_value = MagicMock(success=True, message_id="msg-pid", block_reason=None)
-
-        body = _valid_body(parent_invocation_id="my-inv-id-555")
-        event = _make_event(body)
-        handle_agent_trigger(event, None)
-
-        call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["correlation_ctx"]["parent_invocation_id"] == "my-inv-id-555"
-
-
-# =============================================================================
-# Cross-Tenant Check
-# =============================================================================
-
-
-class TestCrossTenantCheck:
-    """Cross-tenant validation."""
-
-    @patch("agent_trigger._resolve_chain")
-    def test_cross_tenant_mismatch_returns_403(self, mock_resolve):
-        """Body tenant_id != chain tenant_id returns 403."""
-        mock_resolve.return_value = _chain_record(tenant_id="real-tenant")
-        body = _valid_body(tenant_id="different-tenant")
-        event = _make_event(body)
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 403
-        result = json.loads(resp["body"])
-        assert result["error"] == "cross_tenant"
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
-    @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._resolve_chain")
-    def test_matching_tenant_allowed(self, mock_resolve, mock_spawn, mock_install):
-        """Body tenant_id == chain tenant_id is fine."""
-        mock_resolve.return_value = _chain_record(tenant_id="my-tenant")
-        mock_spawn.return_value = MagicMock(success=True, message_id="msg-t", block_reason=None)
-        body = _valid_body(tenant_id="my-tenant")
-        event = _make_event(body)
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 202
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
-    @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._resolve_chain")
-    def test_no_body_tenant_still_checks_chain_tenant(
-        self, mock_resolve, mock_spawn, mock_install
-    ):
-        """Issue #4128: omitting tenant_id no longer BYPASSES the check.
-
-        This test replaces ``test_no_body_tenant_allowed``, which asserted the
-        vulnerable behaviour: the old ``if body_tenant`` guard meant simply
-        leaving tenant_id out skipped cross-tenant validation entirely. Omitting
-        it is still ALLOWED (the tenant is server-resolved from the chain — that
-        is the point of the route), but the check now runs: the chain must have
-        a resolvable tenant, and the target must belong to it.
-        """
-        mock_resolve.return_value = _chain_record(tenant_id="my-tenant")
-        mock_spawn.return_value = MagicMock(success=True, message_id="msg-nt", block_reason=None)
-        body = _valid_body()  # No tenant_id in body
-        event = _make_event(body)
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 202
-        # The tenant used downstream is the chain's, never a body-supplied one.
-        assert mock_spawn.call_args[1]["tenant_id"] == "my-tenant"
-
-    @patch("agent_trigger._resolve_chain")
-    def test_chain_without_tenant_rejected(self, mock_resolve):
-        """Issue #4128: a chain with no tenant_id cannot be dispatched from.
-
-        Previously the omitted-tenant path reached spawn_persona with
-        tenant_id="" — tenant isolation cannot be enforced on a run with no
-        tenant, so this fails closed.
-        """
-        record = _chain_record()
-        del record["tenant_id"]
-        mock_resolve.return_value = record
-        resp = handle_agent_trigger(_make_event(_valid_body()), None)
-        assert resp["statusCode"] == 403
-        assert json.loads(resp["body"])["error"] == "cross_tenant"
-
-
-# =============================================================================
-# Guard Rejections
-# =============================================================================
-
-
-class TestGuardRejections:
-    """Guard rejections surface as 422 guard_rejected."""
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
-    @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._resolve_chain")
-    def test_guard_rejected_returns_422(self, mock_resolve, mock_spawn, mock_install):
-        """When spawn_persona blocks, return 422 with guard_rejected."""
-        mock_resolve.return_value = _chain_record()
-        mock_spawn.return_value = MagicMock(
-            success=False, message_id=None, block_reason="chain_depth_exceeded"
-        )
-        event = _make_event(_valid_body())
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 422
-        result = json.loads(resp["body"])
-        assert result["error"] == "guard_rejected"
-        assert result["detail"] == "chain_depth_exceeded"
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
-    @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._resolve_chain")
-    def test_sqs_failure_returns_500(self, mock_resolve, mock_spawn, mock_install):
-        """SQS publish failure returns 500 enqueue_failed."""
-        mock_resolve.return_value = _chain_record()
-        mock_spawn.return_value = MagicMock(
-            success=False, message_id=None, block_reason="sqs_publish_failed"
-        )
-        event = _make_event(_valid_body())
-        resp = handle_agent_trigger(event, None)
-        assert resp["statusCode"] == 500
-        assert json.loads(resp["body"])["error"] == "enqueue_failed"
-
-
-# =============================================================================
-# GSI Retry Path
-# =============================================================================
 
 
 class TestGSIRetry:
@@ -432,11 +140,6 @@ class TestGSIRetry:
         assert mock_table.query.call_count == 1
 
 
-# =============================================================================
-# Handler Dispatch
-# =============================================================================
-
-
 class TestHandlerDispatch:
     """handler.py dispatches /agent/trigger before HMAC validation."""
 
@@ -474,3 +177,38 @@ class TestHandlerDispatch:
                 mock_sig.return_value.verify_github_signature.return_value = False
                 result = handler(event, None)
                 assert result["statusCode"] == 401  # HMAC failure, not agent_trigger
+
+
+@pytest.mark.parametrize("authority", [None, "false", "true"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "{invalid",
+        json.dumps(_valid_body()),
+        json.dumps(
+            {**_valid_body(), "tenant_id": "other", "provenance_marker": "signed-looking-marker"}
+        ),
+    ],
+)
+def test_retired_route_cannot_publish_or_resolve_lineage(monkeypatch, authority, body):
+    if authority is None:
+        monkeypatch.delenv("AGENT_AUTHORITY_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", authority)
+    event = _make_event({})
+    event["body"] = body
+    event["requestContext"]["identity"]["userArn"] = (
+        "arn:aws:sts::999999999999:assumed-role/unrelated/session"
+    )
+    with (
+        patch("agent_trigger._resolve_chain") as resolve,
+        patch("common.spawn_persona.spawn_persona") as spawn,
+        patch("common.sqs_publisher.publish_envelope") as publish,
+    ):
+        response = handle_agent_trigger(event, None)
+    assert response["statusCode"] == 410
+    assert json.loads(response["body"])["error"] == "legacy_agent_trigger_retired"
+    resolve.assert_not_called()
+    spawn.assert_not_called()
+    publish.assert_not_called()

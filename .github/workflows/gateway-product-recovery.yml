@@ -1,0 +1,442 @@
+name: Gateway Product Recovery Qualification
+
+on:
+  workflow_call:
+    inputs:
+      expected_revision:
+        description: Reviewed source of the deployed dev release
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-live-eval-dev
+  queue: max
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  hold:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    environment: dev
+    env: &product_evaluator
+      CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+      CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
+      CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+      CLI_UPLIFT_EVAL_SECURITY_GROUP_ID: ${{ vars.CLI_UPLIFT_EVAL_SECURITY_GROUP_ID }}
+      CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+      CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
+      CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL: ${{ vars.CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify complete reviewed history
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$PRODUCT_EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          git rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null
+          git merge-base --is-ancestor "$PRODUCT_EXPECTED_REVISION" refs/remotes/origin/main
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-session-name: product-hold-${{ github.run_id }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install evaluator dependencies
+        working-directory: modules/gateway
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e '.[dev]'
+      - name: Require completed checks for this signed automatic run
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.product_automatic_identity verify
+          --expected-revision "$PRODUCT_EXPECTED_REVISION"
+      - name: Retain the isolated original Product
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.live
+          --cases api_product_lifecycle --expected-revision "$PRODUCT_EXPECTED_REVISION"
+          --hold-for-rollback
+
+  handoff:
+    needs: hold
+    runs-on: arc-runner-org
+    environment: dev
+    env: *product_evaluator
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      run_id: ${{ steps.binding.outputs.run_id }}
+      source_revision: ${{ steps.binding.outputs.source_revision }}
+      workflow_revision: ${{ steps.binding.outputs.workflow_revision }}
+      candidate_image_digest: ${{ steps.binding.outputs.candidate_image_digest }}
+      baseline_source_revision: ${{ steps.binding.outputs.baseline_source_revision }}
+      baseline_image_digest: ${{ steps.binding.outputs.baseline_image_digest }}
+      resource_id: ${{ steps.binding.outputs.resource_id }}
+      account_id: ${{ steps.binding.outputs.account_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-session-name: product-handoff-${{ github.run_id }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install evaluator dependencies
+        working-directory: modules/gateway
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e '.[dev]'
+      - name: Requalify both signed releases and original owner
+        id: binding
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.product_recovery_handoff
+          --expected-revision "$PRODUCT_EXPECTED_REVISION"
+
+  quiesce:
+    needs: handoff
+    runs-on: arc-runner-deploy
+    environment: adp-gateway-deploy-dev
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: us-east-1
+      - name: Quiesce admissions before changing the image
+        env:
+          ADP_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          BINDING: ${{ toJSON(needs.handoff.outputs) }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$BINDING" > "$RUNNER_TEMP/product-binding.json"
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1 >/dev/null
+          python3 modules/gateway/scripts/product-recovery-control.py \
+            --binding "$RUNNER_TEMP/product-binding.json" --phase quiesce \
+            --receipt "$RUNNER_TEMP/product-quiesce.json"
+
+  read_quiesced:
+    needs: quiesce
+    runs-on: arc-runner-org
+    environment: dev
+    env: *product_evaluator
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-session-name: product-quiesced-${{ github.run_id }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install evaluator dependencies
+        working-directory: modules/gateway
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e '.[dev]'
+      - name: Read original Product with admissions disabled
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.product_recovery_observation
+          --expected-revision "$PRODUCT_EXPECTED_REVISION" --choice quiesced
+          --receipt "$RUNNER_TEMP/product-quiesced.json"
+
+  baseline:
+    needs: [handoff, read_quiesced]
+    runs-on: arc-runner-deploy
+    environment: adp-gateway-deploy-dev
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: us-east-1
+      - name: Install the signed compatible baseline
+        env:
+          ADP_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          BINDING: ${{ toJSON(needs.handoff.outputs) }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$BINDING" > "$RUNNER_TEMP/product-binding.json"
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1 >/dev/null
+          python3 modules/gateway/scripts/product-recovery-control.py \
+            --binding "$RUNNER_TEMP/product-binding.json" --phase baseline \
+            --receipt "$RUNNER_TEMP/product-baseline.json"
+
+  read_baseline:
+    needs: baseline
+    runs-on: arc-runner-org
+    environment: dev
+    env: *product_evaluator
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-session-name: product-baseline-${{ github.run_id }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install evaluator dependencies
+        working-directory: modules/gateway
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e '.[dev]'
+      - name: Read original Product and immutable history on the baseline
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.product_recovery_observation
+          --expected-revision "$PRODUCT_EXPECTED_REVISION" --choice baseline
+          --receipt "$RUNNER_TEMP/product-baseline-readback.json"
+
+  prepare_restore:
+    needs: [handoff, quiesce, read_quiesced, baseline, read_baseline]
+    if: always() && needs.handoff.result == 'success' && needs.quiesce.result != 'skipped'
+    runs-on: arc-runner-org
+    environment: dev
+    env: *product_evaluator
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-session-name: product-restore-intent-${{ github.run_id }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install evaluator dependencies
+        working-directory: modules/gateway
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e '.[dev]'
+      - name: Retain candidate restoration intent independently
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.product_recovery_observation
+          --expected-revision "$PRODUCT_EXPECTED_REVISION" --choice restore-intent
+          --receipt "$RUNNER_TEMP/product-restore-intent.json"
+
+  restore:
+    needs: [handoff, prepare_restore]
+    if: always() && needs.prepare_restore.result == 'success'
+    runs-on: arc-runner-deploy
+    environment: adp-gateway-deploy-dev
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: us-east-1
+      - name: Restore the candidate and reopen admissions
+        env:
+          ADP_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          BINDING: ${{ toJSON(needs.handoff.outputs) }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$BINDING" > "$RUNNER_TEMP/product-binding.json"
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1 >/dev/null
+          for attempt in 1 2 3; do
+            if python3 modules/gateway/scripts/product-recovery-control.py \
+              --binding "$RUNNER_TEMP/product-binding.json" --phase candidate \
+              --receipt "$RUNNER_TEMP/product-restored.json"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
+
+  read_candidate:
+    needs: restore
+    if: always() && needs.restore.result == 'success'
+    runs-on: arc-runner-org
+    environment: dev
+    env: *product_evaluator
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-session-name: product-restored-${{ github.run_id }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install evaluator dependencies
+        working-directory: modules/gateway
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e '.[dev]'
+      - name: Verify candidate, original Product and idempotency replay
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.product_recovery_observation
+          --expected-revision "$PRODUCT_EXPECTED_REVISION" --choice candidate
+          --receipt "$RUNNER_TEMP/product-restored-readback.json"
+
+  cleanup:
+    needs: [hold, handoff, quiesce, read_quiesced, baseline, read_baseline, prepare_restore, restore, read_candidate]
+    if: always() && needs.hold.result != 'skipped'
+    runs-on: arc-runner-org
+    environment: dev
+    env: *product_evaluator
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-session-name: product-cleanup-${{ github.run_id }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install evaluator dependencies
+        working-directory: modules/gateway
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e '.[dev]'
+      - name: Retire only the original owned fixture
+        id: retire
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.recovery_job
+          --expected-revision "$PRODUCT_EXPECTED_REVISION" --cases api_product_lifecycle
+          --hold-for-rollback
+      - name: Refuse qualification without independent restoration and cleanup
+        if: always()
+        env:
+          READBACK: ${{ needs.read_candidate.result }}
+          CLEANUP: ${{ steps.retire.outputs.cleanup_ok }}
+        run: |
+          test "$READBACK" = success && test "$CLEANUP" = true
+      - name: Finalize all D01 cases from the retained recovery and owned cleanup
+        if: always()
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.product_d01_finalization
+          --expected-revision "$PRODUCT_EXPECTED_REVISION"
+          --output test-results/product-d01-final.json
+      - uses: ./.github/actions/upload-ci-evidence-s3
+        if: always()
+        with:
+          name: product-d01-final
+          path: test-results/product-d01-final.json
+          if-no-files-found: error
+          retention-days: 14

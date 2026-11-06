@@ -142,7 +142,7 @@ async def test_native_destroy_runs_guard_with_isolated_renewable_credentials(
         "assert 'AWS_ACCESS_KEY_ID' not in os.environ\n"
         "assert 'AWS_PROFILE' not in os.environ\n"
         "assert os.environ['AWS_EC2_METADATA_DISABLED']=='true'\n"
-        "assert os.environ['AWS_CONTAINER_CREDENTIALS_FULL_URI'].startswith('http://127.0.0.1:')\n"
+        "assert os.environ['SUPERPLANE_CREDENTIAL_BRIDGE_URL'].startswith('http://127.0.0.1:')\n"
         f"pathlib.Path({str(marker)!r}).write_text('verified')\n"
     )
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "ambient-must-not-leak")

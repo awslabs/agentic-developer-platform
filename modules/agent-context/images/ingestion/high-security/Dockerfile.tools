@@ -1,0 +1,34 @@
+# Build context: this directory. Retain the existing independently tested packages.
+FROM public.ecr.aws/docker/library/golang:1.26.9-trixie@sha256:f06b7122f888680048afb247c4e5f49c0069eb6c4c1ccae0f3f4834527a8d22c AS build
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+ENV GOTOOLCHAIN=local GOMAXPROCS=2
+COPY rebuild-go-tools.py tool-sources.json /recipe/
+COPY locks /recipe/locks
+WORKDIR /work
+RUN --mount=type=cache,target=/root/.cache/go-build,id=adp-ingestion-go126-build --mount=type=cache,target=/go/pkg/mod,id=adp-ingestion-go-modules python3 /recipe/rebuild-go-tools.py syft
+RUN --mount=type=cache,target=/root/.cache/go-build,id=adp-ingestion-go126-build --mount=type=cache,target=/go/pkg/mod,id=adp-ingestion-go-modules python3 /recipe/rebuild-go-tools.py trivy
+RUN --mount=type=cache,target=/root/.cache/go-build,id=adp-ingestion-go126-build --mount=type=cache,target=/go/pkg/mod,id=adp-ingestion-go-modules python3 /recipe/rebuild-go-tools.py scip
+RUN --mount=type=cache,target=/root/.cache/go-build,id=adp-ingestion-go126-build --mount=type=cache,target=/go/pkg/mod,id=adp-ingestion-go-modules python3 /recipe/rebuild-go-tools.py tsgo
+RUN --mount=type=cache,target=/go/pkg/mod,id=adp-ingestion-go-modules mkdir -p rebuild-output/licenses/go rebuild-output/licenses/modules \
+    && cp /usr/local/go/LICENSE rebuild-output/licenses/go/ \
+    && find /go/pkg/mod -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+       -exec cp --parents '{}' rebuild-output/licenses/modules/ \;
+FROM public.ecr.aws/docker/library/golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS osv-build
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+ENV GOTOOLCHAIN=local GOMAXPROCS=2
+COPY rebuild-go-tools.py tool-sources.json /recipe/
+COPY locks/osv /recipe/locks/osv
+WORKDIR /work
+RUN --mount=type=cache,target=/root/.cache/go-build,id=adp-ingestion-go127-build --mount=type=cache,target=/go/pkg/mod,id=adp-ingestion-go-modules python3 /recipe/rebuild-go-tools.py osv
+RUN --mount=type=cache,target=/go/pkg/mod,id=adp-ingestion-go-modules mkdir -p rebuild-output/licenses/go rebuild-output/licenses/modules \
+    && cp /usr/local/go/LICENSE rebuild-output/licenses/go/ \
+    && find /go/pkg/mod -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+       -exec cp --parents '{}' rebuild-output/licenses/modules/ \;
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2 AS packages
+FROM scratch
+COPY --from=packages /packages /packages
+COPY --from=build /work/rebuild-output/syft /work/rebuild-output/trivy /work/rebuild-output/scip-go /work/rebuild-output/tsc /bin/
+COPY --from=osv-build /work/rebuild-output/osv-scanner /bin/osv-scanner
+COPY --from=build /work/rebuild-output/licenses /usr/share/licenses/ingestion-security-tools/
+COPY --from=osv-build /work/rebuild-output/licenses /usr/share/licenses/osv-scanner/
+USER 65532:65532

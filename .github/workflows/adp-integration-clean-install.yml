@@ -1,0 +1,87 @@
+name: ADP integration clean install
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Published release candidate to install from reviewed main history'
+        required: true
+        type: string
+      bootstrap_admin_email:
+        description: 'Operator email for the first administrator invitation (required for installation)'
+        required: false
+        type: string
+      account_id:
+        description: 'Type 608380991969 to select integration-test'
+        required: true
+        type: string
+      dry_run:
+        description: 'Validate deletion plans only; do not delete or install'
+        type: boolean
+        default: true
+      allow_known_claude_gap:
+        description: 'Accept only the reviewed seven-model Claude pricing source gap'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: adp-release-upgrade-608380991969
+  cancel-in-progress: false
+
+jobs:
+  clean-install:
+    if: github.repository == 'aws-e/adp' && github.ref == 'refs/heads/main'
+    environment: integration-test
+    runs-on: arc-runner-org
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ADP_BOOTSTRAP_ADMIN_EMAIL: ${{ inputs.bootstrap_admin_email }}
+      CLEAN_INSTALL_DRY_RUN: ${{ inputs.dry_run }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      CONFIRMED_ACCOUNT: ${{ inputs.account_id }}
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/release-tools
+      - name: Validate candidate and target before assuming deployment role
+        run: |
+          python - <<'PY'
+          import os, re
+          assert os.environ['CONFIRMED_ACCOUNT'] == '608380991969', 'Integration account confirmation required'
+          assert re.fullmatch(r'v\d{4}\.\d{2}\.\d{2}-rc\.\d+', os.environ['RELEASE_TAG']), 'An exact RC tag is required'
+          PY
+          if [ "$CLEAN_INSTALL_DRY_RUN" = false ]; then
+            python3 modules/gateway/scripts/bootstrap-admin.py --check-config
+          fi
+          gh auth setup-git
+          gh release view "$RELEASE_TAG" --repo aws-e/adp --json isDraft,isPrerelease,publishedAt \
+            --jq 'select(.isDraft == false and .isPrerelease == true and .publishedAt != null)' | python -c 'import json,sys; json.load(sys.stdin)'
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          source_sha=$(git rev-parse 'FETCH_HEAD^{commit}')
+          git merge-base --is-ancestor "$source_sha" "$GITHUB_SHA"
+          git checkout --detach "$source_sha"
+          test -f platform/scripts/integration-clean-install.py
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::608380991969:role/adp-release-deploy
+          aws-region: us-east-1
+          role-duration-seconds: 14400
+          allowed-account-ids: '608380991969'
+      - name: Delete through undeploy.sh and install through deploy.sh
+        env:
+          CLEAN_INSTALL_DRY_RUN: ${{ inputs.dry_run }}
+          CLEAN_INSTALL_ALLOW_CLAUDE_GAP: ${{ inputs.allow_known_claude_gap }}
+        run: |
+          for tool in 'aws' 'terraform' 'kubectl' 'helm' 'jq' 'zip' 'unzip' 'curl' 'git' 'python3' 'node' 'npm' 'gh'; do
+            command -v "$tool" >/dev/null || { echo "Missing deployment tool: $tool"; exit 1; }
+          done
+          python platform/scripts/integration-clean-install.py

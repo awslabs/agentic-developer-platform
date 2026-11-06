@@ -88,6 +88,21 @@ export interface ToolUseInfo {
   tool_input?: string;
 }
 
+export interface AnswerEvidence {
+  status: 'ok' | 'empty' | 'denied' | 'unavailable' | 'partial';
+  from?: string;
+  to?: string;
+  timezone?: string;
+  observed_at?: string;
+  coverage?: Array<{
+    source: string;
+    status: 'available' | 'empty' | 'denied' | 'unavailable' | 'partial';
+    reason?: string;
+  }>;
+  sources?: Array<{ label: string; url: string }>;
+  has_more?: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -103,6 +118,7 @@ export interface ChatMessage {
   agUiMessageId?: string;
   /** Reason string when status === 'error'. */
   errorReason?: string;
+  evidence?: AnswerEvidence;
   /** Active tool use shown below the pending bubble (legacy). */
   toolUse?: ToolUseInfo | null;
   /** AG-UI tool calls associated with this message. */
@@ -121,6 +137,9 @@ export interface Conversation {
   messages: ChatMessage[];
   replayCursor?: string;
 }
+
+export type ChatTurnPhase = 'sending' | 'acknowledged' | 'queued' | 'starting' | 'running' |
+  'streaming' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
 // ---------------------------------------------------------------------------
 // Hook state

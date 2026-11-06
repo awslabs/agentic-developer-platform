@@ -126,6 +126,7 @@ class ConnectStartRequest(BaseModel):
     nickname: str
     account_id: str
     role_name: str = "ADP-Agent-Role"
+    agent_consent: bool = True
 
     validate_account_id = field_validator("account_id")(_validate_account_id)
     validate_nickname = field_validator("nickname")(_validate_nickname)
@@ -159,6 +160,7 @@ class ConnectImportRequest(BaseModel):
     nickname: str
     account_id: str
     role_arn: str
+    agent_consent: bool = True
     # Kept as a null-only field so old clients fail explicitly instead of silently
     # believing their supplied trust value was accepted.
     external_id: None = None
@@ -285,6 +287,7 @@ async def connect_start(
     # Create the DB row with status=pending in scopes JSON
     cred = UserCredential(
         aws_external_id=external_id,
+        agent_consent=data.agent_consent,
         org_id=effective_org_id,
         user_id=db_user_id,
         service="aws",
@@ -591,6 +594,7 @@ async def connect_import(
 
     cred = UserCredential(
         aws_external_id=external_id,
+        agent_consent=data.agent_consent,
         org_id=effective_org_id,
         user_id=db_user_id,
         service="aws",
@@ -733,20 +737,33 @@ def _import_response(cred, *, reused):
         role_arn=cred.scopes["role_arn"],
         reused=reused,
         external_id=cred.aws_external_id,
+        # Same shape as cfn_templates/aws_role_deploy_v1.yaml: `sts:ExternalId` is a
+        # condition key of AssumeRole only. Putting TagSession under the same
+        # ExternalId condition makes every tagged assume fail (the key is absent in
+        # the TagSession evaluation), so the owner-pinned tag is the only condition
+        # on the TagSession statement.
         trust_policy={
             "Version": "2012-10-17",
             "Statement": [
                 {
+                    "Sid": "TenantBoundAssume",
                     "Effect": "Allow",
                     "Principal": {"AWS": get_gateway_role_arn()},
-                    "Action": ["sts:AssumeRole", "sts:TagSession"],
+                    "Action": "sts:AssumeRole",
                     "Condition": {
                         "StringEquals": {
                             "sts:ExternalId": cred.aws_external_id,
                             "aws:RequestTag/adp:user_id": cred.user_id,
                         }
                     },
-                }
+                },
+                {
+                    "Sid": "AttributedSessions",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": get_gateway_role_arn()},
+                    "Action": "sts:TagSession",
+                    "Condition": {"StringEquals": {"aws:RequestTag/adp:user_id": cred.user_id}},
+                },
             ],
         },
     )

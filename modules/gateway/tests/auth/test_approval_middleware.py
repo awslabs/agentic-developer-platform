@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -301,9 +302,12 @@ class TestExemptions:
         context = _ctx(user_id="registered-agent", org_id="org-acme", account_type="service")
         context.auth_source = "iam"
         context.agent_registry_id = "registry-row-id"
+        context.attributed_org_id = "org-triggering-tenant"
         h = _Harness(_with_session_factory(session_factory))
         await h.run(context)
         assert h.admitted
+        assert context.org_id == "org-acme"
+        assert context.attributed_org_id == "org-triggering-tenant"
 
     async def test_unstamped_account_type_is_treated_as_human(self, session_factory):
         """Fail-safe direction: an unstamped caller is gated, not waved through.
@@ -604,6 +608,86 @@ class TestEveryEnforcedPathIsGated:
         assert h.admitted, f"approved traffic must still reach the app on {request_path}"
 
 
+class TestApprovedHumanAttribution:
+    @pytest.mark.parametrize("org_id", ["", "   ", "org-acme", " org-acme "])
+    async def test_billing_tenant_follows_verified_membership(self, session_factory, org_id):
+        context = _ctx(user_id=APPROVED_SUB, org_id=org_id)
+        context.attributed_org_id = "org-stale-attribution"
+        h = _Harness(_with_session_factory(session_factory))
+
+        await h.run(context)
+
+        assert h.admitted
+        assert context.org_id == context.attributed_org_id == "org-acme"
+
+    @pytest.mark.parametrize("entity_type", ["user", "org"])
+    async def test_resolved_membership_enforces_tenant_budget(self, session_factory, entity_type):
+        from src.budget.enforcement_service import BudgetEnforcementService
+        from src.shared.models.budget import BudgetConfig
+        from src.shared.schemas.budget import EntityType
+
+        entity_id = APPROVED_SUB if entity_type == "user" else "org-acme"
+        async with session_factory() as session:
+            session.add(
+                BudgetConfig(
+                    org_id="org-acme",
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    period_type="daily",
+                    budget_amount_usd=Decimal("0.01"),
+                    enforcement_mode="hard",
+                )
+            )
+            await session.commit()
+
+        context = _ctx(user_id=APPROVED_SUB)
+        h = _Harness(_with_session_factory(session_factory))
+        await h.run(context)
+        assert h.admitted
+
+        async with session_factory() as session:
+            service = BudgetEnforcementService(db_session=session)
+            within_budget = await service.check_budget_hierarchy(context, Decimal("0.001"), reserve=False)
+            over_budget = await service.check_budget_hierarchy(context, Decimal("1"), reserve=False)
+
+        assert within_budget.allowed
+        assert not over_budget.allowed
+        assert over_budget.exceeded_entity_type == EntityType(entity_type)
+        assert over_budget.exceeded_entity_id == entity_id
+
+    @pytest.mark.parametrize("entity_type", ["user", "org"])
+    async def test_resolved_membership_enforces_tenant_rate_limit(self, session_factory, entity_type):
+        from src.ratelimit.backends.in_memory import InMemoryBackend
+        from src.ratelimit.config import RateLimitConfig
+        from src.ratelimit.service import RateLimitService
+        from src.shared.models.usage import RateLimitConfig as RateLimitConfigModel
+
+        entity_id = APPROVED_SUB if entity_type == "user" else "org-acme"
+        async with session_factory() as session:
+            session.add(RateLimitConfigModel(org_id="org-acme", entity_type=entity_type, entity_id=entity_id, concurrent_requests=1))
+            await session.commit()
+
+        context = _ctx(user_id=APPROVED_SUB)
+        h = _Harness(_with_session_factory(session_factory))
+        await h.run(context)
+        assert h.admitted
+
+        backend = InMemoryBackend()
+        service = RateLimitService(backend=backend, config=RateLimitConfig(enforce_hierarchy=True))
+        service._get_session = lambda: session_factory()
+        try:
+            assert (await service.check_rate_limit(context)).allowed
+            await service.consume_rate_limit(context)
+            exhausted = await service.check_rate_limit(context)
+            assert not exhausted.allowed
+            assert exhausted.limit_type == "concurrent"
+            assert exhausted.limit == 1
+            await service.release_concurrent(context)
+            assert (await service.check_rate_limit(context)).allowed
+        finally:
+            await service.close()
+
+
 class TestMiddlewareOrdering:
     """The approval gate must sit between token-context and budget/rate-limit.
 
@@ -728,8 +812,11 @@ async def test_selected_second_membership_is_current_even_when_not_active(sessio
         session.add(TenantMembership(user_id="db-user-1", tenant_id="org-second", role="member", is_active=False, joined_via="onboarding_approval"))
         await session.commit()
     h = _Harness(_with_session_factory(session_factory))
-    await h.run(_ctx(user_id=APPROVED_SUB, org_id="org-second"))
+    context = _ctx(user_id=APPROVED_SUB, org_id="org-second")
+    context.attributed_org_id = "org-acme"
+    await h.run(context)
     assert h.status == 200
+    assert context.org_id == context.attributed_org_id == "org-second"
 
 
 async def test_multiple_memberships_without_selected_tenant_are_policy_denial(session_factory):
@@ -738,16 +825,23 @@ async def test_multiple_memberships_without_selected_tenant_are_policy_denial(se
         session.add(TenantMembership(user_id="db-user-1", tenant_id="org-second", role="member", is_active=False, joined_via="onboarding_approval"))
         await session.commit()
     h = _Harness(_with_session_factory(session_factory))
-    await h.run(_ctx(user_id=APPROVED_SUB))
+    context = _ctx(user_id=APPROVED_SUB)
+    await h.run(context)
     assert h.status == 409
+    assert context.org_id == context.attributed_org_id == ""
 
 
-async def test_deleted_membership_cannot_be_replaced_by_stale_org_claim(session_factory):
-    from sqlalchemy import delete
+@pytest.mark.parametrize("removed", ["deleted", "revoked"])
+async def test_removed_membership_cannot_be_replaced_by_stale_org_claim(session_factory, removed):
+    from sqlalchemy import delete, update
 
     async with session_factory() as session:
-        await session.execute(delete(TenantMembership).where(TenantMembership.user_id == "db-user-1"))
+        statement = delete(TenantMembership) if removed == "deleted" else update(TenantMembership).values(revoked_at=datetime.now(UTC))
+        await session.execute(statement.where(TenantMembership.user_id == "db-user-1"))
         await session.commit()
     h = _Harness(_with_session_factory(session_factory))
-    await h.run(_ctx(user_id=APPROVED_SUB, org_id="org-acme"))
+    context = _ctx(user_id=APPROVED_SUB, org_id="org-acme")
+    context.attributed_org_id = ""
+    await h.run(context)
     assert h.status == 409
+    assert context.attributed_org_id == ""

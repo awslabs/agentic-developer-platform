@@ -1,0 +1,185 @@
+name: DevLake POC
+on:
+  pull_request:
+    paths:
+      - 'modules/connectors/devlake/**'
+      - 'modules/insights/**'
+      - 'modules/gateway/**'
+      - 'docs/engineering-insights/**'
+      - '.github/workflows/**'
+      - 'platform/scripts/publish-shared-image.sh'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish one checked optional component to its protected ECR repository
+        type: boolean
+        required: true
+        default: false
+      component:
+        description: Optional DevLake component to publish
+        type: choice
+        required: true
+        default: api
+        options: [api, worker]
+permissions:
+  contents: read
+concurrency:
+  group: devlake-poc-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  collection-contracts:
+    name: DevLake POC / collection contracts
+    runs-on: arc-runner-org
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated PostgreSQL test dependencies
+        run: python -m pip install pgserver==0.1.4 'psycopg[binary]==3.3.6'
+      - name: Verify pinned schemas, IAM connection factory and SQL isolation
+        run: python modules/insights/poc/devlake/scripts/check_collection_contracts.py
+      - name: Verify native DevLake pipeline normalization
+        run: |
+          export DEVLAKE_TEST_PG_BIN="$(python -c 'from pathlib import Path; import pgserver; print(Path(pgserver.__file__).resolve().parent / "pginstall" / "bin")')"
+          modules/connectors/devlake/scripts/test-normalization.sh
+      - name: Verify migration and optional-installation contracts
+        run: python -m unittest discover -s modules/insights/tests/devlake_poc -p 'test_s02*.py' -v
+
+  verify:
+    name: DevLake POC / verify
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ADP_DEVLAKE_PR_NUMBER: ${{ github.event.pull_request.number }}
+      ADP_DEVLAKE_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      ADP_DEVLAKE_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    runs-on: arc-runner-org
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+      - name: Check reviewed shared-CLI predecessor before candidate verification
+        run: python3 modules/insights/poc/devlake/scripts/verify_poc.py --preflight-only
+      - name: Verify declared clean-workspace builds and offline publication contracts
+        env:
+          DEVLAKE_SOURCE_INTEGRATION: '1'
+        run: python3 -m unittest discover -s modules/insights/tests/devlake_poc -p 'test_s09*.py' -v
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: verify
+    runs-on: arc-runner-org
+    environment: adp-devlake-publisher
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+      - name: Build the explicitly selected component from pinned source
+        env:
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/devlake"
+          modules/connectors/devlake/scripts/build.sh \
+            --customization "$GITHUB_SHA" --component "$COMPONENT" \
+            --output "$RUNNER_TEMP/devlake/image.oci"
+      - name: Install pinned registry and verification tools
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/devlake/bin"
+          GOBIN="$RUNNER_TEMP/devlake/bin" go install github.com/google/go-containerregistry/cmd/crane@v0.20.7
+          GOBIN="$RUNNER_TEMP/devlake/bin" go install -ldflags '-X main.version=1.42.0' github.com/anchore/syft/cmd/syft@v1.42.0
+          GOBIN="$RUNNER_TEMP/devlake/bin" go install -ldflags '-X github.com/zricethezav/gitleaks/v8/version.Version=8.30.0' github.com/zricethezav/gitleaks/v8@v8.30.0
+          echo "$RUNNER_TEMP/devlake/bin" >> "$GITHUB_PATH"
+      - name: Verify all required checks before preparing publication evidence
+        env:
+          COMPONENT: ${{ inputs.component }}
+          ACCOUNT: ${{ vars.ADP_DEVLAKE_ACCOUNT }}
+          REGION: ${{ vars.ADP_DEVLAKE_REGION }}
+          ADP_DEVLAKE_PILOT_ID: ${{ vars.ADP_DEVLAKE_PILOT_ID }}
+          ADP_DEVLAKE_LEDGER_TABLE: ${{ vars.ADP_DEVLAKE_LEDGER_TABLE }}
+          ADP_DEVLAKE_ACCOUNT: ${{ vars.ADP_DEVLAKE_ACCOUNT }}
+          ADP_DEVLAKE_REGION: ${{ vars.ADP_DEVLAKE_REGION }}
+          ADP_DEVLAKE_FINALIZE_ROLE: ${{ vars.ADP_DEVLAKE_FINALIZE_ROLE }}
+          ADP_DEVLAKE_PUBLISH_ROLE: ${{ vars.ADP_DEVLAKE_PUBLISH_ROLE }}
+          ADP_DEVLAKE_CONNECTION_LABEL: ${{ secrets.ADP_DEVLAKE_CONNECTION_LABEL }}
+        run: |
+          set -euo pipefail
+          digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifests"][0]["digest"])' "$RUNNER_TEMP/devlake/image.oci/index.json")
+          python3 modules/insights/poc/devlake/scripts/checks.py \
+            --layout "$RUNNER_TEMP/devlake/image.oci" --component "$COMPONENT" \
+            --expected-digest "$digest" --revision "$GITHUB_SHA" \
+            --account "$ACCOUNT" --region "$REGION" \
+            --repository-uri "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/devlake-poc/$COMPONENT" \
+            --output "$RUNNER_TEMP/devlake/checks.json"
+      - name: Publish only with complete verified checks and protected scope
+        env:
+          COMPONENT: ${{ inputs.component }}
+          ACCOUNT: ${{ vars.ADP_DEVLAKE_ACCOUNT }}
+          ROLE: ${{ vars.ADP_DEVLAKE_PUBLISH_ROLE }}
+          REGION: ${{ vars.ADP_DEVLAKE_REGION }}
+          CONNECTION_LABEL: ${{ secrets.ADP_DEVLAKE_CONNECTION_LABEL }}
+          ADP_DEVLAKE_PILOT_ID: ${{ vars.ADP_DEVLAKE_PILOT_ID }}
+          ADP_DEVLAKE_LEDGER_TABLE: ${{ vars.ADP_DEVLAKE_LEDGER_TABLE }}
+          ADP_DEVLAKE_ACCOUNT: ${{ vars.ADP_DEVLAKE_ACCOUNT }}
+          ADP_DEVLAKE_REGION: ${{ vars.ADP_DEVLAKE_REGION }}
+          ADP_DEVLAKE_FINALIZE_ROLE: ${{ vars.ADP_DEVLAKE_FINALIZE_ROLE }}
+          ADP_DEVLAKE_PUBLISH_ROLE: ${{ vars.ADP_DEVLAKE_PUBLISH_ROLE }}
+          ADP_DEVLAKE_CONNECTION_LABEL: ${{ secrets.ADP_DEVLAKE_CONNECTION_LABEL }}
+        run: |
+          set -euo pipefail
+          checks="$RUNNER_TEMP/devlake/checks.json"
+          test -s "$checks"
+          digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifests"][0]["digest"])' "$RUNNER_TEMP/devlake/image.oci/index.json")
+          repository="devlake-poc/$COMPONENT"
+          uri="$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$repository"
+          python3 modules/insights/poc/devlake/publish.py --publish \
+            --component "$COMPONENT" --layout "$RUNNER_TEMP/devlake/image.oci" \
+            --expected-digest "$digest" --revision "$GITHUB_SHA" --checks "$checks" \
+            --account "$ACCOUNT" --role "$ROLE" --region "$REGION" \
+            --repository "$repository" --repository-uri "$uri" \
+            --connection-label "$CONNECTION_LABEL" \
+            --receipt "$RUNNER_TEMP/devlake/publication-receipt.json"
+
+  finalize-on-publish-failure:
+    if: always() && needs.publish.result == 'failure' && github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: publish
+    runs-on: arc-runner-org
+    environment: adp-devlake-finalizer
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.ADP_DEVLAKE_FINALIZER_REVISION }}
+          persist-credentials: false
+      - name: Fence failed publication and reconcile registered images
+        env:
+          ADP_DEVLAKE_PILOT_ID: ${{ vars.ADP_DEVLAKE_PILOT_ID }}
+          ADP_DEVLAKE_LEDGER_TABLE: ${{ vars.ADP_DEVLAKE_LEDGER_TABLE }}
+          ADP_DEVLAKE_ACCOUNT: ${{ vars.ADP_DEVLAKE_ACCOUNT }}
+          ADP_DEVLAKE_REGION: ${{ vars.ADP_DEVLAKE_REGION }}
+          ADP_DEVLAKE_FINALIZE_ROLE: ${{ vars.ADP_DEVLAKE_FINALIZE_ROLE }}
+          ADP_DEVLAKE_FINALIZER_REVISION: ${{ vars.ADP_DEVLAKE_FINALIZER_REVISION }}
+          ADP_DEVLAKE_PUBLISH_ROLE: ${{ vars.ADP_DEVLAKE_PUBLISH_ROLE }}
+          ADP_DEVLAKE_CONNECTION_LABEL: ${{ secrets.ADP_DEVLAKE_FINALIZE_CONNECTION_LABEL }}
+        run: python3 modules/insights/poc/devlake/finalize.py --mode manual --action failure

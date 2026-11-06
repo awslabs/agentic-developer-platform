@@ -4,6 +4,7 @@ on:
 concurrency:
   group: gateway-release-dev
   cancel-in-progress: false
+  queue: max
 permissions:
   contents: read
 jobs:

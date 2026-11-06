@@ -1,0 +1,2212 @@
+{
+  "flow_slug": "devlake-poc-8887",
+  "title": "DevLake connector POC \u2014 parallel build, one acceptance campaign",
+  "org_id": "",
+  "spec_revision": "d33abdf0b9ff245586fe98de7f9e3acb0ee571a7",
+  "intent_ref": "8887",
+  "description": "Two concurrent POC actions; reviewed source delivery, machine evaluations, bounded operations repair, one release campaign and default finalization. Initial acceptance permits repository code work. Private launch bindings and authority remain mandatory before live operations; unresolved runtime inputs do not block independent code work. Shared-file merge checks and runtime serialization follow the versioned parallel-execution contract; source access is not capability evidence.",
+  "epic_metadata": [
+    {
+      "epic_ref": "epic-8887",
+      "title": "Optional DevLake connectors for Product Profile and governed Insights",
+      "description": "Connector reuse first, optional collection, one release campaign and complete isolation/lineage acceptance."
+    }
+  ],
+  "wave_metadata": [
+    {
+      "epic_ref": "epic-8887",
+      "wave_ref": "w01-build",
+      "title": "1. Implement and integrate; no story deployment gates"
+    },
+    {
+      "epic_ref": "epic-8887",
+      "wave_ref": "w02-pilot",
+      "title": "2. One release and complete acceptance campaign"
+    },
+    {
+      "epic_ref": "epic-8887",
+      "wave_ref": "w03-closure",
+      "title": "3. Three reuse decisions and verified cleanup"
+    }
+  ],
+  "nodes": [
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s01",
+      "kind": "story",
+      "title": "S01 \u2014 Scope, reuse and evaluation contract (code and checks)",
+      "issue_ref": "8888",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Evaluation contract and mappings",
+          "create": [
+            "docs/engineering-insights/devlake-poc/pilot-contract.json",
+            "docs/engineering-insights/devlake-poc/source-field-map.json",
+            "docs/engineering-insights/devlake-poc/readiness.md"
+          ],
+          "modify": [
+            "docs/engineering-insights/devlake-poc/architecture.md",
+            "docs/engineering-insights/devlake-poc/verification.md"
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269,
+      "required_inputs": [
+        {
+          "name": "repository-design-contract",
+          "source": "repository:aws-e/adp",
+          "description": "Use the canonical architecture and S01 design under docs/engineering-insights/devlake-poc/. Deliver the reviewed scope, source-field map, measurement plan and readiness matrix. Record unresolved provider/owner/runtime facts explicitly; they block dependent live work, not this code-only story. Repository access supplies design inputs, not source consent or deployment authority."
+        }
+      ]
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s09",
+      "kind": "story",
+      "title": "S09 \u2014 Pinned custom builds and immutable artifacts (code and checks)",
+      "issue_ref": "8901",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Pinned extraction and independent packaging",
+          "create": [
+            "modules/connectors/devlake/source-lock.json",
+            "modules/connectors/devlake/go.mod",
+            "modules/connectors/devlake/go.sum",
+            "modules/connectors/devlake/Dockerfile",
+            "modules/connectors/devlake/cmd/connector-api/main.go",
+            "modules/connectors/devlake/scripts/build.sh",
+            "modules/connectors/devlake/scripts/extract.sh",
+            "modules/connectors/devlake/patches/series",
+            "modules/connectors/devlake/patches/0001-injected-clients-and-schema-checks.patch",
+            "modules/connectors/devlake/NOTICE",
+            "modules/connectors/devlake/LICENSE",
+            "modules/connectors/devlake/reuse-inventory.json",
+            "modules/insights/poc/devlake/go.mod",
+            "modules/insights/poc/devlake/go.sum",
+            "modules/insights/poc/devlake/Dockerfile",
+            "modules/insights/poc/devlake/schema-manifest.json",
+            "modules/insights/poc/devlake/scripts/build.sh",
+            ".github/workflows/devlake-poc-ci.yml",
+            "modules/connectors/devlake/scripts/verify-poc.sh",
+            "modules/connectors/devlake/scripts/check-repair-coverage.py"
+          ]
+        },
+        {
+          "group": "Bootstrap finalizer and publication ownership",
+          "create": [
+            ".github/workflows/insights-poc-finalize.yml",
+            "modules/insights/poc/devlake/finalize/__init__.py",
+            "modules/insights/poc/devlake/finalize/__main__.py",
+            "modules/insights/poc/devlake/finalize/artifacts.py",
+            "modules/insights/poc/devlake/finalize/ledger.py"
+          ]
+        },
+        {
+          "group": "Source-build and finalizer checks",
+          "create": [
+            "modules/insights/tests/devlake_poc/__init__.py",
+            "modules/insights/tests/devlake_poc/test_s09.py"
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269,
+      "required_inputs": [
+        {
+          "name": "shared-file-ci-contract",
+          "source": "repository:aws-e/adp",
+          "description": "S09 implements the shared-file merge preflight in its existing verification script per docs/engineering-insights/devlake-poc/delivery-flow/parallel-execution.md. It checks current merge/CI receipts; declaration alone is not scheduler enforcement."
+        }
+      ]
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s12",
+      "kind": "story",
+      "title": "S12 \u2014 Cell and policy authority (code and checks)",
+      "issue_ref": "8919",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Gateway scope and cell authority",
+          "create": [
+            "modules/gateway/src/connector_scope/__init__.py",
+            "modules/gateway/src/connector_scope/models.py",
+            "modules/gateway/src/connector_scope/routes.py",
+            "modules/gateway/src/connector_scope/service.py",
+            "modules/gateway/src/connector_scope/policy.py",
+            "modules/gateway/alembic/versions/devlake_cell_authority.py"
+          ],
+          "modify": [
+            "modules/gateway/src/app.py"
+          ]
+        },
+        {
+          "group": "Controlled authority verification",
+          "create": [
+            "modules/insights/tests/devlake_poc/test_s12.py",
+            "modules/gateway/tests/connector_scope/test_authority.py"
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s02",
+      "kind": "story",
+      "title": "S02 \u2014 Optional connector infrastructure and IAM collection runtime (code and checks)",
+      "issue_ref": "8889",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Separate connector infrastructure and deployment",
+          "create": [
+            "modules/connectors/devlake/infra/main.tf",
+            "modules/connectors/devlake/infra/variables.tf",
+            "modules/connectors/devlake/infra/outputs.tf",
+            "modules/connectors/devlake/infra/versions.tf",
+            "modules/connectors/devlake/deploy.sh",
+            "modules/connectors/devlake/k8s/connector-api.yaml",
+            ".github/workflows/devlake-connectors-deploy.yml",
+            ".github/workflows/insights-devlake-deploy.yml"
+          ],
+          "modify": [
+            "platform/scripts/deploy-all.sh",
+            "modules/gateway/k8s/deployment.yaml"
+          ]
+        },
+        {
+          "group": "Collection cell infrastructure and renewable IAM",
+          "create": [
+            "modules/insights/poc/devlake/infra/main.tf",
+            "modules/insights/poc/devlake/infra/variables.tf",
+            "modules/insights/poc/devlake/infra/outputs.tf",
+            "modules/insights/poc/devlake/infra/versions.tf",
+            "modules/insights/poc/devlake/deploy.sh",
+            "modules/insights/poc/devlake/k8s/collector-worker.yaml",
+            "modules/insights/poc/devlake/internal/database/iam.go",
+            "modules/insights/poc/devlake/cmd/migrate/main.go",
+            "modules/insights/poc/devlake/finalize/runtime.py",
+            "modules/insights/poc/devlake/finalize/database.py"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/insights/poc/devlake/schema-manifest.json",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            },
+            {
+              "path": "modules/insights/poc/devlake/finalize/__main__.py",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            },
+            {
+              "path": ".github/workflows/insights-poc-finalize.yml",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            }
+          ]
+        },
+        {
+          "group": "Default-off admission and runtime checks",
+          "create": [
+            "modules/gateway/src/connector_scope/feature_flags.py",
+            "modules/insights/tests/devlake_poc/test_s02.py"
+          ],
+          "modify": [
+            "modules/gateway/src/features/routes.py"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/gateway/src/connector_scope/service.py",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s12"
+            }
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s10",
+      "kind": "story",
+      "title": "S10 \u2014 Reused Go discovery through ADP authority (code and checks)",
+      "issue_ref": "8902",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Extracted connector API and broker transport",
+          "create": [
+            "modules/connectors/devlake/internal/api/server.go",
+            "modules/connectors/devlake/internal/broker/transport.go",
+            "modules/connectors/devlake/internal/connectors/github.go",
+            "modules/connectors/devlake/internal/connectors/jira.go",
+            "modules/connectors/devlake/internal/operations/context.go"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/connectors/devlake/cmd/connector-api/main.go",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            },
+            {
+              "path": "modules/connectors/devlake/source-lock.json",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            },
+            {
+              "path": "modules/connectors/devlake/go.mod",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            },
+            {
+              "path": "modules/connectors/devlake/go.sum",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            }
+          ]
+        },
+        {
+          "group": "ADP connection discovery and credentials",
+          "create": [
+            "modules/gateway/src/product_onboarding/devlake_discovery.py"
+          ],
+          "modify": [
+            "modules/gateway/src/product_onboarding/source_discovery.py",
+            "modules/gateway/src/internal/credential_routes.py",
+            "modules/gateway/src/internal/credential_authorization.py",
+            "modules/gateway/src/internal/credential_binding.py",
+            "modules/gateway/src/shared/identity/oauth_providers.py"
+          ]
+        },
+        {
+          "group": "Connector scenarios",
+          "create": [
+            "modules/insights/tests/devlake_poc/test_s10.py"
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s11",
+      "kind": "story",
+      "title": "S11 \u2014 Profile onboarding enrichment (code and checks)",
+      "issue_ref": "8903",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Profile enrichment, revisions and provenance",
+          "create": [
+            "modules/gateway/src/product_onboarding/devlake_enrichment.py"
+          ],
+          "modify": [
+            "modules/gateway/src/product_onboarding/routes.py",
+            "modules/gateway/src/product_onboarding/discovery.py",
+            "modules/gateway/src/products/source_routes.py",
+            "modules/gateway/src/products/models.py"
+          ]
+        },
+        {
+          "group": "Served Profile UI and installed CLI",
+          "modify": [
+            "modules/gateway/frontend/src/pages/products/ProductSources.tsx",
+            "modules/gateway/frontend/src/pages/products/ProductOnboarding.tsx",
+            "modules/gateway/frontend/src/services/products.ts",
+            "modules/gateway/frontend/src/__tests__/pages/products/ProductSources.test.tsx",
+            "modules/gateway/frontend/src/__tests__/pages/products/ProductOnboarding.test.tsx",
+            "modules/gateway/src/cli_capabilities/contract.py",
+            "modules/gateway/cli/adp-product.py",
+            "modules/gateway/cli/adp-onboard.py"
+          ]
+        },
+        {
+          "group": "Profile scenarios and live response fields",
+          "create": [
+            "modules/insights/tests/devlake_poc/test_s11.py",
+            "modules/insights/tests/devlake_poc/profile-contract-fields.json"
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269,
+      "required_inputs": [
+        {
+          "name": "shared-cli-merge-order",
+          "source": "repository:aws-e/adp",
+          "description": "Before S11 merge, verify aws-e/adp PR #9132 is merged into current main with successful required CI, then rebase and check the shared CLI contract. S09 CI enforces this preflight. See docs/engineering-insights/devlake-poc/delivery-flow/parallel-execution.md. No cross-flow node dependency is implied."
+        }
+      ]
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s03",
+      "kind": "story",
+      "title": "S03 \u2014 Profile-source collection and normalization (code and checks)",
+      "issue_ref": "8890",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Cell collection and immutable sealing",
+          "create": [
+            "modules/insights/poc/devlake/cmd/collector-worker/main.go",
+            "modules/insights/poc/devlake/internal/collection/jobs.go",
+            "modules/insights/poc/devlake/internal/collection/generation.go",
+            "modules/insights/poc/devlake/internal/collection/seal.go",
+            "modules/insights/poc/devlake/internal/collection/normalize.go",
+            "modules/insights/poc/devlake/migrations/sealed_batches.sql"
+          ],
+          "modify_after": [
+            {
+              "path": "modules/insights/poc/devlake/schema-manifest.json",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            },
+            {
+              "path": "modules/insights/poc/devlake/Dockerfile",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            }
+          ]
+        },
+        {
+          "group": "Native normalization and replay scenarios",
+          "create": [
+            "modules/insights/tests/devlake_poc/test_s03.py"
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s04",
+      "kind": "story",
+      "title": "S04 \u2014 Scoped immutable observation admission (code and checks)",
+      "issue_ref": "8891",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Read-only sealed export and durable admission",
+          "create": [
+            "modules/insights/poc/devlake/exporter.py",
+            "modules/insights/poc/devlake/observation_mapper.py",
+            "modules/insights/poc/devlake/export_checkpoint.py",
+            "modules/insights/schemas/observations/v1/observation.schema.json",
+            "modules/insights/schemas/observations/v1/policy-envelope.schema.json",
+            "modules/insights/tests/devlake_poc/test_s04.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "capability-8374",
+          "source": "repository:aws-e/adp",
+          "description": "Repository access only. The developer must verify the reviewed interface/code handoff for https://github.com/aws-e/adp/issues/8374 before merging its consumer. S07 checks the required live capability proof before use. Issue closure and source access are not acceptance evidence."
+        },
+        {
+          "name": "capability-8375",
+          "source": "repository:aws-e/adp",
+          "description": "Repository access only. The developer must verify the reviewed interface/code handoff for https://github.com/aws-e/adp/issues/8375 before merging its consumer. S07 checks the required live capability proof before use. Issue closure and source access are not acceptance evidence."
+        }
+      ],
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s05",
+      "kind": "story",
+      "title": "S05 \u2014 Exact requirement, test and delivery chain (code and checks)",
+      "issue_ref": "8892",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Versioned requirement and test evidence",
+          "create": [
+            "modules/insights/poc/devlake/requirement_mapper.py",
+            "modules/insights/poc/devlake/test_evidence_mapper.py",
+            "modules/insights/poc/devlake/evidence_chain.py",
+            "modules/insights/tests/devlake_poc/test_s05.py"
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s13",
+      "kind": "story",
+      "title": "S13 \u2014 Fresh source/evidence authority when serving (code and checks)",
+      "issue_ref": "8920",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Fresh serving authorization and policy descriptors",
+          "create": [
+            "modules/insights/dataset_policy.py",
+            "modules/insights/schemas/results/v2/dataset-policy.schema.json",
+            "modules/gateway/src/insights_results/policy_authority.py",
+            "modules/insights/tests/devlake_poc/test_s13.py"
+          ],
+          "modify": [
+            "modules/insights/results.py",
+            "modules/gateway/src/insights_results/routes.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "capability-8374",
+          "source": "repository:aws-e/adp",
+          "description": "Repository access only. The developer must verify the reviewed interface/code handoff for https://github.com/aws-e/adp/issues/8374 before merging its consumer. S07 checks the required live capability proof before use. Issue closure and source access are not acceptance evidence."
+        },
+        {
+          "name": "capability-8375",
+          "source": "repository:aws-e/adp",
+          "description": "Repository access only. The developer must verify the reviewed interface/code handoff for https://github.com/aws-e/adp/issues/8375 before merging its consumer. S07 checks the required live capability proof before use. Issue closure and source access are not acceptance evidence."
+        }
+      ],
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s06",
+      "kind": "story",
+      "title": "S06 \u2014 Real work/cost publication (code and checks)",
+      "issue_ref": "8893",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Immutable authorized work and cost publication",
+          "create": [
+            "modules/insights/poc/devlake/dataset_builder.py",
+            "modules/insights/poc/devlake/publisher.py",
+            "modules/insights/poc/devlake/publication_reconciler.py",
+            "modules/insights/poc/devlake/quality_report.py",
+            "modules/insights/tests/devlake_poc/test_s06.py"
+          ],
+          "modify": [
+            "modules/insights/projection.py",
+            "modules/gateway/cli/adp-insights.py"
+          ]
+        }
+      ],
+      "required_inputs": [
+        {
+          "name": "capability-8374",
+          "source": "repository:aws-e/adp",
+          "description": "Repository access only. The developer must verify the reviewed interface/code handoff for https://github.com/aws-e/adp/issues/8374 before merging its consumer. S07 checks the required live capability proof before use. Issue closure and source access are not acceptance evidence."
+        },
+        {
+          "name": "capability-8375",
+          "source": "repository:aws-e/adp",
+          "description": "Repository access only. The developer must verify the reviewed interface/code handoff for https://github.com/aws-e/adp/issues/8375 before merging its consumer. S07 checks the required live capability proof before use. Issue closure and source access are not acceptance evidence."
+        }
+      ],
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/s07",
+      "kind": "story",
+      "title": "S07 \u2014 Operational, freshness and isolation proof (code and checks)",
+      "issue_ref": "8894",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Shared campaign runner and independent evidence reader",
+          "create": [
+            "modules/insights/poc/devlake/campaign.py",
+            "modules/insights/poc/devlake/verify_campaign.py",
+            "modules/insights/poc/devlake/campaign.schema.json",
+            "modules/insights/tests/devlake_poc/conftest.py",
+            "modules/insights/tests/devlake_poc/test_s07.py",
+            ".github/workflows/devlake-poc-qualify.yml",
+            "docs/engineering-insights/devlake-poc/operating-report.md",
+            "modules/insights/poc/devlake/resume_campaign.py",
+            "modules/insights/poc/devlake/complete_issues.py",
+            "modules/insights/tests/devlake_poc/test_unattended.py"
+          ],
+          "modify": [
+            ".github/workflows/insights-ci.yml",
+            "modules/insights/deploy.sh"
+          ]
+        },
+        {
+          "group": "Integrated schema and source qualification",
+          "modify_after": [
+            {
+              "path": "modules/insights/poc/devlake/schema-manifest.json",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            },
+            {
+              "path": "modules/insights/poc/devlake/scripts/build.sh",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            },
+            {
+              "path": "modules/connectors/devlake/scripts/build.sh",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            },
+            {
+              "path": ".github/workflows/devlake-poc-ci.yml",
+              "created_by": "devlake-poc-8887/epic-8887/w01-build/s09"
+            }
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269,
+      "required_inputs": [
+        {
+          "name": "cross-flow-runtime-coordination",
+          "source": "repository:aws-e/adp",
+          "description": "Implement campaign preflight in the existing S07 harness: fresh shared-capability receipts, compatible installed revisions, canonical target/state/migration locking, runner and DB headroom. Recheck before each mutation. Contract: docs/engineering-insights/devlake-poc/delivery-flow/parallel-execution.md."
+        }
+      ]
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w03-closure/s08",
+      "kind": "story",
+      "title": "S08 \u2014 Produce reviewed reuse recommendations from the accepted rubric",
+      "issue_ref": "8895",
+      "repository_identity": "aws-e/adp",
+      "delivery_mode": "code_only",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      },
+      "evidence_expectations": [
+        "verified-merge"
+      ],
+      "file_groups": [
+        {
+          "group": "Three decisions and sanitized completion index",
+          "create": [
+            "docs/engineering-insights/devlake-poc/decision.md",
+            "docs/engineering-insights/devlake-poc/completion-index.json"
+          ]
+        }
+      ],
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w01-build/code-evidence",
+      "kind": "eval",
+      "title": "Automatically verify all reviewed code and required CI",
+      "repository_identity": "aws-e/adp",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "34a9c4fd34af1b748167c8c612e616c4dac105bca5a3606df8fbff5092fedf7d"
+        },
+        "predecessors": [
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s01",
+            "required_checks": [
+              {
+                "name": "check",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 370881543,
+                  "workflow_path": ".github/workflows/public-docs.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s02",
+            "required_checks": [
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              },
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s03",
+            "required_checks": [
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 379777787,
+                  "workflow_path": ".github/workflows/insights-ci.yml"
+                }
+              },
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s04",
+            "required_checks": [
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 379777787,
+                  "workflow_path": ".github/workflows/insights-ci.yml"
+                }
+              },
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s05",
+            "required_checks": [
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 379777787,
+                  "workflow_path": ".github/workflows/insights-ci.yml"
+                }
+              },
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s06",
+            "required_checks": [
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 379777787,
+                  "workflow_path": ".github/workflows/insights-ci.yml"
+                }
+              },
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s07",
+            "required_checks": [
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 379777787,
+                  "workflow_path": ".github/workflows/insights-ci.yml"
+                }
+              },
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s09",
+            "required_checks": [
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s10",
+            "required_checks": [
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              },
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s11",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Frontend Unit Tests",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s12",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 399225481,
+                  "workflow_path": ".github/workflows/devlake-poc.yml"
+                }
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s13",
+            "required_checks": [
+              {
+                "name": "Lint",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "Test",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 248828769,
+                  "workflow_path": ".github/workflows/gateway-ci.yml"
+                }
+              },
+              {
+                "name": "verify",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 379777787,
+                  "workflow_path": ".github/workflows/insights-ci.yml"
+                }
+              },
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              }
+            ]
+          }
+        ],
+        "max_age_seconds": 604800
+      },
+      "issue_ref": "9110",
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "kind": "eval",
+      "title": "Automatically accept complete pilot evidence",
+      "repository_identity": "aws-e/adp",
+      "evidence_expectations": [
+        "trusted-evaluation"
+      ],
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "34a9c4fd34af1b748167c8c612e616c4dac105bca5a3606df8fbff5092fedf7d"
+        },
+        "predecessors": [
+          {
+            "address": "devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify",
+            "required_checks": []
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "pilot.workflow",
+            "path": ".github/workflows/devlake-poc-qualify.yml",
+            "source": {
+              "predecessor": "devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify"
+            },
+            "definition": {
+              "predecessor": "devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify"
+            },
+            "dispatch_only": true,
+            "required_jobs": [
+              "qualify"
+            ],
+            "artifacts": [
+              {
+                "name": "devlake-pilot-{run_id}-{run_attempt}",
+                "path": "summary.json",
+                "bind_workflow_provenance": true,
+                "predicates": [
+                  {
+                    "criterion_id": "S01-AC-01",
+                    "pointer": "/criteria/S01-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S01-AC-02",
+                    "pointer": "/criteria/S01-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S01-AC-03",
+                    "pointer": "/criteria/S01-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S02-AC-01",
+                    "pointer": "/criteria/S02-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S02-AC-02",
+                    "pointer": "/criteria/S02-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S02-AC-03",
+                    "pointer": "/criteria/S02-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S02-AC-04",
+                    "pointer": "/criteria/S02-AC-04/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S02-AC-05",
+                    "pointer": "/criteria/S02-AC-05/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S03-AC-01",
+                    "pointer": "/criteria/S03-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S03-AC-02",
+                    "pointer": "/criteria/S03-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S03-AC-03",
+                    "pointer": "/criteria/S03-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S04-AC-01",
+                    "pointer": "/criteria/S04-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S04-AC-02",
+                    "pointer": "/criteria/S04-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S04-AC-03",
+                    "pointer": "/criteria/S04-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S05-AC-01",
+                    "pointer": "/criteria/S05-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S05-AC-02",
+                    "pointer": "/criteria/S05-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S05-AC-03",
+                    "pointer": "/criteria/S05-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S06-AC-01",
+                    "pointer": "/criteria/S06-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S06-AC-02",
+                    "pointer": "/criteria/S06-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S06-AC-03",
+                    "pointer": "/criteria/S06-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S07-AC-01",
+                    "pointer": "/criteria/S07-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S07-AC-02",
+                    "pointer": "/criteria/S07-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S07-AC-03",
+                    "pointer": "/criteria/S07-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S07-AC-04",
+                    "pointer": "/criteria/S07-AC-04/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S09-AC-01",
+                    "pointer": "/criteria/S09-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S09-AC-02",
+                    "pointer": "/criteria/S09-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S09-AC-03",
+                    "pointer": "/criteria/S09-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S10-AC-01",
+                    "pointer": "/criteria/S10-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S10-AC-02",
+                    "pointer": "/criteria/S10-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S10-AC-03",
+                    "pointer": "/criteria/S10-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S10-AC-04",
+                    "pointer": "/criteria/S10-AC-04/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S11-AC-01",
+                    "pointer": "/criteria/S11-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S11-AC-02",
+                    "pointer": "/criteria/S11-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S11-AC-03",
+                    "pointer": "/criteria/S11-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S11-AC-04",
+                    "pointer": "/criteria/S11-AC-04/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S12-AC-01",
+                    "pointer": "/criteria/S12-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S12-AC-02",
+                    "pointer": "/criteria/S12-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S12-AC-03",
+                    "pointer": "/criteria/S12-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S13-AC-01",
+                    "pointer": "/criteria/S13-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S13-AC-02",
+                    "pointer": "/criteria/S13-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S13-AC-03",
+                    "pointer": "/criteria/S13-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "pilot.phase",
+                    "pointer": "/phase",
+                    "operation": "equals",
+                    "expected": "pilot"
+                  },
+                  {
+                    "criterion_id": "pilot.independent_verification",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "pilot.required_failed",
+                    "pointer": "/required_failed",
+                    "operation": "equals",
+                    "expected": 0
+                  },
+                  {
+                    "criterion_id": "pilot.required_skipped",
+                    "pointer": "/required_skipped",
+                    "operation": "equals",
+                    "expected": 0
+                  },
+                  {
+                    "criterion_id": "pilot.required_not_run",
+                    "pointer": "/required_not_run",
+                    "operation": "equals",
+                    "expected": 0
+                  },
+                  {
+                    "criterion_id": "pilot.unresolved_operations",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "pilot.authority_snapshot_valid",
+                    "pointer": "/authority_snapshot_valid",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "pilot.requirements_snapshot_matches",
+                    "pointer": "/requirements_snapshot_matches",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "pilot.human_interventions",
+                    "pointer": "/human_interventions",
+                    "operation": "equals",
+                    "expected": 0
+                  },
+                  {
+                    "criterion_id": "pilot.resume-qualified",
+                    "pointer": "/unattended/resume_qualified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "pilot.repair-qualified",
+                    "pointer": "/unattended/repair_qualified",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "pilot.live-contract",
+                    "pointer": "/live_profile_contract_verified",
+                    "operation": "equals",
+                    "expected": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "issue_ref": "9111",
+      "provider_repository_id": 1186991269,
+      "criteria": [
+        "S01-AC-01",
+        "S01-AC-02",
+        "S01-AC-03",
+        "S02-AC-01",
+        "S02-AC-02",
+        "S02-AC-03",
+        "S02-AC-04",
+        "S02-AC-05",
+        "S03-AC-01",
+        "S03-AC-02",
+        "S03-AC-03",
+        "S04-AC-01",
+        "S04-AC-02",
+        "S04-AC-03",
+        "S05-AC-01",
+        "S05-AC-02",
+        "S05-AC-03",
+        "S06-AC-01",
+        "S06-AC-02",
+        "S06-AC-03",
+        "S07-AC-01",
+        "S07-AC-02",
+        "S07-AC-03",
+        "S07-AC-04",
+        "S09-AC-01",
+        "S09-AC-02",
+        "S09-AC-03",
+        "S10-AC-01",
+        "S10-AC-02",
+        "S10-AC-03",
+        "S10-AC-04",
+        "S11-AC-01",
+        "S11-AC-02",
+        "S11-AC-03",
+        "S11-AC-04",
+        "S12-AC-01",
+        "S12-AC-02",
+        "S12-AC-03",
+        "S13-AC-01",
+        "S13-AC-02",
+        "S13-AC-03"
+      ]
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence",
+      "kind": "eval",
+      "title": "Automatically accept recommendations and verified cleanup",
+      "repository_identity": "aws-e/adp",
+      "evidence_expectations": [
+        "trusted-evaluation"
+      ],
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "machine",
+        "evidence_schema": "repository-evaluation/v1",
+        "runner": {
+          "adapter": "engine-repository-evidence-v1",
+          "repository": "aws-e/adp",
+          "repository_id": 1186991269,
+          "harness_sha256": "34a9c4fd34af1b748167c8c612e616c4dac105bca5a3606df8fbff5092fedf7d"
+        },
+        "predecessors": [
+          {
+            "address": "devlake-poc-8887/epic-8887/w03-closure/s08",
+            "required_checks": [
+              {
+                "name": "check",
+                "app_id": 15368,
+                "workflow": {
+                  "workflow_id": 370881543,
+                  "workflow_path": ".github/workflows/public-docs.yml"
+                }
+              },
+              {
+                "name": "DevLake POC / verify",
+                "app_id": 15368
+              }
+            ]
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w03-closure/finalize",
+            "required_checks": []
+          }
+        ],
+        "max_age_seconds": 604800,
+        "workflows": [
+          {
+            "criterion_id": "closure.workflow",
+            "path": ".github/workflows/insights-poc-finalize.yml",
+            "source": {
+              "predecessor": "devlake-poc-8887/epic-8887/w03-closure/finalize"
+            },
+            "definition": {
+              "predecessor": "devlake-poc-8887/epic-8887/w03-closure/finalize"
+            },
+            "dispatch_only": false,
+            "required_jobs": [
+              "finalize"
+            ],
+            "artifacts": [
+              {
+                "name": "devlake-closure-{run_id}-{run_attempt}",
+                "path": "summary.json",
+                "bind_workflow_provenance": true,
+                "predicates": [
+                  {
+                    "criterion_id": "S08-AC-01",
+                    "pointer": "/criteria/S08-AC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S08-AC-02",
+                    "pointer": "/criteria/S08-AC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "S08-AC-03",
+                    "pointer": "/criteria/S08-AC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-01",
+                    "pointer": "/criteria/EC-01/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-02",
+                    "pointer": "/criteria/EC-02/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-03",
+                    "pointer": "/criteria/EC-03/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-04",
+                    "pointer": "/criteria/EC-04/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-05",
+                    "pointer": "/criteria/EC-05/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-06",
+                    "pointer": "/criteria/EC-06/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-07",
+                    "pointer": "/criteria/EC-07/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-08",
+                    "pointer": "/criteria/EC-08/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-09",
+                    "pointer": "/criteria/EC-09/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "EC-10",
+                    "pointer": "/criteria/EC-10/outcome",
+                    "operation": "equals",
+                    "expected": "pass"
+                  },
+                  {
+                    "criterion_id": "closure.phase",
+                    "pointer": "/phase",
+                    "operation": "equals",
+                    "expected": "closure"
+                  },
+                  {
+                    "criterion_id": "closure.independent_verification",
+                    "pointer": "/independent_verification",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "closure.required_failed",
+                    "pointer": "/required_failed",
+                    "operation": "equals",
+                    "expected": 0
+                  },
+                  {
+                    "criterion_id": "closure.required_skipped",
+                    "pointer": "/required_skipped",
+                    "operation": "equals",
+                    "expected": 0
+                  },
+                  {
+                    "criterion_id": "closure.required_not_run",
+                    "pointer": "/required_not_run",
+                    "operation": "equals",
+                    "expected": 0
+                  },
+                  {
+                    "criterion_id": "closure.unresolved_operations",
+                    "pointer": "/unresolved_operations",
+                    "operation": "equals",
+                    "expected": []
+                  },
+                  {
+                    "criterion_id": "closure.authority_snapshot_valid",
+                    "pointer": "/authority_snapshot_valid",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "closure.requirements_snapshot_matches",
+                    "pointer": "/requirements_snapshot_matches",
+                    "operation": "equals",
+                    "expected": true
+                  },
+                  {
+                    "criterion_id": "closure.human_interventions",
+                    "pointer": "/human_interventions",
+                    "operation": "equals",
+                    "expected": 0
+                  },
+                  {
+                    "criterion_id": "closure.disposition",
+                    "pointer": "/cleanup_status",
+                    "operation": "equals",
+                    "expected": "confirmed"
+                  },
+                  {
+                    "criterion_id": "closure.decisions",
+                    "pointer": "/decision_authority",
+                    "operation": "equals",
+                    "expected": "accepted-rubric-delegated-review"
+                  },
+                  {
+                    "criterion_id": "closure.business-adoption",
+                    "pointer": "/business_adoption_authorized",
+                    "operation": "equals",
+                    "expected": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "issue_ref": "9112",
+      "provider_repository_id": 1186991269,
+      "criteria": [
+        "S08-AC-01",
+        "S08-AC-02",
+        "S08-AC-03",
+        "EC-01",
+        "EC-02",
+        "EC-03",
+        "EC-04",
+        "EC-05",
+        "EC-06",
+        "EC-07",
+        "EC-08",
+        "EC-09",
+        "EC-10"
+      ]
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify",
+      "kind": "story",
+      "title": "Build each component once; release and qualify the integrated POC",
+      "issue_ref": "8894",
+      "repository_identity": "aws-e/adp",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "required_inputs": [
+        {
+          "name": "workflow",
+          "source": "deployment_workflow:devlake-poc-qualify.yml"
+        },
+        {
+          "name": "registered-target",
+          "source": "environment_connection:unresolved-poc-connection",
+          "description": "Resolve actual tenant/target and account approval before live operations."
+        },
+        {
+          "name": "protected-connection",
+          "source": "environment_connection:unresolved-poc-connection",
+          "description": "Unresolved; no connection is authorized in the proposed policy."
+        },
+        {
+          "name": "finalizer-ownership",
+          "source": "environment_connection:unresolved-poc-connection",
+          "description": "Private ledger, retention decisions and qualified independent failure/expiry finalizer."
+        },
+        {
+          "name": "predecessor-0",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s01"
+        },
+        {
+          "name": "predecessor-1",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s09"
+        },
+        {
+          "name": "predecessor-2",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s12"
+        },
+        {
+          "name": "predecessor-3",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s02"
+        },
+        {
+          "name": "predecessor-4",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s10"
+        },
+        {
+          "name": "predecessor-5",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s11"
+        },
+        {
+          "name": "predecessor-6",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s03"
+        },
+        {
+          "name": "predecessor-7",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s04"
+        },
+        {
+          "name": "predecessor-8",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s05"
+        },
+        {
+          "name": "predecessor-9",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s13"
+        },
+        {
+          "name": "predecessor-10",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s06"
+        },
+        {
+          "name": "predecessor-11",
+          "source": "node:devlake-poc-8887/epic-8887/w01-build/s07"
+        },
+        {
+          "name": "readiness",
+          "source": "environment_connection:unresolved-poc-connection",
+          "description": "Verified launch bindings and authority before live operations; automatic S07 capability, CI/repair, runner-window and schema checks. No mid-flow human configuration."
+        }
+      ],
+      "evidence_expectations": [
+        "runtime_verified:devlake-poc"
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s01",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s09",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s12",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s02",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s10",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s11",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s03",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s04",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s05",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s13",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s06",
+            "receipt_kind": "verified_merge"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w01-build/s07",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "devlake-poc-8887/epic-8887/w01-build/s01",
+          "devlake-poc-8887/epic-8887/w01-build/s09",
+          "devlake-poc-8887/epic-8887/w01-build/s12",
+          "devlake-poc-8887/epic-8887/w01-build/s02",
+          "devlake-poc-8887/epic-8887/w01-build/s10",
+          "devlake-poc-8887/epic-8887/w01-build/s11",
+          "devlake-poc-8887/epic-8887/w01-build/s03",
+          "devlake-poc-8887/epic-8887/w01-build/s04",
+          "devlake-poc-8887/epic-8887/w01-build/s05",
+          "devlake-poc-8887/epic-8887/w01-build/s13",
+          "devlake-poc-8887/epic-8887/w01-build/s06",
+          "devlake-poc-8887/epic-8887/w01-build/s07"
+        ],
+        "repository": "aws-e/adp",
+        "target": "unresolved-poc-target",
+        "component": "devlake-poc",
+        "workflows": [
+          "devlake-poc-qualify.yml"
+        ],
+        "default_branch": "main",
+        "definition_predecessor": "devlake-poc-8887/epic-8887/w01-build/s07",
+        "delivery_contract": {
+          "schema_version": 2,
+          "connection_id": "unresolved-poc-connection",
+          "resource_kind": "engineering-poc",
+          "resource_id": "unresolved-poc-resource",
+          "definition_revision": "f45a0cbef4f012b14af7ddcd70fec0d6362ebc13",
+          "baseline_revision": "f45a0cbef4f012b14af7ddcd70fec0d6362ebc13",
+          "workflow_inputs": {
+            "phase": "pilot",
+            "launch_manifest": "unresolved-private-launch-manifest"
+          },
+          "required_checks": [
+            "preflight",
+            "all-required-criteria",
+            "independent-readback",
+            "unattended-resume",
+            "scope-and-identity"
+          ],
+          "cleanup_required": true,
+          "evidence_artifact": "devlake-pilot-delivery"
+        }
+      },
+      "provider_repository_id": 1186991269
+    },
+    {
+      "address": "devlake-poc-8887/epic-8887/w03-closure/finalize",
+      "kind": "story",
+      "title": "Finalize owned pilot resources and verify retained evidence",
+      "issue_ref": "8895",
+      "repository_identity": "aws-e/adp",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "operate",
+        "persona": "operations"
+      },
+      "required_inputs": [
+        {
+          "name": "workflow",
+          "source": "deployment_workflow:insights-poc-finalize.yml"
+        },
+        {
+          "name": "registered-target",
+          "source": "environment_connection:unresolved-poc-connection",
+          "description": "Resolve actual tenant/target and account approval before live operations."
+        },
+        {
+          "name": "protected-connection",
+          "source": "environment_connection:unresolved-poc-connection",
+          "description": "Unresolved; no connection is authorized in the proposed policy."
+        },
+        {
+          "name": "finalizer-ownership",
+          "source": "environment_connection:unresolved-poc-connection",
+          "description": "Private ledger, retention decisions and qualified independent failure/expiry finalizer."
+        },
+        {
+          "name": "predecessor-0",
+          "source": "node:devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify"
+        },
+        {
+          "name": "predecessor-1",
+          "source": "node:devlake-poc-8887/epic-8887/w03-closure/s08"
+        },
+        {
+          "name": "readiness",
+          "source": "environment_connection:unresolved-poc-connection",
+          "description": "Verified launch bindings and authority before live operations; automatic S07 capability, CI/repair, runner-window and schema checks. No mid-flow human configuration."
+        }
+      ],
+      "evidence_expectations": [
+        "runtime_verified:devlake-poc-finalizer"
+      ],
+      "operational_release_binding": {
+        "predecessors": [
+          {
+            "address": "devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify",
+            "receipt_kind": "verified_operations_release"
+          },
+          {
+            "address": "devlake-poc-8887/epic-8887/w03-closure/s08",
+            "receipt_kind": "verified_merge"
+          }
+        ],
+        "build_prerequisites": [
+          "devlake-poc-8887/epic-8887/w03-closure/s08"
+        ],
+        "repository": "aws-e/adp",
+        "target": "unresolved-poc-target",
+        "component": "devlake-poc-finalizer",
+        "workflows": [
+          "insights-poc-finalize.yml"
+        ],
+        "default_branch": "main",
+        "definition_predecessor": "devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify",
+        "delivery_contract": {
+          "schema_version": 2,
+          "connection_id": "unresolved-poc-connection",
+          "resource_kind": "engineering-poc",
+          "resource_id": "unresolved-poc-resource",
+          "definition_revision": "f45a0cbef4f012b14af7ddcd70fec0d6362ebc13",
+          "baseline_revision": "f45a0cbef4f012b14af7ddcd70fec0d6362ebc13",
+          "workflow_inputs": {
+            "phase": "closure",
+            "launch_manifest": "unresolved-private-launch-manifest"
+          },
+          "required_checks": [
+            "all-required-criteria",
+            "independent-readback",
+            "retention-and-removal",
+            "issue-closure-ready"
+          ],
+          "cleanup_required": true,
+          "evidence_artifact": "devlake-closure-delivery"
+        }
+      },
+      "provider_repository_id": 1186991269
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s01",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s09"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s01",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s12"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s01",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s02"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s09",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s02"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s12",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s02"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s01",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s10"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s02",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s10"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s09",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s10"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s10",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s11"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s01",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s03"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s02",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s03"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s11",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s03"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s01",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s04"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s03",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s04"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s04",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s05"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s04",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s13"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s12",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s13"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s04",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s06"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s13",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s06"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s02",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s07"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s03",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s07"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s05",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s07"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s06",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/s07"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s07",
+      "to_address": "devlake-poc-8887/epic-8887/w03-closure/s08"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s01",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s09",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s12",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s02",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s10",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s11",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s03",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s04",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s05",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s13",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s06",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/s07",
+      "to_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w01-build/code-evidence",
+      "to_address": "devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify",
+      "to_address": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "to_address": "devlake-poc-8887/epic-8887/w03-closure/s08"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w03-closure/s08",
+      "to_address": "devlake-poc-8887/epic-8887/w03-closure/finalize"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w03-closure/s08",
+      "to_address": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "from_address": "devlake-poc-8887/epic-8887/w03-closure/finalize",
+      "to_address": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    }
+  ],
+  "proposed_execution_policy": {
+    "schema_version": 3,
+    "org_id": "org-resolved-at-registration",
+    "team_ids": [],
+    "repository_ids": [
+      "aws-e/adp"
+    ],
+    "environment_connection_ids": [],
+    "allowed_actions": [
+      "develop",
+      "review",
+      "repair",
+      "merge",
+      "operate",
+      "deploy",
+      "evaluate"
+    ],
+    "human_gates": [],
+    "evaluation_acceptance": {
+      "devlake-poc-8887/epic-8887/w01-build/code-evidence": "machine",
+      "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence": "machine",
+      "devlake-poc-8887/epic-8887/w03-closure/closure-evidence": "machine"
+    },
+    "expires_at": "2026-11-10T23:59:59Z",
+    "limits": {
+      "max_spend_usd": "1500",
+      "max_wall_clock_seconds": 1209600,
+      "max_attempts_per_node": 3,
+      "max_concurrent_actions": 2
+    },
+    "repair_paths": [
+      ".github/workflows/devlake-poc-qualify.yml",
+      ".github/workflows/insights-poc-finalize.yml",
+      "modules/connectors/devlake/Dockerfile",
+      "modules/connectors/devlake/cmd/connector-api/main.go",
+      "modules/connectors/devlake/deploy.sh",
+      "modules/connectors/devlake/go.mod",
+      "modules/connectors/devlake/infra/main.tf",
+      "modules/connectors/devlake/infra/outputs.tf",
+      "modules/connectors/devlake/infra/variables.tf",
+      "modules/connectors/devlake/infra/versions.tf",
+      "modules/connectors/devlake/internal/api/server.go",
+      "modules/connectors/devlake/internal/broker/transport.go",
+      "modules/connectors/devlake/internal/connectors/github.go",
+      "modules/connectors/devlake/internal/connectors/jira.go",
+      "modules/connectors/devlake/internal/operations/context.go",
+      "modules/connectors/devlake/k8s/connector-api.yaml",
+      "modules/connectors/devlake/patches/0001-injected-clients-and-schema-checks.patch",
+      "modules/connectors/devlake/patches/series",
+      "modules/connectors/devlake/reuse-inventory.json",
+      "modules/connectors/devlake/scripts/build.sh",
+      "modules/connectors/devlake/scripts/check-repair-coverage.py",
+      "modules/connectors/devlake/scripts/extract.sh",
+      "modules/connectors/devlake/scripts/verify-poc.sh",
+      "modules/connectors/devlake/source-lock.json",
+      "modules/gateway/alembic/versions/devlake_cell_authority.py",
+      "modules/gateway/cli/adp-insights.py",
+      "modules/gateway/cli/adp-onboard.py",
+      "modules/gateway/cli/adp-product.py",
+      "modules/gateway/frontend/src/__tests__/pages/products/ProductOnboarding.test.tsx",
+      "modules/gateway/frontend/src/__tests__/pages/products/ProductSources.test.tsx",
+      "modules/gateway/frontend/src/pages/products/ProductOnboarding.tsx",
+      "modules/gateway/frontend/src/pages/products/ProductSources.tsx",
+      "modules/gateway/frontend/src/services/products.ts",
+      "modules/gateway/src/cli_capabilities/contract.py",
+      "modules/gateway/src/connector_scope/__init__.py",
+      "modules/gateway/src/connector_scope/feature_flags.py",
+      "modules/gateway/src/connector_scope/models.py",
+      "modules/gateway/src/connector_scope/routes.py",
+      "modules/gateway/src/connector_scope/service.py",
+      "modules/gateway/src/features/routes.py",
+      "modules/gateway/src/insights_results/routes.py",
+      "modules/gateway/src/product_onboarding/devlake_discovery.py",
+      "modules/gateway/src/product_onboarding/devlake_enrichment.py",
+      "modules/gateway/src/product_onboarding/discovery.py",
+      "modules/gateway/src/product_onboarding/source_discovery.py",
+      "modules/gateway/src/products/models.py",
+      "modules/gateway/src/shared/identity/oauth_providers.py",
+      "modules/gateway/tests/connector_scope/test_authority.py",
+      "modules/insights/deploy.sh",
+      "modules/insights/poc/devlake/Dockerfile",
+      "modules/insights/poc/devlake/campaign.py",
+      "modules/insights/poc/devlake/campaign.schema.json",
+      "modules/insights/poc/devlake/cmd/collector-worker/main.go",
+      "modules/insights/poc/devlake/cmd/migrate/main.go",
+      "modules/insights/poc/devlake/complete_issues.py",
+      "modules/insights/poc/devlake/dataset_builder.py",
+      "modules/insights/poc/devlake/deploy.sh",
+      "modules/insights/poc/devlake/evidence_chain.py",
+      "modules/insights/poc/devlake/export_checkpoint.py",
+      "modules/insights/poc/devlake/exporter.py",
+      "modules/insights/poc/devlake/finalize/__init__.py",
+      "modules/insights/poc/devlake/finalize/__main__.py",
+      "modules/insights/poc/devlake/finalize/artifacts.py",
+      "modules/insights/poc/devlake/finalize/database.py",
+      "modules/insights/poc/devlake/finalize/ledger.py",
+      "modules/insights/poc/devlake/finalize/runtime.py",
+      "modules/insights/poc/devlake/go.mod",
+      "modules/insights/poc/devlake/infra/main.tf",
+      "modules/insights/poc/devlake/infra/outputs.tf",
+      "modules/insights/poc/devlake/infra/variables.tf",
+      "modules/insights/poc/devlake/infra/versions.tf",
+      "modules/insights/poc/devlake/internal/collection/generation.go",
+      "modules/insights/poc/devlake/internal/collection/jobs.go",
+      "modules/insights/poc/devlake/internal/collection/normalize.go",
+      "modules/insights/poc/devlake/internal/collection/seal.go",
+      "modules/insights/poc/devlake/internal/database/iam.go",
+      "modules/insights/poc/devlake/k8s/collector-worker.yaml",
+      "modules/insights/poc/devlake/migrations/sealed_batches.sql",
+      "modules/insights/poc/devlake/observation_mapper.py",
+      "modules/insights/poc/devlake/publication_reconciler.py",
+      "modules/insights/poc/devlake/publisher.py",
+      "modules/insights/poc/devlake/quality_report.py",
+      "modules/insights/poc/devlake/requirement_mapper.py",
+      "modules/insights/poc/devlake/resume_campaign.py",
+      "modules/insights/poc/devlake/schema-manifest.json",
+      "modules/insights/poc/devlake/scripts/build.sh",
+      "modules/insights/poc/devlake/test_evidence_mapper.py",
+      "modules/insights/poc/devlake/verify_campaign.py",
+      "modules/insights/projection.py",
+      "modules/insights/results.py",
+      "modules/insights/schemas/observations/v1/observation.schema.json",
+      "modules/insights/tests/devlake_poc/__init__.py",
+      "modules/insights/tests/devlake_poc/conftest.py",
+      "modules/insights/tests/devlake_poc/profile-contract-fields.json",
+      "modules/insights/tests/devlake_poc/test_s02.py",
+      "modules/insights/tests/devlake_poc/test_s03.py",
+      "modules/insights/tests/devlake_poc/test_s04.py",
+      "modules/insights/tests/devlake_poc/test_s05.py",
+      "modules/insights/tests/devlake_poc/test_s06.py",
+      "modules/insights/tests/devlake_poc/test_s07.py",
+      "modules/insights/tests/devlake_poc/test_s09.py",
+      "modules/insights/tests/devlake_poc/test_s10.py",
+      "modules/insights/tests/devlake_poc/test_s11.py",
+      "modules/insights/tests/devlake_poc/test_s12.py",
+      "modules/insights/tests/devlake_poc/test_s13.py",
+      "modules/insights/tests/devlake_poc/test_unattended.py"
+    ],
+    "repair_required_checks": [
+      "DevLake POC / verify"
+    ]
+  }
+}

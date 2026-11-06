@@ -149,6 +149,30 @@ def _listed_deployments(bin_dir: Path, home: Path) -> list[dict]:
 
 
 class TestUpdate:
+    def test_product_helper_updates_and_rolls_back_with_the_cli(self, installed, upstream):
+        bin_dir, home = installed
+        source = upstream.source_dir / "adp-product.py"
+        original = (bin_dir / "adp-product.py").read_bytes()
+        source.write_bytes(original.replace(b"Installed Product commands", b"Updated Product commands"))
+        assert source.read_bytes() != original
+
+        updated = _run_adp(bin_dir, home, ["update"])
+        assert updated.returncode == 0, updated.stderr
+        assert "/api/cli/adp-product.py" in upstream.requested
+        assert (bin_dir / "adp-product.py").read_bytes() == source.read_bytes()
+        assert (bin_dir / "adp-product.py.prev").read_bytes() == original
+        helper_help = subprocess.run(
+            ["python3", str(bin_dir / "adp-product.py"), "list", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert helper_help.returncode == 0 and "--limit" in helper_help.stdout
+
+        rolled_back = _run_adp(bin_dir, home, ["update", "--rollback"])
+        assert rolled_back.returncode == 0, rolled_back.stderr
+        assert (bin_dir / "adp-product.py").read_bytes() == original
+
     def test_pulls_the_new_cli_from_the_stored_gateway(self, installed) -> None:
         bin_dir, home = installed
 
@@ -199,13 +223,42 @@ class TestUpdate:
 
     def test_update_then_rollback_restores_the_old_version(self, installed) -> None:
         bin_dir, home = installed
+        native_helper = bin_dir / "adp_native_test.py"
+        old_native_helper = native_helper.read_bytes() + b"\n# Offline previous native helper revision\n"
+        native_helper.write_bytes(old_native_helper)
         assert _run_adp(bin_dir, home, ["update"]).returncode == 0
+        assert native_helper.read_bytes() != old_native_helper
 
         result = _run_adp(bin_dir, home, ["update", "--rollback"])
 
         assert result.returncode == 0, result.stderr
         assert 'ADP_VERSION="1.0.0"' in (bin_dir / "adp").read_text()
+        assert native_helper.read_bytes() == old_native_helper
         assert _run_adp(bin_dir, home, ["version"]).returncode == 0, "rolled-back CLI must run"
+
+    def test_amendment_helper_updates_and_rolls_back_as_an_executable_command(self, installed, upstream):
+        bin_dir, home = installed
+        original = (bin_dir / "adp-flow.py").read_bytes()
+        helper = upstream.source_dir / "adp-flow.py"
+        help_text = "Propose work with an explicit graph placement"
+        helper.write_text(helper.read_text().replace(help_text, help_text + " (updated)"))
+
+        updated = _run_adp(bin_dir, home, ["update"])
+        assert updated.returncode == 0, updated.stderr
+        assert "/api/cli/adp-flow.py" in upstream.requested
+        assert (bin_dir / "adp-flow.py").read_bytes() == helper.read_bytes()
+        assert (bin_dir / "adp-flow.py.prev").read_bytes() == original
+        help_result = _run_adp(bin_dir, home, ["flow", "amendment", "--help"])
+        assert help_result.returncode == 0, help_result.stderr
+        assert "(updated)" in help_result.stdout
+
+        rolled_back = _run_adp(bin_dir, home, ["update", "--rollback"])
+        assert rolled_back.returncode == 0, rolled_back.stderr
+        assert (bin_dir / "adp-flow.py").read_bytes() == original
+        help_result = _run_adp(bin_dir, home, ["flow", "amendment", "--help"])
+        assert help_result.returncode == 0, help_result.stderr
+        assert "(updated)" not in help_result.stdout
+        assert "preview" in help_result.stdout
 
     def test_keeps_the_session_config(self, installed, upstream) -> None:
         """Updating must not log the user out."""

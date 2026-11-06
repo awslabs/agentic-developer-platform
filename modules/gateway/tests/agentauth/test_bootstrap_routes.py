@@ -138,7 +138,7 @@ def kubernetes(tmp_path):
                             "username": "system:serviceaccount:adp-agents:agent-scaledjob-sa",
                             "extra": {
                                 "authentication.kubernetes.io/pod-name": ["worker-a"],
-                                "authentication.kubernetes.io/pod-uid": ["pod-a"],
+                                "authentication.kubernetes.io/pod-uid": [state.get("token_uid", "pod-a")],
                             },
                         },
                     }
@@ -204,6 +204,9 @@ def http_client(store, kubernetes, monkeypatch, *, posture="report_only", postur
 
     async def _provision():
         async with engine.begin() as conn:
+            # SQLite's legacy mode doesn't begin a transaction for DDL. Without
+            # this, each table/index creation commits separately to disk.
+            await conn.exec_driver_sql("BEGIN")
             await conn.run_sync(Base.metadata.create_all)
         if posture is None:
             return
@@ -532,10 +535,15 @@ def broker_harness(store, kubernetes, monkeypatch):
     runtime = AgentRuntime(store=store, workloads=kubernetes[0], env=ENV)
     lease = runtime.bootstrap(BootstrapRequest(invocation_id="run-a", envelope_digest=envelope_digest(envelope)), "pod-token")
     monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
-    monkeypatch.setattr("src.shared.config.get_settings", lambda: SimpleNamespace(webhook_events_table="broker-events"))
+    monkeypatch.setattr(
+        "src.shared.config.get_settings",
+        lambda: SimpleNamespace(webhook_events_table="broker-events", bedrock_routing_credential_cache_size=256),
+    )
     identity = SimpleNamespace(
         scope="internal",
         user_id="shared-worker",
+        agent_registry_id="shared-worker",
+        org_id="tenant",
         credential_scopes=[
             "credential:list",
             "credential:proxy",
@@ -728,6 +736,162 @@ def test_authority_child_github_mint_uses_protected_assignment_not_missing_legac
     assert response.status_code == 200, response.text
     ownership.assert_awaited_once_with("tenant", 123, db=db)
     assert mint.await_args.kwargs["repositories"] == ["repo"]
+
+
+def _github_mint_app(broker_harness, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from src.internal import routes as internal_routes
+    from src.shared.database import get_db
+
+    _, headers, _, _ = broker_harness
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.flush = AsyncMock()
+    app = FastAPI()
+    app.include_router(internal_routes.router)
+    app.dependency_overrides[get_db] = lambda: db
+    monkeypatch.setattr(internal_routes, "assert_installation_owned_by", AsyncMock())
+    monkeypatch.setattr(internal_routes, "resolve_tenant_app_credentials", AsyncMock(return_value=("app", "private-test-key")))
+    mint = AsyncMock(return_value=("repo-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()))
+    monkeypatch.setattr(internal_routes, "mint_installation_token_with_expiry", mint)
+    audits = []
+    monkeypatch.setattr(internal_routes, "_write_audit", AsyncMock(side_effect=lambda *a, **k: audits.append(k)))
+    body = {"invocation_id": "run-a", "installation_id": 123, "repo_owner": "org", "repo_name": "repo"}
+    return TestClient(app), headers, body, mint, audits
+
+
+def test_github_mint_lists_the_products_other_repositories_in_the_same_installation(broker_harness, monkeypatch):
+    """Issue #9550: the token covers the Product-bound set, derived server-side, audited and returned."""
+    from src.internal import routes as internal_routes
+    from src.products.token_scope import ProductRepositoryScope
+
+    client, headers, body, mint, audits = _github_mint_app(broker_harness, monkeypatch)
+    scope = AsyncMock(return_value=ProductRepositoryScope("product-1", ("org/repo", "org/planning"), (34, 35)))
+    monkeypatch.setattr(internal_routes, "_product_repository_scope", scope)
+
+    response = client.post("/internal/v1/github-installation-token", headers=headers, json=body)
+
+    assert response.status_code == 200, response.text
+    assert mint.await_args.kwargs["repositories"] == ["repo", "planning"]
+    assert response.json()["repositories"] == ["org/repo", "org/planning"]
+    # The resolver only ever sees the trusted binding, never a body-chosen repository.
+    binding = scope.await_args.args[0]
+    assert binding.tenant_id == "tenant" and binding.repo == "org/repo"
+    minted = next(a for a in audits if a["event_type"] == "github_installation_token_minted")
+    assert minted["details"]["repositories"] == ["repo", "planning"]
+    assert minted["details"]["repository_full_names"] == ["org/repo", "org/planning"]
+    assert minted["details"]["product_id"] == "product-1"
+
+
+def test_github_mint_keeps_one_repository_when_no_single_product_binds_it(broker_harness, monkeypatch):
+    """Issue #9550: no Product (or an ambiguous one) means today's single-repository token."""
+    from src.internal import routes as internal_routes
+
+    client, headers, body, mint, _ = _github_mint_app(broker_harness, monkeypatch)
+    monkeypatch.setattr(internal_routes, "_product_repository_scope", AsyncMock(return_value=None))
+
+    response = client.post("/internal/v1/github-installation-token", headers=headers, json=body)
+
+    assert response.status_code == 200, response.text
+    assert mint.await_args.kwargs["repositories"] == ["repo"]
+    assert response.json()["repositories"] == ["org/repo"]
+
+
+def test_github_mint_resolves_the_product_scope_on_its_own_session_and_survives_a_timeout(broker_harness, monkeypatch):
+    """Issue #9550 review F1: a cancelled scope lookup must not poison the route session.
+
+    The resolver's timeout can interrupt a query; the session it ran on is then in
+    a pending-rollback state. The route's session is the one the mandatory audit
+    flushes on, so the lookup must use a private session and a timeout must still
+    deliver the single-repository token with its audit committed.
+    """
+
+    from src.products import token_scope
+    from src.shared import database as shared_database
+
+    client, headers, body, mint, audits = _github_mint_app(broker_harness, monkeypatch)
+    route_db = client.app.dependency_overrides[shared_database.get_db]()
+    private_sessions = []
+
+    class PrivateSession:
+        async def __aenter__(self):
+            private_sessions.append(self)
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(shared_database, "get_session_factory", lambda: PrivateSession)
+    clients = _fake_github_clients(monkeypatch)
+    seen = {}
+
+    async def slow_resolution(db, **kwargs):
+        seen["db"] = db
+        raise TimeoutError()
+
+    monkeypatch.setattr(token_scope, "product_repository_scope", slow_resolution)
+
+    response = client.post("/internal/v1/github-installation-token", headers=headers, json=body)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["repositories"] == ["org/repo"]
+    assert mint.await_args.kwargs["repositories"] == ["repo"]
+    assert seen["db"] in private_sessions and seen["db"] is not route_db, "the lookup must never run on the route session"
+    assert not route_db.execute.called and not route_db.get.called
+    assert any(a["event_type"] == "github_installation_token_minted" for a in audits)
+    assert route_db.commit.await_count >= 1, "the single-repository fallback is delivered only after its audit commits"
+    # Review F2: the per-mint GitHub client is closed on the cancelled path too.
+    assert [c.closed for c in clients] == [True]
+
+
+def _fake_github_clients(monkeypatch):
+    """Replace the per-mint GitHubAppClient with a recorder of construction and close."""
+    from src.admin.connections import github_client as github_client_module
+
+    created = []
+
+    class FakeGitHubAppClient:
+        def __init__(self, app_id, private_key, **kwargs):
+            self.closed = False
+            created.append(self)
+
+        async def aclose(self):
+            self.closed = True
+
+    monkeypatch.setattr(github_client_module, "GitHubAppClient", FakeGitHubAppClient)
+    return created
+
+
+def test_github_mint_closes_the_per_mint_github_client_after_a_successful_resolution(broker_harness, monkeypatch):
+    """Review F2 (#9604): the GitHub client's connection pool is released on the resolved path."""
+    from src.products import token_scope
+    from src.products.token_scope import ProductRepositoryScope
+    from src.shared import database as shared_database
+
+    client, headers, body, mint, _ = _github_mint_app(broker_harness, monkeypatch)
+
+    class PrivateSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(shared_database, "get_session_factory", lambda: PrivateSession)
+    clients = _fake_github_clients(monkeypatch)
+
+    async def resolved(db, *, github, **kwargs):
+        assert github is clients[0] and github.closed is False, "the client is open while the lookup runs"
+        return ProductRepositoryScope("product-1", ("org/repo", "org/planning"), (34, 35))
+
+    monkeypatch.setattr(token_scope, "product_repository_scope", resolved)
+
+    response = client.post("/internal/v1/github-installation-token", headers=headers, json=body)
+
+    assert response.status_code == 200, response.text
+    assert mint.await_args.kwargs["repositories"] == ["repo", "planning"]
+    assert [c.closed for c in clients] == [True]
 
 
 def test_recorded_user_cannot_replace_the_signed_grant_human(broker_harness, store):

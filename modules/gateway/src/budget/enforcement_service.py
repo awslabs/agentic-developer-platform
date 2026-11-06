@@ -10,6 +10,9 @@ import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from datetime import time as datetime_time
 from decimal import Decimal
 from typing import Any
 
@@ -18,7 +21,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.shared.database import get_session_factory, reset_engine
+from src.shared.database import get_accounting_session_factory, get_session_factory, reset_engine
 from src.shared.logging import get_logger
 from src.shared.metrics import (
     emit_budget_check_failure,
@@ -357,7 +360,7 @@ class BudgetEnforcementService:
         return os.environ.get("BG_ENVIRONMENT", "dev")
 
     @asynccontextmanager
-    async def _get_session(self) -> AsyncIterator[AsyncSession]:
+    async def _get_session(self, *, accounting: bool = False) -> AsyncIterator[AsyncSession]:
         """Get database session as async context manager.
 
         For IAM auth, resets the engine before each session to ensure
@@ -373,7 +376,7 @@ class BudgetEnforcementService:
             settings = get_settings()
             if settings.rds_iam_auth and settings.rds_host and settings.rds_pool_enabled is not True:
                 reset_engine()
-            factory = get_session_factory()
+            factory = get_accounting_session_factory() if accounting else get_session_factory()
             async with factory() as session:
                 yield session
 
@@ -757,12 +760,17 @@ class BudgetEnforcementService:
             )
         try:
             async with self._get_session() as session:
+                if binding is not None and context._project_attribution is None:
+                    from src.products.work_scope import resolve_run_project
+
+                    context._project_attribution = await resolve_run_project(session, binding=binding)
+                    await session.commit()
                 posture = await read_enforcement(session, org_id=binding.tenant_id if binding else None, flow_id=binding.flow_id if binding else None)
                 context._budget_observation_scope = flow_key(binding.tenant_id, binding.flow_id) if binding and binding.flow_id else "global"
                 context._budget_enforcement_enabled = posture.enabled
                 context._budget_accounting_incomplete = posture.accounting_incomplete
         except Exception:
-            return self._policy_budget_unavailable()
+            return self._project_budget_unavailable() if context._project_attribution is not None else self._policy_budget_unavailable()
         return None
 
     async def check_budget_hierarchy(
@@ -771,6 +779,9 @@ class BudgetEnforcementService:
         estimated_cost: Decimal,
         request_id: str | None = None,
         run_id: str | None = None,
+        *,
+        reserve: bool = True,
+        tool_estimate: bool = False,
     ) -> EnforcementResult:
         """
         Check budget constraints across the entire hierarchy.
@@ -801,10 +812,16 @@ class BudgetEnforcementService:
             run_id: The caller's asserted run id (Issue #4187). Treated as an
                 assertion to verify, never as an identity — see
                 ``_resolve_run_scope``.
+            reserve: False for advisory catalog availability against settled
+                ledger limits, without reservations or off-mode observations.
+                Paid admission must use the default True to check and reserve
+                live in-flight headroom atomically.
 
         Returns:
             EnforcementResult indicating if request is allowed
         """
+        if tool_estimate and (not reserve or not context._budget_enforcement_enabled or not budget_config.budget_check_enabled):
+            return self._policy_budget_unavailable()
         if context._budget_accounting_incomplete and context._budget_enforcement_enabled:
             return self._policy_budget_unavailable()
         if not context._budget_enforcement_enabled:
@@ -814,7 +831,14 @@ class BudgetEnforcementService:
                     object.__setattr__(
                         context, "attributed_user_id", _qualify_root_principal_id(binding.root_human_id, is_human_rooted=binding.is_human_rooted)
                     )
+                if not reserve:
+                    return EnforcementResult(allowed=True)
                 async with self._get_session() as session:
+                    if binding is not None and context._project_attribution is None:
+                        from src.products.work_scope import resolve_run_project
+
+                        context._project_attribution = await resolve_run_project(session, binding=binding)
+                        await session.commit()
                     return await self._observe_without_enforcement(session, context, binding, request_id)
             except RunBindingError as exc:
                 return EnforcementResult(
@@ -837,8 +861,12 @@ class BudgetEnforcementService:
             if context._policy_estimated_cost is None or context._policy_request_id is None or context._policy_quote is None:
                 return self._policy_budget_unavailable()
             request_id = context._policy_request_id
-            estimated_cost = max(estimated_cost, context._policy_estimated_cost)
+            # The server quote includes this request's explicit output limit.
+            # A header-size heuristic with a different default must not replace it.
+            estimated_cost = context._policy_estimated_cost
         if not budget_config.budget_check_enabled:
+            if context._project_attribution is not None:
+                return self._project_budget_unavailable()
             if policy_target is not None:
                 return self._policy_budget_unavailable()
             return EnforcementResult(allowed=True)
@@ -1006,6 +1034,42 @@ class BudgetEnforcementService:
                             _qualify_root_principal_id(binding.root_human_id, is_human_rooted=binding.is_human_rooted),
                         )
 
+                if binding is not None and context._project_attribution is None:
+                    from src.products.work_scope import resolve_run_project
+
+                    try:
+                        context._project_attribution = await resolve_run_project(session, binding=binding)
+                        await session.commit()
+                    except Exception:
+                        return self._project_budget_unavailable()
+                if context._project_attribution is not None:
+                    from src.budget.project_budget import prepare_project_budget
+
+                    if context._project_attribution.tenant_id != context.attributed_org_id:
+                        return self._policy_budget_unavailable()
+                    project_target = await prepare_project_budget(session, self._get_reservations(), context._project_attribution)
+                    await session.commit()
+                    if context._policy_quote is not None:
+                        # Issue #9536: the Project meter holds the quote's provider
+                        # ceiling so an unknown outcome can be charged at that
+                        # ceiling (see the retained maximum in
+                        # ``reconcile_reservation``). The ceiling is NOT the
+                        # request estimate: pushing it into the shared amount made
+                        # the run cap refuse a reviewer's first request whose
+                        # full-context ceiling (about 30 USD for Codex) exceeded the
+                        # 25 USD run cap while nothing had been spent. Only this
+                        # target reserves the ceiling; every other cap admits the
+                        # request-sized estimate.
+                        project_target = replace(
+                            project_target,
+                            pending_marker_seconds=1000000000000,
+                            reserve_usd=max(estimated_cost, context._policy_quote.maximum_cost_usd),
+                        )
+                    reservation_targets.append(project_target)
+                    context._run_scope_reservations = [target for target in context._run_scope_reservations if target.entity_type != "project"] + [
+                        project_target
+                    ]
+
                 # ORDERING CONTRACT (Issue #4300): the hierarchy is built HERE,
                 # strictly after the run binding has been resolved and
                 # `attributed_user_id` published above. Building it earlier — where
@@ -1039,7 +1103,8 @@ class BudgetEnforcementService:
                             # Hard limit exceeded - block immediately. The
                             # ledger read itself succeeded, so this counts as a
                             # healthy check for grace-window purposes.
-                            await self._note_check_succeeded()
+                            if reserve:
+                                await self._note_check_succeeded()
                             return result
 
                         if target is not None:
@@ -1070,18 +1135,25 @@ class BudgetEnforcementService:
                 if person_result is not None:
                     if not person_result.allowed:
                         # The ledger read succeeded, so this is a healthy check.
-                        await self._note_check_succeeded()
+                        if reserve:
+                            await self._note_check_succeeded()
                         return person_result
                     all_warnings.extend(person_result.warnings)
 
                 # All checks passed — the ledger is readable, so reset the
                 # consecutive-failure window and emit the healthy-path 0.
-                await self._note_check_succeeded()
+                if reserve:
+                    await self._note_check_succeeded()
 
         except Exception as e:
-            if policy_target is not None:
+            if context._project_attribution is not None:
+                return self._project_budget_unavailable()
+            if policy_target is not None or not reserve or tool_estimate:
                 return self._policy_budget_unavailable()
             return await self._handle_check_failure(e, "Budget check")
+
+        if not reserve:
+            return EnforcementResult(allowed=True, warnings=all_warnings)
 
         # Issue #5225: confirm the quote at the boundary that actually spends.
         #
@@ -1102,9 +1174,7 @@ class BudgetEnforcementService:
         # (503 + Retry-After) rather than a 402, because no cap was exceeded —
         # the bound is merely unconfirmed, and a retry requotes.
         if policy_target is not None:
-            from src.orchestration.provider_quotes import confirm_quote_spendable
-
-            refusal = await confirm_quote_spendable(context._policy_quote)
+            refusal = await self._confirm_policy_quote(context)
             if refusal is not None:
                 logger.warning(
                     "Denying policy model request: quote no longer spendable at the reservation boundary "
@@ -1117,14 +1187,41 @@ class BudgetEnforcementService:
         # into _handle_check_failure would let a Redis blip burn the DB grace
         # window and then deny all traffic. It degrades instead — see
         # _reserve_or_degrade.
+        if tool_estimate:
+            now = datetime.now(UTC)
+            retained_targets = []
+            for target in reservation_targets:
+                if target.period_type in CALENDAR_PERIOD_TYPES:
+                    _, period_end = get_period_start_end(PeriodType(target.period_type), reference_date=now.date())
+                    expiry = datetime.combine(period_end + timedelta(days=1), datetime_time.min, tzinfo=UTC)
+                    target = replace(target, ttl_seconds=max(1, int((expiry - now).total_seconds()) + 1))
+                retained_targets.append(target)
+            reservation_targets = retained_targets
+        reservation_targets = self._retained_reservation_targets(context, reservation_targets)
         context._budget_admission_targets = list(reservation_targets)
         reservation_denial = await self._reserve_or_degrade(
-            request_id, estimated_cost, reservation_targets, **({"strict": True} if policy_target is not None else {})
+            request_id,
+            estimated_cost,
+            reservation_targets,
+            **(
+                {"strict": True}
+                if policy_target is not None or context._project_attribution is not None or (tool_estimate and reservation_targets)
+                else {}
+            ),
         )
         if reservation_denial is not None:
             return reservation_denial
 
         return EnforcementResult(allowed=True, warnings=all_warnings)
+
+    def _retained_reservation_targets(self, context, targets):
+        return targets
+
+    async def _confirm_policy_quote(self, context):
+        """Recheck server quote provenance immediately before atomic reservation."""
+        from src.orchestration.provider_quotes import confirm_quote_spendable
+
+        return await confirm_quote_spendable(context._policy_quote)
 
     async def _observe_without_enforcement(self, session, context, binding, request_id):
         """Usage writers still run. Maintain accumulators without spending gates."""
@@ -1149,6 +1246,11 @@ class BudgetEnforcementService:
         scopes = self._scope_targets(binding, Decimal(0), Decimal(0)) if binding else []
         if context._policy_flow_target is not None:
             scopes.append(context._policy_flow_target)
+        if context._project_attribution is not None:
+            from src.budget.project_budget import prepare_project_budget
+
+            scopes.append(await prepare_project_budget(session, self._get_reservations(), context._project_attribution, enforce=False))
+            await session.commit()
         context._run_scope_reservations = scopes
         context._budget_admission_targets = [*targets, *scopes]
         store = self._get_reservations()
@@ -1244,7 +1346,10 @@ class BudgetEnforcementService:
         return EnforcementResult(
             allowed=False,
             deny_reason=DenyReason.BUDGET_EXCEEDED,
-            blocked_reason=f"Budget exceeded for {exhausted.entity_type} {exhausted.entity_id} (including in-flight spend)",
+            blocked_reason=(
+                f"Budget exceeded for {exhausted.entity_type} {exhausted.entity_id}: "
+                f"recorded usage and outstanding reservations plus the next ${estimated_cost:.6f} reservation exceed available budget"
+            ),
             exceeded_entity_type=EntityType(exhausted.entity_type),
             exceeded_entity_id=exhausted.entity_id,
             enforcement_mode=EnforcementMode.HARD,
@@ -1255,6 +1360,17 @@ class BudgetEnforcementService:
             # ledger, so this is `cap - settled_spend`, the headroom the request
             # was denied against rather than the configured ceiling.
             scope_cap_usd=exhausted.headroom_usd if is_scope_denial else None,
+            current_total_usd=outcome.current_total_usd,
+            request_estimate_usd=estimated_cost,
+        )
+
+    @staticmethod
+    def _project_budget_unavailable() -> EnforcementResult:
+        return EnforcementResult(
+            allowed=False,
+            deny_reason=DenyReason.CHECK_UNAVAILABLE,
+            blocked_reason="Project spend could not be confirmed. Retry after accounting recovers.",
+            scope="project",
         )
 
     @staticmethod
@@ -1302,7 +1418,7 @@ class BudgetEnforcementService:
         """
         if not context._budget_enforcement_enabled and (not usage_known or (context._policy_flow_target is not None and actual_cost_usd is None)):
             # Preserve all unbounded markers. No missing receipt becomes $0.
-            async with self._get_session() as session:
+            async with self._get_session(accounting=True) as session:
                 if await session.get(BudgetAccountingGap, request_id) is None:
                     session.add(BudgetAccountingGap(request_id=request_id, scope_key=context._budget_observation_scope or "global"))
                     await session.commit()
@@ -1347,13 +1463,23 @@ class BudgetEnforcementService:
             targets = list(context._budget_admission_targets)
 
         if not usage_known or actual_cost_usd is None:
+            maximum_cost = getattr(context._policy_quote, "maximum_cost_usd", None)
+            if maximum_cost is not None and maximum_cost > context._policy_quote.total_usd:
+                # A request estimate is not evidence of a failed call's maximum
+                # cost. Unknown outcomes retain the independent provider ceiling
+                # until a trusted receipt supplies the actual charge.
+                await store.retain_maximum(request_id, maximum_cost, targets)
             # Policy totals require a trusted price receipt. A failed upstream
             # call or missing usage must not turn its estimate into zero spend.
             unresolved = [target for target in targets if target.require_initialization]
             for target in unresolved:
                 # A provider failure can retry against the full server-admitted
                 # quote. No actual usage is invented and no headroom released.
-                if retain_failed_bound and context._policy_quote is not None and await store.retain_failed_bound(request_id, target):
+                if (
+                    (retain_failed_bound or target.entity_type == "project")
+                    and context._policy_quote is not None
+                    and await store.retain_failed_bound(request_id, target)
+                ):
                     logger.warning(
                         "Provider failure retained at full admitted bound; no usage settled",
                         extra={"request_id": request_id, "budget_scope": target.entity_type},
@@ -1367,6 +1493,18 @@ class BudgetEnforcementService:
             targets = [target for target in targets if not target.require_initialization]
 
         await store.reconcile(request_id, actual_cost, targets)
+        project_targets = [target for target in targets if target.entity_type == "project"]
+        if project_targets and usage_known:
+            from src.budget.project_budget import reconcile_project_budget
+
+            async with self._get_session(accounting=True) as session:
+                for target in project_targets:
+                    if actual_cost == 0:
+                        # usage_known=True and an explicit zero are the existing
+                        # transport contract for a proven unsubmitted request.
+                        await store.release_project_receipt(request_id, Decimal(0), target)
+                    else:
+                        await reconcile_project_budget(session, store, target)
 
     async def _check_entity_budget(
         self,

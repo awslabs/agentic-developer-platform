@@ -1,0 +1,235 @@
+{
+  "regions": {
+    "us-west-2": {
+      "documentation": "https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/using-price-list-query-api.html",
+      "eks_extended_support_basis": "Standard cluster charge plus extended-support surcharge; https://aws.amazon.com/eks/pricing/",
+      "quotes": [
+        {
+          "description": "$0.0416 per On Demand Linux t3.medium Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "83H2W4FZK86NAGZF.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "83H2W4FZK86NAGZF",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:t3.medium",
+          "usd": "0.0416000000"
+        },
+        {
+          "description": "$0.0832 per On Demand Linux t3.large Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "JZMQ5VQSSPBWHNHH.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "JZMQ5VQSSPBWHNHH",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:t3.large",
+          "usd": "0.0832000000"
+        },
+        {
+          "description": "$0.096 per On Demand Linux m6i.large Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "M2FWPJS5NYCRADSV.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "M2FWPJS5NYCRADSV",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:m6i.large",
+          "usd": "0.0960000000"
+        },
+        {
+          "description": "$0.192 per On Demand Linux m6i.xlarge Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "DA65P5JFWM5XU6EG.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "DA65P5JFWM5XU6EG",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:m6i.xlarge",
+          "usd": "0.1920000000"
+        },
+        {
+          "description": "$0.384 per On Demand Linux m6i.2xlarge Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "7AMHUMVDV6D3TDZ6.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "7AMHUMVDV6D3TDZ6",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:m6i.2xlarge",
+          "usd": "0.3840000000"
+        },
+        {
+          "description": "$0.1008 per On Demand Linux m7i.large Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "76SYQ5S6SHTVH6CA.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "76SYQ5S6SHTVH6CA",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:m7i.large",
+          "usd": "0.1008000000"
+        },
+        {
+          "description": "$0.2016 per On Demand Linux m7i.xlarge Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "XBHFT8FZNSVBBZTU.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "XBHFT8FZNSVBBZTU",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:m7i.xlarge",
+          "usd": "0.2016000000"
+        },
+        {
+          "description": "$0.085 per On Demand Linux c6i.large Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "Q5M5AMCZFUSR83SW.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "Q5M5AMCZFUSR83SW",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:c6i.large",
+          "usd": "0.0850000000"
+        },
+        {
+          "description": "$0.17 per On Demand Linux c6i.xlarge Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "98E6PS364VFEQ4PW.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "98E6PS364VFEQ4PW",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:c6i.xlarge",
+          "usd": "0.1700000000"
+        },
+        {
+          "description": "$0.126 per On Demand Linux r6i.large Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "KB3KDGSFAAQPR5F6.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "KB3KDGSFAAQPR5F6",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:r6i.large",
+          "usd": "0.1260000000"
+        },
+        {
+          "description": "$0.252 per On Demand Linux r6i.xlarge Instance Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "SH2B54UCWNYTYXPR.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "SH2B54UCWNYTYXPR",
+          "unit": "Hrs",
+          "usage_type": "USW2-BoxUsage:r6i.xlarge",
+          "usd": "0.2520000000"
+        },
+        {
+          "description": "Amazon EKS cluster usage in US West (Oregon)",
+          "effective_date": "2026-09-01T00:00:00Z",
+          "rate_code": "DYQZA4NFAQKBU6H4.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEKS",
+          "sku": "DYQZA4NFAQKBU6H4",
+          "unit": "Hours",
+          "usage_type": "USW2-AmazonEKS-Hours:perCluster",
+          "usd": "0.1000000000"
+        },
+        {
+          "description": "Amazon EKS extended support usage in US West (Oregon)",
+          "effective_date": "2026-09-01T00:00:00Z",
+          "rate_code": "MBEV4FFUUBVFQGEW.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEKS",
+          "sku": "MBEV4FFUUBVFQGEW",
+          "unit": "Hours",
+          "usage_type": "USW2-AmazonEKS-Hours:extendedSupport",
+          "usd": "0.5000000000"
+        },
+        {
+          "description": "$0.045 per NAT Gateway Hour",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "44T683R45QPT8RYQ.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "44T683R45QPT8RYQ",
+          "unit": "Hrs",
+          "usage_type": "USW2-NatGateway-Hours",
+          "usd": "0.0450000000"
+        },
+        {
+          "description": "$1 per customer managed KMS key version in US West (Oregon)",
+          "effective_date": "2025-07-01T00:00:00Z",
+          "rate_code": "S8HBXBVJKWKDP9AS.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "awskms",
+          "sku": "S8HBXBVJKWKDP9AS",
+          "unit": "Keys",
+          "usage_type": "us-west-2-KMS-Keys",
+          "usd": "1.0000000000"
+        },
+        {
+          "description": "$0.08 per GB-month of General Purpose (gp3) provisioned storage - US West (Oregon)",
+          "effective_date": "2026-10-01T00:00:00Z",
+          "rate_code": "BB8UJWJ4XPFJB95G.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonEC2",
+          "sku": "BB8UJWJ4XPFJB95G",
+          "unit": "GB-Mo",
+          "usage_type": "USW2-EBS:VolumeUsage.gp3",
+          "usd": "0.0800000000"
+        },
+        {
+          "description": "$0.005 per In-use public IPv4 address per hour",
+          "effective_date": "2026-09-01T00:00:00Z",
+          "rate_code": "NBHXEKTE88TJDDQF.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonVPC",
+          "sku": "NBHXEKTE88TJDDQF",
+          "unit": "Hrs",
+          "usage_type": "USW2-PublicIPv4:InUseAddress",
+          "usd": "0.0050000000"
+        },
+        {
+          "description": "$0.01 per VPC Endpoint Hour",
+          "effective_date": "2026-09-01T00:00:00Z",
+          "rate_code": "3CXT4SN26EPSKK5A.JRTCKXETXF.6YS6EN2CT7",
+          "region": "us-west-2",
+          "service": "AmazonVPC",
+          "sku": "3CXT4SN26EPSKK5A",
+          "unit": "Hrs",
+          "usage_type": "USW2-VpcEndpoint-Hours",
+          "usd": "0.0100000000"
+        }
+      ],
+      "rates": {
+        "ebs_gp3_monthly_usd_per_gib": 0.08,
+        "eks_hourly_usd": {
+          "extended": 0.6,
+          "standard": 0.1
+        },
+        "instance_hourly_usd": {
+          "c6i.large": 0.085,
+          "c6i.xlarge": 0.17,
+          "m6i.2xlarge": 0.384,
+          "m6i.large": 0.096,
+          "m6i.xlarge": 0.192,
+          "m7i.large": 0.1008,
+          "m7i.xlarge": 0.2016,
+          "r6i.large": 0.126,
+          "r6i.xlarge": 0.252,
+          "t3.large": 0.0832,
+          "t3.medium": 0.0416
+        },
+        "interface_endpoint_az_hourly_usd": 0.01,
+        "kms_key_monthly_usd": 1.0,
+        "nat_gateway_hourly_usd": 0.045,
+        "public_ipv4_hourly_usd": 0.005
+      },
+      "reviewed_on": "2026-10-12",
+      "source": "AWS Price List GetProducts, exact regionCode us-west-2, OnDemand USD"
+    }
+  },
+  "version": 1
+}

@@ -11,6 +11,7 @@ from src.orchestration.amend import AmendmentContext, amend_plan
 from src.orchestration.compile import HASH_EXCLUDED_FIELDS, PolicyNotAcceptableError, compile_proposal, plan_hash, require_evaluation_acceptor
 from src.orchestration.proposal import validate_proposal
 from src.orchestration.state import ActorKind
+from tests.orchestration.product_fixture import seed_product
 from tests.orchestration.test_compile import approval, valid_proposal  # noqa: F401
 from tests.orchestration.test_evaluation_evidence import evaluation  # noqa: F401
 from tests.orchestration.test_pending_amendments_postgres import factory, pg_server, pg_url  # noqa: F401
@@ -73,6 +74,8 @@ async def test_human_amendment_can_change_suite_and_invalidates_prior_hash(sessi
 @pytest.fixture
 async def session(factory):  # noqa: F811
     async with factory() as value:
+        await seed_product(value, org_id="org-alpha", actor_id="cognito-sub-123")
+        await value.commit()
         yield value
 
 

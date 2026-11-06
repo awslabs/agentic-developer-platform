@@ -6,31 +6,21 @@ Build from the repository root:
 docker build -t skypilot-go-tools modules/domain-apps/superplane/images/skypilot/go-security
 ```
 
-The image is a distribution artifact. Copy its three `/bin/` executables into
-the matching SkyPilot SDK/plugin locations, and copy
-`/usr/share/licenses/skypilot-go-tools/` into the runtime's license directory.
-It is not a standalone SkyPilot server.
+This distribution artifact supplies three `/bin/` executables and
+`/usr/share/licenses/skypilot-go-tools/` to SkyPilot's maintained runtime.
 
-The GKE authentication plugin stays at source revision
-`395432f6b23de7465d1a0ebb9b384cf96e3a04b3`, with locked patched x/net and x/text
-modules. The AWS Session Manager plugin stays at release 1.2.814.0, including
-AWS's release-time VERSION injection. Both compile with Go 1.26.8. CRC32C uses
-Google's checksum-verified 20260821073916 component, built with Go 1.26.6.
-All sources and downloads are checksum pinned; source and dependency notices
-are included.
+The GKE authentication plugin retains source revision
+`395432f6b23de7465d1a0ebb9b384cf96e3a04b3`, with x/net 0.60.0 and its compatible
+module graph locked in `gcp-locks/`. AWS Session Manager retains release
+1.2.814.0 and the upstream release-time VERSION injection. Both use Go 1.26.9.
+CRC32C uses Google's checksum-pinned 20261016073856 component, built with
+Go 1.27.2. These versions address GO-2026-6612 / CVE-2026-78663.
 
-The published artifact in `evidence/publication.json` has zero native scanner
-matches (35 cataloged packages) against the frozen September 27 database.
-This does not describe the entire SkyPilot image; rescan the assembled runtime.
-SSM retains the upstream GOPATH/vendor build, whose dependency metadata is
-less detailed than the authentication plugin's module metadata.
+Run the assembled runtime's `../high-maintenance/verify_runtime.py` to check
+CRC32C file/range results, the GKE credential contract using a synthetic local
+gcloud, SSM version, and the provider environment. Rescan the assembled image
+before claiming remediation. SSM retains its upstream GOPATH/vendor build,
+whose dependency metadata is less detailed than Go module metadata.
 
-Validation: the GKE plugin unit tests and the SSM upstream suite pass. SSM tests
-use the upstream makefile's `-test.paniconexit0=false` requirement. CRC32C passes
-82 parity cases against the old binary, covering decimal/base64 output, empty
-input, random file ranges, invalid arguments and files/offsets over 4 GiB.
-The full source Docker build passes. CRC32C and GKE reproduce the exact published
-executable hashes. SSM differs only in Go/GNU ELF build-ID notes; executable
-content is equal after normalizing those notes, as recorded in the parity receipt.
-Full local validation logs live under
-`/workspaces/projects/security27-high-zoekt/skypilot-tools/`.
+The September publication, scanner and parity receipts in `evidence/` document
+the previous artifact. They do not validate this refreshed build.

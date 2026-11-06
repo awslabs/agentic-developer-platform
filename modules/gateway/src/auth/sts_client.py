@@ -147,10 +147,11 @@ class STSClient:
         self,
         role_arn: str,
         role_session_name: str,
-        duration_seconds: int = 3600,
+        duration_seconds: int = 900,
         external_id: str | None = None,
         *,
         tags: list[dict[str, str]] | None = None,
+        session_policy: str | None = None,
     ) -> dict[str, Any]:
         """
         Assume an AWS IAM role.
@@ -158,7 +159,7 @@ class STSClient:
         Args:
             role_arn: ARN of the role to assume
             role_session_name: Session name for the assumed role
-            duration_seconds: Duration of the session in seconds (default: 1 hour)
+            duration_seconds: Duration of the session in seconds (capped at 15 minutes)
             external_id: Optional ExternalId for confused-deputy protection. When
                 supplied it is sent as the ``ExternalId`` parameter, which a role
                 whose trust policy carries an ``sts:ExternalId`` condition requires.
@@ -184,12 +185,14 @@ class STSClient:
         params: dict[str, Any] = {
             "RoleArn": role_arn,
             "RoleSessionName": role_session_name,
-            "DurationSeconds": duration_seconds,
+            "DurationSeconds": min(duration_seconds, 900),
         }
         if external_id:
             params["ExternalId"] = external_id
         if tags is not None:
             params["Tags"] = tags
+        if session_policy is not None:
+            params["Policy"] = session_policy
 
         try:
             loop = asyncio.get_event_loop()
@@ -215,11 +218,12 @@ class STSClient:
         self,
         stored_account: Mapping[str, Any],
         role_session_name: str,
-        duration_seconds: int = 3600,
+        duration_seconds: int = 900,
         *,
         user_id: str,
         agent_id: str,
         task_id: str,
+        session_policy: str | None = None,
     ) -> dict[str, Any]:
         """Broker an ADP-created workspace role using authorized stored metadata.
 
@@ -254,6 +258,7 @@ class STSClient:
                 {"Key": "adp:task_id", "Value": task_id},
                 {"Key": "adp:persona", "Value": agent_id},
             ],
+            **({"session_policy": session_policy} if session_policy is not None else {}),
         )
         credentials = response.get("Credentials")
         required = ("AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")

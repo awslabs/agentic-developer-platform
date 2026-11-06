@@ -29,13 +29,12 @@ from src.shared.models.organization import Organization, Team, TeamMembership, U
 from src.shared.models.usage import UsageLog
 from src.shared.models.vault import ChannelTenantMap, UserCredential, UserIdentity
 from src.shared.schemas.auth import TokenContext
-from tests.migrations.conftest_postgres import to_async_url, upgrade
+from tests.migrations.conftest_postgres import to_async_url
 
 
 @pytest.fixture
-async def sessions(pg_url):
-    upgrade(pg_url)
-    engine = create_async_engine(to_async_url(pg_url))
+async def sessions(pg_head_url):
+    engine = create_async_engine(to_async_url(pg_head_url))
     try:
         yield async_sessionmaker(engine, expire_on_commit=False)
     finally:

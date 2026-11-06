@@ -1,8 +1,9 @@
-"""One durable queue assignment per verified pod; no worker receipt handles.
+"""One executable queue assignment per verified pod; no worker receipt handles.
 
 The gateway owns SQS receive/heartbeat/delete and journals each assignment in
 the protected authority table. A pod cannot choose a tenant, task, queue, receipt
-or another assignment, and acknowledgement never grants it another task.
+or another assignment. Only the domain handler can archive a bounded number of
+proven-obsolete pre-bootstrap deliveries before assigning executable work.
 """
 
 from __future__ import annotations
@@ -54,6 +55,8 @@ class TaskDelivery:
         return {k: _DESERIALIZER.deserialize(v) for k, v in raw.items()} if raw else None
 
     def save(self, pod_uid: str, values: dict, previous: dict | None, *, extra_items=()) -> dict:
+        if previous and "discarded_acknowledgements" in previous:
+            values = {"discarded_acknowledgements": previous["discarded_acknowledgements"], **values}
         item = {**values, "pk": f"PODTASK#{pod_uid}", "sk": "DELIVERY", "version": uuid.uuid4().hex}
         args = {
             "TableName": self.store.table,
@@ -128,7 +131,51 @@ class TaskDelivery:
             self.cancelled_tasks[task["task_id"]] = task
         return cancelled
 
-    def acquire(self, pod_uid: str) -> str | None:
+    def resume_after_obsolete(self, pod_uid: str, acknowledgement: dict) -> bool:
+        """Archive a confirmed pre-bootstrap discard before one bounded receive.
+
+        Only the domain acquisition handler calls this, after it has discarded an
+        obsolete message in the same request. A pod that ever bound an execution
+        cannot resume, even when its queue acknowledgement is complete.
+        """
+        history = acknowledgement.get("discarded_acknowledgements", [])
+        if len(history) >= 9:
+            return False
+        if (
+            acknowledgement.get("state") != "acknowledged"
+            or acknowledgement.get("sqs_http_status") != 200
+            or not acknowledgement.get("sqs_request_id")
+            or not acknowledgement.get("receipt_handle_sha256")
+            or acknowledgement.get("pk") != f"PODTASK#{pod_uid}"
+            or acknowledgement.get("sk") != "DELIVERY"
+        ):
+            raise TaskDeliveryError("finished")
+        version = acknowledgement["version"]
+        archive = {**acknowledgement, "sk": "DISCARDED#" + version}
+        self.save(
+            pod_uid,
+            {"state": "receiving", "operation_until": 0, "discarded_acknowledgements": [*history, version]},
+            acknowledgement,
+            extra_items=[
+                {
+                    "ConditionCheck": {
+                        "TableName": self.store.table,
+                        "Key": {"pk": {"S": f"POD#{pod_uid}"}, "sk": {"S": "BINDING"}},
+                        "ConditionExpression": "attribute_not_exists(pk)",
+                    }
+                },
+                {
+                    "Put": {
+                        "TableName": self.store.table,
+                        "Item": {k: _SERIALIZER.serialize(v) for k, v in archive.items()},
+                        "ConditionExpression": "attribute_not_exists(pk)",
+                    }
+                },
+            ],
+        )
+        return True
+
+    def acquire(self, pod_uid: str, *, wait_seconds: int = 10) -> str | None:
         now = int(self.clock())
         previous = self.read(pod_uid)
         if previous is None and self.store._read(f"POD#{pod_uid}", "BINDING") is not None:
@@ -153,7 +200,7 @@ class TaskDelivery:
             response = self.sqs.receive_message(
                 QueueUrl=self.queue_url,
                 MaxNumberOfMessages=1,
-                WaitTimeSeconds=10,
+                WaitTimeSeconds=wait_seconds,
                 VisibilityTimeout=VISIBILITY_SECONDS,
             )
         except (ClientError, BotoCoreError):

@@ -10,7 +10,16 @@ import { COMMON_RULES, phaseRules, projectRules, renderProjection, resolveRuleRe
 import { snapshotPersona, verifySnapshot } from './persona.js';
 const rules = fileURLToPath(new URL('../../rules/', import.meta.url));
 
-for (const persona of ['developer', 'reviewer', 'operations', 'architect', 'product', 'pm', 'aidlc', 'intent-refinement']) {
+test('PM projection supplies full epic/story authoring sources to the model', () => {
+  const projection = projectRules(rules, 'pm', [...COMMON_RULES, 'personas/pm.md', ...phaseRules(rules, 'pm')]);
+  const rendered = renderProjection(projection);
+  for (const source of ['agents/issue-authoring.md', 'templates/epic-issue.md', 'templates/developer-issue.md']) {
+    assert.ok(projection.sources.some(s => s.path === source));
+    assert.ok(rendered.includes(readFileSync(join(rules, source), 'utf8')));
+  }
+});
+
+for (const persona of ['developer', 'reviewer', 'operations', 'operations-story', 'architect', 'product', 'pm', 'aidlc', 'intent-refinement']) {
   test(`${persona}: maintained source selection and deterministic frozen references`, () => {
     const projection = projectRules(rules, persona, [...COMMON_RULES, `personas/${persona}.md`, ...phaseRules(rules, persona)]);
     const refs = { ...projection, sources: projection.sources.map(({ path, sha256 }) => ({ path, sha256 })) };
@@ -31,7 +40,7 @@ test('catalogue compiler binds every shipped candidate to the actual maintained 
   const folder = fileURLToPath(new URL('../personas/', import.meta.url));
   const definitions = readdirSync(folder).filter(f => f.endsWith('.json')).sort().map(f => join(folder, f));
   const compiled = JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/catalogue.mjs', import.meta.url)), ...definitions], { maxBuffer: 2 * 1024 * 1024 }).toString());
-  assert.equal(compiled.snapshots.length, 8);
+  assert.equal(compiled.snapshots.length, 9);
   for (const snapshot of compiled.snapshots) {
     const verified = verifySnapshot(snapshot);
     const definition = JSON.parse(verified.definition);

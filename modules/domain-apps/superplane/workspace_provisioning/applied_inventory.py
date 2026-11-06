@@ -181,6 +181,36 @@ async def seal_applied_inventory(operation, context, result):
         or metadata.get("next_phase") != "bootstrap-workspace"
     ):
         raise LifecycleRefused("applied inventory lost its original paid source")
+    outputs = {key: value["value"] for key, value in metadata["outputs"].items()}
+    session = await applied_provider_session(
+        current, context, outputs["account_id"], outputs["aws_region"]
+    )
+
+    async def resolve():
+        return await current_operation(operation, context)
+
+    await seal_verified_inventory(
+        current, context, row, result[0].idempotency_key, session, resolve
+    )
+
+
+async def seal_verified_inventory(
+    current, context, row, idempotency_key, session, resolve
+):
+    """Seal authenticated original identities under a live execution or recovery claim.
+
+    The caller verifies original artifact provenance. Recovery composes a read-only
+    provider; this helper neither issues credentials nor changes the original call.
+    InventoryAuthority independently fences every membership/report write.
+    """
+    lease = current.grant.lease
+    metadata = json.loads(row["artifact_metadata_json"])
+    if (
+        metadata.get("allocation_source_operation_id") != lease.operation_id
+        or metadata.get("next_phase") != "bootstrap-workspace"
+        or row["source_operation_id"] != lease.operation_id
+    ):
+        raise LifecycleRefused("inventory lost its original paid apply")
     document = infrastructure_document(metadata.get("applied_resources"))
     outputs = {key: value["value"] for key, value in metadata["outputs"].items()}
     if (outputs["org_id"], outputs["workspace_id"], outputs["account_id"]) != (
@@ -200,9 +230,6 @@ async def seal_applied_inventory(operation, context, result):
         or clusters[0].get("name") != outputs["cluster_name"]
     ):
         raise LifecycleRefused("applied state omits the exact managed cluster")
-    session = await applied_provider_session(
-        current, context, outputs["account_id"], outputs["aws_region"]
-    )
     inventory = RetirementInventory(
         lease.workspace_id,
         lease.org_id,
@@ -229,27 +256,30 @@ async def seal_applied_inventory(operation, context, result):
     resources = {}
 
     async def authenticate(_token):
-        return (await current_operation(operation, context)).grant
+        return (await resolve()).grant
 
     async def query(_lease, members, _query_id):
         if _lease.operation_id != lease.operation_id:
             raise LifecycleRefused("applied inventory query changed operation")
-        observed = {}
-        for member in members:
-            await current_operation(operation, context)
-            observed[member.resource_id] = await asyncio.to_thread(
-                reader.observe, inventory, member
-            )
-        await current_operation(operation, context)
+        await resolve()
+        semaphore = asyncio.Semaphore(8)
+
+        async def observe(member):
+            async with semaphore:
+                value = await asyncio.to_thread(reader.observe, inventory, member)
+                return member.resource_id, value
+
+        observed = dict(await asyncio.gather(*(observe(member) for member in members)))
+        await resolve()
         return observed
 
     authority = InventoryAuthority(
         connect=context.connect, authenticate=authenticate, query_provider=query
     )
-    creation_keys = frozenset({result[0].idempotency_key})
+    creation_keys = frozenset({idempotency_key})
 
     async def discover():
-        await current_operation(operation, context)
+        await resolve()
         found = await asyncio.to_thread(
             reader.catalog,
             inventory,
@@ -260,7 +290,7 @@ async def seal_applied_inventory(operation, context, result):
             include_bootstrap=False,
             infrastructure_document=document,
         )
-        await current_operation(operation, context)
+        await resolve()
         return found
 
     resources = await discover()

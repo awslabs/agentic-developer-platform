@@ -63,7 +63,7 @@ it('offers read sharing rather than approver setup from workspace details', asyn
     http.get(`${path}/me`, () => HttpResponse.json(administrator)),
   );
   const user = userEvent.setup();
-  render(<WorkspaceDetails workspaceId="workspace-1" guard={new ScopeGuard()} sessionToken="test-token"
+  render(<WorkspaceDetails workspaceId="workspace-1" expectedOrgId="org-1" guard={new ScopeGuard()} sessionToken="test-token"
     scope={{ orgId: 'org-1', deploymentId: 'test-deployment' }} now={Date.now()} />);
   await user.click(await screen.findByRole('button', { name: 'Share workspace read access' }));
   expect(await screen.findByLabelText(/immutable ADP subject/)).toBeInTheDocument();

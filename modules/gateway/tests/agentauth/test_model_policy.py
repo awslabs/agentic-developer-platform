@@ -48,6 +48,7 @@ from src.agentauth.model_policy import (
 )
 from src.agentauth.runtime_posture import measured_cache_ttl_seconds
 from src.proxy.bedrock_routing import BedrockTarget, bedrock_routing_resolver
+from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import User
 from src.shared.models.persona_model_catalogue import ModelInvocabilityEvidence
 from src.shared.models.persona_models import (
@@ -56,6 +57,7 @@ from src.shared.models.persona_models import (
     ServicePrincipal,
     ServicePrincipalAlias,
 )
+from src.shared.models.vault import UserIdentity
 
 NOW = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
 OPUS = "global.anthropic.claude-opus-5"
@@ -843,6 +845,189 @@ async def test_human_root_cannot_resolve_another_tenants_user(db_session, author
             grant=_grant(authority_kind),
             now=NOW,
         )
+
+
+def _member(user_id: str, tenant_id: str, **fields) -> TenantMembership:
+    return TenantMembership(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        role=fields.pop("role", "member"),
+        is_active=fields.pop("is_active", False),
+        joined_via=fields.pop("joined_via", "app_install"),
+        **fields,
+    )
+
+
+async def _resolve_human(db_session, human_id: str, *, tenant_id: str = "tenant-a", kind: str = "github_event"):
+    return await model_policy_module._resolve_principal(
+        db_session,
+        tenant_id=tenant_id,
+        grant=_grant(kind, human_id),
+        authority={"authority_kind": {"S": kind}, "human_id": {"S": human_id}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_human_root_keeps_the_admissions_canonical_member_whose_home_org_differs(db_session, caplog):
+    """#8010 AC-01 (dev defect): chat admission binds a GitHub-login human by their
+    canonical ``users.id`` plus current tenant membership; that row's ``users.org_id``
+    is their personal org. The model-policy principal must be that same id, not the
+    tenant-local duplicate the ``org_id``-scoped resolver would pick."""
+    db_session.add_all(
+        [
+            User(id="650f093f-owner", org_id="pranavsharma1000", team_id="team-home", email="owner@example.test", cognito_sub="owner-sub"),
+            _member("650f093f-owner", "pranavsharma1000", is_active=True, joined_via="org_membership"),
+            _member("650f093f-owner", "tenant-a"),
+            # The duplicate, tenant-local row sharing the same login (#8011).
+            User(id="1fb07e6f-duplicate", org_id="tenant-a", team_id="team-a", email="owner@example.test", cognito_sub=None),
+            _member("1fb07e6f-duplicate", "tenant-a"),
+            UserIdentity(
+                user_id="1fb07e6f-duplicate",
+                org_id="tenant-a",
+                team_id="team-a",
+                provider="cognito",
+                provider_user_id="owner-sub",
+                verification_method="org_placement",
+                verified_at=NOW,
+            ),
+            PersonaModelPolicySetting(
+                compatibility_class="claude-agent-sdk",
+                harness_contract_revision="0.3.283",
+                active_default_model_id=SONNET,
+                revision=4,
+                posture_revision=2,
+                enforcement_posture="report_only",
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    with caplog.at_level("WARNING", logger="bedrockgateway.agentauth.model_policy"):
+        assert await _resolve_human(db_session, "650f093f-owner") == ("human", "650f093f-owner")
+        built = await build_root_snapshot(
+            db_session,
+            store=_RootStore({"authority_kind": {"S": "github_event"}, "human_id": {"S": "650f093f-owner"}}),
+            invocation_id="root-a",
+            tenant_id="tenant-a",
+            execution={"flow_id": {"S": "chain-a"}},
+            grant=_grant("github_event", "650f093f-owner"),
+            now=NOW,
+        )
+    assert (built.principal_kind, built.principal_id) == ("human", "650f093f-owner")
+    assert not [record for record in caplog.records if record.getMessage() == "Model policy principal re-resolved"]
+
+
+@pytest.mark.asyncio
+async def test_human_root_bound_to_the_tenant_member_row_keeps_it_and_the_snapshot_names_it(db_session, caplog):
+    """#8011: chat admission now binds the person's *tenant member row* (the one with
+    the team in the tenant) rather than the Cognito-index home-org row. Model policy
+    keeps that id unchanged -- the snapshot's ``principal_id`` is the tenant member
+    id -- and the home-org row never re-enters through the resolver."""
+    db_session.add_all(
+        [
+            User(id="650f093f-home", org_id="pranavsharma1000", team_id="team-home", email="owner@example.test", cognito_sub="owner-sub"),
+            _member("650f093f-home", "pranavsharma1000", is_active=True, joined_via="org_membership"),
+            _member("650f093f-home", "tenant-a"),
+            User(id="1fb07e6f-member", org_id="tenant-a", team_id="team-a", email="owner@example.test", cognito_sub=None),
+            _member("1fb07e6f-member", "tenant-a"),
+            UserIdentity(
+                user_id="1fb07e6f-member",
+                org_id="tenant-a",
+                team_id="team-a",
+                provider="cognito",
+                provider_user_id="owner-sub",
+                verification_method="org_placement",
+                verified_at=NOW,
+            ),
+            PersonaModelPolicySetting(
+                compatibility_class="claude-agent-sdk",
+                harness_contract_revision="0.3.283",
+                active_default_model_id=SONNET,
+                revision=4,
+                posture_revision=2,
+                enforcement_posture="report_only",
+            ),
+        ]
+    )
+    await db_session.flush()
+    with caplog.at_level("WARNING", logger="bedrockgateway.agentauth.model_policy"):
+        assert await _resolve_human(db_session, "1fb07e6f-member") == ("human", "1fb07e6f-member")
+        built = await build_root_snapshot(
+            db_session,
+            store=_RootStore({"authority_kind": {"S": "github_event"}, "human_id": {"S": "1fb07e6f-member"}}),
+            invocation_id="root-a",
+            tenant_id="tenant-a",
+            execution={"flow_id": {"S": "chain-a"}},
+            grant=_grant("github_event", "1fb07e6f-member"),
+            now=NOW,
+        )
+    assert (built.principal_kind, built.principal_id) == ("human", "1fb07e6f-member")
+    assert not [record for record in caplog.records if record.getMessage() == "Model policy principal re-resolved"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("membership", ["revoked", "other_tenant_only", "service_account"])
+async def test_a_supplied_users_id_without_live_membership_is_not_taken_as_canonical(db_session, membership):
+    """The shortcut applies admission's own rule: a human ``users.id`` that is not a
+    current member of the tenant is never trusted on the strength of being a users.id."""
+    from src.shared.identity.resolver import UnresolvableUserEntityError
+
+    kind = "service_account" if membership == "service_account" else "human"
+    db_session.add(User(id="stranger", org_id="elsewhere", team_id="team-x", email="x@example.test", cognito_sub="stranger-sub", user_kind=kind))
+    if membership == "revoked":
+        db_session.add(_member("stranger", "tenant-a", revoked_at=NOW))
+    elif membership == "other_tenant_only":
+        db_session.add(_member("stranger", "elsewhere", is_active=True))
+    else:
+        db_session.add(_member("stranger", "tenant-a"))
+    await db_session.flush()
+    with pytest.raises(UnresolvableUserEntityError):
+        await _resolve_human(db_session, "stranger")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authority_kind", ["github_event", "gate_decision", "replan_request"])
+async def test_legacy_human_root_carrying_a_cognito_sub_still_resolves_through_the_resolver(db_session, authority_kind, caplog):
+    """#8010 AC-02: a root whose ``human_id`` is a Cognito sub (not a users.id) keeps
+    the ``resolve_root_user_entity_id`` path, and the re-resolution is logged with both ids."""
+    db_session.add(User(id="user-a", org_id="tenant-a", team_id="team-a", email="a@example.test", cognito_sub="human-sub"))
+    await db_session.flush()
+    with caplog.at_level("WARNING", logger="bedrockgateway.agentauth.model_policy"):
+        assert await _resolve_human(db_session, "human-sub", kind=authority_kind) == ("human", "user-a")
+    records = [record for record in caplog.records if record.getMessage() == "Model policy principal re-resolved"]
+    assert len(records) == 1
+    assert (records[0].tenant_id, records[0].supplied_id, records[0].resolved_id) == ("tenant-a", "human-sub", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_re_resolution_to_a_duplicate_row_is_logged_with_both_ids(db_session, caplog):
+    """A supplied users.id that is NOT a current tenant member falls back to the
+    resolver; when the login's workspace mapping lands on a different (duplicate)
+    row in the tenant, the drift is visible: the warning names the supplied and
+    resolved ids. A silent re-binding is the wrong result that must fail."""
+    db_session.add_all(
+        [
+            User(id="home-row", org_id="home-org", team_id="team-home", email="dup@example.test", cognito_sub="dup-sub"),
+            _member("home-row", "home-org", is_active=True, joined_via="org_membership"),
+            User(id="tenant-row", org_id="tenant-a", team_id="team-a", email="dup@example.test", cognito_sub=None),
+            _member("tenant-row", "tenant-a"),
+            UserIdentity(
+                user_id="tenant-row",
+                org_id="tenant-a",
+                team_id="team-a",
+                provider="cognito",
+                provider_user_id="dup-sub",
+                verification_method="org_placement",
+                verified_at=NOW,
+            ),
+        ]
+    )
+    await db_session.flush()
+    with caplog.at_level("WARNING", logger="bedrockgateway.agentauth.model_policy"):
+        assert await _resolve_human(db_session, "home-row") == ("human", "tenant-row")
+    records = [record for record in caplog.records if record.getMessage() == "Model policy principal re-resolved"]
+    assert len(records) == 1
+    assert (records[0].tenant_id, records[0].supplied_id, records[0].resolved_id) == ("tenant-a", "home-row", "tenant-row")
 
 
 @pytest.mark.asyncio

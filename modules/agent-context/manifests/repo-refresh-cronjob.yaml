@@ -1,16 +1,4 @@
-# Unified Ingestion Refresh CronJob
-# Runs daily at 6am UTC:
-#   1. refresh-repos.py    — SHA-based repo refresh + incremental wiki updates + topic tagging
-#   2. discover-infra.py   — AWS Resource Explorer snapshot + IaC parsing
-#   3. correlate.py        — Link code repos <-> AWS resources <-> CI/CD pipelines
-#   4. lint-wiki.py        — Knowledge base health check + report
-#   5. generate-indexes.py — LLM-discovered topic index pages
-#
-# Manual trigger:
-#   kubectl create job --from=cronjob/ingestion-refresh manual-refresh -n ${NAMESPACE}
-#
-# Variables substituted at deploy time: ${NAMESPACE}, ${SERVICE_ACCOUNT},
-# ${INGESTION_IMAGE}, ${INGESTION_REFRESH_SCHEDULE}
+# The scheduler has only a purpose-specific projected identity; no content or cloud credentials.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -21,22 +9,21 @@ metadata:
     app.kubernetes.io/part-of: agent-context-platform
     app.kubernetes.io/component: ingestion
 spec:
-  schedule: "${INGESTION_REFRESH_SCHEDULE}"
+  schedule: ${INGESTION_REFRESH_SCHEDULE}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 21600  # 6 hours max
-      ttlSecondsAfterFinished: 259200  # Clean up after 3 days
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 259200
       backoffLimit: 1
       template:
         metadata:
           labels:
             app: ingestion-refresh
         spec:
-          serviceAccountName: ${SERVICE_ACCOUNT}
-          # Pod-level security context (#6038 — S15 non-root hardening).
+          serviceAccountName: ingestion-refresh
           securityContext:
             runAsUser: 10001
             runAsGroup: 10001
@@ -53,83 +40,21 @@ spec:
               allowPrivilegeEscalation: false
               privileged: false
               capabilities:
-                drop: ["ALL"]
-            command: ["/bin/bash", "-c"]
-            args:
-              - |
-                set -euo pipefail
-                echo "=== Ingestion Refresh $(date -u) ==="
-
-                # Step 1: Refresh repos and URLs (FATAL on failure — downstream
-                # steps depend on repos being cloned; an import crash here means
-                # nothing useful can happen, so fail the Job loudly).
-                echo ""
-                echo "--- Step 1: Repo + URL refresh ---"
-                python /app/refresh-repos.py \
-                  --repos-file /config/repos.txt \
-                  --urls-file /config/urls.txt
-
-                # Step 2: Infrastructure discovery
-                echo ""
-                echo "--- Step 2: Infrastructure discovery ---"
-                python /app/discover-infra.py \
-                  --accounts-file /config/accounts.txt \
-                  || echo "WARNING: discover-infra.py had errors (non-fatal)"
-
-                # Step 3: Correlate code <-> infrastructure
-                echo ""
-                echo "--- Step 3: Correlation ---"
-                python /app/correlate.py \
-                  || echo "WARNING: correlate.py had errors (non-fatal)"
-
-                # Step 4: Knowledge base lint
-                echo ""
-                echo "--- Step 4: Knowledge base lint ---"
-                python /app/lint-wiki.py \
-                  --repos-file /config/repos.txt \
-                  || echo "WARNING: lint-wiki.py had errors (non-fatal)"
-
-                # Step 5: Topic index generation
-                echo ""
-                echo "--- Step 5: Topic index generation ---"
-                python /app/generate-indexes.py \
-                  || echo "WARNING: generate-indexes.py had errors (non-fatal)"
-
-                # Step 6: Learning artifact generation (per-repo)
-                echo ""
-                echo "--- Step 6: Learning artifact generation ---"
-                python /app/generate-learning-artifacts.py \
-                  --all --repos-file /config/repos.txt --max-repos 20 \
-                  || echo "WARNING: generate-learning-artifacts.py had errors (non-fatal)"
-
-                # Step 7: Cross-repo curricula generation
-                echo ""
-                echo "--- Step 7: Cross-repo curricula ---"
-                python /app/generate-curricula.py \
-                  --repos-file /config/repos.txt \
-                  || echo "WARNING: generate-curricula.py had errors (non-fatal)"
-
-                echo ""
-                echo "=== Refresh complete $(date -u) ==="
-            envFrom:
-            - configMapRef:
-                name: agent-context-config
-            - secretRef:
-                name: agent-context-secrets
-                optional: true
+                drop:
+                - ALL
+            command:
+            - python3
+            - /app/queue-refresh.py
             env:
-            # Secret injected from K8s Secret (not ConfigMap)
-            - name: OPENVIKING_ROOT_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: agent-context-secrets
-                  key: openviking-root-key
-                  optional: true
+            - name: INGESTION_REFRESH_URL
+              value: ${INGESTION_REFRESH_URL}
+            - name: INGESTION_REFRESH_TOKEN_FILE
+              value: /refresh-identity/token
+            - name: AWS_EC2_METADATA_DISABLED
+              value: 'true'
             volumeMounts:
-            - name: platform-data
-              mountPath: /platform-data
-            - name: config
-              mountPath: /config
+            - name: refresh-identity
+              mountPath: /refresh-identity
               readOnly: true
             - name: tmp
               mountPath: /tmp
@@ -137,22 +62,24 @@ spec:
               mountPath: /home/appuser
             resources:
               requests:
-                cpu: "500m"
-                memory: "1Gi"
+                cpu: 100m
+                memory: 128Mi
               limits:
-                cpu: "2"
-                memory: "4Gi"
+                cpu: 500m
+                memory: 512Mi
           restartPolicy: OnFailure
           volumes:
-          - name: platform-data
-            persistentVolumeClaim:
-              claimName: platform-data
-          - name: config
-            configMap:
-              name: ingestion-content-config
+          - name: refresh-identity
+            projected:
+              sources:
+              - serviceAccountToken:
+                  audience: adp-ingestion-refresh
+                  expirationSeconds: 3600
+                  path: token
           - name: tmp
             emptyDir:
-              sizeLimit: 10Gi
+              sizeLimit: 64Mi
           - name: home
             emptyDir:
-              sizeLimit: 512Mi
+              sizeLimit: 64Mi
+          automountServiceAccountToken: false

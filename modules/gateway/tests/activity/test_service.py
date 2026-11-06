@@ -3566,6 +3566,49 @@ class TestDateBoundZeroRowRegression:
         result = self._query(seeded_table, "2026-06-13", "2026-06-13")
         assert result.items == []
 
+    def test_tool_receipt_is_stored_under_verified_user_and_tenant(self, seeded_table):
+        from decimal import Decimal
+
+        service = ActivityService(table_name=self.TABLE, dynamodb_resource=seeded_table)
+        service.record_tool_call(
+            receipt_id="receipt-one",
+            user_id="person-one",
+            tenant_id="tenant-one",
+            tool="websearch___search",
+            estimated_cost_usd=Decimal("0.05"),
+            run_id="run-one",
+            task_id="tsk-verified",
+            story_id="example/project#123",
+            team_id="team-one",
+        )
+        own = service.query_by_user(user_id="person-one", tenant_id="tenant-one")
+        assert len(own.items) == 1 and own.items[0].invocation_id == "tool#receipt-one"
+        assert own.items[0].channel == "tool" and own.items[0].status == "tool_authorized"
+        assert own.items[0].topic == "websearch.search" and own.items[0].tool_name == "websearch___search"
+        assert own.items[0].receipt_id == "receipt-one" and own.items[0].estimated_cost_usd == 0.05
+        assert own.items[0].total_cost_usd is None and own.items[0].liveness is None
+        chains = service.query_chains_by_user(user_id="person-one", tenant_id="tenant-one")
+        assert len(chains.chains) == 1 and chains.chains[0].root.receipt_id == "receipt-one"
+        assert chains.chains[0].root.estimated_cost_usd == 0.05
+        assert service.query_by_user(user_id="person-two", tenant_id="tenant-one").items == []
+        assert service.query_by_user(user_id="person-one", tenant_id="tenant-two").items == []
+        item = seeded_table.Table(self.TABLE).get_item(
+            Key={"event_id": "tool#receipt-one", "arrived_at": own.items[0].invoked_at},
+        )["Item"]
+        assert item["receipt_id"] == "receipt-one"
+        assert item["call_id"] == "receipt-one"
+        assert item["team_id"] == "team-one"
+        assert item["task_id"] == "tsk-verified"
+        assert item["story_id"] == "example/project#123"
+        assert item["tool_name"] == "websearch___search"
+        assert item["estimated_cost_usd"] == Decimal("0.05")
+        assert item["run_id"] == "run-one"
+        assert item["settled_cost_usd"] is None
+        assert item["accounting_status"] == "estimate_only"
+        assert item["observed_usage_status"] == "not_observed"
+        assert item["reservation_status"] == "estimated_hold"
+        assert not {"arguments", "result", "credential", "payload"} & item.keys()
+
     def test_until_only_includes_late_in_day_row(self, seeded_table):
         """A bare-date upper bound must not drop the end day."""
         expanded = self._query(seeded_table, None, _expand_date_bound("2026-06-13", end=True))

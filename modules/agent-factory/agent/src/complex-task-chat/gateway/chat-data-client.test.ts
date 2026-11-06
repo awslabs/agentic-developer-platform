@@ -1,4 +1,5 @@
 import { ChatDataClient } from './chat-data-client';
+import { qualificationDigest, qualificationManifest } from '../qualification-contract';
 
 const NOW = Date.parse('2026-10-04T12:00:00Z');
 const binding = {
@@ -24,6 +25,93 @@ describe('chat data transport', () => {
   });
 
   afterEach(() => jest.restoreAllMocks());
+
+  it('binds tools to the Crew identity and never retries a lost response', async () => {
+    const crewRunId = '00000000-0000-4000-8000-000000000001';
+    const crew = new ChatDataClient({ baseUrl: 'https://gateway.example.test', workloadToken, crewRunId });
+    fetchMock.mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockRejectedValueOnce(new TypeError('response lost'));
+    await expect(crew.requestTools('POST', '/tools/call', { request_id: 'stable-id' })).rejects.toMatchObject({ code: 'unavailable' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]).toEqual(['https://gateway.example.test/v1/chat/data/tools', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: `Bearer ${binding.capability}`,
+        'X-Adp-Workload-Token': 'synthetic.workload.token', 'x-agent-runid': crewRunId }),
+      body: JSON.stringify({ run_id: 'run-a', session_id: 'session-a', method: 'POST', path: '/tools/call', body: { request_id: 'stable-id' } }),
+    })]);
+  });
+
+  it('refuses tools for an ephemeral sandbox without a Crew run', async () => {
+    fetchMock.mockResolvedValueOnce(json(binding));
+    await expect(client.requestTools('GET', '/tools')).rejects.toMatchObject({ code: 'scope_mismatch' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('relays explicit original-request recovery with the same Crew binding and payload', async () => {
+    const crewRunId = '00000000-0000-4000-8000-000000000001';
+    const crew = new ChatDataClient({ baseUrl: 'https://gateway.example.test', workloadToken, crewRunId });
+    const original = { tool: 'browser___start', arguments: { url: 'https://example.org' },
+      request_id: '00000000-0000-4000-8000-000000000099', ttl_seconds: 2 };
+    fetchMock.mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockResolvedValueOnce(json({ status: 200, body: { status: 'confirmed', request_id: original.request_id } }));
+    await expect(crew.requestTools('POST', '/tools/operations/recover', original)).resolves.toEqual({
+      status: 200, body: { status: 'confirmed', request_id: original.request_id },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]).toEqual(['https://gateway.example.test/v1/chat/data/tools', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: `Bearer ${binding.capability}`,
+        'X-Adp-Workload-Token': 'synthetic.workload.token', 'x-agent-runid': crewRunId }),
+      body: JSON.stringify({ run_id: 'run-a', session_id: 'session-a', method: 'POST',
+        path: '/tools/operations/recover', body: original }),
+    })]);
+  });
+
+  it('refuses qualification when bootstrap did not select it, regardless of supplied approval', async () => {
+    fetchMock.mockResolvedValueOnce(json(binding));
+    await expect(client.qualificationRequest('pending')).rejects.toMatchObject({ code: 'scope_mismatch' });
+    await expect(client.qualificationRequest('pending', { approved: true })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the current workload and capability for a fully bound qualification plan', async () => {
+    const plan = {
+      manifest: qualificationManifest,
+      binding: {
+        nonce: 'a'.repeat(64), manifest_digest: qualificationDigest, manifest_version: 'e45-v1',
+        evaluation_id: 'evaluation', target: 'test-target', actor: 'a1', tenant_id: 'tenant', user_id: 'owner', team_id: '',
+        session_id: 'session-a', run_id: 'run-a', sandbox_uid: 'pod-a', lease_generation: 1,
+        image_digest: `sha256:${'b'.repeat(64)}`, attempt: 1, credential_epoch: 1,
+        issued_at: NOW / 1000, expires_at: NOW / 1000 + 120, limits: qualificationManifest.limits,
+      },
+    };
+    fetchMock.mockResolvedValueOnce(json({ ...binding, attempt: 1, lease_generation: 1, qualification_required: true }))
+      .mockResolvedValueOnce(json(plan));
+    await expect(client.qualificationRequest('pending')).resolves.toEqual(plan);
+    expect(client.qualificationRequired()).toBe(true);
+    expect(fetchMock.mock.calls[1]).toEqual(['https://gateway.example.test/v1/chat/data/qualification/pending', expect.objectContaining({
+      body: JSON.stringify({ run_id: 'run-a', session_id: 'session-a' }),
+      headers: expect.objectContaining({ Authorization: 'Bearer synthetic.scoped.capability', 'X-Adp-Workload-Token': 'synthetic.workload.token' }),
+    })]);
+    fetchMock.mockResolvedValueOnce(json({ ...plan, binding: { ...plan.binding, lease_generation: 2 } }));
+    await expect(client.qualificationRequest('pending')).rejects.toMatchObject({ code: 'scope_mismatch' });
+  });
+
+  it('rejects a qualification mode change on capability refresh', async () => {
+    fetchMock.mockResolvedValueOnce(json({ ...binding, qualification_required: true }))
+      .mockResolvedValueOnce(json(binding));
+    await client.renewSession();
+    await expect(client.renewSession()).rejects.toMatchObject({ code: 'scope_mismatch' });
+  });
+
+  it('propagates probe cancellation without losing bound identity or issuing further requests', async () => {
+    fetchMock.mockResolvedValueOnce(json(binding));
+    await client.sessionScope();
+    const cancellation = new AbortController();
+    const bounded = client.withSignal(cancellation.signal);
+    await expect(bounded.sessionRequest('history/read', 'other-session')).rejects.toMatchObject({ code: 'scope_mismatch' });
+    cancellation.abort();
+    await expect(bounded.sessionRequest('history/read', 'session-a')).rejects.toMatchObject({ code: 'unavailable' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 
   it('exposes only the verified run and session for context tools', async () => {
     fetchMock.mockResolvedValueOnce(json(binding));
@@ -206,6 +294,21 @@ describe('chat data transport', () => {
       await expect(failure).rejects.not.toThrow('sensitive');
       expect(fetchMock).toHaveBeenCalledTimes(3);
       expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [{ detail: { error: 'chat_memory_unconfigured', hint: 'ignored' } }, 'chat_memory_unconfigured'],
+      [{ error: 'chat_artifacts_unconfigured' }, 'chat_artifacts_unconfigured'],
+      [{ detail: { error: 'Traceback: not a code' } }, undefined],
+      [{ detail: 'sensitive outage text' }, undefined],
+    ])('exposes only a well-formed error code from a 503 body as detail (%j)', async (body, detail) => {
+      // A fresh Response per call: the unavailable retry reads the body again.
+      fetchMock.mockResolvedValueOnce(json(binding)).mockImplementation(async () => json(body, 503));
+      const failure = client.sessionRequest('draft/read', 'session-a');
+      await expect(failure).rejects.toMatchObject({ code: 'unavailable', status: 503, detail });
+      await expect(failure).rejects.not.toThrow('sensitive');
+      await expect(failure).rejects.not.toThrow('Traceback');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     });
 
     it('classifies 429 with Retry-After seconds as rate_limited and waits that long before one identical retry', async () => {

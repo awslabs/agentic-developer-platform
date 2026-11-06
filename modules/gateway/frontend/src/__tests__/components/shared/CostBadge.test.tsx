@@ -35,6 +35,12 @@ function invocation(overrides: Partial<InvocationItem> = {}): InvocationItem {
 }
 
 describe('CostBadge', () => {
+  it('labels a tool admission estimate rather than a settled provider charge', () => {
+    render(<CostBadge item={invocation({ channel: 'tool', status: 'tool_authorized', estimated_cost_usd: 0.05, total_cost_usd: null })} />);
+    expect(screen.getByText('Est. $0.05')).toHaveAttribute('title', expect.stringContaining('not a settled provider charge'));
+    expect(screen.queryByText('$0.05')).not.toBeInTheDocument();
+  });
+
   it('renders a known cost as a monospaced amount with a usage tooltip', () => {
     render(<CostBadge item={invocation({ total_cost_usd: 1.5, call_count: 12, total_tokens: 3400 })} />);
     const badge = screen.getByText('$1.50');

@@ -2,14 +2,57 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+from string import Template
 import subprocess
+import sys
 import tempfile
 import unittest
 
 MODULE = Path(__file__).resolve().parents[1]
 DIGEST = "sha256:" + "a" * 64
 SHA = "b" * 40
+SOURCE_ROOT = MODULE.parents[1]
+
+
+def external_build_inputs(dockerfile, target=None, build_args=None):
+    """Follow the real Dockerfile's FROM/COPY dependencies for one build target."""
+    arguments = dict(build_args or {})
+    stages = {}
+    current = None
+    lines = dockerfile.read_text().replace("\\\n", " ").splitlines()
+    for line in lines:
+        words = line.split()
+        if not words or words[0].startswith("#"):
+            continue
+        instruction = words[0].upper()
+        if instruction == "ARG" and "=" in words[1]:
+            key, value = words[1].split("=", 1)
+            arguments.setdefault(key, value)
+        elif instruction == "FROM":
+            source = next(word for word in words[1:] if not word.startswith("--"))
+            name = words[-1] if words[-2].upper() == "AS" else str(len(stages))
+            current = stages[name] = [source]
+        elif current is not None and instruction in ("COPY", "ADD"):
+            current.extend(re.findall(r"--from=(\S+)", line))
+    pending = [target or next(reversed(stages))]
+    visited = set()
+    external = set()
+    while pending:
+        source = Template(pending.pop()).substitute(arguments)
+        if source in visited or source == "scratch":
+            continue
+        visited.add(source)
+        if source in stages:
+            pending.extend(stages[source])
+        else:
+            external.add(source)
+    return external
+
+
+def docker_build_args(command):
+    return dict(command[i + 1].split("=", 1) for i, value in enumerate(command) if value == "--build-arg")
 
 
 class ReleaseTests(unittest.TestCase):
@@ -28,11 +71,11 @@ class ReleaseTests(unittest.TestCase):
         build.write_text('''#!/bin/bash
 exit 0
 ''')
+        (build.parent.parent / "Dockerfile").write_text("FROM scratch\n")
         self.log = self.root / "calls"
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        stub = '''#!/usr/bin/python3
-import json,os,sys
+        stub = f'#!{sys.executable}\n' + '''import json,os,sys
 from pathlib import Path
 name=Path(sys.argv[0]).name
 args=sys.argv[1:]
@@ -48,7 +91,9 @@ if name=='aws':
   print(os.environ.get('RESULT_DIGEST','sha256:'+'a'*64))
 elif name=='docker':
  if args[0]=='login': sys.stdin.read()
- if args[0]=='build': sys.exit(int(os.environ.get('BUILD_STATUS','0')))
+ if args[0]=='build':
+  if os.environ.get('FAIL_BUILD_TAG') and os.environ['FAIL_BUILD_TAG'] in args: sys.exit(7)
+  sys.exit(int(os.environ.get('BUILD_STATUS','0')))
  if args[0]=='run': sys.exit(int(os.environ.get('SELFCHECK_STATUS','0')))
  if args[0]=='push':
   if os.environ.get('PUSH_STATUS'): sys.exit(int(os.environ['PUSH_STATUS']))
@@ -63,7 +108,7 @@ elif name=='terraform':
         self.env = {**os.environ, "PATH": f"{self.bin}:/usr/bin:/bin", "LOG": str(self.log),
                     "PUSHED": str(self.root / "pushed"), "ADP_SOURCE_SHA": SHA,
                     "SOURCE_SHA": SHA, "REGISTRY": "example.invalid", "AWS_REGION": "us-east-1"}
-        for name in ("GBRAIN_IMAGE_DIGEST", "BUILD_STATUS", "PUSH_STATUS", "MISSING_IMAGE", "REGISTRY_ERROR", "RESULT_DIGEST"):
+        for name in ("GBRAIN_IMAGE_DIGEST", "BUILD_STATUS", "FAIL_BUILD_TAG", "SELFCHECK_STATUS", "PUSH_STATUS", "MISSING_IMAGE", "REGISTRY_ERROR", "RESULT_DIGEST"):
             self.env.pop(name, None)
 
     def run_script(self, script, repo="adp-agent-runtime", **env):
@@ -77,6 +122,76 @@ elif name=='terraform':
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum('"push"' in c for c in calls), 1)
         self.assertIn(DIGEST, result.stdout)
+
+    def assert_customer_prerequisites(self, repo, dockerfile, **env):
+        result, calls = self.run_script("publish-shared-image.sh", repo=repo, MISSING_IMAGE="true", **env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [json.loads(c) for c in calls if c.startswith('["docker", "build"')]
+        final = builds[-1]
+        arguments = docker_build_args(final)
+        local_images = {command[command.index("-t") + 1]: command for command in builds[:-1]}
+        # Derive required inputs from the actual Dockerfile: a newly added
+        # private artifact must also be handled by the customer publisher.
+        private_inputs = {
+            key for key, value in re.findall(r"^ARG (\w+)=(\S+)", dockerfile.read_text(), re.MULTILINE)
+            if ".dkr.ecr." in value
+        }
+        self.assertTrue(private_inputs)
+        self.assertFalse(private_inputs - arguments.keys(), f"Missing overrides: {private_inputs - arguments.keys()}")
+        self.assertNotIn("--pull", final, "Locally built prerequisite tags must not be pulled remotely")
+        if env.get("PUBLISH_LOCAL_BUILD") != "true":
+            self.assertIn("--no-cache", final)
+        for key in private_inputs:
+            source = arguments[key]
+            if repo == "adp-agent-gateway" and key == "AWSCLI_SECURITY_IMAGE":
+                self.assertEqual(source, f"{self.env['REGISTRY']}/adp-agent-runtime:{SHA}")
+                continue
+            self.assertIn(source, local_images, f"{key} was not built before the deployable image")
+            self.assertTrue(source.endswith(":" + SHA))
+            command = local_images[source]
+            self.assertIn("--pull", command)
+            self.assertIn("--no-cache", command)
+            context = SOURCE_ROOT / command[-1]
+            recipe = SOURCE_ROOT / command[command.index("-f") + 1] if "-f" in command else context / "Dockerfile"
+            target = command[command.index("--target") + 1] if "--target" in command else None
+            # Only reachable stages matter. The curl and ARC Dockerfiles also
+            # contain private overlays outside the selected artifact targets.
+            inputs = external_build_inputs(recipe, target, docker_build_args(command))
+            self.assertTrue(inputs)
+            for image in inputs:
+                self.assertRegex(image, r"^public\.ecr\.aws/.+@sha256:[0-9a-f]{64}$")
+        resolved = external_build_inputs(dockerfile, build_args=arguments)
+        self.assertFalse(any(".dkr.ecr." in source for source in resolved), resolved)
+        return builds
+
+    def test_customer_runtime_builds_every_private_prerequisite_from_public_sources(self):
+        builds = self.assert_customer_prerequisites(
+            "adp-agent-runtime", SOURCE_ROOT / "modules/agent-factory/agent-worker-image/Dockerfile")
+        go = next(command for command in builds if f"adp-go-security:{SHA}" in command)
+        self.assertEqual(go[go.index("--target") + 1], "go-security-artifact")
+        self.assertEqual(go[-1], "platform/arc-runner")
+        python = next(command for command in builds if f"adp-python314-expat:{SHA}" in command)
+        self.assertEqual(docker_build_args(python)["ADP_SOURCE_COMMIT"], SHA)
+
+    def test_local_customer_runtime_preserves_prerequisite_overrides(self):
+        builds = self.assert_customer_prerequisites(
+            "adp-agent-runtime", SOURCE_ROOT / "modules/agent-factory/agent-worker-image/Dockerfile",
+            PUBLISH_LOCAL_BUILD="true")
+        self.assertNotIn("--no-cache", builds[-1])
+
+    def test_customer_agent_gateway_uses_public_curl_and_same_source_runtime(self):
+        self.assert_customer_prerequisites(
+            "adp-agent-gateway", SOURCE_ROOT / "modules/agent-factory/gateway/Dockerfile")
+
+    def test_failed_runtime_prerequisite_never_builds_or_publishes_worker(self):
+        for name in ("adp-curl-security", "adp-go-security", "adp-python314-expat"):
+            with self.subTest(prerequisite=name):
+                self.log.unlink(missing_ok=True)
+                result, calls = self.run_script(
+                    "publish-shared-image.sh", MISSING_IMAGE="true", FAIL_BUILD_TAG=f"{name}:{SHA}")
+                self.assertEqual(result.returncode, 7)
+                self.assertFalse(any("agent-worker-image/Dockerfile" in c for c in calls))
+                self.assertFalse(any('"run"' in c or '"push"' in c for c in calls))
 
     def test_immutable_retry_reuses_existing_digest(self):
         result, calls = self.run_script("publish-shared-image.sh")
@@ -137,8 +252,9 @@ elif name=='terraform':
     def test_resolver_pins_tag_and_checks_digest(self):
         script=self.module / "scripts/resolve-ecr-image.py"
         prefix="111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent"
-        for selector in (":" + SHA, "@" + DIGEST):
-            result=subprocess.run(["python3",str(script),prefix+selector],env=self.env,text=True,capture_output=True)
+        # `sandbox-<sha>` is the restricted chat sandbox variant (#7899); still SHA-pinned.
+        for selector in (":" + SHA, "@" + DIGEST, ":sandbox-" + SHA):
+            result=subprocess.run([sys.executable,str(script),prefix+selector],env=self.env,text=True,capture_output=True)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(result.stdout.strip(),prefix+"@"+DIGEST)
 
@@ -146,7 +262,7 @@ elif name=='terraform':
         script=self.module / "scripts/resolve-ecr-image.py"
         prefix="111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent"
         for selector,extra in ((":latest",{}),(":"+SHA,{"RESULT_DIGEST":"None"}),("@"+DIGEST,{"RESULT_DIGEST":"sha256:"+"c"*64})):
-            result=subprocess.run(["python3",str(script),prefix+selector],env={**self.env,**extra},text=True,capture_output=True)
+            result=subprocess.run([sys.executable,str(script),prefix+selector],env={**self.env,**extra},text=True,capture_output=True)
             self.assertNotEqual(result.returncode,0)
 
 if __name__ == "__main__":

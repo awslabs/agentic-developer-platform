@@ -76,7 +76,10 @@ locals {
               values: ["medium", "large", "xlarge", "2xlarge"]
       disruption:
         consolidationPolicy: WhenEmptyOrUnderutilized
-        consolidateAfter: 30s
+        # Let newly placed services finish startup before moving them again.
+        # A 30-second window repeatedly evicted gateway rollout pods before
+        # readiness, preventing the deployment from completing.
+        consolidateAfter: 5m
         budgets:
           # Allow up to half the pool's nodes to be consolidated at once, but
           # only for Underutilized/Empty reasons — never throttle voluntary

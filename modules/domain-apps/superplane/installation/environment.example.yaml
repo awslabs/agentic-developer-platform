@@ -1,3 +1,6 @@
+# Operation approval: an authorized requester may approve their own plan.
+# Set true to require a separate human for new approval tickets.
+require_distinct_approver: false
 version: 1
 # Native Auto Mode DNS is discovered automatically during preflight.
 # All values are explicit — nothing is inferred from the AWS environment.

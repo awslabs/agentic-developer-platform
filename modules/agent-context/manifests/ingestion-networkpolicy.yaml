@@ -1,0 +1,75 @@
+# #4720: registered sources and AWS use public TLS; private destinations are
+# limited to the named gateway and enrichment services. No RDS, metadata,
+# Kubernetes API, or arbitrary cluster/VPC access. Verify CNI enforcement live.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingestion-worker-isolation
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels:
+      app: ingestion-worker
+      adp.io/ingestion-isolation: v1
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: adp-gateway
+          podSelector:
+            matchLabels:
+              app: bedrockgateway
+      ports:
+        - {protocol: TCP, port: 8080}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: deepwiki
+      ports:
+        - {protocol: TCP, port: 8001}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: litellm-proxy
+      ports:
+        - {protocol: TCP, port: 4000}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: adp-agents
+          podSelector:
+            matchLabels:
+              app: adot-collector
+      ports:
+        - {protocol: TCP, port: 4317}
+        - {protocol: TCP, port: 4318}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 198.18.0.0/15
+              - 224.0.0.0/4
+              - 240.0.0.0/4
+        - ipBlock:
+            cidr: 2000::/3
+      ports:
+        - {protocol: TCP, port: 443}

@@ -9,9 +9,9 @@
       "openai.gpt-6-luna": "cc89ddd85f051e3d9d534e18a012979576df1496f5d3d78671b5fa8f5be52868"
     },
     "agent-codex-reviewer": {
-      "openai.gpt-6-astra": "9cf89c759fd57a0b5da08904da147458e7277f174281642e99ab22e39eec3dee",
-      "openai.gpt-6-sol": "a682c761549cdbddee97c0028e0c353332d03b6e70c53bb947a681f2f5f017c6",
-      "openai.gpt-6-luna": "9fac9032ffd2f03d7468954ac063b6204c24f2850cbbedf12fd458b8de53bd21"
+      "openai.gpt-6-astra": "567b59934fc9e47334997ba5e7c898ab2e97537034a19a2ba4da78a1b2a5cbcc",
+      "openai.gpt-6-sol": "af64a04e094797bd7f6d0281aec3acfb74d6ce2e05c63be5bfb746ae316f2127",
+      "openai.gpt-6-luna": "4a3019d9042f7b11fc048636af6c69e67a4455ace3755f146eb7bc118b3f835e"
     }
   }
 }

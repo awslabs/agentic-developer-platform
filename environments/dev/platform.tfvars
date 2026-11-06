@@ -67,6 +67,15 @@ enable_network_policy_controller = true
 # unassigned keeps the shipped repo portable AND keeps the override working.
 # Set EXTRA_CLUSTER_ADMIN_ARNS (repo variable) to this account's operator ARNs.
 
+# `runtime_verifier_principal_arn` (platform/infra/runtime-verifier-access.tf) is
+# account-specific for the same reason: it is the ADP-Agent-<nickname> connection
+# role the owner creates when connecting the account in the UI, so it cannot be
+# known before onboarding. Once the account is connected, set it per-invocation
+# (deploy-all.sh passes TF_VAR_* through unchanged) and re-run the platform step:
+#   export TF_VAR_runtime_verifier_principal_arn='arn:aws:iam::<acct>:role/ADP-Agent-<nickname>'
+# Leaving it unset keeps the access entry absent; the orchestration engine then
+# cannot verify deployments and holds with deployment_runtime_read_forbidden.
+
 # `eks_public_access_cidrs` is intentionally NOT set here so the repo stays
 # portable. Set it per-invocation via:
 #   export TF_VAR_eks_public_access_cidrs='["<your.public.ip>/32"]'

@@ -38,8 +38,8 @@ the message above, 6.42.0 decodes and exports. Do not lower it.
 
 * every `required_providers` block under `platform/infra` that constrains `hashicorp/aws`
   admits nothing below 6.42.0 — in particular, no `~> 5.x` and no bare `>= 5.x`;
-* the root and child constraints are byte-identical, so `terraform init` cannot fail on
-  unsatisfiable constraints between them;
+* the root pins the reviewed release provider and children retain the compatible
+  state-decoding range;
 * the constraint stays below the next major, so a v7 release cannot arrive unreviewed;
 * platform apply stays manual-only, so raising a provider floor cannot widen what applies
   automatically.
@@ -62,8 +62,10 @@ APPLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "platform-infra-apply.yml
 # The release that added aws_eks_addon namespace_config. See the module docstring.
 MINIMUM_AWS_MAJOR_MINOR = (6, 42)
 
-# The single constraint both the root and the child module are expected to carry.
+# Reusable children keep the state-compatible range; release roots pin the tested
+# provider so a new provider cannot break a downloaded RC (regression #7733).
 EXPECTED_CONSTRAINT = ">= 6.42.0, < 7.0.0"
+RELEASE_PROVIDER = "6.68.0"
 
 AWS_SOURCE_RE = re.compile(r'source\s*=\s*"(?:registry\.terraform\.io/)?hashicorp/aws"')
 VERSION_RE = re.compile(r'version\s*=\s*"([^"]+)"')
@@ -187,7 +189,8 @@ def test_aws_constraint_stays_below_next_major(path: Path) -> None:
     a v7 release arrive on the next `init` without one.
     """
     for constraint in _aws_constraints(_strip_comments(path.read_text())):
-        assert re.search(r"(<\s*7|~>\s*6)", constraint), (
+        assert (re.search(r"(<\s*7|~>\s*6)", constraint)
+                or re.fullmatch(r"(?:=\s*)?6\.\d+\.\d+", constraint)), (
             f"{path.relative_to(REPO_ROOT)} constrains hashicorp/aws to "
             f'"{constraint}", which does not bound the major version. AWS provider 7.x '
             "would be accepted on the next init without the state-decoding review "
@@ -195,22 +198,31 @@ def test_aws_constraint_stays_below_next_major(path: Path) -> None:
         )
 
 
-def test_root_and_child_constraints_are_identical() -> None:
-    """Root and child modules must agree, or `terraform init` fails outright.
+def test_release_roots_pin_the_reviewed_provider_and_children_keep_compatible_range() -> None:
+    """Exact release pins and reusable child ranges must have an intersection.
 
     Terraform intersects every constraint on a provider across the whole configuration.
     A child module left on `~> 5.0` while the root requires `>= 6.42.0` has an empty
     intersection, which fails init rather than degrading quietly.
     """
+    # private-capacity has its own backend/provider and is applied independently;
+    # it is a release root, not a child of platform/infra.
+    roots = (PLATFORM_INFRA / "main.tf", PLATFORM_INFRA / "private-capacity/main.tf",
+             REPO_ROOT / "modules/gateway/infra/versions.tf")
+    for root in roots:
+        assert _aws_constraints(_strip_comments(root.read_text())) == [RELEASE_PROVIDER]
+    assert _parsed(RELEASE_PROVIDER) >= (*MINIMUM_AWS_MAJOR_MINOR, 0)
+    assert _parsed(RELEASE_PROVIDER) < (7, 0, 0)
     found = {
         path: constraints
         for path in CONSTRAINED_FILES
+        if path not in roots
         if (constraints := _aws_constraints(_strip_comments(path.read_text())))
     }
     distinct = {constraint for constraints in found.values() for constraint in constraints}
 
     assert distinct == {EXPECTED_CONSTRAINT}, (
-        "every platform AWS constraint must be exactly "
+        "reusable platform children must retain the state-compatible range "
         f'"{EXPECTED_CONSTRAINT}", but found {sorted(distinct)} across '
         f"{sorted(str(p.relative_to(REPO_ROOT)) for p in found)}. Divergent "
         "constraints either fail `terraform init` on an empty intersection or let a "

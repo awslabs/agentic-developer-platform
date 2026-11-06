@@ -31,6 +31,7 @@ prerequisites, headless login and administrator login.
 | I want to… | Read |
 |---|---|
 | Install, sign in, launch tools, update or uninstall | [Getting started](getting-started.md) |
+| Connect Claude App or a compatible ChatGPT App on macOS | [macOS apps](macos-apps.md) |
 | Choose a default environment or use three terminals | [Environments](environments.md) |
 | Look up every command and its options | [Command reference](command-reference.md) |
 | Connect an AWS account, reuse a role or arrange an administrator handoff | [AWS accounts and Bedrock](aws-and-bedrock.md) |

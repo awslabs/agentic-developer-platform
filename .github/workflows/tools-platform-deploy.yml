@@ -1,0 +1,740 @@
+name: Deploy tools platform
+# The engine recognises an engine-dispatched run only by this exact title
+# ("ADP deployment <correlation>"); without it a green release is never
+# bound as runtime evidence for the operate story.
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || '' }}
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'modules/tools/platform/infra/**'
+      - 'modules/tools/platform/schemas/**'
+      - 'modules/tools/platform/scripts/**'
+      - 'modules/tools/deploy.sh'
+      - 'modules/tools/orchestrate.sh'
+      - '.github/workflows/tools-platform-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Release the gateway or compare deployed state to main
+        required: true
+        type: choice
+        default: release
+        options: [release, drift, identity]
+      adp_correlation:
+        description: Engine delivery correlation (64 hex characters)
+        required: false
+        type: string
+        default: ''
+      adp_source_revision:
+        description: Reviewed source commit from main history
+        required: false
+        type: string
+        default: ''
+      adp_definition_revision:
+        description: Expected workflow definition commit
+        required: false
+        type: string
+        default: ''
+      adp_contract_digest:
+        description: Accepted generic delivery contract digest for Identity or adapter handoff
+        required: false
+        type: string
+        default: ''
+      manual_source_revision:
+        description: Reviewed main source commit for a manual dispatch without engine inputs
+        required: false
+        type: string
+        default: ''
+      stage:
+        description: Protected deployment stage
+        required: true
+        type: choice
+        default: platform
+        options: [platform, tool-adapters]
+      adapter_action:
+        description: Adapter foundation release or guarded prepared-route transition
+        required: true
+        type: choice
+        default: foundation
+        options: [foundation, handoff, rollback]
+      environment:
+        description: Deployment environment
+        required: true
+        type: choice
+        default: dev
+        options: [dev, prod]
+permissions:
+  contents: read
+concurrency:
+  group: tools-release-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+  ADP_DELIVERY_EVIDENCE_STORE: s3-oidc-v1
+
+jobs:
+  guard:
+    runs-on: arc-runner-org
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject mismatched workflow definition before source checkout or plan
+        env:
+          ADP_TOOLS_MODE: ${{ github.event_name == 'schedule' && 'drift' || inputs.mode || 'release' }}
+          ADP_TOOLS_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          ADP_TOOLS_STAGE: ${{ inputs.stage || 'platform' }}
+          ADP_TOOLS_ADAPTER_ACTION: ${{ inputs.adapter_action || 'foundation' }}
+          ADP_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
+          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
+        run: bash modules/tools/platform/scripts/guard_dispatch.sh definition
+      - name: Check source is an ancestor of reviewed main
+        env:
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
+        run: bash modules/tools/platform/scripts/guard_dispatch.sh source
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify checkout matches approved source
+        env:
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${ADP_MANUAL_SOURCE:-${ADP_SOURCE:-$GITHUB_SHA}}"
+  release:
+    needs: guard
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode != 'drift' && inputs.stage != 'tool-adapters'
+    runs-on: arc-runner-org
+    timeout-minutes: 12
+    environment: ${{ inputs.environment == 'prod' && 'adp-tools-deploy-prod' || 'adp-tools-deploy-dev' }}
+    env:
+      ADP_TOOLS_AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      ADP_TOOLS_SMOKE_GATEWAY_URL: ${{ vars.ADP_TOOLS_EVAL_GATEWAY_URL }}
+      ADP_SOURCE_REVISION: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+      ADP_DEFINITION_REVISION: ${{ github.workflow_sha }}
+      ADP_TOOLS_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_TOOLS_RELEASE_QUALIFICATION: ${{ vars.ADP_TOOLS_RELEASE_QUALIFICATION || 'native' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Set native evidence path after runner allocation
+        shell: bash
+        run: printf 'ADP_TOOLS_SMOKE_EVIDENCE_DIR=%s/adp-native-tools-evidence\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
+          # persist-credentials: false leaves no credential helper for a network
+          # fetch; prove the dispatched commit belongs to origin/main from the
+          # authenticated fetch-depth: 0 objects and populate FETCH_HEAD with a
+          # local self-fetch.
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          git fetch --no-tags . "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Pin target mutation guard to the protected workflow revision
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          # Selecting an older main ancestor must not resurrect its weaker plan
+          # validator after first-enable permissions have been granted.
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          for file in modules/tools/deploy.sh modules/tools/platform/scripts/release_plan.py modules/tools/platform/scripts/knowledge_overlay.py modules/tools/platform/scripts/operational_release.py modules/tools/platform/scripts/native_release.py; do
+            git show "$ADP_WORKFLOW_REVISION:$file" | cmp - "$file"
+          done
+
+      # Only bounded private input delivery uses existing runner IRSA before deployment OIDC.
+      - name: Receive original owner approval and explicit native fixture
+        if: env.ADP_TOOLS_RELEASE_QUALIFICATION == 'native'
+        env:
+          ADP_TOOLS_SMOKE_NATIVE_ACCESS_TOKEN: ${{ secrets.ADP_TOOLS_SMOKE_NATIVE_ACCESS_TOKEN }}
+        run: python3 -m modules.tools.platform.scripts.native_smoke_inputs download
+      - name: Validate protected operational policy and dedicated ordinary-user login
+        if: env.ADP_TOOLS_RELEASE_QUALIFICATION == 'operational'
+        env:
+          ADP_TOOLS_OPERATIONAL_SMOKE_JSON: ${{ vars.ADP_TOOLS_OPERATIONAL_SMOKE_JSON }}
+          ADP_TOOLS_SMOKE_OPERATIONAL_ACCESS_TOKEN: ${{ secrets.ADP_TOOLS_SMOKE_OPERATIONAL_ACCESS_TOKEN }}
+        run: python3 -m modules.tools.platform.scripts.operational_release
+      - name: Assume environment-scoped deployment role
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - name: Apply reviewed source, synchronize targets and gate release on authenticated MCP smoke
+        env:
+          ADP_TOOLS_MODE: apply
+          ADP_TOOLS_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          ADP_TOOLS_AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+          ADP_TOOLS_ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ADP_TOOLS_STATE_BUCKET: ${{ vars.ADP_TOOLS_STATE_BUCKET }}
+          ADP_TOOLS_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          ADP_TOOLS_TFVARS_JSON: ${{ secrets.ADP_TOOLS_DEPLOY_TFVARS_JSON }}
+          ADP_TOOLS_RELEASE_SELECTORS_JSON: ${{ secrets.ADP_TOOLS_RELEASE_SELECTORS_JSON }}
+          ADP_TOOLS_KNOWLEDGE_CONFIG_JSON: ${{ vars.ADP_TOOLS_KNOWLEDGE_CONFIG_JSON || '' }}
+          ADP_TOOLS_CONNECTIONS_CONFIG_JSON: ${{ vars.ADP_TOOLS_CONNECTIONS_CONFIG_JSON || '' }}
+          ADP_TOOLS_KNOWLEDGE_CREATE_JSON: ${{ vars.ADP_TOOLS_KNOWLEDGE_CREATE_JSON || '' }}
+          ADP_TOOLS_CONNECTIONS_CREATE_JSON: ${{ vars.ADP_TOOLS_CONNECTIONS_CREATE_JSON || '' }}
+          ADP_TOOLS_RELEASE_DIR: ${{ runner.temp }}/adp-release-tools-platform
+          ADP_TOOLS_SMOKE_GATEWAY_URL: ${{ vars.ADP_TOOLS_EVAL_GATEWAY_URL }}
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE_REVISION: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          ADP_DEFINITION_REVISION: ${{ github.workflow_sha }}
+        run: bash modules/tools/deploy.sh --infra --targets
+      - name: Retain original native smoke evidence on success or failure
+        if: always()
+        timeout-minutes: 1
+        run: python3 -m modules.tools.platform.scripts.native_evidence
+      - name: Remove dedicated native login and private inputs
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f -- "$RUNNER_TEMP/adp-native-tools-inputs/login.jwt" \
+            "$RUNNER_TEMP/adp-native-tools-inputs/bundle.json" \
+            "$RUNNER_TEMP/adp-native-tools-inputs/approval.json" \
+            "$RUNNER_TEMP/adp-native-tools-inputs/fixture.json"
+          rm -f -- "$RUNNER_TEMP/adp-operational-tools-inputs/login.jwt" \
+            "$RUNNER_TEMP/adp-operational-tools-inputs/config.json"
+      - name: Qualify selected smoke after confirmed private evidence retention
+        run: python3 -m modules.tools.platform.scripts.native_release qualify --release "$RUNNER_TEMP/adp-release-tools-platform/release.json"
+      - name: Load deployment evidence publisher from workflow revision
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${ADP_WORKFLOW_REVISION}^{commit}"
+          git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"
+          for file in scripts/publish-deployment-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_WORKFLOW_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+      - name: Record deployment workflow context
+        env:
+          CONTEXT_REVISION: ${{ github.workflow_sha }}
+          CONTEXT_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          CONTEXT_CORRELATION: ${{ inputs.adp_correlation || '' }}
+          CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          INPUT_MODE: ${{ inputs.mode || 'release' }}
+          INPUT_MANUAL_SOURCE_REVISION: ${{ inputs.manual_source_revision || '' }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+          ADP_TOOLS_RELEASE_DIR: ${{ runner.temp }}/adp-release-tools-platform
+        run: python3 modules/tools/platform/scripts/deployment_evidence.py context
+      - name: Publish deployment workflow context to S3
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context tools-platform-deploy.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
+      - name: Bind tools platform release to reviewed workflow
+        env:
+          CONTEXT_REVISION: ${{ github.workflow_sha }}
+          CONTEXT_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          CONTEXT_CORRELATION: ${{ inputs.adp_correlation || '' }}
+          CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+          ADP_TOOLS_RELEASE_DIR: ${{ runner.temp }}/adp-release-tools-platform
+        run: python3 modules/tools/platform/scripts/deployment_evidence.py bind-release
+      - name: Publish verified tools platform release
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" release tools-platform "$RUNNER_TEMP/adp-release-tools-platform/release.json"
+  adapter-handoff:
+    needs: guard
+    # Handoff changes gateway runtime settings and routes. Share the existing
+    # release queue so an ordinary gateway rollout cannot overwrite them.
+    concurrency:
+      group: gateway-release-${{ inputs.environment || 'dev' }}
+      cancel-in-progress: false
+      queue: max
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode == 'release' && inputs.environment == 'dev' && inputs.stage == 'tool-adapters' && inputs.adp_correlation != '' && (inputs.adapter_action == 'handoff' || inputs.adapter_action == 'rollback')
+    runs-on: arc-runner-org
+    timeout-minutes: 25
+    environment: adp-tools-handoff-dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_DEFINITION_REVISION: ${{ github.workflow_sha }}
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_TOOLS_ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+      ADP_TOOLS_AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      ADP_TOOLS_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      ADP_TOOLS_ADAPTER_CONNECTION_ROLE_ARN: ${{ vars.ADP_TOOLS_ADAPTER_CONNECTION_ROLE_ARN }}
+      ADP_TOOLS_EVAL_GATEWAY_URL: ${{ vars.ADP_TOOLS_EVAL_GATEWAY_URL }}
+      ADP_TOOLS_EKS_CLUSTER_NAME: ${{ vars.ADP_TOOLS_EKS_CLUSTER_NAME }}
+      ADP_TOOLS_ENVIRONMENT: dev
+      ADP_TOOLS_GATEWAY_ID: ${{ vars.ADP_TOOLS_GATEWAY_ID }}
+      ADP_IDENTITY_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+      ADP_TOOLS_ADAPTER_WORKFLOW_INPUTS_JSON: ${{ toJSON(inputs) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind handoff implementation to the reviewed workflow
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_DEFINITION_REVISION"
+          git merge-base --is-ancestor "$ADP_SOURCE_REVISION" refs/remotes/origin/main
+          git merge-base --is-ancestor "$ADP_SOURCE_REVISION" "$ADP_DEFINITION_REVISION"
+          # The protected workflow owns control code. The separately verified
+          # source/image tuple still identifies the adapter being transitioned,
+          # including rollback of an older image after a controller repair.
+      - name: Verify current native deployment authority
+        run: python3 modules/tools/adapters/guard_release.py
+      - name: Assume protected workflow mutation role
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Materialize protected preparation selectors
+        env:
+          PREPARATION_CONFIG: ${{ secrets.ADP_TOOLS_ADAPTER_PREPARATION_JSON }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "$RUNNER_TEMP/adp-adapter-handoff"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = os.environ["PREPARATION_CONFIG"]
+          if not value or len(value.encode()) > 1024 * 1024:
+              raise SystemExit("Protected preparation selectors are unavailable")
+          path = Path(os.environ["RUNNER_TEMP"]) / "adp-adapter-handoff/preparation.json"
+          with path.open("x") as stream:
+              json.dump(json.loads(value), stream)
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              stream.write(f"ADP_TOOLS_ADAPTER_PREPARATION_FILE={path}\n")
+              stream.write(f"ADP_TOOLS_ADAPTER_HANDOFF_FILE={path.parent / 'plan.json'}\n")
+              stream.write(f"ADP_TOOLS_ADAPTER_HANDOFF_RESULT={path.parent / 'result.json'}\n")
+              stream.write(f"ADP_TOOLS_ADAPTER_HANDOFF_CONTEXT={path.parent / 'dispatch-context.json'}\n")
+              stream.write(f"ADP_TOOLS_ADAPTER_RELEASE_DIR={path.parent / 'release'}\n")
+              stream.write(f"KUBECONFIG={path.parent / 'kubeconfig'}\n")
+          PY
+      - name: Bind authenticated handoff dispatch before target mutation
+        run: bash modules/tools/adapters/deploy.sh handoff-context
+      - name: Stage protected handoff evidence publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in scripts/publish-deployment-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py src/__init__.py src/orchestration/__init__.py src/orchestration/delivery_contract.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_DEFINITION_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+          python3 -m venv "$RUNNER_TEMP/adp-deployment-evidence/runtime"
+          "$RUNNER_TEMP/adp-deployment-evidence/runtime/bin/python" -m pip install --quiet pydantic==2.14.1
+      - name: Publish signed pre-mutation handoff context
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: dev
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context tools-platform-deploy.yml "$ADP_TOOLS_ADAPTER_HANDOFF_CONTEXT"
+      - name: Select the protected cluster
+        run: aws eks update-kubeconfig --region "$ADP_TOOLS_AWS_REGION" --name "$ADP_TOOLS_EKS_CLUSTER_NAME" --kubeconfig "$KUBECONFIG" >/dev/null
+      - name: Prepare and independently read back private connector routes and targets
+        if: inputs.adapter_action == 'handoff'
+        run: bash modules/tools/adapters/deploy.sh prepare
+      - name: Load and verify retained rollback plan without adapter readiness
+        if: inputs.adapter_action == 'rollback'
+        run: bash modules/tools/adapters/deploy.sh rollback-plan
+      - name: Fence, drain, switch and independently verify all four routes
+        env:
+          ADAPTER_ACTION: ${{ inputs.adapter_action }}
+        run: bash modules/tools/adapters/deploy.sh "$ADAPTER_ACTION"
+      - name: Produce verified handoff delivery documents
+        run: bash modules/tools/adapters/deploy.sh handoff-receipt
+      - name: Verify completed handoff context matches signed dispatch
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          original = json.loads(Path(os.environ["ADP_TOOLS_ADAPTER_HANDOFF_CONTEXT"]).read_bytes())
+          completed = json.loads((Path(os.environ["ADP_TOOLS_ADAPTER_RELEASE_DIR"]) / "deployment-context.json").read_bytes())
+          if original != completed:
+              raise SystemExit("Completed handoff context differs from signed dispatch")
+          PY
+      - name: Publish correlated generic handoff delivery evidence
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: dev
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: '"$RUNNER_TEMP/adp-deployment-evidence/runtime/bin/python" "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" delivery delivery-evidence "$RUNNER_TEMP/adp-adapter-handoff/release/delivery.json"'
+      - name: Publish sanitized handoff readback
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: handoff-readback-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-adapter-handoff/release/handoff-readback.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove private handoff inputs
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/adp-adapter-handoff"
+  adapter-foundation:
+    needs: guard
+    # Qualification checks the live gateway before and after its isolated tests.
+    # Share the existing release queue so a gateway rollout cannot invalidate it.
+    concurrency:
+      group: gateway-release-${{ inputs.environment || 'dev' }}
+      cancel-in-progress: false
+      queue: max
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode == 'release' && inputs.environment == 'dev' && inputs.stage == 'tool-adapters' && inputs.adp_correlation != '' && (inputs.adapter_action == 'foundation' || inputs.adapter_action == '')
+    runs-on: arc-runner-org
+    timeout-minutes: 55
+    environment: adp-tools-deploy-dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_DEFINITION_REVISION: ${{ github.workflow_sha }}
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_TOOLS_ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+      ADP_TOOLS_AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      ADP_TOOLS_ENVIRONMENT: dev
+      ADP_TOOLS_STATE_BUCKET: ${{ vars.ADP_TOOLS_STATE_BUCKET }}
+      ADP_TOOLS_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      ADP_TOOLS_ADAPTER_CONNECTION_ROLE_ARN: ${{ vars.ADP_TOOLS_ADAPTER_CONNECTION_ROLE_ARN }}
+      ADP_TOOLS_ADAPTER_NAMESPACE: ${{ vars.ADP_TOOLS_ADAPTER_NAMESPACE }}
+      ADP_TOOLS_ADAPTER_ROLE_ARN: ${{ vars.ADP_TOOLS_ADAPTER_ROLE_ARN }}
+      ADP_TOOLS_EKS_CLUSTER_NAME: ${{ vars.ADP_TOOLS_EKS_CLUSTER_NAME }}
+      ADP_TOOLS_ADAPTER_GROUP_GENERATION: ${{ vars.ADP_TOOLS_ADAPTER_GROUP_GENERATION }}
+      ADP_TOOLS_ADAPTER_BACKEND_GENERATION: ${{ vars.ADP_TOOLS_ADAPTER_BACKEND_GENERATION }}
+      ADP_TOOLS_EVAL_GATEWAY_URL: ${{ vars.ADP_TOOLS_EVAL_GATEWAY_URL }}
+      ADP_TOOLS_ADAPTER_WORKFLOW_INPUTS_JSON: ${{ toJSON(inputs) }}
+      ADP_TOOLS_FOUNDATION_GATEWAY_REVISION: ${{ vars.ADP_TOOLS_FOUNDATION_GATEWAY_REVISION }}
+      ADP_FOUNDATION_EVIDENCE_STORE: s3-oidc-v1
+    steps:
+      - name: Set private adapter paths after runner allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "$RUNNER_TEMP/adp-adapter-stage"
+          printf 'ADP_TOOLS_ADAPTER_PUBLICATION_FILE=%s/adp-adapter-stage/publication.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'ADP_TOOLS_ADAPTER_CONFIG_FILE=%s/adp-adapter-stage/configuration.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'ADP_TOOLS_ADAPTER_EVIDENCE_FILE=%s/adp-adapter-stage/runtime-verified.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'ADP_TOOLS_ADAPTER_RELEASE_DIR=%s/adp-adapter-stage/release\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SOURCE_REVISION"
+          # actions/checkout keeps persist-credentials: false, so no credential
+          # helper remains and an anonymous network fetch cannot read this
+          # repository. The authenticated fetch-depth: 0 checkout already
+          # supplied origin/main and the reviewed history, so prove the
+          # identical ancestry from those local objects.
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          git fetch --no-tags . "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+          for file in modules/tools/adapters/deploy.sh modules/tools/adapters/deploy.py modules/tools/adapters/guard_release.py modules/tools/adapters/stage_configuration.py modules/tools/adapters/materialize_observation.py modules/tools/adapters/release_evidence.py modules/tools/adapters/foundation_release.py modules/tools/adapters/foundation_runtime.py modules/tools/adapters/foundation_contract.py codebuild/bs-tools-adapters-foundation-check.yml modules/gateway/scripts/publish-deployment-evidence.py; do
+            git show "$ADP_DEFINITION_REVISION:$file" | cmp - "$file"
+          done
+      - name: Assume protected workflow mutation role
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Materialize optional protected observation configuration
+        env:
+          ADP_TOOLS_ADAPTER_OBSERVATION_JSON: ${{ secrets.ADP_TOOLS_ADAPTER_OBSERVATION_JSON }}
+        run: python3 modules/tools/adapters/materialize_observation.py
+      - name: Publish qualified immutable image under current native lease
+        run: bash modules/tools/adapters/deploy.sh publish
+      - name: Bind published image to reviewed foundation generations
+        run: bash modules/tools/adapters/deploy.sh configure
+      - name: Apply standalone adapter in its isolated namespace
+        run: ADP_TOOLS_ADAPTER_EVIDENCE_FILE="$RUNNER_TEMP/adp-adapter-stage/runtime-applied.json" bash modules/tools/adapters/deploy.sh apply
+      - name: Independently observe deployed adapter runtime
+        run: bash modules/tools/adapters/deploy.sh verify
+      - name: Produce bounded native release and workflow-context documents
+        run: bash modules/tools/adapters/deploy.sh receipt
+      - name: Qualify exact deployed images with isolated generated foundation data
+        run: bash modules/tools/adapters/deploy.sh foundation
+      - name: Stage protected deployment evidence publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in scripts/publish-deployment-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_DEFINITION_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+      - name: Publish signed native adapter context
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: dev
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context tools-platform-deploy.yml "$ADP_TOOLS_ADAPTER_RELEASE_DIR/deployment-context.json"
+      - name: Publish signed native adapter release
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: dev
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" release tool-adapters "$ADP_TOOLS_ADAPTER_RELEASE_DIR/release.json"
+      - name: Publish independently verified foundation summary
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: dev
+          EXPECTED_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" repository-artifact atlassian-foundation "$ADP_TOOLS_ADAPTER_RELEASE_DIR/atlassian-stage-summary.json"
+      - name: Remove private stage inputs
+        if: always()
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/adp-adapter-stage"
+  adapter-identity:
+    needs: guard
+    concurrency:
+      group: gateway-release-${{ inputs.environment || 'dev' }}
+      cancel-in-progress: false
+      queue: max
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && inputs.mode == 'identity' && inputs.environment == 'dev' && inputs.stage == 'tool-adapters' && inputs.adp_correlation != '' && inputs.adp_source_revision != '' && inputs.adp_definition_revision != '' && inputs.adp_contract_digest != ''
+    runs-on: arc-runner-org
+    timeout-minutes: 55
+    environment: adp-tools-deploy-dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ADP_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_DEFINITION_REVISION: ${{ github.workflow_sha }}
+      ADP_CORRELATION: ${{ inputs.adp_correlation }}
+      ADP_TOOLS_ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+      ADP_TOOLS_AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      ADP_TOOLS_ENVIRONMENT: dev
+      ADP_TOOLS_STATE_BUCKET: ${{ vars.ADP_TOOLS_STATE_BUCKET }}
+      ADP_TOOLS_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      ADP_TOOLS_ADAPTER_CONNECTION_ROLE_ARN: ${{ vars.ADP_TOOLS_ADAPTER_CONNECTION_ROLE_ARN }}
+      ADP_TOOLS_ADAPTER_NAMESPACE: ${{ vars.ADP_TOOLS_ADAPTER_NAMESPACE }}
+      ADP_TOOLS_ADAPTER_ROLE_ARN: ${{ vars.ADP_TOOLS_ADAPTER_ROLE_ARN }}
+      ADP_TOOLS_EKS_CLUSTER_NAME: ${{ vars.ADP_TOOLS_EKS_CLUSTER_NAME }}
+      ADP_TOOLS_ADAPTER_GROUP_GENERATION: ${{ vars.ADP_TOOLS_ADAPTER_GROUP_GENERATION }}
+      ADP_TOOLS_ADAPTER_BACKEND_GENERATION: ${{ vars.ADP_TOOLS_ADAPTER_BACKEND_GENERATION }}
+      ADP_TOOLS_EVAL_GATEWAY_URL: ${{ vars.ADP_TOOLS_EVAL_GATEWAY_URL }}
+      ADP_TOOLS_ADAPTER_WORKFLOW_INPUTS_JSON: ${{ toJSON(inputs) }}
+      ADP_TOOLS_FOUNDATION_GATEWAY_REVISION: ${{ inputs.adp_source_revision }}
+      ADP_FOUNDATION_EVIDENCE_STORE: s3-oidc-v1
+      ADP_IDENTITY_CONTRACT_DIGEST: ${{ inputs.adp_contract_digest }}
+    steps:
+      - name: Set private adapter paths after runner allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "$RUNNER_TEMP/adp-adapter-stage"
+          printf 'ADP_TOOLS_ADAPTER_PUBLICATION_FILE=%s/adp-adapter-stage/publication.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'ADP_TOOLS_ADAPTER_CONFIG_FILE=%s/adp-adapter-stage/configuration.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'ADP_TOOLS_ADAPTER_EVIDENCE_FILE=%s/adp-adapter-stage/runtime-verified.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'ADP_TOOLS_ADAPTER_RELEASE_DIR=%s/adp-adapter-stage/release\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SOURCE_REVISION"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          git fetch --no-tags . "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+          for file in modules/tools/adapters/deploy.sh modules/tools/adapters/deploy.py modules/tools/adapters/guard_release.py modules/tools/adapters/stage_configuration.py modules/tools/adapters/materialize_observation.py modules/tools/adapters/release_evidence.py modules/tools/adapters/foundation_release.py modules/tools/adapters/foundation_runtime.py modules/tools/adapters/foundation_contract.py modules/tools/adapters/identity_release.py modules/tools/adapters/identity_contract.py modules/tools/adapters/identity_delivery.py modules/tools/adapters/identity_dispatch_context.py modules/tools/adapters/tests/test_observation.py codebuild/bs-tools-adapters-foundation-check.yml modules/gateway/tests/auth/test_connections_routes.py modules/gateway/tests/auth/test_atlassian_mcp_reconnect_postgres.py modules/gateway/tests/auth/test_atlassian_mcp_revocation.py modules/gateway/tests/internal/test_tool_adapter_authority.py modules/gateway/tests/migrations/test_136_grant_revocation_worker.py modules/gateway/scripts/publish-deployment-evidence.py modules/gateway/deployment_evidence/store.py; do
+            git show "$ADP_DEFINITION_REVISION:$file" | cmp - "$file"
+          done
+      - name: Assume protected workflow mutation role
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Stage protected deployment evidence publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in scripts/publish-deployment-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py src/__init__.py src/orchestration/__init__.py src/orchestration/delivery_contract.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_DEFINITION_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+          python3 -m venv "$RUNNER_TEMP/adp-deployment-evidence/runtime"
+          "$RUNNER_TEMP/adp-deployment-evidence/runtime/bin/python" -m pip install --quiet pydantic==2.14.1
+      - name: Record original dispatch context before any release mutation
+        run: bash modules/tools/adapters/deploy.sh dispatch-context
+      - name: Publish signed original dispatch context
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: dev
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context tools-platform-deploy.yml "$ADP_TOOLS_ADAPTER_RELEASE_DIR.dispatch-context.json"
+      - name: Materialize optional protected observation configuration
+        env:
+          ADP_TOOLS_ADAPTER_OBSERVATION_JSON: ${{ secrets.ADP_TOOLS_ADAPTER_OBSERVATION_JSON }}
+        run: python3 modules/tools/adapters/materialize_observation.py
+      - name: Publish qualified immutable image under current native lease
+        run: bash modules/tools/adapters/deploy.sh publish
+      - name: Bind published image to reviewed generations without connector cutover
+        run: bash modules/tools/adapters/deploy.sh configure
+      - name: Apply standalone adapter in its isolated namespace
+        run: ADP_TOOLS_ADAPTER_EVIDENCE_FILE="$RUNNER_TEMP/adp-adapter-stage/runtime-applied.json" bash modules/tools/adapters/deploy.sh apply
+      - name: Independently observe deployed adapter runtime
+        run: bash modules/tools/adapters/deploy.sh verify
+      - name: Produce bounded native release and workflow-context documents
+        run: bash modules/tools/adapters/deploy.sh receipt
+      - name: Qualify deployed images with generated Identity fixtures
+        run: bash modules/tools/adapters/deploy.sh identity
+      - name: Publish signed native adapter release
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: dev
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" release tool-adapters "$ADP_TOOLS_ADAPTER_RELEASE_DIR/release.json"
+      - name: Publish independently verified Identity summary
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: dev
+          EXPECTED_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" repository-artifact atlassian-identity "$ADP_TOOLS_ADAPTER_RELEASE_DIR/atlassian-stage-summary.json" > "$RUNNER_TEMP/adp-adapter-stage/identity-receipt.json"
+      - name: Read back Identity evidence and prepare generic delivery receipt
+        env:
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: python3 modules/tools/adapters/identity_delivery.py --summary "$ADP_TOOLS_ADAPTER_RELEASE_DIR/atlassian-stage-summary.json" --receipt "$RUNNER_TEMP/adp-adapter-stage/identity-receipt.json" --output "$RUNNER_TEMP/adp-adapter-stage/delivery.json"
+      - name: Publish independently verified Identity summary for the repository gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlassian-identity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-adapter-stage/release/atlassian-stage-summary.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish correlated generic delivery evidence
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+          ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ENVIRONMENT: dev
+          AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+        run: '"$RUNNER_TEMP/adp-deployment-evidence/runtime/bin/python" "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" delivery delivery-evidence "$RUNNER_TEMP/adp-adapter-stage/delivery.json"'
+      - name: Remove private stage inputs
+        if: always()
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/adp-adapter-stage"
+  drift:
+    needs: guard
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'drift' && inputs.stage != 'tool-adapters'))
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+    environment: adp-tools-deploy-dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
+          # persist-credentials: false leaves no credential helper for a network
+          # fetch; prove the dispatched commit belongs to origin/main from the
+          # authenticated fetch-depth: 0 objects and populate FETCH_HEAD with a
+          # local self-fetch.
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          git fetch --no-tags . "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Pin target mutation guard to the protected workflow revision
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          for file in modules/tools/deploy.sh modules/tools/platform/scripts/release_plan.py modules/tools/platform/scripts/knowledge_overlay.py modules/tools/platform/scripts/operational_release.py modules/tools/platform/scripts/native_release.py; do
+            git show "$ADP_WORKFLOW_REVISION:$file" | cmp - "$file"
+          done
+      - name: Assume environment-scoped role for live-state reads
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - name: Fail when deployed dev resources differ from main
+        env:
+          ADP_TOOLS_MODE: drift
+          ADP_TOOLS_ENVIRONMENT: dev
+          ADP_TOOLS_AWS_REGION: ${{ vars.ADP_TOOLS_REGION || 'us-east-1' }}
+          ADP_TOOLS_ACCOUNT_ID: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+          ADP_TOOLS_STATE_BUCKET: ${{ vars.ADP_TOOLS_STATE_BUCKET }}
+          ADP_TOOLS_DEPLOY_ROLE_ARN: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          ADP_TOOLS_TFVARS_JSON: ${{ secrets.ADP_TOOLS_DEPLOY_TFVARS_JSON }}
+          ADP_TOOLS_RELEASE_SELECTORS_JSON: ${{ secrets.ADP_TOOLS_RELEASE_SELECTORS_JSON }}
+          ADP_TOOLS_KNOWLEDGE_CONFIG_JSON: ${{ vars.ADP_TOOLS_KNOWLEDGE_CONFIG_JSON || '' }}
+          ADP_TOOLS_CONNECTIONS_CONFIG_JSON: ${{ vars.ADP_TOOLS_CONNECTIONS_CONFIG_JSON || '' }}
+          ADP_SOURCE_REVISION: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          ADP_DEFINITION_REVISION: ${{ github.workflow_sha }}
+        run: bash modules/tools/deploy.sh --infra --targets

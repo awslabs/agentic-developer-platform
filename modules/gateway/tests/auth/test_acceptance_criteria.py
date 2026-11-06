@@ -359,12 +359,8 @@ class TestAcceptanceCriteria:
             await auth_service.validate_token(auth_response.token, db_session)
 
     @pytest.mark.asyncio
-    async def test_admin_privilege_detection(self, db_session, sample_organization, sample_department, sample_team):
-        """
-        Test that admin privileges are correctly detected and included in tokens.
-
-        This validates admin role mapping from organization configuration.
-        """
+    async def test_legacy_service_mapping_cannot_grant_platform_admin(self, db_session, sample_organization, sample_department, sample_team):
+        """Tenant-controlled IAM mappings cannot grant global platform authority."""
         # Create admin service account
         service_account_service = ServiceAccountService()
         admin_sa_data = ServiceAccountCreate(
@@ -395,8 +391,8 @@ class TestAcceptanceCriteria:
         response = await auth_service.exchange_credentials(request, db_session)
         token_context = await auth_service.validate_token(response.token, db_session)
 
-        # Admin privileges should be detected
-        assert token_context.is_admin is True
+        assert token_context.account_type == "service"
+        assert token_context.is_admin is False
 
     def test_integration_with_shared_interfaces(self):
         """

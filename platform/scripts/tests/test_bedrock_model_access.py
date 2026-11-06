@@ -238,7 +238,7 @@ def test_prepare_and_verify_registers_before_invoking(monkeypatch, form):
 
 
 @pytest.mark.parametrize("mode", ["prepare-and-verify", "verify"])
-def test_retired_chat_rollout_refuses_before_model_or_deployment_calls(tmp_path, mode):
+def test_chat_rollout_refuses_legacy_worker_inputs_before_model_or_deployment_calls(tmp_path, mode):
     relative = "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
     script = tmp_path / relative
     script.parent.mkdir(parents=True)
@@ -258,8 +258,13 @@ def test_retired_chat_rollout_refuses_before_model_or_deployment_calls(tmp_path,
         ["bash", str(script)],
         env={
             **os.environ,
-            "ENVIRONMENT": "test",
+            "ENVIRONMENT": "dev",
+            "NAMESPACE": "adp-gateway-agents",
             "AGENT_IMAGE": "test:sha",
+            "SUPERVISOR_IMAGE": "",
+            "SANDBOX_IMAGE": "",
+            "ADP_CHAT_EXISTING_NAMESPACE_ONLY": "true",
+            "ADP_CHAT_MODEL_POLICY_ENABLED": "true",
             "ADP_CHAT_MODEL_ACCESS_MODE": mode,
             "PATH": str(binary) + os.pathsep + os.environ["PATH"],
         },
@@ -267,10 +272,53 @@ def test_retired_chat_rollout_refuses_before_model_or_deployment_calls(tmp_path,
         text=True,
     )
     assert result.returncode == 1
-    assert "Credentialed chat ScaledJob retired" in result.stderr
+    assert "distinct supervisor image required" in result.stderr
     assert "unexpected model access call" not in result.stderr
     assert "unexpected deployment call" not in result.stderr
     assert "Reading Terraform outputs" not in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["prepare-and-verify", "verify"])
+def test_chat_rollout_only_verifies_models_and_stops_on_denial(tmp_path, mode):
+    commands = tmp_path / "commands"
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    stubs = {
+        "kubectl": '#!/bin/bash\nprintf "kubectl %s\\n" "$*" >> "$MOCK_COMMANDS"\n',
+        "bash": '#!/bin/bash\nprintf "model %s\\n" "$*" >> "$MOCK_COMMANDS"\nexit 9\n',
+        "aws": '#!/bin/bash\necho "unexpected deployment call" >&2\nexit 8\n',
+        "terraform": '#!/bin/bash\necho "unexpected deployment call" >&2\nexit 8\n',
+    }
+    for name, body in stubs.items():
+        executable = binary / name
+        executable.write_text(body)
+        executable.chmod(0o700)
+    result = subprocess.run(
+        ["/bin/bash", str(ROOT / "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh")],
+        env={
+            **os.environ,
+            "ENVIRONMENT": "dev",
+            "NAMESPACE": "adp-gateway-agents",
+            "AWS_REGION": "us-east-1",
+            "ADP_CHAT_EXISTING_NAMESPACE_ONLY": "true",
+            "ADP_CHAT_MODEL_POLICY_ENABLED": "true",
+            "ADP_CHAT_MODEL_ACCESS_MODE": mode,
+            "SUPERVISOR_IMAGE": f"123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:{'a' * 64}",
+            "SANDBOX_IMAGE": f"123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:{'b' * 64}",
+            "GATEWAY_HTTPS_ORIGIN": "https://gateway.example.test",
+            "MOCK_COMMANDS": str(commands),
+            "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 9
+    calls = commands.read_text().splitlines()
+    assert calls[0] == "kubectl get namespace adp-gateway-agents -o name"
+    assert len(calls) == 2
+    assert calls[1].endswith("platform/scripts/enable-bedrock-models.sh --verify --region us-east-1")
+    assert "unexpected deployment call" not in result.stderr
 
 
 @pytest.mark.parametrize(

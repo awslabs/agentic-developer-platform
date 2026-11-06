@@ -71,7 +71,14 @@ def test_quota_includes_only_matching_ondemand_family_and_unused_owned_reservati
 
 
 @pytest.mark.parametrize(
-    "instance_type,code", [("g6f.xlarge", "L-DB2E81BA"), ("vt1.3xlarge", "L-DB2E81BA"), ("p5.48xlarge", "L-417A185B"), ("m7i.large", "L-1216C47")]
+    "instance_type,code",
+    [
+        ("g6f.xlarge", "L-DB2E81BA"),
+        ("vt1.3xlarge", "L-DB2E81BA"),
+        ("p5.48xlarge", "L-417A185B"),
+        ("m7i.large", "L-1216C47A"),
+        ("t3.large", "L-1216C47A"),
+    ],
 )
 def test_uses_the_correct_regional_vcpu_quota(provider, instance_type, code):
     provider.validator.profile = AwsValidationProfile(**(PROFILE | {"instance_type": instance_type}))

@@ -126,114 +126,25 @@ def _secret_client() -> MagicMock:
     return client
 
 
-class TestLegacyRouteStaysConservative:
-    """A selected ancestor can never lower the shared-IAM route's charge."""
+class TestLegacyRouteRetired:
+    """Even valid signed lineage cannot reopen shared-IAM dispatch."""
 
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=1247)
-    @patch("agent_trigger._query_event_row")
-    @patch("agent_trigger._resolve_chain")
-    def test_unsigned_shallow_ancestor_is_charged_the_observed_head(
-        self, resolve, query_row, _installation
-    ):
-        head = "actual-depth-8-run"
-        ancestor = "published-depth-0-ancestor"
-        resolve.return_value = _row(event_id=head, chain_depth=MAX_CHAIN_DEPTH)
-        query_row.return_value = [_row(event_id=ancestor, chain_depth=0)]
-
-        with patch("common.spawn_persona._capture_blocked_event"):
-            response = handle_agent_trigger(_event(_body(parent_invocation_id=ancestor)), None)
-
-        assert response["statusCode"] == 422
-        assert json.loads(response["body"]) == {
-            "error": "guard_rejected",
-            "detail": "chain_depth_exceeded",
-            "chain_depth": MAX_CHAIN_DEPTH,
-            "max_chain_depth": MAX_CHAIN_DEPTH,
-            "depth_source_invocation": head,
-        }
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=1247)
-    @patch("agent_trigger._query_event_row")
-    @patch("agent_trigger._resolve_chain")
-    def test_replayed_signed_ancestor_is_charged_the_observed_head_in_strict_mode(
-        self, resolve, query_row, _installation
-    ):
-        ancestor = "published-depth-0-ancestor"
-        head = "actual-depth-8-run"
-        resolve.return_value = _row(event_id=head, chain_depth=MAX_CHAIN_DEPTH)
-        query_row.return_value = [_row(event_id=ancestor, chain_depth=0)]
-        body = _body(
-            parent_invocation_id=ancestor,
-            provenance_marker=_marker(ancestor, 0),
-        )
-
+    @pytest.mark.parametrize("signed", [False, True])
+    @pytest.mark.parametrize("depth", [0, MAX_CHAIN_DEPTH])
+    def test_ancestor_selection_cannot_dispatch(self, signed, depth, monkeypatch):
+        body = _body(parent_invocation_id="published-ancestor", chain_depth=depth)
+        if signed:
+            body["provenance_marker"] = _marker("published-ancestor", depth)
+        monkeypatch.setenv("REQUIRE_SIGNED_PROVENANCE", str(signed).lower())
         with (
-            patch.dict(
-                os.environ,
-                {
-                    "REQUIRE_SIGNED_PROVENANCE": "true",
-                    "MARKER_SIGNING_KEY_SECRET_ARN": SECRET_ARN,
-                },
-            ),
-            patch("common.secrets._get_client", return_value=_secret_client()),
-            patch("common.spawn_persona._capture_blocked_event"),
+            patch("agent_trigger._resolve_chain") as resolve,
+            patch("common.spawn_persona.spawn_persona") as spawn,
         ):
             response = handle_agent_trigger(_event(body), None)
-
-        assert response["statusCode"] == 422
-        result = json.loads(response["body"])
-        assert result["detail"] == "chain_depth_exceeded"
-        assert result["chain_depth"] == MAX_CHAIN_DEPTH
-        assert result["depth_source_invocation"] == head
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=1247)
-    @patch("common.spawn_persona.spawn_persona")
-    @patch("agent_trigger._query_event_row")
-    @patch("agent_trigger._resolve_chain")
-    def test_honest_older_caller_keeps_the_preexisting_conservative_behavior(
-        self, resolve, query_row, spawn, _installation
-    ):
-        resolve.return_value = _row(event_id="newer-sibling", chain_depth=2)
-        query_row.return_value = [_row(event_id=CALLER, chain_depth=1)]
-        spawn.return_value = MagicMock(success=True, message_id="child-run")
-
-        response = handle_agent_trigger(_event(_body()), None)
-
-        assert response["statusCode"] == 202
-        assert spawn.call_args.kwargs["correlation_ctx"]["chain_depth"] == 2
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=1247)
-    @patch("agent_trigger._resolve_chain")
-    def test_server_observed_ninth_generation_still_hits_the_real_guard(
-        self, resolve, _installation
-    ):
-        resolve.return_value = _row(event_id=CALLER, chain_depth=MAX_CHAIN_DEPTH)
-
-        with patch("common.spawn_persona._capture_blocked_event"):
-            response = handle_agent_trigger(_event(_body()), None)
-
-        assert response["statusCode"] == 422
-        assert json.loads(response["body"]) == {
-            "error": "guard_rejected",
-            "detail": "chain_depth_exceeded",
-            "chain_depth": MAX_CHAIN_DEPTH,
-            "max_chain_depth": MAX_CHAIN_DEPTH,
-            "depth_source_invocation": CALLER,
-        }
-
-    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=1247)
-    @patch("agent_trigger._resolve_chain")
-    def test_caller_asserted_coordinator_role_does_not_lift_the_cap(
-        self, resolve, _installation
-    ):
-        resolve.return_value = _row(event_id=CALLER, chain_depth=MAX_CHAIN_DEPTH)
-        body = _body(role="coordinator", exempt_from_chain_depth=True, max_chain_depth=999)
-
-        with patch("common.spawn_persona._capture_blocked_event"):
-            response = handle_agent_trigger(_event(body), None)
-
-        assert response["statusCode"] == 422
-        assert json.loads(response["body"])["detail"] == "chain_depth_exceeded"
+        assert response["statusCode"] == 410
+        assert json.loads(response["body"])["error"] == "legacy_agent_trigger_retired"
+        resolve.assert_not_called()
+        spawn.assert_not_called()
 
 
 @dataclass

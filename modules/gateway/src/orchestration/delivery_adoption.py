@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.base import utcnow
 
-from .dispatch_pass import DispatchPassConfig, issue_number_for_dispatch, resolve_installation_id
+from .dispatch_pass import issue_number_for_dispatch, resolve_installation_id
 from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
 from .pr_bindings import (
     BindingError,
@@ -94,10 +94,47 @@ async def adopt_delivery(
     scope = await _accepted_scope(session, node)
     if scope != expected_scope:
         raise BindingError(BindingRefusal.SCOPE_CHANGED, "The accepted story scope changed during delivery verification.")
-    repo = DispatchPassConfig.from_env().repo
+    from .accepted_node import accepted_node_contract, requires_verified_repository_connection
+
+    if await requires_verified_repository_connection(session, node):
+        from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+        contract = await accepted_node_contract(session, node)
+        if (
+            contract is None
+            or contract.node.repository_identity != node.repository_identity
+            or contract.node.provider_repository_id != node.provider_repository_id
+            or contract.node.repository_connection is None
+            or contract.node.repository_connection.model_dump(mode="json") != node.repository_connection
+            or issue_number_for_dispatch(contract.node.issue_ref) != issue_number_for_dispatch(node.issue_ref)
+        ):
+            raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The accepted story repository cannot be verified.")
+        try:
+            verified = await resolve_story_repository(
+                session,
+                tenant_id=org_id,
+                name=contract.node.repository_identity,
+                repository_id=contract.node.provider_repository_id,
+                installation_id=contract.node.repository_connection.installation_id,
+                issue=issue_number_for_dispatch(node.issue_ref),
+                operation="dispatch",
+                permitted_names=tuple(contract.repository_ids) if contract.repository_ids else None,
+            )
+        except RepositoryBindingError:
+            raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The accepted story repository cannot be verified.") from None
+        repo, current_installation = verified.full_name, verified.installation_id
+        if pr.provider_repository_id != verified.repository_id:
+            raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The PR belongs to a different repository.")
+    else:
+        repo = node.repository_identity
+        current_installation = await resolve_installation_id(session, org_id=org_id)
+        if node.provider_repository_id is not None and pr.provider_repository_id != node.provider_repository_id:
+            raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The PR belongs to a different repository.")
     if not repo or pr.repo.lower() != repo.lower():
-        raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "Historical delivery must use the configured engine repository.")
-    current_installation = await resolve_installation_id(session, org_id=org_id)
+        raise BindingError(
+            BindingRefusal.REPOSITORY_MISMATCH,
+            "Historical delivery must use the saved or accepted story repository.",
+        )
     if installation_id != current_installation:
         raise BindingError(BindingRefusal.REPOSITORY_MISMATCH, "The tenant installation changed during delivery verification.")
     claim = await session.scalar(
@@ -138,7 +175,16 @@ async def adopt_delivery(
     binding, created = await register_binding(
         session,
         target=RegistrationTarget(
-            org_id, node.flow_id, node.id, 0, None, repo, issue_number_for_dispatch(node.issue_ref) or 0, installation_id, scope
+            org_id,
+            node.flow_id,
+            node.id,
+            0,
+            None,
+            repo,
+            issue_number_for_dispatch(node.issue_ref) or 0,
+            installation_id,
+            scope,
+            provider_repository_id=pr.provider_repository_id,
         ),
         pr=pr,
         actor_id=actor_id,

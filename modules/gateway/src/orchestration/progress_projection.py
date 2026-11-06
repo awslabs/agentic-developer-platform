@@ -6,7 +6,7 @@ can still have node.state=running; only node.state=passed proves completion.
 
 from sqlalchemy import and_, case, func, or_, select
 
-from .display_state import ENGINE_TO_DISPLAY
+from .display_state import ENGINE_TO_DISPLAY, NODE_STATE_OVERRIDES_EXECUTION
 from .models import OrchestrationAcceptedPlan, OrchestrationExecution, OrchestrationNode, OrchestrationWorkClaim
 
 CAPACITY_WAIT_NOTE = "Waiting for a shared worker slot; no dispatch attempt consumed."
@@ -39,7 +39,7 @@ def node_progress_rows(*, org_id: str, flow_ids: list[str] | None = None, preser
     )
     base = case({state.value: display.value if display else None for state, display in ENGINE_TO_DISPLAY.items()}, value=node.state)
     display = case(
-        (node.state.in_(("passed", "superseded", "failed", "halted", "rejected_at_gate", "awaiting_gate")), base),
+        (node.state.in_(NODE_STATE_OVERRIDES_EXECUTION), base),
         (lapsed_claim, "stalled"),
         (and_(live_execution, execution.status == "blocked"), "stalled"),
         (and_(live_execution, execution.block_code.is_(None), execution.progress_note == CAPACITY_WAIT_NOTE), "queued"),

@@ -26,8 +26,16 @@ async def paid_operation(binding, operation_id, *, connection=None, require_curr
             return await paid_operation(binding, operation_id, connection=current, require_current=require_current)
     row = await connection.fetchrow(
         "SELECT o.*,a.approval_id,a.requester,a.approved_by,a.reservation_state,a.max_resource_units,"
-        "a.max_runtime_seconds,a.max_cost_micros,a.reservation_id FROM harness_operations o "
+        "a.max_runtime_seconds,a.max_cost_micros,a.reservation_id,a.requires_distinct_approver,"
+        "COALESCE(p.reauthorization_id,r.reauthorization_id) AS reauthorization_id,"
+        "COALESCE(p.expected_version,r.expected_version) AS recovery_expected_version,"
+        "COALESCE(p.recovery_scope,'undispatched') AS recovery_scope "
+        ",p.proof AS provider_recovery_proof "
+        "FROM harness_operations o "
         "JOIN harness_approval_consumption a USING(operation_id) "
+        "LEFT JOIN harness_dispatch_reauthorizations r ON r.operation_id=o.operation_id "
+        "LEFT JOIN LATERAL (SELECT * FROM harness_provider_retries pr WHERE pr.operation_id=o.operation_id "
+        "ORDER BY pr.source_fence DESC LIMIT 1) p ON TRUE "
         "WHERE o.operation_id=$1 AND o.org_id=$2 "
         "AND a.org_id=o.org_id AND a.workspace_id=o.workspace_id "
         "AND a.plan_digest=o.plan_digest AND a.reservation_state IN ('confirmed','retained','released')",
@@ -95,6 +103,16 @@ async def dispatch(binding, body, store, *, authorize=None):
                 if operation[key] != getattr(body, key):
                     raise HTTPException(403, "paid operation dispatch refused")
             lease = await connection.fetchrow("SELECT * FROM harness_operation_leases WHERE operation_id=$1", body.operation_id)
+            version, fence = getattr(body, "expected_version", None), getattr(body, "expected_fence", None)
+            if (version is not None or fence is not None) and (
+                body.mode != "recovery"
+                or type(version) is not int
+                or type(fence) is not int
+                or operation["version"] != version
+                or lease is None
+                or lease["fence_token"] != fence
+            ):
+                raise HTTPException(409, "original recovery dispatch boundary changed")
             if body.mode == "execution":
                 if (
                     operation["state"] not in {"pending", "running"}
@@ -170,7 +188,36 @@ def provision(store, binding, identity, operation, generation, *, allow_retry=Fa
     if must_exist and store._read(key["pk"]["S"], key["sk"]["S"]) is None:
         raise BootstrapRefusedError("paid execution mapping unavailable")
     now = datetime.now(UTC)
-    expires = now + timedelta(seconds=min(operation["max_runtime_seconds"], 3600))
+    runtime_ceiling = 3600
+    if (
+        binding.domain == "superplane"
+        and identity["mode"] == "execution"
+        and operation.get("action") == "provision"
+        and not operation.get("reauthorization_id")
+        and not operation.get("provider_recovery_proof")
+        and "runtime_config_sha256" in harness("identity").decode_payload(operation["request_payload"]).parameters
+    ):
+        # Native lifecycle admissions already carry their paid runtime envelope.
+        # Match the native worker's ceiling while preserving that approval and
+        # its expiry; recovery keeps its separate runtime amendment checks below.
+        runtime_ceiling = 10800
+    runtime_seconds = min(operation["max_runtime_seconds"], runtime_ceiling)
+    runtime_deadline = None
+    if identity["mode"] == "execution" and operation.get("provider_recovery_proof"):
+        try:
+            proof = json.loads(operation["provider_recovery_proof"])
+            effective, runtime_deadline = harness("bootstrap_runtime_authorization").runtime_authorization(
+                proof, operation["max_runtime_seconds"], operation.get("recovery_scope")
+            )
+        except (ValueError, TypeError, PermissionError):
+            raise BootstrapRefusedError("current bootstrap runtime authority unavailable") from None
+        if runtime_deadline is not None:
+            if operation.get("bootstrap_runtime_amendment") != proof["runtime_amendment"] or operation.get("approval_expires_at") != runtime_deadline:
+                raise BootstrapRefusedError("current bootstrap runtime review unavailable")
+            runtime_seconds = effective
+    expires = now + timedelta(seconds=runtime_seconds)
+    if runtime_deadline is not None:
+        expires = min(expires, runtime_deadline)
     if operation.get("approval_expires_at"):
         expires = min(expires, operation["approval_expires_at"])
     invocation = "domain-" + uuid4().hex

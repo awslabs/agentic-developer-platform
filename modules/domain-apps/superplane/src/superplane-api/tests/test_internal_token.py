@@ -4,6 +4,7 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
+
 from app.config import settings
 from app.main import app, vault_sync_reconciler
 
@@ -26,6 +27,8 @@ from app.main import app, vault_sync_reconciler
         ("post", "/internal/cost-reconcile", "/internal/cost-reconcile", {}),
         ("post", "/internal/vault-sync/trigger", "/internal/vault-sync/trigger", {}),
     ],
+    # Random request IDs must not become worker-specific pytest node IDs.
+    ids=["cluster-resources", "heartbeat", "cost-reconcile", "vault-sync"],
 )
 @pytest.mark.parametrize(
     "headers",

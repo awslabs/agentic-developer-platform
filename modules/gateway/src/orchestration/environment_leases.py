@@ -95,9 +95,11 @@ staleness must be indistinguishable to a caller without standing.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -122,7 +124,356 @@ __all__ = [
     "acquire_lease",
     "reconcile_lease",
     "release_lease",
+    "shared_release_target",
+    "isolated_release_fixture",
+    "foundation_release_scope",
+    "shared_release_held",
+    "handoff_shared_release",
+    "begin_shared_publication",
+    "settle_shared_publication",
+    "recover_shared_publication",
+    "record_shared_publication_absence",
 ]
+
+
+def shared_release_target(target: PhysicalTarget, *, environment: str, group: str) -> PhysicalTarget:
+    if not isinstance(target, PhysicalTarget) or not all(
+        isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value) for value in (environment, group)
+    ):
+        raise LeaseError("invalid_release_scope", "A release group needs a reviewed group, environment and verified physical target.")
+    return PhysicalTarget(
+        target.provider,
+        target.account_id,
+        target.region,
+        "shared-release-group",
+        f"{environment}/{group}",
+        target.evidence,
+    )
+
+
+def foundation_release_scope(
+    *, node, flow, entry, component: str, target: PhysicalTarget, environment: str, source_revision: str
+) -> tuple[PhysicalTarget, str] | None:
+    if entry.release_group is None:
+        return None
+    if node.flow_id != flow.id or node.org_id != flow.org_id:
+        raise LeaseError("invalid_release_owner", "A grouped release requires its accepted flow and node identity.")
+    if not entry.covers(component):
+        raise LeaseError("foundation_release_component_changed", "The reviewed entry does not cover the accepted release component.")
+    if not getattr(node, "id", None) or not isinstance(source_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", source_revision):
+        raise LeaseError("invalid_release_owner", "A foundation release requires a pinned node and source revision.")
+    shared = shared_release_target(target, environment=environment, group=entry.release_group)
+    return shared, f"foundation:{node.id}:{component}:{source_revision}"
+
+
+async def shared_release_held(
+    session: AsyncSession,
+    *,
+    target: PhysicalTarget,
+    org_id: str,
+    action_id: str,
+    release_ref: str,
+    manifest_entry_id: str,
+    generation: int,
+    started_at: datetime,
+    allow_publication_pending: bool = False,
+) -> bool:
+    row = await _locked_lease(session, target.canonical_key)
+    expires = _as_aware(row.lease_expires_at) if row is not None else None
+    acquired = _as_aware(row.acquired_at) if row is not None else None
+    observed_at = _now()
+    return bool(
+        row is not None
+        and row.state == LeaseState.HELD.value
+        and row.owner_org_id == org_id
+        and row.owner_action_id == action_id
+        and row.owner_generation == generation
+        and row.release_ref == release_ref
+        and row.manifest_entry_id == manifest_entry_id
+        and started_at.tzinfo is not None
+        and (allow_publication_pending or row.publication_pending_digest is None)
+        and started_at <= observed_at
+        and acquired is not None
+        and acquired <= started_at
+        and expires is not None
+        and expires > observed_at
+    )
+
+
+async def begin_shared_publication(
+    session: AsyncSession,
+    *,
+    target: PhysicalTarget,
+    holder: LeaseHolder,
+    manifest_entry_id: str,
+    release_ref: str,
+    digest: str,
+) -> bool:
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise LeaseError("invalid_publication_digest", "Publication requires the expected image digest.")
+    row = await _locked_lease(session, target.canonical_key)
+    if (
+        row is None
+        or row.state != LeaseState.HELD.value
+        or row.owner_org_id != holder.org_id
+        or row.owner_action_id != holder.action_id
+        or row.owner_generation != holder.generation
+        or row.manifest_entry_id != manifest_entry_id
+        or row.release_ref != release_ref
+        or row.lease_expires_at is None
+        or _as_aware(row.lease_expires_at) <= _now()
+        or row.publication_pending_digest is not None
+    ):
+        return False
+    row.publication_pending_digest = digest
+    row.reconciled_terminal_evidence = None
+    row.reconciled_at = None
+    row.revision += 1
+    return True
+
+
+async def settle_shared_publication(
+    session: AsyncSession,
+    *,
+    target: PhysicalTarget,
+    holder: LeaseHolder,
+    manifest_entry_id: str,
+    release_ref: str,
+    digest: str,
+) -> bool:
+    row = await _locked_lease(session, target.canonical_key)
+    if (
+        row is None
+        or row.state != LeaseState.HELD.value
+        or row.owner_org_id != holder.org_id
+        or row.owner_action_id != holder.action_id
+        or row.owner_generation != holder.generation
+        or row.manifest_entry_id != manifest_entry_id
+        or row.release_ref != release_ref
+        or row.publication_pending_digest != digest
+        or row.lease_expires_at is None
+        or _as_aware(row.lease_expires_at) <= _now()
+    ):
+        return False
+    row.publication_pending_digest = None
+    row.revision += 1
+    return True
+
+
+async def recover_shared_publication(
+    session: AsyncSession,
+    *,
+    target: PhysicalTarget,
+    holder: LeaseHolder,
+    manifest_entry_id: str,
+    release_ref: str,
+    digest: str,
+    terminal_evidence: str,
+    image_readback,
+) -> bool:
+    """Settle a lost publication reply only after a trusted terminal and scoped registry read."""
+    from .operations_publication_recovery import ImageReadback
+
+    row = await _locked_lease(session, target.canonical_key)
+    if (
+        row is None
+        or row.state != LeaseState.HELD.value
+        or target.resource_kind != "shared-release-group"
+        or target.resource_id.split("/", 1)[0] not in {"dev", "prod"}
+        or row.owner_org_id != holder.org_id
+        or row.owner_action_id != holder.action_id
+        or row.owner_generation != holder.generation
+        or row.manifest_entry_id != manifest_entry_id
+        or row.release_ref != release_ref
+        or row.publication_pending_digest != digest
+        or not isinstance(terminal_evidence, str)
+        or not terminal_evidence.strip()
+        or not isinstance(image_readback, ImageReadback)
+        or image_readback.account_id != target.account_id
+        or image_readback.region != target.region
+        or image_readback.repository != f"adp-tools-{target.resource_id.split('/', 1)[0]}-adapters"
+        or image_readback.source_revision != release_ref
+        or image_readback.image_digest != digest
+        or not isinstance(image_readback.observed_at, datetime)
+        or image_readback.observed_at.tzinfo is None
+        or row.acquired_at is None
+        or image_readback.observed_at < _as_aware(row.acquired_at)
+        or image_readback.observed_at > _now()
+    ):
+        return False
+    row.publication_pending_digest = None
+    row.reconciled_terminal_evidence = terminal_evidence.strip()
+    row.reconciled_at = _now()
+    row.revision += 1
+    return True
+
+
+async def record_shared_publication_absence(
+    session: AsyncSession,
+    *,
+    target: PhysicalTarget,
+    holder: LeaseHolder,
+    manifest_entry_id: str,
+    release_ref: str,
+    digest: str,
+    terminal_evidence: str,
+    image_absence,
+) -> bool:
+    from .operations_publication_recovery import ImageAbsence
+
+    row = await _locked_lease(session, target.canonical_key)
+    if (
+        row is None
+        or row.state != LeaseState.HELD.value
+        or target.resource_kind != "shared-release-group"
+        or target.resource_id.split("/", 1)[0] not in {"dev", "prod"}
+        or row.owner_org_id != holder.org_id
+        or row.owner_action_id != holder.action_id
+        or row.owner_generation != holder.generation
+        or row.manifest_entry_id != manifest_entry_id
+        or row.release_ref != release_ref
+        or row.publication_pending_digest != digest
+        or not isinstance(terminal_evidence, str)
+        or not terminal_evidence.strip()
+        or not isinstance(image_absence, ImageAbsence)
+        or image_absence.account_id != target.account_id
+        or image_absence.region != target.region
+        or image_absence.repository != f"adp-tools-{target.resource_id.split('/', 1)[0]}-adapters"
+        or image_absence.source_revision != release_ref
+        or image_absence.image_digest != digest
+        or not isinstance(image_absence.observed_at, datetime)
+        or image_absence.observed_at.tzinfo is None
+        or row.acquired_at is None
+        or image_absence.observed_at < _as_aware(row.acquired_at)
+        or image_absence.observed_at > _now()
+    ):
+        return False
+    if row.reconciled_terminal_evidence is not None:
+        return row.reconciled_terminal_evidence == terminal_evidence.strip() and row.reconciled_at is not None
+    row.reconciled_terminal_evidence = terminal_evidence.strip()
+    row.reconciled_at = _now()
+    row.revision += 1
+    return True
+
+
+async def rollforward_shared_publication(
+    session: AsyncSession,
+    *,
+    target: PhysicalTarget,
+    holder: LeaseHolder,
+    successor: LeaseHolder,
+    manifest_entry_id: str,
+    release_ref: str,
+    digest: str,
+    terminal_evidence: str,
+    image_absence,
+) -> bool:
+    from .operations_publication_recovery import ImageAbsence
+
+    row = await _locked_lease(session, target.canonical_key)
+    now = _now()
+    if (
+        row is None
+        or row.state != LeaseState.HELD.value
+        or target.resource_kind != "shared-release-group"
+        or target.resource_id.split("/", 1)[0] not in {"dev", "prod"}
+        or row.owner_org_id != holder.org_id
+        or row.owner_action_id != holder.action_id
+        or row.owner_generation != holder.generation
+        or successor.org_id != holder.org_id
+        or successor.action_id != holder.action_id
+        or successor.generation < holder.generation
+        or row.manifest_entry_id != manifest_entry_id
+        or row.release_ref != release_ref
+        or row.publication_pending_digest != digest
+        or row.reconciled_terminal_evidence != terminal_evidence
+        or not isinstance(terminal_evidence, str)
+        or not terminal_evidence.strip()
+        or row.reconciled_at is None
+        or row.lease_expires_at is None
+        or _as_aware(row.lease_expires_at) <= now
+        or not isinstance(image_absence, ImageAbsence)
+        or image_absence.account_id != target.account_id
+        or image_absence.region != target.region
+        or image_absence.repository != f"adp-tools-{target.resource_id.split('/', 1)[0]}-adapters"
+        or image_absence.source_revision != release_ref
+        or image_absence.image_digest != digest
+        or not isinstance(image_absence.observed_at, datetime)
+        or image_absence.observed_at.tzinfo is None
+        or image_absence.observed_at < _as_aware(row.reconciled_at)
+        or image_absence.observed_at > now
+    ):
+        return False
+    row.publication_pending_digest = None
+    row.reconciled_terminal_evidence = None
+    row.reconciled_at = None
+    row.owner_generation = successor.generation
+    row.acquired_at = now
+    row.heartbeat_at = now
+    row.lease_expires_at = now + timedelta(seconds=DEFAULT_LEASE_SECONDS)
+    row.revision += 1
+    return True
+
+
+async def handoff_shared_release(
+    session: AsyncSession,
+    *,
+    target: PhysicalTarget,
+    holder: LeaseHolder,
+    successor: LeaseHolder,
+    current_entry_id: str,
+    next_entry_id: str,
+    current_revision: str,
+    next_revision: str,
+    terminal_evidence: str,
+) -> LeaseOutcome:
+    if target.resource_kind != "shared-release-group" or holder.org_id != successor.org_id or holder.action_id == successor.action_id:
+        raise LeaseError("invalid_release_handoff", "The handoff requires distinct actions in one accepted release group.")
+    if not all(isinstance(item, str) and item for item in (current_entry_id, next_entry_id, terminal_evidence)):
+        raise LeaseError("invalid_release_handoff", "The handoff requires both reviewed entries and terminal evidence.")
+    if not all(isinstance(item, str) and re.fullmatch(r"[0-9a-f]{40}", item) for item in (current_revision, next_revision)):
+        raise LeaseError("invalid_release_handoff", "The handoff requires both pinned release revisions.")
+    async with session.begin_nested():
+        row = await _locked_lease(session, target.canonical_key)
+        if (
+            row is None
+            or row.state != LeaseState.HELD.value
+            or (expires := _as_aware(row.lease_expires_at)) is None
+            or expires <= _now()
+            or row.owner_org_id != holder.org_id
+            or row.owner_action_id != holder.action_id
+            or row.owner_generation != holder.generation
+            or row.manifest_entry_id != current_entry_id
+            or row.release_ref != current_revision
+            or row.publication_pending_digest is not None
+        ):
+            return _held_conflict()
+        released = await release_lease(
+            session,
+            canonical_target_key=target.canonical_key,
+            holder=holder,
+            reason=ReleaseReason.COMPLETED,
+            terminal_evidence=terminal_evidence,
+        )
+        if not released.applied:
+            raise LeaseError("release_handoff_changed", "The previous release changed during handoff.")
+        acquired = await acquire_lease(
+            session,
+            target=target,
+            holder=successor,
+            manifest_entry_id=next_entry_id,
+            release_ref=next_revision,
+        )
+        if not acquired.applied:
+            raise LeaseError("release_handoff_changed", "The next release changed during handoff.")
+        return acquired
+
+
+def isolated_release_fixture(target: PhysicalTarget, *, owner: str) -> str:
+    if target.resource_kind != "shared-release-group" or not isinstance(owner, str) or not owner.strip():
+        raise LeaseError("invalid_fixture_scope", "A phase fixture requires a release group and durable owner identity.")
+    return sha256(f"{target.canonical_key}:{owner}".encode()).hexdigest()[:24]
+
 
 # How long a holder's contact window is before it is considered lapsed. Matches
 # `work_claims.DEFAULT_LEASE_SECONDS` so the two coordination layers do not
@@ -437,6 +788,9 @@ def _take(
     # because a displaced *previous* action is refused earlier, by the
     # held-by-somebody-else arm, and never reaches this comparison at all.
     same_action = row.owner_org_id == holder.org_id and row.owner_action_id == holder.action_id
+    same_release = (
+        same_action and row.state == LeaseState.HELD.value and row.release_ref == release_ref and row.manifest_entry_id == manifest_entry_id
+    )
     row.state = LeaseState.HELD.value
     row.owner_org_id = holder.org_id
     row.owner_action_id = holder.action_id
@@ -444,7 +798,8 @@ def _take(
     row.manifest_entry_id = manifest_entry_id
     row.release_ref = release_ref
     row.revision = row.revision + 1
-    row.acquired_at = now
+    if not same_release or row.acquired_at is None:
+        row.acquired_at = now
     row.heartbeat_at = now
     row.lease_expires_at = now + timedelta(seconds=lease_seconds)
     row.reconciled_terminal_evidence = None
@@ -591,6 +946,8 @@ def _acquire_existing(
     if row.state == LeaseState.HELD.value:
         same_action = row.owner_org_id == holder.org_id and row.owner_action_id == holder.action_id
         if same_action:
+            if row.publication_pending_digest is not None and (row.release_ref != release_ref or row.manifest_entry_id != manifest_entry_id):
+                return _held_conflict()
             if holder.generation < row.owner_generation:
                 # Our own action id, but at a generation the row has passed: this
                 # process was superseded and a newer one holds the target. Terminal,
@@ -606,6 +963,16 @@ def _acquire_existing(
                     lease=_to_view(row),
                     reason="owner_generation_superseded",
                 )
+            if row.publication_pending_digest is not None:
+                if holder.generation != row.owner_generation:
+                    return _held_conflict()
+                row.revision += 1
+                row.heartbeat_at = now
+                row.lease_expires_at = now + timedelta(seconds=lease_seconds)
+                row.evidence_source = target.evidence.source
+                row.evidence_verified_at = _parse_evidence_time(target.evidence.verified_at)
+                row.evidence_detail = target.evidence.detail
+                return LeaseOutcome(kind=LeaseOutcomeKind.APPLIED, lease=_to_view(row))
             # Same action, current generation: a retry after a crash. Refresh the
             # contact window rather than refusing, so recovery is not punished.
             _take(
@@ -623,7 +990,7 @@ def _acquire_existing(
         # whose previous action was positively reconciled as terminal.
         expiry = _as_aware(row.lease_expires_at)
         lapsed = bool(expiry and expiry <= now)
-        if not (lapsed and row.reconciled_terminal_evidence):
+        if not (lapsed and row.reconciled_terminal_evidence and row.publication_pending_digest is None):
             # Includes the dangerous case the story calls out explicitly: the lease
             # HAS expired but nothing reconciled the previous action, so the old
             # pipeline may still be deploying. Expiry is evidence of lost contact,
@@ -770,6 +1137,9 @@ async def reconcile_lease(
         row.revision = row.revision + 1
         return LeaseOutcome(kind=LeaseOutcomeKind.APPLIED, lease=_to_view(row))
 
+    if row.publication_pending_digest is not None:
+        return LeaseOutcome(kind=LeaseOutcomeKind.CONFLICT, lease=_to_view(row), reason="publication_unsettled")
+
     # Record the terminal observation. The hold is deliberately NOT released here:
     # reconciling establishes what happened, while releasing hands the target on,
     # and a single step doing both would mean an observer could free a target
@@ -847,6 +1217,9 @@ async def release_lease(
             row.owner_generation,
         )
         return LeaseOutcome(kind=LeaseOutcomeKind.CONFLICT, lease=_to_view(row), reason="owner_generation_superseded")
+
+    if row.publication_pending_digest is not None:
+        return LeaseOutcome(kind=LeaseOutcomeKind.CONFLICT, lease=_to_view(row), reason="publication_unsettled")
 
     now = _now()
     # `state` is the single authority on whether the target is held — every arm

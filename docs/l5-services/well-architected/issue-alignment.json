@@ -1,0 +1,81 @@
+{
+  "epic": 9078,
+  "parent_epic": 8150,
+  "approval": {
+    "status": "approved",
+    "accepted_revision": "109fd8df85783557ea0efc4bba0ada53355f5c74",
+    "evidence_url": "https://github.com/aws-e/adp/pull/9106#pullrequestreview-5669812097"
+  },
+  "canonical_revision": "109fd8df85783557ea0efc4bba0ada53355f5c74",
+  "roadmap": {
+    "url": "https://github.com/orgs/aws-e/projects/4",
+    "status": "verified",
+    "verified_at": "2026-10-27",
+    "owner": "PranavSharma1000"
+  },
+  "stories": [
+    {
+      "alias": "WA01",
+      "number": 9098,
+      "url": "https://github.com/aws-e/adp/issues/9098",
+      "node_id": "I_kwDORsAMpc8AAAABaU-e7g",
+      "native_parent": 9078,
+      "body_sha256": "c6ff00a0dac79e248f7ed34bd41b67a338e9f0a14f7f25814f424b7400490b33",
+      "native_parent_verified": true
+    },
+    {
+      "alias": "WA02",
+      "number": 9099,
+      "url": "https://github.com/aws-e/adp/issues/9099",
+      "node_id": "I_kwDORsAMpc8AAAABaU-j0Q",
+      "native_parent": 9078,
+      "body_sha256": "b8346e1f87ecd435eda7d1fcfd97cf990014bf8f4cad540e1cf7049a39520de6",
+      "native_parent_verified": true
+    },
+    {
+      "alias": "WA03",
+      "number": 9100,
+      "url": "https://github.com/aws-e/adp/issues/9100",
+      "node_id": "I_kwDORsAMpc8AAAABaU-oQw",
+      "native_parent": 9078,
+      "body_sha256": "d8f319a5c33e12c7523984ff866156932f33e88db839ee2ee59825038975229c",
+      "native_parent_verified": true
+    },
+    {
+      "alias": "WA04",
+      "number": 9101,
+      "url": "https://github.com/aws-e/adp/issues/9101",
+      "node_id": "I_kwDORsAMpc8AAAABaU-sZw",
+      "native_parent": 9078,
+      "body_sha256": "0998520c6b63764845127c84c24eaf6b6ffda4a4eda78520b9190fdee5f9cf0e",
+      "native_parent_verified": true
+    },
+    {
+      "alias": "WA05",
+      "number": 9102,
+      "url": "https://github.com/aws-e/adp/issues/9102",
+      "node_id": "I_kwDORsAMpc8AAAABaU-wVg",
+      "native_parent": 9078,
+      "body_sha256": "e1506dcccaa35a7a806effb957500d458c74f523cf85219e086a76b5771f4d8a",
+      "native_parent_verified": true
+    },
+    {
+      "alias": "WA06",
+      "number": 9104,
+      "url": "https://github.com/aws-e/adp/issues/9104",
+      "node_id": "I_kwDORsAMpc8AAAABaU-0kw",
+      "native_parent": 9078,
+      "body_sha256": "d387130821338938fe843fc5b54692af361c624a2f41354bd165b2572c6e1649",
+      "native_parent_verified": true
+    },
+    {
+      "alias": "WA07",
+      "number": 9105,
+      "url": "https://github.com/aws-e/adp/issues/9105",
+      "node_id": "I_kwDORsAMpc8AAAABaU-6Pw",
+      "native_parent": 9078,
+      "body_sha256": "e2abb74c648b3aac602516d8108cb6724fdf9c6690bdb84466aa0186d2c7f282",
+      "native_parent_verified": true
+    }
+  ]
+}

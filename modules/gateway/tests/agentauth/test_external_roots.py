@@ -13,12 +13,16 @@ from httpx import AsyncClient
 
 from src.agentauth import external_roots
 from src.agentauth.bootstrap import envelope_digest
+from src.agentauth.chat_authority import tenant_member_user
+from src.agentauth.chat_delivery import ChatDelivery, delivery_lookup_key
 from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.agentauth.external_roots import RootAdmission
 from src.agentauth.model_policy import _resolve_principal
 from src.orchestration import intake_wiring
 from src.shared.database import get_db
-from src.shared.models.organization import Organization, User
+from src.shared.identity.workspaces import primary_team_for_workspace
+from src.shared.models.onboarding import TenantMembership
+from src.shared.models.organization import Organization, Team, TeamMembership, User
 from src.shared.models.vault import UserIdentity
 from tests.agentauth.test_bootstrap_routes import store as store_fixture
 from tests.agentauth.test_work_producer import ROLE, proof
@@ -205,6 +209,27 @@ async def test_persistent_ingest_root_accepts_ordered_mailbox_turns_before_publi
     assert mailbox.table.get_item(Key={"PK": "session#session-a", "SK": "mailbox#00000002"})["Item"]["message"] == "second turn"
 
 
+async def test_persistent_root_carries_the_session_executor_and_drops_client_supplied_values(root_client, monkeypatch):
+    """#8115: the executor rides on persistent envelopes from the session header only."""
+    monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
+    mailbox = ChatSessionMailbox(intake_wiring._context_table)
+    now = int(datetime.now(UTC).timestamp())
+    mailbox.select_mode(session_id="session-a", owner=("tenant", "", "human"), mode="persistent", now=now)
+    mailbox.select_executor(session_id="session-a", owner=("tenant", "", "human"), executor="claude-code", now=now)
+    forged = body()
+    forged["envelope"]["executor"] = "kirocrew"
+    accepted = await post(root_client, forged)
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["envelope"]["session_mode"] == "persistent"
+    assert accepted.json()["envelope"]["executor"] == "claude-code"
+    assert (await post(root_client, forged)).json()["envelope"] == accepted.json()["envelope"]
+    ephemeral = body(envelope={**body()["envelope"], "message_id": "root-b", "session_id": "session-b", "executor": "claude-code"})
+    plain = await post(root_client, ephemeral)
+    assert plain.status_code == 200, plain.text
+    assert plain.json()["envelope"]["session_mode"] == "ephemeral"
+    assert "executor" not in plain.json()["envelope"]
+
+
 async def test_persistent_ingest_root_cannot_append_to_another_owner_or_reuse_turn_id(root_client, store, monkeypatch):
     monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
     mailbox = ChatSessionMailbox(intake_wiring._context_table)
@@ -248,6 +273,96 @@ async def test_persistent_ingest_recovers_mailbox_failure_after_root_registratio
     assert mailbox.state(session_id="session-a", owner=owner, now=now)["sequence"] == 1
     assert (await post(root_client, document)).status_code == 200
     assert mailbox.state(session_id="session-a", owner=owner, now=now)["sequence"] == 1
+
+
+async def _add_member(db_session, user_id, tenant_id, *, revoked=False, **fields):
+    db_session.add(
+        TenantMembership(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            role=fields.pop("role", "org_admin"),
+            is_active=fields.pop("is_active", False),
+            joined_via=fields.pop("joined_via", "app_install"),
+            revoked_at=datetime.now(UTC) if revoked else None,
+            **fields,
+        )
+    )
+    await db_session.commit()
+
+
+async def test_chat_root_resolves_a_tenant_member_whose_own_org_differs(root_client, store, db_session):
+    """Dev defect: a GitHub-login human's users.org_id is their personal org; the
+    chat tenant claim is a tenant they belong to only through tenant_memberships
+    (is_active False, revoked_at null). Admission must follow that membership."""
+    db_session.add_all(
+        [
+            Organization(id="pranav", name="Personal"),
+            User(id="member", cognito_sub="member-sub", org_id="pranav", team_id="team", email="member@example.test"),
+        ]
+    )
+    await db_session.commit()
+    await _add_member(db_session, "member", "pranav", is_active=True, joined_via="org_membership")
+    await _add_member(db_session, "member", "tenant")
+    response = await post(root_client, body(subject="member-sub"))
+    assert response.status_code == 200, response.text
+    assert response.json()["envelope"]["correlation"] == {"correlation_id": "root-a", "root_human_id": "member", "is_human_rooted": True}
+    assert response.json()["envelope"]["tenant_id"] == "tenant"
+    assert store._read("TENANT#tenant", "EXEC#root-a") is not None
+
+
+@pytest.mark.parametrize("membership", ["none", "revoked", "other_tenant_only"])
+async def test_chat_root_refuses_a_human_without_live_membership_in_the_bound_tenant(root_client, store, db_session, membership):
+    db_session.add(User(id="member", cognito_sub="member-sub", org_id="elsewhere", team_id="team", email="member@example.test"))
+    await db_session.commit()
+    if membership == "revoked":
+        await _add_member(db_session, "member", "tenant", revoked=True)
+    elif membership == "other_tenant_only":
+        await _add_member(db_session, "member", "elsewhere", is_active=True)
+    response = await post(root_client, body(subject="member-sub"))
+    assert response.status_code == 403
+    assert store._read("INVOCATION#root-a", "DISPATCH") is None
+
+
+async def test_chat_root_refuses_a_revoked_legacy_org_local_human(root_client, store, db_session):
+    await _add_member(db_session, "human", "tenant", revoked=True)
+    assert (await post(root_client, body())).status_code == 403
+    assert store._read("INVOCATION#root-a", "DISPATCH") is None
+
+
+async def test_chat_root_refuses_an_ambiguous_subject_even_when_both_are_members(root_client, store, db_session):
+    # A user id equal to another member's cognito_sub must not resolve to either.
+    db_session.add(User(id="sub-human", cognito_sub="shadow-sub", org_id="elsewhere", team_id="team", email="shadow@example.test"))
+    await db_session.commit()
+    await _add_member(db_session, "sub-human", "tenant")
+    assert (await post(root_client, body())).status_code == 403
+    assert store._read("INVOCATION#root-a", "DISPATCH") is None
+
+
+async def test_gitlab_root_still_requires_an_org_local_verified_identity(root_client, store, db_session):
+    # Tenant membership alone never admits a GitLab subject; the verified
+    # identity link must belong to a human of the bound tenant.
+    db_session.add_all(
+        [
+            Organization(id="pranav", name="Personal"),
+            User(id="member", cognito_sub="member-sub", org_id="pranav", team_id="team", email="member@example.test"),
+            UserIdentity(
+                user_id="member",
+                org_id="pranav",
+                team_id="team",
+                provider="gitlab",
+                provider_user_id="https://gitlab.example#77",
+                verification_method="admin_attested",
+                verified_at=datetime.now(UTC),
+            ),
+        ]
+    )
+    await db_session.commit()
+    await _add_member(db_session, "member", "tenant")
+    assert (await post(root_client, body("gitlab", subject="77"))).status_code == 403
+    assert store._read("INVOCATION#root-a", "DISPATCH") is None
+    accepted = await post(root_client, body("gitlab"))
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["envelope"]["correlation"]["root_human_id"] == "human"
 
 
 @pytest.mark.parametrize("subject", ["other-sub", "bot-sub", "unknown"])
@@ -386,3 +501,223 @@ def test_supervisor_role_cannot_reuse_ingress_producer_identity(monkeypatch):
     with pytest.raises(HTTPException) as refusal:
         external_roots.root_bindings()
     assert refusal.value.status_code == 503
+
+
+# The intake session principal (a duplicate user row, #8011) carries its own team
+# in the ingest envelope; the canonical member resolved by the root has another.
+INTAKE_ROUTING = {
+    "channel": "webchat",
+    "org_id": "tenant",
+    "team_id": "intake-team",
+    "user_id": "shadow-row",
+    "task_id": "task-a",
+    "thread_id": "thread-a",
+    "owner_principal": '["tenant","tenant","intake-team","shadow-row","webchat"]',
+    "session_generation": 1_700_000_000,
+}
+
+
+@pytest.mark.parametrize("canonical_team", ["", "tenant-team"])
+async def test_chat_root_registers_the_delivery_with_the_canonical_tenant_team(root_client, store, db_session, monkeypatch, canonical_team):
+    """Dev defect (#8041): the registered delivery took ``team_id`` from the intake
+    principal while admission binds the canonical human's primary team in the
+    tenant (``""`` when they have none), so every invoke and finalize was refused.
+    The delivery must carry the admission team; the intake routing key stays."""
+    monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
+    if canonical_team:
+        db_session.add_all(
+            [
+                Team(id=canonical_team, org_id="tenant", department_id="department", name="Tenant team"),
+                TeamMembership(id="human-primary", org_id="tenant", user_id="human", team_id=canonical_team, is_primary=True),
+            ]
+        )
+        await db_session.commit()
+    document = body()
+    document["envelope"].update(INTAKE_ROUTING)
+    response = await post(root_client, document)
+    assert response.status_code == 200, response.text
+    delivery = ChatDelivery.model_validate_json(store._read("TENANT#tenant", "EXEC#root-a")["chat_delivery"]["S"])
+    member = await tenant_member_user(db_session, "tenant", "human")
+    admitted = await primary_team_for_workspace(db_session, member, "tenant")
+    assert delivery.team_id == (admitted.id if admitted else "") == canonical_team
+    assert delivery.team_id != INTAKE_ROUTING["team_id"]
+    assert (delivery.user_id, delivery.tenant_id, delivery.session_id, delivery.run_id) == ("human", "tenant", "session-a", "root-a")
+    assert delivery.owner_principal == INTAKE_ROUTING["owner_principal"]
+    assert response.json()["envelope"]["owner_principal"] == INTAKE_ROUTING["owner_principal"]
+    lookup = delivery_lookup_key("tenant", "session-a", "task-a")
+    assert store._read(lookup["pk"]["S"], lookup["sk"]["S"])["run_id"] == {"S": "root-a"}
+    assert (await post(root_client, document)).json()["envelope"] == response.json()["envelope"]
+
+
+async def test_chat_root_still_refuses_a_forged_intake_routing_key(root_client, store, monkeypatch):
+    monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
+    document = body()
+    document["envelope"].update(INTAKE_ROUTING, owner_principal='["tenant","tenant","","human","webchat"]')
+    assert (await post(root_client, document)).status_code == 403
+    assert store._read("TENANT#tenant", "EXEC#root-a") is None
+
+
+# ---------------------------------------------------------------------------
+# #8011: one person, several users rows -- the launch binds the tenant member row.
+# Mirrors dev: the Cognito-index canonical row (home org "pranav", member of the
+# tenant only through tenant_memberships, no team there) and the tenant's own
+# member row (users.org_id == tenant, primary team "tenant-team"), linked either by
+# the platform's org-placement link or by a proven GitHub identity on both rows.
+# ---------------------------------------------------------------------------
+
+
+def _identity(user_id, org_id, provider, provider_user_id, method, team_id="team"):
+    return UserIdentity(
+        user_id=user_id,
+        org_id=org_id,
+        team_id=team_id,
+        provider=provider,
+        provider_user_id=provider_user_id,
+        verification_method=method,
+        verified_at=datetime.now(UTC),
+    )
+
+
+async def _seed_person_with_home_and_tenant_rows(db_session, link):
+    db_session.add_all(
+        [
+            Organization(id="pranav", name="Personal"),
+            Team(id="tenant-team", org_id="tenant", department_id="department", name="Tenant team"),
+            User(id="home-row", cognito_sub="owner-sub", org_id="pranav", team_id="team-home", email="owner@example.test"),
+            User(id="tenant-row", cognito_sub=None, org_id="tenant", team_id="tenant-team", email="owner@example.test"),
+            TeamMembership(id="tenant-row-primary", org_id="tenant", user_id="tenant-row", team_id="tenant-team", is_primary=True),
+        ]
+    )
+    await db_session.commit()
+    await _add_member(db_session, "home-row", "pranav", is_active=True, joined_via="org_membership")
+    await _add_member(db_session, "home-row", "tenant")
+    await _add_member(db_session, "tenant-row", "tenant")
+    if link == "org_placement":
+        db_session.add(_identity("tenant-row", "tenant", "cognito", "owner-sub", "org_placement", team_id="tenant-team"))
+    elif link == "github":
+        db_session.add_all(
+            [
+                _identity("home-row", "pranav", "github", "20402445", "oauth", team_id="team-home"),
+                _identity("tenant-row", "tenant", "github", "20402445", "admin_attested", team_id="tenant-team"),
+            ]
+        )
+    await db_session.commit()
+
+
+@pytest.mark.parametrize("link", ["org_placement", "github"])
+async def test_chat_root_binds_the_tenant_member_row_for_a_person_with_several_rows(root_client, store, db_session, monkeypatch, caplog, link):
+    """Dev defect (#8011): admission bound the Cognito-index row (home org, team "")
+    so every turn was refused ``task_identity_hierarchy_unavailable``. The launch,
+    the delivery, the snapshot and the owner ledger must all name the tenant member
+    row, whose team the hierarchy lookup can resolve."""
+    from src.agentauth.model_policy import parse_snapshot
+    from src.shared.models.persona_models import PersonaModelPolicySetting
+
+    monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
+    await _seed_person_with_home_and_tenant_rows(db_session, link)
+    db_session.add(
+        PersonaModelPolicySetting(
+            compatibility_class="claude-agent-sdk",
+            harness_contract_revision="0.3.283",
+            enforcement_posture="report_only",
+            revision=1,
+            posture_revision=1,
+        )
+    )
+    await db_session.commit()
+    document = body(subject="owner-sub")
+    document["envelope"].update(INTAKE_ROUTING, user_id="owner-sub", owner_principal='["tenant","tenant","intake-team","owner-sub","webchat"]')
+    with caplog.at_level("INFO", logger="bedrockgateway.agentauth.external_roots"):
+        response = await post(root_client, document)
+    assert response.status_code == 200, response.text
+    envelope = response.json()["envelope"]
+    assert envelope["correlation"] == {"correlation_id": "root-a", "root_human_id": "tenant-row", "is_human_rooted": True}
+    execution = store._read("TENANT#tenant", "EXEC#root-a")
+    delivery = ChatDelivery.model_validate_json(execution["chat_delivery"]["S"])
+    assert (delivery.user_id, delivery.team_id) == ("tenant-row", "tenant-team")
+    assert delivery.owner_principal == envelope["owner_principal"] == '["tenant","tenant","intake-team","owner-sub","webchat"]'
+    # The model-policy snapshot and the principal resolver see the same tenant principal.
+    snapshot = parse_snapshot(execution["model_policy_snapshot"]["S"], execution["model_policy_snapshot_digest"]["S"])
+    assert (snapshot.principal_kind, snapshot.principal_id) == ("human", "tenant-row")
+    grant = store.live_grant(invocation_id="root-a", tenant_id="tenant", attempt=1, now=datetime.now(UTC))
+    authority = store._read("TENANT#tenant", f"AUTHORITY#{grant.authority.reference_id}")
+    assert await _resolve_principal(db_session, tenant_id="tenant", grant=grant, authority=authority) == ("human", "tenant-row")
+    # ``admit_chat`` derives the launch from the same id and lands on the same team.
+    member = await tenant_member_user(db_session, "tenant", "tenant-row")
+    assert (await primary_team_for_workspace(db_session, member, "tenant")).id == "tenant-team"
+    bound = [record for record in caplog.records if record.getMessage() == "Chat root bound to the tenant member row"]
+    assert [(record.tenant_id, record.subject, record.member_id) for record in bound] == [("tenant", "owner-sub", "tenant-row")]
+
+
+async def test_chat_root_keeps_the_login_row_when_no_identity_links_the_tenant_row(root_client, store, db_session, monkeypatch):
+    """Without proof that the tenant-local row is the same person, nothing is fused:
+    the login row that holds live membership is bound, exactly as before #8011, and
+    the hierarchy refusal downstream names the missing team instead of guessing."""
+    monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
+    await _seed_person_with_home_and_tenant_rows(db_session, link=None)
+    document = body(subject="owner-sub")
+    document["envelope"].update(INTAKE_ROUTING, user_id="owner-sub", owner_principal='["tenant","tenant","intake-team","owner-sub","webchat"]')
+    response = await post(root_client, document)
+    assert response.status_code == 200, response.text
+    assert response.json()["envelope"]["correlation"]["root_human_id"] == "home-row"
+    delivery = ChatDelivery.model_validate_json(store._read("TENANT#tenant", "EXEC#root-a")["chat_delivery"]["S"])
+    assert (delivery.user_id, delivery.team_id) == ("home-row", "")
+
+
+async def test_chat_root_refuses_an_unproven_link_to_the_tenant_row(root_client, store, db_session):
+    """A self-asserted GitHub claim on the tenant row is not evidence the rows are one
+    person; binding the tenant row on its strength would let a claim pick a principal."""
+    await _seed_person_with_home_and_tenant_rows(db_session, link=None)
+    db_session.add_all(
+        [
+            _identity("home-row", "pranav", "github", "20402445", "oauth", team_id="team-home"),
+            _identity("tenant-row", "tenant", "github", "20402445", "self_asserted", team_id="tenant-team"),
+        ]
+    )
+    await db_session.commit()
+    response = await post(root_client, body(subject="owner-sub"))
+    assert response.status_code == 200, response.text
+    assert response.json()["envelope"]["correlation"]["root_human_id"] == "home-row"
+
+
+@pytest.mark.parametrize(
+    ("subject", "reason"),
+    [("visitor-sub", "chat_principal_not_tenant_member"), ("nobody-sub", "chat_principal_unknown")],
+)
+async def test_chat_root_names_why_a_person_cannot_be_bound_in_the_tenant(root_client, store, db_session, caplog, subject, reason):
+    db_session.add(User(id="visitor", cognito_sub="visitor-sub", org_id="elsewhere", team_id="team", email="visitor@example.test"))
+    await db_session.commit()
+    await _add_member(db_session, "visitor", "elsewhere", is_active=True)
+    with caplog.at_level("WARNING", logger="bedrockgateway.agentauth.external_roots"):
+        response = await post(root_client, body(subject=subject))
+    assert response.status_code == 403
+    assert response.json()["detail"] == reason
+    assert store._read("INVOCATION#root-a", "DISPATCH") is None
+    refused = [record for record in caplog.records if record.getMessage() == "Chat root principal refused"]
+    assert [(record.tenant_id, record.subject, record.reason) for record in refused] == [("tenant", subject, reason)]
+
+
+async def test_chat_root_refuses_two_linked_member_rows_in_the_same_tenant(root_client, store, db_session):
+    """Two org-local rows for one person in one tenant are a duplicate to merge, not a
+    choice admission makes silently (#8011 merge is the operator's step). A GitHub
+    id links once per org, so the second row is reached through the placement link."""
+    await _seed_person_with_home_and_tenant_rows(db_session, link="github")
+    db_session.add_all(
+        [
+            User(id="tenant-row-2", cognito_sub=None, org_id="tenant", team_id="team", email="owner@example.test"),
+            _identity("tenant-row-2", "tenant", "cognito", "owner-sub", "org_placement"),
+        ]
+    )
+    await db_session.commit()
+    await _add_member(db_session, "tenant-row-2", "tenant")
+    response = await post(root_client, body(subject="owner-sub"))
+    assert response.status_code == 403
+    assert response.json()["detail"] == "chat_principal_ambiguous"
+
+
+async def test_chat_root_still_resolves_a_single_row_human_by_their_own_users_id(root_client, store, db_session):
+    """A subject that is already a users.id (legacy intake) of a tenant-local human
+    keeps resolving to that row; single-row humans are unchanged by #8011."""
+    response = await post(root_client, body(subject="human"))
+    assert response.status_code == 200, response.text
+    assert response.json()["envelope"]["correlation"]["root_human_id"] == "human"

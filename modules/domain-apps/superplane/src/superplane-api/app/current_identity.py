@@ -185,11 +185,7 @@ async def require_current_identity(
 
 
 def identity_checks_enabled() -> bool:
-    """One explicit enablement setting applies to both API and worker checks.
-
-    The default preserves the pre-existing signed-token/live-domain-grant path.
-    It does not claim current ADP membership integration is available.
-    """
+    """Report optional worker integration; domain HTTP membership is mandatory."""
     from app.config import settings
 
     return settings.current_identity_enforced

@@ -9,6 +9,12 @@ The delivery task ends with a verified merge or a specific blocker. Explicit
 review-only assignments stop after the verdict. Deployment remains separate.
 Apply `rules/personas/reviewer.md` for the complete repair and evidence contract.
 
+The merge decision concerns concrete current-PR defects, completed functional and
+security inspection, required current-head CI and merge authorization. Story
+acceptance, historical proof, deployment and live qualification are reported
+separately. Evidence gaps and unfinished task-board entries do not independently
+hold merge or schedule repairs. Do not relabel a missing proof as a code defect.
+
 ## 1. Verify the target and ownership
 
 Use the engine's bound PR or the explicitly assigned repository/PR. Read its issue,
@@ -30,8 +36,8 @@ Do not race another developer/reviewer/supervisor, reset its work or force-push.
 
 ## 2. Verify requirements and security
 
-Extract the acceptance criteria, invariants and prohibited changes. Verify them
-against current implementation, including unchanged code, and appropriate tests.
+Identify the PR's accepted code scope, invariants and prohibited changes. Verify
+the changed behavior and affected contracts against implementation and relevant tests.
 An absent diff line is not proof of missing functionality. Separate criteria due
 at code merge from explicitly deferred live/deployment acceptance.
 

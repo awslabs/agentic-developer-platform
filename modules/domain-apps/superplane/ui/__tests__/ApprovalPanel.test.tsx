@@ -60,3 +60,18 @@ it('does not offer a decision for expired approval authority', () => {
   render(<ApprovalPanel approval={{ ...approval, can_decide: true, expires_at: '2000-01-01T00:00:00Z' }} guard={new ScopeGuard()} onChange={() => {}} />);
   expect(screen.queryByRole('button', { name: /approve this operation once/i })).toBeNull();
 });
+
+it('lets the authorized requester confirm without a separate-person handoff', async () => {
+  (ENDPOINTS.decideApproval as { served: boolean }).served = true;
+  server.use(http.post('/api/superplane/v1/operation-approvals/approval-1/decision', () =>
+    HttpResponse.json({ ...approval, requires_distinct_approver: false, result: 'allowed-once' })));
+  function Harness() {
+    const [current, setCurrent] = useState<OperationApproval>({ ...approval, can_decide: true, requires_distinct_approver: false });
+    return <ApprovalPanel approval={current} guard={new ScopeGuard()} onChange={setCurrent} />;
+  }
+  render(<Harness />);
+  expect(screen.getByText(/No second approver is required/)).toBeInTheDocument();
+  expect(screen.queryByText(/Share this approval reference/)).toBeNull();
+  await userEvent.setup().click(screen.getByRole('button', { name: /Approve this operation once/ }));
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('allowed-once'));
+});

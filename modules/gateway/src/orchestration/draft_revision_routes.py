@@ -13,7 +13,15 @@ from src.shared.schemas.auth import TokenContext
 
 from .amend import FlowNotFoundError
 from .compile import ApprovalContext, ProposalRejectedError
-from .draft_revision import DraftRevisionConflictError, DraftRevisionRequest, SaveDraftRevisionRequest, preview_draft_revision, save_draft_revision
+from .draft_revision import (
+    BindDraftProductRequest,
+    DraftRevisionConflictError,
+    DraftRevisionRequest,
+    SaveDraftRevisionRequest,
+    bind_draft_product,
+    preview_draft_revision,
+    save_draft_revision,
+)
 from .state import ActorKind
 
 router = APIRouter()
@@ -28,7 +36,13 @@ async def _operate(operation, db, flow_id, request, current_user, access):
     if current_user.account_type != "human":
         raise HTTPException(status_code=403, detail={"error": "draft_revision_operator_required", "message": "A human operator is required."})
     role = (await access.get_user_role(current_user))[0]
-    actor = ApprovalContext(org_id=current_user.org_id, actor_id=current_user.user_id, actor_role=role.value, actor_kind=ActorKind.HUMAN)
+    actor = ApprovalContext(
+        org_id=current_user.org_id,
+        actor_id=current_user.user_id,
+        actor_role=role.value,
+        actor_kind=ActorKind.HUMAN,
+        username=current_user.cognito_username,
+    )
     try:
         return await operation(db, flow_id, request, actor)
     except FlowNotFoundError as exc:
@@ -51,6 +65,20 @@ async def preview_revision(
 ):
     await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
     return await _operate(preview_draft_revision, db, flow_id, request, current_user, access)
+
+
+@router.post("/flows/{flow_id}/draft/product")
+async def bind_product(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    request: BindDraftProductRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    result = await _operate(bind_draft_product, db, flow_id, request, current_user, access)
+    await db.commit()
+    return result
 
 
 @router.post("/flows/{flow_id}/draft/revise")

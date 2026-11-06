@@ -92,7 +92,19 @@ def save_session(session, *, work_dir):
 
     The reference is a non-secret locator plus the non-secret identity fields the
     orchestrator legitimately reports on (`cli_path`, `username`, `user_id`,
-    `org_id`). No token, and nothing matching `SENSITIVE_KEY`, is in it.
+    `adp_user_id`, `org_id`). No token, and nothing matching `SENSITIVE_KEY`, is
+    in it.
+
+    `user_id` and `adp_user_id` are both carried because they are different
+    identifiers with different uses: `user_id` is the authenticated Cognito
+    subject, which is what `GET /auth/cli/admin-session` attributes the session
+    to, while `adp_user_id` is the ADP `users` row the journey registered, which
+    is what the org-scoped identity routes take and therefore what resource
+    ownership and cleanup must be recorded under. This whitelist is exhaustive,
+    so omitting the row id here dropped it before any consumer could see it —
+    which is why `product_sessions.binding` had only the subject to match a
+    row-id manifest entry against, and refused a correctly-owned session with
+    "Product recovery session has no original actor ownership".
     """
     path = session_vault_path(work_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +120,7 @@ def save_session(session, *, work_dir):
         "expires_at": session.get("expires_at", 0),
         "username": session.get("username", ""),
         "user_id": session.get("user_id", ""),
+        "adp_user_id": session.get("adp_user_id", ""),
         "org_id": session.get("org_id", ""),
         "created_username": session.get("created_username", ""),
     }

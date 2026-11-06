@@ -15,6 +15,14 @@ def _absent(error):
     return response.get("Error", {}).get("Code") == "ResourceNotFoundException"
 
 
+def _scope(value):
+    # EKS includes an empty namespaces list when reading cluster-wide scope.
+    # Preserve every other field/value so a different authority still refuses.
+    if value == {"type": "cluster", "namespaces": []}:
+        return {"type": "cluster"}
+    return value
+
+
 def _pages(client, method, key, **kwargs):
     values, seen = [], set()
     while True:
@@ -122,7 +130,7 @@ class EksGrants:
             raise BootstrapRefused("EKS grant is not owned by this generation")
         if spec["kind"] == "eks-policy" and (
             identity.get("policy_arn") != spec["policy_arn"]
-            or identity.get("scope") != spec["scope"]
+            or _scope(identity.get("scope")) != _scope(spec["scope"])
         ):
             raise BootstrapRefused("EKS policy association has different authority")
 

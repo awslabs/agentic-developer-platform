@@ -71,6 +71,8 @@ jobs:
           src/components/checkRunStreamer.token-rotation.test.ts
           src/github-comments.test.ts
           src/human-communication.test.ts
+          src/pm-issue-authoring.test.ts
+          src/agent-pm-sub-issues.test.ts
           src/operations-prompt.test.ts
           src/aidlc-presentation.test.ts
           src/aidlc-communication.test.ts
@@ -108,6 +110,10 @@ jobs:
           modules/agent-factory/agent-worker-image/tests/test_gateway_communication_policy.py
           modules/agent-factory/agent-worker-image/tests/test_stage_personas.py
           modules/agent-factory/agent-worker-image/tests/test_run_codex.py
+      - name: Verify the run-report spool transports (bucket and gateway-held, #7392)
+        run: >-
+          python -m pytest -q
+          modules/agent-factory/agent-worker-image/tests/test_run_report.py
       - name: Verify repeat-run branch setup and final push from shallow clones
         run: >-
           python -m pytest -q
@@ -119,6 +125,8 @@ jobs:
           modules/agent-factory/agent-worker-image/tests/test_invocation_completion.py
           modules/agent-factory/agent-worker-image/tests/test_entrypoint.py
           modules/agent-factory/agent-worker-image/tests/test_retryable_exit_no_ack.py
+          modules/agent-factory/agent-worker-image/tests/test_codex_failure.py
+          modules/agent-factory/agent-worker-image/tests/test_budget_stop_status.py
       # PMM-07: drives a signed webhook delivery through the real github handler,
       # intent parser, resolvers and envelope builder into the real worker
       # entrypoint, and asserts the model the Node agent would actually start

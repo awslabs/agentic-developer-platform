@@ -41,7 +41,15 @@ pytestmark = requires_harness_postgres
 
 @pytest.mark.parametrize(
     "mutation",
-    [None, "approver", "approval_id", "producer", "pointer", "creation_request"],
+    [
+        None,
+        "streamlined",
+        "approver",
+        "approval_id",
+        "producer",
+        "pointer",
+        "creation_request",
+    ],
 )
 def test_preview_retains_concrete_approval_and_compiled_revision(
     runtime,  # noqa: F811
@@ -59,6 +67,19 @@ def test_preview_retains_concrete_approval_and_compiled_revision(
     class ExactApproval(fixture._Approves):
         async def approval_for(self, *, principal, request):  # noqa: F811
             context = await super().approval_for(principal=principal, request=request)
+            if mutation == "streamlined":
+                requester = context.record.binding.requester
+                status = next(iter(context.approver_statuses.values()))
+                context = replace(
+                    context,
+                    record=replace(
+                        context.record,
+                        requires_distinct_approver=False,
+                        approvers=frozenset({requester}),
+                        decided_by=requester,
+                    ),
+                    approver_statuses={requester: replace(status, subject=requester)},
+                )
             envelope = SpendEnvelope(
                 **{
                     key: int(request.parameters[key])
@@ -99,6 +120,10 @@ def test_preview_retains_concrete_approval_and_compiled_revision(
             paid = await connection.fetchrow(
                 "SELECT * FROM harness_approval_consumption WHERE operation_id=$1",
                 case.control.operation_id,
+            )
+            assert paid["requires_distinct_approver"] is (mutation != "streamlined")
+            assert (paid["approved_by"] == paid["requester"]) is (
+                mutation == "streamlined"
             )
             count = await connection.fetchval("SELECT count(*) FROM harness_operations")
             if mutation == "approver":
@@ -163,7 +188,7 @@ def test_preview_retains_concrete_approval_and_compiled_revision(
                 AsyncSession(engine) as db,
                 split_authorities(h, managed=True) as composition,
             ):
-                if mutation:
+                if mutation not in {None, "streamlined"}:
                     with pytest.raises((LifecycleRefused, ProvisioningUnavailable)):
                         await managed_retirement.preview(
                             composition,

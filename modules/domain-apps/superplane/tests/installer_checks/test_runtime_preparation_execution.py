@@ -212,6 +212,10 @@ class FakeInspector:
             if operation == "list-queues":
                 return {"QueueUrls": [queue["url"]] if self.applied else []}
             if operation == "get-queue-attributes":
+                # Real standard SQS queues refuse this FIFO-only request even
+                # though All responses legitimately omit the FifoQueue field.
+                if "FifoQueue" in args:
+                    raise Refusal("InvalidAttributeName: Unknown Attribute FifoQueue")
                 return {"Attributes": self.queue_attributes}
             if operation == "list-queue-tags":
                 return {"Tags": queue["tags"]}
@@ -441,7 +445,7 @@ def test_execution_rechecks_credentials_after_approval(execution, tmp_path):
     )
 
 
-def test_exact_saved_plan_digest_and_separate_approval(execution, tmp_path):
+def test_exact_saved_plan_digest_and_authenticated_approval(execution, tmp_path):
     (
         selected_request,
         env,
@@ -460,7 +464,7 @@ def test_exact_saved_plan_digest_and_separate_approval(execution, tmp_path):
     assert receipt["plan_sha256"] == inspect_plan(plan, proposal)
     assert (tmp_path / "runtime-preparation.json").stat().st_mode & 0o077 == 0
     assert "apply" not in [args[2] for args in terraform.calls]
-    with pytest.raises(Refusal, match="separate authenticated plan approver"):
+    with pytest.raises(Refusal, match="authenticated plan approver"):
         prepare(
             selected_request,
             env,
@@ -733,7 +737,7 @@ def test_wrong_digest_or_self_approval_never_applies(execution, tmp_path):
             approved_plan_digest="0" * 64,
             approval_check=fake_approval,
         )
-    with pytest.raises(Refusal, match="Separate authenticated plan approver"):
+    with pytest.raises(Refusal, match="Authenticated plan approver"):
         prepare(
             selected_request,
             env,

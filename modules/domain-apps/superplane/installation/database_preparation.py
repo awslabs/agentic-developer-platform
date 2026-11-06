@@ -78,6 +78,8 @@ def observation_secret_value(installer):
             "jwt-signing-key",
         )
     }
+    if env.get("dedicated_readers"):
+        result["skypilot-health-token"] = secrets.token_urlsafe(40)
     result.update(
         {
             key: "Bearer " + secrets.token_urlsafe(40)
@@ -96,9 +98,14 @@ def observation_secret_value(installer):
                 "submitter_id": installer.owner + "-" + component,
                 "credential": result[component + "-credential"],
                 "signing_key": result[component + "-signing-key"],
-                "workspaces": []
-                if installer.control_plane_only
-                else [env["workspace_id"]],
+                "workspaces": (
+                    sorted(
+                        w["workspace_id"]
+                        for w in env.get("dedicated_readers", {}).get("workspaces", [])
+                    )
+                    if installer.control_plane_only
+                    else [env["workspace_id"]]
+                ),
                 "lease_scopes": scopes,
             }
         )

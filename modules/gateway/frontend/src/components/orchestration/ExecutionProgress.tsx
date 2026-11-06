@@ -112,6 +112,8 @@ export function ExecutionProgress({
               what sends an operator to logs that expire. */}
           <span className="font-medium">{view.blockOwner}</span>
           {view.blockRequiredInput ? <> · {view.blockRequiredInput}</> : null}
+          {execution.block?.code === 'review_bootstrap_failing' && execution.block.detail
+            ? <> · {execution.block.detail}</> : null}
         </p>
       )}
 
@@ -146,7 +148,7 @@ export function ExecutionProgress({
       </dl>
 
       {view.evidence.length > 0 && (
-        <ul className="mt-2 space-y-1" aria-label="Delivery evidence" data-testid={`execution-evidence-${nodeRef}`}>
+        <details className="mt-2"><summary className="cursor-pointer py-1 text-xs">Execution activity and receipts ({view.evidence.length})</summary><ul className="mt-2 space-y-1" aria-label="Delivery evidence" data-testid={`execution-evidence-${nodeRef}`}>
           {view.evidence.map((item, index) => (
             <li
               // `operation_key` would be the natural key, but two prepared attempts
@@ -169,7 +171,7 @@ export function ExecutionProgress({
               )}
             </li>
           ))}
-        </ul>
+        </ul></details>
       )}
 
       {evaluations.map((action) => {

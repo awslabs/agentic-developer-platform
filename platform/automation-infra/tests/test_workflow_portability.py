@@ -98,10 +98,10 @@ def test_credential_guard_still_requires_main_and_oidc(kind, valid_ref, has_toke
     assert (result.returncode == 0) is success
 
 
-def test_portability_gate_runs_without_private_runners_or_credentials():
+def test_portability_gate_uses_arc_upstream_and_remains_available_to_public_mirrors():
     workflow = yaml.safe_load((ROOT / ".github/workflows/automation-trust-ci.yml").read_text())
     job = workflow["jobs"]["public-workflow-contracts"]
-    assert job["runs-on"] == "ubuntu-latest"
+    assert job["runs-on"] == "${{ github.repository == 'aws-e/adp' && 'arc-runner-org' || 'ubuntu-latest' }}"
     assert job["permissions"] == {"contents": "read"}
     assert "environment" not in job
     assert "secrets." not in yaml.safe_dump(job)

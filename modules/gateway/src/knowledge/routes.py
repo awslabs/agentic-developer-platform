@@ -25,7 +25,7 @@ import os
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,9 @@ from src.knowledge.dispatch import (
     dispatch_ingestion,
     extract_source_identifier,
 )
+from src.knowledge.product_access import ProductAccess, require_product_access
+from src.knowledge.product_source_routes import router as product_source_router
+from src.knowledge.product_storage_routes import router as product_storage_router
 from src.knowledge.schemas import (
     AssetCreateRequest,
     AssetDetailResponse,
@@ -55,16 +58,19 @@ from src.knowledge.schemas import (
     QuotaDetail,
     QuotaInfo,
 )
+from src.knowledge.search import KnowledgeSearchRequest, KnowledgeSearchResponse, search_knowledge
 from src.knowledge.source_admission import SourceAdmissionError, admit_source
 from src.knowledge.type_registry import is_valid_asset_type, validate_source_ref
 from src.shared.database import get_db
 from src.shared.database_agent_context import get_agent_context_db
 from src.shared.identity import resolve_canonical_user_id
+from src.shared.models.base import utcnow
 
 logger = logging.getLogger("bedrockgateway.knowledge.routes")
 
-_router = APIRouter(prefix="/api/agent-context/assets", tags=["knowledge-assets"])
+_router = APIRouter(prefix="/agent-context/assets", tags=["knowledge-assets"])
 _cli_router = APIRouter(prefix="/agent-context/assets", tags=["knowledge-assets"])
+_search_router = APIRouter(prefix="/agent-context/assets", tags=["knowledge-assets"])
 
 # ---------------------------------------------------------------------------
 # Quota defaults (overridable via env / SSM)
@@ -73,6 +79,7 @@ _cli_router = APIRouter(prefix="/agent-context/assets", tags=["knowledge-assets"
 DEFAULT_QUOTAS: dict[str, dict[str, int]] = {
     "personal": {"repo": 20, "url": 50, "doc": 20},
     "tenant": {"repo": 200, "url": 500, "doc": 200},
+    "product": {"repo": 200, "url": 500, "doc": 200},
 }
 
 
@@ -115,7 +122,22 @@ async def register_asset(
     # --- Register-time accessibility validation (Issue #2087) ---
     # For repos: determine public/private, resolve installation, verify ownership.
     accessibility: AccessibilityResult | None = None
-    if body.asset_type == "repo":
+    product_source = None
+    upload = None
+    if body.source_binding_id:
+        from src.knowledge.product_source_routes import require_source_storage
+        from src.knowledge.product_sources import grant_source
+
+        access = await require_product_access(gateway_db, current_user, body.product_id, write=True, lock=True)
+        await _require_product_storage(db)
+        await require_source_storage(db)
+        product_source = await grant_source(gateway_db, current_user.org_id, body.product_id, body.source_binding_id, access.member_id)
+        if body.source_ref.casefold() != product_source["source_ref"].casefold():
+            raise HTTPException(409, detail="The repository changed. Refresh Product sources before adding it.")
+        product_source["configuration_revision"] = 1
+        product_source["refresh_updated_by"] = access.member_id
+        body.source_ref = product_source["source_ref"]
+    elif body.asset_type == "repo":
         accessibility = await validate_repo_accessibility(
             body.source_ref,
             current_user.org_id or "",
@@ -129,45 +151,47 @@ async def register_asset(
                 detail=accessibility.error_message,
             )
 
-    # Derive scope from session — resolve canonical users.id for owner_sub (#2047/#1319)
-    # If repo is public, override to shared scope (tenant_id=NULL, no owner).
+    # Source access authorizes import, never silently widens the requested scope.
     tenant_id = current_user.org_id or None
     owner_sub: str | None = None
     scope_key = body.scope
-    installation_id: int | None = None
-
-    # Issue #3266: Membership-based org-tenant registration policy.
-    # POLICY: Any org member may register org-scoped assets for repos covered
-    # by the org's GitHub App installation. The membership check in
-    # validate_repo_accessibility IS the authorization — if the caller is a
-    # verified member of the owning org-tenant, they are allowed to register.
-    # The explicit scope="tenant" admin gate (below) applies ONLY to manual
-    # tenant-scope elevation without an installation-membership resolution.
-    if accessibility and accessibility.tenant_id:
-        tenant_id = accessibility.tenant_id
-        owner_sub = None  # Org-scoped: no personal owner
-        scope_key = "tenant"
-        installation_id = accessibility.installation_id
-    elif accessibility and accessibility.shared:
-        # Public repo → shared scope regardless of request body scope
-        tenant_id = None
-        owner_sub = None
-        scope_key = "tenant"  # quota still uses tenant limit for shared
+    installation_id = product_source["installation_id"] if product_source else accessibility.installation_id if accessibility else None
+    if body.scope == "product":
+        access = await require_product_access(gateway_db, current_user, body.product_id, write=True, lock=True)
+        await _require_product_storage(db)
     elif body.scope == "personal":
+        _require_scoped_imports()
         owner_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
-        if accessibility:
-            installation_id = accessibility.installation_id
     elif body.scope == "tenant":
-        if not current_user.is_admin:
-            raise HTTPException(
-                status_code=403,
-                detail="Tenant-scope registration requires admin privileges",
-            )
-        if accessibility:
-            installation_id = accessibility.installation_id
+        # Preserve the explicit legacy tenant import policy: verified members
+        # may choose the org owning the installation; personal imports never do.
+        if accessibility and accessibility.tenant_id:
+            tenant_id = accessibility.tenant_id
+        elif not current_user.is_admin:
+            raise HTTPException(403, detail="Tenant-scope registration requires admin privileges")
+
+    # Both single and bulk registration share the verified-upload boundary.
+    from src.knowledge.product_storage import require_verified_import
+
+    require_verified_import(body.source_ref, tenant_id, body.product_id, upload_id=body.source_upload_id)
+
+    if body.source_upload_id:
+        from src.knowledge.product_storage import load_storage
+        from src.knowledge.product_storage_routes import upload_record
+
+        configured_storage = await load_storage(db, tenant_id, body.product_id)
+        upload = await upload_record(db, tenant_id, body.product_id, body.source_upload_id, access)
+        if (
+            upload["asset_id"]
+            or not upload["source_version_id"]
+            or upload["expires_at"] <= utcnow()
+            or upload["bucket"] != configured_storage.bucket
+            or body.source_ref != f"s3://{upload['bucket']}/{upload['object_key']}"
+        ):
+            raise HTTPException(409, "Complete and verify the original upload before registering it")
 
     try:
-        await admit_source(body.asset_type, body.source_ref, tenant_id, owner_sub)
+        await admit_source(body.asset_type, body.source_ref, tenant_id, owner_sub, product_id=body.product_id)
     except SourceAdmissionError as exc:
         raise HTTPException(status_code=400, detail=f"Source admission refused: {exc}") from exc
 
@@ -178,38 +202,86 @@ async def register_asset(
             SELECT COUNT(*) FROM knowledge_assets
             WHERE tenant_id = :tid
               AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+              AND (to_jsonb(knowledge_assets)->>'product_id') IS NOT DISTINCT FROM CAST(:pid AS text)
               AND asset_type = :atype
               AND status != 'removed'
         """),
-        {"tid": tenant_id or "", "sub": owner_sub or "", "atype": body.asset_type},
+        {"tid": tenant_id or "", "sub": owner_sub or "", "pid": body.product_id, "atype": body.asset_type},
     )
     current_count = count_result.scalar() or 0
 
-    if current_count >= quota_limit:
+    quota_detail = {"message": "Quota exceeded", "quota": {body.asset_type: {"used": current_count, "limit": quota_limit}}}
+    if current_count >= quota_limit and not product_source:
         raise HTTPException(
             status_code=429,
-            detail={
-                "message": "Quota exceeded",
-                "quota": {
-                    body.asset_type: {"used": current_count, "limit": quota_limit},
-                },
-            },
+            detail=quota_detail,
         )
 
     # Check for duplicate (same source_ref in same scope)
     dup_result = await db.execute(
         text("""
             SELECT id FROM knowledge_assets
-            WHERE source_ref = :sref
+            WHERE (source_ref = :sref OR (
+                CAST(:binding_id AS text) IS NOT NULL
+                AND to_jsonb(knowledge_assets)#>>'{product_source,binding_id}' = CAST(:binding_id AS text)
+              ))
               AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
               AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+              AND (to_jsonb(knowledge_assets)->>'product_id') IS NOT DISTINCT FROM CAST(:pid AS text)
               AND status != 'removed'
             LIMIT 1
         """),
-        {"sref": body.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+        {"sref": body.source_ref, "tid": tenant_id or "", "sub": owner_sub or "", "pid": body.product_id, "binding_id": body.source_binding_id},
     )
     existing = dup_result.fetchone()
     if existing:
+        if product_source:
+            # Attach an explicit connection to an existing Product import only
+            # through its current management permission. Reuse the corpus.
+            row = await _fetch_asset_by_id(db, str(existing.id))
+            if not _can_manage(row, current_user, access):
+                raise HTTPException(403, detail="Only the contributor or Product owner can connect this existing information")
+            previous = getattr(row, "product_source", None)
+            if previous:
+                identity_fields = (
+                    "binding_id",
+                    "binding_generation",
+                    "connection_id",
+                    "installation_id",
+                    "repository_id",
+                    "namespace",
+                    "relationship_id",
+                    "app_id",
+                    "source_ref",
+                )
+                if all(previous.get(key) == product_source.get(key) for key in identity_fields):
+                    return _row_to_response(row, can_manage=True)
+                product_source["configuration_revision"] = int(previous["configuration_revision"]) + 1
+            if row.status not in {"indexed", "complete", "partial", "failed"}:
+                raise HTTPException(409, detail="Wait for the current ingestion to finish before connecting this source.")
+            attached = await db.execute(
+                text("""UPDATE knowledge_assets
+                SET product_source=CAST(:grant AS jsonb), refresh_enabled=:enabled, installation_id=:installation, source_ref=:source_ref,
+                    refresh_error=NULL,
+                    last_refreshed_at=COALESCE(last_refreshed_at, CASE WHEN status IN ('indexed','complete') THEN updated_at ELSE NULL END)
+                WHERE id=:id AND status=:status AND updated_at=:updated
+                  AND product_source IS NOT DISTINCT FROM CAST(:previous AS jsonb) RETURNING id"""),
+                {
+                    "id": str(row.id),
+                    "grant": json.dumps(product_source),
+                    "enabled": body.keep_updated,
+                    "installation": installation_id,
+                    "source_ref": body.source_ref,
+                    "status": row.status,
+                    "updated": row.updated_at,
+                    "previous": json.dumps(previous) if previous is not None else None,
+                },
+            )
+            if attached.first() is None:
+                await db.rollback()
+                raise HTTPException(409, detail="This information changed. Reload before connecting it.")
+            await db.commit()
+            return _row_to_response(await _fetch_asset_by_id(db, str(row.id)), can_manage=True)
         raise HTTPException(
             status_code=409,
             detail={
@@ -219,18 +291,23 @@ async def register_asset(
         )
 
     # Insert (includes installation_id from accessibility validation — Issue #2087)
+    if current_count >= quota_limit:
+        raise HTTPException(status_code=429, detail=quota_detail)
     asset_id = str(uuid.uuid4())
     try:
         await db.execute(
-            text("""
+            text(f"""
                 INSERT INTO knowledge_assets
                     (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
                      status, registered_by, metadata, display_name, tags,
-                     installation_id)
+                     installation_id{", product_id" if body.product_id else ""}{", product_source, refresh_enabled" if product_source else ""}
+                     {", source_upload_id, source_object_version, refresh_enabled" if upload else ""})
                 VALUES
                     (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
                      'registered', :registered_by, CAST(:metadata AS jsonb),
-                     :display_name, CAST(:tags AS jsonb), :installation_id)
+                     :display_name, CAST(:tags AS jsonb), :installation_id{", :product_id" if body.product_id else ""}
+                     {", CAST(:product_source AS jsonb), :refresh_enabled" if product_source else ""}
+                     {", CAST(:source_upload_id AS uuid), :source_version, false" if upload else ""})
             """),
             {
                 "id": asset_id,
@@ -243,12 +320,22 @@ async def register_asset(
                 "display_name": body.display_name,
                 "tags": _json_dumps(body.tags),
                 "installation_id": installation_id,
+                "product_id": body.product_id,
+                "product_source": json.dumps(product_source),
+                "refresh_enabled": body.keep_updated,
+                "source_upload_id": body.source_upload_id,
+                "source_version": upload["source_version_id"] if upload else None,
             },
         )
+        if upload:
+            await db.execute(
+                text("UPDATE product_context_uploads SET asset_id=CAST(:asset AS uuid) WHERE id=CAST(:upload AS uuid)"),
+                {"asset": asset_id, "upload": body.source_upload_id},
+            )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
-        if "uq_knowledge_assets_source_scope" in (str(exc.orig) or ""):
+        if any(name in (str(exc.orig) or "") for name in ("uq_knowledge_assets_source_scope", "uq_knowledge_product_source")):
             # Race condition: another request inserted the same source/scope
             # between our dup-check and INSERT. Return the same 409 as above.
             logger.warning(
@@ -261,10 +348,11 @@ async def register_asset(
                     WHERE source_ref = :sref
                       AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
                       AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                      AND (to_jsonb(knowledge_assets)->>'product_id') IS NOT DISTINCT FROM CAST(:pid AS text)
                       AND status != 'removed'
                     LIMIT 1
                 """),
-                {"sref": body.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+                {"sref": body.source_ref, "tid": tenant_id or "", "sub": owner_sub or "", "pid": body.product_id},
             )
             dup = dup_row.fetchone()
             raise HTTPException(
@@ -289,11 +377,12 @@ async def register_asset(
             project_id=None,
             db=db,
             installation_id=installation_id,
+            product_id=body.product_id,
         )
     except IngestionQueueUnavailableError:
         raise HTTPException(
             status_code=503,
-            detail="Knowledge ingestion queue is not configured. Set INGESTION_QUEUE_URL to enable asset dispatch.",
+            detail="Context ingestion queue is not configured. Set INGESTION_QUEUE_URL to enable asset dispatch.",
         )
     except Exception:
         logger.warning(
@@ -306,7 +395,7 @@ async def register_asset(
     row = await _fetch_asset_by_id(db, asset_id)
     if not row:
         raise HTTPException(status_code=500, detail="Failed to read created asset")
-    return _row_to_response(row)
+    return _row_to_response(row, can_manage=True)
 
 
 @_router.get("", response_model=AssetListResponse)
@@ -314,7 +403,9 @@ async def list_assets(
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
-    scope: Annotated[str | None, Query()] = None,
+    scope: Annotated[str | None, Query(pattern=r"^(personal|tenant|product|all)$")] = None,
+    product_id: Annotated[str | None, Query(max_length=36)] = None,
+    search: Annotated[str | None, Query(max_length=512)] = None,
     asset_type: Annotated[str | None, Query()] = None,
     status: Annotated[str | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
@@ -324,8 +415,20 @@ async def list_assets(
     conditions: list[str] = ["status != 'removed'"]
     params: dict[str, Any] = {}
 
+    if (scope == "product") != bool(product_id):
+        raise HTTPException(422, detail="product_id is required only for Product scope")
+    access = None
+    if product_id:
+        access = await require_product_access(gateway_db, current_user, product_id)
+        conditions.extend(["tenant_id = :tid", "(to_jsonb(knowledge_assets)->>'product_id') = :pid"])
+        params.update(tid=current_user.org_id, pid=product_id)
+    else:
+        conditions.append("(to_jsonb(knowledge_assets)->>'product_id') IS NULL")
+
     # Scope filtering — resolve canonical id for personal scope (#2047/#1319)
-    if scope == "personal":
+    if scope == "product":
+        pass
+    elif scope == "personal":
         canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
         conditions.append("owner_sub = :sub")
         params["sub"] = canonical_sub
@@ -337,18 +440,19 @@ async def list_assets(
         conditions.append("owner_sub IS NULL")
     else:
         # Default ("All"): everything the user can see — their tenant's assets
-        # AND shared/public assets (tenant_id IS NULL, e.g. public repos). Public
-        # repos register as shared scope, so without the NULL branch they'd be
-        # invisible in every tab. (#2213 follow-up)
+        # AND legacy shared assets (tenant_id IS NULL). Their existing
+        # ownership remains unchanged when new imports become explicitly scoped.
         conditions.append("(tenant_id = :tid OR tenant_id IS NULL)")
         params["tid"] = current_user.org_id
         # Apply the same personal-owner check as the detail route before
         # counting or paginating; a tenant match does not grant personal access.
-        if not current_user.is_admin:
-            canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
-            conditions.append("(owner_sub = :sub OR owner_sub IS NULL)")
-            params["sub"] = canonical_sub
+        canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
+        conditions.append("(owner_sub = :sub OR owner_sub IS NULL)")
+        params["sub"] = canonical_sub
 
+    if search and search.strip():
+        conditions.append("(display_name ILIKE :search OR source_ref ILIKE :search)")
+        params["search"] = "%" + search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     if asset_type:
         conditions.append("asset_type = :atype")
         params["atype"] = asset_type
@@ -373,7 +477,7 @@ async def list_assets(
         # nosemgrep: avoid-sqlalchemy-text
         text(f"""
             SELECT id, asset_type, source_ref, display_name, tags, metadata,
-                   tenant_id, owner_sub, project_id, status, last_error,
+                   tenant_id, owner_sub, project_id, to_jsonb(knowledge_assets)->>'product_id' AS product_id, status, last_error,
                    retry_count, registered_by, created_at, updated_at
             FROM knowledge_assets
             WHERE {where_clause}
@@ -384,10 +488,10 @@ async def list_assets(
     )
     rows = rows_result.fetchall()
 
-    items = [_row_to_response(r) for r in rows]
+    items = [_row_to_response(r, can_manage=_can_manage(r, current_user, access)) for r in rows]
 
     # Quota info
-    quota = await _get_quota_info(db, gateway_db, current_user)
+    quota = await _get_quota_info(db, gateway_db, current_user, scope=scope or "personal", product_id=product_id)
 
     return AssetListResponse(
         items=items,
@@ -397,6 +501,20 @@ async def list_assets(
         has_more=(offset + page_size) < total,
         quota=quota,
     )
+
+
+@_search_router.post("/search", response_model=KnowledgeSearchResponse)
+async def search_assets(
+    body: KnowledgeSearchRequest,
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+    response: Response,
+    request: Request,
+) -> KnowledgeSearchResponse:
+    """Search indexed content in personal or current Product knowledge."""
+    response.headers["Cache-Control"] = "no-store"
+    return await search_knowledge(body, db, gateway_db, current_user, request)
 
 
 @_router.get("/{asset_id}", response_model=AssetDetailResponse)
@@ -411,23 +529,16 @@ async def get_asset_detail(
     if not row:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    # Scope check: user must be in the same tenant
-    if row.tenant_id and row.tenant_id != current_user.org_id:
-        raise HTTPException(status_code=404, detail="Asset not found")
+    access = await _authorize_read(row, current_user, gateway_db)
 
-    # Personal assets: only visible to owner or admin — use canonical id (#2047/#1319)
-    if row.owner_sub and not current_user.is_admin:
-        canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
-        if row.owner_sub != canonical_sub:
-            raise HTTPException(status_code=404, detail="Asset not found")
-
-    return AssetDetailResponse(**_row_to_response(row).model_dump())
+    return AssetDetailResponse(**_row_to_response(row, can_manage=_can_manage(row, current_user, access)).model_dump())
 
 
 @_router.delete("/{asset_id}", status_code=204)
 async def delete_asset(
     asset_id: str,
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> None:
     """Soft-delete asset (status = 'removed'). Owner or tenant admin."""
@@ -436,7 +547,9 @@ async def delete_asset(
         raise HTTPException(status_code=404, detail="Asset not found")
 
     # Authorization: owner or tenant admin
-    _authorize_modify(row, current_user)
+    access = await _authorize_read(row, current_user, gateway_db, write=True)
+    if not _can_manage(row, current_user, access):
+        raise HTTPException(403, detail="Only the contributor or Product owner can manage this information")
 
     await db.execute(
         text("""
@@ -453,6 +566,7 @@ async def delete_asset(
 async def reindex_asset(
     asset_id: str,
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
     request_id: Annotated[uuid.UUID | None, Query()] = None,
 ) -> AssetResponse:
@@ -461,7 +575,19 @@ async def reindex_asset(
     if not row:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    _authorize_modify(row, current_user)
+    access = await _authorize_read(row, current_user, gateway_db, write=True)
+    if not _can_manage(row, current_user, access):
+        raise HTTPException(403, detail="Only the contributor or Product owner can manage this information")
+
+    if getattr(row, "product_id", None):
+        await _require_product_storage(db)
+    elif row.owner_sub:
+        _require_scoped_imports()
+
+    if getattr(row, "product_source", None):
+        from src.knowledge.product_sources import current_grant
+
+        await current_grant(gateway_db, row.tenant_id, row.product_id, row.product_source)
 
     # Every caller reserves the same asset generation with compare-and-swap.
     # Keyed receipts survive lost responses and subsequent generations. Legacy
@@ -473,13 +599,13 @@ async def reindex_asset(
         if not isinstance(receipts, list):
             raise HTTPException(409, detail={"reason": "reindex_receipts_invalid"})
         if receipt in receipts:
-            return _row_to_response(row)
+            return _row_to_response(row, can_manage=True)
         if len(receipts) >= 256:
             raise HTTPException(409, detail={"reason": "reindex_receipts_full"})
         metadata["_cli_reindex_requests"] = [*receipts, receipt]
     # The signed ingestion callback persists its successful terminal state as
     # "complete"; legacy indexed rows remain eligible too.
-    if row.status not in {"indexed", "complete", "failed"}:
+    if row.status not in {"indexed", "complete", "partial", "failed"}:
         raise HTTPException(409, detail={"reason": "indexing_not_terminal"})
     reserved = await db.execute(
         text("""
@@ -508,6 +634,7 @@ async def reindex_asset(
             project_id=str(row.project_id) if row.project_id else None,
             db=db,
             installation_id=row.installation_id,
+            product_id=getattr(row, "product_id", None),
         )
     except Exception:
         logger.warning(
@@ -519,7 +646,7 @@ async def reindex_asset(
     updated_row = await _fetch_asset_by_id(db, asset_id)
     if not updated_row:
         raise HTTPException(status_code=500, detail="Failed to read updated asset")
-    return _row_to_response(updated_row)
+    return _row_to_response(updated_row, can_manage=True)
 
 
 @_router.get("/{asset_id}/status", response_model=AssetStatusResponse)
@@ -541,15 +668,7 @@ async def get_asset_status(
     if not row:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    # Scope check: user must be in the same tenant
-    if row.tenant_id and row.tenant_id != current_user.org_id:
-        raise HTTPException(status_code=404, detail="Asset not found")
-
-    # Personal assets: only visible to owner or admin — use canonical id (#2047/#1319)
-    if row.owner_sub and not current_user.is_admin:
-        canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
-        if row.owner_sub != canonical_sub:
-            raise HTTPException(status_code=404, detail="Asset not found")
+    await _authorize_read(row, current_user, gateway_db)
 
     # Resolve per-stage detail from the latest index run for this asset.
     # For repos: index_run_stages.repo holds the canonical "owner/repo" slug.
@@ -559,7 +678,7 @@ async def get_asset_status(
 
     # For non-repo assets, use the asset_id (registry_asset_id) as the lookup key
     # since that's what the ingestion workers write to index_run_stages.repo.
-    stage_lookup_key = asset_id if row.asset_type in ("url", "doc") else repo_slug
+    stage_lookup_key = asset_id if row.asset_type in ("url", "doc") or row.owner_sub or getattr(row, "product_id", None) else repo_slug
 
     stages: list[AssetIndexStage] = []
     run_id: str | None = None
@@ -627,14 +746,20 @@ async def bulk_preview(
     current_user: Annotated[Any, Depends(get_current_user)],
     file: UploadFile = File(...),
     scope: str = Form("tenant"),
+    product_id: str | None = Form(None),
 ) -> BulkPreviewResponse:
     """Parse + validate a bulk upload file. Returns preview — NO DB writes.
 
     Tenant admin can upload at tenant scope; any user can upload at personal scope.
     """
     # Validate scope value
-    if scope not in ("personal", "tenant"):
-        raise HTTPException(status_code=400, detail="scope must be 'personal' or 'tenant'")
+    if scope not in ("personal", "tenant", "product") or (scope == "product") != bool(product_id):
+        raise HTTPException(422, detail="Product scope requires product_id")
+    if product_id:
+        await require_product_access(gateway_db, current_user, product_id, write=True)
+        await _require_product_storage(db)
+    elif scope == "personal":
+        _require_scoped_imports()
 
     # Admin gate for tenant scope
     if scope == "tenant" and not current_user.is_admin:
@@ -681,10 +806,11 @@ async def bulk_preview(
                 WHERE source_ref = :sref
                   AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
                   AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                  AND (to_jsonb(knowledge_assets)->>'product_id') IS NOT DISTINCT FROM CAST(:pid AS text)
                   AND status != 'removed'
                 LIMIT 1
             """),
-            {"sref": item.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+            {"sref": item.source_ref, "tid": tenant_id or "", "sub": owner_sub or "", "pid": product_id},
         )
         existing = dup_result.fetchone()
         if existing:
@@ -710,10 +836,11 @@ async def bulk_preview(
             FROM knowledge_assets
             WHERE COALESCE(tenant_id, '') = COALESCE(:tid, '')
               AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+              AND (to_jsonb(knowledge_assets)->>'product_id') IS NOT DISTINCT FROM CAST(:pid AS text)
               AND status != 'removed'
             GROUP BY asset_type
         """),
-        {"tid": tenant_id or "", "sub": owner_sub or ""},
+        {"tid": tenant_id or "", "sub": owner_sub or "", "pid": product_id},
     )
     existing_counts: dict[str, int] = {}
     for r in count_result.fetchall():
@@ -773,6 +900,7 @@ async def bulk_preview_json(
         current_user=current_user,
         file=UploadFile(file=io.BytesIO(content.encode())),
         scope=body.scope,
+        product_id=body.product_id,
     )
 
 
@@ -783,25 +911,22 @@ async def bulk_commit(
     gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> BulkCommitResponse:
-    """Commit a previewed bulk upload batch. Writes rows + dispatches to SQS.
+    """Validate a batch and import into the explicitly requested ownership scope.
 
-    Tenant admin can commit at tenant scope; any user can commit at personal scope.
-    Validates ALL repo items for accessibility BEFORE inserting any (Issue #2087).
-
-    Issue #3266 policy note: Non-admin users submitting scope="personal" may have
-    items resolved to org-tenant scope via the membership fallback in
-    validate_repo_accessibility. This is allowed — the membership check IS the
-    authorization. The admin gate below only applies to EXPLICIT scope="tenant"
-    requests (manual tenant-scope elevation without membership resolution).
+    Provider authorization permits reading the source; it never promotes a
+    personal import to a Product, tenant, or shared collection.
     """
-    # Admin gate for explicit tenant scope (Issue #3266: membership-resolved
-    # items bypass this because they submit as scope="personal" and get rerouted
-    # to the org tenant during per-item scope resolution).
     if body.scope == "tenant" and not current_user.is_admin:
         raise HTTPException(
             status_code=403,
             detail="Tenant-scope bulk commit requires admin privileges",
         )
+
+    if body.product_id:
+        await require_product_access(gateway_db, current_user, body.product_id, write=True, lock=True)
+        await _require_product_storage(db)
+    elif body.scope == "personal":
+        _require_scoped_imports()
 
     if not body.items:
         raise HTTPException(status_code=400, detail="No items to commit")
@@ -852,16 +977,7 @@ async def bulk_commit(
                 )
             accessibility_map[item.source_ref] = result
 
-    # --- Scope resolution: resolve per-item tenant/owner before quota/dedup ---
-    # Issue #3358: Quota and dedup must operate on the RESOLVED scope, not the
-    # caller's session scope. Membership fallback may route items to a different
-    # org-tenant than the caller's personal tenant.
-    #
-    # POLICY (Issue #3266): Any org member may register org-scoped assets for repos
-    # covered by the org's GitHub App installation. The membership check in
-    # validate_repo_accessibility IS the authorization. The scope="tenant" admin
-    # gate applies only to explicit tenant-scope elevation without membership.
-
+    # Preserve requested scope for quota, deduplication, and each import.
     # Build resolved scope for each item
     resolved_items: list[tuple[Any, str | None, str | None, int | None]] = []  # (item, item_tenant_id, item_owner_sub, item_installation_id)
 
@@ -880,27 +996,18 @@ async def bulk_commit(
         item_installation_id: int | None = None
 
         acc = accessibility_map.get(item.source_ref)
-        if acc and acc.shared:
-            # Public repo → shared scope
-            item_tenant_id = None
-            item_owner_sub = None
-        elif acc:
+        if acc:
             item_installation_id = acc.installation_id
-            # Issue #3266: membership fallback may resolve a different org tenant
-            if acc.tenant_id:
-                item_tenant_id = acc.tenant_id
-                # Membership-resolved assets are org-scoped, not personal
-                item_owner_sub = None
+        from src.knowledge.product_storage import require_verified_import
 
+        require_verified_import(item.source_ref, item_tenant_id, body.product_id)
         try:
-            await admit_source(item.asset_type, item.source_ref, item_tenant_id, item_owner_sub)
+            await admit_source(item.asset_type, item.source_ref, item_tenant_id, item_owner_sub, product_id=body.product_id)
         except SourceAdmissionError as exc:
             raise HTTPException(status_code=400, detail=f"Source admission refused: {exc}") from exc
         resolved_items.append((item, item_tenant_id, item_owner_sub, item_installation_id))
 
-    # --- Quota check per resolved scope (Issue #3358) ---
-    # Group items by (tenant_id, owner_sub) to count against correct quotas.
-    # This ensures membership-resolved items count against the ORG tenant's quota.
+    # Count the batch against the requested ownership scope.
     scope_groups: dict[tuple[str, str], dict[str, int]] = {}
     for item, item_tenant_id, item_owner_sub, _ in resolved_items:
         key = (item_tenant_id or "", item_owner_sub or "")
@@ -910,7 +1017,7 @@ async def bulk_commit(
 
     for (tid, sub), new_counts in scope_groups.items():
         # Determine scope_key for quota limits
-        group_scope_key = "personal" if sub else "tenant"
+        group_scope_key = "product" if body.product_id else "personal" if sub else "tenant"
 
         count_result = await db.execute(
             text("""
@@ -918,10 +1025,11 @@ async def bulk_commit(
                 FROM knowledge_assets
                 WHERE COALESCE(tenant_id, '') = COALESCE(:tid, '')
                   AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                  AND (to_jsonb(knowledge_assets)->>'product_id') IS NOT DISTINCT FROM CAST(:pid AS text)
                   AND status != 'removed'
                 GROUP BY asset_type
             """),
-            {"tid": tid, "sub": sub},
+            {"tid": tid, "sub": sub, "pid": body.product_id},
         )
         existing_counts: dict[str, int] = {}
         for r in count_result.fetchall():
@@ -946,18 +1054,18 @@ async def bulk_commit(
     skipped_duplicates = 0
 
     for item, item_tenant_id, item_owner_sub, item_installation_id in resolved_items:
-        # Issue #3358: Check duplicate against the resolved tenant (item_tenant_id),
-        # not the caller's session tenant, so membership-resolved assets dedup correctly.
+        # Same source may be independently imported into different Products.
         dup_result = await db.execute(
             text("""
                 SELECT id FROM knowledge_assets
                 WHERE source_ref = :sref
                   AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
                   AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                  AND (to_jsonb(knowledge_assets)->>'product_id') IS NOT DISTINCT FROM CAST(:pid AS text)
                   AND status != 'removed'
                 LIMIT 1
             """),
-            {"sref": item.source_ref, "tid": item_tenant_id or "", "sub": item_owner_sub or ""},
+            {"sref": item.source_ref, "tid": item_tenant_id or "", "sub": item_owner_sub or "", "pid": body.product_id},
         )
         if dup_result.fetchone():
             skipped_duplicates += 1
@@ -967,15 +1075,15 @@ async def bulk_commit(
         asset_id = str(uuid.uuid4())
         try:
             await db.execute(
-                text("""
+                text(f"""
                     INSERT INTO knowledge_assets
                         (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
                          status, registered_by, metadata, display_name, tags,
-                         installation_id)
+                         installation_id{", product_id" if body.product_id else ""})
                     VALUES
                         (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
-                         'registered', :registered_by, '{}'::jsonb,
-                         :display_name, CAST(:tags AS jsonb), :installation_id)
+                         'registered', :registered_by, '{{}}'::jsonb,
+                         :display_name, CAST(:tags AS jsonb), :installation_id{", :product_id" if body.product_id else ""})
                 """),
                 {
                     "id": asset_id,
@@ -987,6 +1095,7 @@ async def bulk_commit(
                     "display_name": item.display_name,
                     "tags": _json_dumps(item.tags),
                     "installation_id": item_installation_id,
+                    "product_id": body.product_id,
                 },
             )
         except IntegrityError as exc:
@@ -1012,11 +1121,12 @@ async def bulk_commit(
                 project_id=None,
                 db=db,
                 installation_id=item_installation_id,
+                product_id=body.product_id,
             )
         except IngestionQueueUnavailableError:
             raise HTTPException(
                 status_code=503,
-                detail="Knowledge ingestion queue is not configured. Set INGESTION_QUEUE_URL to enable asset dispatch.",
+                detail="Context ingestion queue is not configured. Set INGESTION_QUEUE_URL to enable asset dispatch.",
             )
         except Exception:
             logger.warning(
@@ -1028,7 +1138,7 @@ async def bulk_commit(
         # Fetch the created row
         row = await _fetch_asset_by_id(db, asset_id)
         if row:
-            created_assets.append(_row_to_response(row))
+            created_assets.append(_row_to_response(row, can_manage=True))
 
     await db.commit()
 
@@ -1044,20 +1154,46 @@ async def bulk_commit(
 # ---------------------------------------------------------------------------
 
 
-def _authorize_modify(row: Any, current_user: Any) -> None:
-    """Check that the current user can modify (delete/reindex) the asset."""
-    # Tenant check
-    if row.tenant_id and row.tenant_id != current_user.org_id:
-        raise HTTPException(status_code=404, detail="Asset not found")
+def _require_scoped_imports() -> None:
+    # New owned imports need updated workers AND all vector readers. Existing
+    # registrations remain readable while the independently deployed code rolls.
+    if os.environ.get("SCOPED_KNOWLEDGE_IMPORTS_ENABLED", "").lower() != "true":
+        raise HTTPException(503, detail="Personal and Product knowledge imports are being upgraded. Please try again shortly.")
 
-    # Owner or admin can modify
-    is_owner = row.registered_by == current_user.user_id
-    is_tenant_admin = current_user.is_admin and (row.tenant_id == current_user.org_id)
-    if not is_owner and not is_tenant_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="Only the asset owner or a tenant admin can perform this action",
+
+async def _require_product_storage(db: AsyncSession) -> None:
+    _require_scoped_imports()
+    result = await db.execute(
+        text("""SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'knowledge_assets' AND column_name = 'product_id'
+    )""")
+    )
+    if not result.scalar():
+        raise HTTPException(503, detail="Product knowledge storage is being upgraded")
+
+
+async def _authorize_read(row: Any, current_user: Any, gateway_db: AsyncSession, *, write: bool = False) -> ProductAccess | None:
+    if row.tenant_id and row.tenant_id != current_user.org_id:
+        raise HTTPException(404, detail="Asset not found")
+    product_id = getattr(row, "product_id", None)
+    if product_id:
+        return await require_product_access(gateway_db, current_user, product_id, write=write, lock=write)
+    if row.owner_sub:
+        canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
+        if row.owner_sub != canonical_sub:
+            raise HTTPException(404, detail="Asset not found")
+    return None
+
+
+def _can_manage(row: Any, current_user: Any, access: ProductAccess | None = None) -> bool:
+    if getattr(row, "product_id", None):
+        return bool(
+            access
+            and access.product.archived_at is None
+            and (row.registered_by in {current_user.user_id, access.member_id} or access.product.owner_user_id == access.member_id)
         )
+    return bool(row.registered_by == current_user.user_id or (current_user.is_admin and row.tenant_id == current_user.org_id))
 
 
 async def _fetch_asset_by_id(db: AsyncSession, asset_id: str) -> Any | None:
@@ -1065,18 +1201,21 @@ async def _fetch_asset_by_id(db: AsyncSession, asset_id: str) -> Any | None:
     result = await db.execute(
         text("""
             SELECT id, asset_type, source_ref, display_name, tags, metadata,
-                   tenant_id, owner_sub, project_id, status, status_detail,
+                   tenant_id, owner_sub, project_id, to_jsonb(knowledge_assets)->>'product_id' AS product_id, status, status_detail,
                    last_error, retry_count, registered_by, installation_id,
+                   to_jsonb(knowledge_assets)->'product_source' AS product_source,
+                   to_jsonb(knowledge_assets)->'refresh_enabled' AS refresh_enabled,
+                   to_jsonb(knowledge_assets)->>'source_upload_id' AS source_upload_id,
                    created_at, updated_at
             FROM knowledge_assets
-            WHERE id = :id
+            WHERE id = :id AND status != 'removed'
         """),
         {"id": asset_id},
     )
     return result.fetchone()
 
 
-def _row_to_response(row: Any) -> AssetResponse:
+def _row_to_response(row: Any, *, can_manage: bool = False) -> AssetResponse:
     """Convert a DB row to an AssetResponse."""
     return AssetResponse(
         id=str(row.id),
@@ -1088,6 +1227,9 @@ def _row_to_response(row: Any) -> AssetResponse:
         tenant_id=row.tenant_id,
         owner_sub=row.owner_sub,
         project_id=str(row.project_id) if row.project_id else None,
+        product_id=getattr(row, "product_id", None),
+        can_manage=can_manage,
+        can_download=bool(getattr(row, "source_upload_id", None)),
         status=row.status,
         last_error=row.last_error,
         retry_count=row.retry_count,
@@ -1097,7 +1239,9 @@ def _row_to_response(row: Any) -> AssetResponse:
     )
 
 
-async def _get_quota_info(db: AsyncSession, gateway_db: AsyncSession, current_user: Any) -> QuotaInfo:
+async def _get_quota_info(
+    db: AsyncSession, gateway_db: AsyncSession, current_user: Any, *, scope: str = "personal", product_id: str | None = None
+) -> QuotaInfo:
     """Compute quota usage for the current user's scope.
 
     ``db`` is the agent_context session (knowledge_assets); ``gateway_db`` is the
@@ -1113,17 +1257,18 @@ async def _get_quota_info(db: AsyncSession, gateway_db: AsyncSession, current_us
             SELECT asset_type, COUNT(*) as cnt
             FROM knowledge_assets
             WHERE tenant_id = :tid
-              AND (owner_sub = :sub OR owner_sub IS NULL)
+              AND owner_sub IS NOT DISTINCT FROM CAST(:sub AS text)
+              AND (to_jsonb(knowledge_assets)->>'product_id') IS NOT DISTINCT FROM CAST(:pid AS text)
               AND status != 'removed'
             GROUP BY asset_type
         """),
-        {"tid": current_user.org_id, "sub": canonical_sub},
+        {"tid": current_user.org_id, "sub": canonical_sub if scope not in {"tenant", "product"} else None, "pid": product_id},
     )
     counts: dict[str, int] = {}
     for r in result.fetchall():
         counts[r.asset_type] = r.cnt
 
-    scope_key = "personal"
+    scope_key = scope if scope in {"personal", "tenant", "product"} else "personal"
     return QuotaInfo(
         repos=QuotaDetail(
             used=counts.get("repo", 0),
@@ -1153,8 +1298,15 @@ def _json_dumps(obj: dict[str, Any]) -> str:
 
 _legacy_router = _router
 _router = APIRouter()
+# The gateway ingress strips its outer /api prefix. Native clients send
+# /api/agent-context/assets; older UI clients send /api/api/agent-context/assets.
+# Mount the same handlers at both paths so authorization and behavior stay equal.
 _router.include_router(_legacy_router)
+_router.include_router(_legacy_router, prefix="/api")
 _router.include_router(_cli_router)
+_router.include_router(_search_router)
+_router.include_router(product_source_router)
+_router.include_router(product_storage_router)
 
 if os.environ.get("AGENT_CONTEXT_ENABLED", "").lower() == "true":
     router = _router

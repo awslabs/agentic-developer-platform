@@ -166,6 +166,29 @@ def test_refuses_mutable_source_image(baseline, material):
         renderer.render(baseline, *material, now=NOW)
 
 
+def test_private_python_gateway_opts_out_of_java_injection(baseline, material):
+    # The observed Deployment can contain annotations added by the CloudWatch
+    # controller. A new Deployment without explicit opt-outs is annotated again.
+    inherited = {
+        "cloudwatch.aws.amazon.com/auto-annotate-java": "true",
+        "instrumentation.opentelemetry.io/inject-java": "true",
+    }
+    baseline["spec"]["template"]["metadata"] = {"annotations": inherited.copy()}
+    items = renderer.render(baseline, *material, now=NOW)["items"]
+    deployment = next(item for item in items if item["kind"] == "Deployment")
+    template = deployment["spec"]["template"]
+    assert template["metadata"]["annotations"] == {
+        "cloudwatch.aws.amazon.com/auto-annotate-java": "false",
+        "instrumentation.opentelemetry.io/inject-java": "false",
+    }
+    assert "initContainers" not in template["spec"]
+    assert template["spec"]["containers"][0]["securityContext"] == {
+        "readOnlyRootFilesystem": True,
+        "allowPrivilegeEscalation": False,
+    }
+    assert baseline["spec"]["template"]["metadata"]["annotations"] == inherited
+
+
 def test_refuses_private_key_or_extra_material_in_public_ca(baseline, material):
     certificate, key, ca = material
     for suffix in (key, certificate, b"unparsed material"):

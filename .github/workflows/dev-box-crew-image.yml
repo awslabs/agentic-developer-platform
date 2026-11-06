@@ -1,0 +1,78 @@
+# ADP-managed Crew image release for a CUSTOMER connection (#8054): the same
+# scripts the self-managed operator runs from the dev box
+# (modules/user-services/dev-box/scripts/release-crew-image.sh, which chains
+# build-crew-bundle.sh → build-dev-box-image.sh → crew_release_pin.py), executed
+# under the vaulted connection identity dev-box-deploy.yml uses. It pins the
+# release in SSM (--pin) and uploads the plan; the foundation is applied by
+# dev-box-deploy.yml once the operator copies the printed ADP_DEV_BOX_* variables.
+# The platform account runs `release-crew-image.sh --env dev --crew-model-id <id>
+# --apply` from the dev box instead; neither path needs a GitHub environment for dev.
+name: Dev Box Crew image
+run-name: Crew image ${{ inputs.environment }} ${{ inputs.profile_revision || '(new profile)' }}
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Approved protected environment (dev-box-<environment>)
+        required: true
+        type: string
+      crew_model_id:
+        description: Approved gateway model for the Crew host supervisor
+        required: true
+        type: string
+      profile_revision:
+        description: Crew profile revision (default crew-<date>-<sha12>)
+        required: false
+        default: ''
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: dev-box-crew-image-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    environment: dev-box-${{ inputs.environment }}
+    runs-on: arc-runner-deploy
+    steps:
+      - name: Guard approved connection, account and inputs
+        env:
+          APPROVED_LABEL: ${{ vars.ADP_DEV_BOX_CONNECTION_LABEL }}
+          APPROVED_ACCOUNT: ${{ vars.ADP_DEV_BOX_ACCOUNT_ID }}
+          APPROVED_REGION: ${{ vars.ADP_DEV_BOX_REGION }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          CREW_MODEL_ID: ${{ inputs.crew_model_id }}
+          PROFILE_REVISION: ${{ inputs.profile_revision }}
+        run: |
+          set -euo pipefail
+          test -n "$APPROVED_LABEL"
+          [[ "$APPROVED_ACCOUNT" =~ ^[0-9]{12}$ ]]
+          test -n "$APPROVED_REGION"
+          [[ "$ENVIRONMENT" =~ ^[a-z][a-z0-9-]{0,31}$ ]]
+          [[ "$CREW_MODEL_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$ ]]
+          [ -z "$PROFILE_REVISION" ] || [[ "$PROFILE_REVISION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the Crew bundle and image, verify the AMI tags, pin the release
+        env:
+          ADP_CONNECTION_LABEL: ${{ vars.ADP_DEV_BOX_CONNECTION_LABEL }}
+          TARGET_ACCOUNT_ID: ${{ vars.ADP_DEV_BOX_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.ADP_DEV_BOX_REGION }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          CREW_MODEL_ID: ${{ inputs.crew_model_id }}
+          PROFILE_REVISION: ${{ inputs.profile_revision }}
+        run: |
+          set -euo pipefail
+          args=(--env "$ENVIRONMENT" --region "$AWS_REGION" --crew-model-id "$CREW_MODEL_ID" --account-id "$TARGET_ACCOUNT_ID"
+                --journal crew-image/crew-image-journal.jsonl --plan-output crew-image/crew-image-pins.json --pin)
+          [ -z "$PROFILE_REVISION" ] || args+=(--profile-revision "$PROFILE_REVISION")
+          adp-cred assume --service aws --label "$ADP_CONNECTION_LABEL" --exec \
+            bash modules/user-services/dev-box/scripts/release-crew-image.sh "${args[@]}"
+      - uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: adp-dev-box-crew-image-${{ inputs.environment }}-${{ github.run_attempt }}
+          path: crew-image/
+          if-no-files-found: error
+          retention-days: 90

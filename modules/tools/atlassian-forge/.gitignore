@@ -1,0 +1,5 @@
+node_modules/
+static/dist/
+manifest.yml
+.forge/
+.adp-forge-state.json

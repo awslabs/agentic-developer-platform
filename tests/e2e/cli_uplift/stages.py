@@ -24,8 +24,10 @@ full acceptance red, which is the correct state for work that does not exist.
 from __future__ import annotations
 
 import shlex
+import time
 
 from . import (
+    assistant_fault_control,
     assistant_oracles,
     assistant_provider_sources,
     bundle,
@@ -219,6 +221,20 @@ def preflight_stage(cfg, ports):
         preflight.check_served_cli_hashes(
             cfg, expected_hashes, record, fetch=http.get_bytes
         )
+        if any(
+            case_id.startswith(("PR01", "PR03", "PR04")) for case_id in ctx["matrix"]
+        ):
+            evidence = ports.get("product_release_evidence")
+            if evidence is None:
+                raise preflight.PreflightError(
+                    "Product release evidence reader is unavailable"
+                )
+            selection, receipt, runtime = evidence()
+            preflight.check_product_release(cfg, selection, receipt, runtime, record)
+            record["product_release_check"]["workflow_revision"] = receipt[
+                "workflow_revision"
+            ]
+            record["product_release_check"]["run_attempt"] = receipt["run_attempt"]
         # Carried into the instance payload so "the gateway serves the release"
         # and "the instance installed the release" are the same assertion.
         ctx["expected_hashes"] = expected_hashes
@@ -342,9 +358,53 @@ def preflight_stage(cfg, ports):
             )
             else None,
         )
+        lifecycle = cfg.get("dev_box_lifecycle")
+        if (
+            isinstance(lifecycle, dict)
+            and lifecycle.get("approved") is True
+            and lifecycle.get("template")
+            and lifecycle.get("profile")
+        ):
+            available.add(cases.DEV_BOX_LIFECYCLE)
         record["fixture_classes"] = sorted(available)
         record["missing_fixtures"] = preflight.missing_fixture_report(cfg, available)
         blocked = cases.block_missing_fixtures(ctx["matrix"], available)
+        if selected(ctx, "E51") and not (
+            isinstance(cfg.get("dev_box_lifecycle"), dict)
+            and cfg["dev_box_lifecycle"].get("approved") is True
+            and cfg["dev_box_lifecycle"].get("template")
+            and cfg["dev_box_lifecycle"].get("profile")
+        ):
+            record_selected(
+                ctx,
+                "E51",
+                cases.BLOCKED,
+                {"missing_fixtures": [cases.DEV_BOX_LIFECYCLE]},
+            )
+            blocked["E51"] = [cases.DEV_BOX_LIFECYCLE]
+        if selected(ctx, "E44") and not cfg.get("assistant_provider_activity"):
+            record_selected(
+                ctx,
+                "E44",
+                cases.BLOCKED,
+                {"missing_fixtures": ["assistant_provider_activity"]},
+            )
+            blocked["E44"] = ["assistant_provider_activity"]
+        latency_plan = cfg.get("assistant_latency")
+        if selected(ctx, "E49") and not (
+            isinstance(latency_plan, dict) and latency_plan.get("enabled") is True
+        ):
+            record_selected(
+                ctx,
+                "E49",
+                cases.BLOCKED,
+                {
+                    "missing_fixtures": [
+                        "assistant_latency explicit opt-in and approved budget"
+                    ]
+                },
+            )
+            blocked["E49"] = ["assistant_latency explicit opt-in and approved budget"]
         record["blocked_cases"] = {k: v for k, v in sorted(blocked.items())}
         if set(ctx["document"].get("suites") or []) == {"assistant"}:
             for case_id in ctx["matrix"]:
@@ -456,6 +516,16 @@ def ec2_stage(cfg, ports):
                 {
                     "ResourceType": "instance",
                     "Tags": [
+                        *(
+                            [
+                                {
+                                    "Key": "adp:evaluator-target",
+                                    "Value": cfg["evaluation_target"],
+                                }
+                            ]
+                            if cfg.get("evaluation_target")
+                            else []
+                        ),
                         {"Key": cleanup.OWNER_TAG, "Value": ctx["evaluation_id"]},
                         {
                             "Key": "Name",
@@ -563,7 +633,8 @@ def install_auth_stage(cfg, ports):
         #
         # Selected, not merely present in the matrix: a BLOCKED or already-passed
         # E02 must not create identities nothing will use.
-        challenges = selected(ctx, "E02")
+        product_owner = selected(ctx, "PR03-C01")
+        challenges = selected(ctx, "E02") or product_owner
         fixtures = ports["admin_fixtures"](ctx) if challenges else {}
         if fixtures.get("created_username"):
             # Published before the worker runs so a failed login still reports
@@ -622,7 +693,30 @@ def install_auth_stage(cfg, ports):
         # cannot know this id in advance: the product assigns it. Recorded here,
         # immediately on return, which is the earliest moment it is knowable.
         for kind, identifier in evidence.get("resources") or []:
-            ctx["manifest"].record(kind, identifier, detail={"case": "E02"})
+            # With this run's own account and region, exactly like the Cognito
+            # identity recorded above. Location is part of a resource's identity
+            # (see `cleanup.record`), and this journey runs on the platform
+            # session, so the row it registered lives in the account and region
+            # under evaluation. Recorded with no location at all, the run's own
+            # ADP account was ownership no caller could attribute: the protected
+            # Product driver dispatch counts a second tenant only from ownership
+            # recorded in THIS account and region, so it refused a healthy fleet
+            # on deploy run 39957554663 -- after the probe had already proved
+            # every serving pod -- for having no verified separate tenant. A kind
+            # that could exist in either account is refused here rather than
+            # attributed to the platform session by default.
+            require(
+                kind not in cleanup.LOCATION_REQUIRED,
+                f"install/auth reported a {kind}, which can exist in either "
+                "account; it cannot be attributed to the run's own session",
+            )
+            ctx["manifest"].record(
+                kind,
+                identifier,
+                detail={"case": "E02"},
+                account=str(cfg["platform_account"]),
+                region=cfg["region"],
+            )
 
         # E01: discovery/download unauthenticated, executable install, hashes match.
         install = evidence.get("install") or {}
@@ -707,6 +801,30 @@ def install_auth_stage(cfg, ports):
                 "duplicates": setup.get("duplicates"),
             },
         )
+
+        # Retention comes LAST, and only for a setup that actually completed.
+        #
+        # `retain_product_session` -> `product_sessions.binding` refuses a run
+        # whose owned actor session does not exist, which is exactly the state a
+        # FAILED install/auth leaves behind. Running it before the records above
+        # aborted this stage with "Product recovery session has no original actor
+        # ownership" on run 39733378117 and discarded the worker's real error --
+        # the organization team collection answering HTTP 404 -- so the evidence
+        # named a secondary ownership problem instead of the route defect.
+        # Preserve the failed-stage evidence, report the actual failure, and only
+        # then retain a session a successful setup produced. This weakens no
+        # ownership or tenant check: retention and its binding are unchanged for
+        # a successful setup.
+        if product_owner:
+            require(
+                evidence.get("success"),
+                "install/auth did not complete on the instance, so no Product "
+                "actor session exists to retain: "
+                + (evidence.get("error") or "the worker reported no error")
+                + f" (worker stage: {evidence.get('stage') or 'unknown'})",
+            )
+            if ports.get("retain_product_session"):
+                ports["retain_product_session"](ctx)
 
     return run
 
@@ -808,6 +926,7 @@ JOURNEY_DRIVERS = {
     "E48": "assistant_installations",
     "E49": "assistant_latency",
     "E50": "assistant_baseline",
+    "E51": "dev_box_lifecycle",
     "D01": "hosted_chat",
     "D02": "vault_lifecycle",
     "D03": "hierarchy_lifecycle",
@@ -823,6 +942,11 @@ JOURNEY_DRIVERS = {
     "E11": "github_login",
     "E12": "agent_task",
     "E13": "api_parity",
+    "PR04-C01": "product_scope_isolation",
+    "PR04-C02": "product_scope_denials",
+    "PR04-C03": "product_scope_history",
+    "PR03-C01": "product_profile_roundtrip",
+    "PR03-C02": "product_profile_denial_retry",
     "E14": "update_rollback",
     # #5413. Two purposes, one module: E16 is the concurrent-overlap proof and E17
     # is what a default switch, a refresh and one logout do to the other two. Split
@@ -886,6 +1010,190 @@ def journeys_stage(cfg, ports):
         for case_id, purpose in JOURNEY_DRIVERS.items():
             if not selected(ctx, case_id):
                 continue
+            if case_id in {"PR04-C01", "PR04-C02", "PR04-C03"} and not (
+                cfg.get("product_scopes") or {}
+            ).get("owned_fixture"):
+                record_selected(
+                    ctx,
+                    case_id,
+                    cases.BLOCKED,
+                    {
+                        "detail": "Protected run-owned two-scope CLI fixture is unavailable"
+                    },
+                )
+                continue
+            if case_id in {"PR04-C02", "PR04-C03"}:
+                fixture = cfg.get("product_scopes") or {}
+                manifest = ctx.get("manifest")
+                session = ctx["document"].get("session") or {}
+                deleters = ports.get("deleters") or {}
+                if callable(deleters):
+                    deleters = deleters(cfg, ctx)
+                recovery = deleters.get("product_fixture")
+                project_ids = [
+                    scope.get("project_id") for scope in fixture.get("scopes") or []
+                ]
+                recovery_plan = {
+                    "evaluation_id": ctx.get("evaluation_id"),
+                    "tenant_id": fixture.get("tenant_id"),
+                    "product_id": fixture.get("product_id"),
+                    "project_ids": project_ids,
+                }
+                owned_record = (
+                    next(
+                        (
+                            entry
+                            for entry in manifest.read().get("resources", [])
+                            if entry.get("kind") == "product_fixture"
+                            and entry.get("id") == fixture.get("recovery_manifest_ref")
+                            and entry.get("prefix") == ctx.get("evaluation_id")
+                            and entry.get("status") == cleanup.PENDING
+                            and entry.get("detail") == recovery_plan
+                        ),
+                        None,
+                    )
+                    if manifest
+                    else None
+                )
+                actor_ready = (
+                    all(
+                        fixture.get(key)
+                        for key in (
+                            "editor_fixture_name",
+                            "foreign_fixture_name",
+                            "editor_user_id",
+                            "foreign_user_id",
+                            "foreign_project_id",
+                            "foreign_tenant_id",
+                        )
+                    )
+                    if case_id == "PR04-C02"
+                    else all(
+                        (fixture.get("history") or {}).get(key)
+                        for key in (
+                            "project_id",
+                            "relationship_id",
+                            "linked_revision",
+                            "valid_from",
+                            "unbound_at",
+                            "rebound_at",
+                        )
+                    )
+                    and type((fixture.get("history") or {}).get("linked_revision"))
+                    is int
+                    and (fixture.get("history") or {}).get("project_id")
+                    == (project_ids[1] if len(project_ids) == 2 else None)
+                )
+                if not (
+                    actor_ready
+                    and fixture.get("owned_fixture") is True
+                    and fixture.get("run_id") == ctx.get("evaluation_id")
+                    and fixture.get("recovery_manifest_ref") == ctx.get("evaluation_id")
+                    and fixture.get("tenant_id") == session.get("org_id")
+                    and fixture.get("login_user_id") == session.get("user_id")
+                    and len(project_ids) == 2
+                    and all(project_ids)
+                    and project_ids[0] != project_ids[1]
+                    and owned_record is not None
+                    and callable(recovery)
+                    and getattr(recovery, "available", True)
+                    and getattr(manifest, "on_change", None)
+                ):
+                    record_selected(
+                        ctx,
+                        case_id,
+                        cases.BLOCKED,
+                        {
+                            "detail": "Product scope writes require protected actors or dated history and durable run-owned recovery"
+                        },
+                    )
+                    continue
+                manifest.record_diagnostic(case_id, recovery_plan)
+            if case_id.startswith("PR03-"):
+                if case_id == "PR03-C02" and (
+                    ctx["matrix"].get("PR03-C01", {}).get("status") != cases.PASSED
+                    or not ctx.get("owned_product")
+                ):
+                    record_selected(
+                        ctx,
+                        case_id,
+                        cases.BLOCKED,
+                        {
+                            "detail": "Product denial/retry needs the verified roundtrip Product from this attempt"
+                        },
+                    )
+                    continue
+                deleters = ports.get("deleters") or {}
+                if callable(deleters):
+                    deleters = deleters(cfg, ctx)
+                recovery = deleters.get("product_fixture")
+                if (
+                    not callable(recovery)
+                    or not getattr(recovery, "available", True)
+                    or not getattr(ctx.get("manifest"), "on_change", None)
+                ):
+                    record_selected(
+                        ctx,
+                        case_id,
+                        cases.BLOCKED,
+                        {
+                            "detail": "Product fixture recovery requires a durable, authorized deleter; "
+                            "archive preserves the Product and cannot prove removal"
+                        },
+                    )
+                    continue
+                if case_id == "PR03-C01" and ports.get("prepare_product_profile"):
+                    ports["prepare_product_profile"](ctx)
+                fixture = ctx.get("product_profile") or cfg.get("product_profile") or {}
+                session = (
+                    ctx["document"].get("product_actor_session")
+                    or ctx["document"].get("session")
+                    or {}
+                )
+                require(
+                    fixture.get("owned_mutations_authorized") is True
+                    and fixture.get("tenant_id") == session.get("org_id")
+                    and fixture.get("login_user_id") == session.get("user_id")
+                    and ctx.get("evaluation_id"),
+                    "Product fixture authority or authenticated ownership is missing",
+                )
+                plan = {
+                    "evaluation_id": ctx["evaluation_id"],
+                    "case": case_id,
+                    "criterion": {
+                        "PR03-C01": "AC-01",
+                        "PR03-C02": "AC-02",
+                        "PR03-C03": "AC-03",
+                    }[case_id],
+                    "tenant_id": fixture["tenant_id"],
+                    "name": "Owned Product " + ctx["evaluation_id"],
+                    "create_key": "create_" + ctx["evaluation_id"],
+                    "idempotency_key": "create_" + ctx["evaluation_id"],
+                    "actor_id": session["user_id"],
+                    "source_revision": cfg["expected_revision"],
+                    "instance_id": instance,
+                    "actor_secret_id": f"adp/cli-uplift-eval/{ctx['evaluation_id']}-product-fixtures",
+                    "actor_cognito_id": f"{cfg['cognito_user_pool_id']}/{ctx['evaluation_id']}-product-admin@adp-eval.example",
+                }
+                ctx["manifest"].record_diagnostic(case_id, plan)
+                ctx["manifest"].record(
+                    "product_fixture",
+                    ctx["evaluation_id"],
+                    account=str(cfg["platform_account"]),
+                    region=cfg["region"],
+                    detail=plan,
+                )
+            if (
+                case_id == "E47"
+                and ctx["fault"] not in assistant_fault_control.ASSISTANT_FAULTS
+            ):
+                record_selected(
+                    ctx,
+                    case_id,
+                    cases.NOT_RUN,
+                    {"detail": "E47 requires an explicit assistant fault"},
+                )
+                continue
             driver = ports["journey"](purpose)
             if driver is None:
                 record_selected(
@@ -902,7 +1210,267 @@ def journeys_stage(cfg, ports):
                     },
                 )
                 continue
-            evidence = driver(instance, ctx) or {}
+            try:
+                evidence = driver(instance, ctx) or {}
+            except ports_module.PortError as error:
+                if case_id == "E47" and (
+                    "lacks a verified run-owned inspection" in str(error)
+                    or "mutation capability is unavailable" in str(error)
+                    or "requires a separately prepared run-owned session" in str(error)
+                ):
+                    record_selected(ctx, case_id, cases.BLOCKED, {"detail": str(error)})
+                    continue
+                raise
+            if case_id == "PR04-C01":
+                scope_fixture = cfg.get("product_scopes") or {}
+                scopes = scope_fixture.get("scopes") or []
+                expected_ids = [
+                    scope.get("project_id")
+                    for scope in scopes
+                    if isinstance(scope, dict)
+                ]
+                cli_events = evidence.get("cli_events") or []
+                api_reads = evidence.get("api_readback") or []
+                hashes = evidence.get("installed_hashes") or {}
+                expected_hashes = (
+                    ctx.get("expected_hashes")
+                    or (ctx.get("preflight") or {}).get("served_cli_hashes")
+                    or {}
+                )
+                valid = (
+                    len(expected_ids) == 2
+                    and expected_ids[0] != expected_ids[1]
+                    and len(cli_events) == len(api_reads) == 3
+                    and isinstance(hashes, dict)
+                    and isinstance(expected_hashes, dict)
+                    and all(
+                        isinstance(event, dict)
+                        and isinstance(read, dict)
+                        and event.get("exit_code") == 0
+                        and event.get("argv")
+                        == [
+                            "adp",
+                            "product",
+                            "show",
+                            "--product",
+                            scope_fixture.get("product_id"),
+                            "--project",
+                            (expected_ids[0], expected_ids[1], expected_ids[0])[index],
+                            "--json",
+                        ]
+                        and isinstance(event.get("output"), dict)
+                        and event["output"].get("status") == "ok"
+                        and read.get("product_id") == scope_fixture.get("product_id")
+                        and read.get("project_id")
+                        == (expected_ids[0], expected_ids[1], expected_ids[0])[index]
+                        and read.get("status") == 200
+                        and type(read.get("revision")) is int
+                        and read["revision"] >= 1
+                        for index, (event, read) in enumerate(
+                            zip(cli_events, api_reads)
+                        )
+                    )
+                    and all(
+                        hashes.get(name) == expected_hashes.get(name)
+                        and hashes.get(name)
+                        for name in ("adp", "adp-product.py")
+                    )
+                )
+                attempt = {
+                    "case_id": case_id,
+                    "attempt_id": ctx.get("attempt_id"),
+                    "source_revision": cfg.get("expected_revision"),
+                    "status": "passed"
+                    if evidence.get("success") and valid
+                    else "failed",
+                    "cli_events": cli_events,
+                    "api_readback": api_reads,
+                    "installed_hashes": hashes,
+                }
+                ctx["document"].setdefault("product_scope_attempts", []).append(attempt)
+                if evidence.get("success") and not valid:
+                    evidence = {
+                        **evidence,
+                        "success": False,
+                        "detail": {
+                            "oracle_error": "Installed scope CLI or independent readback evidence missing"
+                        },
+                    }
+            if case_id == "PR04-C02":
+                denials = evidence.get("denials") or []
+                reads = evidence.get("api_readback") or []
+                hashes = evidence.get("installed_hashes") or {}
+                expected_hashes = (
+                    ctx.get("expected_hashes")
+                    or (ctx.get("preflight") or {}).get("served_cli_hashes")
+                    or {}
+                )
+                expected_ids = [
+                    scope.get("project_id")
+                    for scope in (cfg.get("product_scopes") or {}).get("scopes") or []
+                ]
+                valid = (
+                    len(expected_ids) == 2
+                    and expected_ids[0] != expected_ids[1]
+                    and len(denials) == 8
+                    and len(reads) == 4
+                    and [entry.get("project_id") for entry in reads]
+                    == expected_ids + expected_ids
+                    and all(
+                        entry.get("status") == 200
+                        and type(entry.get("revision")) is int
+                        for entry in reads
+                    )
+                    and sum(
+                        entry.get("error_code") == "not_found"
+                        and entry.get("exit_code") == 5
+                        for entry in denials
+                    )
+                    == 7
+                    and sum(
+                        entry.get("error_code") == "permission_denied"
+                        and entry.get("exit_code") == 3
+                        for entry in denials
+                    )
+                    == 1
+                    and isinstance(hashes, dict)
+                    and isinstance(expected_hashes, dict)
+                    and all(
+                        hashes.get(name) and hashes[name] == expected_hashes.get(name)
+                        for name in ("adp", "adp-product.py")
+                    )
+                    and len(evidence.get("cli_events") or []) >= 12
+                )
+                ctx["document"].setdefault("product_scope_attempts", []).append(
+                    {
+                        "case_id": case_id,
+                        "attempt_id": ctx.get("attempt_id"),
+                        "source_revision": cfg.get("expected_revision"),
+                        "status": "passed"
+                        if evidence.get("success") and valid
+                        else "failed",
+                        "denials": denials,
+                        "api_readback": reads,
+                        "installed_hashes": hashes,
+                    }
+                )
+                if evidence.get("success") and not valid:
+                    evidence = {
+                        **evidence,
+                        "success": False,
+                        "detail": {
+                            "oracle_error": "Installed denial or independent readback evidence missing"
+                        },
+                    }
+            if case_id == "PR04-C03":
+                fixture = cfg.get("product_scopes") or {}
+                history = fixture.get("history") or {}
+                revisions = evidence.get("binding_history") or []
+                reads = evidence.get("api_readback") or []
+                hashes = evidence.get("installed_hashes") or {}
+                expected_hashes = (
+                    ctx.get("expected_hashes")
+                    or (ctx.get("preflight") or {}).get("served_cli_hashes")
+                    or {}
+                )
+                valid = (
+                    len(revisions) == 3
+                    and len(reads) == 3
+                    and all(isinstance(entry, dict) for entry in (*revisions, *reads))
+                    and [entry.get("revision") for entry in revisions]
+                    == [
+                        history.get("linked_revision"),
+                        history.get("linked_revision", 0) + 1,
+                        history.get("linked_revision", 0) + 2,
+                    ]
+                    and [entry.get("status") for entry in reads] == [200, 404, 200]
+                    and all(
+                        entry.get("project_id") == history.get("project_id")
+                        for entry in reads
+                    )
+                    and isinstance(hashes, dict)
+                    and isinstance(expected_hashes, dict)
+                    and all(
+                        hashes.get(name) and hashes[name] == expected_hashes.get(name)
+                        for name in ("adp", "adp-product.py")
+                    )
+                    and len(evidence.get("cli_events") or []) >= 5
+                )
+                ctx["document"].setdefault("product_scope_attempts", []).append(
+                    {
+                        "case_id": case_id,
+                        "attempt_id": ctx.get("attempt_id"),
+                        "source_revision": cfg.get("expected_revision"),
+                        "status": "passed"
+                        if evidence.get("success") and valid
+                        else "failed",
+                        "binding_history": revisions,
+                        "api_readback": reads,
+                        "installed_hashes": hashes,
+                    }
+                )
+                if evidence.get("success") and not valid:
+                    evidence = {
+                        **evidence,
+                        "success": False,
+                        "detail": {
+                            "oracle_error": "Installed history or independent readback evidence missing"
+                        },
+                    }
+            if case_id.startswith("PR03-"):
+                attempt = {
+                    "case_id": case_id,
+                    "attempt_id": ctx.get("attempt_id"),
+                    "requirements_revision": cfg.get("expected_revision"),
+                    "status": "passed" if evidence.get("success") else "failed",
+                    "cli_events": evidence.get("cli_events") or [],
+                    "api_readback": evidence.get("api_readback") or [],
+                    "installed_hashes": evidence.get("installed_hashes") or {},
+                    "owned_product": evidence.get("owned_product"),
+                    "denials": evidence.get("denials") or [],
+                    "retry": evidence.get("retry"),
+                    "error_type": evidence.get("error_type"),
+                }
+                if evidence.get("success") and (
+                    not attempt["cli_events"]
+                    or not attempt["installed_hashes"]
+                    or (case_id == "PR03-C01" and len(attempt["api_readback"]) < 5)
+                    or (
+                        case_id == "PR03-C01"
+                        and (
+                            not isinstance(attempt["owned_product"], dict)
+                            or not all(
+                                attempt["owned_product"].get(key)
+                                for key in ("product_id", "project_id")
+                            )
+                            or any(
+                                not isinstance(readback, dict)
+                                or readback.get("product_id")
+                                != attempt["owned_product"]["product_id"]
+                                or readback.get("project_id")
+                                != attempt["owned_product"]["project_id"]
+                                for readback in attempt["api_readback"]
+                            )
+                        )
+                    )
+                    or (
+                        case_id == "PR03-C02"
+                        and (len(attempt["denials"]) < 3 or not attempt["retry"])
+                    )
+                ):
+                    attempt["status"] = "failed"
+                    evidence = {
+                        **evidence,
+                        "success": False,
+                        "detail": {
+                            "oracle_error": "Required installed Product CLI command/readback evidence is missing"
+                        },
+                    }
+                ctx["document"].setdefault("product_cli_attempts", []).append(attempt)
+                if case_id == "PR03-C01" and attempt["status"] == "passed":
+                    ctx["owned_product"] = attempt["owned_product"]
+            if case_id == "E46" and isinstance(evidence.get("fault_target"), dict):
+                ctx["assistant_fault_target"] = evidence["fault_target"]
             # Resources the journey itself removed AND asserted absent. A pair, so
             # a bare id cannot mark the wrong kind's record deleted.
             proved_removed = {
@@ -936,6 +1504,20 @@ def journeys_stage(cfg, ports):
             }
             if evidence.get("error"):
                 detail = {**detail, "error": evidence["error"]}
+            if case_id == "E45" and evidence.get("success"):
+                try:
+                    detail = {
+                        **detail,
+                        **assistant_oracles.isolation_receipts(
+                            evidence.get("qualification"),
+                            cfg.get("assistant_users") or {},
+                            ctx.get("evaluation_id"),
+                            now=int(time.time()),
+                        ),
+                    }
+                except assistant_oracles.EvidenceError as error:
+                    evidence = {**evidence, "success": False}
+                    detail = {**detail, "oracle_error": str(error)}
             if case_id in {"E43", "E44"} and evidence.get("success"):
                 try:
                     if case_id == "E43":
@@ -991,12 +1573,19 @@ def journeys_stage(cfg, ports):
                         **detail,
                         "oracle_error": "Supported assistant baseline evidence is incomplete",
                     }
+            if case_id == "E51" and evidence.get("success"):
+                evidence = {**evidence, "success": False}
+                detail = {
+                    **detail,
+                    "status": "BLOCKED",
+                    "reason": "Independent deployed provider and SSM qualification belongs to #7217",
+                }
             artifacts = {
                 "detail": detail,
                 "transcript": evidence.get("transcript") or [],
                 "correlation": evidence.get("correlation") or {},
             }
-            if case_id in {f"E{index}" for index in range(43, 51)}:
+            if case_id in {f"E{index}" for index in range(43, 52)}:
                 artifacts = {
                     name: assistant_oracles.redact_canary(
                         report.redact(value), evidence.get("canary")
@@ -1006,10 +1595,69 @@ def journeys_stage(cfg, ports):
             detail = artifacts["detail"]
             ctx["transcript"].extend(artifacts["transcript"])
             ctx["correlation"].update(artifacts["correlation"])
-            if case_id in {"E45", "E46", "E47", "E48", "E49"}:
+            if (
+                case_id == "E46"
+                and evidence.get("success")
+                and not detail.get("lifecycle_verified")
+            ):
+                evidence = {**evidence, "success": False}
+                detail = {
+                    **detail,
+                    "oracle_error": "E46 lifecycle and destruction evidence is incomplete",
+                }
+            if case_id == "E46" and evidence.get("reservation_limitation"):
+                limitation = report.redact(evidence["reservation_limitation"])
+                evidence = {**evidence, "success": False}
+                if (
+                    isinstance(limitation, dict)
+                    and limitation.get("criterion") == "QUAL03"
+                    and limitation.get("status") == "known_limitation"
+                    and limitation.get("reservation_recorded") is True
+                    and limitation.get("pod_observed") is False
+                    and limitation.get("observation_source")
+                    == "reservation_and_pod_readback"
+                    and isinstance(limitation.get("reservation_id"), str)
+                    and limitation["reservation_id"]
+                ):
+                    detail = {
+                        **detail,
+                        "reservation_limitation": limitation,
+                        "oracle_error": "QUAL03 creation reservation has no observed pod; known limitation",
+                    }
+                else:
+                    detail = {
+                        **detail,
+                        "oracle_error": "QUAL03 reservation proof is invalid",
+                    }
+            if (
+                case_id == "E47"
+                and evidence.get("success")
+                and (
+                    detail.get("fault") != ctx["fault"]
+                    or detail.get("outcome") not in {"completed", "interrupted"}
+                    or not detail.get("cursor")
+                )
+            ):
+                evidence = {**evidence, "success": False}
+                detail = {
+                    **detail,
+                    "oracle_error": "E47 fault reconciliation evidence is incomplete",
+                }
+            if case_id == "E48":
                 evidence = {**evidence, "success": False}
                 detail = {**detail, "unimplemented": True}
             status = cases.PASSED if evidence.get("success") else cases.FAILED
+            if (
+                case_id == "E45"
+                and evidence.get("stage") == "blocked"
+                and evidence.get("success") is False
+                and not evidence.get("error")
+                and detail.get("status") == "BLOCKED"
+                and str(detail.get("unavailable_capability", "")).startswith(
+                    "chat_qualification_"
+                )
+            ):
+                status = cases.BLOCKED
             if (
                 case_id in {"E28", "E37"}
                 and evidence.get("stage") == "blocked"
@@ -1021,6 +1669,16 @@ def journeys_stage(cfg, ports):
                 ]
                 and detail.get("capability_supported") is False
             ):
+                status = cases.BLOCKED
+            if (
+                case_id == "E49"
+                and evidence.get("stage") == "blocked"
+                and evidence.get("success") is False
+                and not evidence.get("error")
+                and detail.get("status") == "BLOCKED"
+            ):
+                status = cases.BLOCKED
+            if case_id == "E51" and detail.get("status") == "BLOCKED":
                 status = cases.BLOCKED
             record_selected(ctx, case_id, status, detail)
 
@@ -1125,11 +1783,36 @@ def evidence_stage(cfg, ports):
     return run
 
 
+CLEANUP_DRIVERS = {"PR03-C03": "product_fixture"}
+
+
 def cleanup_stage(cfg, ports):
     """Delete exactly what this run created, by recorded ID."""
 
     def run(ctx):
+        cleanup_attempt = None
+        if selected(ctx, "PR03-C03"):
+            cleanup_attempt = {
+                "case_id": "PR03-C03",
+                "attempt_id": ctx["attempt_id"],
+                "requirements_revision": cfg.get("expected_revision"),
+                "status": "failed",
+                "cleanup_results": [],
+            }
+            ctx["document"].setdefault("product_cli_attempts", []).append(
+                cleanup_attempt
+            )
+            if ctx["manifest"].on_change is not None:
+                ctx["manifest"].record_diagnostic(
+                    "PR03-C03:" + ctx["attempt_id"],
+                    {
+                        "evaluation_id": ctx["evaluation_id"],
+                        "attempt_id": ctx["attempt_id"],
+                    },
+                )
         if ctx["fault"] == "cleanup_failure":
+            if cleanup_attempt is not None:
+                record_selected(ctx, "PR03-C03", cases.FAILED, {"cleanup": "failed"})
             return False
         # `ctx` is passed so the connection deleter can use this run's own
         # authenticated session and check ownership before deleting (R8).
@@ -1139,6 +1822,61 @@ def cleanup_stage(cfg, ports):
         ctx["document"]["cleanup_results"] = [
             {"kind": r["kind"], "status": r["status"]} for r in results
         ]
+        if cleanup_attempt is not None:
+            kind = CLEANUP_DRIVERS["PR03-C03"]
+            product_entries = [
+                entry
+                for entry in ctx["manifest"].read().get("resources", [])
+                if entry.get("kind") == kind
+                and cleanup.owned(entry, ctx["evaluation_id"])
+                and entry.get("id") == ctx["evaluation_id"]
+                and entry.get("detail", {}).get("case") == "PR03-C01"
+            ]
+            roundtrip = next(
+                (
+                    attempt
+                    for attempt in reversed(
+                        ctx["document"].get("product_cli_attempts") or []
+                    )
+                    if attempt.get("case_id") == "PR03-C01"
+                    and attempt.get("status") == "passed"
+                    and attempt.get("requirements_revision")
+                    == cfg.get("expected_revision")
+                ),
+                {},
+            )
+            owned_product = roundtrip.get("owned_product") or {}
+            if not isinstance(owned_product, dict):
+                owned_product = {}
+            verified = (
+                ok
+                and len(product_entries) == 1
+                and product_entries[0].get("status") == cleanup.DELETED
+                and bool(owned_product.get("product_id"))
+                and bool(owned_product.get("project_id"))
+                and ctx["matrix"].get("PR03-C01", {}).get("status") == cases.PASSED
+                and any(
+                    result.get("kind") == kind
+                    and result.get("status") == cleanup.DELETED
+                    for result in results
+                )
+                and not ctx["manifest"].outstanding()
+            )
+            cleanup_attempt.update(
+                status="passed" if verified else "failed",
+                owned_product=owned_product,
+                cleanup_results=ctx["document"]["cleanup_results"],
+                absence_verified=verified,
+                retirement_receipt=ctx["document"].get("product_retirement_receipt"),
+                recovery_attempts=ctx["document"].get("product_recovery_attempts")
+                or [],
+            )
+            record_selected(
+                ctx,
+                "PR03-C03",
+                cases.PASSED if verified else cases.FAILED,
+                {"cleanup": "complete" if verified else "failed"},
+            )
         return ok
 
     return run

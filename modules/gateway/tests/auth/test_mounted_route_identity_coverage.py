@@ -27,8 +27,11 @@ import pytest
 from fastapi.routing import APIRoute
 
 from src.agentauth.routes import require_agent_transport
+from src.crew.checkpoint_routes import helper_identity, restore_identity
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.persona_model_probe_routes import verify_model_probe_irsa
+from src.internal.route_authority_manifest import classify_internal_route
+from src.products.runtime_proof_routes import require_runtime_proof_role
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,6 +60,7 @@ REVIEWED_WRAPPERS: frozenset[object] = frozenset(
     {
         require_agent_transport,
         verify_model_probe_irsa,
+        require_runtime_proof_role,
     }
 )
 
@@ -69,9 +73,25 @@ REVIEWED_WRAPPERS: frozenset[object] = frozenset(
 # prefix is /internal/v1 and sub-routers add further prefixes.
 REVIEWED_EXCEPTIONS: frozenset[tuple[frozenset[str], str]] = frozenset(
     {
+        # Ed25519 audience/expiry/semantic-key proof plus fresh Product, grant,
+        # publication and task authority. Returns only a non-cacheable boolean.
+        # Mounted crypto rejection tests: test_l5_contribution_callback.py.
+        (frozenset({"POST"}), "/internal/v1/l5/contribution-authority"),
+        (frozenset({"POST"}), "/internal/v1/tools/knowledge/mcp"),
+        (frozenset({"POST"}), "/internal/v1/tools/github/mcp"),
+        (frozenset({"POST"}), "/internal/v1/tools/slack/mcp"),
+        (frozenset({"POST"}), "/internal/v1/tools/jira/mcp"),
         # knowledge_assets_internal.py: signed asset/tenant/attempt grant,
         # verified against the stored grant digest and current attempt before writes.
         (frozenset({"POST"}), "/internal/v1/knowledge-assets/status-callback"),
+        # #4720: control verifies the signed asset/tenant/attempt grant against
+        # persisted lifecycle, attempt and digest before backend access. Refresh
+        # verifies RS256 Kubernetes JWT issuer, audience, expiry and exact SA sub.
+        # Adversarial checks live in tests/internal/test_ingestion_capabilities.py
+        # and test_ingestion_control_postgres.py; the named-verifier guard also
+        # checks that the mounted routes retain these verifiers.
+        (frozenset({"POST"}), "/internal/v1/knowledge-assets/ingestion-control"),
+        (frozenset({"POST"}), "/internal/v1/knowledge-assets/refresh"),
         # --- Agent routes: STS GetCallerIdentity SigV4 proof (/agent/ subrouter) ---
         # work_routes.py: STS SigV4 proof + signed invocation header + role allowlist
         (frozenset({"POST"}), "/internal/v1/agent/work/admit"),
@@ -84,10 +104,19 @@ REVIEWED_EXCEPTIONS: frozenset[tuple[frozenset[str], str]] = frozenset(
         (frozenset({"POST"}), "/internal/v1/agent/chat/data/session/commit"),
         (frozenset({"POST"}), "/internal/v1/agent/chat/data/resume"),
         (frozenset({"POST"}), "/internal/v1/agent/chat/data/reserve"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/crew-run"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/crew-run/lease"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/crew-run/activate"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/crew-run/ready"),
+        (frozenset({"DELETE"}), "/internal/v1/agent/chat/crew-run/{run_id}"),
         # persona_model_selection.py: STS SigV4 proof via require_agent_transport
         (frozenset({"POST"}), "/internal/v1/agent/persona-model/resolve"),
         # chat_model.py: Kubernetes TokenReview pod identity + live grant + bound dispatch
         (frozenset({"POST"}), "/internal/v1/agent/chat/model-decision"),
+        (frozenset({"POST"}), "/internal/v1/agent/crew/checkpoints/{checkpoint_id}/upload-grant"),
+        (frozenset({"POST"}), "/internal/v1/agent/crew/checkpoints/{checkpoint_id}/complete"),
+        (frozenset({"POST"}), "/internal/v1/agent/crew/checkpoints/{checkpoint_id}/restore-grant"),
+        (frozenset({"POST"}), "/internal/v1/agent/crew/checkpoints/{checkpoint_id}/restore-release"),
         # arc_model.py: GitHub OIDC claims -> registered workflow + human owner
         (frozenset({"POST"}), "/internal/v1/agent/arc/model-decision"),
         # cyber_jobs.py: GitHub OIDC claims -> registered workflow + human owner
@@ -231,17 +260,66 @@ class TestReviewedExceptionsAreStable:
         approved image and original pod name. Persistent turn completion uses
         the same body-bound STS supervisor proof and registered tenant/persona
         checks, verifies the original run/attempt/pod binding, and requires a
-        sealed result and owner delivery without removing the live pod, for a
-        total of 23.
+        sealed result and owner delivery without removing the live pod. Crew-run
+        creation verifies body-bound STS supervisor proof and the registered
+        tenant against the active persistent session's human owner. Revocation
+        and activation use the same supervisor proof; activation additionally
+        requires a reserved creation, a verified pod, ready inventory, and the
+        current owner lease before its conditional transaction. Revocation
+        binds the supervisor proof to the requested run ID, checks its tenant,
+        and conditionally revokes only the matching lease marker. Lease publication
+        and readiness also verify the body-bound STS supervisor proof and registered
+        tenant/persona before checking the persistent human owner, pod and inventory
+        generation. These two routes bring the total to 32. The four checkpoint
+        helper routes remain reviewed: upload-grant and complete require
+        helper_identity, while restore-grant and restore-release require the
+        separate restore_identity. Both verify bearer credentials via Kubernetes
+        TokenReview, bind the audience and service account to a live admitted pod,
+        and check its approved image and owner mount. The checkpoint store then
+        binds the checkpoint digest and owner to the current executor generation.
         Negative authentication cases live in test_chat_sandbox_exit.py,
         test_chat_teardown.py, test_chat_turn_finalization.py, test_chat_turn_completion.py,
         test_chat_supervisor_resume.py, test_chat_sandbox_creation.py and
-        test_chat_persistent_completion.py.
+        test_chat_persistent_completion.py. Crew-run creation and revocation
+        rejection cases live in test_chat_data_routes.py.
+        Checkpoint rejection cases live in tests/crew/test_checkpoint_identity.py
+        and tests/crew/test_checkpoint_routes.py; the test below pins each mounted
+        checkpoint route to its reviewed identity dependency.
+        Slack MCP verifies private edge provenance and the registered gateway
+        role before reading the request body. Tool calls additionally verify
+        the signed facade assertion and current owned Slack connection.
+        Jira uses the same private edge/role verifier before body reads, then
+        verifies the signed facade assertion, current ADP consent, independently
+        observed Atlassian account and protected site before reading an issue.
+        Mounted rejection tests cover missing and forged transport proof.
         Updating this count requires reviewing the
         new route's authentication mechanism."""
-        assert len(REVIEWED_EXCEPTIONS) == 23, (
-            f"REVIEWED_EXCEPTIONS has {len(REVIEWED_EXCEPTIONS)} entries, expected 23. If a new exception was reviewed and added, update this count."
+        assert len(REVIEWED_EXCEPTIONS) == 39, (
+            f"REVIEWED_EXCEPTIONS has {len(REVIEWED_EXCEPTIONS)} entries, expected 39. If a new exception was reviewed and added, update this count."
         )
+
+    @pytest.mark.parametrize("namespace", ["slack", "jira"])
+    def test_oauth_exception_keeps_reviewed_transport_verifier(self, internal_routes, namespace):
+        routes = [route for route in internal_routes if route.path == f"/internal/v1/tools/{namespace}/mcp" and route.methods == {"POST"}]
+        assert len(routes) == 1
+        assert _classify_route(routes[0]) == "exception"
+        assert classify_internal_route(routes[0]).verifier == "require_transport"
+
+    @pytest.mark.parametrize(
+        ("operation", "identity_guard"),
+        [
+            ("upload-grant", helper_identity),
+            ("complete", helper_identity),
+            ("restore-grant", restore_identity),
+            ("restore-release", restore_identity),
+        ],
+    )
+    def test_checkpoint_exception_keeps_reviewed_workload_identity_guard(self, internal_routes, operation, identity_guard):
+        path = "/internal/v1/agent/crew/checkpoints/{checkpoint_id}/" + operation
+        routes = [route for route in internal_routes if route.path == path and route.methods == {"POST"}]
+        assert len(routes) == 1
+        assert identity_guard in dependency_calls(routes[0].dependant)
+        assert _classify_route(routes[0]) == "exception"
 
     def test_every_exception_exists_in_the_app(self, internal_routes):
         """Every reviewed exception must correspond to a real mounted route.

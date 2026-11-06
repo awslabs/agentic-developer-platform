@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "executor": "docker-autoscaler",
+  "cases": [
+    {"name": "privileged", "attempt": "Attempt a privileged operation through the actual executor; inspect effective Privileged and denial before tenant work."},
+    {"name": "root_user", "attempt": "Submit an image docker:user root override; require refusal or a verified non-root UID."},
+    {"name": "host_network", "attempt": "Attempt host network access and inspect the actual container network namespace."},
+    {"name": "host_pid", "attempt": "Attempt access to host processes; inspect PidMode and namespace isolation."},
+    {"name": "host_ipc", "attempt": "Attempt host IPC access; inspect IpcMode and namespace isolation."},
+    {"name": "host_path", "attempt": "Attempt host filesystem access and inspect every mount source."},
+    {"name": "host_device", "attempt": "Attempt access to a host device; inspect device grants and actual refusal."},
+    {"name": "added_capability", "attempt": "Attempt a capability-requiring operation; inspect CapAdd and effective process capabilities."},
+    {"name": "docker_socket", "attempt": "Attempt Docker daemon socket access from build/helper containers; inspect mount sources."},
+    {"name": "manager_credentials", "attempt": "Attempt manager token, IRSA and Fleeting connector credential access; inspect all container mounts."},
+    {"name": "arbitrary_image", "attempt": "Submit a non-allowlisted image through valid GitLab CI YAML; require executor refusal before scripts."},
+    {"name": "arbitrary_service", "attempt": "Submit a non-allowlisted or root service through valid GitLab CI YAML; require refusal before scripts."},
+    {"name": "debug_trace", "attempt": "Submit CI_DEBUG_TRACE=true and verify the pinned executor disables tracing without emitting credentials."}
+  ]
+}

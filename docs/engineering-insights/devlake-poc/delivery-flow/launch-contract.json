@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "status": "runtime-unresolved; independent-code-work-admissible-after-initial-approval",
+  "code_admission": "Verified tenant/Product/Project/repository, code actor authority and initial flow approval. S01 reads the repository design and records readiness gaps; no environment connection is required for code-only work.",
+  "runtime_binding_handoff": "Coordinator resolves actual launch bindings and authority while code work runs. An accepted flow uses a native plan amendment preserving progress; unresolved operations remain blocked. Code approval does not grant environment access.",
+  "private_bindings_required": [
+    "org_id",
+    "product_id",
+    "target",
+    "connection_id",
+    "resource_id",
+    "launch_manifest",
+    "approved_source_workflow_bindings",
+    "protected_provider_selection_and_source_config",
+    "independent_provider_artifact_id_and_sha256"
+  ],
+  "provider_evidence_handoff": {
+    "source": ".github/workflows/devlake-poc-provider-profile.yml",
+    "manifest_receipt": "provider_receipt",
+    "selection": "protected seven-provider revisions must agree with private manifest and independent Profile/provider readbacks",
+    "pilot": "require all 46 pre-closure criteria, including five S14 supplements, plus matching native and independent provider receipts",
+    "closure": "recheck every current provider revision before protected finalization; original 44 mapped rows retained",
+    "live_followup": "SCN-06 GitLab/SaaS consent, qualification, ownership and cleanup require coordinator/operator admission"
+  },
+  "initial_owner_decisions": [
+    "pilot scope and actual component/acceptance owners",
+    "provider consents and actual source targets",
+    "delegated independent recommendation review against frozen rubric",
+    "owned-resource removal on completion/failure/abort/expiry; exact retention holds",
+    "finite spend, retries, wall-clock, runner window and cloud load"
+  ],
+  "admission_checks": [
+    "only registration acceptance gate; all evals machine; ORCHESTRATION_AUTONOMY_GATE_EVERY_WAVE disabled",
+    "registered repository installation and delegated actions admitted",
+    "branch/environment protections admit the actual automated actors; no bypass",
+    "gateway, worker and scheduler have protected operations and durable continuation enabled",
+    "future workflow definition resolved from verified predecessor, not a guessed future SHA",
+    "existing runner pool supports four-hour measurement jobs capped at 300 minutes, fresh job credentials and >=56-hour workflow/execution/authority window; expiry has >=56 hours left",
+    "finalizer authority and external ledger/schedule survive stopped worker and disabled feature"
+  ],
+  "automatic_implementation_checks": [
+    "S09 CI checks every accepted repair path, including workflow-only repairs",
+    "S07 runner/CI/permission preflight precedes mutation; actual operations repair/resume proof runs on owned fixtures inside the admitted campaign before its timed soak/acceptance",
+    "S11 field inventory is derived from verified implementation automatically",
+    "S07 completion consumer only closes matching accepted requirements after final machine verdict"
+  ],
+  "exception_policy": "Stop affected action and finalize owned resources on revoked authority, out-of-scope changes, exhausted limits or failed recovery. Report an explicit blocked/failed outcome; never pass or silently expand scope.",
+  "future_definition_rule": "The fixed definition_revision is an authoring baseline. Each operations binding has definition_predecessor; the engine resolves the reviewed future workflow definition from that receipt without a mid-run policy amendment.",
+  "registration_status": "initial approval recorded; runtime bindings outstanding; see private flow receipts for execution status",
+  "parallel_execution_contract": "parallel-execution.md"
+}

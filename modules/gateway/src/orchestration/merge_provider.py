@@ -32,9 +32,11 @@ class MergeProvider:
     def __init__(self, *, client=None, clock=lambda: datetime.now(UTC)):
         self.client, self.clock = client, clock
 
-    async def token(self, binding, *, write=False, evidence=False, workflows=False):
+    async def token(self, binding, *, write=False, evidence=False, workflows=False, actions=False):
         if workflows and (not write or evidence):
             raise ValueError("Workflow credentials require an authorized merge mutation")
+        if actions and (not evidence or write):
+            raise ValueError("Actions-read credentials require read-only evidence scope")
         app, key = await resolve_tenant_app_credentials(binding.org_id)
         permissions = {"contents": "write" if write else "read", "pull_requests": "write" if write else "read", "metadata": "read"}
         if workflows:
@@ -43,6 +45,8 @@ class MergeProvider:
             if write:
                 raise ValueError("Evidence observations require read-only credentials")
             permissions = dict(READ_PERMISSIONS)
+            if actions:
+                permissions["actions"] = "read"
         token, expires = await mint_installation_token_with_expiry(
             app,
             key,

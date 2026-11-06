@@ -1,11 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { z } from 'zod';
 import { parsePlanning, planningContract, planningReport, readyAssignments, storyMarker, planningIssueContext, planningCorrection } from './planning.js';
 import { PlanningProvider, type PlanningTransport } from './planning-provider.js';
 const base = { summary: 'Plan', requirements: [{ id: 'one', text: 'Retain audit history', source_refs: ['instructions'] }], assumptions: [], open_questions: [], superseded_requirements: [] };
 const product = { ...base, acceptance_criteria: ['History remains after editing'] };
 const refs = new Set(['instructions', 'follow_up_input.real']);
 const parse = (artifact: unknown, previous?: typeof product) => parsePlanning(JSON.stringify({ artifact, clarification: null }), 'product', refs, previous);
+test('oversized malformed planning arrays fail without accumulating per-element errors', () => {
+  assert.throws(() => parse({ ...product, requirements: Array(1000).fill(null) }), (error: unknown) => {
+    assert.ok(error instanceof z.ZodError);
+    assert.deepEqual(error.issues.map(issue => ({ code: issue.code, path: issue.path })), [
+      { code: 'too_big', path: ['artifact', 'requirements'] },
+    ]);
+    return true;
+  });
+});
 test('requirements cannot disappear or change without a real amendment', () => {
   assert.throws(() => parse({ ...product, requirements: [{ ...base.requirements[0], text: 'Remove history' }] }, product), /silently/);
   assert.throws(() => parse({ ...product, superseded_requirements: [{ id: 'one', reason: 'requested', source_ref: 'invented' }] }, product), /amendment/);

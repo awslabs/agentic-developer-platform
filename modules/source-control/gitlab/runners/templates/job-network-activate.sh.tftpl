@@ -1,0 +1,26 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+trap 'rm -f /run/adp-job-ready; systemctl stop sshd.service' ERR
+test "$(sha256sum /usr/local/libexec/adp-job-host | cut -d' ' -f1)" = "${host_sha256}"
+/usr/local/libexec/adp-job-host --boot
+# Wait for the initial observer before changing the destination policy, including
+# when systemd already started it during boot. Its startup guard read must not
+# race --allow's verified policy replacement.
+systemctl start adp-job-observer.service
+/usr/local/libexec/adp-job-host --allow "${gitlab_ip}" "${cache_ip}"
+printf '%s %s\n' "${gitlab_ip}" "${gitlab_host}" >> /etc/hosts
+printf '%s %s\n' "${cache_ip}" "${cache_host}" >> /etc/hosts
+# Retain the initial deny-only service lifetimes, then exercise a controlled
+# restart before this disposable host's sole job. Stop the observer cleanly
+# before Docker so an intentional restart cannot look like a lost event stream.
+# The firewall has no clearing ExecStop; its replacement transaction is atomic.
+systemctl stop adp-job-observer.service
+systemctl restart adp-job-firewall.service
+systemctl restart docker.service
+systemctl start adp-job-observer.service
+test "$(sha256sum /usr/local/libexec/adp-job-images | cut -d' ' -f1)" = "${image_verifier_sha256}"
+python3 /usr/local/libexec/adp-job-images '${job_image}' '${helper_image}'
+/usr/local/libexec/adp-job-host --ready
+systemctl restart sshd.service
+/usr/local/libexec/adp-job-host --verify

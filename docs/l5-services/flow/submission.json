@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "status": "registered_draft_not_activated",
+  "epic": "https://github.com/aws-e/adp/issues/8682",
+  "flow_slug": "l5-security-8682",
+  "flow_location": "Authenticated Delivery Flows page; private instance identifiers omitted",
+  "plan_version": 1,
+  "authored_nodes": 21,
+  "effective_nodes": 22,
+  "development_nodes": 16,
+  "operations_nodes": 1,
+  "machine_evaluations": 4,
+  "initial_gates": 1,
+  "recurring_human_gates": 0,
+  "planned_coordinated_l5_releases": 1,
+  "gateway_frontend_auto_deployments": "continue_without_code_wave_barriers",
+  "file_groups": "optional_nonbinding_no_diff_enforcement",
+  "repair_paths": [],
+  "activated": false,
+  "validation": {
+    "local_authored_proposal": "passed",
+    "local_transformed_proposal": "passed",
+    "server_preview_violations": 0,
+    "live_qualification": "not_run",
+    "execution_readback": "zero_executions_no_active_policy",
+    "stored_plan_hash": "matches_bound_preview_and_private_proposal",
+    "story_file_maps": "all_16_match"
+  },
+  "implementation_pr": "https://github.com/aws-e/adp/pull/8778"
+}

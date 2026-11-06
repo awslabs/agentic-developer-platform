@@ -1,0 +1,23 @@
+[
+  {
+    "name": "virtualenv",
+    "version": "21.7.13",
+    "filename": "virtualenv-21.7.13-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/9a/ce/e74453531b0c49a58d0e8a4f9bab4495705859fee4a4f7de27d58f4a791a/virtualenv-21.7.13-py3-none-any.whl",
+    "sha256": "1bea5af7463f59c4719db48fe739579a2a4f569c96f26c086edda85c96da9f59"
+  },
+  {
+    "name": "certifi",
+    "version": "2026.10.19",
+    "filename": "certifi-2026.10.19-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl",
+    "sha256": "42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b"
+  },
+  {
+    "name": "pip",
+    "version": "26.2.2",
+    "filename": "pip-26.2.2-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl",
+    "sha256": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+  }
+]

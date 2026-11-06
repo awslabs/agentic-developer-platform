@@ -76,6 +76,7 @@ class ConclusionAuthority(StrEnum):
     # A story, which passes on evidence of a merged pull request in scope — not on an
     # agent's own report that it finished.
     MERGED_PULL_REQUEST = "merged_pull_request"
+    EVIDENCE = "evidence"
     # A kind this module has no rule for. Reported rather than assumed.
     UNDETERMINED = "undetermined"
 
@@ -143,7 +144,7 @@ def wave_label(epic_ref: str, wave_ref: str) -> str:
     return f"{epic_ref}/{wave_ref}"
 
 
-def conclusion_authority(kind: str, address: str, policy: ExecutionPolicy | None) -> ConclusionAuthority:
+def conclusion_authority(kind: str, address: str, policy: ExecutionPolicy | None, *, executor=None, evidence_expectations=()) -> ConclusionAuthority:
     """Who may conclude this node, given the policy the plan proposes.
 
     Reads the *proposed* policy on purpose. The reviewer is deciding whether to grant
@@ -161,6 +162,15 @@ def conclusion_authority(kind: str, address: str, policy: ExecutionPolicy | None
         return ConclusionAuthority.HUMAN_DECISION
 
     if kind == NodeKind.STORY.value:
+        from .developer_personas import operations_executor_enabled
+
+        if (
+            operations_executor_enabled()
+            and executor is not None
+            and executor.role == "operate"
+            and any(item.startswith("runtime_verified:") for item in evidence_expectations)
+        ):
+            return ConclusionAuthority.EVIDENCE
         return ConclusionAuthority.MERGED_PULL_REQUEST
 
     if kind == NodeKind.EVAL.value:
@@ -208,7 +218,9 @@ def derive_nodes(proposal: LoopProposal) -> dict[str, DerivedNode]:
             address=node.address,
             epic_ref=epic_ref,
             wave_ref=wave_ref,
-            concluded_by=conclusion_authority(node.kind, node.address, policy),
+            concluded_by=conclusion_authority(
+                node.kind, node.address, policy, executor=node.executor, evidence_expectations=node.evidence_expectations
+            ),
             depends_on=sorted(predecessors.get(node.address, ())),
         )
     return derived

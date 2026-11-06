@@ -21,6 +21,8 @@ set -euo pipefail
 #   ./platform/scripts/deploy-all.sh --skip-broker              # Skip broker Lambda deploy (step 7)
 #   ./platform/scripts/deploy-all.sh --skip-admin-bootstrap     # Skip first-admin DB seeding (step 8)
 #   ./platform/scripts/deploy-all.sh --skip-webhook-ingress     # Skip webhook-ingress stack (step 9)
+#   ./platform/scripts/deploy-all.sh --dev-box on               # Also run the optional Dev Box module (step 12)
+#   ./platform/scripts/deploy-all.sh --dev-box-only             # Platform + Dev Box only (existing environment)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,6 +46,9 @@ ENVIRONMENT="$ADP_ENVIRONMENT"
 GATEWAY_ONLY=false
 AGENT_FACTORY_ONLY=false
 AGENT_CONTEXT_ONLY=false
+INSIGHTS_ONLY=false
+TOOLS_ONLY=false
+TOOLS_ADAPTERS_ONLY=false
 SKIP_AGENT_CONTEXT=false
 AGENT_CONTEXT_ENABLED="${AGENT_CONTEXT_ENABLED:-false}"
 DESTROY=false
@@ -58,6 +63,13 @@ CONFIRM_DESTRUCTIVE=false
 RESUME=false
 FROM_PHASE=""
 ALLOW_KNOWN_CLAUDE_GAP=false
+# Chat rollout mode (#7899): retire (default, today's behaviour) | delegated | keep-legacy.
+CHAT_MODE="${ADP_CHAT_MODE:-retire}"
+CHAT_EXCEPTION="${ADP_CHAT_EXCEPTION:-}"
+# Dev Box (#7998): OPTIONAL module. on | off | "" (decide from the environment's
+# dev-box.tfvars stage_enabled); --dev-box-only runs platform + Dev Box alone.
+DEV_BOX_MODE="${ADP_DEV_BOX:-}"
+DEV_BOX_ONLY=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -66,6 +78,9 @@ while [ "$#" -gt 0 ]; do
     --gateway-only) GATEWAY_ONLY=true ;;
     --agent-factory-only) AGENT_FACTORY_ONLY=true ;;
     --agent-context-only) AGENT_CONTEXT_ONLY=true ;;
+    --insights-only) INSIGHTS_ONLY=true ;;
+    --tools-only) TOOLS_ONLY=true ;;
+    --tools-adapters-only) TOOLS_ADAPTERS_ONLY=true ;;
     --skip-agent-context) SKIP_AGENT_CONTEXT=true ;;
     --superplane-only|--skip-superplane)
       echo "Superplane is deployed from modules/domain-apps/superplane/; use its deploy.sh or module workflows." >&2
@@ -82,6 +97,10 @@ while [ "$#" -gt 0 ]; do
     --allow-known-claude-gap) ALLOW_KNOWN_CLAUDE_GAP=true ;;
     --update) UPDATE_MODE=true ;;
     --confirm-destructive) CONFIRM_DESTRUCTIVE=true ;;
+    --chat) CHAT_MODE="${2:?--chat requires retire, delegated or keep-legacy}"; shift ;;
+    --chat-exception) CHAT_EXCEPTION="${2:?--chat-exception requires a qualification/exception record reference}"; shift ;;
+    --dev-box) DEV_BOX_MODE="${2:?--dev-box requires on or off}"; shift ;;
+    --dev-box-only) DEV_BOX_ONLY=true; DEV_BOX_MODE=on ;;
     --help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -97,13 +116,18 @@ while [ "$#" -gt 0 ]; do
       echo "  --resume               Resume completed named phases for this source and target"
       echo "  --from PHASE           Rerun PHASE and later phases (requires matching checkpoints)"
       echo "  --allow-known-claude-gap Accept the reviewed pricing gap across accounts"
-      echo "  Phases: bootstrap platform gateway-infra gateway gateway-alb broker admin webhook factory context finalize frontend verify"
+      echo "  Phases: bootstrap platform gateway-infra gateway gateway-alb broker admin webhook factory tools-adapters dev-box context finalize frontend verify"
       echo "Target: --env <dev|staging|prod> --region <aws-region> (AWS_PROFILE selects account)"
       echo ""
       echo "Scope:"
       echo "  --gateway-only         Platform + gateway only"
       echo "  --agent-factory-only   Platform + agent-factory only"
       echo "  --agent-context-only   Platform + agent-context only"
+      echo "  --dev-box-only         Platform + Dev Box only (add the optional module to an existing environment)"
+      echo "  --insights-only        Deploy isolated Insights infrastructure only"
+      echo "  --tools-only           Deploy the independently gated tools module"
+      echo "  --tools-adapters-only  Install adapter foundations using ADP_TOOLS_ADAPTERS_CONFIG"
+      echo "                         --ci plans only; runtime deployment remains in the tools workflow"
       echo ""
       echo "Skip:"
       echo "  --skip-frontend        Skip frontend build and deploy"
@@ -115,6 +139,20 @@ while [ "$#" -gt 0 ]; do
       echo ""
       echo "Build:"
       echo "  --local                Use local Docker for image builds (instead of CodeBuild)"
+      echo ""
+      echo "Chat (Step 10; ADP_CHAT_MODE / ADP_CHAT_EXCEPTION set the same values):"
+      echo "  --chat retire          Retire the legacy credentialed chat worker; chat stays unavailable (default)"
+      echo "  --chat keep-legacy     Leave the legacy credentialed chat worker running; skip retirement"
+      echo "  --chat delegated       Build supervisor + sandbox images, provision the sandbox gateway TLS"
+      echo "                         endpoint, apply the delegated ScaledJob and Crew controls, then retire"
+      echo "                         the legacy worker. Requires --chat-exception."
+      echo "  --chat-exception REF   Qualification/exception record for delegated chat (#6937 evidence ID);"
+      echo "                         recorded in the deployment journal"
+      echo ""
+      echo "Dev Box (Step 12, optional module; ADP_DEV_BOX sets the same value):"
+      echo "  --dev-box on|off       Run modules/user-services/dev-box/scripts/deploy-dev-box.sh after the"
+      echo "                         agent factory (default: off unless environments/<env>/modules/dev-box.tfvars"
+      echo "                         sets stage_enabled = true, as dev does). Off deploys exactly today's platform."
       exit 0
       ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
@@ -129,12 +167,78 @@ ok()   { echo -e "${GREEN}✓ $1${NC}"; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; }
 fail() { echo -e "${RED}✗ $1${NC}"; exit 1; }
 
+# =============================================================================
+# Chat rollout mode (#7899) — decided before preflight, builds or any apply.
+# =============================================================================
+# retire      Today's behaviour: Step 10 drains the legacy credentialed worker
+#             (`upgrade-chat.py drain` deletes ScaledJob chat-agent-worker) and
+#             verifies it is gone. Chat is unavailable afterwards.
+# keep-legacy Leaves the legacy worker and its grants in place; no retirement step
+#             runs. The journal records that a credentialed worker remains.
+# delegated   Builds the supervisor and sandbox images, provisions the sandbox
+#             gateway TLS endpoint, applies the supervisor/sandbox ScaledJob and
+#             the Crew pod controls, and only then retires the legacy worker.
+#             Delegated chat is gated on the #6937 qualification, so the mode
+#             refuses to start without a recorded qualification/exception
+#             reference (--chat-exception), which goes into the journal.
+case "$CHAT_MODE" in
+  retire|delegated|keep-legacy) ;;
+  *) fail "--chat must be retire, delegated or keep-legacy (got: $CHAT_MODE)" ;;
+esac
+if [ "$CHAT_MODE" = delegated ]; then
+  [ -n "$CHAT_EXCEPTION" ] || fail "--chat delegated requires --chat-exception <qualification/exception record, e.g. the #6937 evidence ID>; refusing before any build"
+  [[ "$CHAT_EXCEPTION" =~ ^[A-Za-z0-9#][A-Za-z0-9#:/._@+\ -]{0,199}$ ]] || fail "--chat-exception must be a short record reference (letters, digits, spaces, #:/._@+-)"
+elif [ -n "$CHAT_EXCEPTION" ]; then
+  fail "--chat-exception is only meaningful with --chat delegated"
+fi
+# The ingest Lambda's ADP_CHAT_MODEL_POLICY_ENABLED must agree with the delegated
+# ScaledJob's requirement (true); every other mode keeps the module default. This is
+# the delegated-chat plumbing switch (the ingest roots every turn as a model root and
+# the sandbox obtains its model from /v1/chat/model/decision; the ingest answers
+# "Chat is currently unavailable" and the sandbox admission policies refuse pods
+# without it). Whether that decision REQUIRES invocability evidence is the separate
+# chat model-policy posture, SSM /adp/<env>/gateway/chat-model-policy-posture
+# (#7997; default advisory), read in Step 10c below.
+CHAT_MODEL_POLICY_ENABLED=false
+[ "$CHAT_MODE" != delegated ] || CHAT_MODEL_POLICY_ENABLED=true
+case "$CHAT_MODE" in
+  delegated) ok "Chat mode: delegated (qualification/exception record: $CHAT_EXCEPTION)" ;;
+  keep-legacy) warn "Chat mode: keep-legacy — the legacy credentialed chat worker will remain running" ;;
+  retire) ok "Chat mode: retire — the legacy credentialed chat worker will be retired; chat becomes unavailable" ;;
+esac
+
 if [ "${ADP_ENABLED_DOMAIN_APPS+x}" = x ]; then
   fail "ADP_ENABLED_DOMAIN_APPS is retired; deploy optional build jobs from their domain modules"
 fi
 if [ "${SUPERPLANE_ENABLED:-false}" = true ]; then
   fail "SUPERPLANE_ENABLED no longer deploys Superplane; use modules/domain-apps/superplane/deploy.sh"
 fi
+
+# =============================================================================
+# Dev Box mode (#7998) — optional module, decided before preflight or any apply.
+# =============================================================================
+# off  (default) Nothing Dev Box-related runs; a fresh environment is exactly
+#      today's platform. The gateway renders empty BG_DEV_BOX_* values.
+# on   Step 12 calls modules/user-services/dev-box/scripts/deploy-dev-box.sh
+#      (platform prerequisites, AMI, foundation, controller, seed, verification).
+#      Requires environments/<env>/modules/dev-box.tfvars.
+# An empty mode is decided by that tfvars file: `stage_enabled = true` turns the
+# stage on (dev), anything else leaves it off.
+DEV_BOX_TFVARS="$ROOT_DIR/environments/$ENVIRONMENT/modules/dev-box.tfvars"
+if [ -z "$DEV_BOX_MODE" ]; then
+  DEV_BOX_MODE=off
+  if [ -f "$DEV_BOX_TFVARS" ] && grep -Eq '^[[:space:]]*stage_enabled[[:space:]]*=[[:space:]]*true' "$DEV_BOX_TFVARS"; then
+    DEV_BOX_MODE=on
+  fi
+fi
+case "$DEV_BOX_MODE" in
+  on)
+    [ -f "$DEV_BOX_TFVARS" ] || fail "--dev-box on requires environments/$ENVIRONMENT/modules/dev-box.tfvars (copy environments/dev/modules/dev-box.tfvars and set the platform-account values); refusing before any apply"
+    ok "Dev Box: on — Step 12 runs modules/user-services/dev-box/scripts/deploy-dev-box.sh ($DEV_BOX_TFVARS)" ;;
+  off) [ "$DEV_BOX_ONLY" = false ] || fail "--dev-box-only cannot combine with --dev-box off"
+       echo "Dev Box: off (optional module not selected; --dev-box on or stage_enabled = true in environments/$ENVIRONMENT/modules/dev-box.tfvars enables it)" ;;
+  *) fail "--dev-box must be on or off (got: $DEV_BOX_MODE)" ;;
+esac
 
 # =============================================================================
 # Mutual exclusion checks
@@ -146,10 +250,52 @@ if [ "$UPDATE_MODE" = true ] && [ "$CI_MODE" = true ]; then
   fail "--update and --ci are mutually exclusive"
 fi
 _SCOPE_COUNT=0
-for _scope in "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY"; do
+for _scope in "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY" "$DEV_BOX_ONLY" "$INSIGHTS_ONLY" "$TOOLS_ONLY" "$TOOLS_ADAPTERS_ONLY"; do
   [ "$_scope" != true ] || _SCOPE_COUNT=$((_SCOPE_COUNT + 1))
 done
 [ "$_SCOPE_COUNT" -le 1 ] || fail "Choose only one scope flag"
+if [ -n "${ADP_TOOLS_ADAPTERS_CONFIG:-}" ] && [ "$DESTROY" = false ] \
+  && { [ "$_SCOPE_COUNT" -eq 0 ] || [ "$TOOLS_ADAPTERS_ONLY" = true ]; }; then
+  ADP_TOOLS_ADAPTERS_CONFIG=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=True))' "$ADP_TOOLS_ADAPTERS_CONFIG") \
+    || fail "Cannot resolve the private adapter installer configuration"
+  export ADP_TOOLS_ADAPTERS_CONFIG
+  (cd "$ROOT_DIR" && python3 -m modules.tools.adapters.installer validate \
+    --config "$ADP_TOOLS_ADAPTERS_CONFIG" --account "$ADP_ACCOUNT_ID" \
+    --region "$AWS_REGION" --environment "$ENVIRONMENT") || fail "Adapter installer configuration does not match this target"
+fi
+install_tools_adapters() {
+  [ -f "${ADP_TOOLS_ADAPTERS_CONFIG:-}" ] || fail "Set ADP_TOOLS_ADAPTERS_CONFIG to the private installer configuration"
+  local adapter_work adapter_mode
+  adapter_work=$(mktemp -d "${TMPDIR:-/tmp}/adp-tools-adapters-install.XXXXXX")
+  adapter_mode=install
+  [ "$CI_MODE" = false ] || adapter_mode=plan
+  echo "Adapter foundation plans and receipts: $adapter_work"
+  (cd "$ROOT_DIR" && python3 -m modules.tools.adapters.installer "$adapter_mode" \
+    --config "$ADP_TOOLS_ADAPTERS_CONFIG" --work-dir "$adapter_work" \
+    --account "$ADP_ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT")
+}
+if [ "$TOOLS_ADAPTERS_ONLY" = true ]; then
+  [ "$DESTROY" = false ] && [ "$LOCAL_MODE" = false ] && [ -z "$FROM_PHASE" ] \
+    || fail "--tools-adapters-only cannot combine with destroy, local, or from"
+  # Each invocation replans against both original backends; interrupted installs
+  # converge through a fresh saved plan, never a stale plan or an empty state.
+  install_tools_adapters
+  exit 0
+fi
+if [ "$TOOLS_ONLY" = true ]; then
+  [ "$DESTROY" = false ] && [ "$UPDATE_MODE" = false ] && [ "$LOCAL_MODE" = false ] && [ -z "$FROM_PHASE" ] || fail "--tools-only cannot combine with destroy, update, local, or from"
+  export ADP_TOOLS_ENVIRONMENT="$ENVIRONMENT" ADP_TOOLS_AWS_REGION="$AWS_REGION" ADP_TOOLS_ACCOUNT_ID="$ADP_ACCOUNT_ID"
+  args=()
+  [ "$CI_MODE" = false ] || args+=(--plan)
+  [ "$RESUME" = false ] || args+=(--resume)
+  exec bash "$ROOT_DIR/modules/tools/deploy.sh" "${args[@]}"
+fi
+if [ "$INSIGHTS_ONLY" = true ]; then
+  [ "$DESTROY" = false ] && [ "$UPDATE_MODE" = false ] && [ "$RESUME" = false ] && [ "$LOCAL_MODE" = false ] || fail "--insights-only cannot combine with destroy, update, resume, or local modes"
+  args=(--infra --env "$ENVIRONMENT" --region "$AWS_REGION")
+  if [ "$CI_MODE" = true ]; then args+=(--plan); fi
+  exec bash "$ROOT_DIR/modules/insights/deploy.sh" "${args[@]}"
+fi
 WORKER_MIGRATION=false
 if [ -n "${ADP_WORKER_MIGRATION_EVIDENCE:-}" ]; then
   [ "$UPDATE_MODE" = true ] && [ "$_SCOPE_COUNT" -eq 0 ] && [ "$SKIP_WEBHOOK_INGRESS" = false ] \
@@ -166,7 +312,7 @@ worker_migration() {
 # source, account, manifest and every artifact before any infrastructure apply.
 if [ -n "${ADP_RELEASE_DIR:-}" ]; then
   [ "$UPDATE_MODE" = true ] && [ "$ENVIRONMENT" = dev ] && [ "$AWS_REGION" = us-east-1 ] || fail "Prepared releases require --update --env dev --region us-east-1"
-  for flag in "$DESTROY" "$CI_MODE" "$LOCAL_MODE" "$CONFIRM_DESTRUCTIVE" "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY" "$SKIP_FRONTEND" "$SKIP_BROKER" "$SKIP_ADMIN_BOOTSTRAP" "$SKIP_WEBHOOK_INGRESS" "$SKIP_AGENT_CONTEXT"; do
+  for flag in "$DESTROY" "$CI_MODE" "$LOCAL_MODE" "$CONFIRM_DESTRUCTIVE" "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY" "$DEV_BOX_ONLY" "$SKIP_FRONTEND" "$SKIP_BROKER" "$SKIP_ADMIN_BOOTSTRAP" "$SKIP_WEBHOOK_INGRESS" "$SKIP_AGENT_CONTEXT"; do
     [ "$flag" = false ] || fail "Release upgrades require the full deployment and safety gates"
   done
   python3 "$SCRIPT_DIR/release/artifacts.py" verify-prepared --directory "$ADP_RELEASE_DIR"
@@ -221,8 +367,26 @@ fi
 if [ "$CI_MODE" = false ] && [ "$DESTROY" = false ]; then
   source "$SCRIPT_DIR/deploy-checkpoints.sh"
   deploy_checkpoint_init
+  # The operator's chat decision is part of the journal for this target.
+  deploy_checkpoint note chat-mode "$CHAT_MODE" || fail "Cannot record the chat mode in the deployment journal"
+  if [ -n "$CHAT_EXCEPTION" ]; then
+    deploy_checkpoint note chat-exception "$CHAT_EXCEPTION" || fail "Cannot record the chat exception in the deployment journal"
+  fi
+  # The optional Dev Box module leaves no footprint unless selected: the journal
+  # note is written only when the stage is on (the mode is always in the resume
+  # binding, so a resumed run cannot flip it).
+  if [ "$DEV_BOX_MODE" = on ]; then
+    deploy_checkpoint note dev-box-mode "$DEV_BOX_MODE" || fail "Cannot record the Dev Box mode in the deployment journal"
+  fi
 fi
 
+
+# Validate admin selection before provisioning; updates keep existing administrators.
+if [ "$UPDATE_MODE" = false ] && [ "$DESTROY" = false ] && [ "$CI_MODE" = false ] && \
+   [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$DEV_BOX_ONLY" = false ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
+  python3 "$ROOT_DIR/modules/gateway/scripts/bootstrap-admin.py" --env "$ENVIRONMENT" --check-config \
+    || fail "Select ADP_BOOTSTRAP_ADMIN_EMAIL before installing (see bootstrap-administrator.md)."
+fi
 
 # ---------------------------------------------------------------------------
 # Detect operator's public IP and lock EKS public API to /32 (portable)
@@ -406,6 +570,62 @@ refresh_credentials() {
 # unconditional — no flag dance needed.
 
 # =============================================================================
+# Helper: adopt an object that already exists live but is not yet in this stack's
+# Terraform state. Several dev objects were first created by hand and declared
+# afterwards (#7892); without adoption a plan fails with "already exists".
+# Usage: tf_adopt_existing <address> <import-id> <probe command...> -- <terraform var args...>
+# The probe decides whether the live object exists; the var args are the same
+# -var/-var-file arguments the following apply uses, so the import evaluates the
+# configuration identically. A fresh environment has nothing to adopt.
+tf_adopt_existing() {
+  local ADDR="$1" IMPORT_ID="$2"; shift 2
+  local PROBE=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do PROBE+=("$1"); shift; done
+  [ "$#" -gt 0 ] && shift
+  if terraform state show "$ADDR" >/dev/null 2>&1; then return 0; fi
+  if ! "${PROBE[@]}" >/dev/null 2>&1; then return 0; fi
+  echo "Adopting existing $IMPORT_ID into $ADDR..."
+  terraform import -input=false "$@" "$ADDR" "$IMPORT_ID" >/dev/null \
+    || warn "Could not adopt $IMPORT_ID into $ADDR; the apply will report the conflict"
+}
+
+# Helper: run the gateway schema migration Job pinned to the release image before
+# the Deployment changes, mirroring gateway-deploy.yml. Nullable schema expansion
+# must finish before the new ORM can serve; a failed migration leaves the previous
+# release serving. Arguments: <rendered deployment manifest> <release image>.
+migrate_gateway_before_rollout() {
+  python3 "$ROOT_DIR/modules/gateway/scripts/migrate-before-rollout.py" \
+    --manifest "$1" --image "$2" --namespace adp-gateway \
+    || fail "Gateway schema migration failed; the previous release keeps serving"
+}
+
+# Helper: gateway service role IAM budget (#7944). The gateway module's grants on
+# adp-<env>-role-gateway-service are three consolidated managed policies. An
+# environment that still carries the old inline policies gets an extra complete
+# saved-plan pass before the normal gateway apply, so the role never loses a
+# permission: pass 1 attaches the managed policies while every live inline policy
+# is retained byte-for-byte (no PutRolePolicy at the limit); the normal pass then
+# retires them under the superset gate in upgrade-plan-policy.py. The helper
+# script only reads the role; it exits 2 when the attachment quota cannot take
+# pass 1 and names what to detach. Arguments: the same plan args the following
+# gateway apply uses (ALB vars, engine digest).
+gateway_role_policy_cutover() {
+  local CUTOVER="$UPGRADE_RUN_DIR/gateway-role-policy-cutover.tfvars.json" PHASE
+  PHASE=$(python3 "$ROOT_DIR/modules/gateway/scripts/gateway-role-policy-cutover.py" \
+    --environment "$ENVIRONMENT" --region "$AWS_REGION" --output "$CUTOVER") \
+    || fail "Cannot prepare the gateway service role policy cutover (see docs/adp-platform-deployment/deployment-reference.md, 'Gateway service role IAM budget')"
+  case "$PHASE" in
+    cutover)
+      step "Step 3a/11: Gateway service role policy cutover (pass 1: attach consolidated policies, retain inline)"
+      terraform_update_apply "gateway" "$GATEWAY_UPDATE_VAR_FILE" "$@" -var-file="$CUTOVER"
+      ok "Consolidated gateway-role policies attached; the next pass retires the legacy grants"
+      ;;
+    retire) echo "Gateway service role: consolidated policies attached; this pass retires the legacy grants" ;;
+    complete) ;;
+    *) fail "Invalid gateway service role cutover phase: $PHASE" ;;
+  esac
+}
+
 # Helper: run a CodeBuild job (project must already exist via Terraform)
 # =============================================================================
 # Uses codebuild-run.sh which uploads source to a per-build-unique S3 key
@@ -826,6 +1046,30 @@ prepare_gateway_image() {
   GATEWAY_IMAGE_PREPARED=true
 }
 
+prepare_gateway_capacity() {
+  CAPACITY_LOCK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/adp-gateway-owner.XXXXXX")
+  CAPACITY_OWNER_FILE="$CAPACITY_LOCK_DIR/owner.json"
+  capacity_lock() {
+    python3 "$SCRIPT_DIR/gateway-capacity-lock.py" "$1" \
+      --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+      --cluster "$EKS_CLUSTER" --namespace adp-gateway --owner-file "$CAPACITY_OWNER_FILE"
+  }
+  capacity_lock acquire || fail "Another gateway capacity deployment owns this target"
+  capacity_cleanup() {
+    local result=$?
+    if [ -f "$CAPACITY_OWNER_FILE" ]; then
+      capacity_lock release || warn "Gateway capacity owner needs recovery"
+    fi
+    [ -z "${CAPACITY_BUNDLE:-}" ] || rm -rf "$CAPACITY_BUNDLE"
+    rm -rf "$CAPACITY_LOCK_DIR"
+    if declare -F deploy_checkpoint_exit >/dev/null; then
+      deploy_checkpoint_exit "$result" || true
+    fi
+    return "$result"
+  }
+  trap capacity_cleanup EXIT
+}
+
 # =============================================================================
 # Step 2: Platform infra
 # =============================================================================
@@ -915,6 +1159,7 @@ PYENGINE
     else
       python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
         --quiesce --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+        --product-dispatch-inputs "$UPGRADE_RUN_DIR/gateway.tfvars.json" \
         || fail "Cannot pause and drain the existing engine before gateway changes"
     fi
   else
@@ -930,6 +1175,27 @@ PYENGINE
   # Gateway infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/infra"
   terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false -reconfigure
+  # Chief-of-Staff flag parameters (#7197) were first set by an operator on dev;
+  # adopt any that already exist so the declared value takes over (#7892).
+  GATEWAY_ADOPT_VAR_FILE="../../../environments/$ENVIRONMENT/modules/gateway.tfvars"
+  [ "$UPDATE_MODE" = true ] && GATEWAY_ADOPT_VAR_FILE="$GATEWAY_UPDATE_VAR_FILE"
+  for pair in \
+    "aws_ssm_parameter.feature_chat=/adp/${ENVIRONMENT}/gateway/feature-chat" \
+    "aws_ssm_parameter.feature_assistant_ui=/adp/${ENVIRONMENT}/gateway/feature-assistant-ui" \
+    "aws_ssm_parameter.feature_crew_dashboard=/adp/${ENVIRONMENT}/gateway/feature-crew-dashboard" \
+    "aws_ssm_parameter.crew_proxy_enabled=/adp/${ENVIRONMENT}/gateway/crew-proxy-enabled" \
+    "aws_ssm_parameter.chat_authority_worker_images=/adp/${ENVIRONMENT}/gateway/chat-authority-worker-images" \
+    "aws_ssm_parameter.chat_sandbox_image_digests=/adp/${ENVIRONMENT}/gateway/chat-sandbox-image-digests" \
+    "aws_ssm_parameter.chat_crew_image_digests=/adp/${ENVIRONMENT}/gateway/chat-crew-image-digests" \
+    "aws_ssm_parameter.chat_worker_service_account=/adp/${ENVIRONMENT}/gateway/chat-worker-service-account" \
+    "aws_ssm_parameter.chat_persistent_executor=/adp/${ENVIRONMENT}/gateway/chat-persistent-executor" \
+    "aws_ssm_parameter.model_root_bindings=/adp/${ENVIRONMENT}/gateway/model-root-bindings" \
+    "aws_ssm_parameter.chat_data_enabled=/adp/${ENVIRONMENT}/gateway/chat-data-enabled" \
+    "aws_ssm_parameter.github_user_access_enabled=/adp/${ENVIRONMENT}/gateway/github-user-access-enabled"; do
+    tf_adopt_existing "${pair%%=*}" "${pair#*=}" \
+      aws ssm get-parameter --name "${pair#*=}" --region "$AWS_REGION" \
+      -- -var-file="$GATEWAY_ADOPT_VAR_FILE" -var "orchestration_tick_image_digest=$GATEWAY_INITIAL_ENGINE_DIGEST"
+  done
   # Issue #3789: enable_webhook_secrets_kms_grant removed — the CMK now lives in
   # platform infra (applied Step 2) so the gateway grant is unconditional.
   if [ "$UPDATE_MODE" = true ]; then
@@ -937,6 +1203,11 @@ PYENGINE
     ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/wire-gateway-alb.sh" \
       || fail "Cannot discover existing gateway load balancers"
     gateway_alb_vars
+    # Gateway service role IAM budget (#7944): an environment that still carries
+    # the retired inline policies gets pass 1 of the cutover first (see the
+    # gateway_role_policy_cutover helper); this apply then retires them.
+    gateway_role_policy_cutover "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_digest=$GATEWAY_INITIAL_ENGINE_DIGEST"
     terraform_update_apply "gateway" "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
       -var "orchestration_tick_image_digest=$GATEWAY_INITIAL_ENGINE_DIGEST"
   else
@@ -966,6 +1237,7 @@ if [ "$DEPLOY_GATEWAY" = false ]; then
   ok "Skipped"
 else
   prepare_gateway_image
+  prepare_gateway_capacity
 
   # --- K8s deploy: runs directly (no CodeBuild needed) ---
   cd "$ROOT_DIR/modules/gateway/infra"
@@ -1050,11 +1322,15 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   BUDGET_FAIL_MODE=$(_get_ssm "/adp/$ENVIRONMENT/gateway/budget-fail-mode" "closed")
   if [ -z "$BUDGET_FAIL_MODE" ] || [ "$BUDGET_FAIL_MODE" = "None" ]; then BUDGET_FAIL_MODE="closed"; fi
 
-  # #4076: Credential->host egress binding. Default "false" (shadow mode) — violations
-  # are WARN-logged but allowed, so operators can confirm the service->host map covers
-  # live traffic before anyone gets a 403. Flip to "true" per env via SSM once clean.
-  VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(_get_ssm "/adp/$ENVIRONMENT/gateway/vault-enforce-credential-host-binding" "false")
-  if [ "$VAULT_ENFORCE_CREDENTIAL_HOST_BINDING" = "None" ]; then VAULT_ENFORCE_CREDENTIAL_HOST_BINDING="false"; fi
+  # #8848/#4076: Enforce credential destinations by default. Only an explicit
+  # "false" opts into temporary shadow mode; reject typos.
+  VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(_get_ssm "/adp/$ENVIRONMENT/gateway/vault-enforce-credential-host-binding" "true")
+  case "$VAULT_ENFORCE_CREDENTIAL_HOST_BINDING" in
+    ""|None) VAULT_ENFORCE_CREDENTIAL_HOST_BINDING="true" ;;
+    true) ;;
+    false) echo "WARNING: Credential destination binding explicitly disabled (shadow mode)" >&2 ;;
+    *) echo "ERROR: vault-enforce-credential-host-binding must be true or false" >&2; exit 1 ;;
+  esac
 
   # #5653 (A01): whether the pod may believe X-Caller-Identity, which it treats as
   # proof of identity (resolved against the agent registry to a privileged
@@ -1137,11 +1413,61 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     echo "ERROR: API Gateway header trust is enabled but its provenance secret is unavailable" >&2
     exit 1
   fi
+  # Crew proxy tuning and checkpoints (#7902): gateway-infra SSM parameters
+  # (chief-of-staff-flags.tf, crew-checkpoints.tf); same parameters and defaults as
+  # gateway-deploy.yml. Malformed numbers fall back to the code's defaults; the
+  # bucket parameter exists only while crew_checkpoints_enabled is on (absent => "").
+  CREW_PROXY_KEEPALIVE_SECONDS=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/crew-proxy-keepalive-seconds" "25")
+  [[ "$CREW_PROXY_KEEPALIVE_SECONDS" =~ ^[0-9]+$ ]] || CREW_PROXY_KEEPALIVE_SECONDS="25"
+  CREW_PROXY_MAX_CONN_PER_USER=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/crew-proxy-max-conn-per-user" "64")
+  [[ "$CREW_PROXY_MAX_CONN_PER_USER" =~ ^[0-9]+$ ]] || CREW_PROXY_MAX_CONN_PER_USER="64"
+  ADP_CREW_CHECKPOINTS_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/crew-checkpoints-enabled" "false")
+  [ "$ADP_CREW_CHECKPOINTS_ENABLED" = "true" ] || ADP_CREW_CHECKPOINTS_ENABLED="false"
+  ADP_GITHUB_USER_ACCESS_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/github-user-access-enabled" "false")
+  [ "$ADP_GITHUB_USER_ACCESS_ENABLED" = "true" ] || ADP_GITHUB_USER_ACCESS_ENABLED="false"
+  # The Dev Box controller reads the Crew dashboard switch and edge origin from this
+  # ConfigMap (it has no Deployment env of its own); same parameters as the Deployment
+  # render later in this step (#8223 cause 20).
+  FEATURE_CREW_DASHBOARD=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-crew-dashboard" "false")
+  [ -n "$FEATURE_CREW_DASHBOARD" ] && [ "$FEATURE_CREW_DASHBOARD" != "None" ] || FEATURE_CREW_DASHBOARD="false"
+  CREW_DASHBOARD_ORIGIN=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/crew-dashboard-origin" "")
+  if [ "$CREW_DASHBOARD_ORIGIN" = "None" ]; then CREW_DASHBOARD_ORIGIN=""; fi
+  # #8387: tools consent posture; anything but granted|explicit falls back to granted (the code fails closed on invalid values).
+  ADP_TOOLS_CONSENT_DEFAULT=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/tools-consent-default" "granted")
+  [[ "$ADP_TOOLS_CONSENT_DEFAULT" =~ ^(granted|explicit)$ ]] || ADP_TOOLS_CONSENT_DEFAULT="granted"
+  ADP_CREW_CHECKPOINT_BUCKET=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/crew-checkpoint-bucket" "")
+  [ "$ADP_CREW_CHECKPOINT_BUCKET" != "None" ] || ADP_CREW_CHECKPOINT_BUCKET=""
+  ADP_CREW_CHECKPOINT_RETENTION_SECONDS=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/crew-checkpoint-retention-seconds" "2592000")
+  [[ "$ADP_CREW_CHECKPOINT_RETENTION_SECONDS" =~ ^[0-9]+$ ]] || ADP_CREW_CHECKPOINT_RETENTION_SECONDS="2592000"
+  # Shared AgentCore user memory (#7901): agentcore-memory.tf writes all four
+  # parameters while agentcore_memory_enabled is on. agentcore_recall() treats
+  # all four empty as "memory disabled" and a partial set as an outage ("memory
+  # target unconfigured"), so a partial set is refused here, before any rollout.
+  # The namespace key is a SecureString: decrypted here, landed only in the
+  # bedrockgateway-secrets Secret below, never printed and never in the ConfigMap.
+  ADP_AGENTCORE_MEMORY_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/agentcore-memory-id" "")
+  ADP_AGENTCORE_MEMORY_STRATEGY_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/agentcore-memory-strategy-id" "")
+  ADP_AGENTCORE_MEMORY_REGION=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/agentcore-memory-region" "")
+  ADP_AGENTCORE_NAMESPACE_KEY=$(aws ssm get-parameter \
+    --name "/adp/${ENVIRONMENT}/gateway/agentcore-namespace-key" \
+    --with-decryption --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  _memory_values_set=0
+  for _name in ADP_AGENTCORE_MEMORY_ID ADP_AGENTCORE_MEMORY_STRATEGY_ID ADP_AGENTCORE_MEMORY_REGION ADP_AGENTCORE_NAMESPACE_KEY; do
+    [ "${!_name}" != "None" ] || printf -v "$_name" '%s' ""
+    [ -z "${!_name}" ] || _memory_values_set=$((_memory_values_set + 1))
+  done
+  if [ "$_memory_values_set" -ne 0 ] && [ "$_memory_values_set" -ne 4 ]; then
+    fail "AgentCore memory is partially configured (${_memory_values_set}/4 of /adp/${ENVIRONMENT}/gateway/agentcore-{memory-id,memory-strategy-id,memory-region,namespace-key} set); apply gateway infra with agentcore_memory_enabled fully on or off"
+  fi
+  if [ -n "$ADP_AGENTCORE_MEMORY_REGION" ] && [ "$ADP_AGENTCORE_MEMORY_REGION" != "$AWS_REGION" ]; then
+    fail "AgentCore memory region ${ADP_AGENTCORE_MEMORY_REGION} differs from the gateway region ${AWS_REGION}; the gateway refuses recall across regions"
+  fi
   SECRET_APPLY_RESULT=$(kubectl create secret generic bedrockgateway-secrets \
     --from-literal=token-secret-key="$TOKEN_SECRET" \
     --from-literal=internal-api-key="$INTERNAL_API_KEY" \
     --from-literal=apigw-provenance-secret="$APIGW_PROVENANCE_SECRET" \
     --from-literal=magic-link-secret="$MAGIC_LINK_SECRET" \
+    --from-literal=agentcore-namespace-key="$ADP_AGENTCORE_NAMESPACE_KEY" \
     -n adp-gateway --dry-run=client -o yaml | kubectl apply -f -)
   echo "$SECRET_APPLY_RESULT"
   COGNITO_CLI_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
@@ -1160,6 +1486,63 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG_SED//&/\\&}
   MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG_SED//|/\\|}
 
+  # Model invocability probing (#7967): gateway-infra SSM parameters
+  # (model-probe.tf, values from the environment's gateway tfvars); same parameters,
+  # defaults and validation in gateway-deploy.yml and deploy-all.sh. Absent or
+  # malformed values render the fail-closed defaults (off, 0 slots, 0 budget, whole
+  # catalogue, 24 h). Delegated chat enforces model policy and refuses every turn
+  # without this evidence, so an environment running --chat delegated must arm it.
+  MODEL_PROBE_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-enabled" "false")
+  [ "$MODEL_PROBE_ENABLED" = "true" ] || MODEL_PROBE_ENABLED="false"
+  MODEL_PROBE_MAX_SLOTS_PER_CYCLE=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-max-slots-per-cycle" "0")
+  [[ "$MODEL_PROBE_MAX_SLOTS_PER_CYCLE" =~ ^[0-9]+$ ]] || MODEL_PROBE_MAX_SLOTS_PER_CYCLE="0"
+  MODEL_PROBE_BUDGET_USD_PER_CYCLE=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-budget-usd-per-cycle" "0")
+  [[ "$MODEL_PROBE_BUDGET_USD_PER_CYCLE" =~ ^[0-9]+(\.[0-9]{1,6})?$ ]] || MODEL_PROBE_BUDGET_USD_PER_CYCLE="0"
+  MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-max-budget-usd-per-attempt" "0")
+  [[ "$MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT" =~ ^[0-9]+(\.[0-9]{1,6})?$ ]] || MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT="0"
+  MODEL_PROBE_MODEL_ALLOWLIST=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-model-allowlist" "[]")
+  # Must be a JSON array of strings; anything else means the whole catalogue ([]).
+  MODEL_PROBE_MODEL_ALLOWLIST=$(printf '%s' "$MODEL_PROBE_MODEL_ALLOWLIST" | python3 -c 'import json, sys
+try:
+    v = json.loads(sys.stdin.read())
+    assert isinstance(v, list) and all(isinstance(x, str) for x in v)
+except Exception:
+    v = []
+print(json.dumps(v, separators=(",", ":")))')
+  MODEL_PROBE_MODEL_ALLOWLIST_SED=${MODEL_PROBE_MODEL_ALLOWLIST//\\/\\\\}
+  MODEL_PROBE_MODEL_ALLOWLIST_SED=${MODEL_PROBE_MODEL_ALLOWLIST_SED//&/\\&}
+  MODEL_PROBE_MODEL_ALLOWLIST_SED=${MODEL_PROBE_MODEL_ALLOWLIST_SED//|/\\|}
+  MODEL_PROBE_EVIDENCE_TTL_HOURS=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-evidence-ttl-hours" "24")
+  [[ "$MODEL_PROBE_EVIDENCE_TTL_HOURS" =~ ^[0-9]+$ ]] || MODEL_PROBE_EVIDENCE_TTL_HOURS="24"
+  # Dev Box (#7998, optional module): /adp/${ENVIRONMENT}/dev-box/* exists only
+  # where modules/user-services/dev-box/scripts/deploy-dev-box.sh ran. Absent =>
+  # "" / "0": admission disabled, bounds fail closed, no desktop option in the UI.
+  BG_DEV_BOX_DEPLOYMENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/dev-box/deployment-id" "")
+  [ "$BG_DEV_BOX_DEPLOYMENT_ID" != "None" ] && [ "$BG_DEV_BOX_DEPLOYMENT_ID" != " " ] || BG_DEV_BOX_DEPLOYMENT_ID=""
+  BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES=$(_get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-live-boxes" "0")
+  [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES" =~ ^[0-9]+$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES="0"
+  BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES=$(_get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-running-boxes" "0")
+  [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES" =~ ^[0-9]+$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES="0"
+  BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB=$(_get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-storage-gb" "0")
+  [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB" =~ ^[0-9]+$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB="0"
+  BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS=$(_get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-running-hours" "0")
+  [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS" =~ ^[0-9]+$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS="0"
+  BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD=$(_get_ssm "/adp/${ENVIRONMENT}/dev-box/max-deployment-budget-usd" "0")
+  [[ "$BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD" =~ ^[0-9]+(\.[0-9]{1,6})?$ ]] || BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD="0"
+  # SSH grant role (#8049): published by the Dev Box foundation when gateway_principal_arn
+  # is set. Absent, " " sentinel or malformed => "" and POST /cloud-desktops/{id}/ssh-access
+  # keeps failing closed with 503 "Dev Box SSH access is not configured".
+  BG_DEV_BOX_SSH_GRANT_ROLE_ARN=$(_get_ssm "/adp/${ENVIRONMENT}/dev-box/ssh-grant-role-arn" "")
+  [ "$BG_DEV_BOX_SSH_GRANT_ROLE_ARN" != "None" ] && [ "$BG_DEV_BOX_SSH_GRANT_ROLE_ARN" != " " ] || BG_DEV_BOX_SSH_GRANT_ROLE_ARN=""
+  [[ "$BG_DEV_BOX_SSH_GRANT_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$ ]] || BG_DEV_BOX_SSH_GRANT_ROLE_ARN=""
+  BG_DEV_BOX_CREW_BOOTSTRAP=$(_get_ssm "/adp/${ENVIRONMENT}/dev-box/crew-bootstrap" "image")
+  [[ "$BG_DEV_BOX_CREW_BOOTSTRAP" =~ ^(image|user-data)$ ]] || BG_DEV_BOX_CREW_BOOTSTRAP="image"
+  # Model policy posture for chat (#7997): off | advisory | enforced, from gateway infra
+  # chief-of-staff-flags.tf (chat_model_policy_posture in the environment's gateway
+  # tfvars). Absent or unrecognised renders the default, advisory; same in gateway-deploy.yml.
+  CHAT_MODEL_POLICY_POSTURE=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/chat-model-policy-posture" "advisory")
+  case "$CHAT_MODEL_POLICY_POSTURE" in off|advisory|enforced) ;; *) CHAT_MODEL_POLICY_POSTURE="advisory" ;; esac
+
   # Issue #3960: CIDRs the gateway may dial an in-pod control listener in.
   # This is the SSRF allowlist for the one outbound path that deliberately
   # targets PRIVATE addresses, so it cannot be defaulted to something
@@ -1174,16 +1557,56 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   AGENT_CONTROL_CLUSTER_POD_CIDRS=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/agent-control-cluster-pod-cidrs" "")
   # The authority configuration parameters are encrypted at rest.
   get_authority_ssm() { aws ssm get-parameter --with-decryption --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+  ATLASSIAN_CONFIG_REF=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/atlassian-mcp-config-ref" "")
+  ATLASSIAN_CONTRACT_REVISION=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/atlassian-mcp-contract-revision" "")
+  ATLASSIAN_METADATA_SHA256=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/atlassian-mcp-metadata-sha256" "")
+  if [[ "$ATLASSIAN_CONFIG_REF" != "None" && -n "$ATLASSIAN_CONFIG_REF" ]] &&
+     [[ ! "$ATLASSIAN_CONFIG_REF" =~ ^arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:adp/${ENVIRONMENT}/connections/atlassian-mcp/config-[A-Za-z0-9]{6}$ ]]; then
+    fail "Invalid Atlassian MCP config reference"
+  fi
+  if [[ "$ATLASSIAN_CONTRACT_REVISION" != "None" && -n "$ATLASSIAN_CONTRACT_REVISION" ]] &&
+     [[ ! "$ATLASSIAN_CONTRACT_REVISION" =~ ^[A-Za-z0-9_.-]{1,128}$ ]]; then
+    fail "Invalid Atlassian MCP contract revision"
+  fi
+  if [[ "$ATLASSIAN_METADATA_SHA256" != "None" && -n "$ATLASSIAN_METADATA_SHA256" ]] &&
+     [[ ! "$ATLASSIAN_METADATA_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    fail "Invalid Atlassian MCP metadata digest"
+  fi
+  for name in ATLASSIAN_CONFIG_REF ATLASSIAN_CONTRACT_REVISION ATLASSIAN_METADATA_SHA256; do
+    [ "${!name}" != "None" ] || printf -v "$name" '%s' ""
+  done
+  if [[ -n "$ATLASSIAN_CONTRACT_REVISION" || -n "$ATLASSIAN_METADATA_SHA256" ]] &&
+     [[ -z "$ATLASSIAN_CONFIG_REF" || -z "$ATLASSIAN_CONTRACT_REVISION" || -z "$ATLASSIAN_METADATA_SHA256" ]]; then
+    fail "Incomplete Atlassian MCP provider plan binding"
+  fi
   AGENT_AUTHORITY_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-enabled" "false")
   ADP_WORK_CLAIMS_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claims-enabled" "false")
+  ADP_PRODUCT_STORY_DISPATCH_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/product-story-dispatch-enabled" "false")
   ADP_WORK_CLAIM_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claim-producer-roles" "")
-  AGENT_AUTHORITY_TABLE=$(get_authority_ssm "/adp/${ENVIRONMENT}/webhook-ingress/agent-authority-table" "")
+  # The table name is published as a SecureString by webhook-ingress; a renderer
+  # identity without kms:Decrypt on that key must not blank it (an empty value
+  # disables model-root registration: external_roots.root_store). The name is
+  # deterministic, so fall back to it (parity with WEBHOOK_EVENTS_TABLE).
+  AGENT_AUTHORITY_TABLE=$(get_authority_ssm "/adp/${ENVIRONMENT}/webhook-ingress/agent-authority-table" "adp-${ENVIRONMENT}-agent-authority")
   WEBHOOK_EVENTS_TABLE=$(_get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/webhook-events-table" "adp-${ENVIRONMENT}-webhook-events")
   ADP_TASK_API_ADMISSION_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-admission-enabled" "false")
   ADP_TASK_API_READ_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-read-enabled" "false")
   ADP_TASK_API_WORKER_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-worker-enabled" "false")
   ADP_TASK_API_RECOVERY_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-recovery-enabled" "false")
   TASK_ARTIFACT_BUCKET_NAME=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-artifact-bucket-name" "")
+  PRODUCT_SOURCE_SNAPSHOT_BUCKET=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/product-source-snapshot-bucket" "")
+  [[ "$PRODUCT_SOURCE_SNAPSHOT_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || PRODUCT_SOURCE_SNAPSHOT_BUCKET=""
+  # Delegated chat memory/artifact stores (#8028): agent-factory publishes the table
+  # names (chat-agent-infra.tf); the bucket is the task-api artifact bucket read above.
+  # Validated as names, with the deterministic defaults so a fresh environment is
+  # configured before the parameters exist; an invalid bucket renders empty (503
+  # chat_artifacts_unconfigured, which the sandbox degrades on rather than fails).
+  MEMORY_TABLE=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/chat-memory-table" "adp-${ENVIRONMENT}-agent-memory")
+  ARTIFACTS_TABLE=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/chat-artifacts-table" "adp-${ENVIRONMENT}-chat-artifacts")
+  ARTIFACTS_BUCKET="${TASK_ARTIFACT_BUCKET_NAME}"
+  [[ "$MEMORY_TABLE" =~ ^[A-Za-z0-9_.-]{3,255}$ ]] && [ "$MEMORY_TABLE" != "None" ] || MEMORY_TABLE="adp-${ENVIRONMENT}-agent-memory"
+  [[ "$ARTIFACTS_TABLE" =~ ^[A-Za-z0-9_.-]{3,255}$ ]] && [ "$ARTIFACTS_TABLE" != "None" ] || ARTIFACTS_TABLE="adp-${ENVIRONMENT}-chat-artifacts"
+  [[ "$ARTIFACTS_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || ARTIFACTS_BUCKET=""
   ADP_TASK_API_QUEUE_URL=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-queue-url" "")
   ADP_TASK_ADMISSION_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-admission-producer-roles" "")
   ADP_TASK_DISPATCH_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-dispatch-producer-roles" "")
@@ -1192,21 +1615,53 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   ADP_TASK_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-worker-image-digests" "disabled")
   ADP_TASK_WORKER_SERVICE_ACCOUNT=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-worker-service-account" "agent-scaledjob-sa")
   AGENT_DISPATCH_QUEUE_URL=$(_get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
-  BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
   AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
   ADP_MODEL_ROOT_BINDINGS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/model-root-bindings" "[]")
   ADP_MODEL_ROOT_BINDINGS_SED=$(printf '%s' "$ADP_MODEL_ROOT_BINDINGS_RAW" | python3 "$ROOT_DIR/platform/scripts/render-model-root-config.py" bindings)
   ADP_ARC_MODEL_BINDINGS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/arc-model-bindings" "[]")
   ADP_ARC_MODEL_BINDINGS_SED=$(printf '%s' "$ADP_ARC_MODEL_BINDINGS_RAW" | python3 "$ROOT_DIR/platform/scripts/render-model-root-config.py" bindings)
+  # Chat intake, chat queues and tools-plane identities (parity with
+  # gateway-deploy.yml; the SSM parameters are published by the agent-factory
+  # and tools stacks). Empty values leave the corresponding surface disabled.
+  ADP_TOOLS_GATEWAY_ROLE_ARN=$(_get_ssm "/adp/${ENVIRONMENT}/tools/target-role-arn" "")
+  ADP_TOOLS_FACADE_ROLE_ARN=$(_get_ssm "/adp/${ENVIRONMENT}/tools/caller-role-arn" "")
+  ADP_TOOLS_ASSERTION_KEY_ARN=$(_get_ssm "/adp/${ENVIRONMENT}/tools/assertion-signing-key-arn" "")
+  NATIVE_CREDENTIALS_VALUES=$(python3 "${ROOT_DIR}/modules/gateway/scripts/native-credential-config.py" "$ENVIRONMENT" "$AWS_REGION" "${ACCOUNT_ID}")
+  read -r ADP_NATIVE_CREDENTIALS_ENABLED ADP_NATIVE_CREDENTIALS_ISSUER ADP_NATIVE_CREDENTIALS_APPROVAL_ORIGIN ADP_NATIVE_CREDENTIALS_KEY_ID ADP_NATIVE_CREDENTIALS_KEY_ARN <<< "$NATIVE_CREDENTIALS_VALUES"
+  BG_INTAKE_SESSIONS_TABLE=$(_get_ssm "/adp/${ENVIRONMENT}/agent-gateway/sessions-table" "adp-${ENVIRONMENT}-agent-gateway-sessions")
+  ADP_CHAT_RESPONSE_QUEUE_URL=$(_get_ssm "/adp/${ENVIRONMENT}/agent-gateway/response-queue-url" "")
+  ADP_CHAT_INPUT_QUEUE_URL=$(_get_ssm "/adp/${ENVIRONMENT}/agent-gateway/chat-input-queue-url" "")
+  BG_INTAKE_CONTEXT_TABLE=$(_get_ssm "/adp/${ENVIRONMENT}/agent-gateway/context-table" "adp-${ENVIRONMENT}-chat-context")
+  BG_INTAKE_INGEST_FUNCTION=$(_get_ssm "/adp/${ENVIRONMENT}/agent-gateway/ingest-function" "adp-${ENVIRONMENT}-agent-gateway-ingest")
+  # Delegated chat sandbox transport: the CA ConfigMap name is published by
+  # platform/scripts/apply-chat-tls.sh (--chat delegated); empty leaves both empty.
+  ADP_CHAT_DATA_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/chat-data-enabled" "false")
+  [ "$ADP_CHAT_DATA_ENABLED" = true ] || ADP_CHAT_DATA_ENABLED=false
+  ADP_CHAT_SANDBOX_CA_CONFIGMAP=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/chat-sandbox-ca-configmap" "")
+  [ "$ADP_CHAT_SANDBOX_CA_CONFIGMAP" != "None" ] || ADP_CHAT_SANDBOX_CA_CONFIGMAP=""
+  ADP_CHAT_DATA_URL=""
+  [ -z "$ADP_CHAT_SANDBOX_CA_CONFIGMAP" ] || ADP_CHAT_DATA_URL="https://chat-sandbox-gateway.adp-gateway.svc:8443"
   ADP_CHAT_WORKER_IMAGE_DIGESTS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/chat-authority-worker-images" "")
   ADP_CHAT_WORKER_IMAGE_DIGESTS_SED=$(printf '%s' "$ADP_CHAT_WORKER_IMAGE_DIGESTS_RAW" | python3 "$ROOT_DIR/platform/scripts/render-model-root-config.py" images)
+  # Delegated chat workload identities, published by `deploy-all.sh --chat delegated`
+  # (#7899); the Terraform seeds are empty digests and the legacy adp-agent account.
+  ADP_CHAT_SANDBOX_IMAGE_DIGESTS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/chat-sandbox-image-digests" "")
+  ADP_CHAT_SANDBOX_IMAGE_DIGESTS_SED=$(printf '%s' "$ADP_CHAT_SANDBOX_IMAGE_DIGESTS_RAW" | python3 "$ROOT_DIR/platform/scripts/render-model-root-config.py" images)
+  ADP_CHAT_CREW_IMAGE_DIGESTS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/chat-crew-image-digests" "")
+  ADP_CHAT_CREW_IMAGE_DIGESTS_SED=$(printf '%s' "$ADP_CHAT_CREW_IMAGE_DIGESTS_RAW" | python3 "$ROOT_DIR/platform/scripts/render-model-root-config.py" images)
+  ADP_CHAT_WORKER_SERVICE_ACCOUNT=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/chat-worker-service-account" "adp-agent")
+  [[ "$ADP_CHAT_WORKER_SERVICE_ACCOUNT" =~ ^(adp-agent|adp-chat-supervisor)$ ]] || ADP_CHAT_WORKER_SERVICE_ACCOUNT="adp-agent"
   AGENT_AUTHORITY_KEY_ID=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-key-id" "disabled")
   AGENT_TASK_SOURCE_ROLE_ARN=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-role-arn" "")
   AGENT_TASK_SOURCE_EKS_CLUSTER=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-eks-cluster" "")
   AGENT_TASK_SOURCE_ISOLATION_CONFIRMED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-isolation-confirmed" "false")
 
+  PLATFORM_OPERATOR_ROLE_ARNS=$(python3 "${ROOT_DIR}/modules/gateway/scripts/platform-operator-roles.py" "$ENVIRONMENT" "$AWS_REGION" "$EFFECTIVE_ACCOUNT")
   CONFIGMAP_APPLY_RESULT=$(sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
       -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
+      -e "s|__ATLASSIAN_CONFIG_REF__|${ATLASSIAN_CONFIG_REF}|g" \
+      -e "s|__ATLASSIAN_CONTRACT_REVISION__|${ATLASSIAN_CONTRACT_REVISION}|g" \
+      -e "s|__ATLASSIAN_METADATA_SHA256__|${ATLASSIAN_METADATA_SHA256}|g" \
       -e "s|__DB_HOST__|${DB_HOST}|g" \
       -e "s|__DB_USER__|${DB_USER}|g" \
       -e "s|__DB_NAME__|${DB_NAME}|g" \
@@ -1233,25 +1688,63 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
       -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
       -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
+      -e "s|__SCOPED_KNOWLEDGE_IMPORTS_ENABLED__|${SCOPED_KNOWLEDGE_IMPORTS_ENABLED:-false}|g" \
       -e "s|__AGENT_RUN_LOGS_BUCKET__|${AGENT_RUN_LOGS_BUCKET}|g" \
       -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
       -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
       -e "s|__COGNITO_CLI_CLIENT_ID__|${COGNITO_CLI_CLIENT_ID}|g" \
       -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
       -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
+      -e "s|__PLATFORM_OPERATOR_ROLE_ARNS__|${PLATFORM_OPERATOR_ROLE_ARNS}|g" \
       -e "s|__PERSONA_MODEL_MAPPING_ENABLED__|${PERSONA_MODEL_MAPPING_ENABLED}|g" \
       -e "s|__MODEL_ALLOWED_MODELS_CONFIG__|${MODEL_ALLOWED_MODELS_CONFIG_SED}|g" \
+      -e "s|__MODEL_PROBE_ENABLED__|${MODEL_PROBE_ENABLED}|g" \
+      -e "s|__MODEL_PROBE_MAX_SLOTS_PER_CYCLE__|${MODEL_PROBE_MAX_SLOTS_PER_CYCLE}|g" \
+      -e "s|__MODEL_PROBE_BUDGET_USD_PER_CYCLE__|${MODEL_PROBE_BUDGET_USD_PER_CYCLE}|g" \
+      -e "s|__MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT__|${MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT}|g" \
+      -e "s|__MODEL_PROBE_MODEL_ALLOWLIST__|${MODEL_PROBE_MODEL_ALLOWLIST_SED}|g" \
+      -e "s|__MODEL_PROBE_EVIDENCE_TTL_HOURS__|${MODEL_PROBE_EVIDENCE_TTL_HOURS}|g" \
+      -e "s|__BG_DEV_BOX_DEPLOYMENT_ID__|${BG_DEV_BOX_DEPLOYMENT_ID}|g" \
+      -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES__|${BG_DEV_BOX_MAX_DEPLOYMENT_LIVE_BOXES}|g" \
+      -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES__|${BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_BOXES}|g" \
+      -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB__|${BG_DEV_BOX_MAX_DEPLOYMENT_STORAGE_GB}|g" \
+      -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS__|${BG_DEV_BOX_MAX_DEPLOYMENT_RUNNING_HOURS}|g" \
+      -e "s|__BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD__|${BG_DEV_BOX_MAX_DEPLOYMENT_BUDGET_USD}|g" \
+      -e "s|__BG_DEV_BOX_SSH_GRANT_ROLE_ARN__|${BG_DEV_BOX_SSH_GRANT_ROLE_ARN}|g" \
+      -e "s|__BG_DEV_BOX_CREW_BOOTSTRAP__|${BG_DEV_BOX_CREW_BOOTSTRAP}|g" \
+      -e "s|__CHAT_MODEL_POLICY_POSTURE__|${CHAT_MODEL_POLICY_POSTURE}|g" \
       -e "s|__AGENT_CONTROL_CLUSTER_POD_CIDRS__|${AGENT_CONTROL_CLUSTER_POD_CIDRS}|g" \
       -e "s|__AGENT_AUTHORITY_ENABLED__|${AGENT_AUTHORITY_ENABLED}|g" \
       -e "s|__ADP_WORK_CLAIMS_ENABLED__|${ADP_WORK_CLAIMS_ENABLED}|g" \
+      -e "s|__ADP_PRODUCT_STORY_DISPATCH_ENABLED__|${ADP_PRODUCT_STORY_DISPATCH_ENABLED}|g" \
       -e "s|__ADP_WORK_CLAIM_PRODUCER_ROLES__|${ADP_WORK_CLAIM_PRODUCER_ROLES}|g" \
       -e "s|__AGENT_AUTHORITY_TABLE__|${AGENT_AUTHORITY_TABLE}|g" \
       -e "s|__WEBHOOK_EVENTS_TABLE__|${WEBHOOK_EVENTS_TABLE}|g" \
+      -e "s|__ADP_TOOLS_GATEWAY_ROLE_ARN__|${ADP_TOOLS_GATEWAY_ROLE_ARN}|g" \
+      -e "s|__ADP_TOOLS_FACADE_ROLE_ARN__|${ADP_TOOLS_FACADE_ROLE_ARN}|g" \
+      -e "s|__ADP_TOOLS_ASSERTION_KEY_ARN__|${ADP_TOOLS_ASSERTION_KEY_ARN}|g" \
+      -e "s|__ADP_NATIVE_CREDENTIALS_ENABLED__|${ADP_NATIVE_CREDENTIALS_ENABLED}|g" \
+      -e "s|__ADP_NATIVE_CREDENTIALS_ISSUER__|${ADP_NATIVE_CREDENTIALS_ISSUER}|g" \
+      -e "s|__ADP_NATIVE_CREDENTIALS_APPROVAL_ORIGIN__|${ADP_NATIVE_CREDENTIALS_APPROVAL_ORIGIN}|g" \
+      -e "s|__ADP_NATIVE_CREDENTIALS_KEY_ID__|${ADP_NATIVE_CREDENTIALS_KEY_ID}|g" \
+      -e "s|__ADP_NATIVE_CREDENTIALS_KEY_ARN__|${ADP_NATIVE_CREDENTIALS_KEY_ARN}|g" \
+      -e "s|__BG_INTAKE_SESSIONS_TABLE__|${BG_INTAKE_SESSIONS_TABLE}|g" \
+      -e "s|__ADP_CHAT_RESPONSE_QUEUE_URL__|${ADP_CHAT_RESPONSE_QUEUE_URL}|g" \
+      -e "s|__ADP_CHAT_INPUT_QUEUE_URL__|${ADP_CHAT_INPUT_QUEUE_URL}|g" \
+      -e "s|__BG_INTAKE_CONTEXT_TABLE__|${BG_INTAKE_CONTEXT_TABLE}|g" \
+      -e "s|__BG_INTAKE_INGEST_FUNCTION__|${BG_INTAKE_INGEST_FUNCTION}|g" \
+      -e "s|__ADP_CHAT_DATA_URL__|${ADP_CHAT_DATA_URL}|g" \
+      -e "s|__ADP_CHAT_SANDBOX_CA_CONFIGMAP__|${ADP_CHAT_SANDBOX_CA_CONFIGMAP}|g" \
+      -e "s|__ADP_CHAT_DATA_ENABLED__|${ADP_CHAT_DATA_ENABLED}|g" \
       -e "s|__ADP_TASK_API_ADMISSION_ENABLED__|${ADP_TASK_API_ADMISSION_ENABLED}|g" \
       -e "s|__ADP_TASK_API_READ_ENABLED__|${ADP_TASK_API_READ_ENABLED}|g" \
       -e "s|__ADP_TASK_API_WORKER_ENABLED__|${ADP_TASK_API_WORKER_ENABLED}|g" \
       -e "s|__ADP_TASK_API_RECOVERY_ENABLED__|${ADP_TASK_API_RECOVERY_ENABLED}|g" \
       -e "s|__TASK_ARTIFACT_BUCKET_NAME__|${TASK_ARTIFACT_BUCKET_NAME}|g" \
+      -e "s|__PRODUCT_SOURCE_SNAPSHOT_BUCKET__|${PRODUCT_SOURCE_SNAPSHOT_BUCKET}|g" \
+      -e "s|__MEMORY_TABLE__|${MEMORY_TABLE}|g" \
+      -e "s|__ARTIFACTS_TABLE__|${ARTIFACTS_TABLE}|g" \
+      -e "s|__ARTIFACTS_BUCKET__|${ARTIFACTS_BUCKET}|g" \
       -e "s|__ADP_TASK_API_QUEUE_URL__|${ADP_TASK_API_QUEUE_URL}|g" \
       -e "s|__ADP_TASK_ADMISSION_PRODUCER_ROLES__|${ADP_TASK_ADMISSION_PRODUCER_ROLES}|g" \
       -e "s|__ADP_TASK_DISPATCH_PRODUCER_ROLES__|${ADP_TASK_DISPATCH_PRODUCER_ROLES}|g" \
@@ -1260,23 +1753,39 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__ADP_TASK_WORKER_IMAGE_DIGESTS__|${ADP_TASK_WORKER_IMAGE_DIGESTS}|g" \
       -e "s|__ADP_TASK_WORKER_SERVICE_ACCOUNT__|${ADP_TASK_WORKER_SERVICE_ACCOUNT}|g" \
       -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
-      -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
       -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
       -e "s|__ADP_MODEL_ROOT_BINDINGS__|${ADP_MODEL_ROOT_BINDINGS_SED}|g" \
       -e "s|__ADP_ARC_MODEL_BINDINGS__|${ADP_ARC_MODEL_BINDINGS_SED}|g" \
       -e "s|__ADP_CHAT_WORKER_IMAGE_DIGESTS__|${ADP_CHAT_WORKER_IMAGE_DIGESTS_SED}|g" \
+      -e "s|__ADP_CHAT_SANDBOX_IMAGE_DIGESTS__|${ADP_CHAT_SANDBOX_IMAGE_DIGESTS_SED}|g" \
+      -e "s|__ADP_CHAT_CREW_IMAGE_DIGESTS__|${ADP_CHAT_CREW_IMAGE_DIGESTS_SED}|g" \
+      -e "s|__ADP_CHAT_WORKER_SERVICE_ACCOUNT__|${ADP_CHAT_WORKER_SERVICE_ACCOUNT}|g" \
       -e "s|__AGENT_AUTHORITY_KEY_ID__|${AGENT_AUTHORITY_KEY_ID}|g" \
       -e "s|__AGENT_TASK_SOURCE_ROLE_ARN__|${AGENT_TASK_SOURCE_ROLE_ARN}|g" \
       -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \
       -e "s|__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__|${AGENT_TASK_SOURCE_ISOLATION_CONFIRMED}|g" \
-      k8s/configmap.yaml | kubectl apply -f -)
+      -e "s|__CREW_PROXY_KEEPALIVE_SECONDS__|${CREW_PROXY_KEEPALIVE_SECONDS}|g" \
+      -e "s|__CREW_PROXY_MAX_CONN_PER_USER__|${CREW_PROXY_MAX_CONN_PER_USER}|g" \
+      -e "s|__FEATURE_CREW_DASHBOARD__|${FEATURE_CREW_DASHBOARD}|g" \
+      -e "s|__CREW_DASHBOARD_ORIGIN__|${CREW_DASHBOARD_ORIGIN}|g" \
+      -e "s|__ADP_CREW_CHECKPOINTS_ENABLED__|${ADP_CREW_CHECKPOINTS_ENABLED}|g" \
+      -e "s|__ADP_GITHUB_USER_ACCESS_ENABLED__|${ADP_GITHUB_USER_ACCESS_ENABLED}|g" \
+      -e "s|__ADP_CREW_CHECKPOINT_BUCKET__|${ADP_CREW_CHECKPOINT_BUCKET}|g" \
+      -e "s|__ADP_CREW_CHECKPOINT_RETENTION_SECONDS__|${ADP_CREW_CHECKPOINT_RETENTION_SECONDS}|g" \
+      -e "s|__ADP_TOOLS_CONSENT_DEFAULT__|${ADP_TOOLS_CONSENT_DEFAULT}|g" \
+      -e "s|__ADP_AGENTCORE_MEMORY_ID__|${ADP_AGENTCORE_MEMORY_ID}|g" \
+      -e "s|__ADP_AGENTCORE_MEMORY_STRATEGY_ID__|${ADP_AGENTCORE_MEMORY_STRATEGY_ID}|g" \
+      -e "s|__ADP_AGENTCORE_MEMORY_REGION__|${ADP_AGENTCORE_MEMORY_REGION}|g" \
+      k8s/configmap.yaml |
+      python3 "${ROOT_DIR}/modules/gateway/scripts/tool-adapter-config.py" "$ENVIRONMENT" "$AWS_REGION" "$ACCOUNT_ID" | kubectl apply -f -)
   echo "$CONFIGMAP_APPLY_RESULT"
   # Render serviceaccount with the correct IRSA role ARN (Issue #1008)
   sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
       k8s/serviceaccount.yaml | kubectl apply -f -
   for f in k8s/*.yaml; do
     case "$(basename "$f")" in
-      configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
+      configmap.yaml|serviceaccount.yaml|deployment.yaml|atlassian-mcp-recovery.yaml|targetgroupbinding.yaml|pdb.yaml) continue ;;
+      hpa.yaml|pdb.yaml) continue ;;
     esac
     if kubectl create --dry-run=client --validate=false -f "$f" \
          -o jsonpath='{.kind}{"\n"}{range .items[*]}{.kind}{"\n"}{end}' \
@@ -1295,10 +1804,46 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   FEATURE_AGENT_EXPLANATIONS_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-explanations" "false")
   FEATURE_AGENT_CONTROL_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
   FEATURE_NEW_UI_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-new-ui" "false")
+  BG_INSIGHTS_RESULTS_BUCKET=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/insights-results-bucket" "")
+  if [[ -n "$BG_INSIGHTS_RESULTS_BUCKET" && ! "$BG_INSIGHTS_RESULTS_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+    fail "Invalid Insights results bucket setting"
+  fi
+  L5_WORK_QUEUE_URL=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/l5-work-queue-url" "")
+  [[ "$L5_WORK_QUEUE_URL" =~ ^https://sqs\.[a-z0-9-]+\.amazonaws\.com/[0-9]{12}/adp-${ENVIRONMENT}-l5-work$ ]] || L5_WORK_QUEUE_URL=""
+  L5_CONSUMER_TARGETS=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/l5-consumer-targets" "{}")
+  L5_CONSUMER_TARGETS=$(printf '%s' "$L5_CONSUMER_TARGETS" | python3 "$ROOT_DIR/modules/gateway/src/l5_consumer_config.py")
+  L5_FINOPS_ADMISSION_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/l5-finops-admission-enabled" "false")
+  [[ "$L5_FINOPS_ADMISSION_ENABLED" == "true" ]] || L5_FINOPS_ADMISSION_ENABLED="false"
+  BG_PRODUCT_PROFILE_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/product-profile-enabled" "false")
+  BG_PRODUCT_ONBOARDING_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/product-onboarding-enabled" "false")
+  [[ "$BG_PRODUCT_PROFILE_ENABLED" == "true" ]] || BG_PRODUCT_PROFILE_ENABLED="false"
+  [[ "$BG_PRODUCT_ONBOARDING_ENABLED" == "true" ]] || BG_PRODUCT_ONBOARDING_ENABLED="false"
   FEATURE_AGENT_MODELS_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-models" "$PERSONA_MODEL_MAPPING_ENABLED")
+  # Chief-of-Staff surfaces (#7197): same parameters as gateway-deploy.yml; absent => off.
+  FEATURE_CHAT_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-chat" "false")
+  FEATURE_ASSISTANT_UI_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-assistant-ui" "false")
+  FEATURE_CREW_DASHBOARD=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-crew-dashboard" "false")
+  CREW_PROXY_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/crew-proxy-enabled" "false")
+  CREW_DASHBOARD_ORIGIN=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/crew-dashboard-origin" "")
+  for _name in FEATURE_CHAT_ENABLED FEATURE_ASSISTANT_UI_ENABLED FEATURE_CREW_DASHBOARD CREW_PROXY_ENABLED; do
+    if [ -z "${!_name}" ] || [ "${!_name}" = "None" ]; then printf -v "$_name" '%s' "false"; fi
+  done
+  if [ "$CREW_DASHBOARD_ORIGIN" = "None" ]; then CREW_DASHBOARD_ORIGIN=""; fi
+  # Browser-hop WebSocket ping (#7902): the same parameter as the ConfigMap's
+  # CREW_PROXY_KEEPALIVE_SECONDS. 0 deletes the UVICORN_WS_PING_INTERVAL name/value
+  # pair from the manifest (uvicorn treats 0 as a tight loop, not "off").
+  UVICORN_WS_PING_INTERVAL=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/crew-proxy-keepalive-seconds" "25")
+  [[ "$UVICORN_WS_PING_INTERVAL" =~ ^[0-9]+$ ]] || UVICORN_WS_PING_INTERVAL="25"
+  if [[ "$UVICORN_WS_PING_INTERVAL" =~ ^0+$ ]]; then
+    UVICORN_WS_PING_INTERVAL_SED='/^ *- name: UVICORN_WS_PING_INTERVAL$/{N;d;}'
+  else
+    UVICORN_WS_PING_INTERVAL_SED="s|__UVICORN_WS_PING_INTERVAL__|${UVICORN_WS_PING_INTERVAL}|g"
+  fi
   GATEWAY_DEPLOYMENT_REPLICAS=$(gateway_deployment_replicas "$UPDATE_MODE") \
     || fail "Cannot read gateway replica count; refusing to reset upgrade capacity"
-  DEPLOYMENT_APPLY_RESULT=$(sed -e "s|^  replicas: .*|  replicas: ${GATEWAY_DEPLOYMENT_REPLICAS}|" \
+  RENDERED_DEPLOYMENT=$(mktemp "${TMPDIR:-/tmp}/adp-gateway-deployment.XXXXXX.yaml")
+  sed -e "s|^  replicas: .*|  replicas: ${GATEWAY_DEPLOYMENT_REPLICAS}|" \
+      -e "$UVICORN_WS_PING_INTERVAL_SED" \
       -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
       -e "s|__FEATURE_KNOWLEDGE_ENABLED__|${FEATURE_KNOWLEDGE_ENABLED}|g" \
       -e "s|__FEATURE_INDEXING_ENABLED__|${FEATURE_INDEXING_ENABLED}|g" \
@@ -1306,10 +1851,55 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__FEATURE_AGENT_EXPLANATIONS_ENABLED__|${FEATURE_AGENT_EXPLANATIONS_ENABLED}|g" \
       -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
       -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
+      -e "s|__L5_DEPLOYMENT_ENV__|${ENVIRONMENT}|g" \
+              -e "s|__L5_WORK_QUEUE_URL__|${L5_WORK_QUEUE_URL}|g" \
+      -e "s|__L5_FINOPS_ADMISSION_ENABLED__|${L5_FINOPS_ADMISSION_ENABLED}|g" \
+      -e "s|__L5_CONSUMER_TARGETS__|${L5_CONSUMER_TARGETS}|g" \
+      -e "s|__BG_PRODUCT_PROFILE_ENABLED__|${BG_PRODUCT_PROFILE_ENABLED}|g" \
+      -e "s|__BG_INSIGHTS_RESULTS_BUCKET__|${BG_INSIGHTS_RESULTS_BUCKET}|g" \
+      -e "s|__BG_PRODUCT_ONBOARDING_ENABLED__|${BG_PRODUCT_ONBOARDING_ENABLED}|g" \
       -e "s|__FEATURE_AGENT_MODELS_ENABLED__|${FEATURE_AGENT_MODELS_ENABLED}|g" \
+      -e "s|__FEATURE_CHAT_ENABLED__|${FEATURE_CHAT_ENABLED}|g" \
+      -e "s|__FEATURE_ASSISTANT_UI_ENABLED__|${FEATURE_ASSISTANT_UI_ENABLED}|g" \
+      -e "s|__FEATURE_CREW_DASHBOARD__|${FEATURE_CREW_DASHBOARD}|g" \
+      -e "s|__CREW_PROXY_ENABLED__|${CREW_PROXY_ENABLED}|g" \
+      -e "s|__CREW_DASHBOARD_ORIGIN__|${CREW_DASHBOARD_ORIGIN}|g" \
       -e "s|REPLACE_WITH_GATEWAY_IMAGE|${GATEWAY_IMAGE}|g" \
-      k8s/deployment.yaml | kubectl apply -f - -n adp-gateway)
+      k8s/deployment.yaml > "$RENDERED_DEPLOYMENT"
+  CAPACITY_BUNDLE=$(mktemp -d "${TMPDIR:-/tmp}/adp-gateway-capacity.XXXXXX")
+  python3 "${SCRIPT_DIR:-../../platform/scripts}/render-gateway-capacity.py" \
+    --manifest "$RENDERED_DEPLOYMENT" --root k8s --environment "$ENVIRONMENT" \
+    --output-dir "$CAPACITY_BUNDLE" || fail "Invalid gateway capacity selection; rollout unchanged"
+  if [ -n "${DEPLOY_CHECKPOINT_FILE:-}" ]; then
+    install -d -m 700 "$DEPLOY_CHECKPOINT_FILE.capacity"
+    cp "$CAPACITY_BUNDLE/"*.json "$DEPLOY_CHECKPOINT_FILE.capacity/"
+  fi
+  cp "$CAPACITY_BUNDLE/deployment.json" "$RENDERED_DEPLOYMENT"
+  capacity_lock verify || fail "Gateway capacity ownership changed before migration"
+  # Schema migration runs against the release image before the pod template
+  # changes (parity with gateway-deploy.yml); the Job is pinned to the same digest.
+  migrate_gateway_before_rollout "$RENDERED_DEPLOYMENT" "$GATEWAY_IMAGE"
+  capacity_lock verify || fail "Gateway capacity ownership changed during migration"
+  python3 "$SCRIPT_DIR/render-gateway-capacity.py" --environment "$ENVIRONMENT" \
+    --verify-bundle "$CAPACITY_BUNDLE" || fail "Capacity selection changed during migration"
+  DEPLOYMENT_APPLY_RESULT=$(python3 scripts/apply-gateway-deployment.py \
+    --manifest "$RENDERED_DEPLOYMENT" --image "$GATEWAY_IMAGE" --namespace adp-gateway) \
+    || fail "Gateway replica-safe apply failed"
+  sed -e "s|REPLACE_WITH_GATEWAY_IMAGE|${GATEWAY_IMAGE}|g" \
+    k8s/atlassian-mcp-recovery.yaml | kubectl apply -n adp-gateway -f - \
+    || fail "Atlassian MCP recovery worker apply failed"
+  rm -f "$RENDERED_DEPLOYMENT"
   echo "$DEPLOYMENT_APPLY_RESULT"
+  capacity_lock verify || fail "Gateway capacity ownership changed during apply"
+  python3 "$SCRIPT_DIR/render-gateway-capacity.py" --environment "$ENVIRONMENT" \
+    --verify-bundle "$CAPACITY_BUNDLE" || fail "Capacity selection changed during apply"
+  kubectl apply -f "$CAPACITY_BUNDLE/pdb.json" -n adp-gateway
+  if [ "$UPDATE_MODE" = true ]; then
+    capacity_lock verify || fail "Gateway capacity ownership changed before HPA apply"
+    python3 "$SCRIPT_DIR/render-gateway-capacity.py" --environment "$ENVIRONMENT" \
+      --verify-bundle "$CAPACITY_BUNDLE" || fail "Capacity selection changed before HPA apply"
+    kubectl apply -f "$CAPACITY_BUNDLE/hpa.json" -n adp-gateway
+  fi
 
   if [ "$UPDATE_MODE" = true ]; then
     # Applying a changed pod template already starts a rollout. Restart only
@@ -1318,8 +1908,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     CURRENT_IMAGE=$(kubectl get deployment/bedrockgateway -n adp-gateway \
       -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
     if [ "$CURRENT_IMAGE" != "${GATEWAY_IMAGE}" ]; then
-      kubectl set image deployment/bedrockgateway \
-        bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
+      fail "Gateway image changed during protected apply"
     elif { [[ "$SECRET_APPLY_RESULT" == *configured* ]] || [[ "$CONFIGMAP_APPLY_RESULT" == *configured* ]]; } \
          && [[ "$DEPLOYMENT_APPLY_RESULT" == *unchanged* ]]; then
       echo "Secret or ConfigMap changed. Restarting gateway to load it..."
@@ -1332,14 +1921,11 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
 
     # Post-rollout health check (§2)
     sleep 5
-    HEALTH=$(kubectl exec -n adp-gateway deploy/bedrockgateway -- \
-      curl -sf http://localhost:8080/health 2>/dev/null) || true
-    echo "$HEALTH" | grep -q '"status"' \
-      || warn "Health check inconclusive. Verify: kubectl exec -n adp-gateway deploy/bedrockgateway -- curl http://localhost:8080/health"
+    gateway_healthcheck >/dev/null 2>&1 \
+      || warn "Health check inconclusive. Verify: source \"${SCRIPT_DIR}/gateway-rollout.sh\"; gateway_healthcheck"
 
   else
     # Fresh deployments require the same release-image readiness as updates.
-    kubectl set image deployment/bedrockgateway bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
     wait_for_gateway_rollout || fail "Gateway rollout not complete"
   fi
 
@@ -1381,6 +1967,17 @@ fi
 ok "Gateway deployed"
 
 deploy_phase_complete
+fi
+
+if [ "$DEPLOY_GATEWAY" = true ] && ! declare -F capacity_lock >/dev/null; then
+  prepare_gateway_capacity
+  CAPACITY_BUNDLE=$(mktemp -d "${TMPDIR:-/tmp}/adp-gateway-capacity.XXXXXX")
+  for capacity_resource in deployment hpa pdb; do
+    cp "$DEPLOY_CHECKPOINT_FILE.capacity/$capacity_resource.json" "$CAPACITY_BUNDLE/" \
+      || fail "Saved gateway capacity bundle is missing; replay from the gateway phase"
+  done
+  python3 "$SCRIPT_DIR/render-gateway-capacity.py" --environment "$ENVIRONMENT" \
+    --verify-deployment "$CAPACITY_BUNDLE" || fail "Saved gateway capacity no longer matches selection or Deployment; replay from the gateway phase"
 fi
 
 refresh_credentials
@@ -1611,6 +2208,9 @@ fi
 if deploy_phase_begin factory; then
 if [ "$DEPLOY_FACTORY" = true ]; then
   step "Step 10/11: Deploy agent-factory"
+  # Chat rollout mode is decided at startup; the stage itself defaults to retire.
+  CHAT_MODE="${CHAT_MODE:-retire}"
+  CHAT_EXCEPTION="${CHAT_EXCEPTION:-}"
   bash "$SCRIPT_DIR/build-agent-factory-lambdas.sh"
 
   # Agent factory infra runs directly — no CodeBuild needed.
@@ -1650,15 +2250,43 @@ environment              = "${ENVIRONMENT}"
 aws_region               = "${AWS_REGION}"
 github_org               = "${ADP_GITHUB_ORG:-aws-e}"
 runner_namespace         = "arc-runners"
+runner_role_name         = "adp-${ENVIRONMENT}-agent-factory-runner-role"
+gateway_intake_managed_policy = true
 enable_github_apps       = ${_GH_APPS_EXIST}
 enable_agent_context_rbac = ${_AC_NS_EXISTS}
 seed_agent_registry      = ${_SEED_REGISTRY}
 gateway_deployed         = true
+chat_model_policy_enabled = ${CHAT_MODEL_POLICY_ENABLED:-false}
 EOF
   else
     FACTORY_VAR_FILE="$UPGRADE_RUN_DIR/agent-factory.tfvars.json"
   fi
   terraform init -backend-config="$BACKEND_FILE" -input=false
+  # The runtime verifier Role in adp-gateway was granted live on dev before it was
+  # declared (#7870/#7892); adopt it so the apply converges instead of conflicting.
+  FACTORY_ADOPT_VAR_FILE=terraform.tfvars
+  [ "$UPDATE_MODE" = true ] && FACTORY_ADOPT_VAR_FILE="$FACTORY_VAR_FILE"
+  for kind in role role_binding; do
+    tf_adopt_existing "kubernetes_${kind}.runtime_verifier" "adp-gateway/adp-runtime-verifier" \
+      kubectl get "${kind/_/}" adp-runtime-verifier -n adp-gateway \
+      -- -var-file="$FACTORY_ADOPT_VAR_FILE"
+  done
+  # Publish the chat ingress before retiring the old identity. The helper
+  # preserves only observed grants. In `delegated` mode the ingest Lambda is
+  # applied with the model policy enabled (the delegated ScaledJob requires it)
+  # and the helper runs with --delegated so the supervisor ScaledJob that reuses
+  # the legacy name is recognised instead of deleted; otherwise it never starts
+  # delegated chat.
+  export ADP_CHAT_RETIREMENT_DIR="${UPGRADE_RUN_DIR:-$(mktemp -d)}"
+  CHAT_RETIREMENT_ARGS=(--directory "$ADP_CHAT_RETIREMENT_DIR" --account "$ACCOUNT_ID"
+    --region "$AWS_REGION" --environment "$ENVIRONMENT")
+  CHAT_POLICY_ARGS=()
+  if [ "$CHAT_MODE" = delegated ]; then
+    CHAT_RETIREMENT_ARGS+=(--delegated)
+    CHAT_POLICY_ARGS=(-var=chat_model_policy_enabled=true)
+  fi
+  python3 "$SCRIPT_DIR/upgrade-chat.py" prepare "${CHAT_RETIREMENT_ARGS[@]}"
+  CHAT_RETAIN_VARS="$ADP_CHAT_RETIREMENT_DIR/chat-retirement.tfvars.json"
   if [ "$UPDATE_MODE" = true ]; then
     # Terraform may load managed mode from terraform.tfvars as well as the
     # recovered JSON. Ask Terraform for the effective value before the first
@@ -1698,17 +2326,196 @@ Path(sys.argv[2]).write_text(json.dumps({
 }))
 PY
           terraform_update_apply "agent-factory" "$FACTORY_VAR_FILE" \
-            -var-file="$INTAKE_CUTOVER"
+            -var-file="$INTAKE_CUTOVER" -var-file="$CHAT_RETAIN_VARS" "${CHAT_POLICY_ARGS[@]}"
         fi
         ;;
       false) ;;
       *) fail "Invalid effective agent-factory intake policy mode: $INTAKE_MANAGED" ;;
     esac
-    terraform_update_apply "agent-factory" "$FACTORY_VAR_FILE"
+    terraform_update_apply "agent-factory" "$FACTORY_VAR_FILE" -var-file="$CHAT_RETAIN_VARS" "${CHAT_POLICY_ARGS[@]}"
   else
-    terraform apply -var-file=terraform.tfvars -auto-approve
-    ok "Agent-factory deployed"
+    terraform apply -var-file=terraform.tfvars -var-file="$CHAT_RETAIN_VARS" "${CHAT_POLICY_ARGS[@]}" -auto-approve
   fi
+
+  if [ "$CHAT_MODE" = delegated ]; then
+    # ------------------------------------------------------------------------
+    # Step 10c (delegated): activate delegated chat BEFORE retiring the legacy
+    # worker, so the environment is never left without chat (#7899 AC-01/AC-03).
+    # Both chat images are built, the sandbox gateway TLS endpoint is provisioned
+    # (apply-chat-tls.sh), the Crew pod controls and the supervisor/sandbox
+    # ScaledJob are applied (deploy-chat-scaledjob.sh), and the ScaledJob must be
+    # Ready with the supervisor service account before `drain --delegated` runs.
+    # ------------------------------------------------------------------------
+    step "Step 10c/11: Delegated chat rollout (qualification/exception record: $CHAT_EXCEPTION)"
+    _chat_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo ""; }
+    # Chat model-policy posture (#7997; gateway infra chief-of-staff-flags.tf, Step 3,
+    # rendered into BG_CHAT_MODEL_POLICY_POSTURE in Step 4). Under "enforced" the
+    # gateway refuses every /v1/chat/model/decision without fresh invocability
+    # evidence (503 probing_disabled), and only the probe writes that evidence, so the
+    # checks below stop the rollout before building anything (#7967). Under the
+    # default "advisory" (and "off") chat answers without evidence, so the same
+    # checks only warn. Unrecognised values are treated as the default, advisory.
+    CHAT_MODEL_POLICY_POSTURE=$(_chat_ssm "/adp/${ENVIRONMENT}/gateway/chat-model-policy-posture")
+    case "$CHAT_MODEL_POLICY_POSTURE" in off|advisory|enforced) ;; *) CHAT_MODEL_POLICY_POSTURE="advisory" ;; esac
+    ok "Chat model policy posture: ${CHAT_MODEL_POLICY_POSTURE} (SSM /adp/${ENVIRONMENT}/gateway/chat-model-policy-posture)"
+    # The parameters are gateway infra (model-probe.tf, Step 3) rendered into the
+    # ConfigMap in Step 4; the CronJob is webhook-ingress (Step 9).
+    MODEL_PROBE_GUARD_ENABLED=$(_chat_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-enabled")
+    MODEL_PROBE_GUARD_SLOTS=$(_chat_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-max-slots-per-cycle")
+    MODEL_PROBE_GUARD_CYCLE_BUDGET=$(_chat_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-budget-usd-per-cycle")
+    MODEL_PROBE_GUARD_ATTEMPT_BUDGET=$(_chat_ssm "/adp/${ENVIRONMENT}/gateway/model-probe-max-budget-usd-per-attempt")
+    _probe_bound_is_positive() { [[ "$1" =~ ^[0-9]+(\.[0-9]{1,6})?$ ]] && [[ "$1" =~ [1-9] ]]; }
+    MODEL_PROBE_GUARD_STATE="SSM /adp/${ENVIRONMENT}/gateway/model-probe-*: enabled=${MODEL_PROBE_GUARD_ENABLED:-unset} slots=${MODEL_PROBE_GUARD_SLOTS:-unset} budget_per_cycle=${MODEL_PROBE_GUARD_CYCLE_BUDGET:-unset} budget_per_attempt=${MODEL_PROBE_GUARD_ATTEMPT_BUDGET:-unset}"
+    if [ "$MODEL_PROBE_GUARD_ENABLED" != "true" ] \
+        || ! _probe_bound_is_positive "$MODEL_PROBE_GUARD_SLOTS" \
+        || ! _probe_bound_is_positive "$MODEL_PROBE_GUARD_CYCLE_BUDGET" \
+        || ! _probe_bound_is_positive "$MODEL_PROBE_GUARD_ATTEMPT_BUDGET"; then
+      if [ "$CHAT_MODEL_POLICY_POSTURE" = enforced ]; then
+        fail "Delegated chat enforces model policy (chat_model_policy_posture=enforced) and needs invocability evidence; set model_probe_enabled/model_probe_max_slots_per_cycle/model_probe_budget_usd_per_cycle/model_probe_max_budget_usd_per_attempt in environments/${ENVIRONMENT}/modules/gateway.tfvars and persona_model_probe_enabled=true in webhook-ingress.tfvars (or set chat_model_policy_posture = \"advisory\"), then re-run (${MODEL_PROBE_GUARD_STATE})"
+      fi
+      warn "Model invocability probing is not armed; chat model policy posture is ${CHAT_MODEL_POLICY_POSTURE}, so delegated chat answers without invocability evidence (decisions are journaled as ${CHAT_MODEL_POLICY_POSTURE}). Arm model_probe_* in environments/${ENVIRONMENT}/modules/gateway.tfvars and persona_model_probe_enabled=true in webhook-ingress.tfvars before setting the posture to enforced (${MODEL_PROBE_GUARD_STATE})"
+    else
+      ok "Model invocability probing is armed (slots=${MODEL_PROBE_GUARD_SLOTS}/cycle, budget ${MODEL_PROBE_GUARD_CYCLE_BUDGET} USD/cycle, ${MODEL_PROBE_GUARD_ATTEMPT_BUDGET} USD/attempt)"
+    fi
+    if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
+      SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
+        bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-chat-agent
+      # The restricted sandbox variant is published next to the supervisor image
+      # (CodeBuild's bs-chat-agent.yml does both; local Docker needs the second step).
+      (cd "$ROOT_DIR" && ADP_SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
+        bash modules/agent-factory/agent/scripts/publish-chat-sandbox-image.sh)
+    else
+      run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml" adp-chat-agent
+    fi
+    SUPERVISOR_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" \
+      "${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-chat-agent:$IMAGE_TAG}") \
+      || fail "Chat supervisor release digest could not be verified"
+    SANDBOX_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" \
+      "${ADP_RELEASE_CHAT_SANDBOX_IMAGE:-$REGISTRY/adp-chat-agent:sandbox-$IMAGE_TAG}") \
+      || fail "Chat sandbox release digest could not be verified"
+    [ "$SUPERVISOR_IMAGE" != "$SANDBOX_IMAGE" ] || fail "Supervisor and sandbox images must be distinct digests"
+    CHAT_IMAGE="$SUPERVISOR_IMAGE"
+    # The supervisor reaches the gateway's internal plane (/internal/v1/agent/chat/*)
+    # through the AWS_IAM-authorized API Gateway stage URL that gateway Terraform
+    # publishes (Step 4; output api_gateway_invoke_url is the fallback). It signs
+    # every request for execute-api with its IRSA identity. Never the CloudFront
+    # frontend origin (it only forwards /api/*, so /internal/* is an S3 403) and
+    # never the restricted sandbox listener.
+    GATEWAY_HTTPS_ORIGIN=$(_chat_ssm "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url")
+    [ -n "$GATEWAY_HTTPS_ORIGIN" ] && [ "$GATEWAY_HTTPS_ORIGIN" != "None" ] \
+      || GATEWAY_HTTPS_ORIGIN=$(cd "$ROOT_DIR/modules/gateway/infra" && terraform output -raw api_gateway_invoke_url 2>/dev/null || echo "")
+    GATEWAY_HTTPS_ORIGIN=$(CHAT_REGION="$AWS_REGION" python3 -c 'import os, re, sys
+from urllib.parse import urlsplit
+u = urlsplit(sys.argv[1].strip())
+host = u.hostname or ""
+ok = (u.scheme == "https" and not u.username and not u.password and not u.port and not u.query and not u.fragment
+      and re.fullmatch(r"[a-z0-9]+\.execute-api\." + re.escape(os.environ["CHAT_REGION"]) + r"\.amazonaws\.com", host)
+      and re.fullmatch(r"/[A-Za-z0-9_-]+/?", u.path))
+print(f"https://{host}{u.path.rstrip(chr(47))}" if ok else "")' "$GATEWAY_HTTPS_ORIGIN")
+    [ -n "$GATEWAY_HTTPS_ORIGIN" ] || fail "Delegated chat needs the gateway API stage URL (https://<id>.execute-api.${AWS_REGION}.amazonaws.com/<stage>) in SSM /adp/${ENVIRONMENT}/gateway/apigw-invoke-url or gateway infra output api_gateway_invoke_url"
+    # Optional Crew values. deploy-chat-scaledjob.sh resolves both from the same SSM
+    # parameters itself when the caller leaves them unset (#8058: the ADP-managed
+    # chat-agent-deploy.yml sets neither); they are read here so this run's log and
+    # journal show the values the ScaledJob will carry.
+    ADP_CREW_DASHBOARD_ORIGIN=$(_chat_ssm "/adp/${ENVIRONMENT}/gateway/crew-dashboard-origin")
+    [ "$ADP_CREW_DASHBOARD_ORIGIN" != "None" ] || ADP_CREW_DASHBOARD_ORIGIN=""
+    ADP_CREW_S3_INTERFACE_IP=$(_chat_ssm "/adp/${ENVIRONMENT}/gateway/crew-s3-interface-ip")
+    [ "$ADP_CREW_S3_INTERFACE_IP" != "None" ] || ADP_CREW_S3_INTERFACE_IP=""
+    # Deployment default for the persistent-session executor (#8115): an operator export
+    # (ADP_CHAT_PERSISTENT_EXECUTOR=claude-code) wins and is published back to SSM by
+    # deploy-chat-scaledjob.sh after the apply; otherwise the SSM value is passed through so
+    # the log shows what the ScaledJob will carry (empty = the supervisor's sandbox-loop).
+    ADP_CHAT_PERSISTENT_EXECUTOR="${ADP_CHAT_PERSISTENT_EXECUTOR:-$(_chat_ssm "/adp/${ENVIRONMENT}/gateway/chat-persistent-executor")}"
+    [ "$ADP_CHAT_PERSISTENT_EXECUTOR" != "None" ] || ADP_CHAT_PERSISTENT_EXECUTOR=""
+    kubectl create namespace adp-gateway-agents --dry-run=client -o yaml | kubectl apply -f -
+    # Sandbox gateway TLS endpoint; idempotent, publishes the CA ConfigMap name to
+    # SSM /adp/<env>/gateway/chat-sandbox-ca-configmap and prints it.
+    CHAT_SANDBOX_CA_CONFIGMAP=$(bash "$SCRIPT_DIR/apply-chat-tls.sh" --env "$ENVIRONMENT" --region "$AWS_REGION") \
+      || fail "Chat sandbox gateway TLS endpoint could not be provisioned"
+    CHAT_SANDBOX_CA_CONFIGMAP="${CHAT_SANDBOX_CA_CONFIGMAP##*$'\n'}"
+    [[ "$CHAT_SANDBOX_CA_CONFIGMAP" =~ ^chat-sandbox-gateway-ca-[a-f0-9]{16}$ ]] \
+      || fail "apply-chat-tls.sh did not report the sandbox CA ConfigMap name"
+    ok "Sandbox gateway endpoint ready; CA ConfigMap $CHAT_SANDBOX_CA_CONFIGMAP"
+    # Reviewed Crew pod controls first (same set chat-agent-deploy.yml applies), then
+    # the supervisor/sandbox ScaledJob. deploy-chat-scaledjob.sh re-checks every
+    # precondition (model access, Terraform outputs, Service, CA ConfigMap) and, before
+    # the ScaledJob, pins both release digests into the chat-agent-image-prepull
+    # DaemonSet and waits for every node (#8059) — no separate DaemonSet apply here.
+    # After the ScaledJob apply the same script publishes the release identities the
+    # gateway verifies chat workloads against (SSM chat-authority-worker-images /
+    # chat-sandbox-image-digests / chat-crew-image-digests + chat-worker-service-account /
+    # chat-data-enabled; seeded by gateway Terraform with lifecycle ignore_changes) and
+    # converges the live bedrockgateway-config (ADP_CHAT_*_DIGESTS, CA ConfigMap, data
+    # URL) with a gateway restart — on this path and on chat-agent-deploy.yml alike, so
+    # the ADP-managed image deploy no longer leaves the gateway refusing the new digests
+    # (#8086). Step 4 renders the same parameters on every later run.
+    ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" STATE_BUCKET="$STATE_BUCKET" \
+      ADP_CREW_S3_INTERFACE_IP="$ADP_CREW_S3_INTERFACE_IP" ADP_CHAT_CREW_CONTROLS_ONLY=true \
+      bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh" \
+      || fail "Crew pod controls could not be applied"
+    ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" STATE_BUCKET="$STATE_BUCKET" \
+      SUPERVISOR_IMAGE="$SUPERVISOR_IMAGE" SANDBOX_IMAGE="$SANDBOX_IMAGE" \
+      GATEWAY_HTTPS_ORIGIN="$GATEWAY_HTTPS_ORIGIN" ADP_CREW_DASHBOARD_ORIGIN="$ADP_CREW_DASHBOARD_ORIGIN" \
+      ADP_CHAT_PERSISTENT_EXECUTOR="$ADP_CHAT_PERSISTENT_EXECUTOR" \
+      ADP_CHAT_EXISTING_NAMESPACE_ONLY=true ADP_CHAT_MODEL_POLICY_ENABLED=true ADP_CHAT_CREW_CONTROLS_ONLY=false \
+      bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh" \
+      || fail "Delegated chat ScaledJob rollout failed"
+    kubectl wait --for=condition=Ready scaledjob/chat-agent-worker -n adp-gateway-agents --timeout=300s \
+      || fail "Delegated chat ScaledJob is not ready"
+    DELEGATED_SA=$(kubectl get scaledjob chat-agent-worker -n adp-gateway-agents \
+      -o jsonpath='{.spec.jobTargetRef.template.spec.serviceAccountName}')
+    [ "$DELEGATED_SA" = adp-chat-supervisor ] \
+      || fail "ScaledJob chat-agent-worker is not the delegated supervisor (service account: ${DELEGATED_SA:-none})"
+    SUPERVISOR_DIGEST="${SUPERVISOR_IMAGE##*@}"
+    SANDBOX_DIGEST="${SANDBOX_IMAGE##*@}"
+    ok "Published chat release identities (deploy-chat-scaledjob.sh): SSM /adp/${ENVIRONMENT}/gateway/chat-authority-worker-images=${SUPERVISOR_DIGEST}, chat-sandbox-image-digests=${SANDBOX_DIGEST}, chat-crew-image-digests=${SANDBOX_DIGEST}, chat-worker-service-account=adp-chat-supervisor, chat-data-enabled=true"
+    ok "Gateway reconfigured for delegated chat (CA ConfigMap ${CHAT_SANDBOX_CA_CONFIGMAP}, supervisor/sandbox/Crew digests) by deploy-chat-scaledjob.sh"
+    # Record invocability evidence now instead of waiting for the CronJob's next
+    # scheduled tick (#7967): one cycle from cronjob/persona-model-invocability-probe
+    # (webhook-ingress, Step 9). Exit 3 means nothing was claimable (every catalogue
+    # model already holds fresh evidence, or today's cycle budget is spent). Any other
+    # failure means chat would refuse every turn under the enforced posture, so the
+    # rollout stops there; under advisory/off (#7997) chat answers without evidence
+    # and the failure is a warning.
+    ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/run-probe-cycle.sh" \
+      && PROBE_CYCLE_STATUS=0 || PROBE_CYCLE_STATUS=$?
+    case "$PROBE_CYCLE_STATUS" in
+      0) ok "Model invocability probe cycle recorded proven evidence" ;;
+      3) warn "Model invocability probe cycle had nothing to claim; existing evidence stands (see the job log above)" ;;
+      *) if [ "$CHAT_MODEL_POLICY_POSTURE" = enforced ]; then
+           fail "Model invocability probe cycle did not record proven evidence (exit $PROBE_CYCLE_STATUS); delegated chat would refuse every turn under chat_model_policy_posture=enforced"
+         fi
+         warn "Model invocability probe cycle did not record proven evidence (exit $PROBE_CYCLE_STATUS); chat model policy posture is ${CHAT_MODEL_POLICY_POSTURE}, so delegated chat answers without evidence (see the job log above)" ;;
+    esac
+    ok "Delegated chat ScaledJob is Ready; retiring the legacy credentialed worker"
+  fi
+
+  case "$CHAT_MODE" in
+    retire|delegated)
+      # Legacy retirement. With --delegated the helper leaves the supervisor
+      # ScaledJob (same name, service account adp-chat-supervisor) in place and
+      # only waits for credentialed adp-agent work to finish.
+      python3 "$SCRIPT_DIR/upgrade-chat.py" drain "${CHAT_RETIREMENT_ARGS[@]}"
+      # Install the stronger denial while retaining all existing policies. The
+      # retirement gate requires it to be observed as a no-op in the removal plan.
+      if [ "$UPDATE_MODE" = true ]; then
+        terraform_update_apply "agent-factory" "$FACTORY_VAR_FILE" -var-file="$CHAT_RETAIN_VARS" \
+          -var=chat_legacy_upgrade_deny_ready=true "${CHAT_POLICY_ARGS[@]}"
+      else
+        terraform apply -var-file=terraform.tfvars -var-file="$CHAT_RETAIN_VARS" \
+          -var=chat_legacy_upgrade_deny_ready=true "${CHAT_POLICY_ARGS[@]}" -auto-approve
+      fi
+      if [ "$UPDATE_MODE" = true ]; then
+        terraform_update_apply "agent-factory" "$FACTORY_VAR_FILE" -var='chat_legacy_upgrade_policies={}' "${CHAT_POLICY_ARGS[@]}"
+      else
+        terraform apply -var-file=terraform.tfvars -var='chat_legacy_upgrade_policies={}' "${CHAT_POLICY_ARGS[@]}" -auto-approve
+      fi
+      python3 "$SCRIPT_DIR/upgrade-chat.py" verify "${CHAT_RETIREMENT_ARGS[@]}"
+      ;;
+    keep-legacy)
+      warn "Chat mode keep-legacy: the legacy credentialed chat worker (ScaledJob chat-agent-worker, service account adp-agent) and its IAM grants remain in place; no drain or verification ran"
+      ;;
+  esac
 
   if [ "$DEPLOY_GATEWAY" = true ] && [ "$ENVIRONMENT" = "dev" ]; then
     COGNITO_PENTEST_CLIENT_ID=$(terraform output -raw pentest_actor_client_id 2>/dev/null || echo "")
@@ -1770,25 +2577,72 @@ PY
     warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
   fi
 
-  # The WebSocket ingest Lambda sends to the chat FIFO queue. Its TypeScript
-  # consumer has its own repository, so both images use the full source SHA
-  # without a suffix that would violate the shared publication contract.
-  step "Step 10c/11: Build and deploy chat agent"
-  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
-    SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
-      bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-chat-agent
+  if [ "$CHAT_MODE" = delegated ]; then
+    # Images were built and the ScaledJob applied before retirement (Step 10c above).
+    # deploy-chat-scaledjob.sh already rendered the pre-pull DaemonSet with BOTH release
+    # digests (containers prepull + prepull-sandbox) and waited for it before the
+    # ScaledJob, on this path and on chat-agent-deploy.yml alike (#8059). Re-applying
+    # the single-container manifest here would drop the sandbox digest again.
+    step "Step 10c/11: Delegated chat images cached by deploy-chat-scaledjob.sh"
   else
-    run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml" adp-chat-agent
+    # Cache the release image without launching the retired credentialed worker.
+    # Delegated chat activation requires its separate qualification (#6937) and
+    # `--chat delegated` with a recorded exception.
+    step "Step 10c/11: Cache chat release image (delegated chat not selected)"
+    if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
+      SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
+        bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-chat-agent
+    else
+      run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml" adp-chat-agent
+    fi
+    CHAT_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" \
+      "${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-chat-agent:$IMAGE_TAG}") \
+      || fail "Chat agent release digest could not be verified"
+    sed -e "s|REPLACE_WITH_AGENT_IMAGE|${CHAT_IMAGE}|g" \
+      "$ROOT_DIR/modules/agent-factory/agent/k8s/image-prepull-daemonset.yaml" | kubectl apply -f -
+    kubectl rollout status daemonset/chat-agent-image-prepull -n adp-gateway-agents --timeout=600s
   fi
-  CHAT_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" \
-    "${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-chat-agent:$IMAGE_TAG}") \
-    || fail "Chat agent release digest could not be verified"
-  ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" STATE_BUCKET="$STATE_BUCKET" \
-    AGENT_IMAGE="$CHAT_IMAGE" \
-    bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
-  ok "Chat agent deployed (SHA: $IMAGE_TAG)"
+  case "$CHAT_MODE" in
+    delegated) ok "Delegated chat is live (supervisor $SUPERVISOR_IMAGE, sandbox $SANDBOX_IMAGE); legacy worker retired. Exception record: $CHAT_EXCEPTION" ;;
+    keep-legacy) warn "Chat image cached; the legacy credentialed chat worker remains running (keep-legacy)" ;;
+    retire) ok "Chat image cached; legacy worker retired and delegated chat remains disabled" ;;
+  esac
 else
   step "Step 10/11: Skipping agent-factory"
+fi
+
+deploy_phase_complete
+fi
+
+# =============================================================================
+# Step 12: Dev Box (optional module — --dev-box on / --dev-box-only, #7998)
+# =============================================================================
+# Runs after the agent factory and chat (Steps 10 and 10c): the module's entrypoint
+# owns everything Dev Box-specific (two Terraform stacks, AMI build, controller
+# Deployment, gateway seed, live verification); this block only decides whether to
+# call it and in which mode. Off is a no-op so an environment without the module
+# gets exactly today's platform.
+if deploy_phase_begin tools-adapters; then
+  if [ -n "${ADP_TOOLS_ADAPTERS_CONFIG:-}" ] && [ "$_SCOPE_COUNT" -eq 0 ]; then
+    install_tools_adapters
+  else
+    echo "Adapter foundations not selected for this deployment"
+  fi
+  deploy_phase_complete
+fi
+
+if deploy_phase_begin dev-box; then
+if [ "$DEV_BOX_MODE" = on ]; then
+  step "Step 12 (optional): Dev Box (modules/user-services/dev-box)"
+  refresh_credentials
+  DEV_BOX_ARGS=(--env "$ENVIRONMENT" --region "$AWS_REGION")
+  [ "$UPDATE_MODE" = false ] || DEV_BOX_ARGS+=(--update)
+  [ "$CONFIRM_DESTRUCTIVE" = false ] || DEV_BOX_ARGS+=(--confirm-destructive)
+  bash "$ROOT_DIR/modules/user-services/dev-box/scripts/deploy-dev-box.sh" "${DEV_BOX_ARGS[@]}" \
+    || fail "Dev Box stage failed; fix the named input and re-run with --resume (or --dev-box-only)"
+  ok "Dev Box stage complete"
+else
+  step "Step 12 (optional): Skipping Dev Box (--dev-box on enables it)"
 fi
 
 deploy_phase_complete
@@ -1821,8 +2675,11 @@ EOF
     ok "Agent-context infrastructure deployed"
   fi
 
-  # Deploy k8s manifests
+  # Deploy k8s manifests. deploy.sh renders ${ENVIRONMENT} into the runtime
+  # verifier RoleBinding group (adp:runtime-verifier-<env>); without the export
+  # a non-dev environment would bind the dev group.
   cd "$ROOT_DIR/modules/agent-context"
+  export ENVIRONMENT
   if [ "$UPDATE_MODE" = true ]; then
     bash deploy.sh --skip-terraform
   else
@@ -1896,9 +2753,27 @@ if [ "$UPDATE_MODE" = true ]; then
     ${REQUIRED_MODULE_ARGS[@]+"${REQUIRED_MODULE_ARGS[@]}"}
 fi
 if [ "$DEPLOY_GATEWAY" = true ]; then
+  if [ "$UPDATE_MODE" = false ]; then
+    step "Enable gateway autoscaling after initial configuration"
+    capacity_lock verify || fail "Gateway capacity ownership changed before HPA apply"
+    python3 "$SCRIPT_DIR/render-gateway-capacity.py" --environment "$ENVIRONMENT" \
+      --verify-bundle "$CAPACITY_BUNDLE" || fail "Capacity selection changed before HPA apply"
+    kubectl apply -f "$CAPACITY_BUNDLE/hpa.json" -n adp-gateway
+    wait_for_gateway_rollout || fail "Gateway is not ready after enabling autoscaling"
+  fi
   CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query Parameter.Value --output text)
   curl --fail --silent --show-error --retry 5 --retry-all-errors "https://$CF_DOMAIN/api/health" \
     | python3 -c 'import json,sys; assert json.load(sys.stdin).get("status")=="healthy", "CDN API is unhealthy"'
+  capacity_lock verify || fail "Gateway capacity ownership changed after rollout"
+  python3 "$SCRIPT_DIR/render-gateway-capacity.py" --environment "$ENVIRONMENT" \
+    --verify-applied "$CAPACITY_BUNDLE" || fail "Gateway capacity readback differs from selected bundle"
+  capacity_lock release || fail "Gateway capacity ownership release failed"
+  rm -rf "$CAPACITY_BUNDLE" "$CAPACITY_LOCK_DIR"
+  if declare -F deploy_checkpoint_exit >/dev/null; then
+    trap 'deploy_checkpoint_exit $?' EXIT
+  else
+    trap - EXIT
+  fi
 fi
 
 if [ "$CI_MODE" = false ] && [ "${ADP_BEDROCK_VERIFY_DEFERRED:-false}" != true ]; then
@@ -1923,6 +2798,7 @@ CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-d
 [ "$DEPLOY_WEBHOOK" = true ] && echo "Hosted agents: kubectl get scaledjobs -n adp-agents (check admission pause status)"
 [ "$DEPLOY_FACTORY" = true ] && echo "Factory workers: kubectl get scaledjobs -n adp-gateway-agents"
 [ "$DEPLOY_AGENT_CONTEXT" = true ] && echo "Context:   kubectl get pods -n agent-context"
+[ "$DEV_BOX_MODE" = on ] && echo "Dev Box:   kubectl -n adp-gateway logs deploy/dev-box-controller; acceptance: modules/user-services/dev-box/scripts/verify-dev-box.py --env $ENVIRONMENT"
 GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
 [ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "AgentGW:   $GW_WS"
 
@@ -1934,7 +2810,7 @@ if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
 fi
 
 # --- Next steps (manual — GitHub App wiring; skipped in update mode) ---
-if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$DEV_BOX_ONLY" = false ]; then
   echo ""
   echo "━━━ Next steps (manual) ━━━"
   echo "To complete the agent path, wire a GitHub App:"
@@ -1950,7 +2826,7 @@ if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEX
   echo "  4. Complete worker-security activation and admission checks: docs/security/terraform-worker-rollout.md"
   echo "  5. With approval for a live GitHub test, comment '@agent-developer <task>' on an issue"
   echo ""
-  echo "Admin credentials location: Secrets Manager → adp/$ENVIRONMENT/gateway/test-admin-credentials"
+  echo "Sign in with your selected administrator; see docs/adp-platform-deployment/bootstrap-administrator.md"
 fi
 
 echo ""

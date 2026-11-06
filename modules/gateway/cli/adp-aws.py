@@ -429,7 +429,7 @@ def connect(api, args):
     confirm(
         args,
         f"Connect AWS account {args.account_id} to your ADP account as {args.name}.",
-        "ADP will be able to read that account on your behalf. Shared Bedrock routing is not affected.",
+        "ADP, your agents and your Dev Box can read this account on your behalf. You can revoke agent access in connection settings.",
     )
 
     directory = common.private_directory(args.output_dir) if args.output_dir else None

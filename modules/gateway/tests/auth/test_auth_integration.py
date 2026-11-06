@@ -282,8 +282,10 @@ class TestAuthIntegration:
         assert count == 1
 
     @pytest.mark.asyncio
-    async def test_admin_privilege_integration(self, db_session, sample_organization, sample_department, sample_team):
-        """Test admin privilege handling integration."""
+    async def test_legacy_admin_mapping_preserves_service_identity_without_global_authority(
+        self, db_session, sample_organization, sample_department, sample_team
+    ):
+        """A mapped IAM role authenticates but cannot acquire platform authority."""
         # Mock STS responses for admin role
         mock_sts_responses = {
             "get_caller_identity": {
@@ -309,7 +311,7 @@ class TestAuthIntegration:
 
         await service_account_service.create_service_account(admin_sa_data, sample_organization.id, db_session)
 
-        # Exchange credentials - should get admin privileges
+        # Exchange credentials for the registered service identity
         request = AuthExchangeRequest(
             aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
             aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY",
@@ -321,9 +323,9 @@ class TestAuthIntegration:
         # Validate token and check admin privileges
         token_context = await auth_service.validate_token(response.token, db_session)
 
-        # Admin role should be detected based on organization role mappings
-        # Note: This depends on the sample_organization fixture having "AdminRole" in admin_roles
-        assert token_context.is_admin is True
+        assert token_context.org_id == sample_organization.id
+        assert token_context.account_type == "service"
+        assert token_context.is_admin is False
 
     @pytest.mark.asyncio
     async def test_multi_tenant_isolation(self, db_session, sample_organization, sample_department, sample_team):

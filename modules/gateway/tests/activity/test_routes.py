@@ -136,6 +136,46 @@ def admin_client(app, mock_service, mock_access, mock_db, admin_user):
 class TestGetMyInvocations:
     """/me/agent-invocations endpoint tests."""
 
+    def test_tool_receipt_fields_survive_the_owned_activity_route(self, client, mock_service, monkeypatch):
+        from src.activity import routes as activity_routes
+
+        model_costs = AsyncMock()
+        monkeypatch.setattr(activity_routes, "get_cost_by_run_ids", model_costs)
+        item = ActivityService._map_item(
+            {
+                "event_id": "tool#receipt-one",
+                "arrived_at": "2026-06-14T10:00:00Z",
+                "channel": "tool",
+                "status": "tool_authorized",
+                "tenant_id": "org-tenant-001",
+                "user_id": CANONICAL_USER_ID,
+                "tool_name": "websearch___search",
+                "receipt_id": "receipt-one",
+                "estimated_cost_usd": 0.05,
+                "settled_cost_usd": None,
+                "accounting_status": "estimate_only",
+                "observed_usage_status": "not_observed",
+                "reservation_status": "estimated_hold",
+                "request_id": "request-one",
+                "execution_id": "execution-one",
+            }
+        )
+        mock_service.query_by_user.return_value = InvocationListResponse(items=[item], count=1, last_key=None)
+        response = client.get("/me/agent-invocations?user_id=someone-else")
+        assert response.status_code == 200
+        row = response.json()["items"][0]
+        assert (row["tool_name"], row["receipt_id"], row["estimated_cost_usd"]) == (
+            "websearch___search",
+            "receipt-one",
+            0.05,
+        )
+        assert row["total_cost_usd"] is None and row["liveness"] is None
+        assert row["settled_cost_usd"] is None and row["accounting_status"] == "estimate_only"
+        assert row["reservation_status"] == "estimated_hold" and row["observed_usage_status"] == "not_observed"
+        assert row["request_id"] == "request-one" and row["execution_id"] == "execution-one"
+        assert mock_service.query_by_user.call_args.kwargs["user_id"] == CANONICAL_USER_ID
+        model_costs.assert_not_awaited()
+
     def test_uses_token_user_id_not_param(self, client, mock_service, regular_user):
         """The endpoint resolves the token's Cognito sub to the canonical user_id,
         ignoring any user_id query param (privacy)."""
@@ -938,3 +978,99 @@ class TestPageSizeBounds:
     def test_in_range_page_size_accepted(self, client, mock_service):
         assert client.get("/me/agent-invocations?page_size=100").status_code == 200
         assert mock_service.query_by_user.call_args[1]["page_size"] == 100
+
+
+class TestToolCallExport:
+    def test_org_admin_exports_only_own_tenant(self, client, mock_service, mock_access, org_admin_user, app):
+        from datetime import date
+
+        from fastapi import Request
+        from fastapi.responses import JSONResponse
+
+        from src.admin.config import AdminRole, Permission
+        from src.shared.exceptions import BedrockGatewayError
+
+        app.dependency_overrides[get_current_user] = lambda: org_admin_user
+        access = AccessControl(None)
+        mock_access.check_permission.side_effect = lambda context, permission, target_org_id: access._check_resolved_permission(
+            AdminRole.ORG_ADMIN,
+            org_admin_user.org_id,
+            None,
+            permission,
+            target_org_id,
+            None,
+        )
+
+        @app.exception_handler(BedrockGatewayError)
+        async def gateway_error_handler(request: Request, exc: BedrockGatewayError):
+            return JSONResponse(status_code=exc.status_code, content={"error": exc.error})
+
+        mock_service.export_tool_calls.return_value = b"call_id,tool,estimated_cost_usd\nfirst,browser___open,0.05\n"
+        response = client.get("/admin/tool-calls/export?since=2026-10-14&until=2026-10-14")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert response.headers["content-disposition"] == 'attachment; filename="tool-calls-2026-10-14-2026-10-14.csv"'
+        assert response.content.startswith(b"call_id,tool,estimated_cost_usd")
+        mock_access.check_permission.assert_awaited_with(org_admin_user, Permission.ACTIVITY_READ_ALL, target_org_id=org_admin_user.org_id)
+        mock_service.export_tool_calls.assert_called_once_with(
+            tenant_id=org_admin_user.org_id,
+            since=date(2026, 10, 14),
+            until=date(2026, 10, 14),
+            format="csv",
+        )
+
+        response = client.get("/admin/tool-calls/export?since=2026-10-14&until=2026-10-14&tenant_id=another-tenant")
+        assert response.status_code == 403
+        mock_service.export_tool_calls.assert_called_once()
+
+    def test_member_without_activity_permission_cannot_export(self, client, mock_service, mock_access, regular_user, app):
+        from fastapi import Request
+        from fastapi.responses import JSONResponse
+
+        from src.admin.config import AdminRole
+        from src.shared.exceptions import BedrockGatewayError
+
+        access = AccessControl(None)
+        mock_access.check_permission.side_effect = lambda context, permission, target_org_id: access._check_resolved_permission(
+            AdminRole.MEMBER,
+            regular_user.org_id,
+            None,
+            permission,
+            target_org_id,
+            None,
+        )
+
+        @app.exception_handler(BedrockGatewayError)
+        async def gateway_error_handler(request: Request, exc: BedrockGatewayError):
+            return JSONResponse(status_code=exc.status_code, content={"error": exc.error})
+
+        response = client.get("/admin/tool-calls/export?since=2026-10-14&until=2026-10-14")
+        assert response.status_code == 403
+        mock_service.export_tool_calls.assert_not_called()
+
+    def test_platform_admin_can_select_a_tenant_and_parquet(self, admin_client, mock_service, mock_access, admin_user):
+        from datetime import date
+
+        from src.admin.config import Permission
+
+        mock_service.export_tool_calls.return_value = b"PAR1test"
+        response = admin_client.get("/admin/tool-calls/export?since=2026-10-13&until=2026-10-14&tenant_id=org-xyz&format=parquet")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/vnd.apache.parquet"
+        assert response.content == b"PAR1test"
+        mock_access.check_permission.assert_awaited_with(admin_user, Permission.ACTIVITY_READ_ALL, target_org_id="org-xyz")
+        mock_service.export_tool_calls.assert_called_once_with(
+            tenant_id="org-xyz",
+            since=date(2026, 10, 13),
+            until=date(2026, 10, 14),
+            format="parquet",
+        )
+
+    def test_invalid_request_never_queries_export(self, client, mock_service):
+        for query, status in (
+            ("since=2026-10-15&until=2026-10-14", 400),
+            ("since=bad&until=2026-10-14", 422),
+            ("since=2026-10-14&until=2026-10-14&format=json", 422),
+        ):
+            assert client.get(f"/admin/tool-calls/export?{query}").status_code == status
+        mock_service.export_tool_calls.assert_not_called()

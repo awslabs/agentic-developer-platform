@@ -408,6 +408,16 @@ class DomainPrincipal:
         return self.account_type == "service"
 
 
+@dataclass(frozen=True)
+class TokenCandidate:
+    """Validated access-token selection, not yet authorized for a domain tenant."""
+
+    subject: str
+    org_id: str
+    client_id: str
+    account_type: str
+
+
 class DomainTokenPolicy:
     """Admits ADP access tokens from an allowlisted client, and nothing else.
 
@@ -438,6 +448,17 @@ class DomainTokenPolicy:
     def admit(
         self, claims: Mapping[str, object], *, validation_path: str
     ) -> DomainPrincipal:
+        candidate = self.admit_candidate(claims, validation_path=validation_path)
+        return DomainPrincipal(
+            subject=candidate.subject,
+            org_id=candidate.org_id,
+            client_id=candidate.client_id,
+            account_type=candidate.account_type,
+        )
+
+    def admit_candidate(
+        self, claims: Mapping[str, object], *, validation_path: str
+    ) -> TokenCandidate:
         """Admit a validated token, or raise :class:`TokenRejectedError`.
 
         ``claims`` must already be signature-verified; this method decides
@@ -493,7 +514,7 @@ class DomainTokenPolicy:
         }:
             raise TokenRejectedError("token must carry a recognized account type")
 
-        return DomainPrincipal(
+        return TokenCandidate(
             subject=subject,
             org_id=org_id,
             client_id=client_id,

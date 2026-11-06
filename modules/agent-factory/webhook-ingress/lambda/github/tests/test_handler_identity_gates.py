@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Add parent directories to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -53,11 +55,22 @@ def _labeled_payload(
     return {
         "action": "labeled",
         "label": {"name": "developer"},
-        "issue": {"number": 42},
-        "repository": {"full_name": "acme/repo"},
+        "issue": {"number": 42, "user": {"id": sender_id}},
+        "repository": {"id": 51, "full_name": "acme/repo"},
         "sender": {"login": sender_login, "id": sender_id, "type": "User"},
         "installation": {"id": installation_id},
     }
+
+
+@pytest.fixture
+def eligible_sender():
+    from common.github_actor_authority import ActorDecision
+
+    with patch(
+        "common.github_actor_authority.check_actor",
+        return_value=ActorDecision(True, "allowed", "writer", "write"),
+    ):
+        yield
 
 
 class TestUnknownInstallation:
@@ -110,8 +123,8 @@ class TestUnknownInstallation:
         ]
         # Issue #2724: the return type is AutoRegisterResult(tenant_id,
         # authoritative). Routing keys off tenant_id, so a fail-open (non-
-        # authoritative) registration must still resolve and dispatch — only
-        # credential provisioning is withheld.
+        # authoritative) registration may resolve, but does not supply the
+        # installation-scoped eligibility evidence required for dispatch.
         from handler import AutoRegisterResult
 
         mock_auto_reg.return_value = AutoRegisterResult("acme-hackathon", False)
@@ -137,9 +150,11 @@ class TestUnknownInstallation:
             event = _make_event("issues", payload)
             result = handler(event, None)
 
-        assert result["statusCode"] == 202
+        assert result["statusCode"] == 503
+        assert json.loads(result["body"])["outcome"] == "eligibility_unavailable"
         mock_auto_reg.assert_called_once_with(888888, "acme-hackathon")
         assert mock_resolver.return_value.resolve.call_count == 2
+        mock_sqs_pub.assert_not_called()
 
 
 class TestUnknownUser:
@@ -206,6 +221,7 @@ class TestCrossTenantIdentity:
         assert body["outcome"] == "cross_tenant_identity"
 
 
+@pytest.mark.usefixtures("eligible_sender")
 class TestSuccessfulIdentityResolution:
     """Known installation + known sender (same org) → 202 with full actor."""
 
@@ -228,12 +244,14 @@ class TestSuccessfulIdentityResolution:
                 org_id="acme",
                 user_id="u_abc123",
                 user_provisioning_mode="strict",
+                verification_method="org_placement",
             ),
             "ok",
         )
         mock_rate.return_value.check_and_increment.return_value = MagicMock(
             allowed=True, retry_after_seconds=0
         )
+        mock_resolver.return_value.last_tenant_item = {"min_author_association": "NONE"}
         mock_sqs.return_value = "msg-id-202"
         mock_log.return_value.log_event = MagicMock()
 
@@ -255,6 +273,7 @@ class TestSuccessfulIdentityResolution:
         assert envelope["actor"]["is_bot"] is False
 
 
+@pytest.mark.usefixtures("eligible_sender")
 class TestAutoProvision:
     """Auto-provision: unknown sender + auto_provision mode → 202 after provision."""
 
@@ -280,6 +299,7 @@ class TestAutoProvision:
             org_id="acme",
             user_id="u_new_user",
             user_provisioning_mode="auto_provision",
+            verification_method="org_placement",
         )
         mock_resolver.return_value.resolve.side_effect = [
             (None, "unknown_user"),
@@ -297,6 +317,7 @@ class TestAutoProvision:
             }
         }
         mock_resolver.return_value._get_table.return_value = mock_table
+        mock_resolver.return_value.last_tenant_item = {"min_author_association": "NONE"}
 
         mock_gw_client.return_value.auto_provision_user.return_value = True
         mock_rate.return_value.check_and_increment.return_value = MagicMock(

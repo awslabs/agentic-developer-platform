@@ -83,6 +83,7 @@ from src.orchestration.models import (
 from .test_pending_amendments import ORG_A, accepted_flow, base_proposal
 from .test_replan_authoring_dispatch import ASKER, FakeSQS, asker, flow_with_asker, replan
 from .test_replan_authoring_dispatch import session as _session_fixture
+from .test_replan_authoring_dispatch import verified_authoring_source as verified_authoring_source
 
 #: Rebound rather than imported under its own name, for the reason given in
 #: `test_authoring_recovery.py`: every test taking `session` as a parameter would

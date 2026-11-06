@@ -36,10 +36,11 @@ async def workspace_scope(db, org_id, workspace_id):
 
 
 async def verified_proposal(composition, org_id, workspace_id, artifact_id):
-    from workspace_provisioning.artifacts import read_artifact
+    from workspace_provisioning.bootstrap_review import read_continuation_artifact
 
-    artifact = await read_artifact(
+    artifact = await read_continuation_artifact(
         composition.domain_connect,
+        composition.operation_connect,
         artifact_id=artifact_id,
         org_id=str(org_id),
         workspace_id=str(workspace_id),
@@ -61,6 +62,11 @@ async def verified_proposal(composition, org_id, workspace_id, artifact_id):
         or dict(source.parameters) != json.loads(artifact["parameters_json"])
     ):
         raise ProvisioningRefused("lifecycle proposal original admission mismatch")
+    from workspace_provisioning.planning_budget import verify_budget_artifact
+
+    await verify_budget_artifact(
+        artifact, composition.operation_connect, composition.domain_connect
+    )
     return artifact
 
 
@@ -73,7 +79,7 @@ async def preview_continuation(
 
     workspace, principal = await workspace_scope(db, org_id, workspace_id)
     artifact = await verified_proposal(composition, org_id, workspace_id, artifact_id)
-    policy = policy_for(org_id)
+    policy = policy_for(org_id, workspace_id)
     parameters = continuation_parameters(artifact)
     original_request = json.loads(parameters["lifecycle_request"])
     mode = {

@@ -29,6 +29,16 @@ set -euo pipefail
 #   --client-secret SECRET OAuth client secret (for GitHub login wiring). Shown
 #                          once at app creation; pass it to wire login in the
 #                          same run.                                    [GH_APP_CLIENT_SECRET]
+#   --user-access         Register the App's user OAuth client with AgentCore
+#                         instead of creating or modifying a GitHub App.
+#                         Requires --app-id, --client-id / GH_APP_CLIENT_ID and
+#                         GH_APP_CLIENT_SECRET (preferred over a CLI argument).
+#   --from-manifest       With --user-access, read the App ID and OAuth client
+#                         from the manifest-created App metadata secret instead.
+#   --return-url URL      OAuth return URL for a new workload identity; an
+#                         existing workload supplies it automatically. [ADP_OAUTH_RETURN_URL]
+#   --rollback            With --user-access, restore the previous secret
+#                         version and provider client. No client flags needed.
 #   --region REGION        AWS region (default: us-east-1)              [AWS_REGION]
 #   --no-wire              Register only; skip calling wire-github-app.sh.
 #
@@ -38,8 +48,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-GITHUB_ORG="${1:-}"
-shift 2>/dev/null || true
+GITHUB_ORG=""
+if [[ "${1:-}" != --* ]] && [[ $# -gt 0 ]]; then
+  GITHUB_ORG="$1"
+  shift
+fi
 
 ENVIRONMENT="${ADP_ENV:-dev}"
 WEBHOOK_URL=""
@@ -49,6 +62,11 @@ APP_VISIBILITY="${APP_VISIBILITY:-}"
 APP_ID_FLAG=""
 PEM_PATH_FLAG=""
 CLIENT_SECRET="${GH_APP_CLIENT_SECRET:-}"
+CLIENT_ID="${GH_APP_CLIENT_ID:-}"
+RETURN_URL="${ADP_OAUTH_RETURN_URL:-}"
+USER_ACCESS=false
+FROM_MANIFEST=false
+ROLLBACK=false
 NO_WIRE=false
 # Owner of the GitHub App. "org" creates it under the org (requires org-owner
 # rights); "user" creates it under the caller's personal account (any user, no
@@ -69,6 +87,11 @@ while [[ $# -gt 0 ]]; do
     --app-id)         APP_ID_FLAG="$2"; shift 2 ;;
     --pem-path)       PEM_PATH_FLAG="$2"; shift 2 ;;
     --client-secret)  CLIENT_SECRET="$2"; shift 2 ;;
+    --client-id)      CLIENT_ID="$2"; shift 2 ;;
+    --return-url)     RETURN_URL="$2"; shift 2 ;;
+    --user-access)    USER_ACCESS=true; shift ;;
+    --from-manifest)  FROM_MANIFEST=true; shift ;;
+    --rollback)       ROLLBACK=true; shift ;;
     --region)         AWS_REGION="$2"; shift 2 ;;
     --no-wire)        NO_WIRE=true; shift ;;
     *)                shift ;;
@@ -80,6 +103,133 @@ ok()   { echo -e "${GREEN}✓${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 info() { echo -e "${BLUE}ℹ${NC} $1"; }
+
+register_user_access() {
+  command -v aws >/dev/null || fail "AWS CLI not installed"
+  command -v python3 >/dev/null || fail "Python 3 not installed"
+  [[ "$ENVIRONMENT" =~ ^[a-z0-9-]+$ ]] || fail "Invalid environment"
+  [[ "$AWS_REGION" =~ ^[a-z0-9-]+$ ]] || fail "Invalid AWS region"
+  [ "$ROLLBACK" = false ] || [ "$FROM_MANIFEST" = false ] || fail "--from-manifest cannot be used with --rollback"
+  if [ "$FROM_MANIFEST" = false ] && [ "$ROLLBACK" = false ]; then
+    [[ "$APP_ID_FLAG" =~ ^[1-9][0-9]{0,18}$ ]] || fail "--app-id is required for --user-access"
+    [[ "$CLIENT_ID" =~ ^[A-Za-z0-9_]{1,128}$ ]] || fail "--client-id (or GH_APP_CLIENT_ID) is required"
+    [ -n "$CLIENT_SECRET" ] || fail "GH_APP_CLIENT_SECRET (or --client-secret) is required"
+  fi
+  local secret_name="adp/${ENVIRONMENT}/connections/oauth/github"
+  local workload_name="adp-tools-${ENVIRONMENT}-oauth-user"
+  local provider_name="adp-tools-${ENVIRONMENT}-github-user"
+  local secret_file error_file config_file current_file manifest_file vendor allowed callback operation manifest_client
+  umask 077
+  secret_file=$(mktemp)
+  error_file=$(mktemp)
+  config_file=$(mktemp)
+  current_file=$(mktemp)
+  manifest_file=$(mktemp)
+  trap "rm -f -- '$secret_file' '$error_file' '$config_file' '$current_file' '$manifest_file'" EXIT
+
+  if [ "$FROM_MANIFEST" = true ]; then
+    aws secretsmanager get-secret-value --secret-id "adp/${ENVIRONMENT}/github-app/adp-agent-platform-meta" \
+      --query SecretString --output text --region "$AWS_REGION" > "$manifest_file" 2> "$error_file" \
+      || fail "Manifest-created GitHub App metadata is unavailable"
+    manifest_client=$(python3 -c '
+import json, re, sys
+value = json.load(open(sys.argv[1]))
+app_id, client_id, client_secret = (value.get(key) for key in ("app_id", "client_id", "client_secret"))
+assert isinstance(app_id, str) and re.fullmatch(r"[1-9][0-9]{0,18}", app_id)
+assert not sys.argv[2] or sys.argv[2] == app_id
+assert isinstance(client_id, str) and re.fullmatch(r"[A-Za-z0-9_]{1,128}", client_id)
+assert isinstance(client_secret, str) and client_secret and client_secret != "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"
+with open(sys.argv[3], "w") as output:
+    json.dump({"app_id": app_id, "client_id": client_id, "client_secret": client_secret}, output)
+print(app_id, client_id)
+' "$manifest_file" "$APP_ID_FLAG" "$secret_file" 2>/dev/null) || fail "Manifest-created GitHub App credentials are invalid or App ID does not match"
+    read -r APP_ID_FLAG CLIENT_ID <<< "$manifest_client"
+  elif [ "$ROLLBACK" = true ]; then
+    aws secretsmanager get-secret-value --secret-id "$secret_name" --version-stage AWSPREVIOUS \
+      --query SecretString --output text --region "$AWS_REGION" > "$secret_file" 2> "$error_file" \
+      || fail "No previous GitHub provider secret version is available for rollback"
+    CLIENT_ID=$(python3 -c 'import json,re,sys; value=json.load(open(sys.argv[1])); client=value["client_id"]; assert isinstance(client,str) and re.fullmatch("[A-Za-z0-9_]{1,128}",client) and isinstance(value["client_secret"],str) and value["client_secret"]; print(client)' "$secret_file" 2>/dev/null) \
+      || fail "Previous GitHub provider secret is invalid"
+  else
+    printf '%s' "$CLIENT_SECRET" | python3 -c 'import json,sys; print(json.dumps({"client_id":sys.argv[1],"client_secret":sys.stdin.read(),"app_id":sys.argv[2]}))' "$CLIENT_ID" "$APP_ID_FLAG" > "$secret_file"
+  fi
+  CLIENT_SECRET=""
+  if aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text \
+    --region "$AWS_REGION" > "$current_file" 2> "$error_file"; then
+    operation=put-secret-value
+  elif grep -q ResourceNotFoundException "$error_file" && [ "$ROLLBACK" = false ]; then
+    operation=create-secret
+  else
+    fail "GitHub provider secret cannot be read"
+  fi
+  if [ -n "$RETURN_URL" ]; then
+    [[ "$RETURN_URL" =~ ^https://[^/?#]+/api/auth/connections/oauth/return$ ]] || fail "Invalid OAuth return URL"
+  fi
+
+  if allowed=$(aws bedrock-agentcore-control get-workload-identity --name "$workload_name" \
+    --query allowedResourceOauth2ReturnUrls --output text --region "$AWS_REGION" 2> "$error_file"); then
+    if [ -n "$RETURN_URL" ]; then
+      [[ " ${allowed//$'\t'/ } " == *" $RETURN_URL "* ]] || fail "OAuth return URL is not registered on the workload identity"
+    else
+      RETURN_URL="${allowed%%$'\t'*}"
+    fi
+  elif grep -q ResourceNotFoundException "$error_file"; then
+    [ -n "$RETURN_URL" ] || fail "--return-url is required when the OAuth workload identity does not exist"
+    aws bedrock-agentcore-control create-workload-identity --name "$workload_name" \
+      --allowed-resource-oauth2-return-urls "$RETURN_URL" --region "$AWS_REGION" >/dev/null 2> "$error_file" \
+      || fail "Could not create OAuth workload identity"
+  else
+    fail "OAuth workload identity cannot be read"
+  fi
+  [[ "$RETURN_URL" =~ ^https://[^/?#]+/api/auth/connections/oauth/return$ ]] || fail "Invalid OAuth return URL"
+
+  if vendor=$(aws bedrock-agentcore-control get-oauth2-credential-provider --name "$provider_name" \
+    --query credentialProviderVendor --output text --region "$AWS_REGION" 2> "$error_file"); then
+    [ "$vendor" = GithubOauth2 ] || fail "Existing GitHub provider has a different vendor"
+    [ "$operation" != create-secret ] || fail "Existing provider secret is missing; reconcile before replacing"
+    operation="${operation}:update"
+  elif grep -q ResourceNotFoundException "$error_file"; then
+    operation="${operation}:create"
+  else
+    fail "GitHub OAuth provider cannot be read"
+  fi
+  python3 -c 'import json,sys; json.dump({"githubOauth2ProviderConfig":{"clientId":sys.argv[1],"clientSecretSource":"EXTERNAL","clientSecretConfig":{"secretId":sys.argv[2],"jsonKey":"client_secret"}}},open(sys.argv[3],"w"))' "$CLIENT_ID" "$secret_name" "$config_file"
+
+  if ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])) else 1)' \
+    "$secret_file" "$current_file" >/dev/null 2>&1; then
+    if [[ "$operation" == create-secret:* ]]; then
+      aws secretsmanager create-secret --name "$secret_name" --secret-string "file://$secret_file" --region "$AWS_REGION" >/dev/null 2> "$error_file" \
+        || fail "Could not create GitHub provider secret"
+    else
+      aws secretsmanager put-secret-value --secret-id "$secret_name" --secret-string "file://$secret_file" --region "$AWS_REGION" >/dev/null 2> "$error_file" \
+        || fail "Could not rotate GitHub provider secret"
+    fi
+  fi
+  if [[ "$operation" == *:update ]]; then
+    aws bedrock-agentcore-control update-oauth2-credential-provider --name "$provider_name" --credential-provider-vendor GithubOauth2 \
+      --oauth2-provider-config-input "file://$config_file" --region "$AWS_REGION" >/dev/null 2> "$error_file" \
+      || fail "Provider update failed; restore the previous secret version with --user-access --rollback"
+  else
+    aws bedrock-agentcore-control create-oauth2-credential-provider --name "$provider_name" --credential-provider-vendor GithubOauth2 \
+      --oauth2-provider-config-input "file://$config_file" --region "$AWS_REGION" >/dev/null 2> "$error_file" \
+      || fail "Provider creation failed; check the existing secret before retrying"
+  fi
+  callback=$(aws bedrock-agentcore-control get-oauth2-credential-provider --name "$provider_name" \
+    --query callbackUrl --output text --region "$AWS_REGION" 2> "$error_file") || fail "Cannot verify the provider callback"
+  [[ "$callback" == https://bedrock-agentcore."$AWS_REGION".amazonaws.com/identities/oauth2/callback/* ]] \
+    || fail "Provider callback is unavailable; check the provider status"
+  info "GitHub user-access provider configured. Add this callback URL to the existing GitHub App: $callback"
+  if [ "$ROLLBACK" = true ]; then
+    warn "Previous provider credentials restored; reconnect App users after re-registration"
+  fi
+}
+
+if [ "$USER_ACCESS" = true ]; then
+  register_user_access
+  exit 0
+fi
+[ "$ROLLBACK" = false ] || fail "--rollback requires --user-access"
+[ "$FROM_MANIFEST" = false ] || fail "--from-manifest requires --user-access"
 
 if [ -z "$GITHUB_ORG" ]; then
   echo "Usage: $0 <github-org> [options]"
@@ -98,6 +248,9 @@ if [ -z "$GITHUB_ORG" ]; then
   echo "  --app-id ID            App ID — skips the interactive 'Enter the App ID' prompt"
   echo "  --pem-path PATH        Private key .pem path — skips ~/Downloads auto-detect"
   echo "  --client-secret SECRET OAuth client secret → wires GitHub LOGIN in the same run"
+  echo "  --user-access          Configure the App's AgentCore user-access provider"
+  echo "  --from-manifest        With --user-access, read credentials stored by the UI manifest flow"
+  echo "  --rollback             With --user-access, restore the prior provider credentials"
   echo "  --region REGION        AWS region (default: us-east-1)"
   echo "  --no-wire              Register only; don't call wire-github-app.sh"
   echo ""

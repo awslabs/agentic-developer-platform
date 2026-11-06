@@ -1,0 +1,316 @@
+name: Tools live evaluation
+run-name: ${{ format('ADP tools evaluation {0}', inputs.adp_correlation) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      adp_correlation:
+        description: Engine dispatch correlation
+        required: true
+        type: string
+      adp_source_revision:
+        description: Deployed tools façade source SHA
+        required: true
+        type: string
+      adp_definition_revision:
+        description: Approved evaluation workflow SHA
+        required: true
+        type: string
+      gateway_revision:
+        description: Deployed gateway source SHA
+        required: true
+        type: string
+      cell_filter:
+        description: "Optional single SCN-8067-02 client:operation diagnostic; never a complete matrix"
+        required: false
+        type: string
+      prepare_atlassian_adapter:
+        description: "Prepare private adapter configuration from an existing consented grant; never deploy"
+        required: false
+        default: false
+        type: boolean
+      scenario_filter:
+        description: "Scenario glob; full/l5 = legacy TLS; repair = all repair cases (SCN-8065-04 requires a separate live run)"
+        required: false
+        default: SCN-TLS-00*
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tools-live-evaluation-dev
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    environment: adp-tools-deploy-dev
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      GATEWAY_URL: ${{ vars.ADP_TOOLS_EVAL_GATEWAY_URL }}
+      EKS_CLUSTER: ${{ vars.ADP_TOOLS_EKS_CLUSTER_NAME }}
+      TOOLS_NAMESPACE: ${{ vars.ADP_TOOLS_NAMESPACE }}
+      EXPECTED_ACCOUNT: ${{ vars.ADP_TOOLS_ACCOUNT_ID }}
+      EXPECTED_ROLE: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+      SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+      DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+      GATEWAY_REVISION: ${{ inputs.gateway_revision }}
+      SCENARIO_FILTER: ${{ inputs.scenario_filter }}
+      CELL_FILTER: ${{ inputs.cell_filter }}
+      ADP_SOURCE_REVISION: ${{ inputs.gateway_revision }}
+      ADP_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+      ADP_TOOLS_SMOKE_GATEWAY_URL: ${{ vars.ADP_TOOLS_EVAL_GATEWAY_URL }}
+      ADP_TOOLS_AWS_REGION: us-east-1
+      ADP_TOOLS_ATLASSIAN_ADAPTER_OBSERVER_ROLE_ARN: ${{ vars.ADP_TOOLS_ATLASSIAN_ADAPTER_OBSERVER_ROLE_ARN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require approved definition and source history
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ && "$DEFINITION_REVISION" =~ ^[0-9a-f]{40}$ && "$GATEWAY_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" == "$DEFINITION_REVISION" && "$(git rev-parse HEAD)" == "$DEFINITION_REVISION" ]]
+          git merge-base --is-ancestor "$SOURCE_REVISION" HEAD
+          git merge-base --is-ancestor "$GATEWAY_REVISION" HEAD
+          [[ "$GATEWAY_URL" =~ ^https://[a-zA-Z0-9.-]+$ ]]
+          [[ "$EXPECTED_ACCOUNT" =~ ^[0-9]{12}$ ]]
+          [[ "$EKS_CLUSTER" =~ ^[a-z0-9-]+$ && "$TOOLS_NAMESPACE" =~ ^[a-z0-9-]+$ ]]
+      - name: Resolve selected scenario bindings
+        id: scenario-selection
+        run: python3 -m tests.e2e.tools.atlassian_scenario_selection
+      - name: Install locked Atlassian observer dependencies
+        if: steps.scenario-selection.outputs.atlassian == 'true'
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/atlassian-bootstrap"
+          "$RUNNER_TEMP/atlassian-bootstrap/bin/python" -m pip install uv==0.13.4
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/atlassian-runtime" "$RUNNER_TEMP/atlassian-bootstrap/bin/uv" sync --project modules/tools/adapters --frozen --no-dev --group harness --python 3.12
+          printf '%s\n' "$RUNNER_TEMP/atlassian-runtime/bin" >> "$GITHUB_PATH"
+      - name: Preserve runner identity for private CI evidence
+        run: |
+          set -euo pipefail
+          test -n "$AWS_ROLE_ARN"
+          test -f "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          printf 'CI_EVIDENCE_RUNNER_ROLE_ARN=%s\n' "$AWS_ROLE_ARN" >> "$GITHUB_ENV"
+          printf 'CI_EVIDENCE_RUNNER_TOKEN_FILE=%s\n' "$AWS_WEB_IDENTITY_TOKEN_FILE" >> "$GITHUB_ENV"
+      - name: Establish protected read identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+      - name: Verify the deployed container images against immutable source tags
+        run: |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text)
+          role=$(aws sts get-caller-identity --query Arn --output text)
+          [[ "$account" == "$EXPECTED_ACCOUNT" && "$EXPECTED_ROLE" =~ ^arn:aws:iam::${account}:role/adp-[a-z0-9-]+-trusted-deployment$ ]]
+          [[ "$role" == "arn:aws:sts::${account}:assumed-role/${EXPECTED_ROLE##*/}/deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]]
+          umask 077
+          # Persist only this job's owned file; later steps use the same protected identity.
+          rm -f -- "$RUNNER_TEMP/tools-eval-kubeconfig"
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" --kubeconfig "$RUNNER_TEMP/tools-eval-kubeconfig" >/dev/null
+          export KUBECONFIG="$RUNNER_TEMP/tools-eval-kubeconfig"
+          printf 'KUBECONFIG=%s\n' "$KUBECONFIG" >> "$GITHUB_ENV"
+          gateway_image=$(kubectl get deployment bedrockgateway -n adp-gateway -o json | jq -r '[.spec.template.spec.containers[] | select(.name == "bedrockgateway") | .image] | if length == 1 then .[0] else empty end')
+          facade_image=$(kubectl get deployment tools-facade -n "$TOOLS_NAMESPACE" -o json | jq -r '[.spec.template.spec.containers[] | select(.name == "tools-facade") | .image] | if length == 1 then .[0] else empty end')
+          for component in gateway facade; do
+            if [[ "$component" == gateway ]]; then
+              image=$gateway_image; repository=adp-gateway; revision=$GATEWAY_REVISION
+            else
+              image=$facade_image; repository=adp-tools-facade; revision=$SOURCE_REVISION
+            fi
+            [[ "$image" =~ ^${account}\.dkr\.ecr\.${AWS_REGION}\.amazonaws\.com/${repository}@sha256:[a-f0-9]{64}$ ]]
+            digest=${image##*@}
+            expected=$(aws ecr describe-images --repository-name "$repository" --image-ids "imageTag=$revision" --query 'imageDetails[0].imageDigest' --output text)
+            [[ "$digest" == "$expected" ]]
+          done
+          printf 'GATEWAY_IMAGE=%s\nFACADE_IMAGE=%s\n' "$gateway_image" "$facade_image" >> "$GITHUB_ENV"
+      - name: Bind the approved private release window
+        if: inputs.scenario_filter == 'SCN-8068-04' || inputs.scenario_filter == 'repair' || startsWith(inputs.scenario_filter, 'SCN-8067-') || steps.scenario-selection.outputs.atlassian_clients == 'true'
+        env:
+          PRIVATE_RELEASE_MANIFEST: ${{ secrets.ADP_TOOLS_RELEASE_MANIFEST_JSON }}
+          PRIVATE_RELEASE_SELECTORS: ${{ secrets.ADP_TOOLS_RELEASE_SELECTORS_JSON }}
+        run: |
+          set -euo pipefail
+          [[ -n "$PRIVATE_RELEASE_MANIFEST" && -n "$PRIVATE_RELEASE_SELECTORS" ]] || {
+            echo 'Coordinator: supply the approved private component manifest and runtime resource selectors' >&2
+            exit 2
+          }
+          umask 077
+          receipt="$RUNNER_TEMP/tools-release-window.json"
+          selectors="$RUNNER_TEMP/tools-release-selectors.json"
+          printf '%s' "$PRIVATE_RELEASE_MANIFEST" > "$receipt"
+          printf '%s' "$PRIVATE_RELEASE_SELECTORS" > "$selectors"
+          printf 'ADP_TOOLS_RELEASE_MANIFEST_FILE=%s\nADP_TOOLS_RELEASE_SELECTORS_FILE=%s\n' "$receipt" "$selectors" >> "$GITHUB_ENV"
+      - name: Bind the dedicated installed-client test session
+        if: inputs.scenario_filter == 'repair' || startsWith(inputs.scenario_filter, 'SCN-8067-') || steps.scenario-selection.outputs.atlassian_clients == 'true'
+        env:
+          DEDICATED_REFRESH: ${{ secrets.ADP_TOOLS_DEDICATED_EVAL_REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$DEDICATED_REFRESH" ]] || {
+            echo 'Coordinator: supply an authorized dedicated tools evaluation session' >&2
+            exit 2
+          }
+          umask 077
+          refresh="$RUNNER_TEMP/tools-dedicated-refresh"
+          printf '%s' "$DEDICATED_REFRESH" > "$refresh"
+          printf 'ADP_TOOLS_REFRESH_FILE=%s\n' "$refresh" >> "$GITHUB_ENV"
+      - name: Prove the protected tools identity and authorization scope
+        if: inputs.scenario_filter == 'SCN-8068-04' || inputs.scenario_filter == 'repair' || startsWith(inputs.scenario_filter, 'SCN-8067-') || steps.scenario-selection.outputs.atlassian_clients == 'true'
+        env:
+          EXPECTED_KUBERNETES_GROUP: adp:tools-release-dev
+        run: python3 -m tests.e2e.tools.release_authorization
+      - name: Import the protected test user's refresh session
+        if: inputs.scenario_filter != 'SCN-8068-04' && inputs.scenario_filter != 'repair' && !startsWith(inputs.scenario_filter, 'SCN-8067-') && steps.scenario-selection.outputs.atlassian != 'true'
+        env:
+          EVAL_REFRESH_TOKEN: ${{ secrets.TLS_EVAL_REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$EVAL_REFRESH_TOKEN" ]]
+          umask 077
+          export HOME="$RUNNER_TEMP/tools-eval-home" BG_CONFIG_DIR="$RUNNER_TEMP/tools-eval-home/.bedrock-gateway"
+          mkdir -p "$BG_CONFIG_DIR"
+          printf '%s\n' "$EVAL_REFRESH_TOKEN" | modules/gateway/cli/bg-cognito-auth.sh import --gateway-url "$GATEWAY_URL/api" >/dev/null
+          printf 'HOME=%s\nBG_CONFIG_DIR=%s\n' "$HOME" "$BG_CONFIG_DIR" >> "$GITHUB_ENV"
+      - name: Bind protected Atlassian setup and verify independent observer roles
+        if: steps.scenario-selection.outputs.atlassian_setup == 'true'
+        env:
+          ADP_TOOLS_ATLASSIAN_SETUP_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_SETUP_JSON }}
+          ADP_TOOLS_ATLASSIAN_ADMIN_SESSION: ${{ secrets.ADP_TOOLS_ATLASSIAN_ADMIN_SESSION }}
+          ADP_TOOLS_ATLASSIAN_OWNER_SESSION: ${{ secrets.ADP_TOOLS_ATLASSIAN_OWNER_SESSION }}
+          ADP_TOOLS_ATLASSIAN_OBSERVER_SESSION: ${{ secrets.ADP_TOOLS_ATLASSIAN_OBSERVER_SESSION }}
+          ADP_TOOLS_ATLASSIAN_CORE_OBSERVER_ROLE_ARN: ${{ vars.ADP_TOOLS_ATLASSIAN_CORE_OBSERVER_ROLE_ARN }}
+          ADP_TOOLS_ATLASSIAN_ADAPTER_OBSERVER_ROLE_ARN: ${{ vars.ADP_TOOLS_ATLASSIAN_ADAPTER_OBSERVER_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          python3 -m tests.e2e.tools.atlassian_setup_binding
+      - name: Reconcile previously retained setup before another attempt
+        if: steps.scenario-selection.outputs.atlassian_setup == 'true'
+        env:
+          ADP_TOOLS_ATLASSIAN_RESUME_URI: ${{ secrets.ADP_TOOLS_ATLASSIAN_RESUME_URI }}
+          ADP_TOOLS_ATLASSIAN_RESUME_VERSION: ${{ secrets.ADP_TOOLS_ATLASSIAN_RESUME_VERSION }}
+          ADP_TOOLS_ATLASSIAN_RESUME_REVISION: ${{ secrets.ADP_TOOLS_ATLASSIAN_RESUME_REVISION }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$ADP_TOOLS_ATLASSIAN_RESUME_URI" || -n "$ADP_TOOLS_ATLASSIAN_RESUME_VERSION" || -n "$ADP_TOOLS_ATLASSIAN_RESUME_REVISION" ]]; then
+            python3 -m tests.e2e.tools.atlassian_setup_recovery restore
+          fi
+      - name: Bind independent Atlassian client readback
+        if: steps.scenario-selection.outputs.atlassian_native == 'true'
+        env:
+          ADP_TOOLS_ATLASSIAN_CLIENT_MANIFEST_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_CLIENT_MANIFEST_JSON }}
+          ADP_TOOLS_ATLASSIAN_ADAPTER_OBSERVER_ROLE_ARN: ${{ vars.ADP_TOOLS_ATLASSIAN_ADAPTER_OBSERVER_ROLE_ARN }}
+          ADP_TOOLS_ATLASSIAN_NATIVE_PLAN_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_NATIVE_PLAN_JSON }}
+          ADP_TOOLS_ATLASSIAN_NATIVE_SESSIONS_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_NATIVE_SESSIONS_JSON }}
+          ADP_TOOLS_ATLASSIAN_RECOVERY_RESUME_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_RECOVERY_RESUME_JSON }}
+        run: python3 -m tests.e2e.tools.atlassian_client_binding
+      - name: Bind ordinary installed-client authority campaign
+        if: steps.scenario-selection.outputs.atlassian_authority == 'true'
+        env:
+          ADP_TOOLS_ATLASSIAN_AUTHORITY_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_AUTHORITY_JSON }}
+          ADP_TOOLS_ATLASSIAN_AUTHORITY_SESSIONS_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_AUTHORITY_SESSIONS_JSON }}
+        run: python3 -m tests.e2e.tools.atlassian_authority_binding
+      - name: Restore original client recovery state before any new work
+        if: steps.scenario-selection.outputs.atlassian_recovery == 'true'
+        env:
+          ADP_TOOLS_ATLASSIAN_RECOVERY_KEY_B64: ${{ secrets.ADP_TOOLS_ATLASSIAN_RECOVERY_KEY_B64 }}
+          ADP_TOOLS_ATLASSIAN_RECOVERY_RESUME_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_RECOVERY_RESUME_JSON }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$ADP_TOOLS_ATLASSIAN_RECOVERY_RESUME_JSON" ]]; then
+            python3 -m tests.e2e.tools.atlassian_recovery_handoff
+          fi
+      - name: Bind protected legacy regression clients and provider readers
+        if: steps.scenario-selection.outputs.atlassian_regression == 'true'
+        env:
+          ADP_TOOLS_ATLASSIAN_REGRESSION_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_REGRESSION_JSON }}
+          ADP_TOOLS_ATLASSIAN_REGRESSION_SESSIONS_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_REGRESSION_SESSIONS_JSON }}
+          ADP_TOOLS_ATLASSIAN_ADAPTER_OBSERVER_ROLE_ARN: ${{ vars.ADP_TOOLS_ATLASSIAN_ADAPTER_OBSERVER_ROLE_ARN }}
+        run: python3 -m tests.e2e.tools.atlassian_regression_binding
+      - name: Bind read-only adapter release observations
+        if: steps.scenario-selection.outputs.atlassian_handoff == 'true'
+        env:
+          ADP_TOOLS_ATLASSIAN_RELEASE_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_RELEASE_JSON }}
+        run: python3 -m tests.e2e.tools.atlassian_release_binding
+      - name: Exercise deployed gateway through the MCP client
+        env:
+          ADP_TOOLS_ATLASSIAN_RECOVERY_KEY_B64: ${{ secrets.ADP_TOOLS_ATLASSIAN_RECOVERY_KEY_B64 }}
+        run: |
+          python3 -m tests.e2e.tools.runner --scenario-filter "$SCENARIO_FILTER" ${CELL_FILTER:+--cell-filter "$CELL_FILTER"} --output "$RUNNER_TEMP/tools-eval-evidence" --gateway-url "$GATEWAY_URL" --gateway-revision "$GATEWAY_REVISION" --gateway-image "$GATEWAY_IMAGE" --facade-image "$FACADE_IMAGE"
+      - name: Capture non-token setup recovery state
+        if: always() && steps.scenario-selection.outputs.atlassian_setup == 'true'
+        run: |
+          set -euo pipefail
+          if [[ -n "${ADP_TOOLS_ATLASSIAN_SETUP_FILE:-}" ]]; then
+            python3 -m tests.e2e.tools.atlassian_setup_recovery capture
+          fi
+      - name: Prepare protected adapter configuration from the existing owner grant
+        if: always() && steps.scenario-selection.outputs.atlassian_setup == 'true' && inputs.prepare_atlassian_adapter
+        env:
+          ADP_TOOLS_ATLASSIAN_ADAPTER_REQUEST_JSON: ${{ secrets.ADP_TOOLS_ATLASSIAN_ADAPTER_REQUEST_JSON }}
+        run: python3 -m tests.e2e.tools.atlassian_adapter_binding
+      - name: Produce the independently qualified acceptance inventory
+        if: always() && steps.scenario-selection.outputs.atlassian_full == 'true'
+        run: python3 -m tests.e2e.tools.atlassian_flow_producer
+      - name: Publish result and failure evidence
+        id: publish
+        if: always()
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: tools-live-evaluation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tools-eval-evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retrieve and validate protected client evidence
+        if: always() && (inputs.scenario_filter == 'repair' || startsWith(inputs.scenario_filter, 'SCN-8067-') || steps.scenario-selection.outputs.atlassian == 'true')
+        env:
+          CI_EVIDENCE_MANIFEST_URI: ${{ steps.publish.outputs.manifest-uri }}
+          CI_EVIDENCE_MANIFEST_VERSION: ${{ steps.publish.outputs.manifest-version }}
+          ADP_TOOLS_ATLASSIAN_FLOW_OUTPUT: ${{ steps.scenario-selection.outputs.atlassian_full == 'true' && format('{0}/atlassian-flow-readback.json', runner.temp) || '' }}
+        run: |
+          python3 -m tests.e2e.tools.evidence_reader
+      - name: Verify private setup recovery publication
+        if: always() && steps.scenario-selection.outputs.atlassian_setup == 'true'
+        env:
+          CI_EVIDENCE_MANIFEST_URI: ${{ steps.publish.outputs.manifest-uri }}
+          CI_EVIDENCE_MANIFEST_VERSION: ${{ steps.publish.outputs.manifest-version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${ADP_TOOLS_ATLASSIAN_SETUP_FILE:-}" ]]; then
+            python3 -m tests.e2e.tools.atlassian_setup_recovery verify
+          fi
+      - name: Remove owned evaluation configuration and test-user session
+        if: always()
+        env:
+          ATLASSIAN_SETUP_SELECTED: ${{ steps.scenario-selection.outputs.atlassian_setup }}
+        run: |
+          rm -f -- "$RUNNER_TEMP/tools-release-window.json" "$RUNNER_TEMP/tools-release-selectors.json" "$RUNNER_TEMP/tools-eval-kubeconfig" "$RUNNER_TEMP/tools-dedicated-refresh"
+          if [[ "${ADP_TOOLS_ATLASSIAN_REGRESSION_FILE:-}" == "$RUNNER_TEMP/legacy-live-"*/config.json ]]; then
+            regression_root=$(dirname "$ADP_TOOLS_ATLASSIAN_REGRESSION_FILE")
+            rm -f -- "$regression_root/aws-config" "$regression_root/aws-credentials"
+            find "$regression_root" -type f -name session.token -delete
+          fi
+          if [[ "${ADP_TOOLS_ATLASSIAN_RELEASE_FILE:-}" == "$RUNNER_TEMP/atlassian-release-"*/config.json ]]; then
+            rm -rf -- "${ADP_TOOLS_ATLASSIAN_RELEASE_FILE%/config.json}"
+          fi
+          if [[ "$ATLASSIAN_SETUP_SELECTED" == 'true' && "${ADP_TOOLS_ATLASSIAN_SETUP_FILE:-}" == "$RUNNER_TEMP/atlassian-setup-"*/config.json ]]; then
+            setup_root=${ADP_TOOLS_ATLASSIAN_SETUP_FILE%/config.json}
+            rm -f -- "$setup_root/admin.token" "$setup_root/owner.token" "$setup_root/observer.token" "$setup_root/aws-config" "$setup_root/aws-credentials" "$setup_root/consent.json" "$setup_root/authorization.json"
+            if [[ "${ADP_TOOLS_ATLASSIAN_RECOVERY_VERIFIED:-}" == 1 ]]; then
+              rm -rf -- "$setup_root"
+            else
+              echo 'Setup recovery publication not verified; retaining run-owned journal for operator reconciliation' >&2
+            fi
+          fi
+          if [ -d "$RUNNER_TEMP/tools-eval-home" ]; then
+            rm -rf -- "$RUNNER_TEMP/tools-eval-home"
+          fi

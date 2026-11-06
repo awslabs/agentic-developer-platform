@@ -61,6 +61,52 @@ def preview(app, proposal, *, permitted: bool = True):
 class TestEffectiveGraph:
     """The preview reports what would execute, not what was authored."""
 
+    def test_lineage_and_labels_are_echoed_without_annotating_inserted_gate(self, app_with_router, autonomy_default_unset):
+        proposal = gateless_proposal()
+        first = proposal.nodes[0]
+        annotated = type(first).model_validate(
+            {
+                **first.model_dump(mode="json"),
+                "lineage": {"story_id": "EI-S02", "size": "M"},
+                "labels": {"source": "issue"},
+                "file_groups": [{"group": "API", "create": ["src/service.py"]}],
+            }
+        )
+        proposal = proposal.model_copy(update={"nodes": [annotated, *proposal.nodes[1:]]})
+        response = preview(app_with_router, proposal)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["would_register"] is True
+        nodes = {node["address"]: node for node in body["nodes"]}
+        assert nodes[first.address]["lineage"]["story_id"] == "EI-S02"
+        assert nodes[first.address]["labels"] == {"source": "issue"}
+        assert nodes[first.address]["file_groups"][0]["create"] == ["src/service.py"]
+        assert nodes[body["acceptance_gate_address"]]["lineage"] is None
+        assert nodes[body["acceptance_gate_address"]]["labels"] == {}
+        assert nodes[body["acceptance_gate_address"]]["file_groups"] == []
+
+    @pytest.mark.parametrize(
+        ("labels", "expected_rule"),
+        [({f"key-{index}": "value" for index in range(17)}, "labels_too_many"), ({"unregistered": "value"}, "label_key_unknown")],
+    )
+    def test_invalid_labels_are_preview_violations(self, app_with_router, autonomy_default_unset, labels, expected_rule):
+        proposal = gateless_proposal()
+        story = proposal.nodes[0].model_copy(update={"labels": labels})
+        response = preview(app_with_router, proposal.model_copy(update={"nodes": [story, *proposal.nodes[1:]]}))
+        assert response.status_code == 200
+        assert response.json()["would_register"] is False
+        assert any(expected_rule in violation for violation in response.json()["violations"])
+
+    def test_invalid_lineage_is_a_preview_violation(self, app_with_router, autonomy_default_unset):
+        proposal = gateless_proposal()
+        payload = proposal.model_dump(mode="json")
+        payload["nodes"][0]["lineage"] = {"story_id": "  "}
+        with client_for(app_with_router, permitted=True) as client:
+            response = client.post(ROUTE, json=payload)
+        assert response.status_code == 200
+        assert response.json()["would_register"] is False
+        assert any("lineage_invalid" in violation for violation in response.json()["violations"])
+
     def test_the_server_inserted_acceptance_gate_is_shown_and_attributed(self, app_with_router, autonomy_default_unset):
         """The gate the author did not write is present, and marked as not theirs.
 
@@ -608,3 +654,82 @@ def test_preview_rejects_unsupported_executor_before_registration(app_with_route
     with client_for(app_with_router, permitted=True) as client:
         response = client.post(ROUTE, json=proposal)
     assert response.status_code == 422
+
+
+def test_preview_accepts_flagged_operational_story_without_changing_development(app_with_router, autonomy_default_unset, monkeypatch):
+    monkeypatch.setenv("ADP_ENGINE_OPERATIONS_EXECUTOR", "true")
+    proposal = gateless_proposal()
+    story = next(node for node in proposal.nodes if node.kind == "story")
+    from src.orchestration.executor_assignment import ExecutorAssignment
+
+    story.executor = ExecutorAssignment(kind="agent", role="operate", persona="operations")
+    response = preview(app_with_router, proposal)
+    assert response.status_code == 200, response.text
+    selected = next(node for node in response.json()["nodes"] if node["address"] == story.address)
+    assert selected["executor"] == {"schema_version": 1, "kind": "agent", "role": "operate", "persona": "operations"}
+
+    story.executor = ExecutorAssignment(kind="agent", role="develop", persona="agent-codex-developer")
+    assert preview(app_with_router, proposal).status_code == 200
+
+
+@pytest.mark.parametrize("readiness", [False, True])
+@pytest.mark.asyncio
+async def test_recorded_interview_compiles_to_bounded_preview(tmp_path, app_with_router, autonomy_default_unset, readiness, session):
+    import json
+    import shutil
+    import subprocess
+    import sys
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from src.orchestration.proposal import LoopProposal, validate_proposal
+
+    root = Path(__file__).resolve().parents[4]
+    fixture = root / "modules/agent-factory/skills/adp-flow/tests/fixtures/recorded-interview"
+    for name in ("intent.md", "story-mapping.json", "facts.json"):
+        shutil.copyfile(fixture / name, tmp_path / name)
+    facts_path = tmp_path / "facts.json"
+    facts = json.loads(facts_path.read_text())
+    facts["org_id"] = ORG_A
+    facts["emitted_at"] = datetime.now(UTC).isoformat()
+    facts_path.write_text(json.dumps(facts))
+    if readiness:
+        intent_path = tmp_path / "intent.md"
+        intent = json.loads(intent_path.read_text().split("```json\n", 1)[1].split("\n```", 1)[0])
+        intent["policy"] = {"allowed_actions": ["develop", "review", "repair", "merge", "deploy"]}
+        intent["waves"][2].update(actions=["deploy"], effects=["external_spend"], readiness_gate={"title": "Owner confirms deployment readiness"})
+        intent_path.write_text("```json\n" + json.dumps(intent) + "\n```\n")
+    writer = root / "modules/agent-factory/skills/adp-flow/scripts/plan_writer.py"
+    subprocess.run([sys.executable, str(writer), str(tmp_path), str(facts_path)], check=True)
+    proposal_path = tmp_path / "proposal.authored.json"
+    subprocess.run([sys.executable, str(root / ".github/scripts/validate_loop_proposal.py"), str(proposal_path)], check=True)
+    document = json.loads(proposal_path.read_text())
+    proposal = LoopProposal.model_validate(document)
+    assert not validate_proposal(proposal)
+    response = preview(app_with_router, proposal)
+    assert response.status_code == 200, response.text
+    assert response.json()["would_register"] is True, response.json()
+    assert response.json()["execution_is_unbounded"] is False
+    assert response.json()["violations"] == []
+    assert not any(node.get("required_inputs") for node in response.json()["nodes"])
+    assert all(node["issue_ref"] for node in document["nodes"] if node["kind"] == "eval")
+    assert {node["repository_identity"] for node in document["nodes"] if node["kind"] == "story"} == {"example/home", "example/component"}
+    if readiness:
+        body = response.json()
+        gate = next(node for node in document["nodes"] if node["kind"] == "gate")
+        assert gate["address"] != body["acceptance_gate_address"]
+        preview_gate = next(node for node in body["nodes"] if node["address"] == gate["address"])
+        assert preview_gate["inserted_by_server"] is False
+        assert preview_gate["kind"] == "gate"
+        assert preview_gate["title"] == "Owner confirms deployment readiness"
+        assert len([node for node in body["nodes"] if node["kind"] == "gate"]) == 2
+        previous_eval = next(node for node in document["nodes"] if node["kind"] == "eval" and "/w2/" in node["address"])
+        assert {"from_address": previous_eval["address"], "to_address": gate["address"]} in document["edges"]
+        for node in document["nodes"]:
+            if node["kind"] == "story":
+                if "/w3/" in node["address"]:
+                    assert {"from_address": gate["address"], "to_address": node["address"]} in document["edges"]
+                    assert "delivery_mode" not in node
+                else:
+                    assert node["delivery_mode"] == "code_only"
+    await assert_graph_is_empty(session)

@@ -13,12 +13,16 @@
  */
 
 import { resilientQuery } from './utils/resilientQuery';
-import { wrapUntrusted } from './utils/trust-boundary';
+import { buildSuperpowerBrainstormingPrompt, buildSuperpowerImplementationPrompt } from './utils/superpower-prompts';
+import { CommentAuthorityCache } from './utils/comment-authority';
+import { renderSuperpowerContext, resolveSuperpowerTriggerComment, selectSuperpowerGuidance, type SelectedGuidance } from './utils/superpower-guidance';
 import { buildSummaryPrompt } from './utils/superpower-summary-prompt';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { randomUUID } from 'crypto';
+import { bindPostedApproval, fetchApprovalComments, fetchApprovalPlan, postApprovalPlan, waitForPostedApproval } from './services/posted-approval';
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
 import { resolveAgentLogGroup } from './lib/logGroup';
 
@@ -140,11 +144,14 @@ interface Issue {
   body: string;
   labels: string[];
   comments: Comment[];
-  guidance: string | null;
   previousContext: string | null;
+  sessionStart: number;
+  triggerCommentId?: string;
+  runId: string;
+  authorityCache: CommentAuthorityCache;
 }
 
-async function getIssue(): Promise<Issue> {
+async function getIssue(sessionStart: number, triggerCommentId?: string): Promise<Issue> {
   const result = execCommand(`gh issue view ${ISSUE_NUMBER} --repo ${REPO_OWNER}/${REPO_NAME} --json number,title,body,labels,comments`);
   const data = JSON.parse(result);
 
@@ -155,14 +162,10 @@ async function getIssue(): Promise<Issue> {
     createdAt: c.createdAt || '',
   }));
 
-  // Extract guidance from comments (look for /context, /guidance, /resume, /use commands)
-  const guidance = extractGuidance(comments);
-
   // Extract previous implementation context (agent summaries, approved designs)
   const previousContext = extractPreviousContext(comments);
 
   log('INFO', `Loaded issue with ${comments.length} comments`);
-  if (guidance) log('INFO', `Found guidance comment`);
   if (previousContext) log('INFO', `Found previous context (${previousContext.length} chars)`);
 
   return {
@@ -171,34 +174,43 @@ async function getIssue(): Promise<Issue> {
     body: data.body || '',
     labels: (data.labels || []).map((l: { name: string }) => l.name),
     comments,
-    guidance,
     previousContext,
+    sessionStart,
+    triggerCommentId,
+    runId: process.env.ADP_MESSAGE_ID || randomUUID(),
+    authorityCache: new CommentAuthorityCache(),
   };
 }
 
-/**
- * Extract user guidance from comments.
- * Looks for comments starting with /context, /guidance, /resume, /use, /instruction
- * Returns the most recent guidance comment.
- */
-function extractGuidance(comments: Comment[]): string | null {
-  const guidanceCommands = ['/context', '/guidance', '/resume', '/use', '/instruction', '/direction'];
+function getTriggerCommentId(): string | undefined {
+  if (!process.env.GITHUB_EVENT_PATH) return undefined;
+  try {
+    const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) as unknown;
+    return resolveSuperpowerTriggerComment(event, REPO_OWNER, REPO_NAME, Number(ISSUE_NUMBER));
+  } catch {
+    return undefined;
+  }
+}
 
-  // Find guidance comments (non-bot, starting with guidance commands)
-  const guidanceComments = comments.filter(c => {
-    if (c.author.includes('[bot]') || c.author === 'github-actions') return false;
-    const lower = c.body.toLowerCase().trim();
-    return guidanceCommands.some(cmd => lower.startsWith(cmd));
-  });
-
-  if (guidanceComments.length === 0) return null;
-
-  // Return the most recent guidance
-  const latest = guidanceComments[guidanceComments.length - 1];
-  // Remove the command prefix and return the content
-  const body = latest.body.trim();
-  const firstNewline = body.indexOf('\n');
-  return firstNewline > 0 ? body.substring(firstNewline + 1).trim() : body.substring(body.indexOf(' ') + 1).trim();
+async function getCurrentGuidance(issue: Issue): Promise<SelectedGuidance | null> {
+  try {
+    await refreshGitHubToken();
+    const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || GH_APP_TOKEN || GITHUB_TOKEN;
+    const effect = (process.env.TARGET_REPO || `${REPO_OWNER}/${REPO_NAME}`).split('/');
+    if (!token || effect.length !== 2 || !effect[0] || !effect[1]) return null;
+    const comments = await fetchApprovalComments(REPO_OWNER, REPO_NAME, issue.number, token);
+    return selectSuperpowerGuidance(comments, {
+      owner: REPO_OWNER, repo: REPO_NAME, runId: issue.runId, cache: issue.authorityCache,
+      effectRepo: { owner: effect[0], repo: effect[1] },
+      tokenProvider: async () => {
+        await refreshGitHubToken();
+        return process.env.GH_TOKEN || process.env.GITHUB_TOKEN || GH_APP_TOKEN || GITHUB_TOKEN;
+      },
+    }, issue.sessionStart, issue.triggerCommentId);
+  } catch {
+    log('WARN', 'Guidance could not be verified');
+    return null;
+  }
 }
 
 /**
@@ -288,147 +300,49 @@ function loadSuperpowersSkills(): string {
 }
 
 // ============================================================================
-// User Response Parsing
-// ============================================================================
-
-interface UserResponse {
-  action: 'approve' | 'feedback' | 'reject' | 'unknown';
-  content: string;
-}
-
-function parseUserResponse(comment: string): UserResponse {
-  const lower = comment.toLowerCase().trim();
-
-  // Check for approval commands
-  if (lower.startsWith('/approve') || lower.startsWith('/lgtm') || lower.startsWith('/go')) {
-    return { action: 'approve', content: comment };
-  }
-
-  // Check for rejection
-  if (lower.startsWith('/reject') || lower.startsWith('/stop') || lower.startsWith('/cancel')) {
-    return { action: 'reject', content: comment };
-  }
-
-  // Check for feedback (any substantive response)
-  if (comment.length > 20 && !comment.startsWith('##')) {
-    return { action: 'feedback', content: comment };
-  }
-
-  return { action: 'unknown', content: comment };
-}
-
-// ============================================================================
-// Interactive Polling
+// Host-owned plan approval
 // ============================================================================
 
 interface PollResult {
   shouldContinue: boolean;
-  reason: 'approved' | 'feedback' | 'rejected' | 'timeout' | 'error';
+  reason: 'approved' | 'rejected' | 'timeout' | 'error';
   userResponse?: string;
 }
 
-async function pollForUserResponse(phase: string): Promise<PollResult> {
-  const startTime = Date.now();
-  const maxPolls = Math.ceil(USER_RESPONSE_TIMEOUT_MS / POLL_INTERVAL_MS);
-
-  log('INFO', `Waiting for user response in ${phase} phase (max ${USER_RESPONSE_TIMEOUT_MS / 60000} minutes)`);
-  console.log('\n' + '═'.repeat(60));
-  console.log(`⏳ Waiting for user response (${phase} phase)...`);
-  console.log('   Commands: /approve, /reject, or provide feedback');
-  console.log('═'.repeat(60) + '\n');
-
-  // Track the timestamp of comments we've seen
-  let lastSeenTimestamp = new Date().toISOString();
+async function pollForUserResponse(phase: string, planBody: string): Promise<PollResult> {
+  if (!planBody.trim()) return { shouldContinue: false, reason: 'error' };
+  const issueNumber = Number(ISSUE_NUMBER);
+  const requestId = randomUUID();
+  const runId = process.env.ADP_INVOCATION_ID || randomUUID();
+  const body = `${planBody}\n\n---\n**To approve:** Comment \`/approve ${requestId}\`\n**To reject:** Comment \`/reject ${requestId} [feedback]\``;
+  const tokenProvider = async () => {
+    await refreshGitHubToken();
+    return process.env.GH_TOKEN || process.env.GITHUB_TOKEN || GH_APP_TOKEN || GITHUB_TOKEN;
+  };
   try {
-    const initialComments = await fetchIssueComments();
-
-    // FIRST: Check existing comments for approval (handles re-runs where /approve was already posted)
-    log('INFO', `Checking ${initialComments.length} existing comments for approval...`);
-    for (const comment of initialComments) {
-      // Skip bot comments
-      if (comment.author.includes('[bot]') || comment.author === 'github-actions' || comment.author === 'adp-agent-ops') {
-        continue;
-      }
-
-      const response = parseUserResponse(comment.body);
-      if (response.action === 'approve') {
-        log('INFO', `Found existing approval from ${comment.author}`);
-        console.log('✅ Found existing approval! Proceeding...');
-        return { shouldContinue: true, reason: 'approved', userResponse: comment.body };
-      }
-      if (response.action === 'reject') {
-        log('INFO', `Found existing rejection from ${comment.author}`);
-        console.log('❌ Found existing rejection.');
-        return { shouldContinue: false, reason: 'rejected', userResponse: comment.body };
-      }
-    }
-
-    // Set timestamp to last comment for polling new ones
-    if (initialComments.length > 0) {
-      lastSeenTimestamp = initialComments[initialComments.length - 1].createdAt || lastSeenTimestamp;
-    }
+    const token = await tokenProvider();
+    const receipt = await postApprovalPlan(REPO_OWNER, REPO_NAME, issueNumber, body, token);
+    const request = bindPostedApproval(requestId, runId, REPO_OWNER, REPO_NAME,
+      issueNumber, body, receipt, USER_RESPONSE_TIMEOUT_MS);
+    if (!request) return { shouldContinue: false, reason: 'error' };
+    const target = (process.env.TARGET_REPO || `${REPO_OWNER}/${REPO_NAME}`).split('/');
+    if (target.length !== 2 || !target[0] || !target[1]) return { shouldContinue: false, reason: 'error' };
+    const context = { owner: REPO_OWNER, repo: REPO_NAME, runId, tokenProvider,
+      effectRepo: { owner: target[0], repo: target[1] } };
+    log('INFO', `Waiting for current ${phase} request ${requestId}`);
+    const result = await waitForPostedApproval(request,
+      async () => fetchApprovalComments(REPO_OWNER, REPO_NAME, issueNumber, await tokenProvider()),
+      async () => fetchApprovalPlan(REPO_OWNER, REPO_NAME, issueNumber, request.planCommentId, await tokenProvider()),
+      context, POLL_INTERVAL_MS, Math.ceil(USER_RESPONSE_TIMEOUT_MS / POLL_INTERVAL_MS), 3);
+    return { shouldContinue: result.outcome === 'allowed-once',
+      reason: result.outcome === 'allowed-once' ? 'approved'
+        : result.outcome === 'unavailable' ? 'error'
+          : result.approver ? 'rejected' : 'timeout',
+      userResponse: 'comment' in result ? result.comment : undefined };
   } catch {
-    log('WARN', 'Could not get initial comments');
+    log('WARN', 'Approval plan or comments unavailable');
+    return { shouldContinue: false, reason: 'error' };
   }
-
-  for (let poll = 1; poll <= maxPolls; poll++) {
-    const elapsedMinutes = Math.round((Date.now() - startTime) / 60000);
-    const remainingMinutes = Math.round((USER_RESPONSE_TIMEOUT_MS - (Date.now() - startTime)) / 60000);
-
-    console.log(`🔄 Poll ${poll}/${maxPolls} (${elapsedMinutes}m elapsed, ${remainingMinutes}m remaining)`);
-
-    try {
-      const comments = await fetchIssueComments();
-
-      // Find comments newer than lastSeenTimestamp
-      const newComments = comments.filter(c => c.createdAt > lastSeenTimestamp);
-
-      if (newComments.length > 0) {
-        log('INFO', `Found ${newComments.length} new comment(s)`);
-
-        for (const comment of newComments) {
-          // Skip bot comments
-          if (comment.author.includes('[bot]') || comment.author === 'github-actions') {
-            continue;
-          }
-
-          log('INFO', `Checking comment from ${comment.author}: ${comment.body.substring(0, 50)}...`);
-
-          const response = parseUserResponse(comment.body);
-
-          if (response.action === 'approve') {
-            console.log('✅ User approved! Proceeding...');
-            return { shouldContinue: true, reason: 'approved', userResponse: comment.body };
-          }
-
-          if (response.action === 'reject') {
-            console.log('❌ User rejected. Stopping.');
-            return { shouldContinue: false, reason: 'rejected', userResponse: comment.body };
-          }
-
-          if (response.action === 'feedback') {
-            console.log('💬 User provided feedback. Incorporating...');
-            return { shouldContinue: true, reason: 'feedback', userResponse: comment.body };
-          }
-        }
-
-        // Update timestamp to latest comment
-        const latestComment = newComments[newComments.length - 1];
-        lastSeenTimestamp = latestComment.createdAt || lastSeenTimestamp;
-      }
-    } catch (err) {
-      log('WARN', `Poll error: ${(err as Error).message}`);
-    }
-
-    // Wait before next poll
-    if (poll < maxPolls) {
-      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
-    }
-  }
-
-  // Timeout - auto-proceed with recommendations
-  console.log('⏰ Timeout reached. Auto-proceeding with recommendations...');
-  return { shouldContinue: true, reason: 'timeout' };
 }
 
 // ============================================================================
@@ -491,90 +405,10 @@ function logMessage(message: { type: string; message: { content: Array<Record<st
 async function runBrainstormingPhase(issue: Issue, skills: string): Promise<{ approved: boolean; design: string }> {
   log('INFO', 'Starting brainstorming phase');
 
-  // Build context sections
-  const guidanceSection = issue.guidance ? `
----
+  const guidance = await getCurrentGuidance(issue);
+  const contextSection = renderSuperpowerContext(guidance, issue.previousContext);
 
-## 🎯 User Guidance (from comments)
-
-The user has provided specific guidance for this run:
-
-${issue.guidance}
-
-**IMPORTANT:** Follow this guidance carefully. It may ask you to skip certain steps, use previous context, or focus on specific aspects.
-` : '';
-
-  const previousContextSection = issue.previousContext ? `
----
-
-## 📋 Previous Implementation Context
-
-A previous run of this agent produced the following work (which may not have been committed due to workflow issues). You can use this as reference:
-
-<previous_context>
-${issue.previousContext.substring(0, 8000)}${issue.previousContext.length > 8000 ? '\n...(truncated)' : ''}
-</previous_context>
-
-**NOTE:** If the user's guidance asks you to resume or use this context, you should leverage this previous work instead of starting from scratch.
-` : '';
-
-  const prompt = `You are @agent-pt-superpower using the Superpowers workflow from obra/superpowers.
-
-## Your Task
-Process this GitHub issue using the brainstorming skill.
-
-### Issue #${issue.number}: ${issue.title}
-
-${wrapUntrusted(issue.body)}
-${guidanceSection}
-${previousContextSection}
----
-
-## Superpowers Skills Available
-
-${skills}
-
----
-
-## Instructions for Brainstorming Phase
-
-**Follow the brainstorming skill workflow:**
-
-1. **Don't jump into code** - Step back and understand what the user really wants
-2. **Ask clarifying questions** - Identify ambiguities, assumptions, edge cases
-3. **Explore alternatives** - Consider different approaches
-4. **Present design in chunks** - Break it down for easy review
-
-${issue.guidance ? `**SPECIAL:** User has provided guidance - check if they want you to skip brainstorming or use previous context.` : ''}
-
-**Your output should be a GitHub comment with:**
-1. Your understanding of the problem
-2. Key questions that need answers (if any)
-3. Proposed approach/design (in digestible sections)
-4. Request for approval or feedback
-
-Post your brainstorming output as a comment using:
-\`\`\`bash
-gh issue comment ${ISSUE_NUMBER} --body "## 🧠 Brainstorming: [Title]
-
-### Understanding
-[Your interpretation of the problem]
-
-### Questions (if any)
-1. [Question 1]
-2. [Question 2]
-
-### Proposed Approach
-[Design in sections]
-
----
-**Please respond with:**
-- \`/approve\` to proceed with implementation
-- \`/reject\` to stop
-- Or provide feedback to refine the design"
-\`\`\`
-
-After posting, report back with a summary.`;
+  const prompt = buildSuperpowerBrainstormingPrompt(issue, skills, contextSection);
 
   let designOutput = '';
   let turnCount = 0;
@@ -641,18 +475,9 @@ After posting, report back with a summary.`;
   }
 
   // Wait for user response
-  const pollResult = await pollForUserResponse('brainstorming');
+  const pollResult = await pollForUserResponse('brainstorming', designOutput);
 
-  if (pollResult.reason === 'rejected') {
-    return { approved: false, design: '' };
-  }
-
-  if (pollResult.reason === 'feedback' && pollResult.userResponse) {
-    // Incorporate feedback and iterate
-    log('INFO', 'Incorporating user feedback...');
-    // For now, treat feedback as approval to continue
-    // In a more sophisticated version, we'd loop back to brainstorming
-  }
+  if (!pollResult.shouldContinue) return { approved: false, design: '' };
 
   return { approved: true, design: designOutput };
 }
@@ -668,106 +493,10 @@ async function runImplementationPhase(issue: Issue, skills: string, design: stri
     log('INFO', `Created project folder: ${projectPath}`);
   }
 
-  // Build context sections
-  const guidanceSection = issue.guidance ? `
----
+  const guidance = await getCurrentGuidance(issue);
+  const contextSection = renderSuperpowerContext(guidance, issue.previousContext);
 
-## 🎯 User Guidance
-
-${issue.guidance}
-` : '';
-
-  const previousContextSection = issue.previousContext ? `
----
-
-## 📋 Previous Implementation Reference
-
-A previous run produced this work (use as reference if applicable):
-
-<previous_implementation>
-${issue.previousContext.substring(0, 6000)}${issue.previousContext.length > 6000 ? '\n...(truncated)' : ''}
-</previous_implementation>
-` : '';
-
-  const prompt = `You are @agent-pt-superpower using the Superpowers workflow from obra/superpowers.
-
-## Context
-The brainstorming phase is complete and the design has been approved.
-
-### Issue #${issue.number}: ${issue.title}
-
-${wrapUntrusted(issue.body)}
-
-### Approved Design Summary
-${design.substring(0, 2000)}...
-${guidanceSection}
-${previousContextSection}
----
-
-## Superpowers Skills Available
-
-${skills}
-
----
-
-## IMPORTANT: Project Folder Structure
-
-**ALL generated files MUST be created inside this folder:**
-\`\`\`
-${projectFolder}/
-\`\`\`
-
-For example:
-- Source code: \`${projectFolder}/src/\`
-- Tests: \`${projectFolder}/tests/\` or \`${projectFolder}/src/__tests__/\`
-- Config files: \`${projectFolder}/\`
-- Documentation: \`${projectFolder}/docs/\` or \`${projectFolder}/README.md\`
-
-**First, create the project folder if it doesn't exist:**
-\`\`\`bash
-mkdir -p ${projectFolder}
-\`\`\`
-
----
-
-## Instructions for Implementation Phase
-
-**Follow these Superpowers skills in order:**
-
-### 1. Writing Plans (writing-plans skill)
-Create a detailed implementation plan:
-- Break into 2-5 minute tasks
-- Each task: exact file paths (inside ${projectFolder}/), code snippets, verification steps
-- Post plan to issue for reference
-
-### 2. Test-Driven Development (test-driven-development skill)
-For each task:
-- Write failing test FIRST (RED) in ${projectFolder}/tests/ or similar
-- Implement minimal code to pass (GREEN)
-- Refactor if needed
-- Commit after each green test
-
-### 3. Implementation
-Execute the plan task by task:
-- ALL files go in ${projectFolder}/
-- Follow TDD strictly
-- Commit after each task
-- Self-review before moving on
-
-### 4. Verification (verification-before-completion skill)
-- Run all tests
-- Verify the implementation actually works
-- Fix any issues found
-
-### 5. Report Results
-Post a summary comment with:
-- Tasks completed
-- Tests passing
-- Files changed (all should be in ${projectFolder}/)
-- Any issues encountered
-
-Now execute the implementation. Start by creating the plan, then implement with TDD.
-Remember: ALL files must be created inside ${projectFolder}/`;
+  const prompt = buildSuperpowerImplementationPrompt(issue, skills, design, projectFolder, contextSection);
 
   let implementationOutput = '';
   let turnCount = 0;
@@ -869,7 +598,7 @@ async function main(): Promise<void> {
 
   try {
     // Get issue details
-    const issue = await getIssue();
+    const issue = await getIssue(Date.now(), getTriggerCommentId());
     log('INFO', `Processing issue: ${issue.title}`);
 
     // Generate project folder name

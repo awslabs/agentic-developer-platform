@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
-from security_image_targets import ORIGINAL_COVERAGE, discover, non_runtime_fixtures
+from security_image_targets import ORIGINAL_COVERAGE, discover, maintenance_recipes, non_runtime_fixtures
 
 
 def command(args, **kwargs):
@@ -233,7 +233,9 @@ def scan(target, tool, output, root):
             raise ValueError("Docker did not report an immutable sha256 image ID")
         # Docker's streaming source can buffer large layers inside the scanner.
         # A seekable archive plus bounded Go/cataloger concurrency keeps the
-        # full package scope while fitting the shared CodeBuild memory budget.
+        # full package scope. GOMEMLIMIT is a soft Go heap target, not an RSS
+        # cap: SkyPilot still needs over 5 GiB plus Docker/CodeBuild overhead,
+        # so the workflow and project both select the 15 GiB compute size.
         command(["docker", "save", "--output", str(archive), image], timeout=600)
         scanner_env = {**os.environ, "GOMEMLIMIT": "2GiB", "SYFT_PARALLELISM": "2"}
         if tool == "grype":
@@ -334,6 +336,7 @@ def main():
         raise ValueError(f"Invalid image scope: {scope}")
     targets = discover(root, scope)
     excluded = non_runtime_fixtures(root, scope)
+    recipes = maintenance_recipes(root, scope)
     date = os.environ.get("SECURITY_SCAN_DATE") or datetime.datetime.now(
         datetime.timezone.utc
     ).strftime("%Y/%m/%d")
@@ -350,13 +353,15 @@ def main():
         "scope": scope,
         "commit": os.environ["ADP_SOURCE_SHA"],
         "expected": len(targets),
-        "discovered": len(targets) + len(excluded),
+        "discovered": len(targets) + len(excluded) + len(recipes),
         "excluded_non_runtime": excluded,
+        "maintenance_recipes": recipes,
         "original_gap": ORIGINAL_COVERAGE if scope == "all" else None,
         "succeeded": 0,
         "targets": [],
     }
-    print(json.dumps({"scope": scope, "targets": targets}, indent=2), flush=True)
+    print(json.dumps({"scope": scope, "targets": targets, "maintenance_recipes": recipes,
+                      "excluded_non_runtime": excluded}, indent=2), flush=True)
     with tempfile.TemporaryDirectory(prefix="security-images-") as temp:
         for target in targets:
             result = dict(target, status="failed")

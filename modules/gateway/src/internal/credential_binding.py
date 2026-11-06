@@ -13,6 +13,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from src.shared.config import Settings
 
@@ -32,9 +33,60 @@ class BindingResult:
     # Whether drift was detected (body user_id != registry user_id).
     drift_detected: bool
     # The body-supplied user_id (for audit purposes).
-    body_user_id: str
+    body_user_id: str | None
     invocation_id: str | None = None
     tenant_id: str | None = None
+
+
+@dataclass(frozen=True)
+class GatewayCredentialAuthority:
+    """Server-verified tool principal and the owner's consented credential IDs."""
+
+    user_id: str
+    tenant_id: str
+    agent_id: str
+    credential_ids: frozenset[str]
+    assertion_expires_at: int | None = None
+
+
+def resolve_broker_binding(
+    request: Request,
+    *,
+    body_user_id: str | None,
+    agent_id: str | None,
+    invocation_id: str | None,
+    settings: Settings,
+    task_id: str | None = None,
+) -> BindingResult:
+    """Select the verified gateway identity or the existing authenticated run."""
+    authority = getattr(request.state, "agent_tools_credential_authority", None)
+    if authority is None:
+        return resolve_credential_binding(
+            verified_binding=getattr(request.state, "agent_credential_binding", None),
+            invocation_id=invocation_id,
+            body_user_id=body_user_id,
+            settings=settings,
+        )
+    if (
+        not isinstance(authority, GatewayCredentialAuthority)
+        or not authority.user_id
+        or not authority.tenant_id
+        or not authority.agent_id
+        or not isinstance(authority.credential_ids, frozenset)
+        or request.url.path == "/internal/v1/credential-raw-read"
+        or getattr(request.state, "agent_credential_binding", None) is not None
+        or body_user_id is not None
+        or agent_id is not None
+        or task_id is not None
+        or invocation_id is not None
+    ):
+        raise HTTPException(403, {"error": "credential_binding_failed", "message": "Verified tools principal required"})
+    return BindingResult(authority.user_id, False, False, body_user_id, tenant_id=authority.tenant_id)
+
+
+def broker_actor(request: Request, agent_id: str | None) -> str | None:
+    authority = getattr(request.state, "agent_tools_credential_authority", None)
+    return authority.user_id if isinstance(authority, GatewayCredentialAuthority) else agent_id
 
 
 def _get_dynamodb_table(table_name: str, aws_region: str):
@@ -143,6 +195,11 @@ class InstallationBinding:
     tenant_id: str
     installation_id: int
     repo: str | None = None
+    # Issue #9550: the bound repository's GitHub id when the trusted execution
+    # row recorded it (``provider_repository_id``, written by webhook-ingress from
+    # the delivery payload). ``None`` when the row predates it; the token route
+    # then reads the id back from GitHub by name before any Product widening.
+    repository_id: int | None = None
 
 
 def resolve_installation_binding(

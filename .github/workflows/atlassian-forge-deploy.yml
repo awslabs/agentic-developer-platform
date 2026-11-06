@@ -1,0 +1,155 @@
+name: Deploy Atlassian Forge app
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Protected ADP deployment environment
+        type: choice
+        options: [dev, prod]
+        default: dev
+        required: true
+      register_app:
+        description: 'One-time registration of a NEW app using the selected owner credentials. Never repeat an uncertain registration.'
+        type: boolean
+        default: false
+      developer_space_id:
+        description: 'App owner Developer Space ID; required only for new registration.'
+        type: string
+      app_name:
+        description: 'Name for a new app; ignored for existing app releases.'
+        type: string
+        default: ADP Jira
+permissions:
+  contents: read
+concurrency:
+  group: atlassian-forge-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    environment: ${{ inputs.environment == 'prod' && 'adp-tools-deploy-prod' || 'adp-tools-deploy-dev' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare registered app for this ADP environment
+        env:
+          FORGE_APP_ID: ${{ vars.ADP_ATLASSIAN_FORGE_APP_ID }}
+          ADP_BASE_URL: ${{ vars.ADP_TOOLS_EVAL_GATEWAY_URL }}
+          FORGE_ENVIRONMENT: ${{ vars.ADP_ATLASSIAN_FORGE_ENVIRONMENT_NAME || 'production' }}
+          FORGE_REGISTER_APP: ${{ inputs.register_app }}
+          FORGE_DEVELOPER_SPACE_ID: ${{ inputs.developer_space_id }}
+          FORGE_APP_NAME: ${{ inputs.app_name }}
+        run: |
+          python3 -m unittest discover -s modules/tools/atlassian-forge/tests -p 'test_*.py'
+          python - <<'PY'
+          import importlib.util, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('prepare', 'modules/tools/atlassian-forge/prepare.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          spec = importlib.util.spec_from_file_location('release', 'modules/tools/atlassian-forge/release.py')
+          release = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(release)
+          registering = os.environ['FORGE_REGISTER_APP'] == 'true'
+          if registering and os.environ['GITHUB_RUN_ATTEMPT'] != '1':
+              raise ValueError('Do not rerun registration. Recover the app ID from the registration artifact or Developer Console, configure it, and publish with register_app=false.')
+          release.release_settings(os.environ, for_registration=registering)
+          output = Path(os.environ['RUNNER_TEMP']) / ('adp-forge-' + os.environ['GITHUB_RUN_ID'])
+          configuration = {'adp_base_url': os.environ['ADP_BASE_URL']}
+          if not registering:
+              configuration['app_id'] = os.environ['FORGE_APP_ID']
+          module.prepare(configuration, output, for_registration=registering)
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write('ADP_FORGE_BUILD=' + str(output) + '\n')
+          PY
+      - name: Install locked Forge tooling
+        run: |
+          cd "$ADP_FORGE_BUILD"
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run forge -- settings set usage-analytics false
+      - name: Register the selected owner's new app once
+        if: inputs.register_app
+        env:
+          FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+          FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+          FORGE_DEVELOPER_SPACE_ID: ${{ inputs.developer_space_id }}
+          FORGE_APP_NAME: ${{ inputs.app_name }}
+        run: |
+          set -euo pipefail
+          test -n "$FORGE_EMAIL"
+          test -n "$FORGE_API_TOKEN"
+          cd "$ADP_FORGE_BUILD"
+          npm run forge -- register "$FORGE_APP_NAME" --developer-space-id "$FORGE_DEVELOPER_SPACE_ID" --accept-terms
+          python3 - <<'PY'
+          import importlib.util, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('release', Path(os.environ['GITHUB_WORKSPACE']) / 'modules/tools/atlassian-forge/release.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          app_id = module.registered_app_id(Path('manifest.yml').read_text())
+          module.write_private(Path(os.environ['RUNNER_TEMP']) / ('adp-forge-registration-' + os.environ['GITHUB_RUN_ID'] + '.json'), {'app_id': app_id, 'source_revision': os.environ['GITHUB_SHA']})
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write('ADP_FORGE_REGISTERED_APP_ID=' + app_id + '\n')
+          PY
+      - name: Preserve registered app identity even if publication fails
+        if: always() && inputs.register_app
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: adp-forge-registration-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/adp-forge-registration-${{ github.run_id }}.json
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Build, verify and publish Forge artifact
+        env:
+          FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+          FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+          FORGE_ENVIRONMENT: ${{ vars.ADP_ATLASSIAN_FORGE_ENVIRONMENT_NAME || 'production' }}
+          FORGE_APP_ID: ${{ vars.ADP_ATLASSIAN_FORGE_APP_ID || env.ADP_FORGE_REGISTERED_APP_ID }}
+          ADP_BASE_URL: ${{ vars.ADP_TOOLS_EVAL_GATEWAY_URL }}
+          FORGE_INSTALL_URL: ${{ vars.ADP_ATLASSIAN_FORGE_INSTALL_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$FORGE_EMAIL"
+          test -n "$FORGE_API_TOKEN"
+          test -n "$FORGE_ENVIRONMENT"
+          cd "$ADP_FORGE_BUILD"
+          npm run build
+          npm test
+          npm run forge -- settings set usage-analytics false
+          npm run --silent forge -- environments list --json --non-interactive > "$RUNNER_TEMP/adp-forge-environments-${GITHUB_RUN_ID}.json"
+          python3 "$GITHUB_WORKSPACE/modules/tools/atlassian-forge/release.py" \
+            --environments "$RUNNER_TEMP/adp-forge-environments-${GITHUB_RUN_ID}.json"
+          npm run forge -- deploy --non-interactive --environment "$FORGE_ENVIRONMENT"
+          python3 "$GITHUB_WORKSPACE/modules/tools/atlassian-forge/release.py" \
+            --environments "$RUNNER_TEMP/adp-forge-environments-${GITHUB_RUN_ID}.json" \
+            --manifest "$ADP_FORGE_BUILD/manifest.yml" \
+            --output "$RUNNER_TEMP/adp-forge-release-${GITHUB_RUN_ID}.json"
+      - name: Retain publication and ADP configuration receipt
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: adp-forge-release-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/adp-forge-release-${{ github.run_id }}.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove private generated configuration
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / ('adp-forge-' + os.environ['GITHUB_RUN_ID'])
+          if path.exists():
+              shutil.rmtree(path)
+          for name in ('environments', 'release', 'registration'):
+              (Path(os.environ['RUNNER_TEMP']) / ('adp-forge-' + name + '-' + os.environ['GITHUB_RUN_ID'] + '.json')).unlink(missing_ok=True)
+          PY

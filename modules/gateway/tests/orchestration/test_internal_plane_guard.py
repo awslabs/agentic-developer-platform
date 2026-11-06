@@ -44,6 +44,11 @@ INTERNAL_ROUTE_MODULES = (
     "src.internal.assume_role_routes",
     "src.internal.provenance_routes",
     "src.internal.status_callback_routes",
+    # #4720: only knowledge registry/catalog state and ingestion backends are
+    # reachable. Neither module nor its helpers imports promotion models or
+    # reads/writes orchestration promotion state.
+    "src.internal.ingestion_control_routes",
+    "src.internal.ingestion_refresh_routes",
     "src.internal.admin_routes",
     # PMM-03 bounded-probe admission and result recording only. Reviewed at
     # 46b62cf8: it imports no orchestration package/model/table and cannot read
@@ -61,6 +66,16 @@ INTERNAL_ROUTE_MODULES = (
     "src.internal.controller_execution_routes",
     "src.internal.domain_operation_routes",
     "src.internal.domain_operation_binding_proof_routes",
+    "src.internal.l5_credential_routes",
+    "src.internal.l5_product_routes",
+    "src.internal.l5_snapshot_routes",
+    # Schedule admission uses current Product, source, binding and delegation
+    # authority. It cannot approve or advance an orchestration release.
+    "src.internal.l5_schedule_routes",
+    # L5 publication forwarding and current-authority checks access Product,
+    # run, binding, delegation and Task records, never promotion state.
+    "src.internal.l5_consumer_routes",
+    "src.internal.connector_context_routes",
 )
 
 # The full internal-plane surface as of this change, as (path, method) pairs.
@@ -68,6 +83,16 @@ INTERNAL_ROUTE_MODULES = (
 # requires adding it here — and that is the review moment where someone must
 # confirm the route does not read or write promotion state.
 EXPECTED_INTERNAL_ROUTES = {
+    ("/internal/v1/tools/authorize", "POST"),
+    ("/internal/v1/tools/l5-list", "POST"),
+    ("/internal/v1/tools/l5-call", "POST"),
+    ("/internal/v1/tools/outcome", "POST"),
+    ("/internal/v1/tools/outcome-repair", "POST"),
+    # Native tool dispatch and cleanup consume existing owner-approved authority
+    # and write bounded dispatch/cleanup claims, tool receipts and budget holds.
+    # Their native-test adapters do not read or mutate release-promotion state.
+    ("/internal/v1/tools/native-dispatch", "POST"),
+    ("/internal/v1/tools/native-cleanup", "POST"),
     ("/internal/v1/issue-magic-link", "POST"),
     ("/internal/v1/resolve-user", "POST"),
     ("/internal/v1/resolve-installation", "POST"),
@@ -77,8 +102,65 @@ EXPECTED_INTERNAL_ROUTES = {
     ("/internal/v1/credential-raw-read", "POST"),
     ("/internal/v1/credential-assume-role", "POST"),
     ("/internal/v1/github-installation-token", "POST"),
+    ("/internal/v1/l5/credential-session", "POST"),
+    ("/internal/v1/l5/knowledge-publication-session", "POST"),
+    ("/internal/v1/l5/contribution-authority", "POST"),
+    ("/internal/v1/l5/well-architected/schedule-admissions", "POST"),
+    ("/internal/v1/l5/transform/schedule-admissions", "POST"),
+    ("/internal/v1/l5/security/schedule-admissions", "POST"),
+    # Captures a scoped setup document; it has no promotion-state mutation.
+    ("/internal/v1/l5/security/setup-document", "POST"),
+    ("/internal/v1/context/l5-contributions", "POST"),
+    ("/internal/v1/context/l5-contributions/{contribution_id}", "GET"),
+    ("/internal/v1/context/l5-contributions/{contribution_id}/projection", "GET"),
+    ("/internal/v1/context/l5-contributions/{contribution_id}/invalidate", "POST"),
+    ("/internal/v1/context/l5-devops-contributions", "POST"),
+    ("/internal/v1/context/l5-devops-contributions/{contribution_id}", "GET"),
+    ("/internal/v1/context/l5-devops-contributions/{contribution_id}/projection", "GET"),
+    ("/internal/v1/context/l5-devops-contributions/{contribution_id}/invalidate", "POST"),
+    ("/internal/v1/context/l5-cost-contributions", "POST"),
+    ("/internal/v1/context/l5-cost-contributions/{contribution_id}", "GET"),
+    ("/internal/v1/context/l5-cost-contributions/{contribution_id}/projection", "GET"),
+    ("/internal/v1/context/l5-cost-contributions/{contribution_id}/invalidate", "POST"),
+    ("/internal/v1/context/l5-transform-contributions", "POST"),
+    ("/internal/v1/context/l5-transform-contributions/{contribution_id}", "GET"),
+    ("/internal/v1/context/l5-transform-contributions/{contribution_id}/projection", "GET"),
+    ("/internal/v1/context/l5-transform-contributions/{contribution_id}/invalidate", "POST"),
+    ("/internal/v1/context/l5-wa-contributions", "POST"),
+    ("/internal/v1/context/l5-wa-contributions/{contribution_id}", "GET"),
+    ("/internal/v1/context/l5-wa-contributions/{contribution_id}/projection", "GET"),
+    ("/internal/v1/context/l5-wa-contributions/{contribution_id}/invalidate", "POST"),
+    ("/internal/v1/insights/l5-devops-contributions", "POST"),
+    ("/internal/v1/insights/l5-devops-contributions/{contribution_id}", "GET"),
+    ("/internal/v1/insights/l5-devops-contributions/{contribution_id}/projection", "GET"),
+    ("/internal/v1/insights/l5-devops-contributions/{contribution_id}/invalidate", "POST"),
+    ("/internal/v1/insights/l5-cost-contributions", "POST"),
+    ("/internal/v1/insights/l5-cost-contributions/{contribution_id}", "GET"),
+    ("/internal/v1/insights/l5-cost-contributions/{contribution_id}/projection", "GET"),
+    ("/internal/v1/insights/l5-cost-contributions/{contribution_id}/invalidate", "POST"),
+    ("/internal/v1/insights/l5-transform-contributions", "POST"),
+    ("/internal/v1/insights/l5-transform-contributions/{contribution_id}", "GET"),
+    ("/internal/v1/insights/l5-transform-contributions/{contribution_id}/projection", "GET"),
+    ("/internal/v1/insights/l5-transform-contributions/{contribution_id}/invalidate", "POST"),
+    ("/internal/v1/insights/l5-wa-contributions", "POST"),
+    ("/internal/v1/insights/l5-wa-contributions/{contribution_id}", "GET"),
+    ("/internal/v1/insights/l5-wa-contributions/{contribution_id}/projection", "GET"),
+    ("/internal/v1/insights/l5-wa-contributions/{contribution_id}/invalidate", "POST"),
+    ("/internal/v1/products/{product_id}/projects/{project_id}", "GET"),
+    ("/internal/v1/products/{product_id}/projects/{project_id}/revisions/{revision}", "GET"),
+    ("/internal/v1/products/{product_id}/projects/{project_id}/changes", "GET"),
+    ("/internal/v1/products/{product_id}/projects/{project_id}/project-bindings", "GET"),
+    ("/internal/v1/products/{product_id}/projects/{project_id}/bindings", "GET"),
+    ("/internal/v1/products/{product_id}/projects/{project_id}/sources", "GET"),
+    ("/internal/v1/products/{product_id}/projects/{project_id}/source-snapshots/{snapshot_id}/read", "POST"),
+    ("/internal/v1/connector-contexts/module/{tenant_id}", "PUT"),
+    ("/internal/v1/connector-contexts/resolve", "POST"),
+    ("/internal/v1/connector-contexts/{handle}", "GET"),
+    ("/internal/v1/connector-contexts/{handle}/derive", "POST"),
     ("/internal/v1/provenance", "POST"),
     ("/internal/v1/knowledge-assets/status-callback", "POST"),
+    ("/internal/v1/knowledge-assets/ingestion-control", "POST"),
+    ("/internal/v1/knowledge-assets/refresh", "POST"),
     ("/internal/v1/admin/tenant-config/{tenant}", "GET"),
     ("/internal/v1/admin/audit-entries", "GET"),
     ("/internal/v1/persona-model-probes/claim", "POST"),
@@ -98,6 +180,30 @@ EXPECTED_INTERNAL_ROUTES = {
     ("/internal/v1/controller-execution/producer-readiness", "POST"),
     ("/internal/v1/controller-execution/binding-proof", "POST"),
     ("/internal/v1/controller-execution/dispatch", "POST"),
+    # Original admission recovery touches only Harness/domain authority and the
+    # protected dispatch store; it cannot mutate orchestration promotion state.
+    ("/internal/v1/controller-execution/recover-undispatched", "POST"),
+    ("/internal/v1/controller-execution/recover-uncredentialed", "POST"),
+    # Same original-domain recovery boundary with owner start-barrier evidence;
+    # no release-promotion state is read or mutated.
+    ("/internal/v1/controller-execution/recover-unstarted-planning", "POST"),
+    # Interrupted planning joins protected owner evidence to an original domain
+    # admission and Harness retry receipt; it cannot access promotion state.
+    ("/internal/v1/controller-execution/recover-interrupted-planning", "POST"),
+    # Bootstrap retry reads domain journals and cannot mutate orchestration state.
+    ("/internal/v1/controller-execution/recover-unstarted-bootstrap", "POST"),
+    # Settled bootstrap recovery changes only the original domain/Harness claim,
+    # after fresh approval and protected owner evidence; no promotion state.
+    ("/internal/v1/controller-execution/recover-settled-bootstrap", "POST"),
+    # Owner-verified saved-plan completion is confined to the original domain
+    # approval, Harness lease/receipt and protected provider evidence. Its shared
+    # recovery handler cannot read or mutate orchestration promotion state.
+    ("/internal/v1/controller-execution/complete-saved-plan", "POST"),
+    # Partial recovery observes original domain evidence or records its Harness
+    # receipt after producer/human approval checks. The handler imports no
+    # orchestration model/repository and cannot alter release-promotion state.
+    ("/internal/v1/controller-execution/partial-apply-observation", "POST"),
+    ("/internal/v1/controller-execution/repair-partial-apply", "POST"),
     ("/internal/v1/controller-execution/task/acquire", "POST"),
     ("/internal/v1/controller-execution/bootstrap", "POST"),
     ("/internal/v1/controller-execution/task/heartbeat", "POST"),
@@ -419,6 +525,11 @@ class TestOrchestrationRouterIsOperatorPlane:
         # REQUIRES A LINE HERE, and that is the review moment: if the route reads or
         # writes promotion state, the answer is PLAN_APPROVE and nothing weaker.
         expected_permissions = {
+            # Maintenance changes the accepted release authority on the same
+            # story. Both steps require human PLAN_APPROVE, plus platform-admin
+            # and original-owner checks in the endpoint/service.
+            ("/orchestration/flows/{flow_id}/maintenance-adoption/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/maintenance-adoption/accept", "POST"): "Permission.PLAN_APPROVE",
             # Issue #4320: the engine's ingress for plan state. It CREATES flow,
             # node and edge rows, so it is promotion activity of the strongest
             # kind — PLAN_APPROVE and nothing weaker.
@@ -439,8 +550,11 @@ class TestOrchestrationRouterIsOperatorPlane:
             # escalation the sibling guard below exists to stop.
             ("/orchestration/flows", "GET"): "Permission.USAGE_READ",
             ("/orchestration/flows/{flow_id}/amendments", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/legacy-migration", "GET"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/legacy-migration", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/draft/preview", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/draft/revise", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/draft/product", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/plans", "GET"): "Permission.PLAN_APPROVE",
             # Read-only cost rollup. Reads usage_logs, never promotion state.
             ("/orchestration/flows/{flow_id}/cost", "GET"): "Permission.USAGE_READ",
@@ -464,6 +578,12 @@ class TestOrchestrationRouterIsOperatorPlane:
             # and reading it under a spend-read permission is the escalation the
             # sibling guard exists to stop.
             ("/orchestration/flows/{flow_id}", "GET"): "Permission.USAGE_READ",
+            ("/orchestration/flows/{flow_id}/activity", "GET"): "Permission.USAGE_READ",
+            # Story elapsed time, dispatch counts and state transitions only;
+            # no approval identities, reason text or plan content are exposed.
+            ("/orchestration/flows/{flow_id}/timeline", "GET"): "Permission.USAGE_READ",
+            ("/orchestration/flows/{flow_id}/archive", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/unarchive", "POST"): "Permission.PLAN_APPROVE",
             # Issue #5145: the delivery ledger's read model — per node and cycle,
             # the phase, whether it is moving, the next scheduled check and the
             # typed block naming who must act. USAGE_READ, because this answers
@@ -489,9 +609,29 @@ class TestOrchestrationRouterIsOperatorPlane:
             # Pause/resume changes execution authority; visibility alone cannot
             # grant control. The handler also requires a live human session.
             ("/orchestration/flows/{flow_id}/execution", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/recovery", "POST"): "Permission.PLAN_APPROVE",
+            # Build completion changes the accepted completion boundary while
+            # retaining deployment and human acceptance. Both routes require
+            # explicit plan approval and an authenticated human session.
+            ("/orchestration/flows/{flow_id}/build-completion/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/build-completion/accept", "POST"): "Permission.PLAN_APPROVE",
+            # External completion requires plan authority and a live human
+            # session, preserving worker failure and recording attributed evidence.
+            ("/orchestration/flows/{flow_id}/external-completion/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/external-completion/accept", "POST"): "Permission.PLAN_APPROVE",
+            # Partial human observations read accepted scope and append attributed
+            # decisions; they retain plan authority without completing release checks.
+            ("/orchestration/flows/{flow_id}/l5-observations/prepare", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/l5-observations/{challenge_id}", "GET"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/l5-observations/{challenge_id}/observe", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/l5-observations/{challenge_id}/endorse", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/l5-observations/{challenge_id}/effects", "GET"): "Permission.PLAN_APPROVE",
             # Read-only acknowledgment projection; no worker capability,
             # acceptance identity, ownership nonce or raw envelope is exposed.
             ("/orchestration/flows/{flow_id}/run-reports", "GET"): "Permission.USAGE_READ",
+            # Budget balances expose only effective limits and accounting totals.
+            ("/orchestration/flows/{flow_id}/budget", "GET"): "Permission.USAGE_READ",
+            ("/orchestration/flows/{flow_id}/nodes/{node_id}/budget", "GET"): "Permission.USAGE_READ",
             ("/orchestration/flows/{flow_id}/continuation/preview", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/continuation/accept", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/evaluation/preview", "POST"): "Permission.PLAN_APPROVE",
@@ -532,6 +672,49 @@ class TestOrchestrationRouterIsOperatorPlane:
             # the run credential, which is strictly narrower. See
             # `src/agentauth/pr_binding_routes.py`.
             ("/orchestration/flows/{flow_id}/nodes/{node_id}/pull-request-recovery", "POST"): "Permission.PLAN_APPROVE",
+            # Issue #5329: the amendment review loop — propose, preview the graph change,
+            # edit, reject, accept. `PLAN_APPROVE` on all seven, including the two GETs,
+            # and each is worth stating for its own reason rather than by a blanket rule.
+            #
+            # `proposals` files an INERT pending draft, which is the one entry here that
+            # could plausibly argue for PLAN_DRAFT by analogy with #4528/#4529. It does not
+            # get it: those routes exist so an *agent* can publish what it authored, and
+            # their justification rests on the author having no say in what happens next.
+            # This route is the operator surface — the same human then previews and accepts
+            # — so putting it behind approval authority keeps "who may propose against a
+            # plan of record" and "who may approve" as one deliberate grant instead of two
+            # that drift.
+            #
+            # `edit` is the load-bearing one. It writes no plan, so a weaker permission
+            # looks defensible; it is PLAN_APPROVE because an edit chooses *what a human
+            # will be asked to approve*. An agent that could edit a pending draft could
+            # rewrite it after a reviewer read it and before they accepted it, which
+            # defeats review without ever touching promotion state.
+            #
+            # `preview` reads live execution state and therefore requires PLAN_APPROVE
+            # for ordinary callers. #5329 also permits the assignment-bound author to
+            # read only its own proposal under PLAN_DRAFT; route tests pin tenant, flow,
+            # request and run filtering for that narrow exception.
+            #
+            # The two GETs have the same split: PLAN_APPROVE for operator readback, or
+            # assignment-bound PLAN_DRAFT readback limited to that author's own rows.
+            #
+            # `accept` writes the record of what a human approved and is the reason this
+            # feature's routes live on THIS router at all: `draft_routes.py`'s allowlist
+            # states that no acceptance endpoint may ever be added to the PLAN_DRAFT
+            # router, because an agent-reachable accept — even one limited to drafts that
+            # agent authored — is the self-approval the EPIC exists to prevent.
+            # Read-only frozen fixture metadata additionally requires the
+            # original flow-policy owner or authenticated platform operator.
+            ("/orchestration/flows/{flow_id}/security-evidence-rosters", "GET"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/amendments/requests", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/amendments/proposals", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/amendments/drafts", "GET"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/amendments/drafts/{draft_id}", "GET"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/amendments/drafts/{draft_id}/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/amendments/drafts/{draft_id}/edit", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/amendments/drafts/{draft_id}/reject", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/amendments/drafts/{draft_id}/accept", "POST"): "Permission.PLAN_APPROVE",
         }
 
         actual_routes = set()

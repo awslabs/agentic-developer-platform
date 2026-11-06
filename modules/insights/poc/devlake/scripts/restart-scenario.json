@@ -1,0 +1,16 @@
+{
+  "scenario": "test_restart",
+  "scope": "offline-intent-and-artifact-only",
+  "intent_ledger_sha256": "db678b1c0d08881ba66b5ac090f2be68ed85949446a1fac4922769cbe7044b7d",
+  "artifact_finalizer_sha256": "c0f23fa564e6ee331e6456a4b4766ecfedc5b965a849c48bea59c6e834126ced",
+  "checks": [
+    "modules.insights.tests.devlake_poc.test_s02_intent.OptionalIntentTest.test_collection_retry_keeps_one_protected_intent_and_retains_dependencies",
+    "modules.insights.tests.devlake_poc.test_s02_intent.OptionalIntentTest.test_conflict_and_terminal_request_refuse_registration",
+    "modules.insights.tests.devlake_poc.test_s02_intent.OptionalIntentTest.test_lost_save_response_requires_matching_consistent_readback",
+    "modules.insights.tests.devlake_poc.test_s02_intent.OptionalIntentTest.test_unqualified_cleanup_blocks_both_installer_apply_paths_before_terraform",
+    "modules.insights.tests.devlake_poc.test_s09_cleanup.ArtifactRecoveryTest.test_optional_intent_fences_abort_before_image_cleanup",
+    "modules.insights.tests.devlake_poc.test_s09_cleanup.ArtifactRecoveryTest.test_optional_intent_fences_scheduled_expiry_before_image_cleanup",
+    "modules.insights.tests.devlake_poc.test_s09_cleanup.ArtifactRecoveryTest.test_lost_delete_response_retries_exact_intent_without_second_delete",
+    "modules.insights.tests.devlake_poc.test_s09_cleanup.ArtifactRecoveryTest.test_missing_held_image_and_forged_receipt_remain_incomplete"
+  ]
+}

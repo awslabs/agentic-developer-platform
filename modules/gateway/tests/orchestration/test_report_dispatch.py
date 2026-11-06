@@ -1,6 +1,7 @@
 """The real dispatch transaction, durable outbox, registration and result reader."""
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -112,6 +113,30 @@ async def test_dispatch_commit_publish_crash_and_authenticated_completion(sessio
     advisory.get.assert_not_called()
 
 
+async def test_foreign_equal_number_pr_report_cannot_change_story(session, session_factory, monkeypatch):
+    node = await prepare(session)
+    dispatch = await run_dispatch_pass(session, _config())
+    assert dispatch.dispatched == 1
+    envelope = dispatch.pending[0].envelope
+    await session.commit()
+    monkeypatch.setattr("src.shared.database.get_session_factory", lambda: session_factory)
+    provider = AsyncMock()
+    monkeypatch.setattr("src.orchestration.pr_identity.resolve_pr_identity", provider)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[require_agent_transport] = lambda: None
+    headers = {"X-Adp-Report-Credential": envelope["run_report"]["credential"]}
+    foreign = PullRequestIdentity(43, "PR_foreign", "fictional/story-b", 77, "a" * 40)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://gateway.test") as client:
+        response = await client.post("/internal/v1/agent/report/pull-request", headers=headers, json=foreign.__dict__)
+    assert response.status_code == 409 and response.json()["detail"] == "repository_mismatch"
+    await session.rollback()
+    report = await session.get(OrchestrationRunReport, envelope["message_id"])
+    assert report.candidate_pr is None and report.binding_receipt is None
+    assert (await session.get(OrchestrationNode, node.id)).state == "running"
+    provider.assert_not_called()
+
+
 async def test_missing_signing_material_rolls_back_without_publishing(session, monkeypatch):
     node = await prepare(session)
     node_id = node.id
@@ -132,6 +157,33 @@ async def test_staged_default_off_emits_no_report_contract(session, monkeypatch)
     assert (await session.scalars(select(OrchestrationRunReport))).all() == []
 
 
+async def test_disabling_recovery_after_scheduling_holds_dispatch_and_preserves_attempt(session, monkeypatch):
+    from src.orchestration.recovery_control import DISABLED
+
+    node = await prepare(session)
+    node.attempts = 1
+    context = AsyncMock(return_value={"automatic": True, "previous_attempt": 1, "preserve_existing_work": True})
+    monkeypatch.setattr("src.orchestration.developer_recovery.retry_context", context)
+    session.add(
+        OrchestrationDecision(
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            kind=DISABLED,
+            actor_id="owner",
+            actor_kind="human",
+            actor_role="owner",
+            reason="Recovery disabled before dispatch",
+        )
+    )
+    await session.flush()
+    result = await run_dispatch_pass(session, _config())
+    assert result.dispatched == 0 and result.pending == []
+    assert node.state == "ready" and node.attempts == 1
+    context.assert_awaited_once()
+    decisions = list(await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.node_id == node.id)))
+    assert any("automatic_recovery_disabled" in (row.rejection_reason or "") for row in decisions)
+
+
 async def test_replay_of_inactive_flow_is_reported_as_publish_failure(session):
     from src.orchestration.models import OrchestrationFlow
 
@@ -143,6 +195,20 @@ async def test_replay_of_inactive_flow_is_reported_as_publish_failure(session):
     await session.commit()
     recovered = await run_dispatch_pass(session, _config())
     assert recovered.pending == [] and recovered.publish_failed == 1
+
+
+async def test_pending_initial_report_replays_original_repository_after_global_change(session):
+    node = await prepare(session)
+    cfg = _config()
+    initial = await run_dispatch_pass(session, cfg)
+    assert len(initial.pending) == 1
+    saved = initial.pending[0]
+    await session.commit()
+    replay = await run_dispatch_pass(session, replace(cfg, repo="fictional/global-a"))
+    assert len(replay.pending) == 1
+    assert replay.pending[0].envelope == saved.envelope
+    assert replay.pending[0].deduplication_id == saved.deduplication_id
+    assert (await session.get(OrchestrationNode, node.id)).attempts == 1
 
 
 async def test_governed_replay_rechecks_current_policy_before_queueing(session, monkeypatch):

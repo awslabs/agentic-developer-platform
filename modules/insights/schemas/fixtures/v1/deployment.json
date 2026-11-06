@@ -1,0 +1,14 @@
+{
+  "tenant_id": "tenant-example",
+  "project_id": "project-example",
+  "source_connection_id": "pipeline-example",
+  "source_system": "pipeline",
+  "source_event_id": "deployment-example-7061",
+  "event_time": "2026-10-06T01:35:17Z",
+  "ingested_at": "2026-10-06T01:35:18Z",
+  "schema_version": "1.0",
+  "story_ids": ["7061"],
+  "deployment_id": "deployment-example-7061",
+  "environment": "test",
+  "result": "success"
+}

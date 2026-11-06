@@ -15,6 +15,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { apiClient } from '@/services/api';
+import { getAccessToken } from '@/services/auth';
 import { ALL_FEATURES_ENABLED, fetchFeatures } from '@/services/features';
 import type { FeatureFlags } from '@/services/features';
 
@@ -23,10 +24,12 @@ vi.mock('@/services/api', () => ({
     get: vi.fn(),
   },
 }));
+vi.mock('@/services/auth', () => ({ getAccessToken: vi.fn() }));
 
 describe('features service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getAccessToken).mockReturnValue('session-a');
   });
 
   describe('ALL_FEATURES_ENABLED (the pending/failed-fetch fallback)', () => {
@@ -44,6 +47,7 @@ describe('features service', () => {
       // Fail-closed applies to opt-in add-ons only. If this flipped, the whole
       // dashboard would disappear on a slow load.
       expect(ALL_FEATURES_ENABLED.chat).toBe(true);
+      expect(ALL_FEATURES_ENABLED.assistant_ui).toBe(false);
       expect(ALL_FEATURES_ENABLED.knowledge).toBe(true);
       expect(ALL_FEATURES_ENABLED.indexing).toBe(true);
       expect(ALL_FEATURES_ENABLED.connections).toBe(true);
@@ -65,8 +69,10 @@ describe('features service', () => {
       // no index signature must name every key or `tsc` reports the missing
       // one, so the list cannot drift from the interface again.
       const required: Record<keyof FeatureFlags, true> = {
+        product_profile: true,
         chat: true,
         knowledge: true,
+        assistant_ui: true,
         indexing: true,
         connections: true,
         credentials: true,
@@ -107,6 +113,52 @@ describe('features service', () => {
   });
 
   describe('fetchFeatures', () => {
+    it('shares concurrent requests but fetches fresh flags after completion', async () => {
+      let resolve!: (value: { features: FeatureFlags }) => void;
+      vi.mocked(apiClient.get).mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+      const legacy = fetchFeatures();
+      const preview = fetchFeatures();
+      expect(apiClient.get).toHaveBeenCalledTimes(1);
+      resolve({ features: { ...ALL_FEATURES_ENABLED, new_ui: true } });
+      expect((await legacy).new_ui).toBe(true);
+      expect((await preview).new_ui).toBe(true);
+
+      vi.mocked(apiClient.get).mockResolvedValueOnce({ features: ALL_FEATURES_ENABLED });
+      expect((await fetchFeatures()).new_ui).toBe(false);
+      expect(apiClient.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not share pending responses across a session or workspace change', async () => {
+      let resolveA!: (value: { features: FeatureFlags }) => void;
+      let resolveB!: (value: { features: FeatureFlags }) => void;
+      vi.mocked(apiClient.get)
+        .mockImplementationOnce(() => new Promise(r => { resolveA = r; }))
+        .mockImplementationOnce(() => new Promise(r => { resolveB = r; }));
+      const first = fetchFeatures();
+      vi.mocked(getAccessToken).mockReturnValue('session-b');
+      const second = fetchFeatures();
+      expect(apiClient.get).toHaveBeenCalledTimes(2);
+      resolveA({ features: { ...ALL_FEATURES_ENABLED, new_ui: true } });
+      expect((await first).new_ui).toBe(true);
+      const concurrentSecond = fetchFeatures();
+      expect(apiClient.get).toHaveBeenCalledTimes(2);
+      resolveB({ features: ALL_FEATURES_ENABLED });
+      expect((await second).new_ui).toBe(false);
+      expect((await concurrentSecond).new_ui).toBe(false);
+    });
+
+    it('propagates shared failures and allows the next request to retry', async () => {
+      vi.mocked(apiClient.get).mockRejectedValueOnce(new Error('offline'));
+      const first = fetchFeatures();
+      const second = fetchFeatures();
+      await expect(first).rejects.toThrow('offline');
+      await expect(second).rejects.toThrow('offline');
+      expect(apiClient.get).toHaveBeenCalledTimes(1);
+      vi.mocked(apiClient.get).mockResolvedValueOnce({ features: ALL_FEATURES_ENABLED });
+      await expect(fetchFeatures()).resolves.toEqual(ALL_FEATURES_ENABLED);
+      expect(apiClient.get).toHaveBeenCalledTimes(2);
+    });
+
     it('unwraps the features object from the response', async () => {
       vi.mocked(apiClient.get).mockResolvedValue({
         features: { ...ALL_FEATURES_ENABLED, orchestration_engine: false },

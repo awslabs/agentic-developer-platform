@@ -16,7 +16,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "codebuild"))
 import scan_security_images as runner
-from security_image_targets import DOC_API_COMPAT, ORIGINAL_COVERAGE, ORIGINAL_GAPS, REQUIRED_CONTEXT_DOCKERFILES, SUPERPLANE, discover, non_runtime_fixtures
+from security_image_targets import DOC_API_COMPAT, ORIGINAL_COVERAGE, ORIGINAL_GAPS, RECIPE_INVENTORY, REQUIRED_CONTEXT_DOCKERFILES, SUPERPLANE, discover, maintenance_recipes, non_runtime_fixtures
 
 
 @pytest.fixture
@@ -115,9 +115,51 @@ def test_inventory_covers_all_source_components_and_pinned_runtime(source):
     assert next(t for t in discover(source) if t["dockerfile"].endswith("gateway/Dockerfile"))["context"] == "modules/agent-factory"
 
 
+def test_maintenance_recipes_are_explicit_and_do_not_remove_runtime_coverage():
+    recipes = maintenance_recipes(ROOT)
+    assert len(recipes) == 9
+    assert all(item["status"] == "not_scanned" and item["reason"] for item in recipes)
+    targets = discover(ROOT)
+    assert not {r["dockerfile"] for r in recipes} & {t["dockerfile"] for t in targets}
+    assert next(t for t in targets if t["name"] == "superplane-skypilot-api")["required"]
+    for name in ("superplane-api", "superplane-controller", "superplane-platform-monitor"):
+        assert next(t for t in targets if t["dockerfile"] == str(SUPERPLANE / "src" / name / "Dockerfile"))["required"]
+    assert next(t for t in targets if t["dockerfile"] == str(SUPERPLANE / "executor/Dockerfile"))["required"]
+
+
+def test_changed_maintenance_recipe_requires_reclassification(source):
+    dockerfile = "modules/maintenance/Dockerfile"
+    path = source / dockerfile
+    path.parent.mkdir(parents=True)
+    path.write_text("FROM scratch\n")
+    (source / RECIPE_INVENTORY).write_text(json.dumps({"schema_version": 1, "recipes": [{
+        "dockerfile": dockerfile, "dockerfile_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "reason": "Offline test producer",
+    }]}))
+    assert dockerfile not in {t["dockerfile"] for t in discover(source)}
+    path.write_text("FROM python:3.12\n")
+    with pytest.raises(ValueError, match="recipe changed"):
+        discover(source)
+
+
+def test_maintained_runtime_cannot_be_reclassified_as_recipe(source):
+    dockerfile = str(SUPERPLANE / "executor/Dockerfile")
+    (source / RECIPE_INVENTORY).write_text(json.dumps({"schema_version": 1, "recipes": [{
+        "dockerfile": dockerfile,
+        "dockerfile_sha256": hashlib.sha256((source / dockerfile).read_bytes()).hexdigest(),
+        "reason": "Attempt to omit a required runtime",
+    }]}))
+    with pytest.raises(ValueError, match="maintained runtime cannot"):
+        discover(source)
+
+
 def test_all_scope_inventory_uses_production_contexts_and_preparation():
     targets = {target["dockerfile"]: target for target in discover(ROOT)}
     expected = {
+        "modules/tools/facade/Dockerfile": (
+            ".", {"modules/tools/facade/pyproject.toml", "modules/tools/pyproject.toml",
+                  "modules/tools/adp_tools", "modules/tools/facade/tools_facade/"},
+        ),
         "modules/domain-apps/cyber/tools/Dockerfile": (
             ".", {"modules/tools/adp_tools", "modules/domain-apps/cyber/tools/cyber_tools",
                   "modules/domain-apps/cyber/agent/skills/url-analysis"},
@@ -166,7 +208,8 @@ def test_all_scope_inventory_uses_production_contexts_and_preparation():
             assert all((ROOT / context / source).exists() for source in copy_inputs)
 
     assert targets["modules/gateway/Dockerfile"]["prepare"] == [
-        ["run", "bash", "modules/gateway/scripts/stage-contracts.sh"]
+        ["run", "bash", "modules/gateway/scripts/stage-contracts.sh"],
+        ["run", "bash", "modules/gateway/scripts/stage-l5-wheel.sh"],
     ]
 
 
@@ -270,9 +313,10 @@ def test_shared_stdlib_recipe_uses_reviewed_base_and_regressions(image):
 def test_ingestion_family_keeps_exact_donor_and_reviewed_stdlib(image):
     root = ROOT / "modules/agent-context/images"
     recipe = (root / image / "Dockerfile").read_text()
-    donor = (root / "ingestion/high-security/Dockerfile").read_text().splitlines()[0]
+    donor = next(line for line in (root / "ingestion/high-security/Dockerfile").read_text().splitlines()
+                 if line.startswith("FROM ") and line.endswith(" AS tools"))
     donor = donor.removesuffix(" AS tools")
-    assert donor.endswith("@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2")
+    assert donor.endswith("@sha256:934b09fa0c9d4f52c90c68fa9227ba890ecadb303f8cff01a533fac3062c6c10")
     assert recipe.count(donor) == 1
     gateway_base = (ROOT / "modules/gateway/Dockerfile").read_text().splitlines()[7].split(" AS ", 1)[0]
     assert gateway_base in recipe
@@ -557,6 +601,7 @@ def test_dispatch_only_scope_and_shared_buildspecs():
         job = workflow["jobs"][tool]
         assert "continue-on-error" not in job
         build = next(step for step in job["steps"] if step.get("uses") == "./.github/actions/codebuild-run")
+        assert build["with"]["compute_type"] == "BUILD_GENERAL1_LARGE"
         assert "SECURITY_IMAGE_SCOPE" in build["with"]["environment_variables"]
         assert "SECURITY_SCAN_DATE" in build["with"]["environment_variables"]
         for variable in ("SECURITY_EXECUTOR_PYTHON_IMAGE", "SECURITY_PYTORCH_IMAGE", "SECURITY_RUNNER_IMAGE"):
@@ -703,7 +748,7 @@ def test_agent_specific_ignore_preserves_only_required_contract_paths():
     # The context intentionally starts deny-all. Preserve the exact copied
     # contracts without admitting every sibling rule or repository artifact.
     assert "**" in patterns
-    for directory, name in [("agents", "issue-authoring.md"), ("templates", "developer-issue.md")]:
+    for directory, name in [("agents", "issue-authoring.md"), ("agents", "issue-delivery-review.md"), ("templates", "developer-issue.md"), ("templates", "epic-issue.md")]:
         assert f"!rules/{directory}/" in patterns
         assert f"!rules/{directory}/{name}" in patterns
         assert f"!rules/{directory}/**" not in patterns

@@ -35,6 +35,7 @@ evaluation and interleaving deletions.
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from . import ports as ports_module
@@ -69,12 +70,29 @@ def lease_key(evaluation_id):
     return f"{PREFIX}/{evaluation_id}/lease.json"
 
 
+def product_run_key(run_id):
+    if not isinstance(run_id, str) or not re.fullmatch(
+        r"product-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}", run_id
+    ):
+        raise StateStoreError("Invalid Product workflow run identity")
+    return f"{PREFIX}/product-runs/{run_id}/evaluation.json"
+
+
+def product_cli_key(run_id, evaluation_id):
+    product_run_key(run_id)
+    if not isinstance(evaluation_id, str) or not re.fullmatch(
+        r"adp-e2e-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", evaluation_id
+    ):
+        raise StateStoreError("Invalid installed Product CLI evaluation identity")
+    return f"cli-uplift-eval/product-v03/{run_id}/{evaluation_id}/report.json"
+
+
 class S3StateStore:
     """Encrypted, ID-addressed state in S3.
 
-    Deliberately not a general key-value helper: it only ever touches keys under
-    `PREFIX/<evaluation_id>/`, so a bug cannot make it read or overwrite anything
-    else in the bucket.
+    Deliberately not a general key-value helper: state lives under
+    `PREFIX/<evaluation_id>/` and the Product recovery pointer under
+    `PREFIX/product-runs/<workflow_run_id>/`. No other bucket keys are touched.
     """
 
     def __init__(self, aws, bucket, *, kms_key_id=None, clock=time.time):
@@ -132,6 +150,70 @@ class S3StateStore:
             self._get(state_key(evaluation_id)),
             self._get(manifest_key(evaluation_id)),
         )
+
+    def bind_product_run(self, run_id, binding):
+        key = product_run_key(run_id)
+        existing = self._get(key)
+        if existing is not None and existing != binding:
+            raise StateStoreError("Product workflow run is bound to another evaluation")
+        if existing is None:
+            self._put(key, binding)
+        if self._get(key) != binding:
+            raise StateStoreError("Product recovery identity could not be verified")
+
+    def product_run(self, run_id):
+        return self._get(product_run_key(run_id))
+
+    def retain_product_cli(self, run_id, document):
+        if not isinstance(document, dict) or document.get("workflow_run_id") != run_id:
+            raise StateStoreError("Installed Product CLI report belongs to another run")
+        evaluation_id = document.get("evaluation_id")
+        key = product_cli_key(run_id, evaluation_id)
+        reference = f"private:product-v03/{run_id}/{evaluation_id}/report.json"
+        if document.get("artifact_ref") not in (None, reference):
+            raise StateStoreError("Installed Product CLI report reference differs")
+        report = {**document, "artifact_ref": reference}
+        existing = self._get(key)
+        if existing is not None and existing != report:
+            raise StateStoreError(
+                "Installed Product CLI report already belongs to another attempt"
+            )
+        if existing is None:
+            self._put(key, report)
+        if self._get(key) != report:
+            raise StateStoreError("Installed Product CLI report could not be verified")
+        pointer = f"{PREFIX}/product-runs/{run_id}/cli-report.json"
+        binding = {"workflow_run_id": run_id, "evaluation_id": evaluation_id}
+        previous = self._get(pointer)
+        if previous is not None and previous != binding:
+            raise StateStoreError(
+                "Product run already has another installed CLI report"
+            )
+        if previous is None:
+            self._put(pointer, binding)
+        if self._get(pointer) != binding:
+            raise StateStoreError("Installed Product CLI pointer could not be verified")
+        return reference
+
+    def product_cli(self, run_id):
+        product_run_key(run_id)
+        pointer = self._get(f"{PREFIX}/product-runs/{run_id}/cli-report.json")
+        if not isinstance(pointer, dict) or pointer.get("workflow_run_id") != run_id:
+            raise StateStoreError("No run-bound installed Product CLI report")
+        evaluation_id = pointer.get("evaluation_id")
+        key = product_cli_key(run_id, evaluation_id)
+        report = self._get(key)
+        reference = f"private:product-v03/{run_id}/{evaluation_id}/report.json"
+        if (
+            not isinstance(report, dict)
+            or report.get("workflow_run_id") != run_id
+            or report.get("evaluation_id") != evaluation_id
+            or report.get("artifact_ref") != reference
+        ):
+            raise StateStoreError(
+                "Installed Product CLI report is missing or mismatched"
+            )
+        return report
 
     def claim(self, evaluation_id, holder):
         """Take the lease, unless a live one is held by someone else.

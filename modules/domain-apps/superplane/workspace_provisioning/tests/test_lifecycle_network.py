@@ -146,7 +146,10 @@ def test_only_api_rule_is_created_and_untagged_private_sts_is_retained(monkeypat
     assert len(values[4]["creates"]) == 1
 
 
-def test_public_path_observes_nat_and_tls_without_cross_vpc_rule(monkeypatch):
+@pytest.mark.parametrize("management_region", [None, "us-east-2"])
+def test_public_path_observes_nat_and_tls_without_cross_vpc_rule(
+    monkeypatch, management_region
+):
     values = setup(monkeypatch)
     operation, outputs, config, session, state, _, responses = values
     config.update(
@@ -159,6 +162,22 @@ def test_public_path_observes_nat_and_tls_without_cross_vpc_rule(monkeypatch):
             "nat_gateway_ids": ["nat-0123456789abcdef0"],
         },
     )
+    if management_region:
+        config["management_public_access"]["region"] = management_region
+        original_client = session.client
+
+        def regional_client(service, *, region_name):
+            if region_name == management_region:
+                assert service == "ec2"
+                # This object exposes only the management NAT read.
+                return SimpleNamespace(
+                    describe_nat_gateways=lambda **kw: session.describe_nat_gateways(
+                        **kw
+                    )
+                )
+            return original_client(service, region_name=region_name)
+
+        session.client = regional_client
     outputs.update(
         cluster_endpoint_public_access=True,
         cluster_endpoint_public_access_cidrs=["52.22.137.37/32"],

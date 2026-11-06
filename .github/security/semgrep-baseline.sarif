@@ -1773,6 +1773,1620 @@
           ]
         }
       ]
+    },
+    {
+      "tool": {
+        "driver": {
+          "name": "Semgrep"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/scripts/superplane_ci_scope.py"
+                },
+                "region": {
+                  "startLine": 166
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Both revisions must be full hexadecimal commit IDs before fixed git diff argv with an option terminator. No shell or caller-selected executable.",
+              "sources": {
+                ".github/scripts/superplane_ci_scope.py": "7ce5c330d019d6587ff638b15f5d10f11bbea2ff2d71fbf1cb940dbdbfdaabb1"
+              },
+              "evidence": [
+                ".github/scripts/tests/test_superplane_ci_scope.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/scripts/superplane_ci_scope.py"
+                },
+                "region": {
+                  "startLine": 166
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Both revisions must be full hexadecimal commit IDs before fixed git diff argv with an option terminator. No shell or caller-selected executable.",
+              "sources": {
+                ".github/scripts/superplane_ci_scope.py": "7ce5c330d019d6587ff638b15f5d10f11bbea2ff2d71fbf1cb940dbdbfdaabb1"
+              },
+              "evidence": [
+                ".github/scripts/tests/test_superplane_ci_scope.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/design/comment-authority-7845/audit.py"
+                },
+                "region": {
+                  "startLine": 33
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local audit helper runs fixed git -C argv. Callers use read-only tree/archive operations at a fixed revision; no shell or remote request input.",
+              "sources": {
+                "docs/design/comment-authority-7845/audit.py": "006d5e07ae2cf44391b43a07e0b714082111d1fabba80c45d3cd3d6119c181e6"
+              },
+              "evidence": [
+                "docs/design/comment-authority-7845/audit.py:33"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/design/comment-authority-7845/audit.py"
+                },
+                "region": {
+                  "startLine": 33
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local audit helper runs fixed git -C argv. Callers use read-only tree/archive operations at a fixed revision; no shell or remote request input.",
+              "sources": {
+                "docs/design/comment-authority-7845/audit.py": "006d5e07ae2cf44391b43a07e0b714082111d1fabba80c45d3cd3d6119c181e6"
+              },
+              "evidence": [
+                "docs/design/comment-authority-7845/audit.py:33"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/design/flow-self-recovery-7572/audit.py"
+                },
+                "region": {
+                  "startLine": 23
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local audit helper runs fixed git -C argv. Callers use read-only tree/show/archive operations at a fixed revision; no shell or remote request input.",
+              "sources": {
+                "docs/design/flow-self-recovery-7572/audit.py": "41db7016537fe01b251fcf36dc656a4d199462199d9d22e4f559611aa1c541da"
+              },
+              "evidence": [
+                "docs/design/flow-self-recovery-7572/audit.py:23"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/design/flow-self-recovery-7572/audit.py"
+                },
+                "region": {
+                  "startLine": 23
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local audit helper runs fixed git -C argv. Callers use read-only tree/show/archive operations at a fixed revision; no shell or remote request input.",
+              "sources": {
+                "docs/design/flow-self-recovery-7572/audit.py": "41db7016537fe01b251fcf36dc656a4d199462199d9d22e4f559611aa1c541da"
+              },
+              "evidence": [
+                "docs/design/flow-self-recovery-7572/audit.py:23"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/security/tenant-boundaries-7841/audit_inventory.py"
+                },
+                "region": {
+                  "startLine": 43
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local audit helper runs fixed git -C argv. Callers use read-only tree/show/grep operations at a fixed revision with tree-derived paths; no shell.",
+              "sources": {
+                "docs/security/tenant-boundaries-7841/audit_inventory.py": "153e0a7bed968411225bea1b7209115ec435b59da88c7ec0505436fc4b7873f8"
+              },
+              "evidence": [
+                "docs/security/tenant-boundaries-7841/audit_inventory.py:43"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/security/tenant-boundaries-7841/audit_inventory.py"
+                },
+                "region": {
+                  "startLine": 43
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local audit helper runs fixed git -C argv. Callers use read-only tree/show/grep operations at a fixed revision with tree-derived paths; no shell.",
+              "sources": {
+                "docs/security/tenant-boundaries-7841/audit_inventory.py": "153e0a7bed968411225bea1b7209115ec435b59da88c7ec0505436fc4b7873f8"
+              },
+              "evidence": [
+                "docs/security/tenant-boundaries-7841/audit_inventory.py:43"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/task-api/evidence/2026-09-25-cross-replica-quota/runner.py"
+                },
+                "region": {
+                  "startLine": 51
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reported call is constant kubectl get pods -o json argv, without a shell. This reads the operator-selected fixture namespace; adjudication does not authorize executing the live probe.",
+              "sources": {
+                "docs/task-api/evidence/2026-09-25-cross-replica-quota/runner.py": "d34f059ab3af798f31fa31ec683de6a34921c11643acf2adfc46a6c50ecd508d"
+              },
+              "evidence": [
+                "docs/task-api/evidence/2026-09-25-cross-replica-quota/runner.py:51"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/task-api/evidence/2026-09-25-v3/cross-replica/fixture.py"
+                },
+                "region": {
+                  "startLine": 51
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reported call is constant kubectl get pods -o json argv, without a shell. This reads the operator-selected fixture namespace; adjudication does not authorize executing the live probe.",
+              "sources": {
+                "docs/task-api/evidence/2026-09-25-v3/cross-replica/fixture.py": "d34f059ab3af798f31fa31ec683de6a34921c11643acf2adfc46a6c50ecd508d"
+              },
+              "evidence": [
+                "docs/task-api/evidence/2026-09-25-v3/cross-replica/fixture.py:51"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-context/images/deepwiki/security/openssh/authenticate-source.py"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed absolute apt-helper cat-file executable reads paths enumerated from the local apt index directory. Output is checked against the archive signature and checksum; no shell or input-selected executable.",
+              "sources": {
+                "modules/agent-context/images/deepwiki/security/openssh/authenticate-source.py": "c83562338041a5a1b75e11de85b8f109e2496d4e4b0f84fe2d534b76ebf23163"
+              },
+              "evidence": [
+                "modules/agent-context/images/deepwiki/security/openssh/authenticate-source.py:16"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-context/images/deepwiki/security/openssh/authenticate-source.py"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed absolute apt-helper cat-file executable reads paths enumerated from the local apt index directory. Output is checked against the archive signature and checksum; no shell or input-selected executable.",
+              "sources": {
+                "modules/agent-context/images/deepwiki/security/openssh/authenticate-source.py": "c83562338041a5a1b75e11de85b8f109e2496d4e4b0f84fe2d534b76ebf23163"
+              },
+              "evidence": [
+                "modules/agent-context/images/deepwiki/security/openssh/authenticate-source.py:16"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-context/images/ingestion/high-security/rebuild-go-tools.py"
+                },
+                "region": {
+                  "startLine": 12
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Literal go version argv is compared with the pinned toolchain version. No user-derived command argument or shell.",
+              "sources": {
+                "modules/agent-context/images/ingestion/high-security/rebuild-go-tools.py": "e5e34bcb7e33236536e7ffbf1d4d5a8cd9d63f57a01079ab2c1d90d9a8e692f4"
+              },
+              "evidence": [
+                "modules/agent-context/images/ingestion/high-security/rebuild-go-tools.py:12"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-context/scripts/ensure-door-identity.py"
+                },
+                "region": {
+                  "startLine": 13
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reported call is a fixed kubectl ConfigMap read of the public verification key. Neither executable nor arguments are request input; no shell or private-key read.",
+              "sources": {
+                "modules/agent-context/scripts/ensure-door-identity.py": "bcf40bff790acb73677eabb87dde6460f2f56f9d044059fe251409c27f65da46"
+              },
+              "evidence": [
+                "modules/agent-context/scripts/ensure-door-identity.py:13"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B606",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent-worker-image/lib/task_network_exec.py"
+                },
+                "region": {
+                  "startLine": 90
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Intentional task process replacement follows no-new-privileges and architecture-checked seccomp network denial. argv is the task command by contract, not shell source; isolation setup failures prevent execution.",
+              "sources": {
+                "modules/agent-factory/agent-worker-image/lib/task_network_exec.py": "7772b9c8e4e3ab2e2b826cddba739ab2a734523c101d8280f3356b0bb6de2f1b"
+              },
+              "evidence": [
+                "modules/agent-factory/agent-worker-image/tests/test_task_network_exec.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent-worker-image/verify-high-tools-overlay.py"
+                },
+                "region": {
+                  "startLine": 13
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local image verification uses fixed docker inspect argv for operator image references, not a shell. Subsequent comparison containers are read-only and offline; no request-facing command endpoint.",
+              "sources": {
+                "modules/agent-factory/agent-worker-image/verify-high-tools-overlay.py": "01b652ca61c95f4d7fa5621c88df73ed005ca862dde7b750ab0804055dd7f7dd"
+              },
+              "evidence": [
+                "modules/agent-factory/agent-worker-image/verify-high-tools-overlay.py:13"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent-worker-image/verify-high-tools-overlay.py"
+                },
+                "region": {
+                  "startLine": 13
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local image verification uses fixed docker inspect argv for operator image references, not a shell. Subsequent comparison containers are read-only and offline; no request-facing command endpoint.",
+              "sources": {
+                "modules/agent-factory/agent-worker-image/verify-high-tools-overlay.py": "01b652ca61c95f4d7fa5621c88df73ed005ca862dde7b750ab0804055dd7f7dd"
+              },
+              "evidence": [
+                "modules/agent-factory/agent-worker-image/verify-high-tools-overlay.py:13"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.nodejs_scan.javascript-eval-rule-eval_nodejs",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/run-heartbeat.ts"
+                },
+                "region": {
+                  "startLine": 205
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "setInterval receives an arrow-function callback, not a source string or dynamically compiled program. Options supply heartbeat data and timing.",
+              "sources": {
+                "modules/agent-factory/agent/src/run-heartbeat.ts": "acf85a23a33c94c3f3e166ff276e81300afd8753f581755580649293d07be589"
+              },
+              "evidence": [
+                "modules/agent-factory/agent/src/run-heartbeat.test.ts"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/services/posted-approval.ts"
+                },
+                "region": {
+                  "startLine": 137
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "All requests use literal https://api.github.com with encoded owner/repository segments and validated issue/comment IDs. Every fetch rejects redirects; hostile repository strings cannot select another origin or redirect the bearer token.",
+              "sources": {
+                "modules/agent-factory/agent/src/services/posted-approval.ts": "9aca4efee3ae94390c43f2796f4523f03c8a1e4b1f2316071a957a79e60927fa"
+              },
+              "evidence": [
+                "modules/agent-factory/agent/src/services/posted-approval.test.ts"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/services/posted-approval.ts"
+                },
+                "region": {
+                  "startLine": 152
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "All requests use literal https://api.github.com with encoded owner/repository segments and validated issue/comment IDs. Every fetch rejects redirects; hostile repository strings cannot select another origin or redirect the bearer token.",
+              "sources": {
+                "modules/agent-factory/agent/src/services/posted-approval.ts": "9aca4efee3ae94390c43f2796f4523f03c8a1e4b1f2316071a957a79e60927fa"
+              },
+              "evidence": [
+                "modules/agent-factory/agent/src/services/posted-approval.test.ts"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/services/posted-approval.ts"
+                },
+                "region": {
+                  "startLine": 168
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "All requests use literal https://api.github.com with encoded owner/repository segments and validated issue/comment IDs. Every fetch rejects redirects; hostile repository strings cannot select another origin or redirect the bearer token.",
+              "sources": {
+                "modules/agent-factory/agent/src/services/posted-approval.ts": "9aca4efee3ae94390c43f2796f4523f03c8a1e4b1f2316071a957a79e60927fa"
+              },
+              "evidence": [
+                "modules/agent-factory/agent/src/services/posted-approval.test.ts"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B606",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/cyber/workers/isolation.py"
+                },
+                "region": {
+                  "startLine": 145
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Intentional analysis argv execution follows resource limits, no-new-privileges, Landlock and seccomp in the dedicated child. Parent supplies private configuration and a sanitized environment; execution is the sandbox purpose, not shell interpolation.",
+              "sources": {
+                "modules/domain-apps/cyber/workers/isolation.py": "7311498e4983b5ff8ef70c8af49165f1b8dba2e675c5b45fc011835cbef7e2d5"
+              },
+              "evidence": [
+                "modules/domain-apps/cyber/workers/tests/test_isolation.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/native-node/lane/transport.py"
+                },
+                "region": {
+                  "startLine": 27
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed AWS CLI argv implements native-build transport. Callers bind canonical plans to approved digest/account/region and downloads to exact bucket, prefix, version and digest. No shell.",
+              "sources": {
+                "modules/domain-apps/superplane/images/native-node/lane/transport.py": "14f7cd38dbc59e9adbf667aaa777a29dbae40c3287bce6295bd7a0eeba0306a0"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/executor/tests/test_native_image_recipe.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/native-node/lane/transport.py"
+                },
+                "region": {
+                  "startLine": 27
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed AWS CLI argv implements native-build transport. Callers bind canonical plans to approved digest/account/region and downloads to exact bucket, prefix, version and digest. No shell.",
+              "sources": {
+                "modules/domain-apps/superplane/images/native-node/lane/transport.py": "14f7cd38dbc59e9adbf667aaa777a29dbae40c3287bce6295bd7a0eeba0306a0"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/executor/tests/test_native_image_recipe.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/native-node/source_provenance.py"
+                },
+                "region": {
+                  "startLine": 18
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed git argv reads revision, status and tree identities. Creation validates the commit ID and clean exact checkout; verification independently measures the approved tree. No shell or input-selected executable.",
+              "sources": {
+                "modules/domain-apps/superplane/images/native-node/source_provenance.py": "18e8932de4292ece49daea3f013a199d4b0c61e9e1b18bfb11a7c42850229c1b"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/executor/tests/test_native_image_recipe.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/native-node/source_provenance.py"
+                },
+                "region": {
+                  "startLine": 18
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed git argv reads revision, status and tree identities. Creation validates the commit ID and clean exact checkout; verification independently measures the approved tree. No shell or input-selected executable.",
+              "sources": {
+                "modules/domain-apps/superplane/images/native-node/source_provenance.py": "18e8932de4292ece49daea3f013a199d4b0c61e9e1b18bfb11a7c42850229c1b"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/executor/tests/test_native_image_recipe.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B102",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/skypilot/cache-maintenance/clean_oci.py"
+                },
+                "region": {
+                  "startLine": 26
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local maintenance tool imports selected trusted verifier source rather than stale bytecode. No tenant or network payload reaches exec. Source-bound mode additionally checks checkout, expected paths and committed source bytes.",
+              "sources": {
+                "modules/domain-apps/superplane/images/skypilot/cache-maintenance/clean_oci.py": "851207966707b1ef1a9e6614125c236f2b1c56182a75d7ea1dc32459642ca8f5"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/images/skypilot/cache-maintenance/test_clean_oci.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/skypilot/cache-maintenance/clean_oci.py"
+                },
+                "region": {
+                  "startLine": 81
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed git show argv retrieves HEAD plus the verified repository-relative source path. Source binding checks exact checkout and expected verifier paths first; no shell.",
+              "sources": {
+                "modules/domain-apps/superplane/images/skypilot/cache-maintenance/clean_oci.py": "851207966707b1ef1a9e6614125c236f2b1c56182a75d7ea1dc32459642ca8f5"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/images/skypilot/cache-maintenance/test_clean_oci.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/skypilot/cache-maintenance/clean_oci.py"
+                },
+                "region": {
+                  "startLine": 81
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed git show argv retrieves HEAD plus the verified repository-relative source path. Source binding checks exact checkout and expected verifier paths first; no shell.",
+              "sources": {
+                "modules/domain-apps/superplane/images/skypilot/cache-maintenance/clean_oci.py": "851207966707b1ef1a9e6614125c236f2b1c56182a75d7ea1dc32459642ca8f5"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/images/skypilot/cache-maintenance/test_clean_oci.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B302",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/skypilot/cache-maintenance/test_clean_oci.py"
+                },
+                "region": {
+                  "startLine": 221
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "marshal.dumps serializes a synthetic harmless code object for a stale-cache regression fixture. It does not deserialize or execute untrusted marshal data.",
+              "sources": {
+                "modules/domain-apps/superplane/images/skypilot/cache-maintenance/test_clean_oci.py": "e1d08ea6e7302751b52512a6fad60cd72d935549245bfdc9d1670f0a5069a332"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/images/skypilot/cache-maintenance/test_clean_oci.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B102",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/skypilot/email-parser-maintenance/verify.py"
+                },
+                "region": {
+                  "startLine": 29
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Installed parser source is hashed against the reviewed source lock before compiling those exact bytes to compare loaded code. No unverified request or network text reaches exec.",
+              "sources": {
+                "modules/domain-apps/superplane/images/skypilot/email-parser-maintenance/verify.py": "972e0013889496f258411e0ddf2aea7b8941a59d87ac72596984ced55a0de2bd",
+                "modules/domain-apps/superplane/images/skypilot/email-parser-maintenance/source-lock.json": "9c3731b50346eb7416ea2cbcbe1cd12c182293616b3322f2b679ddde83eb24a4"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/images/skypilot/email-parser-maintenance/verify.py:29"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B302",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/images/skypilot/email-parser-maintenance/verify.py"
+                },
+                "region": {
+                  "startLine": 42
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "marshal.dumps serializes code objects for equality checking; there is no marshal load/deserialization of untrusted data.",
+              "sources": {
+                "modules/domain-apps/superplane/images/skypilot/email-parser-maintenance/verify.py": "972e0013889496f258411e0ddf2aea7b8941a59d87ac72596984ced55a0de2bd",
+                "modules/domain-apps/superplane/images/skypilot/email-parser-maintenance/source-lock.json": "9c3731b50346eb7416ea2cbcbe1cd12c182293616b3322f2b679ddde83eb24a4"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/images/skypilot/email-parser-maintenance/verify.py:42"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B606",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/installation/skypilot_bootstrap.py"
+                },
+                "region": {
+                  "startLine": 123
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Entrypoint intentionally replaces itself with the same Python interpreter and fixed sky.server.server module after configuration/provider identity checks. Startup arguments remain argv, not shell text or an input-selected executable.",
+              "sources": {
+                "modules/domain-apps/superplane/installation/skypilot_bootstrap.py": "68ad9d4a880db3e177ce4b22313e026987517bb28f55ec9335cdb69a8c708d2c"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/installation/skypilot_bootstrap.py:123"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/scripts/plan-installer-access.py"
+                },
+                "region": {
+                  "startLine": 143
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local planner uses fixed AWS and Terraform argv for identity/policy inspection and state pull/show. Configuration is validated and target identities compared; no shell.",
+              "sources": {
+                "modules/domain-apps/superplane/scripts/plan-installer-access.py": "576cec4f5573b421a2f6a83480dcca76fdc0cede41328629359e4f6fa37f597c"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/tests/installer_checks/test_installer_access_planner.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/scripts/plan-installer-access.py"
+                },
+                "region": {
+                  "startLine": 143
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local planner uses fixed AWS and Terraform argv for identity/policy inspection and state pull/show. Configuration is validated and target identities compared; no shell.",
+              "sources": {
+                "modules/domain-apps/superplane/scripts/plan-installer-access.py": "576cec4f5573b421a2f6a83480dcca76fdc0cede41328629359e4f6fa37f597c"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/tests/installer_checks/test_installer_access_planner.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/scripts/plan-installer-access.py"
+                },
+                "region": {
+                  "startLine": 222
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local planner uses fixed AWS and Terraform argv for identity/policy inspection and state pull/show. Configuration is validated and target identities compared; no shell.",
+              "sources": {
+                "modules/domain-apps/superplane/scripts/plan-installer-access.py": "576cec4f5573b421a2f6a83480dcca76fdc0cede41328629359e4f6fa37f597c"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/tests/installer_checks/test_installer_access_planner.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/scripts/plan-installer-access.py"
+                },
+                "region": {
+                  "startLine": 222
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local planner uses fixed AWS and Terraform argv for identity/policy inspection and state pull/show. Configuration is validated and target identities compared; no shell.",
+              "sources": {
+                "modules/domain-apps/superplane/scripts/plan-installer-access.py": "576cec4f5573b421a2f6a83480dcca76fdc0cede41328629359e4f6fa37f597c"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/tests/installer_checks/test_installer_access_planner.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/scripts/plan-installer-access.py"
+                },
+                "region": {
+                  "startLine": 240
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local planner uses fixed AWS and Terraform argv for identity/policy inspection and state pull/show. Configuration is validated and target identities compared; no shell.",
+              "sources": {
+                "modules/domain-apps/superplane/scripts/plan-installer-access.py": "576cec4f5573b421a2f6a83480dcca76fdc0cede41328629359e4f6fa37f597c"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/tests/installer_checks/test_installer_access_planner.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/domain-apps/superplane/scripts/plan-installer-access.py"
+                },
+                "region": {
+                  "startLine": 240
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Local planner uses fixed AWS and Terraform argv for identity/policy inspection and state pull/show. Configuration is validated and target identities compared; no shell.",
+              "sources": {
+                "modules/domain-apps/superplane/scripts/plan-installer-access.py": "576cec4f5573b421a2f6a83480dcca76fdc0cede41328629359e4f6fa37f597c"
+              },
+              "evidence": [
+                "modules/domain-apps/superplane/tests/installer_checks/test_installer_access_planner.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B606",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/cli/adp-native-credential-host.py"
+                },
+                "region": {
+                  "startLine": 486
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Revalidated 2026-10-23: both native entry points remain byte-identical to the prior review. The adp_common.py change only classifies ConnectionError as an uncertain transport result and cannot affect runtime or executable selection. Fallback re-exec selects the installed private runtime, isolated mode and this exact script; forwarded arguments cannot replace the executable or script. Focused subprocess boundary tests exercise both fallback entry points without a credential request.",
+              "sources": {
+                "modules/gateway/cli/adp-native-credential-host.py": "ed7084e06e503772da76a90e0d8008cf4b2ef4fcdea6cf4f527f21021e1e01d4",
+                "modules/gateway/cli/adp_common.py": "efe64c7ecee5b02ec213f3aad1357969fadd13d26ef92daeca76e217237e488e",
+                "modules/gateway/cli/adp-native-credentials.py": "9826ecaa48b1ff53f2b22aee9e95ec24f95e400e0dee1aef6105370171abdb40"
+              },
+              "evidence": [
+                ".github/scripts/tests/test_reviewed_subprocess_boundaries.py",
+                "modules/gateway/tests/cli/test_adp_native_credentials.py",
+                "modules/gateway/tests/cli/test_native_private_credentials.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B606",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/cli/adp-native-credentials.py"
+                },
+                "region": {
+                  "startLine": 363
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Revalidated 2026-10-23: the native credential entry point remains byte-identical to the prior review. The adp_common.py change only classifies ConnectionError as an uncertain transport result and cannot affect runtime or executable selection. Fallback re-exec selects the installed private runtime, isolated mode and this exact script; forwarded arguments cannot replace the executable or script. Focused subprocess boundary tests exercise both fallback entry points without a credential request.",
+              "sources": {
+                "modules/gateway/cli/adp-native-credentials.py": "9826ecaa48b1ff53f2b22aee9e95ec24f95e400e0dee1aef6105370171abdb40",
+                "modules/gateway/cli/adp_common.py": "efe64c7ecee5b02ec213f3aad1357969fadd13d26ef92daeca76e217237e488e"
+              },
+              "evidence": [
+                ".github/scripts/tests/test_reviewed_subprocess_boundaries.py",
+                "modules/gateway/tests/cli/test_adp_native_credentials.py",
+                "modules/gateway/tests/cli/test_native_private_credentials.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B606",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/cli/adp_private_credentials.py"
+                },
+                "region": {
+                  "startLine": 414
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Intentional recipient execution uses a sealed executable descriptor with argv/cwd bound to the signed selection. Sealing, envelope/signature/expiry checks and descriptor hardening precede execve; environment excludes ambient credentials and loader variables.",
+              "sources": {
+                "modules/gateway/cli/adp_private_credentials.py": "db55835716ae8f6562cd9c561d6f950a451d65ee60605a5a4ce8b45ed4d1e9ca"
+              },
+              "evidence": [
+                "modules/gateway/tests/cli/test_native_private_credentials.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.nodejs_scan.javascript-eval-rule-eval_nodejs",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/tools/task-sdk/codex-runner.mjs"
+                },
+                "region": {
+                  "startLine": 95
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "setTimeout receives an arrow-function process-group cleanup callback. No source string is evaluated; Node timers reject string callbacks.",
+              "sources": {
+                "modules/tools/task-sdk/codex-runner.mjs": "98046a5351477c3eddf8c82c28a5a7e89cbbf77d071c09d14c6adf436cd2f9c1"
+              },
+              "evidence": [
+                "modules/tools/task-sdk/test/codex.test.mjs",
+                "modules/tools/task-sdk/test/cleanup.test.mjs"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "platform/scripts/deploy-checkpoints.py"
+                },
+                "region": {
+                  "startLine": 18
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Revalidated 2026-10-23: the added tools-adapters phase and private configuration fingerprint do not change the subprocess. Fixed git diff HEAD argv includes an option terminator and constant pathspecs; the operator-controlled local root is a separate -C argument, never shell syntax. Only the source diff is read. Checkpoint and installer regressions verify target binding and private-input fingerprint changes.",
+              "sources": {
+                "platform/scripts/deploy-checkpoints.py": "fc553ed4e986ac00a3a7fb09ecfb463395758b456aadfd29d1ef6eccddc56000"
+              },
+              "evidence": [
+                "platform/scripts/deploy-checkpoints.py:18"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "platform/scripts/deploy-checkpoints.py"
+                },
+                "region": {
+                  "startLine": 18
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Revalidated 2026-10-23: the added tools-adapters phase and private configuration fingerprint do not change the subprocess. Fixed git diff HEAD argv includes an option terminator and constant pathspecs; the operator-controlled local root is a separate -C argument, never shell syntax. Only the source diff is read. Checkpoint and installer regressions verify target binding and private-input fingerprint changes.",
+              "sources": {
+                "platform/scripts/deploy-checkpoints.py": "fc553ed4e986ac00a3a7fb09ecfb463395758b456aadfd29d1ef6eccddc56000"
+              },
+              "evidence": [
+                "platform/scripts/deploy-checkpoints.py:18"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "platform/security/openssh-high/build-tools/authenticate-source.py"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed absolute apt-helper cat-file executable reads paths enumerated from the local apt index directory. Output is checked against archive signature and checksum; no shell or input-selected executable.",
+              "sources": {
+                "platform/security/openssh-high/build-tools/authenticate-source.py": "5c31b70c1180976c10dd5e4cfa8cb9cd2c783ea4ff99eadb000df71082998c6f"
+              },
+              "evidence": [
+                "platform/security/openssh-high/build-tools/authenticate-source.py:16"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "platform/security/openssh-high/build-tools/authenticate-source.py"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Fixed absolute apt-helper cat-file executable reads paths enumerated from the local apt index directory. Output is checked against archive signature and checksum; no shell or input-selected executable.",
+              "sources": {
+                "platform/security/openssh-high/build-tools/authenticate-source.py": "5c31b70c1180976c10dd5e4cfa8cb9cd2c783ea4ff99eadb000df71082998c6f"
+              },
+              "evidence": [
+                "platform/security/openssh-high/build-tools/authenticate-source.py:16"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/tools/atlassian-mcp/design_audit.py"
+                },
+                "region": {
+                  "startLine": 45
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reviewed 2026-10-23: this offline design inventory invokes fixed git subcommands against a constant BASE revision. All callers supply fixed verbs and flags; object paths come from that pinned tree and are prefixed with BASE:. Arguments remain separate list elements and no shell is requested. The regression verifies that shell metacharacters in an object path remain one literal argument.",
+              "sources": {
+                "docs/tools/atlassian-mcp/design_audit.py": "1d0d26b2d3b3cbfed9978cca9ba6eaa717aa4083d63a4f0349e537333a140c5f"
+              },
+              "evidence": [
+                ".github/scripts/tests/test_reviewed_subprocess_boundaries.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/tools/atlassian-mcp/design_audit.py"
+                },
+                "region": {
+                  "startLine": 45
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reviewed 2026-10-23: this offline design inventory invokes fixed git subcommands against a constant BASE revision. All callers supply fixed verbs and flags; object paths come from that pinned tree and are prefixed with BASE:. Arguments remain separate list elements and no shell is requested. The regression verifies that shell metacharacters in an object path remain one literal argument.",
+              "sources": {
+                "docs/tools/atlassian-mcp/design_audit.py": "1d0d26b2d3b3cbfed9978cca9ba6eaa717aa4083d63a4f0349e537333a140c5f"
+              },
+              "evidence": [
+                ".github/scripts/tests/test_reviewed_subprocess_boundaries.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/scripts/publish-deployment-evidence.py"
+                },
+                "region": {
+                  "startLine": 53
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reviewed 2026-10-23: the identity-proof publisher executes fixed git merge-base --is-ancestor argv, not a shell. The source must be a 40-character lowercase commit hash and checkout comes from git rev-parse HEAD and must equal the workflow revision. The maintained main workflow, event, phase, environment and summary filename are checked before this ancestry query. Publisher regressions assert exact ancestry argv and reject mismatched context before publication.",
+              "sources": {
+                "modules/gateway/scripts/publish-deployment-evidence.py": "1f49ddfc1983b8b031f0e4bacfd750de00d9561f7a9b513d36c3dcb0b7490f32"
+              },
+              "evidence": [
+                "modules/gateway/tests/orchestration/test_deployment_evidence_store.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/scripts/publish-deployment-evidence.py"
+                },
+                "region": {
+                  "startLine": 53
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reviewed 2026-10-23: the identity-proof publisher executes fixed git merge-base --is-ancestor argv, not a shell. The source must be a 40-character lowercase commit hash and checkout comes from git rev-parse HEAD and must equal the workflow revision. The maintained main workflow, event, phase, environment and summary filename are checked before this ancestry query. Publisher regressions assert exact ancestry argv and reject mismatched context before publication.",
+              "sources": {
+                "modules/gateway/scripts/publish-deployment-evidence.py": "1f49ddfc1983b8b031f0e4bacfd750de00d9561f7a9b513d36c3dcb0b7490f32"
+              },
+              "evidence": [
+                "modules/gateway/tests/orchestration/test_deployment_evidence_store.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/scripts/publish-deployment-evidence.py"
+                },
+                "region": {
+                  "startLine": 66
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reviewed 2026-10-23: the foundation publisher executes fixed git merge-base --is-ancestor argv, not a shell. The source must be a 40-character lowercase commit hash equal to checkout; the other revision comes from the maintained workflow context. Main workflow identity, dispatch event, first attempt, environment, evidence store and summary filename are checked before ancestry. Publisher regressions assert exact ancestry argv and reject invalid publication context.",
+              "sources": {
+                "modules/gateway/scripts/publish-deployment-evidence.py": "1f49ddfc1983b8b031f0e4bacfd750de00d9561f7a9b513d36c3dcb0b7490f32"
+              },
+              "evidence": [
+                "modules/gateway/tests/orchestration/test_deployment_evidence_store.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/scripts/publish-deployment-evidence.py"
+                },
+                "region": {
+                  "startLine": 66
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reviewed 2026-10-23: the foundation publisher executes fixed git merge-base --is-ancestor argv, not a shell. The source must be a 40-character lowercase commit hash equal to checkout; the other revision comes from the maintained workflow context. Main workflow identity, dispatch event, first attempt, environment, evidence store and summary filename are checked before ancestry. Publisher regressions assert exact ancestry argv and reject invalid publication context.",
+              "sources": {
+                "modules/gateway/scripts/publish-deployment-evidence.py": "1f49ddfc1983b8b031f0e4bacfd750de00d9561f7a9b513d36c3dcb0b7490f32"
+              },
+              "evidence": [
+                "modules/gateway/tests/orchestration/test_deployment_evidence_store.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.bandit.B603",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/tools/adapters/installer.py"
+                },
+                "region": {
+                  "startLine": 125
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reviewed 2026-10-23: the local installer inventories tracked source using fixed git -C <root> ls-files -z -- argv and constant SOURCE_PATHS. The operator-selected root is one -C argument; no shell or caller-selected subcommand is used. Returned entries must be regular non-symlink files and untracked Terraform overrides are refused. Installer regressions exercise the tracked dependency closure and snapshot tampering refusal.",
+              "sources": {
+                "modules/tools/adapters/installer.py": "cff0435ff5297b2a0ad004d5512ccec29d2950e2c617279b7ce39fb604ea97f8"
+              },
+              "evidence": [
+                "modules/tools/adapters/tests/test_installer.py"
+              ]
+            }
+          }
+        },
+        {
+          "ruleId": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+          "message": {
+            "text": "Reviewed intentional operation; bound to unchanged source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/tools/adapters/installer.py"
+                },
+                "region": {
+                  "startLine": 125
+                }
+              }
+            }
+          ],
+          "properties": {
+            "review": {
+              "justification": "Reviewed 2026-10-23: the local installer inventories tracked source using fixed git -C <root> ls-files -z -- argv and constant SOURCE_PATHS. The operator-selected root is one -C argument; no shell or caller-selected subcommand is used. Returned entries must be regular non-symlink files and untracked Terraform overrides are refused. Installer regressions exercise the tracked dependency closure and snapshot tampering refusal.",
+              "sources": {
+                "modules/tools/adapters/installer.py": "cff0435ff5297b2a0ad004d5512ccec29d2950e2c617279b7ce39fb604ea97f8"
+              },
+              "evidence": [
+                "modules/tools/adapters/tests/test_installer.py"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

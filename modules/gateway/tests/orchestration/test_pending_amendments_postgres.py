@@ -1,17 +1,19 @@
 """Real PostgreSQL duplicate acceptance preserves idempotent results."""
 
 import asyncio
+import json
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from src.orchestration.models import OrchestrationPendingAmendment
+from src.orchestration.models import OrchestrationDecision, OrchestrationPendingAmendment
 from src.orchestration.pending_amendments import AmendmentConflictError, accept_amendment, register_amendment_draft
 from src.shared.models.base import Base
 from tests.migrations import conftest_postgres as postgres
 
-from .test_pending_amendments import AUTHOR_RUN, ORG_A, accepted_flow, amended_proposal, amender, open_request
+from .test_pending_amendments import AUTHOR_RUN, ORG_A, accepted_flow, amended_proposal, amender, base_proposal, open_request
+from .test_policy_admission import _policy
 
 pg_server = postgres.pg_server
 pg_url = postgres.pg_url
@@ -60,3 +62,31 @@ async def test_overlapping_acceptances_refresh_state_after_the_flow_lock(factory
 
     assert repeated.replayed
     assert (repeated.plan_version, repeated.decision_id) == (original.plan_version, original.decision_id)
+
+
+async def test_draft_acceptance_replay_keeps_committed_effective_limits(factory):
+    policy = _policy()
+    async with factory() as session:
+        flow_id = await accepted_flow(session, proposal=base_proposal(execution_policy=policy))
+        request = await open_request(session, flow_id)
+        draft = await register_amendment_draft(
+            session,
+            org_id=ORG_A,
+            request=request,
+            author_run_id=AUTHOR_RUN,
+            proposal=amended_proposal(execution_policy=policy),
+        )
+        await session.commit()
+        accepted = await accept_amendment(session, draft_id=draft.draft_id, actor=amender(), flow_id=flow_id)
+        await session.commit()
+
+    async with factory() as session:
+        replay = await accept_amendment(session, draft_id=draft.draft_id, actor=amender(), flow_id=flow_id)
+        decision = await session.get(OrchestrationDecision, replay.decision_id)
+        saved = json.loads(decision.reason.rpartition("[receipt_disposition/v1] ")[2])
+        assert replay.replayed and replay.decision_id == accepted.decision_id
+        assert replay.effective_limits_before == accepted.effective_limits_before == saved["effective_limits_before"]
+        assert replay.effective_limits_after == accepted.effective_limits_after == saved["effective_limits_after"]
+        assert replay.effective_limits_after["max_spend_usd"] == str(policy.limits.max_spend_usd)
+        decisions = list(await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == "plan_amended")))
+        assert len(decisions) == 1 and decisions[0].id == replay.decision_id

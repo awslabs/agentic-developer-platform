@@ -289,5 +289,7 @@ def validate_access_request(operation, context):
         operation.request,
         org_id=operation.grant.lease.org_id,
         workspace_id=operation.grant.lease.workspace_id,
-        policy=load_policy(context, operation.grant.lease.org_id),
+        policy=load_policy(
+            context, operation.grant.lease.org_id, operation.grant.lease.workspace_id
+        ),
     )

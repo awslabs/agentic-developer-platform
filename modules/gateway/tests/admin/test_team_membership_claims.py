@@ -7,7 +7,7 @@ The original token is retained to show this does not revoke issued JWTs.
 import importlib.util
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -86,10 +86,17 @@ def refreshed(cognito):
     path = Path(__file__).parents[2] / "infra/modules/cognito/lambda/pre_token_generation.py"
     spec = importlib.util.spec_from_file_location("primary_team_pre_token", path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    event = module.handle_user_token_generation(
-        {"triggerSource": "TokenGeneration_RefreshTokens", "request": {"userAttributes": dict(cognito.attributes)}}
-    )
+    with patch("boto3.resource"):
+        spec.loader.exec_module(module)
+    with patch("boto3.client", return_value=cognito):
+        event = module.handle_user_token_generation(
+            {
+                "triggerSource": "TokenGeneration_RefreshTokens",
+                "userPoolId": "pool",
+                "userName": "canonical-login",
+                "request": {"userAttributes": dict(cognito.attributes)},
+            }
+        )
     claims = event["response"]["claimsAndScopeOverrideDetails"]["accessTokenGeneration"]["claimsToAddOrOverride"]
     return _cognito_claims_to_context(
         CognitoTokenClaims(

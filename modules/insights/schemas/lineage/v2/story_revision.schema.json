@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "story_revision (section 11.2)",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "const": "story_revision"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "brief": {
+      "type": "string"
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "source_updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "source_action": {
+      "enum": [
+        "created",
+        "edited",
+        "closed",
+        "reopened",
+        "deleted",
+        "transferred",
+        "reconciled"
+      ]
+    },
+    "story_state": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_snapshot": {
+      "$ref": "references.schema.json#/$defs/artifact_ref"
+    },
+    "criteria_extraction_status": {
+      "enum": [
+        "complete",
+        "missing",
+        "ambiguous"
+      ]
+    }
+  },
+  "required": [
+    "title",
+    "brief",
+    "source_url",
+    "source_updated_at",
+    "source_action",
+    "story_state",
+    "source_snapshot",
+    "criteria_extraction_status"
+  ],
+  "unevaluatedProperties": false
+}

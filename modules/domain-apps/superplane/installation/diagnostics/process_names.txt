@@ -1,0 +1,7 @@
+import json;from pathlib import Path;rows=[]
+for p in Path("/proc").glob("[0-9]*/comm"):
+ try:
+  name=p.read_text().strip()
+  if name in ("terraform","aws","kubectl","python","python3"):rows.append({"pid":p.parent.name,"process":name})
+ except OSError:pass
+print(json.dumps(rows))

@@ -8,12 +8,15 @@ an invocation fails closed with account details and remediation.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
-from src.proxy.bedrock_principal import resolve_routing_principal
+from src.proxy.bedrock_principal import BedrockRoutingIdentityError, resolve_routing_principal
 from src.proxy.bedrock_routing import BedrockTarget, bedrock_routing_resolver
 from src.proxy.bedrock_signing import DestinationCredentials, bedrock_destination_signer
 from src.shared.schemas.auth import TokenContext
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -53,7 +56,21 @@ async def resolve_routing_decision(context: TokenContext, *, agent_run_id: str |
             from src.proxy.service import _current_agent_run_id
 
             agent_run_id = _current_agent_run_id.get()
-        principal, user_id = await resolve_routing_principal(session, context, agent_run_id=agent_run_id)
+        try:
+            principal, user_id = await resolve_routing_principal(session, context, agent_run_id=agent_run_id)
+        except BedrockRoutingIdentityError as error:
+            # The client sees one generic sentence; the operator needs the reason
+            # (dev 2026-10-21: ``tenant_mismatch`` for every Dev Box model call stayed
+            # invisible for hours behind "could not verify the run owner").
+            logger.warning(
+                "Bedrock routing principal refused reason=%s run=%s caller=%s auth=%s account_type=%s",
+                (error.details or {}).get("reason"),
+                agent_run_id,
+                context.user_id,
+                context.auth_source,
+                context.account_type,
+            )
+            raise
         target = await bedrock_routing_resolver.resolve(session, principal, user_id=user_id)
 
         # No applicable mapping: use ambient platform credentials and record

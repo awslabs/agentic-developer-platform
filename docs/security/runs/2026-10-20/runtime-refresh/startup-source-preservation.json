@@ -1,0 +1,20 @@
+{
+  "record_type": "sanitized-current-image-derivation",
+  "review_date": "2026-10-20",
+  "image_index_digest": "sha256:1c759ad92f46a2db57797d111685e06ed66036e76fc0fe4f454da039907cf6a6",
+  "platform_digest": "sha256:48cd7c540362ddd5bfd00951a6ea27e934b022f04f6dbd997a2a79011897942e",
+  "config_digest": "sha256:a2e9f54287f38a5f8eb1437393cc51a5a345db4e1b96572c7b55d27872d58053",
+  "previous_image_digest": "sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4",
+  "previous_source_inventory": "docs/security/runs/2026-10-06/demo-image-pins/startup-source-preservation.json",
+  "all_skypilot_python_files_identical": true,
+  "file_count": 555,
+  "canonical_source_map_sha256": "e8dc60ed0eae763b824fba9495fe7b9110f314b69856363d9514f284d5fa8c3c",
+  "source_map_encoding": "JSON object of paths relative to site-packages/sky to file SHA256; sorted keys and compact separators",
+  "passwd_content_sha256": "50ea38474218c7b1cc39ec1bebf3bc123d6b60982a5bfd0524f384ad5d8d1e55",
+  "uid1000_observed": true,
+  "python_version": "3.10.22",
+  "runtime_facts_sha256": "5854b86d83557b94407621bcd9d1404110c73820d611238db9dde7d3ab0b2ff8",
+  "collector_sha256": "99707e4dc7d82974de8b747f0af0f19bc73ab21b147179000c6afb7bbc467d07",
+  "publication_receipt": "docs/security/runs/2026-10-20/runtime-refresh/skypilot-publication.json",
+  "scope": "Fresh inspection of both immutable images in read-only, network-isolated containers. Source-derived startup facts are retained after all 555 SkyPilot Python files matched. Raw inventories remain private; no live deployment claim."
+}

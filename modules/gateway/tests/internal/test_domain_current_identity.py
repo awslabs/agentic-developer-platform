@@ -89,7 +89,7 @@ def payload(org_id="O1", *, subject="immutable-sub", principal_type="human"):
     return {"domain": "superplane", "org_id": org_id, "subject": subject, "principal_type": principal_type}
 
 
-async def test_selected_organization_only_and_switch_does_not_revoke_membership(identity_client):
+async def test_selected_organization_requires_committed_active_membership(identity_client):
     client, state, first, second, cognito = identity_client
     endpoint = "/internal/v1/controller-execution/current-identity"
     response = await client.post(endpoint, json=payload())
@@ -105,11 +105,118 @@ async def test_selected_organization_only_and_switch_does_not_revoke_membership(
     }
     assert (await client.post(endpoint, json=payload("O2"))).status_code == 403
     state["selected"] = "O2"
+    assert (await client.post(endpoint, json=payload("O2"))).status_code == 403
+    assert second.revoked_at is None
+    first.is_active = False
+    second.is_active = True
     result = await client.post(endpoint, json=payload("O2"))
     assert result.status_code == 200 and result.json()["membership_id"] == second.id
-    assert not second.is_active
+    assert second.is_active
     assert (await client.post(endpoint, json=payload())).status_code == 403
-    assert cognito.admin_get_user.call_count == 2
+    assert cognito.admin_get_user.call_count == 3
+
+
+async def test_multi_organization_revocation_and_provider_outage_never_fall_back(identity_client, db_session):
+    client, state, first, second, cognito = identity_client
+    endpoint = "/internal/v1/controller-execution/current-identity"
+
+    first.is_active = False
+    second.is_active = True
+    state["selected"] = "O2"
+    await db_session.commit()
+    response = await client.post(endpoint, json=payload("O2"))
+    assert response.status_code == 200
+    assert response.json()["membership_id"] == second.id
+
+    second.revoked_at = datetime.now(UTC)
+    first.is_active = True
+    await db_session.commit()
+    assert (await client.post(endpoint, json=payload("O2"))).status_code == 403
+    state["selected"] = "O1"
+    assert (await client.post(endpoint, json=payload("O2"))).status_code == 403
+    response = await client.post(endpoint, json=payload("O1"))
+    assert response.status_code == 200
+    assert response.json()["membership_id"] == first.id
+
+    original_lookup = cognito.admin_get_user.side_effect
+    cognito.admin_get_user.side_effect = RuntimeError("identity provider unavailable")
+    assert (await client.post(endpoint, json=payload("O1"))).status_code == 503
+    cognito.admin_get_user.side_effect = original_lookup
+    assert (await client.post(endpoint, json=payload("O1"))).status_code == 200
+    assert (await client.post(endpoint, json=payload("O2"))).status_code == 403
+
+
+async def test_workspace_switch_projects_selected_tenant_into_both_tokens_and_producer(identity_client, db_session, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    from src.auth.workspaces import select_workspace
+    from src.shared.schemas.auth import TokenContext
+
+    client, state, first, second, cognito = identity_client
+
+    def protected_user(**kwargs):
+        return {
+            "Username": kwargs["Username"],
+            "Enabled": state["enabled"],
+            "UserAttributes": [
+                {"Name": "sub", "Value": "immutable-sub"},
+                {"Name": "custom:org_id", "Value": state["selected"]},
+            ],
+        }
+
+    cognito.admin_get_user.side_effect = protected_user
+    monkeypatch.setattr("boto3.client", lambda service: cognito)
+    monkeypatch.setattr("boto3.resource", lambda service: MagicMock())
+    trigger_file = Path(__file__).resolve().parents[2] / "infra/modules/cognito/lambda/pre_token_generation.py"
+    specification = importlib.util.spec_from_file_location("workspace_selected_pre_token", trigger_file)
+    trigger = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(trigger)
+
+    def projected(source):
+        event = {
+            "version": "3",
+            "triggerSource": source,
+            "userPoolId": "pool-test",
+            "userName": "login",
+            "request": {
+                "userAttributes": {"sub": "immutable-sub", "custom:org_id": "other"},
+                "clientMetadata": {"org_id": "other"},
+            },
+            "response": {},
+        }
+        overrides = trigger.handler(event, None)["response"]["claimsAndScopeOverrideDetails"]
+        return {token: overrides[token]["claimsToAddOrOverride"]["custom:org_id"] for token in ("idTokenGeneration", "accessTokenGeneration")}
+
+    endpoint = "/internal/v1/controller-execution/current-identity"
+    assert projected("TokenGeneration_Authentication") == {"idTokenGeneration": "O1", "accessTokenGeneration": "O1"}
+    assert (await client.post(endpoint, json=payload("O1"))).status_code == 200
+
+    class Claims:
+        async def set(self, subject, values):
+            assert subject == "immutable-sub"
+            previous = {"custom:org_id": state["selected"]}
+            state["selected"] = values["custom:org_id"]
+            return previous, values
+
+    context = TokenContext(
+        user_id="immutable-sub",
+        org_id="O1",
+        team_id="",
+        department_id="",
+        account_type="human",
+        cognito_username="login",
+        expires_at=datetime.now(UTC),
+    )
+    selected = await select_workspace(db_session, context, "O2", Claims())
+    assert selected.org_id == "O2" and selected.is_current
+    assert first.is_active is False and second.is_active is True
+    for source in ("TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"):
+        assert projected(source) == {"idTokenGeneration": "O2", "accessTokenGeneration": "O2"}
+    assert (await client.post(endpoint, json=payload("O1"))).status_code == 403
+    response = await client.post(endpoint, json=payload("O2"))
+    assert response.status_code == 200
+    assert response.json()["membership_id"] == second.id
 
 
 @pytest.mark.parametrize("change", ["revoked", "disabled", "no-membership", "service", "substituted", "registry", "absent-pool", "unavailable"])
@@ -137,7 +244,8 @@ async def test_no_unproven_authority(identity_client, monkeypatch, change):
         cognito.admin_get_user.assert_not_called()
 
 
-async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(identity_client, db_session, monkeypatch):
+@pytest.mark.parametrize("distinct", [True, False])
+async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(identity_client, db_session, monkeypatch, distinct):
     _, state, requester_membership, _, cognito = identity_client
     approver = User(
         id="approver-member",
@@ -184,7 +292,8 @@ async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
         "operation_id": "original",
         "org_id": "domain-org",
         "requester": "immutable-sub",
-        "approved_by": "approver-sub",
+        "approved_by": "approver-sub" if distinct else "immutable-sub",
+        "requires_distinct_approver": distinct,
         "plan_digest": "digest",
         "request_payload": "original",
         "budget_state": "confirmed",
@@ -200,6 +309,7 @@ async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
 
     class PaidConnection:
         async def fetchrow(self, statement, *args):
+            assert "a.requires_distinct_approver" in statement
             return operation
 
     @asynccontextmanager
@@ -224,14 +334,15 @@ async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
             require_current=True,
         )
 
-    assert (await permitted())["approved_by"] == "approver-sub"
-    assert cognito.admin_get_user.call_count == 2
-    approver_membership.revoked_at = datetime.now(UTC)
+    assert (await permitted())["approved_by"] == operation["approved_by"]
+    assert cognito.admin_get_user.call_count == (2 if distinct else 1)
+    deciding_membership = approver_membership if distinct else requester_membership
+    deciding_membership.revoked_at = datetime.now(UTC)
     await db_session.commit()
     with pytest.raises(HTTPException) as revoked:
         await permitted()
     assert revoked.value.status_code == 403
-    approver_membership.revoked_at = None
+    deciding_membership.revoked_at = None
     enabled["immutable-sub"] = False
     await db_session.commit()
     with pytest.raises(HTTPException) as disabled:
@@ -252,7 +363,22 @@ async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
     assert unavailable.value.status_code == 503
 
     binding.current_identity_enforced = False
-    assert (await permitted())["approved_by"] == "approver-sub"
+    assert (await permitted())["approved_by"] == operation["approved_by"]
+
+
+@pytest.mark.parametrize("policy", [True, None, "false", 0, "missing"])
+async def test_same_human_refused_without_explicit_recorded_streamlined_policy(monkeypatch, policy):
+    from unittest.mock import AsyncMock
+
+    check = AsyncMock()
+    monkeypatch.setattr(domain_current_identity, "current_human_identity", check)
+    operation = {"requester": "human", "approved_by": "human"}
+    if policy != "missing":
+        operation["requires_distinct_approver"] = policy
+    with pytest.raises(HTTPException) as refused:
+        await domain_current_identity.revalidate_original_humans(operation, adp_org_id="O1")
+    assert refused.value.status_code == 403
+    check.assert_not_awaited()
 
 
 async def test_recovery_worker_rechecks_persisted_humans_before_a_protected_call(monkeypatch):
@@ -503,3 +629,29 @@ async def test_signed_domain_reader_reaches_registered_gateway_identity(identity
     finally:
         await producer.aclose()
         await backend.aclose()
+
+
+async def test_org_local_membership_wins_over_legacy_home_membership(identity_client, db_session):
+    client, state, first, second, _ = identity_client
+    legacy = TenantMembership(user_id="member-one", tenant_id="O2", is_active=False)
+    db_session.add(legacy)
+    await db_session.commit()
+    state["selected"] = "O2"
+    first.is_active = False
+    second.is_active = True
+    endpoint = "/internal/v1/controller-execution/current-identity"
+    response = await client.post(endpoint, json=payload("O2"))
+    assert response.status_code == 200
+    assert response.json()["membership_id"] == second.id
+    second.revoked_at = datetime.now(UTC)
+    await db_session.commit()
+    assert (await client.post(endpoint, json=payload("O2"))).status_code == 403
+
+
+async def test_legacy_revocation_does_not_fall_back_to_local_membership(identity_client, db_session):
+    client, state, _, _, _ = identity_client
+    db_session.add(TenantMembership(user_id="member-one", tenant_id="O2", is_active=False, revoked_at=datetime.now(UTC)))
+    await db_session.commit()
+    state["selected"] = "O2"
+    response = await client.post("/internal/v1/controller-execution/current-identity", json=payload("O2"))
+    assert response.status_code == 403

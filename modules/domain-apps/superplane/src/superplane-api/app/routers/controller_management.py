@@ -158,6 +158,9 @@ async def reconcile(
             if target["workspace_id"] not in provisional_ids
         ]
         targets.extend(provisional)
+    from app.services.provider_health import project_provider_health
+
+    await project_provider_health(targets, org_id=str(org.id))
     return {
         "version": 1,
         "org_id": str(body.org_id),

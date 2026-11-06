@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "original_receipt_sha256": "42f49b615e371047a8283942abcabf4569105af26acf31ad99752c3377815c38",
+  "snapshot_sha256": "9e4c9a42bd502d384604819236b43c5b6c76a3dbbbb1b67e07cd871e311f1956",
+  "predecessor_revision": "3ba70742682d465e5c1d19dec5e26157b9dc4484a384c630369bcb234e099d95",
+  "maintenance": [
+    {
+      "plan_sha256": "cae56301f9cfcf02524f1c971c88137cddf2f86c6b254ce59bae959d59addb41",
+      "receipt_sha256": "535a35edaac98ece264fdfd650bbc21b9fde6a02d94ba4bedbb979e196f39ce8",
+      "mutation_message_sha256": "21332a1fce9cd950d0973760582e965a3e02f07d279fa407022f8d0312c953cd"
+    },
+    {
+      "plan_sha256": "10b7be0f48653605e900e21fd34dff17edca92553feb68ca9922adb005ee5385",
+      "receipt_sha256": "62703eececf1fd925ce57bcd0d3287d13d4e220680a6a8d8d1cab97d79eb588a",
+      "mutation_message_sha256": "d697715b6c7d8e9f84901a63c14ef20309a62cebf6af843463fe5399b4597ef3"
+    }
+  ]
+}

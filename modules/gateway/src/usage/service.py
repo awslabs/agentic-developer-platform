@@ -61,6 +61,13 @@ class UsageService(IUsageService):
         reservation_usage_known: bool = False,
         provider_request_id: str | None = None,
         destination_region: str | None = None,
+        commit: bool = True,
+        settlement_already_claimed: bool = False,
+        harness: str | None = None,
+        conversation_id: str | None = None,
+        origin: str | None = None,
+        conversation_title: str | None = None,
+        owner_user_id: str | None = None,
     ) -> None:
         """
         Log a Bedrock API request.
@@ -92,6 +99,9 @@ class UsageService(IUsageService):
                 for this request's settlement. It is persisted, never re-read;
                 None means the pricing revision was not captured.
         """
+        scope = context._project_attribution
+        if scope and (scope.tenant_id != context.attributed_org_id or (agent_run_id and scope.run_id != agent_run_id)):
+            raise ValueError("Project usage attribution does not match the request")
         log_entry = UsageLog(
             timestamp=context._budget_request_timestamp,
             # Issue #4132: usage_logs is an ATTRIBUTION surface — a hosted run
@@ -101,6 +111,11 @@ class UsageService(IUsageService):
             department_id=context.department_id,
             team_id=context.team_id,
             user_id=context.user_id,
+            root_human_id=(
+                getattr(context, "_crew_root_human_id", None)
+                if agent_run_id and agent_run_id == getattr(context, "_crew_root_run_id", None)
+                else None
+            ),
             account_type=context.account_type,
             model=model,
             input_tokens=input_tokens,
@@ -112,10 +127,19 @@ class UsageService(IUsageService):
             provider_request_id=provider_request_id,
             destination_region=destination_region,
             bedrock_account_id=bedrock_account_id,
-            agent_run_id=agent_run_id,
+            agent_run_id=agent_run_id or (context._project_attribution.run_id if context._project_attribution else None),
+            product_id=context._project_attribution.product_id if context._project_attribution else None,
+            project_id=context._project_attribution.project_id if context._project_attribution else None,
+            flow_id=context._project_attribution.flow_id if context._project_attribution else None,
             cache_read_input_tokens=cache_read_input_tokens,
             cache_creation_input_tokens=cache_creation_input_tokens,
             client_tool=client_tool,
+            # #9024: conversation identity (NULL = not captured)
+            harness=harness,
+            conversation_id=conversation_id,
+            origin=origin,
+            conversation_title=conversation_title,
+            owner_user_id=owner_user_id,
             # Issue #4898: the graph node this call is attributable to. Resolved
             # from the request's own verified context — see `_graph_address_for`.
             graph_address=self._graph_address_for(context, agent_run_id),
@@ -123,7 +147,7 @@ class UsageService(IUsageService):
             **self._pricing_revision_for(pricing_decision),
         )
 
-        if isinstance(pricing_decision, PricingDecision) and request_id:
+        if isinstance(pricing_decision, PricingDecision) and request_id and not settlement_already_claimed:
             from src.budget.settlement import settle_priced_usage
 
             fresh = await settle_priced_usage(
@@ -156,7 +180,10 @@ class UsageService(IUsageService):
                     await self.db.commit()
                     return
         self.db.add(log_entry)
-        await self.db.commit()
+        if commit:
+            await self.db.commit()
+        else:
+            await self.db.flush()
 
     @staticmethod
     def _persona_evidence_for(context: TokenContext, agent_run_id: str | None) -> dict[str, str | None]:
@@ -387,6 +414,7 @@ class UsageService(IUsageService):
                 "department_id": log.department_id,
                 "team_id": log.team_id,
                 "user_id": log.user_id,
+                "root_human_id": log.root_human_id,
                 "account_type": log.account_type,
                 "model": log.model,
                 "input_tokens": log.input_tokens,

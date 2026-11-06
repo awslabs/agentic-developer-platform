@@ -43,7 +43,7 @@ class SecurityBackports(unittest.TestCase):
                     archive.addfile(member, io.BytesIO(b"content"))
                 buffer.seek(0)
                 with tarfile.open(fileobj=buffer) as archive:
-                    archive.extractall(dest, filter=filter_name)
+                    archive.extractall(dest, filter=filter_name)  # nosec B202 - synthetic fixture verifies tar/data extraction filters
                 self.assertFalse((root / "escaped").exists())
                 self.assertEqual((dest / "sub/file").read_bytes(), b"content")
 
@@ -69,7 +69,7 @@ class SecurityBackports(unittest.TestCase):
 
             buffer.seek(0)
             with tarfile.open(fileobj=buffer) as archive:
-                archive.extractall(root, filter=filter_unsafe)
+                archive.extractall(root, filter=filter_unsafe)  # nosec B202 - synthetic fixture verifies tar/data extraction filters
             self.assertTrue((root / "a/b/s").is_symlink())
             self.assertFalse((root / "q").is_symlink())
             self.assertFalse((root / "q").exists())
@@ -97,7 +97,7 @@ class SecurityBackports(unittest.TestCase):
                     archive.addfile(hardlink)
                 buffer.seek(0)
                 with tarfile.open(fileobj=buffer) as archive:
-                    archive.extractall(destination, filter=filter_name)
+                    archive.extractall(destination, filter=filter_name)  # nosec B202 - synthetic fixture verifies tar/data extraction filters
                 self.assertFalse((destination / "s").is_symlink())
                 self.assertEqual((destination / "s").read_bytes(), b"decoy")
                 self.assertEqual(outside.read_bytes(), b"outside fixture")

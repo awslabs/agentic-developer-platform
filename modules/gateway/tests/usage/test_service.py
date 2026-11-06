@@ -436,3 +436,36 @@ class TestUsageServiceFilters:
         logs = await usage_service.query_logs("org-002", filters={"account_type": "service"})
 
         assert all(log["account_type"] == "service" for log in logs)
+
+
+@pytest.mark.asyncio
+async def test_crew_usage_persists_verified_owner_only_for_matching_run(usage_service: UsageService, db_session: AsyncSession):
+    context = TokenContext(
+        user_id="worker-service",
+        org_id="__platform__",
+        team_id="__agents__",
+        department_id="",
+        account_type="service",
+        auth_source="iam",
+        scope="internal",
+        attributed_org_id="org-001",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    context._crew_root_human_id = "user-001"
+    context._crew_root_run_id = "crew-run"
+    for run_id in ("crew-run", "different-run"):
+        await usage_service.log_request(
+            context=context,
+            model="model-1",
+            input_tokens=1,
+            output_tokens=2,
+            cost_usd=0.01,
+            latency_ms=1,
+            status_code=200,
+            request_id=run_id,
+            agent_run_id=run_id,
+        )
+    rows = (await db_session.execute(select(UsageLog).where(UsageLog.org_id == "org-001"))).scalars().all()
+    assert {row.agent_run_id: row.root_human_id for row in rows} == {"crew-run": "user-001", "different-run": None}
+    logs = await usage_service.query_logs("org-001")
+    assert {row["request_id"]: row["root_human_id"] for row in logs} == {"crew-run": "user-001", "different-run": None}

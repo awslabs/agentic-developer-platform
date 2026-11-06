@@ -379,7 +379,7 @@ def _estimate(
     Three things must be established before the result may be called an upper bound, and each
     raises rather than degrading:
 
-    *   the REGION has verified service-specific rates. Currently only us-east-1 is priced.
+    *   the REGION has verified service-specific rates. Each enabled region has its own reviewed rates.
     *   the cluster's EKS SUPPORT TIER, because extended support costs six times standard.
     *   every required value is KNOWN. An unknown ceiling is not a ceiling.
     """
@@ -387,13 +387,35 @@ def _estimate(
     # multipliers cannot establish a bound for other services, even when the factor is 1.0.
     try:
         check_region(aws_region)
+        regional = None
         if aws_region != RATE_TABLE_REGION:
-            raise UnsupportedTargetError(
-                f"bounded pricing is supported only for {RATE_TABLE_REGION}; "
-                f"{aws_region} needs verified per-service regional rates. "
-                "An EC2 multiplier does not bound EKS, NAT, KMS and gp3 prices."
+            catalog = _load_json(
+                Path(__file__).resolve().parents[1] / "regional-pricing.json",
+                "reviewed regional pricing",
             )
+            if catalog.get("version") != 1:
+                raise UnsupportedTargetError("regional pricing schema is not supported")
+            regional = catalog["regions"].get(aws_region)
+            if regional is None:
+                raise UnsupportedTargetError(
+                    f"bounded pricing is unavailable for {aws_region}; "
+                    "verified per-service regional rates are required"
+                )
         multiplier = 1.0
+        rate_region = aws_region
+        rate_date = regional["reviewed_on"] if regional else RATE_TABLE_AS_OF
+        rates = (
+            regional["rates"]
+            if regional
+            else {
+                "instance_hourly_usd": INSTANCE_HOURLY_USD,
+                "nat_gateway_hourly_usd": NAT_GATEWAY_HOURLY_USD,
+                "kms_key_monthly_usd": KMS_KEY_MONTHLY_USD,
+                "ebs_gp3_monthly_usd_per_gib": EBS_GP3_MONTHLY_USD_PER_GIB,
+                "public_ipv4_hourly_usd": PUBLIC_IPV4_HOURLY_USD,
+                "interface_endpoint_az_hourly_usd": INTERFACE_ENDPOINT_AZ_HOURLY_USD,
+            }
+        )
     except UnsupportedTargetError as exc:
         raise WorkspaceOwnershipError(
             f"the bounded estimate cannot be produced: {exc}"
@@ -413,7 +435,7 @@ def _estimate(
         }
         if multiplier != 1.0:
             entry["region_adjustment"] = (
-                f"${us_east_1_monthly:.2f} at {RATE_TABLE_REGION} rates x {multiplier} "
+                f"${us_east_1_monthly:.2f} at {rate_region} rates x {multiplier} "
                 f"for {aws_region}"
             )
         lines.append(entry)
@@ -444,7 +466,11 @@ def _estimate(
                 )
             try:
                 support = check_cluster_version(str(version))
-                hourly = control_plane_hourly_usd(support)
+                hourly = (
+                    rates["eks_hourly_usd"][support.tier]
+                    if regional
+                    else control_plane_hourly_usd(support)
+                )
             except UnsupportedTargetError as exc:
                 raise WorkspaceOwnershipError(
                     f"{change['address']}: {exc} A plan targeting a version that cannot be "
@@ -470,8 +496,8 @@ def _estimate(
         elif resource_type == "aws_nat_gateway":
             line(
                 "NAT gateway (hourly only; data processing is unbounded)",
-                f"1 gateway x ${NAT_GATEWAY_HOURLY_USD:.3f}/hour x {HOURS_PER_MONTH} hours",
-                NAT_GATEWAY_HOURLY_USD * HOURS_PER_MONTH,
+                f"1 gateway x ${rates['nat_gateway_hourly_usd']:.3f}/hour x {HOURS_PER_MONTH} hours",
+                rates["nat_gateway_hourly_usd"] * HOURS_PER_MONTH,
             )
 
         elif resource_type == "aws_vpc_endpoint":
@@ -504,15 +530,15 @@ def _estimate(
                 )
             line(
                 "Private STS interface endpoint (hourly; data processing excluded)",
-                f"At most {ceiling} endpoint AZs x ${INTERFACE_ENDPOINT_AZ_HOURLY_USD:.2f}/hour x {HOURS_PER_MONTH} hours",
-                ceiling * INTERFACE_ENDPOINT_AZ_HOURLY_USD * HOURS_PER_MONTH,
+                f"At most {ceiling} endpoint AZs x ${rates['interface_endpoint_az_hourly_usd']:.2f}/hour x {HOURS_PER_MONTH} hours",
+                ceiling * rates["interface_endpoint_az_hourly_usd"] * HOURS_PER_MONTH,
             )
 
         elif resource_type == "aws_kms_key":
             line(
                 "KMS customer-managed key",
-                f"1 key x ${KMS_KEY_MONTHLY_USD:.2f}/month",
-                KMS_KEY_MONTHLY_USD,
+                f"1 key x ${rates['kms_key_monthly_usd']:.2f}/month",
+                rates["kms_key_monthly_usd"],
             )
 
         elif resource_type == "aws_eks_node_group":
@@ -551,18 +577,20 @@ def _estimate(
 
             # The most expensive type in the list, because the group may launch any of them
             # and this is an upper bound.
-            unpriced = [t for t in instance_types if t not in INSTANCE_HOURLY_USD]
+            unpriced = [
+                t for t in instance_types if t not in rates["instance_hourly_usd"]
+            ]
             if unpriced:
                 raise WorkspaceOwnershipError(
                     f"{change['address']}: instance type(s) {unpriced!r} are not in this "
-                    f"guard's rate table ({RATE_TABLE_REGION}, as of {RATE_TABLE_AS_OF}). "
+                    f"guard's rate table ({rate_region}, as of {rate_date}). "
                     f"Refusing to price them at zero — a silent zero would report a "
                     f"reassuringly small bound for a plan whose nodes may cost two orders "
                     f"of magnitude more. Add the type with its published on-demand rate to "
-                    f"INSTANCE_HOURLY_USD in check_workspace_plan.py."
+                    f"rates['instance_hourly_usd'] in check_workspace_plan.py."
                 )
-            rate = max(INSTANCE_HOURLY_USD[t] for t in instance_types)
-            dearest = max(instance_types, key=lambda t: INSTANCE_HOURLY_USD[t])
+            rate = max(rates["instance_hourly_usd"][t] for t in instance_types)
+            dearest = max(instance_types, key=lambda t: rates["instance_hourly_usd"][t])
             line(
                 f"Node group compute at its ceiling ({dearest})",
                 f"{max_size} nodes (max_size) x ${rate:.4f}/hour x {HOURS_PER_MONTH} hours",
@@ -572,8 +600,8 @@ def _estimate(
         elif resource_type == "aws_eip":
             line(
                 "NAT public IPv4 address",
-                f"${PUBLIC_IPV4_HOURLY_USD:.3f}/hour x {HOURS_PER_MONTH} hours",
-                PUBLIC_IPV4_HOURLY_USD * HOURS_PER_MONTH,
+                f"${rates['public_ipv4_hourly_usd']:.3f}/hour x {HOURS_PER_MONTH} hours",
+                rates["public_ipv4_hourly_usd"] * HOURS_PER_MONTH,
             )
 
         elif resource_type == "aws_launch_template":
@@ -587,16 +615,21 @@ def _estimate(
             line(
                 f"Node root EBS volumes at the node ceiling ({size} GiB gp3 each)",
                 f"{ceiling} volumes (node max_size) x {size} GiB x "
-                f"${EBS_GP3_MONTHLY_USD_PER_GIB:.2f}/GiB-month",
-                EBS_GP3_MONTHLY_USD_PER_GIB * size * ceiling,
+                f"${rates['ebs_gp3_monthly_usd_per_gib']:.2f}/GiB-month",
+                rates["ebs_gp3_monthly_usd_per_gib"] * size * ceiling,
             )
 
     _verify_node_storage(plan)
     lines.sort(key=lambda item: item["component"])
     return {
-        "rate_table_region": RATE_TABLE_REGION,
-        "rate_table_as_of": RATE_TABLE_AS_OF,
+        "rate_table_region": rate_region,
+        "rate_table_as_of": rate_date,
         "priced_for_region": aws_region,
+        **(
+            {"pricing_source": regional["source"], "pricing_quotes": regional["quotes"]}
+            if regional
+            else {}
+        ),
         "region_price_multiplier": multiplier,
         # The multiplier's evidence travels WITH the number (finding W9-05). It was derived from
         # EC2 price spread and is applied to every component, so publishing the factor alone
@@ -616,7 +649,7 @@ def _estimate(
         "upper_bound_scope": (
             "Compute, storage and fixed per-resource charges are bounded at the reviewed ceiling "
             "in the rate table's base region "
-            f"({RATE_TABLE_REGION}, {RATE_TABLE_AS_OF}), with the EKS control plane priced at its "
+            f"({rate_region}, {rate_date}), with the EKS control plane priced at its "
             "version's actual support tier. Items in 'not_bounded_by_this_estimate' are not "
             "included at all."
             + (
@@ -1632,7 +1665,7 @@ def _check_authorization(
     return (not problems), problems
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, review_only=False) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--plan-json",
@@ -1749,6 +1782,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    if review_only and (not args.emit_authorization or args.authorize_destroy):
+        return _fail(
+            "Review-only mode requires proposal output and cannot approve destruction."
+        )
 
     # ---------------------------------------------------------------------------
     # FINDING F6: the region and version support policy, checked BEFORE anything else.
@@ -1976,6 +2013,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args.authorize_destroy and not report.has_destructive_changes:
         print(
             "No destructive change in plan. Verification passed; use scripts/apply_workspace_plan.py with a reviewed authorization to apply."
+        )
+        return 0
+
+    if review_only:
+        print(
+            "Review proposal complete. Destruction remains unapproved; this result does not authorize apply."
         )
         return 0
 

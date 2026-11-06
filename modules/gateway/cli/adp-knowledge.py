@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import adp_common as common
+import adp_context_storage
 
 # Issue #6437: paths are joined onto the deployment's API base, and
 # adp_common.gateway_url() always ends that base in "/api". Carrying a second
@@ -51,6 +52,7 @@ def parser():
         if name == "watch":
             p.add_argument("--timeout", type=int, choices=range(1, 3601), default=300)
             p.add_argument("--interval", type=int, choices=range(1, 61), default=5)
+    adp_context_storage.add_parser(commands)
     bulk = commands.add_parser("bulk").add_subparsers(dest="bulk_action", required=True)
     p = bulk.add_parser("preview")
     p.add_argument("--file", required=True, help='JSON object: {"scope":"personal", "items":[...]}')
@@ -327,6 +329,8 @@ def execute(args, client):
             page_response(value, args.page, args.page_size, run_response)
         return common.envelope("ok", "admin indexing " + args.action, safe(value))
     action = args.action
+    if action == "storage":
+        return adp_context_storage.execute(args, client)
     if action == "bulk":
         return bulk(args, client)
     if action == "list":
@@ -482,7 +486,7 @@ def refuse_malformed_target(args):
     `identifier` is pure, so a well-formed value is unaffected by being checked
     here as well as inside `execute`.
     """
-    for name in ("asset_id", "run"):
+    for name in ("asset_id", "run", "upload_id"):
         value = getattr(args, name, None)
         if value is not None:
             identifier(value)
@@ -505,7 +509,11 @@ def main(argv=None):
         mutation = (
             args is not None
             and args.area == "knowledge"
-            and (args.action in {"add", "delete", "reindex"} or (args.action == "bulk" and args.bulk_action == "commit"))
+            and (
+                args.action in {"add", "delete", "reindex"}
+                or (args.action == "bulk" and args.bulk_action == "commit")
+                or (args.action == "storage" and args.storage_action in {"configure", "upload", "complete"})
+            )
             and args.yes
             and not args.dry_run
         )

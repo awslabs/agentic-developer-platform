@@ -17,8 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
 from .continuation import digest
-from .execution_policy import ExecutionPolicy, policy_hash, stamp_policy
+from .execution_policy import policy_hash, stamp_policy
 from .models import OrchestrationDecision
+from .policy_identity import same_human_principal
 from .state import ActorKind
 
 CONTRACT = "shared-budget-increase/v1"
@@ -87,16 +88,17 @@ def only_spend_increased(before, after):
 
 
 def apply_limits(policy, limits, decision_id):
-    raw = policy.model_dump(mode="json", exclude={"policy_id", "policy_hash", "principal_id"})
-    raw["limits"]["max_spend_usd"] = str(limits.max_spend_usd)
-    effective = stamp_policy(ExecutionPolicy.model_validate(raw), principal_id=policy.principal_id, org_id=policy.org_id)
+    draft = policy.model_copy(deep=True)
+    draft.limits = draft.limits.model_copy(update={"max_spend_usd": limits.max_spend_usd})
+    draft.policy_id = draft.policy_hash = draft.principal_id = None
+    effective = stamp_policy(draft, principal_id=policy.principal_id, org_id=policy.org_id)
     effective._shared_run_spend_usd = limits.max_run_spend_usd
     effective._shared_chain_spend_usd = limits.max_chain_spend_usd
     effective._shared_budget_decision_id = decision_id
     return effective
 
 
-async def effective_shared_budget(session, plan, policy):
+async def effective_shared_budget(session, plan, policy, *, display_lineage=None, as_of=None):
     """A budget receipt cannot confer authority outside its exact accepted plan."""
     decision = await session.scalar(
         select(OrchestrationDecision)
@@ -104,6 +106,7 @@ async def effective_shared_budget(session, plan, policy):
             OrchestrationDecision.org_id == plan.org_id,
             OrchestrationDecision.flow_id == plan.flow_id,
             OrchestrationDecision.kind == KIND,
+            *([OrchestrationDecision.created_at <= as_of] if as_of is not None else []),
         )
         .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
         .limit(1)
@@ -122,7 +125,7 @@ async def effective_shared_budget(session, plan, policy):
     if data["plan_version"] < plan.version:
         from .plan_lineage import receipt_plan
 
-        plan = await receipt_plan(session, plan, data)
+        plan = await display_lineage.receipt_plan(session, plan, data) if display_lineage is not None else await receipt_plan(session, plan, data)
         if plan is None:
             return policy  # General plan changes still require a fresh approval.
     if (
@@ -130,11 +133,12 @@ async def effective_shared_budget(session, plan, policy):
         or decision.actor_role != "platform_admin"
         or not decision.actor_id
         or data.get("contract") != CONTRACT
+        or data.get("flow_id") != plan.flow_id
         or data.get("plan_hash") != plan.plan_hash
         or plan.plan_hash != accepted_document_hash(plan.plan_document)
         or data.get("original_policy_hash") != policy.policy_hash
         or policy.policy_hash != policy_hash(policy)
-        or data.get("principal_id") != policy.principal_id
+        or not await same_human_principal(session, org_id=plan.org_id, recorded_id=data.get("principal_id"), current_id=policy.principal_id)
     ):
         raise BudgetIncreaseError("budget_receipt_unverifiable")
     before = financial_limits(policy)
@@ -145,7 +149,7 @@ async def effective_shared_budget(session, plan, policy):
 
 async def prepare_increase(session, *, flow_id, actor, request, lock=False):
     from .shared_amendment import current_plan
-    from .shared_policy import read_flow_meter, shared_inputs
+    from .shared_policy import reconcile_flow_meter, shared_inputs
 
     if actor.actor_kind != ActorKind.HUMAN or actor.actor_role != "platform_admin":
         raise BudgetIncreaseError("human_platform_admin_required")
@@ -178,7 +182,7 @@ async def prepare_increase(session, *, flow_id, actor, request, lock=False):
         raise BudgetIncreaseError("budget_increase_must_not_reduce_limits")
     if request.limits == before:
         raise BudgetIncreaseError("budget_limits_unchanged")
-    meter = await read_flow_meter(org_id=actor.org_id, flow_id=flow_id, policy=policy)
+    meter = await reconcile_flow_meter(session, org_id=actor.org_id, flow_id=flow_id, policy=policy)
     if meter is None or meter.total_usd < baseline:
         raise BudgetIncreaseError("budget_usage_unavailable")
     document = {

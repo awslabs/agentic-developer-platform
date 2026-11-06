@@ -148,12 +148,13 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_app(db_session: AsyncSession, *, authorized_action: Action | None = None) -> TestClient:
+def _make_app(db_session: AsyncSession, *, authorized_action: Action | None = None, execution_persona: str | None = None) -> TestClient:
     app = FastAPI()
 
     @app.middleware("http")
     async def _set_authorized_action(request, call_next):
         request.state.agent_authorized_action = authorized_action
+        request.state.agent_execution_persona = execution_persona
         return await call_next(request)
 
     app.include_router(router)
@@ -252,6 +253,7 @@ def _post(
     headers: dict | None = None,
     reviewer: AsyncMock | None = None,
     authorized_action: Action | None = None,
+    execution_persona: str | None = None,
 ):
     """POST the route with DDB + mint + credential resolution stubbed out.
 
@@ -262,7 +264,7 @@ def _post(
     settings = settings or _settings_mock()
     mint = mint or AsyncMock(return_value=("ghs_brokered_token", _GITHUB_EXPIRES_AT))
     reviewer = reviewer or AsyncMock(side_effect=ReviewerIdentityUnavailableError("not configured"))
-    client = _make_app(db_session, authorized_action=authorized_action)
+    client = _make_app(db_session, authorized_action=authorized_action, execution_persona=execution_persona)
 
     with (
         patch("src.internal.routes.get_settings", return_value=settings),
@@ -720,6 +722,39 @@ class TestReviewerIdentity:
         assert resp.json()["app_id"] == "88002"
         assert mint.await_args.args[0] == "88002"
         assert mint.await_args.args[2] == self._REVIEW_INSTALLATION
+
+    @pytest.mark.asyncio
+    async def test_reviewer_owned_repair_continuation_keeps_the_reviewer_identity(self, db):
+        """A reviewer that owns delivery is continued as `repair` after it leaves an open
+        defect (#7482); publishing its verdict afterwards still needs the review App.
+        The persona comes from the engine-written execution record, never the body."""
+        reviewer = AsyncMock(return_value=("88002", _FAKE_REVIEW_KEY, self._REVIEW_INSTALLATION))
+        resp, mint = _post(
+            db,
+            body=_body(identity="review"),
+            reviewer=reviewer,
+            authorized_action=Action.REPAIR,
+            execution_persona="agent-codex-reviewer",
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["identity"] == "review"
+        assert mint.await_args.args[2] == self._REVIEW_INSTALLATION
+
+    @pytest.mark.asyncio
+    async def test_developer_repair_still_cannot_mint_reviewer_credentials(self, db):
+        reviewer = AsyncMock(return_value=("88002", _FAKE_REVIEW_KEY, self._REVIEW_INSTALLATION))
+        resp, mint = _post(
+            db,
+            body=_body(identity="review"),
+            reviewer=reviewer,
+            authorized_action=Action.REPAIR,
+            execution_persona="agent-codex-developer",
+        )
+
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "review_identity_not_authorized"
+        mint.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_absent_reviewer_app_falls_back_and_says_so(self, db):

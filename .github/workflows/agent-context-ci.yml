@@ -7,6 +7,7 @@ on:
       - '.github/workflows/agent-context-ci.yml'
       - '.github/workflows/agent-context-deploy.yml'
       - 'modules/agent-context/deploy.sh'
+      - 'modules/agent-context/manifests/**'
       - 'modules/agent-context/scripts/**'
       - 'modules/agent-context/images/ingestion/**'
       - 'modules/agent-context/door/**'
@@ -15,6 +16,7 @@ on:
       - 'modules/agent-context/personal_context/**'
       - 'modules/agent-context/tests/**'
       - 'modules/agent-context/pyproject.toml'
+      - 'libs/python/adp-common/**'
       # Documentation-only changes do not start this workflow.
       - '!docs/**'
       - '!**/docs/**'
@@ -29,6 +31,7 @@ on:
       - '.github/workflows/agent-context-ci.yml'
       - '.github/workflows/agent-context-deploy.yml'
       - 'modules/agent-context/deploy.sh'
+      - 'modules/agent-context/manifests/**'
       - 'modules/agent-context/scripts/**'
       - 'modules/agent-context/images/ingestion/**'
       - 'modules/agent-context/door/**'
@@ -36,6 +39,7 @@ on:
       - 'modules/agent-context/pipeline/**'
       - 'modules/agent-context/personal_context/**'
       - 'modules/agent-context/pyproject.toml'
+      - 'libs/python/adp-common/**'
       # Documentation-only changes do not start this workflow.
       - '!docs/**'
       - '!**/docs/**'
@@ -103,10 +107,11 @@ jobs:
           # so the drift was invisible. 1.29.0 is the last release exporting it.
           pip install pytest pytest-asyncio httpx respx pydantic pydantic-settings asgi-lifespan \
             boto3 sqlalchemy fastapi 'mcp<2' requests pyyaml uvicorn defusedxml \
-            psycopg2-binary python-hcl2 neo4j python-ulid \
+            psycopg2-binary pgserver python-hcl2 neo4j python-ulid \
             opentelemetry-sdk opentelemetry-exporter-otlp \
             opentelemetry-sdk-extension-aws opentelemetry-propagator-aws-xray \
             'playwright==1.63.0'
+          pip install '../../libs/python/adp-common[l5-consumers]'
 
       - name: Install Chromium for ingestion security regression
         run: python -m playwright install --with-deps chromium

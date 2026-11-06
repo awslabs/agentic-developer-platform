@@ -38,6 +38,7 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.orchestration import repository_binding
 from src.orchestration.models import (
     DecisionKind,
     NodeKind,
@@ -60,6 +61,7 @@ from src.orchestration.tracker_projection import (
     flush_tracker_projections,
     read_snapshot,
     render_region,
+    resolve_parent_reference,
     run_tracker_projection_pass,
     splice_region,
 )
@@ -83,6 +85,24 @@ INTENT_BELOW = "\n\n## Notes\n\nDo not lose this paragraph."
 
 def _body(region: str) -> str:
     return f"{INTENT_ABOVE}{REGION_START}\n{region}\n{REGION_END}{INTENT_BELOW}"
+
+
+@pytest.fixture(autouse=True)
+def _verified_reference(monkeypatch):
+    async def verified(_session, **kwargs):
+        return repository_binding.VerifiedRepository(
+            "github",
+            kwargs["repository_id"],
+            kwargs["name"],
+            kwargs["installation_id"],
+            kwargs["name"],
+            kwargs["issue"],
+            kwargs["operation"],
+            kwargs["issue"] + 10000,
+            f"I_{kwargs['repository_id']}_{kwargs['issue']}",
+        )
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", verified)
 
 
 @pytest.fixture
@@ -179,7 +199,9 @@ async def _flow(
     that seeded the plan alone would model a flow that cannot exist, and would make
     the authorization tests below pass for the wrong reason.
     """
-    flow = OrchestrationFlow(org_id=org_id, slug=slug, title="AI-DLC engine", intent_ref="4191")
+    reference = dict(provider="github", repository_id=3003, repository=REPO, installation_id=INSTALLATION, issue_number=epic)
+    tracker_refs = [dict(scope="epic", address=f"{slug}/epic-{epic}", issue=reference)]
+    flow = OrchestrationFlow(org_id=org_id, slug=slug, title="AI-DLC engine", intent_ref="4191", tracker_refs=tracker_refs)
     session.add(flow)
     await session.flush()
     for index, state in enumerate(states or [NodeState.RUNNING.value], start=1):
@@ -203,7 +225,7 @@ async def _flow(
                 org_id=org_id,
                 flow_id=flow.id,
                 version=version,
-                plan_document={"nodes": []},
+                plan_document={"nodes": [], "tracker_refs": tracker_refs},
                 plan_hash="f" * 64,
             )
         )
@@ -400,6 +422,7 @@ def test_the_flag_being_true_enables_the_pass(monkeypatch):
     monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", REPO)
     monkeypatch.setenv("FEATURE_ORCHESTRATION_ENGINE_ENABLED", " TRUE ")
     assert TrackerProjectionConfig.from_env().enabled is True
+    assert TrackerProjectionConfig.from_env().repo == ""
 
 
 @pytest.mark.parametrize("cap", ["not-a-number", "0", "-3", ""])
@@ -423,12 +446,11 @@ async def test_pass_is_a_silent_no_op_when_the_flag_is_off(session):
     assert report.flows_examined == 0
 
 
-async def test_pass_is_a_no_op_without_a_configured_repository(session):
-    """No repository means nothing to write to; reported as disabled, not as an error."""
+async def test_planning_target_needs_no_execution_repository_configuration(session):
     await _flow(session)
     report = await run_tracker_projection_pass(session, TrackerProjectionConfig(enabled=True, repo=""))
-    assert report.enabled is False
-    assert report.pending == []
+    assert report.enabled is True
+    assert [(pending.repo, pending.issue_number) for pending in report.pending] == [(REPO, EPIC)]
 
 
 async def test_pass_targets_the_epic_issue_from_the_graph_address(session):
@@ -439,6 +461,116 @@ async def test_pass_targets_the_epic_issue_from_the_graph_address(session):
     assert (pending.org_id, pending.repo, pending.issue_number) == (ORG_A, REPO, EPIC)
     assert pending.installation_id == INSTALLATION
     assert pending.version == 1
+
+
+async def test_planning_epic_in_c_links_stories_in_a_and_b_without_redirecting_writes(session):
+    flow = await _flow(session, epic=4910, states=[NodeState.RUNNING.value, NodeState.PASSED.value])
+    reference = dict(provider="github", repository_id=3333, repository="example/planning", installation_id=303, issue_number=999)
+    flow.tracker_refs = [dict(scope="epic", address=f"{flow.slug}/epic-4910", issue=reference)]
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id))
+    plan.plan_document = {**plan.plan_document, "tracker_refs": flow.tracker_refs}
+    stories_query = select(OrchestrationNode).where(OrchestrationNode.flow_id == flow.id).order_by(OrchestrationNode.node_ref)
+    stories = (await session.scalars(stories_query)).all()
+    for story, name, repository_id in zip(stories, ("example/api", "example/web"), (1111, 2222), strict=True):
+        story.issue_ref = "42"
+        story.repository_identity = name
+        story.provider_repository_id = repository_id
+        story.repository_connection = {"provider": "github", "installation_id": 101 if repository_id == 1111 else 202}
+    await session.flush()
+
+    parent = await resolve_parent_reference(session, org_id=ORG_A, flow_id=flow.id, epic_ref="epic-4910")
+    assert (parent.repository_id, parent.full_name, parent.issue_number, parent.installation_id) == (3333, "example/planning", 999, 303)
+    assert (parent.issue_id, parent.issue_node_id, parent.operation) == (10999, "I_3333_999", "link")
+    link_targets = []
+    for story in stories:
+        child = await repository_binding.resolve_story_repository(
+            session,
+            tenant_id=ORG_A,
+            name=story.repository_identity,
+            repository_id=story.provider_repository_id,
+            installation_id=story.repository_connection["installation_id"],
+            issue=int(story.issue_ref),
+            operation="link",
+        )
+        link_targets.append((parent.issue_node_id, child.issue_node_id, child.full_name, child.installation_id))
+    assert link_targets == [
+        ("I_3333_999", "I_1111_42", "example/api", 101),
+        ("I_3333_999", "I_2222_42", "example/web", 202),
+    ]
+    report = await run_tracker_projection_pass(session, TrackerProjectionConfig(enabled=True, repo="example/api"))
+    assert len(report.pending) == 1
+    pending = report.pending[0]
+    assert (pending.repo, pending.issue_number, pending.installation_id) == ("example/planning", 999, 303)
+    assert "https://github.com/example/api/issues/42" in pending.body_region
+    assert "https://github.com/example/web/issues/42" in pending.body_region
+    assert [story.repository_identity for story in stories] == ["example/api", "example/web"]
+
+    class RecordingProvider(StubProvider):
+        def __init__(self):
+            super().__init__(_body("kickoff"))
+            self.targets = []
+
+        async def read_issue_body(self, **kwargs):
+            self.targets.append(("read", kwargs["repo"], kwargs["issue_number"], kwargs["installation_id"]))
+            return await super().read_issue_body(**kwargs)
+
+        async def write_issue_body(self, **kwargs):
+            self.targets.append(("write", kwargs["repo"], kwargs["issue_number"], kwargs["installation_id"]))
+            return await super().write_issue_body(**kwargs)
+
+    provider = RecordingProvider()
+    await flush_tracker_projections(report, client_factory=provider)
+    assert report.projections_written == 1
+    assert provider.targets == [("read", "example/planning", 999, 303), ("write", "example/planning", 999, 303)]
+
+
+async def test_parent_for_native_link_refuses_missing_or_wrong_provider_issue_identity(session, monkeypatch):
+    flow = await _flow(session)
+    valid = await resolve_parent_reference(session, org_id=ORG_A, flow_id=flow.id, epic_ref=f"epic-{EPIC}")
+    assert valid.issue_node_id == f"I_3003_{EPIC}"
+
+    async def missing(_session, **kwargs):
+        return repository_binding.VerifiedRepository(
+            "github",
+            kwargs["repository_id"],
+            kwargs["name"],
+            kwargs["installation_id"],
+            kwargs["name"],
+            kwargs["issue"],
+            kwargs["operation"],
+        )
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", missing)
+    assert await resolve_parent_reference(session, org_id=ORG_A, flow_id=flow.id, epic_ref=f"epic-{EPIC}") is None
+    assert await resolve_parent_reference(session, org_id=ORG_A, flow_id=flow.id, epic_ref=f"epic-{EPIC}", operation="tracker_write") is not None
+
+    async def wrong(_session, **kwargs):
+        return repository_binding.VerifiedRepository(
+            "github",
+            kwargs["repository_id"],
+            kwargs["name"],
+            kwargs["installation_id"],
+            kwargs["name"],
+            kwargs["issue"] + 1,
+            kwargs["operation"],
+            100,
+            "I_WRONG",
+        )
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", wrong)
+    assert await resolve_parent_reference(session, org_id=ORG_A, flow_id=flow.id, epic_ref=f"epic-{EPIC}") is None
+
+
+async def test_legacy_epic_number_does_not_authorize_tracker_write(session):
+    flow = await _flow(session)
+    flow.tracker_refs = None
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id))
+    plan.plan_document = {"nodes": []}
+    await session.flush()
+    assert await resolve_parent_reference(session, org_id=ORG_A, flow_id=flow.id, epic_ref=f"epic-{EPIC}") is None
+    report = await run_tracker_projection_pass(session, CONFIG)
+    assert report.pending == []
+    assert report.projections_refused == 1
 
 
 async def test_pass_records_no_decision_and_changes_no_state(session):
@@ -500,12 +632,10 @@ async def test_an_unparseable_epic_reference_is_refused(session):
 
 
 async def test_an_unresolved_installation_is_refused(session, monkeypatch):
-    """Fail-closed on zero and on more than one installation, by the shared rule."""
+    async def _none(_session, **kwargs):
+        raise repository_binding.RepositoryBindingError("connection_revoked")
 
-    async def _none(_session, *, org_id):
-        return None
-
-    monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", _none)
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", _none)
     await _flow(session)
 
     report = await run_tracker_projection_pass(session, CONFIG)
@@ -782,7 +912,9 @@ async def _flow_at(session, *, flow_id: str, epic: int, slug: str, moved_at: dat
     it reproduced on some seeds and not others) and the timestamps must not be "now"
     for every row, or every ordering looks alike.
     """
-    flow = OrchestrationFlow(id=flow_id, org_id=ORG_A, slug=slug, title="AI-DLC engine", intent_ref="4191")
+    reference = dict(provider="github", repository_id=3003, repository=REPO, installation_id=INSTALLATION, issue_number=epic)
+    tracker_refs = [dict(scope="epic", address=f"{slug}/epic-{epic}", issue=reference)]
+    flow = OrchestrationFlow(id=flow_id, org_id=ORG_A, slug=slug, title="AI-DLC engine", intent_ref="4191", tracker_refs=tracker_refs)
     session.add(flow)
     await session.flush()
     session.add(
@@ -800,7 +932,11 @@ async def _flow_at(session, *, flow_id: str, epic: int, slug: str, moved_at: dat
             updated_at=moved_at,
         )
     )
-    session.add(OrchestrationAcceptedPlan(org_id=ORG_A, flow_id=flow.id, version=1, plan_document={"nodes": []}, plan_hash="f" * 64))
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=ORG_A, flow_id=flow.id, version=1, plan_document={"nodes": [], "tracker_refs": tracker_refs}, plan_hash="f" * 64
+        )
+    )
     session.add(
         OrchestrationDecision(
             org_id=ORG_A,

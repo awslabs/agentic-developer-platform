@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tools-facade-reconciler
+  namespace: adp-gateway
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 50
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: tools-facade-reconciler
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reconciler
+              image: REPLACE_WITH_TOOLS_FACADE_IMAGE
+              command: ["python", "-m", "tools_facade.reconciler"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              env:
+                - name: AWS_REGION
+                  value: __AWS_REGION__
+                - name: ADP_TOOLS_EXECUTION_TABLE
+                  value: __TOOLS_EXECUTION_TABLE__
+                - name: ADP_TOOLS_ACCOUNT_ID
+                  value: "__TOOLS_ACCOUNT_ID__"
+                - name: ADP_TOOLS_ENVIRONMENT
+                  value: __TOOLS_ENVIRONMENT__
+                - name: ADP_TOOLS_CLEANUP_LAMBDA_ARN
+                  value: __TOOLS_CLEANUP_LAMBDA_ARN__
+                - name: ADP_TOOLS_RECONCILER_ROLE_ARN
+                  value: __TOOLS_RECONCILER_IRSA_ROLE_ARN__
+                - name: ADP_TOOLS_RECONCILER_KEY_ARN
+                  value: __TOOLS_RECONCILER_SIGNING_KEY_ARN__
+                - name: ADP_TOOLS_NATIVE_CLEANUP_URL
+                  value: __TOOLS_NATIVE_CLEANUP_URL__
+                - name: ADP_TOOLS_OUTCOME_REPAIR_URL
+                  value: __TOOLS_OUTCOME_REPAIR_URL__
+                - name: ADP_TOOLS_ATLASSIAN_READBACK_URL
+                  value: __TOOLS_ATLASSIAN_READBACK_URL__
+                - name: ADP_TOOLS_CLEANUP_BATCH_SIZE
+                  value: "50"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 128Mi

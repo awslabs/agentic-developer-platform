@@ -1,5 +1,331 @@
 # Superplane authoritative design
 
+Retained reader cleanup follows up to four immutable predecessor receipts within
+the original attempt ceiling. Each settlement and journal must still match its
+recorded bytes. A separately qualified stopped source may have re-observed only
+a nonempty subset of the original five components. Its journal keeps those exact
+partial markers; the oldest complete roster is sealed as `inherited_components`.
+Service-held cleanup independently reads all five original UID/document/creation
+identities before and after revocation, and never invents completed inventory,
+management observation or a system workload baseline. Native unknown closure,
+source/expiry proof and a fresh original-human decision remain separate gates.
+See [closed bootstrap cleanup](docs/closed-bootstrap-cleanup.md).
+
+Closed cleanup verifies each exact Kubernetes roster as a finite read-only batch
+with fresh source, owner, operation, enrollment and expiry checks around all I/O.
+Results exceeding thirty seconds refuse. Both native absence/retained-identity
+passes remain independent, and every deletion retains its ordinary fences and
+immutable preconditions. Batch readers cannot write, expand the sealed roster or
+provide proof for later effects. Runtime deployment and fresh permit gates remain.
+
+An expired bootstrap can be observed while paid dispatch and KEDA remain paused.
+The original requester selects its exact version and fence; Gateway checks both
+under the normal dispatch lock. One installation-owned, ten-minute observer Job
+uses fresh native recovery authority and refuses execution messages before run
+credential issuance. Shared recovery owns observation, accounting and closure;
+native source/cleanup/human-decision gates still govern any paid successor.
+See [paused bootstrap observation](docs/paused-bootstrap-observation.md).
+
+Dedicated bootstrap installation permission checks run as one finite read batch
+under the original registration fence, with complete fresh grant inventories
+before and after it. Up to four independent permission reads overlap; every
+started read joins before the fence is released, including on refusal. Each
+actor transport still checks its current operation and pinned cluster transport.
+The batch grants no access and retains no proof for a later mutation. Component
+mutations continue to validate their full current grant inventory independently.
+
+Dedicated EKS reader verification recognizes the exact managed-EKS diagnostic
+`webhook authorizer does not support user rule resolution` only after a live
+SelfSubjectReview proves the expected native ServiceAccount, its UID, and exactly
+the standard ServiceAccount groups. The target must be a TLS-verified EKS
+endpoint in the region of its native cluster ARN. EKS access policies authorize
+IAM principals; they do not add permissions to a native Kubernetes ServiceAccount
+([AWS access-entry contract](https://docs.aws.amazon.com/eks/latest/userguide/access-entries.html)).
+The complete RBAC rule listing still passes the existing strict reader allowlist.
+Unknown/multiple resolution errors, unsafe rules, IAM identities and other
+providers remain refused. The issuer checks every namespace before projection;
+the manager independently verifies the authenticated reader. Shared membership
+rules and the existing paused rollout/admission gates remain unchanged.
+
+An installed dedicated reader can receive an independently qualified image through
+`installation.dedicated_reader_runtime`. This image-only saved-plan maintenance
+uses the native installation lock while dispatch and workers are paused. It
+preserves API/worker images, credentials, IAM, registration and admission gates;
+success requires the owned reader pods to serve the exact image and become ready.
+The reader seeds its Kubernetes authentication entry before its first request,
+then rereads the projected management token for each authenticated request.
+
+An interrupted original initial Terraform plan with no saved proposal has a distinct
+`interrupted-planning` recovery scope. Qualified read-only source, original pod and
+protected audit, retained cache, unchanged storage and empty versioned backend must
+all agree. The original grants and session grace must expire before a fresh human
+decision. A new admitted worker archives the retained tree and conditionally releases
+only the recorded stopped planner's lock under current execution authority. Attempt
+limits and apply approvals remain intact. Harness 18 and domain migration 058 require
+compatible Gateway, tick, API and workers deployed together while paused. See
+[interrupted planning recovery](docs/interrupted-planning-recovery.md).
+
+An installation outside AWS Organizations may explicitly set its lifecycle
+`aws_organization_id` to `standalone`. This limits managed/adopt requests to the
+same verified management account and forbids OU placement and account creation.
+The deployment policy and trusted request authorization must agree on this
+value; provider authority, current approvals and STS identity checks remain
+required. Existing organization-backed policy hashes are unchanged.
+
+
+## Recovery after an unknown bootstrap settlement
+
+An independently qualified original management bootstrap may also retain its
+five installed reader components through `bootstrap-management-components-revoked-v1`.
+This distinct proof requires complete failed-path revocation of its 25 grants,
+the original namespace/component ownership, and the durable pre-admission source
+barrier. It preserves the same unknown/retain closure and original-human fresh
+review below. A new grant generation revalidates and reuses the exact objects;
+it never rewrites the old journal or presents installed components as no effects.
+See [the component boundary](docs/bootstrap-start-recovery.md#completed-management-components-before-admission).
+
+A stopped original dedicated bootstrap can be explicitly reauthorized through the
+`settled-bootstrap-v1` boundary after native acquisition cleanup. The new review
+binds the exact unknown operation version, closed recovery claim, original intent,
+acknowledged retain settlement, and runtime amendment. Only the original selected
+human may decide; the prior approval and envelope are unchanged. A successful fresh
+decision confirms the unchanged retained reservation. Gateway independently verifies
+expired execution grants and sessions, qualified stopped source, the unchanged apply
+artifact, and positive revocation of the same recorded acquisition journal.
+
+The immutable recovery receipt retains the entire source closure and unknown intent
+before the maintained transaction reconciles that intent and advances the live
+operation version and lease fence. The old journal, namespace, audit and apply remain.
+No Terraform apply runs. This boundary initially covers an original bootstrap with
+no prior retry receipts; failed, cancelled, cleanup-required, foreign or changed
+sources are refused. It uses the existing bootstrap receipt scope with a distinct
+review and proof boundary, and requires a reviewed runtime amendment up to three
+hours. The review clock includes dispatch and setup.
+
+An original three-hour admission uses a distinct settled-only runtime
+reauthorization term to obtain a fresh three-hour window. Its new human decision
+binds the retained closure; it preserves the original envelope and attempt limit.
+The ordinary bootstrap extension contract remains strictly increasing.
+
+Harness schema 17 and domain migration `056_recovery_settlement_claims` preserve
+recovery settlements per claim. A later recovery writes a separate immutable receipt;
+a replayed old receipt cannot change a newer reservation or accounting projection.
+Deploy compatible Gateway, API, worker and receipt-delivery readers together before
+activation. See [bootstrap recovery](docs/bootstrap-start-recovery.md).
+
+Domain migration `057_bootstrap_recovery_terms` permits the existing bootstrap
+scope to persist its explicit runtime amendment and settled-closure review. It
+preserves other scopes' term restrictions and refuses downgrade once these
+reviews exist. Database constraint failures are unavailable outcomes, distinct
+from a human-authority refusal.
+
+## Operation approval policy
+
+New operation tickets use streamlined approval by default across installations.
+A verified human with current administrator authority may explicitly approve their
+own exact plan. A second person is optional. Provision-only grants still cannot
+approve spending; creating a ticket does not approve it or dispatch work.
+
+Operators can set `require_distinct_approver: true` in the installation environment
+(or `SUPERPLANE_REQUIRE_DISTINCT_APPROVER=true` on the API) to require a separate
+human for new tickets. The default is `false`. The API records this boolean with
+the selected approvers, requester, decision and exact request digest. Decision,
+admission, and Gateway execution all honor that recorded policy; callers cannot
+supply or override it through the approval API. A deployment setting change affects
+new tickets only. Existing tickets retain their policy, including legacy tickets
+migrated with the separate-person requirement enabled.
+
+This policy applies to workspace creation, lifecycle continuation, retirement,
+and workload operations using the shared operation approval service. Every plan
+still requires an explicit decision; retries reuse that decision. Current grants,
+expiry, revocation, budget limits, tenant scope and request binding remain enforced.
+
+Admission copies the policy into the shared consumption ledger. Historical lineage
+and cleanup read that immutable policy, without consulting current deployment settings.
+Legacy ledger rows retain the separate-person requirement.
+
+Initial dedicated managed lifecycle requests select `prepare-infrastructure`
+from their exact approved execution descriptor; they need no additional
+`lifecycle_phase` parameter. API dispatch and native paid workers use the same
+selection rule and preserve the approved bytes. An incomplete recipe or an
+artifact-backed continuation cannot inherit this initial phase. Installed worker
+binding, deployment mode, current authority and runtime policy checks still apply.
+
+Roll out shared Harness schema version 10 and migration `045_approval_policy` in a
+maintenance window with compatible Gateway, API, and worker consumers, then the UI.
+Harness consumers require the matching schema version. Shared schema downgrade
+refuses while any streamlined consumption records exist. Do not issue streamlined tickets while an old execution
+consumer is running: it will refuse requester decisions. The installer renders the
+setting explicitly. Re-enable strict mode for new tickets before rolling back API
+code; keep compatible execution consumers until existing streamlined operations
+finish. Schema downgrade refuses while any streamlined tickets exist so their recorded
+policy is preserved.
+
+An initial admission whose delivery attempts were exhausted may be recovered once
+only after its delivery defect is repaired and the original selected human
+approver makes a fresh decision on the same plan. Recovery preserves the original
+request, workspace, operation, consumed approval and expiry, and reservation. The
+Gateway checks current authority and proves absence of every initial durable
+dispatch mapping while holding the operation lock; cancellation, cleanup or any
+execution evidence prevents recovery. An immutable receipt records the abandoned
+delivery cycle and fences its stale acknowledgements. This requires coordinated
+Harness schema 11, domain migration 046 and compatible execution consumers. See
+[original admission recovery](docs/dispatch-recovery.md) for the review, decision,
+resume and maintenance procedure.
+
+A separate original-planning recovery path covers an interrupted initial
+`prepare-infrastructure` call that never received provider credentials. It requires
+a fresh, scope-bound human decision on the unchanged plan. Under the provider
+operation lock, Gateway proves all possible protected execution grants expired,
+checks the reserved provider broker's durable issuance audit, and refuses any
+credential delivery, completed artifact, provider report, resource, cancellation,
+cleanup or terminal settlement. This path does not accept caller-supplied absence.
+It cannot recover apply, bootstrap, arbitrary provider failures or raw vault-role
+operations.
+
+Harness reconciles the original intent from that owner proof and preserves its
+key and producer. An immutable receipt authorizes one separate retry key for the
+same admitted descriptor; restarting a worker alone never changes a key. The
+original request, operation, job, admission attempt, approval and expiry, outbox,
+reservation and prior recovery receipts remain intact. The lease fence advances;
+attempt counts and ceilings are not reset. A current human and original confirmed
+budget are checked again before dispatch and execution. This requires coordinated
+Harness schema 12, domain migration 047, API, worker, Gateway and tick deployment.
+See [credential-refusal recovery](docs/provider-recovery.md).
+
+A separately scoped `unstarted-planning` recovery handles recorded credential
+issuance only when the protected installation owner establishes the original
+planning start barrier from qualified source, original pod audit provenance,
+retained volume identity and an inert read-only inspection. Gateway separately
+proves all source grants and possible AWS sessions expired, retains every
+issuance audit and checks fresh human authority. Missing state alone is never
+proof. Harness 13 appends immutable linked receipts without resetting attempt
+limits; domain migration 048 keeps this decision separate from credential
+non-issuance recovery. It cannot replay started planning or later lifecycle
+phases. See [planning start recovery](docs/planning-start-recovery.md).
+
+The historical long-temporary-path recovery is limited to a pinned runner and
+complete provider cache for which an inert owner probe reproduces both providers'
+Unix socket bind failures before schema service startup. It retains original
+source/pod/storage provenance, an empty versioned backend, expired authority,
+fresh human confirmation and unchanged attempt accounting. Retained files are
+archived before retry. Corrected workers keep downloads on disk through a short
+private temporary-path alias; native verification uses the production directory
+layout. This does not authorize recovery of arbitrary failed plans.
+
+An interrupted initial proposal with a real saved Terraform plan has a separate
+`saved-plan-completion` scope. The protected installation owner verifies qualified
+historical source, original pod and volume provenance, the exact five retained
+proposal files, create-only changes, absence of prior managed state, independently
+reproduced offline reports, and an empty versioned backend. It truthfully records
+that planning started. Unstarted-plan evidence cannot authorize this path.
+Gateway additionally requires expired source grants and all possible sessions,
+a fresh decision from the original selected human, and unchanged budget confirmation.
+One receipt-bound execution may preserve the original directory, copy only the
+verified module and proposal files, revalidate the original inputs and current
+provider prerequisites, and publish the resulting immutable proposal. It never
+runs Terraform init, plan or apply. Original credentials are neither opened by
+the inert probe nor copied into the new execution. Attempt counts and ceilings
+are retained; this scope cannot extend attempts or be consumed twice. The actual
+completion lease is recorded as the producer, with the original plan hashes and
+source fence retained in metadata. Apply still requires its ordinary exact-plan
+approval. Coordinated Harness schema 14, domain migration 051, and compatible
+Gateway, API and paid-worker consumers are required before activation.
+
+A partially applied dedicated managed workspace has a separate
+`partial-apply-repair` scope. The protected installation owner records historical
+source/pod/volume evidence and the actual versioned backend after the original
+execution has expired. The supported boundary is an ACTIVE EKS control plane
+without nodes or NAT and one unused tainted EIP. An independently approved,
+zero-spend `prepare-partial-apply` operation plans against that retained state;
+it does not take workspace ownership or consume another infrastructure budget.
+The original requester then reviews the fresh artifact, and the original selected
+human approves its exact plan. Only the identified EIP may be replaced; all other
+retained identities must be preserved. Gateway checks the old grants, issued
+sessions, current human authority and artifact producer before Harness records
+one immutable repair receipt. The original partial call is truthfully reconciled
+as failed, with a separate execution key for the new plan under the same paid
+admission. Attempts, reservations, original files and approval history are retained.
+Actual completion verifies retained identities and observes the old EIP absent
+before sealing inventory and proceeding to ordinary bootstrap. This requires
+coordinated Harness schema 15, domain migration 053, Gateway, API and worker
+consumers. See [partial apply recovery](docs/partial-apply-recovery.md).
+
+A stopped dedicated bootstrap may receive an `unstarted-bootstrap` retry only when
+qualified historical source guarantees every mutation follows a protected journal.
+The installation owner binds original image/source, pod audit and immutable policy;
+Gateway independently proves all grants and possible sessions expired, that no
+bootstrap authority, network effects, membership or output artifact exists, and
+that no registration reservation remains. A pre-authority refusal may release its
+own reservation; durable mutation journals are never removed by that path. Filesystem or cloud absence alone is not proof. The original selected
+human approves the unchanged bootstrap again. Harness retains its admission,
+original call, attempt count and ceiling, appends one retry receipt, and advances
+fencing. A later stopped attempt requires fresh owner evidence for its exact
+qualified source, pod, call and fence, plus a new human decision. The immutable
+receipt chain must retain the identical completed apply artifact. The original
+attempt ceiling applies unless a supported exhausted boundary carries explicit
+owner-bound authorization from the current original human requester. A
+retained-revocation extension adds at most five attempts and caps the total at ten. The
+separate complete-acquisition exception permits one explicitly authorized allowance
+of up to ten additional attempts from ten of ten, for a total ceiling at most
+twenty, only after all 25 recorded grants are positively revoked and the retained
+namespace and original source are verified. Partial or predecessor-only boundaries
+and already raised ceilings cannot use that exception. Both paths record the exact previous
+ceiling and attempts without resetting history; see the
+[complete acquisition continuation](docs/bootstrap-start-recovery.md#bounded-extension-after-complete-acquisition-cleanup)
+for the required fresh evidence and authorization. Execution uses separate private scratch and the exact completed apply
+artifact bound in that receipt even after its review age expires. It rechecks
+current authority and prerequisites; this neither refreshes a Terraform plan nor
+replays apply. Harness 16, domain migration 054 and compatible Gateway, API and
+workers must be installed together. See [bootstrap start recovery](docs/bootstrap-start-recovery.md).
+
+Completed apply recovery also covers failure of the after-step inventory hook.
+The original successful call has no single physical provider reference; recovery
+preserves that record, the original artifact and producer audit, and obtains a
+fresh resource census under the actual recovery claim before settlement. The
+API's dedicated observation role permits only finite AWS reads in explicitly
+installed regions. Workers receive bounded facts, never recovery AWS credentials.
+The same inventory implementation serves ordinary apply and recovery. Workspace registration and immutable artifacts are read through the
+domain connection; claims, admissions and provider-call records use the shared
+operation connection. Separate database schemas must work throughout observation
+and inventory sealing. Unknown
+resources, changed identity or expired claims defer settlement and retain budget;
+bootstrap remains a separately approved continuation. Recovery settlement reads
+and locks original operations, closed claims and immutable receipts through the
+shared connection. Budget reservations, allocation artifacts and accepted receipts
+use the independent domain connection. The domain budget effect and acceptance
+receipt commit together while shared locks remain held; lost acknowledgements
+are redelivered without repeating the budget effect. The worker waits up to 25
+seconds for lifecycle observation, covering the API's 20-second census deadline
+within API Gateway's 29-second limit. A lost response is reconciled through a
+fresh recovery claim; the transport does not retry inventory publication. Installation selects
+`lifecycle_observation.regions` together with native lifecycle and recovery transport. The API's ordinary dispatcher
+also drains pending immutable recovery receipts independently of lease recovery.
+Only receipts belonging to a registered domain workspace and original budget
+reservation reach the same closed-claim validator. It commits the deduplicated
+budget receipt, writes the accounting projection, then acknowledges the shared
+receipt. A crash between these steps retries delivery without reopening execution,
+issuing provider credentials or consuming another paid attempt. Bounded cursor
+pages advance past refused/foreign receipts, and dispatch maintenance pauses this
+sender alongside normal task delivery.
+
+When an apply artifact ages out while completion recovery is pending, a fresh
+successful recovery settlement permits a new bootstrap review for one hour.
+The unchanged artifact must match the completed source operation, original job,
+attempt, request and digest; the settlement audit must match the closed recovery
+lease's actor, attempt and fence and the successful transition timestamp. API
+review and worker validation enforce the same rule. This does not refresh plans,
+rewrite artifact timestamps or reuse an expired approval: bootstrap still needs
+a new exact decision and current execution authority. Missing or stale recovery
+evidence keeps the expired handoff refused.
+
+The UI observes authenticated control-plane health, workspace cluster health and
+heartbeat, and workspace-bound provider validation independently. Workspace
+details use the domain organization from the authenticated listing; the ADP
+organization remains the session scope. Managed provider evidence is restored on
+re-entry and can be refreshed through real AWS validation. A successful recovery
+or healthy control plane does not establish workspace execution readiness.
+
 **Status:** authoritative product and architecture specification; implementation is partial.
 **Updated:** 25 September 2026. **Parent epic:** [#4910](https://github.com/aws-e/adp/issues/4910).
 **Maintained code:** `aws-e/adp`, under `modules/domain-apps/superplane/`.
@@ -74,6 +400,19 @@ identity and releases only operation-bound short-lived sessions. See
 [provider authority](installation/PROVIDER-AUTHORITY.md) for the storage, evidence,
 revocation and delivery contract. Provider policies, mandatory child-role
 boundaries, qualified API/worker images and live acceptance remain separate gates.
+The provider owner supports a bounded repair of the original combined STS trust:
+ExternalId remains mandatory for AssumeRole, while TagSession retains the exact
+principal and required tags using AWS-supported condition keys. A conditional
+policy-generation advancement preserves scope and expiry; it is not general
+policy rotation or human approval.
+
+The provider owner also supports a bounded native network read repair: only
+`ec2:DescribeAddressesAttribute` and `ec2:DescribePrefixLists` may be added to
+the existing region-scoped provisioner read statement. The complete enrolled
+policy snapshot and current AWS version bind the repair; trust, other policies,
+child boundary, target, beneficiary and expiry remain unchanged. This advances
+only the policy generation and does not authorize partial-apply replay. See the
+[provider authority procedure](installation/PROVIDER-AUTHORITY.md).
 
 ## 2. Logical design
 
@@ -849,6 +1188,15 @@ resources, IAM roles/policies and EKS access mappings use app-owned Terraform.
 Kubernetes installation and temporary workspace/bootstrap grants use maintained
 app entrypoints with recorded ownership, verification and cleanup.
 
+Native lifecycle storage is an explicit optional installer dependency. The
+app-owned namespace bootstrap root provisions a non-default encrypted retained
+EBS class and its exact read permission. A bounded installation stage binds the
+owned state claim without activating a worker, then the infrastructure owner
+grants a read of the actual PV after rechecking the claim UID, installation and
+class. Normal installation resumes with full live PV verification. Neither the
+class nor storage reads are added when this option is absent; installation state
+and namespace bootstrap authority remain separate from workspace authority.
+
 Existing ADP management infrastructure remains platform-owned. App modules
 consume explicit references to shared clusters, database instances, state
 storage, identity providers and automation roles. They do not acquire ownership
@@ -861,6 +1209,18 @@ prepare and apply infrastructure. A broker connection is not a prerequisite for
 that operator path. The selected account/immutable role and saved plans must
 still be verified. Runtime provider credentials and workspace delegation are
 separate from installation authority.
+
+The five-resource domain runtime plan accepts an authenticated approval review
+or a merge of its exact plan PR by a current repository maintainer/admin. The
+maintainer may also author the PR; same-author approval uses GitHub's normal merge
+flow. Approval remains bound to the saved binary, source, target and selected
+AWS identity. Merged approval checks the exact manifest at both the PR head and
+merge commit and records the merger. This installation policy does not change
+workspace-operation approvals or image qualification. See the
+[runtime plan approval contract](installation/RUNTIME-PLAN-APPROVAL.md).
+The PR contains only a digest commitment to the private manifest; target
+identities, saved plans and detailed evidence stay in the selected private
+artifact store.
 
 Moving source or introducing a child module must preserve existing resource
 identities and backend keys, with reviewed Terraform address migrations where
@@ -989,3 +1349,110 @@ The app owns `cli/adp-superplane-lifecycle.py`, loaded by the shared Superplane 
 The adapter adds reviewed workspace deletion, credential-reference connection create/show/validate/rotate/revoke, eligible-cluster discovery, installed deployment profiles and cursor-based workspace audit events. [Command semantics and examples](../../../docs/adp-cli/superplane.md#lifecycle-review-and-scoped-events-5638) describe mutation receipts, revision fences and bounded follow. Snapshot reads do not reconcile teardown or probe provider resources. Revisions fence mutations under the existing workspace/connection locks; uncertain mutations are never automatically replayed.
 
 Namespace flags are assertions against server-owned workspace isolation, not overrides. Connection validation retains vault attestation of exact caller readings; disablement retains its explicit issued-credential limitation. Default protection and protected retirement's staged-cleanup admission remain authoritative. Cluster home region and allocation compute region remain independent. E39 qualifies only authenticated preview/event reads, not live inference, provider cleanup or stopped billing.
+
+### Explicit initial-planning attempt extensions
+
+A separately recorded human authorization may extend an original planning
+operation by one to five attempts, up to a total ceiling of ten. The protected
+installation owner binds that authorization to the original requester, exact
+count and prior ceiling. Fresh scoped recovery authority and the existing
+expired-session/start-barrier proofs remain required. Harness atomically appends
+an immutable recovery receipt and audit while changing only the ceiling; recorded
+attempts and all original admission/budget history survive. Ordinary recovery
+never raises a ceiling. Before-init retained preparation may be recovered only
+from exact qualified source/empty-review evidence; its files are preserved under
+the recovery receipt before a fresh private directory is created. See the
+[planning recovery procedure](docs/planning-start-recovery.md).
+
+New native lifecycle approval tickets cover their approved runtime plus fifteen
+minutes of dispatch headroom, with a minimum validity of one hour. This lets the
+broker issue its minimum fifteen-minute STS session inside current authority.
+Other tickets retain fifteen-minute validity. Issuing or retrying an existing
+request never extends its recorded expiry; every new ticket still requires an
+explicit decision and keeps its original resource, runtime and cost bounds.
+
+An initial Terraform provider download interrupted before the required AWS
+provider is installed has a separate, bounded retained-preparation proof. It
+requires original source/pod provenance, exact module and lock bytes, an empty
+review, bound initialization-only backend metadata and absent versioned state and
+lock records. Complete initialization and arbitrary failed plans remain
+ineligible. The recovery receipt preserves all retained files and normal current
+budget, approval, session expiry and attempt checks. See the
+[planning recovery procedure](docs/planning-start-recovery.md#interrupted-provider-installation).
+
+A separately reviewed daily-budget amendment can raise an expired original
+initial plan's future allocation cap. It appends immutable human decision terms,
+updates the workspace budget projection and preserves the original request,
+approval, reservation, lease and attempt history. Planning consumes that bound
+amendment; the exact saved-plan continuation still requires its own approval and
+shared spend admission. See [daily budget amendments](docs/planning-budget-amendments.md).
+
+The historical archive-only provider lock has a distinct checksum-refusal
+recovery boundary. An inert native probe must reproduce Terraform's exact
+mandatory package rejection before provider schema loading; original source,
+policy, storage and empty backend checks still apply. Recovery archives every
+byte. Corrected locks include authenticated Linux package hashes and the native
+fixture validates after read-only initialization. A fresh planning-recovery
+review can explicitly confirm the original unchanged daily cap, requiring current
+administration authority. Only its consumed immutable retry receipt confers
+worker authority; original decisions, expiry, attempt limits and exact-plan apply
+approval remain intact. See [planning recovery](docs/planning-start-recovery.md)
+and [budget confirmation](docs/planning-budget-amendments.md).
+
+
+### Workspace policy selection across AWS regions
+
+The installation may supply complete `workspace_policies` alongside the legacy
+`tenants` policy map. Profiles are keyed by domain organization UUID and immutable
+request-derived workspace UUID. They select that workspace's regional AZ defaults,
+retained KMS key, scoped provider, bootstrap actors and runtime. Unlisted workspaces
+retain the original tenant policy and its exact approval digest. Profiles cannot
+change the tenant's ADP identity, AWS organization or management cluster/account.
+API preview, continuation, execution and retirement select the same scoped policy.
+
+The workspace region is independent from the Terraform backend and management
+regions. Provider policy `state_region` selects only the lock table, while
+`management_region` grants only management NAT observation there. The public
+bootstrap recipe accepts an explicit management NAT `region`; workspace reads and
+mutations remain in the approved target region. Provider enrollment stores its
+record in the management region and reads the target region's exact secret ARN.
+Existing configurations omit these fields and retain their prior behavior.
+
+This is configured regional capability, not a claim that every AWS region or
+live workspace is verified. Regional EKS versions/images, quotas, account opt-in,
+KMS keys and exact provider authorization must be checked before admission.
+
+Account registration continues to constrain personal vault references. An
+installation-owned `spda1:` handle is selected by the protected workspace policy
+and enrolled for the exact request/workspace/account, rather than added to the
+account's personal-vault reference list. This does not resolve or authorize the
+handle at preview: the current protected Gateway enrollment, beneficiary, role,
+policy, version and session checks remain mandatory before execution.
+
+The provider owner supports a bounded inventory-read repair adding only `tag:GetResources` to the existing region-scoped read statement. It preserves trust, other shards, boundary, identity, target, expiry and prior operation evidence; only policy digest and generation advance. This supports completed-apply inventory without replaying Terraform.
+
+### Revoked registrar prefix recovery
+
+`bootstrap-pre-namespace-revoked-v1` covers a stopped, source-qualified bootstrap
+whose only durable mutation intents are the temporary registrar EKS entry and
+policy. Native cleanup verifies the exact generation, immutable entry identity and
+original reservation, revokes via `TemporaryAuthority`/`EksGrants`, positively
+checks absence of every planned bootstrap actor, and compare-releases the claim.
+Any namespace, component, membership or lifecycle effect makes this boundary
+ineligible. EKS cluster access scope may include an empty `namespaces` array;
+verification recognizes that SDK representation while preserving raw immutable
+identities for deletion comparisons.
+
+Fresh owner evidence follows expiration of original execution and issued sessions.
+Gateway independently checks all protected journals and the consumed receipt
+chain. A recovery retains every previous journal and permits at most one new
+fully revoked registrar prefix. Harness records created grants truthfully and
+binds the full journal set to the preceding receipt; original apply, admissions,
+attempt count and configured attempt ceiling survive. Worker scratch selection
+consumes that same immutable chain. This boundary grants no attempt extension.
+
+A temporary app-owned cleanup policy may supply only delete/disassociate on the
+exact immutable access-entry ARN to the existing installer role, with at most a
+two-hour time condition. An additionally scoped STS session performs native
+revocation. Review saved plans and remove the policy after verified cleanup;
+provider trust and standing runtime authority remain unchanged.

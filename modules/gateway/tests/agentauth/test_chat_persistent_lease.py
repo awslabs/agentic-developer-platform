@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from src.agentauth import chat_data_routes
-from src.agentauth.chat_session_mailbox import ChatSessionMailbox
+from src.agentauth.chat_session_mailbox import IDLE_SECONDS, ChatSessionMailbox
 from tests.agentauth.test_chat_data_routes import admit, exchange
 from tests.agentauth.test_chat_data_routes import client as client_fixture
 from tests.agentauth.test_chat_data_routes import runtime as runtime_fixture
@@ -49,6 +49,7 @@ async def test_bound_persistent_lease_renews_without_widening_root(client, runti
     assert lease["run_id"] == "run-a" and lease["sandbox_uid"] == "chat-pod"
     assert lease["expires_at"] == min(now + 90, runtime[0].launches.load("run-a").expires_at)
     assert mailbox.state(session_id="session-a", owner=("tenant", "team", "human"), now=now)["health"] == "active"
+    assert mailbox.state(session_id="session-a", owner=("tenant", "team", "human"), now=now)["idle_timeout_seconds"] == IDLE_SECONDS
     monkeypatch.setattr(chat_data_routes, "clock", lambda: now + 20)
     refreshed = await exchange(client)
     assert refreshed.status_code == 200, refreshed.text
@@ -114,7 +115,7 @@ async def test_sandbox_reads_server_mode_and_health_only_for_its_bound_session(c
     body = {"run_id": "run-a", "session_id": "session-a"}
     response = await client.post(path, json=body, headers=headers)
     assert response.status_code == 200, response.text
-    assert response.json() == {"mode": "persistent", "sequence": 0, "health": "active"}
+    assert response.json() == {"mode": "persistent", "sequence": 0, "health": "active", "idle_timeout_seconds": IDLE_SECONDS}
     assert response.headers["cache-control"] == "no-store"
     assert (await client.post(path, json={**body, "session_id": "other-session"}, headers=headers)).status_code == 404
     assert (await client.post(path, json={**body, "ownerUserId": "another"}, headers=headers)).status_code == 422

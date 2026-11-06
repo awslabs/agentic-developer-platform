@@ -89,6 +89,24 @@ export interface EndpointDeclaration {
  * command builds a path string of its own.
  */
 export const ENDPOINTS = {
+  workspaceProviderAuthority: { method: 'GET', path: '/workspaces/{workspace_id}/provider-authority', served: true },
+  validateProviderAuthority: { method: 'POST', path: '/provider-authorities/{credential_id}/validation', served: true },
+  reviewDispatchRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/dispatch-recovery/review', served: true },
+  decideDispatchRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/dispatch-recovery/decision', served: true },
+  resumeDispatchRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/dispatch-recovery/resume', served: true },
+  reviewProviderRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/provider-recovery/review', served: true },
+  reviewPlanningRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/planning-recovery/review', served: true },
+  reviewBootstrapRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/bootstrap-recovery/review', served: true },
+  reviewSavedPlanCompletion: { method: 'POST', path: '/workspaces/{workspace_id}/saved-plan-completion/review', served: true },
+  decideProviderRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/provider-recovery/decision', served: true },
+  decidePlanningRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/planning-recovery/decision', served: true },
+  decideBootstrapRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/bootstrap-recovery/decision', served: true },
+  decideSavedPlanCompletion: { method: 'POST', path: '/workspaces/{workspace_id}/saved-plan-completion/decision', served: true },
+  resumeProviderRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/provider-recovery/resume', served: true },
+  resumePlanningRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/planning-recovery/resume', served: true },
+  resumeBootstrapRecovery: { method: 'POST', path: '/workspaces/{workspace_id}/bootstrap-recovery/resume', served: true },
+  resumeSavedPlanCompletion: { method: 'POST', path: '/workspaces/{workspace_id}/saved-plan-completion/resume', served: true },
+  controlPlaneHealth: { method: 'GET', path: '/control-plane-health', served: true, capability: 'observing control-plane health' },
   listWorkspaces: { method: 'GET', path: '/workspaces', served: true },
   getWorkspace: { method: 'GET', path: '/workspaces/{workspace_id}', served: true },
   getWorkspaceAccess: { method: 'GET', path: '/workspaces/{workspace_id}/access/v1/me', served: true },
@@ -290,7 +308,24 @@ export function resolvePath(
  * at all. `last_heartbeat` is the observation *time*, kept so the UI can say how
  * stale a reading is instead of presenting it as current.
  */
+export interface ProvisioningProgress {
+  steps: { id: string; label: string; state: 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'paused' | 'unknown' }[];
+  completed: number;
+  total: number;
+  current_step: string | null;
+  message: string;
+  observed_at: string;
+}
+
 export interface WorkspaceSummary {
+  provisioning_progress?: ProvisioningProgress | null;
+  account_id?: string | null;
+  requested_region?: string | null;
+  cluster_name?: string | null;
+  cluster_region?: string | null;
+  cloud_provider?: string | null;
+  cluster_id?: string | null;
+
   id: string;
   org_id: string;
   name: string;
@@ -646,6 +681,7 @@ export interface OperationApproval {
   workspace_id: string;
   result: 'pending' | 'allowed-once' | 'rejected';
   can_decide: boolean;
+  requires_distinct_approver?: boolean;
   action: string;
   target: Record<string, string>;
   plan_digest: string;
@@ -672,6 +708,7 @@ export type OperationState =
  * a second workspace and guessing "succeeded" hides infrastructure that exists.
  */
 export interface OperationReceipt {
+  version?: number;
   operationId: string | null;
   idempotencyKey: string;
   state: OperationState;

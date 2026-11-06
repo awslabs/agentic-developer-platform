@@ -25,6 +25,7 @@ resource "aws_lambda_function" "ingest" {
     variables = {
       RESOLVER_BASE_URL             = var.identity_resolver_url
       ADP_CHAT_MODEL_POLICY_ENABLED = tostring(var.model_policy_enabled)
+      ADP_CHAT_LEGACY_RETIRED       = "true"
       PERSONA_MODEL_MAPPING_ENABLED = tostring(var.persona_model_mapping_enabled)
       ADP_AGENT_CONTROL_ENDPOINT    = var.model_control_endpoint
       WEBHOOK_EVENTS_TABLE          = var.webhook_events_table_name
@@ -301,7 +302,7 @@ resource "aws_lambda_function" "response" {
 }
 
 resource "aws_lambda_event_source_mapping" "response_sqs" {
-  event_source_arn         = var.response_queue_arn
+  event_source_arn        = var.response_queue_arn
   function_name           = aws_lambda_function.response.arn
   function_response_types = ["ReportBatchItemFailures"]
   # Issue #164: batch_size=10 reduces per-message polling overhead. The handler

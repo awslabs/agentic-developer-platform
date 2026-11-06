@@ -256,7 +256,7 @@ class TestDecisionsAreAppendOnly:
         someone adds has to be justified in review rather than slipping in.
         """
         names = {n for n in dir(OrchestrationRepository) if not n.startswith("_") and "decision" in n.lower()}
-        assert names == {"append_decision", "list_decisions"}, f"unexpected decision methods on the repository: {names}"
+        assert names == {"append_decision", "list_decisions", "display_decisions"}, f"unexpected decision methods on the repository: {names}"
 
     @pytest.mark.asyncio
     async def test_updating_a_decision_raises(self, repo, session):

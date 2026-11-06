@@ -53,7 +53,8 @@ class S3ContentStore:
         kwargs: dict[str, Any] = {}
         if region_name:
             kwargs["region_name"] = region_name
-        self._s3 = boto3.client("s3", **kwargs)
+        from job_client import enabled, ObjectClient
+        self._s3 = ObjectClient() if enabled() else boto3.client("s3", **kwargs)
 
     def _key(self, path: str) -> str:
         """Convert a logical path to an S3 key."""

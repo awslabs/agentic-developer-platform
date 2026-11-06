@@ -239,11 +239,9 @@ def _require_target_id(entity_id: str, *, caller_org: str, entity_type: str) -> 
 #     being read, so passing the caller's own org would make the comparison
 #     trivially true for any target. The owning org therefore has to be resolved
 #     from the DATABASE first, and that resolved value is what gets passed in.
-#   * Its department branch is `if target_dept_id and allowed_dept_id and ...`,
-#     and `get_user_role` returns `(role, tenant_id, None)` — `allowed_dept_id` is
-#     ALWAYS None. So that branch can never fire, and a dept_admin reaching
-#     another department inside their own org would pass every check it performs.
-#     The department boundary is therefore enforced here (see `_check_department_scope`).
+#   * The selected entity's department must also be resolved from stored rows.
+#     `_check_department_scope` compares it with the caller's current workspace
+#     primary team, including person and team targets.
 #
 # Both are cases of the same rule: authority comes from the server, and so must the
 # facts it is compared against.
@@ -311,10 +309,8 @@ async def _check_department_scope(
 ) -> bool:
     """Confine a ``dept_admin`` to their own department.
 
-    Needed because ``check_permission``'s department branch is unreachable (see
-    the section comment above): it requires a truthy ``allowed_dept_id``, and
-    ``get_user_role`` never supplies one. Without this, a ``dept_admin`` could read
-    any department, team or member in their org — negative test 3 of the issue.
+    This endpoint starts with an organization-level permission check. Resolve
+    the selected entity before applying the caller's department boundary.
 
     The caller's department is resolved from the current workspace account and
     authoritative primary team. A token department is not sufficient authority.

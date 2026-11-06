@@ -1,0 +1,14 @@
+{
+  "tenant_id": "tenant-example",
+  "project_id": "project-example",
+  "source_connection_id": "github-example",
+  "source_system": "github",
+  "source_event_id": "7062/task-example",
+  "event_time": "2026-10-06T01:35:17Z",
+  "ingested_at": "2026-10-06T01:35:18Z",
+  "schema_version": "1.0",
+  "task_id": "TSK-7061-example",
+  "story_id": "7061",
+  "executor_type": "cloud_agent",
+  "outcome": "pr_opened"
+}

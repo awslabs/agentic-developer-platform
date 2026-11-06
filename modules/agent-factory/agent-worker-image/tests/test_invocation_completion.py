@@ -227,6 +227,7 @@ def worker(delivery, monkeypatch, tmp_path):
         MagicMock(return_value={"id": 1, "html_url": "https://example.test/check"}),
     )
     monkeypatch.setattr(entrypoint, "update_check_run", MagicMock())
+    monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", MagicMock(return_value={"status": "up_to_date"}))
     monkeypatch.setattr(
         entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="", returncode=0))
     )
@@ -741,3 +742,41 @@ def test_pr_review_history_failure_stops_before_model_execution(worker, monkeypa
     history.assert_called_once()
     assert executions == []
     ack.assert_not_called()
+
+
+@pytest.mark.parametrize("persisted", [True, False])
+def test_native_reviewer_budget_stop_is_recorded_before_queue_ack(worker, monkeypatch, persisted):
+    from lib import review_cycle_input
+
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["intent"]["trigger"] = "engine_review_cycle"
+    envelope["review_cycle_input"] = {
+        "action": "review", "repo": envelope["source_ref"]["repo"], "pr_number": 42,
+        "head_sha": "a" * 40, "accepted_scope": "story-revision", "operation_key": "review:1", "findings": [],
+    }
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint.run_report, "enabled", lambda: False)
+    monkeypatch.setattr(review_cycle_input, "checkout_cycle_input", lambda *args, **kwargs: ("story", "a" * 40))
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda *args, **kwargs: MagicMock(
+        returncode=1, stdout=json.dumps({"status": "review_failed", "error": {
+            "message": 'unexpected status 402 Payment Required: {"error":"budget_exceeded","details":{"scope":"chain","scope_cap_usd":150.0}}',
+        }}), stderr="",
+    ))
+    terminal = []
+    original = entrypoint.update_invocation_status
+    def status(*args, **kwargs):
+        if args[2] == "budget_stopped":
+            terminal.append(kwargs)
+            assert ack.call_count == 0
+            return original(*args, **kwargs) if persisted else False
+        return original(*args, **kwargs)
+    monkeypatch.setattr(entrypoint, "update_invocation_status", status)
+    assert entrypoint.main() == (1 if persisted else entrypoint.AGENT_EXIT_RETRYABLE)
+    assert len(terminal) == 1 and terminal[0]["stop_reason"] == "chain_cap_exceeded"
+    assert "incomplete" in terminal[0]["summary"]
+    if persisted:
+        ack.assert_called_once()
+        assert row(client, envelope)["status"] == {"S": "budget_stopped"}
+    else:
+        ack.assert_not_called()

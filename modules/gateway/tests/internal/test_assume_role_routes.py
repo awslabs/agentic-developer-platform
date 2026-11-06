@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -152,6 +152,7 @@ async def _seed_aws_role_credential(
         id=cred_id,
         org_id="org-test",
         user_id="user-alice",
+        agent_consent=True,
         service=service,
         label=label,
         credential_type=credential_type,
@@ -205,8 +206,11 @@ class TestAssumeRoleHappyPath:
     # because `authorize_worker_credential` fail-open-permitted every unrecognized kind,
     # which #4529 closed. `github_event` is the kind this case means — a customer role
     # delivered to a worker rooted in a verified GitHub event, with no engine policy.
-    @pytest.mark.parametrize("authority_kind", ["github_event", "gate_decision"])
-    async def test_protected_worker_preserves_existing_customer_role_delivery_without_execution_policy(self, db, monkeypatch, authority_kind):
+    @pytest.mark.parametrize("authority_kind", ["github_event", "gate_decision", "service_policy"])
+    @pytest.mark.parametrize(
+        "consent_state", ["granted", "missing", "revoked_during_fetch", "deleted_during_fetch", "replaced_during_fetch", "revoked_during_sts"]
+    )
+    async def test_protected_worker_requires_live_consent_without_execution_policy(self, db, monkeypatch, authority_kind, consent_state):
         """Protected authentication must preserve user-created deployment roles.
 
         The real broker dependency and STS service run here. The external pod
@@ -218,7 +222,10 @@ class TestAssumeRoleHappyPath:
         from src.agentauth.grants import AuthorityReference, DelegatedGrant
         from src.internal.auth_deps import verify_internal_or_irsa
 
-        await _seed_aws_role_credential(db)
+        credential = await _seed_aws_role_credential(db)
+        if consent_state == "missing":
+            credential.agent_consent = False
+            await db.commit()
         grant = DelegatedGrant(
             grant_id="grant:customer-deploy:1",
             tenant_id="org-test",
@@ -258,6 +265,27 @@ class TestAssumeRoleHappyPath:
             await verify_broker_worker(request)
 
         client.app.dependency_overrides[verify_internal_or_irsa] = verified_transport
+        # Invalidate the stored row while external work is in flight without
+        # synchronizing the already-selected ORM object. A cached boolean must
+        # not authorize an effect or release after the owner revokes consent.
+        original_to_thread = asyncio.to_thread
+
+        async def external_effect(func, *args, **kwargs):
+            result = await original_to_thread(func, *args, **kwargs)
+            during_fetch = func == mock_sm.get_secret_at_version and consent_state.endswith("during_fetch")
+            during_sts = getattr(func, "__name__", "") == "assume_role" and consent_state == "revoked_during_sts"
+            if during_fetch or during_sts:
+                if consent_state == "deleted_during_fetch":
+                    statement = delete(UserCredential).where(UserCredential.id == credential.id)
+                else:
+                    values = {"secret_arn": "replacement-secret"} if consent_state == "replaced_during_fetch" else {"agent_consent": False}
+                    statement = update(UserCredential).where(UserCredential.id == credential.id).values(**values)
+                await db.execute(statement.execution_options(synchronize_session=False))
+                await db.commit()
+                assert credential.agent_consent is True
+            return result
+
+        monkeypatch.setattr("src.internal.assume_role_routes.asyncio.to_thread", external_effect)
         with (
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
@@ -274,16 +302,30 @@ class TestAssumeRoleHappyPath:
                     "invocation_id": "customer-deploy",
                 },
             )
+        if consent_state != "granted":
+            assert response.status_code == 403, response.text
+            assert response.json()["detail"]["error"] == "not_consented"
+            assert "access_key_id" not in response.json()
+            if consent_state == "missing":
+                mock_sm.current_version_id.assert_not_called()
+                mock_sm.get_secret_at_version.assert_not_called()
+            if consent_state != "revoked_during_sts":
+                mock_boto3.client.return_value.assume_role.assert_not_called()
+            else:
+                mock_boto3.client.return_value.assume_role.assert_called_once()
+            audits = (await db.scalars(select(AuditLog).where(AuditLog.event_type == "vault_aws_role_assumed"))).all()
+            assert any(row.details.get("error_code") == "not_consented" for row in audits)
+            return
         assert response.status_code == 200, response.text
         assert response.json()["profile_name"] == "adp-aws-prod"
         assert response.json()["region"] == "us-west-2"
         call = mock_boto3.client.return_value.assume_role.call_args.kwargs
         assert call["RoleArn"] == "arn:aws:iam::123456789012:role/ADPDeployAgent"
         assert call["ExternalId"] == "adp-dev-hosted-agent"
-        assert call["DurationSeconds"] == 1800
+        assert call["DurationSeconds"] == 900
         assert {tag["Key"]: tag["Value"] for tag in call["Tags"]}["adp:user_id"] == "user-alice"
         assert "Policy" not in call and "PolicyArns" not in call
-        runtime.validate_flow.assert_awaited_once()
+        assert runtime.validate_flow.await_count == 4
 
     @pytest.mark.asyncio
     async def test_valid_request_returns_temp_credentials(self, db):
@@ -428,7 +470,7 @@ class TestAssumeRoleHappyPath:
             )
 
             call_kwargs = mock_sts_client.assume_role.call_args[1]
-            assert call_kwargs["DurationSeconds"] == 1800
+            assert call_kwargs["DurationSeconds"] == 900
 
     @pytest.mark.asyncio
     async def test_audit_row_written_on_success(self, db):
@@ -476,10 +518,172 @@ class TestAssumeRoleHappyPath:
         assert "session_token" not in json.dumps(audit.details)
 
 
+class TestGatewayPrincipalBinding:
+    @pytest.mark.asyncio
+    async def test_gateway_principal_cannot_deliver_own_role_to_generic_result(self, db):
+        from src.internal.auth_deps import verify_internal_or_irsa
+        from src.internal.credential_binding import GatewayCredentialAuthority
+
+        credential = await _seed_aws_role_credential(db)
+        mock_sm = MagicMock()
+        mock_sm.get_secret_at_version.return_value = (_ROLE_SECRET_JSON, "version-1")
+        mock_sm.current_version_id.return_value = "version-1"
+        client = _make_app(db, mock_sm)
+        consented = frozenset({credential.id})
+
+        async def verified_gateway(request: Request):
+            request.state.agent_tools_credential_authority = GatewayCredentialAuthority(
+                user_id="user-alice", tenant_id="org-test", agent_id="tools-facade", credential_ids=consented
+            )
+
+        client.app.dependency_overrides[verify_internal_or_irsa] = verified_gateway
+        payload = {
+            "user_id": "user-alice",
+            "agent_id": "tools-facade",
+            "task_id": "tool-call",
+            "service": "aws",
+            "label": "prod",
+        }
+        with (
+            patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.tools_credential_auth.verify_tools_credential_request", new_callable=AsyncMock),
+            patch("src.internal.sts_assume_service.boto3") as mock_boto3,
+        ):
+            mock_boto3.client.return_value.assume_role.return_value = _mock_sts_response()
+            response = client.post("/internal/v1/credential-assume-role", json=payload)
+            assert response.status_code == 403, response.text
+            assert response.json()["detail"]["error"] == "credential_binding_failed"
+
+            for changed in (
+                {"user_id": "other-user"},
+                {"agent_id": "other-agent"},
+                {"invocation_id": "forged-run"},
+            ):
+                denied = client.post("/internal/v1/credential-assume-role", json={**payload, **changed})
+                assert denied.status_code == 403, denied.text
+                assert denied.json()["detail"]["error"] == "credential_binding_failed"
+            assert mock_boto3.client.return_value.assume_role.call_count == 0
+
+            consented = frozenset()
+            denied = client.post("/internal/v1/credential-assume-role", json=payload)
+            assert denied.status_code == 403, denied.text
+            assert denied.json()["detail"]["error"] == "credential_binding_failed"
+            assert mock_boto3.client.return_value.assume_role.call_count == 0
+            audits = (await db.execute(select(AuditLog).where(AuditLog.event_type == "vault_aws_role_assumed"))).scalars().all()
+            assert audits == []
+            mock_sm.get_secret_at_version.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gateway_workspace_role_cannot_bypass_private_delivery(self, db):
+        from src.auth.aws_connection_authority import connection_binding
+        from src.internal.auth_deps import verify_internal_or_irsa
+        from src.internal.credential_binding import GatewayCredentialAuthority
+
+        credential = await _seed_aws_role_credential(db)
+        credential.scopes = {
+            "account_id": "123456789012",
+            "role_arn": "arn:aws:iam::123456789012:role/Workspace",
+            "status": "verified",
+        }
+        credential.aws_verified_binding = connection_binding(credential)
+        await db.commit()
+        stored = json.loads(_ROLE_SECRET_JSON)
+        stored["role_arn"] = credential.scopes["role_arn"]
+        mock_sm = MagicMock()
+        mock_sm.get_secret_at_version.return_value = (json.dumps(stored), "version-1")
+        mock_sm.current_version_id.return_value = "version-1"
+        client = _make_app(db, mock_sm)
+
+        async def verified_gateway(request: Request):
+            request.state.agent_tools_credential_authority = GatewayCredentialAuthority(
+                user_id="user-alice",
+                tenant_id="org-test",
+                agent_id="tools-facade",
+                credential_ids=frozenset({credential.id}),
+            )
+
+        client.app.dependency_overrides[verify_internal_or_irsa] = verified_gateway
+        with (
+            patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.tools_credential_auth.verify_tools_credential_request", new_callable=AsyncMock),
+            patch("src.auth.sts_client.get_settings", return_value=_settings_mock()),
+            patch("src.auth.sts_client.boto3.client") as client_factory,
+        ):
+            client_factory.return_value.assume_role.return_value = _mock_sts_response()
+            response = client.post(
+                "/internal/v1/credential-assume-role",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "tools-facade",
+                    "task_id": "tool-call",
+                    "label": "prod",
+                },
+            )
+            assert response.status_code == 403, response.text
+            assert response.json()["detail"]["error"] == "credential_binding_failed"
+            client_factory.return_value.assume_role.assert_not_called()
+            mock_sm.get_secret_at_version.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_signed_gateway_call_reaches_real_broker_and_revocation_denies(self, db, monkeypatch):
+        from src.internal.auth_deps import verify_internal_or_irsa
+        from src.internal.credential_routes import router as credential_router
+        from tests.internal.test_tools_credential_auth import FACADE, ROLE, Session, assertion
+
+        credential = await _seed_aws_role_credential(db)
+        mock_sm = MagicMock()
+        mock_sm.get_secret_at_version.return_value = (_ROLE_SECRET_JSON, "version-1")
+        mock_sm.current_version_id.return_value = "version-1"
+        client = _make_app(db, mock_sm)
+        client.app.include_router(credential_router)
+        del client.app.dependency_overrides[verify_internal_or_irsa]
+        monkeypatch.setenv("ADP_TOOLS_GATEWAY_ROLE_ARN", ROLE)
+        monkeypatch.setenv("ADP_TOOLS_FACADE_ROLE_ARN", FACADE)
+        monkeypatch.setenv("ADP_TOOLS_ASSERTION_KEY_ARN", "arn:aws:kms:us-east-1:123456789012:key/fixture")
+        verified_arn = "arn:aws:sts::123456789012:assumed-role/adp-tools-dev-gateway/session"
+        rows = [SimpleNamespace(id=credential.id, agent_consent=True)]
+        policy = {
+            "status": "active",
+            "allowed_tools": ["credentials.list"],
+            "consented_tools": ["credentials.list"],
+        }
+        arguments = {"service": "aws"}
+        headers = {"X-Caller-Identity": verified_arn, "x-adp-assertion": assertion(body=arguments, tool="credentials___list")}
+        with (
+            patch("src.internal.auth_deps.has_caller_identity_assertion", return_value=True),
+            patch("src.internal.auth_deps.verified_caller_identity", return_value=verified_arn),
+            patch("src.internal.tools_credential_auth.verified_caller_identity", return_value=verified_arn),
+            patch("src.internal.tools_credential_auth.boto3.client") as kms,
+            patch("src.agentauth.routes.get_agent_runtime", return_value=SimpleNamespace(store=SimpleNamespace(table="test-authority", client=None))),
+            patch("src.internal.tools_credential_auth.ToolsPolicyStore.get", return_value=policy),
+            patch("src.internal.tools_credential_auth.get_session_factory", return_value=lambda: Session(rows)),
+            patch("src.internal.tools_credential_auth.effective_entitlement", new_callable=AsyncMock, return_value=(True, None)),
+            patch("src.internal.sts_assume_service.boto3") as sts,
+        ):
+            kms.return_value.verify.return_value = {"SignatureValid": True}
+            response = client.get("/internal/v1/user-credentials", params=arguments, headers=headers)
+            assert response.status_code == 200, response.text
+            assert [item["id"] for item in response.json()] == [credential.id]
+            assert "secret_arn" not in response.text
+
+            rows[0].agent_consent = False
+            revoked_credential = client.get("/internal/v1/user-credentials", params=arguments, headers=headers)
+            assert revoked_credential.status_code == 200 and revoked_credential.json() == []
+            policy["consented_tools"].clear()
+            policy["consent_mode"] = "explicit"  # #8387: a revocation is an explicit owner decision
+            denied = client.get("/internal/v1/user-credentials", params=arguments, headers=headers)
+            assert denied.status_code == 403 and denied.json()["detail"]["error"] == "not_consented"
+            sts.client.return_value.assume_role.assert_not_called()
+            mock_sm.get_secret_at_version.assert_not_called()
+            audits = (await db.execute(select(AuditLog).where(AuditLog.event_type == "vault_aws_role_assumed"))).scalars().all()
+            assert audits == []
+
+
 class TestAssumeRoleErrors:
     @pytest.mark.asyncio
     async def test_deploy_tier_request_rejects_linked_steady_state_role_before_secret_read(self, db):
         cred = await _seed_aws_role_credential(db)
+
         cred.scopes = {"permission_tier": "routing"}
         await db.commit()
         sm = MagicMock()
@@ -578,6 +782,7 @@ class TestAssumeRoleErrors:
             id="cred-bearer",
             org_id="org-test",
             user_id="user-alice",
+            agent_consent=True,
             service="aws",
             label="bearer-test",
             credential_type="bearer",
@@ -755,6 +960,7 @@ class TestAssumeRoleCanonicalResolution:
             id="cred-canonical-700",
             org_id="org-test",
             user_id="user-canonical-700",
+            agent_consent=True,
             service="aws",
             label="canonical-role",
             credential_type="aws_role",
@@ -850,7 +1056,7 @@ class TestWorkspaceBrokerIntegration:
         call = client_factory.return_value.assume_role.call_args.kwargs
         assert call["RoleArn"] == stored["role_arn"]
         assert call["ExternalId"] == external_id
-        assert call["DurationSeconds"] == 1800
+        assert call["DurationSeconds"] == 900
         assert {tag["Key"]: tag["Value"] for tag in call["Tags"]} == {
             "adp:user_id": "user-alice",
             "adp:agent_id": "developer",

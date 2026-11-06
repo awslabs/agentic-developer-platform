@@ -5,7 +5,7 @@ Commit: e044e569c5bc81f82e9a4d7891f37c6fbb0a8a10 (v1.9.8)
 
 This binary contains downstream changes. The exact version remains 1.9.8 because
 workspace saved-plan and state consumers explicitly require it. It is compiled
-with Go 1.26.8 and the dependency/source compatibility changes in security.patch.
+with Go 1.26.9 and the dependency/source compatibility changes in security.patch.
 
 The patch upgrades vulnerable runtime libraries, adapts the S3 single-role
 configuration to the new SDK representation, migrates OpenTelemetry gRPC hooks
@@ -21,3 +21,6 @@ remains read-only.
 
 Original HashiCorp license and copyright remain in LICENSE. This is not an
 unmodified upstream release. No live workspace state migration is implied.
+
+The October 10 follow-up pins x/net v0.60.0 and x/text v0.42.0 alongside
+Go 1.26.9 for the October 8 standard-library and HTTP/2 security fixes.

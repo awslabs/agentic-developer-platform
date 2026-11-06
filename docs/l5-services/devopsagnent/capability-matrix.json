@@ -1,0 +1,89 @@
+{
+  "contract_version": "devops/1.0-r2",
+  "catalog": {
+    "status": "unresolved",
+    "module_id": null,
+    "feature_ids": {},
+    "checked_sources": [
+      "modules/gateway/src/catalog/models.py",
+      "modules/gateway/src/catalog/README.md",
+      "modules/insights/schemas/registry/v1/admission.schema.json"
+    ],
+    "missing_mapping": "Source exposes Portfolio/Initiative records and generic Insights admission, not registered L5 Module/Feature IDs; no authorized live registry read was performed.",
+    "owner": "DA01 / SA01 / PranavSharma1000",
+    "blocking_phase": "before dependent dispatch"
+  },
+  "evidence": [
+    {
+      "id": "sdk-source",
+      "source": "modules/gateway/pyproject.toml",
+      "revision": "5adb3015ad67113503f616cc96bb3f1d1cda776c (source tree inspected for DA01)",
+      "established": "Gateway pins boto3 1.43.111.",
+      "not_established": "No deployed DevOps worker, provider operation eligibility or compatible runtime model.",
+      "owner": "DA05 / DA19",
+      "blocking_phase": "before provider capability enablement"
+    },
+    {
+      "id": "sdk-candidate",
+      "source": "docs/l5-services/contracts/v1/compatibility.json",
+      "revision": "5adb3015ad67113503f616cc96bb3f1d1cda776c (source tree inspected for DA01)",
+      "established": "Shared SDK audit names boto3 1.43.114 as a worker candidate, not an approved SDK.",
+      "not_established": "An SDK shape does not prove provider permissions, supported Region or native results.",
+      "owner": "DA05 / DA19",
+      "blocking_phase": "before provider capability enablement"
+    },
+    {
+      "id": "iam-federation-poc",
+      "source": "https://github.com/aws-e/adp/blob/7f82f551d2f1b8aa4ec46a829a217d6c95daf17e/docs/l5-services/devops-ui-sso-poc.md",
+      "revision": "7f82f551d2f1b8aa4ec46a829a217d6c95daf17e (draft PR #8817, inspected report; not independently rerun)",
+      "established": "Report records one GitHub-backed ADP identity reaching a scoped native UI through IAM federation and a custom ADP OIDC provider being rejected.",
+      "not_established": "Production Product-tab integration, two real users, refresh/revocation, supported deep-link stability or provider execution.",
+      "owner": "DA08 / DA19",
+      "blocking_phase": "before native browser access enablement"
+    },
+    {
+      "id": "release-readiness-report",
+      "source": "https://github.com/aws-e/adp/issues/8012",
+      "revision": "issue body reviewed at DA01 contract freeze",
+      "established": "Reusable driver and offline tests are reported; native task permission was denied.",
+      "not_established": "A provider-completed release-readiness result or authorization to execute it.",
+      "owner": "DA11 / DA19",
+      "blocking_phase": "before release-readiness enablement"
+    },
+    {
+      "id": "release-verification-report",
+      "source": "https://github.com/aws-e/adp/issues/8017",
+      "revision": "issue body reviewed at DA01 contract freeze",
+      "established": "Reusable driver and offline tests are reported without an isolated executable target.",
+      "not_established": "A real native verification job or target-isolated scenario result.",
+      "owner": "DA12 / DA19",
+      "blocking_phase": "before release-verification enablement"
+    },
+    {
+      "id": "context-report",
+      "source": "https://github.com/aws-e/adp/issues/7973",
+      "revision": "linked source audit in DevOps architecture; no new live check",
+      "established": "An S3 source read and a refreshed marker were reported.",
+      "not_established": "Indexing, grounded citation and scoped Context reuse.",
+      "owner": "DA06 / DA07 / DA14 / DA19",
+      "blocking_phase": "before knowledge/Context acceptance"
+    }
+  ],
+  "connectors": [
+    {"kind": "github", "category": "integration", "status": "proposed_unqualified", "reason": "Selected repository and delegated source permissions require qualification.", "owner": "DA06 / DA11"},
+    {"kind": "cloudwatch", "category": "integration", "status": "proposed_unqualified", "reason": "Selected resource telemetry and access role require provider readback.", "owner": "DA05 / DA09"},
+    {"kind": "eks", "category": "workload", "status": "proposed_unqualified", "reason": "Only selected EKS workloads need verified cluster, namespace and network access.", "owner": "DA05 / DA19"},
+    {"kind": "aws_resource", "category": "workload", "status": "proposed_unqualified", "reason": "A non-EKS AWS resource needs selected account, role and readable telemetry.", "owner": "DA05 / DA19"},
+    {"kind": "gitlab", "category": "integration", "status": "unsupported", "reason": "No first-epic ADP repository adapter or credential contract is qualified.", "owner": "DA06"},
+    {"kind": "custom_oidc", "category": "authentication", "status": "unsupported", "reason": "The POC reports AWS rejected ADP as a custom OIDC provider; scoped IAM federation needs production qualification.", "owner": "DA08"},
+    {"kind": "arbitrary_telemetry", "category": "integration", "status": "unsupported", "reason": "No first-epic ADP telemetry adapter or provider readback is qualified.", "owner": "DA05"}
+  ],
+  "capabilities": [
+    {"id": "native_ui", "requires": ["space", "membership", "qualified_session"], "conditional": {}, "connector_kinds": [], "evidence_ids": ["iam-federation-poc"], "status": "blocked_live", "owner": "DA08 / DA19", "blocking_phase": "before native browser access enablement"},
+    {"id": "investigation", "requires": ["space", "account", "resources", "telemetry"], "conditional": {"eks": ["cluster_ref", "namespace", "network_access"]}, "connector_kinds": ["cloudwatch", "aws_resource", "eks"], "evidence_ids": ["sdk-source", "sdk-candidate"], "status": "blocked_live", "owner": "DA05 / DA09 / DA10 / DA19", "blocking_phase": "before investigation enablement"},
+    {"id": "release_readiness", "requires": ["space", "repository", "base_revision", "head_revision", "native_eligibility"], "conditional": {}, "connector_kinds": ["github"], "evidence_ids": ["release-readiness-report"], "status": "blocked_live", "owner": "DA11 / DA19", "blocking_phase": "before release-readiness enablement"},
+    {"id": "release_verification", "requires": ["space", "source_deployment_link", "isolated_target", "credential_ref", "scenarios"], "conditional": {}, "connector_kinds": ["github"], "evidence_ids": ["release-verification-report"], "status": "blocked_live", "owner": "DA12 / DA19", "blocking_phase": "before release-verification enablement"},
+    {"id": "prevention", "requires": ["space", "verified_schedule", "explicit_enablement"], "conditional": {}, "connector_kinds": [], "evidence_ids": ["sdk-candidate"], "status": "blocked_live", "owner": "DA13 / DA19", "blocking_phase": "before prevention enablement"},
+    {"id": "knowledge", "requires": ["entitled_sources", "publication_policy", "retrieval_evidence"], "conditional": {}, "connector_kinds": [], "evidence_ids": ["context-report"], "status": "blocked_live", "owner": "DA07 / DA14 / DA19", "blocking_phase": "before knowledge/Context acceptance"}
+  ]
+}

@@ -27,6 +27,9 @@ DECISION = "/v1/chat/model/decision"
 
 @pytest.fixture
 async def sandbox_model(client, runtime, monkeypatch):
+    # The fixture models an enforcing decision; the tests below describe the
+    # fail-closed path, so they run under the enforced posture explicitly (#7997).
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", "enforced")
     authority = runtime[1]
     run_hash = hashlib.sha256(b"run-a").hexdigest()
     pod_name = f"chat-turn-{run_hash[:12]}-abcde"
@@ -108,6 +111,7 @@ async def test_sandbox_decision_uses_protected_execution_and_grant(sandbox_model
     assert request["nonce"] == "a" * 64
     assert request["client_contract"] == 1
     assert request["response_context"] == {"lease_generation": 1}
+    assert request["chat_posture"] == "enforced"
 
 
 async def test_verified_pod_with_same_uid_but_other_run_cannot_refresh_or_use_model(sandbox_model):
@@ -214,7 +218,99 @@ async def test_sandbox_decision_rejects_unsigned_lease_context(sandbox_model):
     policy.return_value["result"]["context"] = {"lease_generation": 2}
     response = await decision(client, token)
     assert response.status_code == 503
-    assert response.json()["detail"] == {"error": "chat_authority_unavailable"}
+    assert response.json()["detail"] == {
+        "error": "chat_model_policy_unavailable",
+        "reason": "decision_unbound",
+        "persona": "developer",
+        "model_id": "global.anthropic.claude-sonnet-5",
+        "retryable": False,
+    }
+
+
+def unavailable_policy(reason, *, posture="report_only", verified=True):
+    """The shape ``bootstrap_model_policy_live`` returns when the live decision is rejected."""
+    policy = {"posture": posture if verified else None, "posture_verified": verified, "status": "unavailable", "reason": reason}
+    return {"result": {"nonce": "a" * 64, "context": {"lease_generation": 1}, "model_policy": policy}, "assertion": "synthetic-response-assertion"}
+
+
+@pytest.mark.parametrize("reason", ["probing_disabled", "evidence_stale", "not_permitted", "not_invocable"])
+async def test_rejected_live_decision_names_its_policy_reason_without_a_retry_hint(sandbox_model, reason, caplog):
+    """AC-01: a refused decision is an expected policy outcome with a structured, reasoned 503."""
+    client, _, token, policy, _ = sandbox_model
+    policy.return_value = unavailable_policy(reason)
+    with caplog.at_level("WARNING", logger="src.agentauth.chat_model"):
+        refused = await decision(client, token)
+    assert refused.status_code == 503, refused.text
+    assert refused.headers["cache-control"] == "no-store"
+    assert refused.json()["detail"] == {
+        "error": "chat_model_policy_unavailable",
+        "reason": reason,
+        "persona": "developer",
+        "model_id": None,
+        "retryable": False,
+    }
+    warnings = [record for record in caplog.records if record.getMessage() == "Chat model policy decision unavailable"]
+    assert len(warnings) == 1 and warnings[0].reason == reason and warnings[0].persona == "developer"
+    assert "sandbox-token" not in caplog.text and token not in caplog.text
+
+
+@pytest.mark.parametrize("reason", ["runtime_posture_unavailable", "model_validation_unavailable", "decision_unavailable"])
+async def test_transient_decision_failure_invites_retry(sandbox_model, reason):
+    """AC-02: a store or verifier outage during the live decision carries a retry hint."""
+    client, _, token, policy, _ = sandbox_model
+    policy.return_value = unavailable_policy(reason, verified=False)
+    refused = await decision(client, token)
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"] == {
+        "error": "chat_model_policy_unavailable",
+        "reason": reason,
+        "persona": "developer",
+        "model_id": None,
+        "retryable": True,
+    }
+
+
+async def test_authority_store_outage_is_a_retryable_policy_unavailability(sandbox_model):
+    """AC-02: the protected store failing while the decision is produced is reported the same way, retryable."""
+    from src.agentauth.store import AuthorityStoreError
+
+    client, _, token, policy, _ = sandbox_model
+    policy.side_effect = AuthorityStoreError("store unavailable")
+    refused = await decision(client, token)
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"] == {
+        "error": "chat_model_policy_unavailable",
+        "reason": "authority_store_unavailable",
+        "persona": "developer",
+        "model_id": None,
+        "retryable": True,
+    }
+
+
+async def test_withheld_enforcing_policy_reports_its_reason_instead_of_an_anonymous_conflict(sandbox_model):
+    """The worker route's 409 stays a 409 for workers; the sandbox gets the reason it must show."""
+    from src.agentauth.routes import ModelPolicyWithheldError
+
+    client, _, token, policy, _ = sandbox_model
+    policy.side_effect = ModelPolicyWithheldError("model policy unavailable", reason="snapshot_missing")
+    refused = await decision(client, token)
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"] == {
+        "error": "chat_model_policy_unavailable",
+        "reason": "snapshot_missing",
+        "persona": "developer",
+        "model_id": None,
+        "retryable": False,
+    }
+
+
+async def test_unavailable_policy_reason_is_never_free_text(sandbox_model):
+    client, _, token, policy, _ = sandbox_model
+    policy.return_value = unavailable_policy("Traceback: psycopg2.OperationalError at host db-internal")
+    refused = await decision(client, token)
+    assert refused.status_code == 503
+    assert refused.json()["detail"]["reason"] == "policy_unavailable"
+    assert "psycopg2" not in refused.text
 
 
 async def test_sandbox_decision_rejects_missing_workload_proof(sandbox_model):
@@ -242,20 +338,21 @@ async def test_sandbox_decision_requires_model_operation(sandbox_model):
 
 
 @pytest.mark.parametrize(
-    "path,value",
+    "path,value,reason",
     [
-        (("posture",), "report_only"),
-        (("posture_verified",), False),
-        (("status",), "unavailable"),
-        (("decision", "runtime_posture"), "report_only"),
-        (("decision", "principal_kind"), "service_account"),
-        (("decision", "principal_id"), "other-human"),
-        (("decision", "tenant_id"), "other-tenant"),
-        (("decision", "resolved_model_id"), ""),
-        (("assertion",), ""),
+        (("posture",), "report_only", "posture_not_enforcing"),
+        (("posture_verified",), False, "posture_unverified"),
+        (("status",), "unavailable", "policy_unavailable"),
+        (("decision", "runtime_posture"), "report_only", "posture_not_enforcing"),
+        (("decision", "principal_kind"), "service_account", "principal_mismatch"),
+        (("decision", "principal_id"), "other-human", "principal_mismatch"),
+        (("decision", "tenant_id"), "other-tenant", "decision_unbound"),
+        (("decision", "invocation_id"), "other-run", "decision_unbound"),
+        (("decision", "resolved_model_id"), "", "model_unresolved"),
+        (("assertion",), "", "assertion_missing"),
     ],
 )
-async def test_sandbox_decision_never_falls_back_to_legacy_policy(sandbox_model, path, value):
+async def test_sandbox_decision_never_falls_back_to_legacy_policy(sandbox_model, path, value, reason):
     client, _, token, policy, _ = sandbox_model
     response = deepcopy(policy.return_value)
     target = response["result"]["model_policy"]
@@ -265,8 +362,34 @@ async def test_sandbox_decision_never_falls_back_to_legacy_policy(sandbox_model,
     policy.return_value = response
     refused = await decision(client, token)
     assert refused.status_code == 503, refused.text
-    assert refused.json()["detail"] == {"error": "chat_authority_unavailable"}
+    detail = refused.json()["detail"]
+    assert detail["error"] == "chat_model_policy_unavailable" and detail["reason"] == reason and detail["retryable"] is False
+    assert detail["persona"] == "developer"
     policy.assert_awaited_once()
+
+
+@pytest.mark.parametrize("posture", ["enforced", "advisory"])
+async def test_a_decision_bound_to_another_human_is_refused_as_principal_mismatch_with_both_ids(sandbox_model, monkeypatch, posture, caplog):
+    """#8010: the model-policy snapshot bound the principal to a different users row
+    (on dev, the tenant-local duplicate of the admitted human). Only the principal
+    differs, so the 503 must say so rather than hide behind ``decision_unbound``, and
+    the gateway warning must name both ids so the drift is diagnosable from logs."""
+    client, _, token, policy, _ = sandbox_model
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", posture)
+    response = deepcopy(policy.return_value) if posture == "enforced" else advisory_policy("advisory", rejection_reason="probing_disabled")
+    response["result"]["model_policy"]["decision"]["principal_id"] = "1fb07e6f-duplicate-row"
+    policy.return_value = response
+    with caplog.at_level("WARNING", logger="src.agentauth.chat_model"):
+        refused = await decision(client, token)
+    assert refused.status_code == 503, refused.text
+    detail = refused.json()["detail"]
+    assert detail["reason"] == "principal_mismatch" and detail["retryable"] is False
+    assert detail["model_id"] == "global.anthropic.claude-sonnet-5"
+    warnings = [record for record in caplog.records if record.getMessage() == "Chat model policy decision unavailable"]
+    assert len(warnings) == 1
+    assert warnings[0].reason == "principal_mismatch"
+    assert warnings[0].decision_principal_id == "1fb07e6f-duplicate-row" and warnings[0].launch_user_id == "human"
+    assert "sandbox-token" not in caplog.text and token not in caplog.text
 
 
 async def test_sandbox_only_discovers_public_model_verification_keys(sandbox_model, monkeypatch):
@@ -296,3 +419,161 @@ async def test_sandbox_only_discovers_public_model_verification_keys(sandbox_mod
     ):
         refused = await client.post("/v1/chat/model/keys", json=body, headers=request_headers)
         assert refused.status_code == 404
+
+
+def advisory_policy(posture, *, rejection_reason=None, verified=None):
+    """The shape ``bootstrap_model_policy_live`` returns for a chat posture of advisory or off (#7997)."""
+    runtime = {"advisory": "report_only", "off": "disabled"}[posture]
+    policy = {
+        "posture": posture,
+        "posture_verified": (rejection_reason is None) if verified is None else verified,
+        "status": "proposed",
+        "decision": {
+            "runtime_posture": runtime,
+            "invocation_id": "run-a",
+            "tenant_id": "tenant",
+            "principal_kind": "human",
+            "principal_id": "human",
+            "persona": "developer",
+            "resolved_model_id": "global.anthropic.claude-sonnet-5",
+        },
+        "assertion": "synthetic-decision-assertion",
+    }
+    if rejection_reason is not None:
+        policy["rejection_reason"] = rejection_reason
+    return {"result": {"nonce": "a" * 64, "context": {"lease_generation": 1}, "model_policy": policy}, "assertion": "synthetic-response-assertion"}
+
+
+def test_chat_posture_defaults_to_advisory_and_fails_closed_when_unreadable(monkeypatch):
+    from src.agentauth import model_policy
+
+    monkeypatch.delenv("BG_CHAT_MODEL_POLICY_POSTURE", raising=False)
+    assert model_policy.chat_model_policy_posture() == "advisory"
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", "enforced")
+    assert model_policy.chat_model_policy_posture() == "enforced"
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", "permissive")
+    assert model_policy.chat_model_policy_posture() == "enforced", "an unrecognised value must not relax the posture"
+
+
+@pytest.mark.parametrize("reason", ["probing_disabled", "evidence_stale", "not_invocable", "model_validation_mismatch"])
+async def test_advisory_posture_answers_on_the_resolved_model_despite_rejected_evidence(sandbox_model, monkeypatch, reason, caplog):
+    """AC-01 (#7997): no invocability evidence, posture advisory -> 200 with posture advisory, reply delivered."""
+    client, _, token, policy, _ = sandbox_model
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", "advisory")
+    policy.return_value = advisory_policy("advisory", rejection_reason=reason)
+    with caplog.at_level("WARNING", logger="src.agentauth.chat_model"):
+        response = await decision(client, token)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()["result"]["model_policy"]
+    assert body["posture"] == "advisory" and body["posture_verified"] is False and body["rejection_reason"] == reason
+    assert body["decision"]["resolved_model_id"] == "global.anthropic.claude-sonnet-5"
+    assert response.json()["assertion"] == "synthetic-response-assertion", "the advisory decision is signed like any other"
+    assert policy.await_args.kwargs["chat_posture"] == "advisory"
+    accepted = [record for record in caplog.records if record.getMessage() == "Chat model policy decision accepted without verified evidence"]
+    assert len(accepted) == 1 and accepted[0].rejection_reason == reason and accepted[0].chat_posture == "advisory"
+    assert accepted[0].model_id == "global.anthropic.claude-sonnet-5"
+
+
+async def test_advisory_posture_accepts_a_verified_decision_without_a_warning(sandbox_model, monkeypatch, caplog):
+    client, _, token, policy, _ = sandbox_model
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", "advisory")
+    policy.return_value = advisory_policy("advisory")
+    with caplog.at_level("WARNING", logger="src.agentauth.chat_model"):
+        response = await decision(client, token)
+    assert response.status_code == 200, response.text
+    assert response.json()["result"]["model_policy"]["posture_verified"] is True
+    assert "accepted without verified evidence" not in caplog.text
+
+
+@pytest.mark.parametrize("posture", ["advisory", "off"])
+async def test_allowlist_refusal_is_refused_in_every_posture(sandbox_model, monkeypatch, posture):
+    """AC-03 (#7997): a model outside the tenant allowlist is refused even when the posture is relaxed."""
+    client, _, token, policy, _ = sandbox_model
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", posture)
+    policy.return_value = unavailable_policy("not_permitted")
+    refused = await decision(client, token)
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"] == {
+        "error": "chat_model_policy_unavailable",
+        "reason": "not_permitted",
+        "persona": "developer",
+        "model_id": None,
+        "retryable": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "reason,retryable", [("runtime_posture_unavailable", True), ("snapshot_missing", False), ("authority_store_unavailable", True)]
+)
+async def test_advisory_posture_still_reports_outages_and_structural_failures(sandbox_model, monkeypatch, reason, retryable):
+    """Advisory relaxes evidence, not availability: no decision means no turn, with the same reasoned 503 (#7968)."""
+    from src.agentauth.store import AuthorityStoreError
+
+    client, _, token, policy, _ = sandbox_model
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", "advisory")
+    if reason == "authority_store_unavailable":
+        policy.side_effect = AuthorityStoreError("store unavailable")
+    else:
+        policy.return_value = unavailable_policy(reason, verified=False)
+    refused = await decision(client, token)
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["reason"] == reason and refused.json()["detail"]["retryable"] is retryable
+
+
+async def test_off_posture_accepts_a_decision_produced_without_evidence(sandbox_model, monkeypatch):
+    client, _, token, policy, _ = sandbox_model
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", "off")
+    policy.return_value = advisory_policy("off")
+    response = await decision(client, token)
+    assert response.status_code == 200, response.text
+    body = response.json()["result"]["model_policy"]
+    assert body["posture"] == "off" and body["decision"]["runtime_posture"] == "disabled"
+    assert policy.await_args.kwargs["chat_posture"] == "off"
+
+
+@pytest.mark.parametrize(
+    "posture,body_posture,runtime_posture",
+    [
+        ("advisory", "enforcing", "enforcing"),
+        ("advisory", "off", "disabled"),
+        ("advisory", "advisory", "enforcing"),
+        ("off", "advisory", "report_only"),
+        ("enforced", "advisory", "report_only"),
+    ],
+)
+async def test_a_decision_produced_under_another_posture_is_not_used(sandbox_model, monkeypatch, posture, body_posture, runtime_posture):
+    """The body must have been produced for the posture the route asked for; a mismatch is refused, never reinterpreted."""
+    client, _, token, policy, _ = sandbox_model
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", posture)
+    response = deepcopy(policy.return_value)
+    response["result"]["model_policy"]["posture"] = body_posture
+    response["result"]["model_policy"]["decision"]["runtime_posture"] = runtime_posture
+    policy.return_value = response
+    refused = await decision(client, token)
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["reason"] == ("posture_not_enforcing" if posture == "enforced" else "posture_mismatch")
+
+
+@pytest.mark.parametrize(
+    "path,value,reason",
+    [
+        (("decision", "principal_id"), "other-human", "principal_mismatch"),
+        (("decision", "tenant_id"), "other-tenant", "decision_unbound"),
+        (("decision", "resolved_model_id"), "", "model_unresolved"),
+        (("assertion",), "", "assertion_missing"),
+        (("status",), "unavailable", "policy_unavailable"),
+    ],
+)
+async def test_advisory_posture_keeps_every_binding_check(sandbox_model, monkeypatch, path, value, reason):
+    client, _, token, policy, _ = sandbox_model
+    monkeypatch.setenv("BG_CHAT_MODEL_POLICY_POSTURE", "advisory")
+    response = advisory_policy("advisory", rejection_reason="probing_disabled")
+    target = response["result"]["model_policy"]
+    for field in path[:-1]:
+        target = target[field]
+    target[path[-1]] = value
+    policy.return_value = response
+    refused = await decision(client, token)
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["reason"] == reason

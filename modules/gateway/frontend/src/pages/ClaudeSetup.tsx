@@ -1,5 +1,5 @@
 /**
- * CLI Setup page (route `/setup`, unchanged).
+ * Apps & CLI Setup page (route `/setup`, unchanged).
  *
  * Issue #4159 restructured this page. It was titled "Claude Code Setup" while
  * actually covering two tools, and the reading order was convoluted: Codex was
@@ -22,10 +22,11 @@ export default function ClaudeSetup() {
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-          CLI Setup
+          Apps &amp; CLI Setup
         </h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          Use Claude Code, Codex, Hermes or Kimi Code on your machine with the platform gateway as the backend.
+          Connect Claude App and compatible ChatGPT App builds on macOS, or use Claude Code,
+          Codex, Hermes and Kimi Code. Reuse one ADP login across your configured apps and tools.
         </p>
       </div>
 
@@ -65,7 +66,28 @@ export default function ClaudeSetup() {
                 adp login
               </code>{' '}
               and approve in the browser — one click, no token to copy. This applies to Claude
-              Code, Codex, Hermes and Kimi Code — they share the same ADP login.
+              Code, Codex, Hermes, Kimi Code and configured desktop apps — they share the same ADP login.
+            </p>
+          </div>
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">
+              ChatGPT App reports Missing environment variable: ADP_GATEWAY_DUMMY
+            </h4>
+            <p className="mt-1">
+              The app's provider configuration expects the local proxy capability, but the app
+              did not receive it. A variable set in Terminal may be absent when the app opens
+              from Finder. Have your desktop connection configured for app launches, then fully
+              quit and reopen the app. Do not set this variable to a placeholder value.
+            </p>
+          </div>
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">
+              ChatGPT App cannot connect to its local proxy
+            </h4>
+            <p className="mt-1">
+              Confirm the ADP proxy is running and the app's provider address matches its current
+              address. A port saved from an earlier session may no longer be active. A working
+              CLI session alone does not verify the desktop app; test a new app conversation.
             </p>
           </div>
           <div>
@@ -157,7 +179,7 @@ export default function ClaudeSetup() {
 
       {/* Info alert */}
       <Alert variant="info" title="About the platform">
-        The platform provides a secure, managed way to reach Amazon Bedrock from your CLI tools.
+        The platform provides a secure, managed way to reach approved models from configured apps and CLI tools.
         It handles authentication, rate limiting, cost tracking, and usage monitoring automatically.
       </Alert>
 

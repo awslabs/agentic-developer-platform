@@ -40,7 +40,13 @@ same invocation, node attempt and SQS deduplication key. The worker uses the
 existing logs bucket for an untrusted pending-report spool and records its start
 before invoking the model. A redelivery with a candidate retries only reporting;
 an interrupted start with no recoverable candidate requires an explicit recovery
-decision. It never silently launches development again.
+decision. It never silently launches development again. An assignment whose
+worker never acknowledged `/started` is different: once the startup watchdog has
+fenced its claim (`startup_deadline_exceeded`, no workload binding), no receipt
+can ever arrive, so the tick settles that attempt as failed with
+`worker_startup_deadline_exceeded` and the accepted retry policy decides whether
+a new attempt — with a new assignment — is dispatched (#7393). A started worker
+keeps the receipt requirement.
 
 Legacy result reconciliation uses a valid current-attempt SQL terminal receipt
 when the dispatch has a report assignment. Missing receipts remain unfinished,
@@ -52,6 +58,25 @@ it does not erase existing receipts or make them advisory. Keep the matching
 signing key and artifact bucket available for in-flight acknowledgements. Key
 rotation cannot reconstruct envelopes signed with the old key; drain or explicitly
 recover outstanding assignments before rotating it.
+
+## Protected runtimes keep the spool in the gateway
+
+A protected worker identity (`agent_authority_enabled`) is denied every direct
+S3 action by its permissions boundary, so it cannot use the bucket spool above.
+Operational delivery requires protected authority and shared reporting at the
+same time, so the two must compose (#7392). When `AGENT_AUTHORITY_ENABLED` is
+true the dispatcher adds `spool: gateway` to the run-report contract and the
+worker reads and writes the identical marker document through
+`GET`/`POST /internal/v1/agent/report/spool`, authenticated by the same
+reporting capability. `create` mirrors the bucket's `IfNoneMatch` precondition:
+a second creator receives 409 and must run delivery recovery. The gateway stores
+the document verbatim after checking that it names this exact assignment and
+has one of the shapes the worker writes; it remains untrusted recovery material
+and never substitutes for the locked `/started` or terminal receipts. Shared-role
+dispatch omits the field, so its envelopes, digests and bucket spool are
+unchanged. Only images containing the gateway-spool client may be admitted on a
+protected runtime with reporting enabled; older images fail every start with
+`report_spool_unavailable`.
 
 When the webhook infrastructure hold is still active, targeting
 `null_resource.keda_scaledjob` can pull unrelated resources and destructive

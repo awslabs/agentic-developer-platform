@@ -13,7 +13,7 @@ on:
         type: boolean
         default: false
       skip_phases:
-        description: 'Comma-separated phases to skip (superplane,agent-context,webhook-ingress,agent-factory,gateway,platform).'
+        description: 'Comma-separated phases to skip (superplane,insights,tools,agent-context,agent-factory,webhook-ingress,gateway,platform).'
         required: false
         default: ''
       include_bootstrap:
@@ -207,11 +207,13 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Destroy Order" >> "$GITHUB_STEP_SUMMARY"
           echo "1. superplane" >> "$GITHUB_STEP_SUMMARY"
-          echo "2. agent-context" >> "$GITHUB_STEP_SUMMARY"
-          echo "3. agent-factory" >> "$GITHUB_STEP_SUMMARY"
-          echo "4. webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
-          echo "5. gateway" >> "$GITHUB_STEP_SUMMARY"
-          echo "6. platform" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. insights" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. tools" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. agent-context" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. agent-factory" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
+          echo "7. gateway" >> "$GITHUB_STEP_SUMMARY"
+          echo "8. platform" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Note**: Terraform state backend is NOT destroyed unless \`include_bootstrap\` is enabled." >> "$GITHUB_STEP_SUMMARY"
 

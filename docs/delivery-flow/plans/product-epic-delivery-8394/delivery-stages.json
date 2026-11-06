@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "status": "draft",
+  "epic": "https://github.com/aws-e/adp/issues/8394",
+  "baseline_checkpoint": true,
+  "outcome_stages": 4,
+  "stages": [
+    {
+      "stage": 0,
+      "name": "Dev baseline",
+      "build": [],
+      "operation": 8516,
+      "alias": "MR-15",
+      "key": "s00-baseline",
+      "review": "Reachable dev health API and real CLI integration; target/retention evidence",
+      "execution": "operator task represented by a human evaluation; no developer dispatch",
+      "review_node": "product-epic-delivery-8394/epic-8394/s00-baseline/baseline-acceptance"
+    },
+    {
+      "stage": 1,
+      "name": "Product and repository foundation",
+      "build": [
+        8395,
+        8396,
+        8403
+      ],
+      "operation": 8517,
+      "alias": "MR-16",
+      "key": "s01-foundation",
+      "review": "Deployed Product/identity API evidence, denied-input logs and legacy compatibility",
+      "execution": "reviewed code, repository evaluation, supported operations assistance, then human evidence review",
+      "review_node": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance",
+      "operation_node": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16",
+      "code_evaluation": "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence"
+    },
+    {
+      "stage": 2,
+      "name": "GitHub-to-delivery journey",
+      "build": [
+        8397,
+        8398,
+        8399,
+        8400,
+        8401,
+        8402
+      ],
+      "operation": 8518,
+      "alias": "MR-17",
+      "key": "s02-journey",
+      "review": "Native GitHub hierarchy, Product-bound A/B delivery, dev API/CLI version result and UI walkthrough",
+      "execution": "reviewed code, repository evaluation, supported operations assistance, then human evidence review",
+      "review_node": "product-epic-delivery-8394/epic-8394/s02-journey-live/outcome-acceptance",
+      "operation_node": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17",
+      "code_evaluation": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "stage": 3,
+      "name": "Evidence and corrections",
+      "build": [
+        8404,
+        8405
+      ],
+      "operation": 8519,
+      "alias": "MR-18",
+      "key": "s03-evidence",
+      "review": "Passing and refused exact-revision verdicts, correctly routed repair and deployed retest",
+      "execution": "reviewed code, repository evaluation, supported operations assistance, then human evidence review",
+      "review_node": "product-epic-delivery-8394/epic-8394/s03-evidence-live/outcome-acceptance",
+      "operation_node": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18",
+      "code_evaluation": "product-epic-delivery-8394/epic-8394/s03-evidence-build/code-evidence"
+    },
+    {
+      "stage": 4,
+      "name": "Full qualification and compatibility",
+      "build": [
+        8406,
+        8407
+      ],
+      "operation": 8408,
+      "alias": "MR-14",
+      "key": "s04-qualification",
+      "review": "Full fault/recovery matrix, UI/CLI/API evidence, legacy compatibility and cleanup",
+      "execution": "reviewed code, repository evaluation, MR-14 manual qualification launch, then final human acceptance",
+      "review_node": "product-epic-delivery-8394/epic-8394/s04-qualification-live/outcome-acceptance",
+      "operation_node": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14",
+      "code_evaluation": "product-epic-delivery-8394/epic-8394/s04-qualification-build/code-evidence",
+      "parallel_build": [
+        8406,
+        8407
+      ],
+      "integration_join": "MR-14 waits for both reviewed merges and stage code evaluation. Run the complete offline matrix on the combined candidate before final live qualification."
+    }
+  ],
+  "bootstrap": "Existing single-repository engine runs the aws-e/adp implementation flow. Product-bound fixture flows are created only after compatible code is deployed.",
+  "operations_binding_status": "Actual environment connection, release/controller receipt, operator and reviewer must be bound before activation. Stage 0 is an operator task, not an agent executor.",
+  "fixtures": {
+    "planning": "aws-e/adp-qualification-planning",
+    "api": "aws-e/adp-qualification-api",
+    "client": "aws-e/adp-qualification-client",
+    "retention": "Pre-existing reusable inputs; do not delete during a consuming run."
+  }
+}

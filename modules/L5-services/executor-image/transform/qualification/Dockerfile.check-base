@@ -1,0 +1,14 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER 0
+COPY wheelhouse /tmp/wheelhouse
+COPY wheelhouse.sha256 /tmp/wheelhouse.sha256
+COPY requirements.lock /tmp/requirements.lock
+COPY transform_fixture_dependencies.py /opt/transform-check-plugins/transform_fixture_dependencies.py
+RUN cd /tmp/wheelhouse \
+    && sha256sum --check /tmp/wheelhouse.sha256 \
+    && python -m pip install --no-cache-dir --no-index --find-links=/tmp/wheelhouse --require-hashes -r /tmp/requirements.lock \
+    && python -m pip install --no-cache-dir --no-index --no-deps --target /opt/transform-check-dependencies/packaging-24.2 /tmp/wheelhouse/packaging-24.2-py3-none-any.whl \
+    && python -m pip install --no-cache-dir --no-index --no-deps --target /opt/transform-check-dependencies/packaging-25.0 /tmp/wheelhouse/packaging-25.0-py3-none-any.whl \
+    && rm -rf /tmp/wheelhouse /tmp/wheelhouse.sha256 /tmp/requirements.lock
+USER 10000:10000

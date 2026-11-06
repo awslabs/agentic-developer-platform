@@ -417,12 +417,28 @@ def resolve_installation_by_id(installation_id: str) -> dict:
         return _installation_error(installation_id, "transport_error", str(e))
 
 
+# admit_issue_work_outcome() results. ADMISSION_OWNED is the one refusal the
+# producer may wait on: the gateway answered 409 because the previous run on
+# the same issue still owns the work (#9541). Everything else that is not a
+# 200 admission is ADMISSION_UNAVAILABLE and prevents publication.
+ADMISSION_ADMITTED = "admitted"
+ADMISSION_OWNED = "owned"
+ADMISSION_UNAVAILABLE = "unavailable"
+
+
 def admit_issue_work(envelope: dict) -> bool:
+    """True only when the gateway admitted the invocation (see the outcome API)."""
+    return admit_issue_work_outcome(envelope) == ADMISSION_ADMITTED
+
+
+def admit_issue_work_outcome(envelope: dict) -> str:
     """Reserve only the invocation already written by the trusted producer.
 
     The gateway resolves tenant, issue and owner from protected authority. The
     shared internal API key cannot call this endpoint; use SigV4 transport.
-    A transport failure or unknown outcome prevents publication.
+    A transport failure or unknown outcome prevents publication
+    (``ADMISSION_UNAVAILABLE``). A 409 means an active run still owns the
+    issue's work (``ADMISSION_OWNED``); the caller decides whether to wait.
     """
     import base64
 
@@ -440,16 +456,16 @@ def admit_issue_work(envelope: dict) -> bool:
         or parsed.query
         or parsed.fragment
     ):
-        return False
+        return ADMISSION_UNAVAILABLE
     invocation = envelope.get("message_id")
     if not invocation:
-        return False
+        return ADMISSION_UNAVAILABLE
     data = json.dumps({"invocation_id": invocation}).encode()
     url = endpoint + "/work/admit"
     try:
         credentials = botocore.session.get_session().get_credentials()
         if credentials is None:
-            return False
+            return ADMISSION_UNAVAILABLE
         region = os.environ.get("AWS_REGION", "us-east-1")
         proof = botocore.awsrequest.AWSRequest(
             method="POST",
@@ -493,16 +509,27 @@ def admit_issue_work(envelope: dict) -> bool:
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect()
         )
-        with opener.open(request, timeout=10) as response:
-            receipt = json.loads(response.read(8193))
-            return response.status == 200 and receipt.get("disposition") in {
-                "admitted",
-                "duplicate",
-                "no_issue",
-            }
+        try:
+            with opener.open(request, timeout=10) as response:
+                receipt = json.loads(response.read(8193))
+                if response.status == 200 and receipt.get("disposition") in {
+                    "admitted",
+                    "duplicate",
+                    "no_issue",
+                }:
+                    return ADMISSION_ADMITTED
+                return ADMISSION_UNAVAILABLE
+        except urllib.error.HTTPError as error:
+            if error.code == 409:
+                logger.info(
+                    "Work admission refused: active run owns the work invocation=%s",
+                    invocation,
+                )
+                return ADMISSION_OWNED
+            raise
     except Exception:
         logger.warning("Work admission unavailable invocation=%s", invocation)
-        return False
+        return ADMISSION_UNAVAILABLE
 
 
 def _open_onboarding_enabled() -> bool:

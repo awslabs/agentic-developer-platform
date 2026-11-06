@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.org/insights/results/v1/business_context.schema.json",
+  "title": "Insights business-context result v1",
+  "type": "object",
+  "required": ["schema_version", "view", "project_id", "product_id", "as_of", "dataset_version", "mapping_versions", "coverage", "grouping", "work_count", "cost_by_currency", "allocated_by_currency", "unallocated_by_currency", "contexts", "associations", "allocation_versions", "next_cursor"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "results/1.0"},
+    "view": {"const": "business_context"},
+    "project_id": {"$ref": "#/$defs/id"},
+    "product_id": {"$ref": "#/$defs/id"},
+    "as_of": {"$ref": "#/$defs/instant"},
+    "dataset_version": {"$ref": "#/$defs/revision"},
+    "mapping_versions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/revision"}},
+    "coverage": {"const": "complete"},
+    "grouping": {"enum": ["historical", "current_regrouping"]},
+    "work_count": {"type": "integer", "minimum": 0},
+    "cost_by_currency": {"$ref": "#/$defs/money"},
+    "allocated_by_currency": {"$ref": "#/$defs/money"},
+    "unallocated_by_currency": {"$ref": "#/$defs/money"},
+    "contexts": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/context"}},
+    "associations": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/association"}},
+    "allocation_versions": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/allocation"}},
+    "next_cursor": {"oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1},
+    "revision": {"type": "string", "minLength": 1, "not": {"enum": ["latest", "null"]}},
+    "instant": {"type": "string", "format": "date-time"},
+    "record_ref": {
+      "type": "object",
+      "required": ["tenant_id", "project_id", "source_connection_id", "record_type", "record_id", "record_revision"],
+      "additionalProperties": false,
+      "properties": {
+        "tenant_id": {"$ref": "#/$defs/id"},
+        "project_id": {"$ref": "#/$defs/id"},
+        "source_connection_id": {"$ref": "#/$defs/id"},
+        "record_type": {"$ref": "#/$defs/id"},
+        "record_id": {"$ref": "#/$defs/id"},
+        "record_revision": {"$ref": "#/$defs/revision"}
+      }
+    },
+    "money": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[A-Z]{3}$"},
+      "additionalProperties": {"type": "string", "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"}
+    },
+    "relationship": {
+      "type": "object",
+      "required": ["relationship_id", "relationship_revision", "mapping_version", "from_ref", "to_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "relationship_id": {"$ref": "#/$defs/id"},
+        "relationship_revision": {"$ref": "#/$defs/revision"},
+        "mapping_version": {"$ref": "#/$defs/revision"},
+        "from_ref": {"$ref": "#/$defs/record_ref"},
+        "to_ref": {"$ref": "#/$defs/record_ref"}
+      }
+    },
+    "context": {
+      "type": "object",
+      "required": ["subject_ref", "grouping", "effective_at", "product_refs", "portfolio_ids", "initiative_refs", "contribution_refs", "relationship_versions"],
+      "additionalProperties": false,
+      "properties": {
+        "subject_ref": {"$ref": "#/$defs/record_ref"},
+        "grouping": {"enum": ["historical", "current_regrouping"]},
+        "effective_at": {"$ref": "#/$defs/instant"},
+        "product_refs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/record_ref"}},
+        "portfolio_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "initiative_refs": {"type": "array", "items": {"$ref": "#/$defs/record_ref"}},
+        "contribution_refs": {"type": "array", "items": {"$ref": "#/$defs/record_ref"}},
+        "relationship_versions": {"type": "array", "items": {"$ref": "#/$defs/relationship"}}
+      }
+    },
+    "association": {
+      "type": "object",
+      "required": ["subject_ref", "portfolio_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "subject_ref": {"$ref": "#/$defs/record_ref"},
+        "portfolio_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      }
+    },
+    "allocation": {
+      "type": "object",
+      "required": ["allocation_id", "allocation_policy_version", "allocation_basis", "source_ref", "target_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "allocation_id": {"$ref": "#/$defs/id"},
+        "allocation_policy_version": {"$ref": "#/$defs/revision"},
+        "allocation_basis": {"$ref": "#/$defs/id"},
+        "source_ref": {"$ref": "#/$defs/record_ref"},
+        "target_ref": {"$ref": "#/$defs/record_ref"}
+      }
+    }
+  }
+}

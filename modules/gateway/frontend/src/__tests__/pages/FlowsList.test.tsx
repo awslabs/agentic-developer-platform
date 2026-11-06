@@ -109,6 +109,7 @@ function makeStatusCounts(overrides: Partial<Record<FlowStatus, number>> = {}): 
     queued: 0,
     complete: 0,
     empty: 0,
+    archived: 0,
     ...overrides,
   };
 }
@@ -179,6 +180,7 @@ function renderFlowsList(initialEntry = '/flows') {
 
 function permissions(overrides: Record<string, unknown> = {}) {
   return {
+    hasPermission: () => false,
     isPlatformAdmin: () => false,
     isOrgAdmin: () => false,
     isDeptAdmin: () => false,
@@ -344,7 +346,27 @@ describe('a flow card', () => {
     );
     renderFlowsList();
 
-    await waitFor(() => expect(screen.getByTestId('awaiting-you')).toHaveTextContent('1 waiting on you'));
+    await waitFor(() => expect(screen.getByTestId('awaiting-you')).toHaveTextContent('1 awaiting review'));
+  });
+
+  it('names the wave that holds the open gate, so consecutive gates read as different decisions', async () => {
+    mockListFlows.mockResolvedValue(
+      makeList({
+        flows: [
+          makeFlow({
+            status: 'awaiting_you',
+            awaiting_gate_count: 1,
+            waves: [
+              makeWave({ wave_ref: 'wave-1', title: 'Foundation', total: 2, done: 2 }),
+              makeWave({ wave_ref: 'wave-2', title: 'Qualification', total: 3, done: 1, display_counts: { queued: 1, in_progress: 0, gate: 1, stalled: 0, complete: 1 } }),
+            ],
+          }),
+        ],
+      })
+    );
+    renderFlowsList();
+
+    await waitFor(() => expect(screen.getByTestId('awaiting-you')).toHaveTextContent('1 awaiting review · Qualification'));
   });
 
   it('shows both calls to action when a flow is stalled AND gated', async () => {
@@ -355,7 +377,7 @@ describe('a flow card', () => {
     );
     renderFlowsList();
 
-    await waitFor(() => expect(screen.getByTestId('awaiting-you')).toHaveTextContent('1 waiting on you'));
+    await waitFor(() => expect(screen.getByTestId('awaiting-you')).toHaveTextContent('1 awaiting review'));
     expect(screen.getByTestId('stalled-count')).toHaveTextContent('2 stalled');
     // Scoped to the card: the chip row carries the same label tenant-wide, so an
     // unscoped query matches both and says nothing about what the card reports.
@@ -375,6 +397,7 @@ describe('a flow card', () => {
     expect(screen.getByTestId('legend-stalled')).toHaveTextContent('3');
     expect(screen.getByTestId('legend-in_progress')).toHaveTextContent('4');
     expect(screen.getByTestId('legend-complete')).toHaveTextContent('5');
+    await userEvent.click(screen.getByText('More details and controls'));
     expect(screen.getByText('All 26 work items, including implementation stories, evaluations and approval gates')).toBeVisible();
   });
 
@@ -392,8 +415,8 @@ describe('a flow card', () => {
     await waitFor(() => expect(screen.getByTestId('flows-list')).toBeInTheDocument());
 
     const card = screen.getByTestId(`flow-card-${makeFlow().id}`);
-    expect(card).toHaveTextContent('aidlc-delivery-loop-4645');
-    expect(card).toHaveTextContent('from intent #4645');
+    expect(screen.getByText('aidlc-delivery-loop-4645')).toBeInTheDocument();
+    expect(card).toHaveTextContent('Intent #4645');
     // §7.2: the joined `flow/epic/wave/node` address is the cost join key and is
     // internal. Rendering it invites someone to depend on its format.
     expect(card.textContent).not.toContain('aidlc-delivery-loop-4645/epic-1');
@@ -798,7 +821,7 @@ describe('filters live in the query string', () => {
 
     await waitFor(() => expect(mockListFlows).toHaveBeenCalled());
     expect(mockListFlows).toHaveBeenCalledWith(
-      expect.objectContaining({ q: '4645', status: 'awaiting_you', needs_me: true, sort: 'stalled' })
+      expect.objectContaining({ q: '4645', status: 'awaiting_you', needs_me: true, sort: 'stalled' }), expect.any(AbortSignal)
     );
   });
 
@@ -815,7 +838,7 @@ describe('filters live in the query string', () => {
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/flows?status=attention_needed')
     );
-    expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'attention_needed' }));
+    expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'attention_needed' }), expect.any(AbortSignal));
   });
 
   it('clears a status filter when its selected chip is clicked again', async () => {
@@ -836,7 +859,7 @@ describe('filters live in the query string', () => {
     await userEvent.click(screen.getByTestId('needs-me-filter'));
 
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('needs_me=true'));
-    expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ needs_me: true }));
+    expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ needs_me: true }), expect.any(AbortSignal));
   });
 
   it('writes the search box into the URL', async () => {
@@ -867,7 +890,7 @@ describe('filters live in the query string', () => {
 
     await waitFor(() => expect(mockListFlows).toHaveBeenCalled());
     expect(mockListFlows).toHaveBeenCalledWith(
-      expect.objectContaining({ status: undefined, sort: 'created' })
+      expect.objectContaining({ status: undefined, sort: 'created' }), expect.any(AbortSignal)
     );
   });
 
@@ -879,7 +902,7 @@ describe('filters live in the query string', () => {
 
     await userEvent.click(screen.getByTestId('needs-me-filter'));
 
-    await waitFor(() => expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 })));
+    await waitFor(() => expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }), expect.any(AbortSignal)));
     expect(screen.getByTestId('location').textContent).not.toContain('offset=');
   });
 });
@@ -889,7 +912,7 @@ describe('filters live in the query string', () => {
 // ---------------------------------------------------------------------------
 
 describe('the status chips and the summary line', () => {
-  it('renders all six chips including zeroes', async () => {
+  it('renders all seven chips including zeroes', async () => {
     // Absence of a status is information, and a chip row whose shape changes as
     // work moves is harder to scan than one that does not.
     mockListFlows.mockResolvedValue(makeList({ status_counts: makeStatusCounts({ queued: 1 }) }));
@@ -897,10 +920,33 @@ describe('the status chips and the summary line', () => {
     await waitFor(() => expect(screen.getByTestId('status-chips')).toBeInTheDocument());
 
     const chips = screen.getByTestId('status-chips');
-    for (const status of ['attention_needed', 'awaiting_you', 'running', 'queued', 'complete', 'empty']) {
+    for (const status of ['attention_needed', 'awaiting_you', 'running', 'queued', 'complete', 'empty', 'archived']) {
       expect(within(chips).getByTestId(`status-chip-${status}`)).toBeInTheDocument();
     }
     expect(within(chips).getByTestId('status-chip-complete')).toHaveTextContent('0');
+  });
+
+  it('selects archived flows from the chip and keeps counts scoped to that population', async () => {
+    mockListFlows.mockImplementation((params) => Promise.resolve(params.status === 'archived'
+      ? makeList({
+          flows: [makeFlow({ status: 'archived', archived_at: '2026-10-13T12:00:00Z' })],
+          status_counts: makeStatusCounts({ archived: 1, running: 1 }),
+        })
+      : makeList({
+          flows: [makeFlow({ status: 'running' })],
+          status_counts: makeStatusCounts({ running: 1 }),
+        })));
+    renderFlowsList();
+    expect(await screen.findByTestId('status-chip-archived')).toHaveTextContent('0');
+    await userEvent.click(screen.getByTestId('status-chip-archived'));
+    await waitFor(() => expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'archived' }), expect.any(AbortSignal)));
+    await waitFor(() => expect(screen.getByTestId('status-chip-archived')).toHaveTextContent('1'));
+    expect(screen.getByTestId('status-chip-running')).toHaveTextContent('1');
+    expect(screen.getByTestId('flow-card-76fea8c6-8e16-4279-aab2-e7b30989be68')).toHaveTextContent('Archived');
+    expect(screen.getByTestId('location')).toHaveTextContent('/flows?status=archived');
+    await userEvent.click(screen.getByTestId('status-chip-archived'));
+    await waitFor(() => expect(screen.getByTestId('status-chip-archived')).toHaveTextContent('0'));
+    expect(screen.getByTestId('flow-card-76fea8c6-8e16-4279-aab2-e7b30989be68')).toHaveTextContent('Running');
   });
 
   it('keeps the chips tenant-wide while a filter narrows the rows', async () => {
@@ -948,7 +994,7 @@ describe('the status chips and the summary line', () => {
     await userEvent.click(screen.getByTestId('flows-next'));
 
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('offset=25'));
-    expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 25 }));
+    expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 25 }), expect.any(AbortSignal));
   });
 
   it('hides the pager when everything fits on one page', async () => {
@@ -985,6 +1031,16 @@ it('shows the story count and requested-change hold on the summary card', async 
   expect(screen.getByTestId('changes-requested-summary')).toHaveTextContent('Work behind these gates is paused');
 });
 
+it('offers an archive action outside the card link and shows archived status without false attention', async () => {
+  mockUsePermissions.mockReturnValue({ hasPermission: () => true });
+  mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ status: 'archived', archived_at: '2026-10-13T12:00:00Z', display_counts: { queued: 0, in_progress: 0, gate: 0, stalled: 1, complete: 2 } })] }));
+  renderFlowsList();
+  const button = await screen.findByRole('button', { name: 'Unarchive flow' });
+  expect(button.closest('a')).toBeNull();
+  expect(screen.getByTestId(`flow-card-${makeFlow().id}`)).toHaveTextContent('Archived');
+  expect(screen.queryByTestId('stalled-count')).not.toBeInTheDocument();
+});
+
 it('renders flow pause controls outside the navigation link', async () => {
   mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ execution_paused: true })] }));
   mockUsePermissions.mockReturnValue({ hasPermission: () => true });
@@ -1005,7 +1061,87 @@ it('shows the current capability description when two epics reuse the same wave 
   })] }));
   renderFlowsList();
   expect(await screen.findByTestId('wave-rail-caption')).toHaveTextContent('Now on Worker execution');
+  await userEvent.click(screen.getByText('More details and controls'));
   expect(screen.getByText('Build and qualify the worker.')).toBeVisible();
   expect(screen.getByTestId('wave-segment-epic-1-wave-1')).toHaveAttribute('data-current', 'false');
   expect(screen.getByTestId('wave-segment-epic-2-wave-1')).toHaveAttribute('data-current', 'true');
+});
+
+it('opens an archived flow from an explicitly included list and restores live-only defaults', async () => {
+  const live = makeFlow({ status: 'running' });
+  const archived = makeFlow({
+    id: 'ad7d768e-d367-43df-bbfd-56521ac82e45',
+    slug: 'completed-delivery',
+    title: 'Completed delivery',
+    status: 'archived',
+    archived_at: '2026-10-13T12:00:00Z',
+  });
+  mockListFlows.mockImplementation((params) => Promise.resolve(makeList({
+    flows: params.include_archived ? [live, archived] : [live],
+    status_counts: makeStatusCounts(params.include_archived ? { running: 1, archived: 1 } : { running: 1 }),
+  })));
+  renderFlowsList();
+  expect(await screen.findByTestId(`flow-card-${live.id}`)).toBeInTheDocument();
+  expect(screen.queryByTestId(`flow-card-${archived.id}`)).not.toBeInTheDocument();
+  expect(screen.getByTestId('include-archived-filter')).not.toBeChecked();
+
+  await userEvent.click(screen.getByLabelText('Include archived flows'));
+  await waitFor(() => expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ include_archived: true, offset: 0 }), expect.any(AbortSignal)));
+  expect(screen.getByTestId('location')).toHaveTextContent('/flows?include_archived=true');
+  const archivedCard = await screen.findByTestId(`flow-card-${archived.id}`);
+  expect(archivedCard).toHaveTextContent('Archived');
+  expect(archivedCard).toHaveAttribute('href', `/flows/${archived.id}`);
+  expect(screen.getByTestId(`flow-card-${live.id}`)).toBeInTheDocument();
+  expect(screen.getByTestId('status-chip-archived')).toHaveTextContent('1');
+  await userEvent.click(archivedCard);
+  expect(screen.getByTestId('graph-view-stub')).toBeInTheDocument();
+});
+
+it('restores the archived list from a shared URL and returns to live-only on uncheck', async () => {
+  const archived = makeFlow({ status: 'archived', archived_at: '2026-10-13T12:00:00Z' });
+  mockListFlows.mockImplementation((params) => Promise.resolve(makeList({
+    flows: params.include_archived ? [archived] : [],
+    status_counts: makeStatusCounts(params.include_archived ? { archived: 1 } : {}),
+  })));
+  renderFlowsList('/flows?include_archived=true&offset=25');
+  expect(await screen.findByTestId(`flow-card-${archived.id}`)).toBeInTheDocument();
+  expect(screen.getByTestId('include-archived-filter')).toBeChecked();
+  expect(mockListFlows).toHaveBeenCalledWith(expect.objectContaining({ include_archived: true, offset: 25 }), expect.any(AbortSignal));
+  await userEvent.click(screen.getByLabelText('Include archived flows'));
+  await waitFor(() => expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ include_archived: false, offset: 0 }), expect.any(AbortSignal)));
+  expect(screen.getByTestId('location').textContent).toBe('/flows');
+  await waitFor(() => expect(screen.queryByTestId(`flow-card-${archived.id}`)).not.toBeInTheDocument());
+});
+
+
+it('clears search and status together and provides a retry after a read failure', async () => {
+  mockListFlows.mockRejectedValueOnce(new Error('Network unavailable')).mockResolvedValue(makeList());
+  renderFlowsList('/flows?q=missing&status=running&needs_me=true');
+  await userEvent.click(await screen.findByRole('button', { name: 'Retry loading flows' }));
+  await screen.findByTestId('flows-list');
+  await userEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+  await waitFor(() => expect(mockListFlows).toHaveBeenLastCalledWith(expect.objectContaining({ q: undefined, status: undefined, needs_me: false, offset: 0 }), expect.any(AbortSignal)));
+});
+
+it('keeps flows visible when spend cannot refresh, then clears the notice after recovery', async () => {
+  const flow = makeFlow();
+  mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({
+    ...flow,
+    delivery_cost: { ...flow.delivery_cost, status: 'unknown', amount_usd: null, reason: 'cost_refresh_unavailable' },
+  })] }));
+  renderFlowsList();
+  expect(await screen.findByTestId(`flow-card-${flow.id}`)).toBeInTheDocument();
+  expect(screen.getByText('Spend is temporarily unavailable')).toBeInTheDocument();
+  expect(screen.queryByTestId('flows-error')).not.toBeInTheDocument();
+  mockListFlows.mockResolvedValue(makeList({ flows: [flow] }));
+  await userEvent.click(screen.getByLabelText('Include archived flows'));
+  await waitFor(() => expect(screen.queryByText('Spend is temporarily unavailable')).not.toBeInTheDocument());
+  expect(screen.getByTestId(`flow-card-${flow.id}`)).toBeInTheDocument();
+});
+
+it('shows the server explanation when the list request fails', async () => {
+  mockListFlows.mockRejectedValue({ status: 503, detail: 'Flow summary refresh timed out' });
+  renderFlowsList();
+  expect(await screen.findByText('Flow summary refresh timed out')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Retry loading flows' })).toBeInTheDocument();
 });

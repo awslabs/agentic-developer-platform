@@ -1,0 +1,10 @@
+{
+  "service_id": "well_architected",
+  "capability": "architecture_review",
+  "configuration_revision": 3,
+  "binding_id": "binding-example",
+  "sources": [
+    {"tenant_id":"example-org","project_id":"project-example","source_connection_id":"source-example","record_type":"repository_commit","record_id":"repository-example","record_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"tenant_id":"example-org","project_id":"project-example","source_connection_id":"source-example","record_type":"document","record_id":"architecture-example","record_revision":"7"}
+  ]
+}

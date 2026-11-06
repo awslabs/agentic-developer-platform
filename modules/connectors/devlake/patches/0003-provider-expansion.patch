@@ -1,0 +1,33 @@
+diff --git a/backend/plugins/argocd/api/remote_api.go b/backend/plugins/argocd/api/remote_api.go
+index b99d5c2..76acb60 100644
+--- a/backend/plugins/argocd/api/remote_api.go
++++ b/backend/plugins/argocd/api/remote_api.go
+@@ -153,0 +154,6 @@
++// ADPListRemoteScopes reuses discovery with a caller-owned client. No connection
++// lookup, plugin initialization or credential storage is performed here.
++func ADPListRemoteScopes(client plugin.ApiClient, group string, page ArgocdRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.ArgocdApplication], *ArgocdRemotePagination, errors.Error) {
++	return listArgocdRemoteScopes(&models.ArgocdConnection{}, client, group, page)
++}
++
+diff --git a/backend/plugins/jenkins/api/remote_api.go b/backend/plugins/jenkins/api/remote_api.go
+index 58b486c..fbdf1aa 100644
+--- a/backend/plugins/jenkins/api/remote_api.go
++++ b/backend/plugins/jenkins/api/remote_api.go
+@@ -99,0 +100,6 @@
++// ADPListRemoteScopes reuses discovery with a caller-owned client. No connection
++// lookup, plugin initialization or credential storage is performed here.
++func ADPListRemoteScopes(client plugin.ApiClient, group string, page JenkinsRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.JenkinsJob], *JenkinsRemotePagination, errors.Error) {
++	return listJenkinsRemoteScopes(&models.JenkinsConnection{}, client, group, page)
++}
++
+diff --git a/backend/plugins/sonarqube/api/remote_api.go b/backend/plugins/sonarqube/api/remote_api.go
+index f8a9c87..652d1a5 100644
+--- a/backend/plugins/sonarqube/api/remote_api.go
++++ b/backend/plugins/sonarqube/api/remote_api.go
+@@ -123,0 +124,6 @@
++// ADPListRemoteScopes reuses discovery with a caller-owned client. No connection
++// lookup, plugin initialization or credential storage is performed here.
++func ADPListRemoteScopes(client plugin.ApiClient, group string, page SonarqubeRemotePagination) ([]dsmodels.DsRemoteApiScopeListEntry[models.SonarqubeProject], *SonarqubeRemotePagination, errors.Error) {
++	return listSonarqubeRemoteScopes(&models.SonarqubeConnection{}, client, group, page)
++}
++

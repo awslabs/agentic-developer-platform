@@ -362,6 +362,13 @@ paths:
       description: |
         Proxy endpoint that forwards Anthropic Messages format to Bedrock.
         Supports anthropic-beta and anthropic-version headers.
+        Tool definitions, complete JSON input schemas, tool_choice, thinking,
+        output_config, metadata, and unknown request fields reach Bedrock; the
+        gateway does not silently discard unsupported fields. Bedrock validation
+        errors return HTTP 400 with the field-naming provider message. Responses
+        preserve all content block types. Streams relay ping and content events,
+        end with one message_stop on success, and emit an error event without a
+        message_stop when interrupted after streaming begins.
       operationId: createMessage
       parameters:
         - name: anthropic-version
@@ -1548,6 +1555,27 @@ components:
           type: number
         tools:
           type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              description:
+                type: string
+              input_schema:
+                type: object
+                description: Full JSON Schema object with type object; nested keywords are preserved.
+              cache_control:
+                type: object
+        tool_choice:
+          type: object
+        thinking:
+          type: object
+        output_config:
+          type: object
+        metadata:
+          type: object
+      additionalProperties: true
 
     AnthropicMessagesResponse:
       type: object

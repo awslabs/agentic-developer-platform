@@ -35,6 +35,8 @@ CAPABILITIES = Literal[
     "agents.delegate",
     "aws.assume",
     "aws.mutate",
+    "actions.read",
+    "actions.write",
 ]
 Effort = Literal["low", "medium", "high", "xhigh"]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]

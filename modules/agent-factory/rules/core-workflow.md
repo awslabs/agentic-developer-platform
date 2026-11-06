@@ -4,6 +4,13 @@
 This workflow OVERRIDES all other workflows. When processing a development request, ALWAYS follow this workflow.
 
 ## Adaptive Workflow Principle
+On a resumed story, keep its existing branch and task board. Startup reconciles
+the current base without discarding story commits. Inspect `git status` before
+work; resolve any pending base-merge conflicts and run affected checks before
+publication. Never replace story work with main or force-push over concurrent
+updates. Exact-revision reviews retain their assigned head; base integration is
+part of an authorized repair, not a change to what was requested for review.
+
 For code delivery: implement and validate on the task branch, open a ready PR,
 then review. Do not create draft PRs or request reviews of incomplete slices.
 Use branch/commit links for progress. Existing drafts enter review only when

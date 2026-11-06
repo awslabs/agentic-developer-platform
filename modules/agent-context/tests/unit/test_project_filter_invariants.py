@@ -18,7 +18,8 @@ import uuid
 
 import pytest
 
-from door.acl import SearchHit
+from door import server as door_server
+from door.acl import CallerPrincipal, SearchHit
 from door.project_filter import (
     ProjectFilterError,
     ProjectScope,
@@ -39,10 +40,12 @@ class FakeDBPool:
         self,
         projects: list[dict] | None = None,
         project_repos: list[dict] | None = None,
+        index_stages: dict[str, str] | None = None,
     ):
         self._projects = projects or []
         self._project_repos = project_repos or []
-        self._conn = _FakeConnection(self._projects, self._project_repos)
+        self._index_stages = index_stages or {}
+        self._conn = _FakeConnection(self._projects, self._project_repos, self._index_stages)
 
     def getconn(self):
         return self._conn
@@ -52,17 +55,18 @@ class FakeDBPool:
 
 
 class _FakeConnection:
-    def __init__(self, projects: list[dict], project_repos: list[dict]):
+    def __init__(self, projects: list[dict], project_repos: list[dict], index_stages: dict[str, str]):
         self._projects = projects
         self._project_repos = project_repos
+        self._index_stages = index_stages
 
     def cursor(self):
-        return _FakeCursorContext(self._projects, self._project_repos)
+        return _FakeCursorContext(self._projects, self._project_repos, self._index_stages)
 
 
 class _FakeCursorContext:
-    def __init__(self, projects: list[dict], project_repos: list[dict]):
-        self._cursor = _FakeCursor(projects, project_repos)
+    def __init__(self, projects: list[dict], project_repos: list[dict], index_stages: dict[str, str]):
+        self._cursor = _FakeCursor(projects, project_repos, index_stages)
 
     def __enter__(self):
         return self._cursor
@@ -72,13 +76,16 @@ class _FakeCursorContext:
 
 
 class _FakeCursor:
-    def __init__(self, projects: list[dict], project_repos: list[dict]):
+    def __init__(self, projects: list[dict], project_repos: list[dict], index_stages: dict[str, str]):
         self._projects = projects
         self._project_repos = project_repos
+        self._index_stages = index_stages
         self._results: list[tuple] = []
 
     def execute(self, query: str, params: tuple = ()) -> None:
-        if "FROM projects" in query and "id = %s" in query:
+        if "FROM repositories AS repo" in query:
+            self._results = [(repo, self._index_stages[repo]) for repo in params[0] if repo in self._index_stages]
+        elif "FROM projects" in query and "id = %s" in query:
             project_uuid = params[0]
             caller_owner_sub = params[1]
             caller_tenant_id = params[2]
@@ -431,6 +438,45 @@ class TestOwnershipInvariant:
         # Alice CAN resolve it
         scope = resolve_project_repos("frontend", ALICE_SUB, mn_pool)
         assert scope.project_id == PROJECT_FRONTEND
+
+
+async def test_foreign_personal_and_tenant_project_refused_before_index_query(mn_pool, monkeypatch):
+    class SearchIndex:
+        calls = 0
+
+        async def search(self, query, *, limit):
+            self.calls += 1
+            return [
+                SearchHit(repo_name=REPO_UI, data={"file": "own.py", "fact": "violet fact", "citation": "fixture/a:7"}),
+                SearchHit(repo_name=REPO_INFRA, data={"file": "foreign.py", "fact": "copper fact", "citation": "fixture/b:9"}),
+            ]
+
+    class ACLStore:
+        def get_allowed_repos(self, caller):
+            return {REPO_UI.casefold(), REPO_INFRA.casefold()}
+
+    index = SearchIndex()
+    monkeypatch.setattr(door_server.state, "db_pool", mn_pool)
+    monkeypatch.setattr(door_server.state, "acl_store", ACLStore())
+    monkeypatch.setattr(door_server.state, "zoekt", index)
+    monkeypatch.setattr(door_server.config, "project_filter_enabled", True)
+    owner = CallerPrincipal(owner_sub=ALICE_SUB, tenant_id=TENANT_ACME, github_login="alice")
+    foreign = CallerPrincipal(owner_sub=BOB_SUB, tenant_id=TENANT_GLOBEX, github_login="bob")
+    arguments = {"query": "violet fact", "scope": "code", "project": PROJECT_FRONTEND}
+
+    pending = await door_server._dispatch_tool("search", arguments, {}, owner)
+    assert pending["code"] == "knowledge_index_not_ready"
+    assert index.calls == 0
+    mn_pool._index_stages.update({REPO_UI: "verified", REPO_SHARED_LIB: "verified"})
+    permitted = await door_server._dispatch_tool("search", arguments, {}, owner)
+    assert permitted["results"] == [{"file": "own.py", "fact": "violet fact", "citation": "fixture/a:7"}]
+    assert index.calls == 1
+
+    for project in (PROJECT_FRONTEND, PROJECT_TEAM_SHARED):
+        denied = await door_server._dispatch_tool("search", {**arguments, "project": project}, {}, foreign)
+        assert denied["code"] == "project_not_found"
+        assert "violet fact" not in str(denied) and "copper fact" not in str(denied)
+        assert index.calls == 1
 
 
 # ---------------------------------------------------------------------------

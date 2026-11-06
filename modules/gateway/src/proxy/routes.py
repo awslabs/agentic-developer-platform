@@ -23,18 +23,27 @@ import asyncio
 import fnmatch
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC as _UTC
+from datetime import datetime as _datetime
 from typing import Annotated
 
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
-from src.auth.middleware import validate_cognito_jwt
+from src.auth.caller_provenance import has_caller_identity_assertion
+from src.auth.middleware import extract_iam_identity_from_headers, validate_cognito_jwt
 from src.chat_logging.service import ChatLoggingService, create_streaming_logging_wrapper
+from src.crew.host_routes import HOST_RUN_ROUTE_PATHS, host_run_route
 from src.proxy.bedrock_streaming_response import BedrockStreamingResponse
 from src.proxy.client_tool import normalize_client_tool
+from src.proxy.conversation_identity import FORWARDED_USER_AGENT_HEADER, ConversationIdentity, _current_conversation, identify
 from src.proxy.eventstream_codec import EVENTSTREAM_CONTENT_TYPE, EVENTSTREAM_KEEPALIVE, sse_to_eventstream
+from src.proxy.format_translator import FormatTranslator
 from src.proxy.mantle_service import MantlePassthroughService, MantleUpstreamError
 from src.proxy.model_resolver import ModelResolver, production_model_resolver
 from src.proxy.pricing_capture import PricingCapture
@@ -56,6 +65,7 @@ from src.shared.timing import get_timings
 
 logger = logging.getLogger(__name__)
 _failure_finalizers: set[asyncio.Task] = set()
+_count_denied_logged_at: dict[str, float] = {}
 
 router = APIRouter(tags=["proxy"])
 
@@ -184,6 +194,60 @@ async def set_agent_run_id_from_header(request: Request) -> str | None:
         _current_agent_run_id.set(agent_run_id)
     else:
         _current_agent_run_id.set(None)
+    context = getattr(request.state, "token_context", None)
+    iam_service = context is not None and context.account_type == "service" and context.auth_source == "iam"
+    restricted_host = iam_service and context.requires_host_identity
+    if restricted_host and not agent_run_id:
+        raise HTTPException(403, "Host run is required")
+    if agent_run_id and iam_service:
+        from src.auth.agent_registry import parse_assumed_role_arn
+        from src.auth.caller_provenance import verified_caller_identity
+        from src.proxy.bedrock_principal import read_routing_run
+
+        route = request.scope.get("route")
+        try:
+            row = await read_routing_run(agent_run_id)
+        except Exception as exc:
+            raise HTTPException(503, "Host run verification unavailable") from exc
+        if restricted_host and (row is None or row.get("kind") != "crew" or row.get("target_kind") != "ec2-instance"):
+            raise HTTPException(403, "Host run is not authorized")
+        # The host allowlist is the set the crew routers register at decoration
+        # time (src/crew/host_routes.py), not a literal here: the literal missed
+        # the #8380 tools relay and every Dev Box tools call was refused (#8223
+        # cause 33).
+        if route is not None and route.path not in HOST_RUN_ROUTE_PATHS:
+            if row is None or row.get("target_kind") == "ec2-instance":
+                raise HTTPException(403, "Host run is not authorized for this model route")
+        if row is not None and row.get("target_kind") == "ec2-instance":
+            if (
+                row.get("status") != "active"
+                or row.get("executor_scope") != "session"
+                or row.get("is_human_rooted") is not True
+                or row.get("root_human_id") != row.get("user_id")
+            ):
+                if row.get("status") == "provisioning":
+                    # #9455: a host attested ready but never activated looked like a silent outage
+                    # (every route 403, nothing logged anywhere). Name it.
+                    logger.warning(
+                        "host run %s is still provisioning; refusing host route %s for instance %s",
+                        str(agent_run_id)[:8],
+                        route.path if route is not None else request.url.path,
+                        row.get("target_ref"),
+                    )
+                raise HTTPException(403, "Host run is not authorized")
+            caller = verified_caller_identity(request)
+            instance_id = caller.rsplit("/", 1)[-1] if caller else None
+            if (
+                not caller
+                or not caller.startswith("arn:aws:sts::")
+                or ":assumed-role/" not in caller
+                or instance_id != row.get("target_ref")
+                or parse_assumed_role_arn(caller) != row.get("host_role_arn")
+                or not re.fullmatch(r"i-[0-9a-f]{8,17}", instance_id)
+            ):
+                raise HTTPException(403, "Host run is not authorized for this instance")
+            context._dev_box_instance_id = instance_id
+            context._dev_box_role_arn = row["host_role_arn"]
     return agent_run_id
 
 
@@ -264,6 +328,26 @@ async def get_token_context(
     # Issue #144: Time the auth segment
     auth_start = time.monotonic()
     try:
+        # API Gateway IAM callers (X-Caller-Identity, edge-verified) on paths the
+        # TokenContextMiddleware does not enforce: /crew/host-restore/* and
+        # /crew/model-token/refresh are reached by Crew hosts only through the AWS_IAM
+        # /agent/{proxy+} route and carry no bearer token, yet this dependency used to
+        # look for one and answer 401 missing_token (dev 2026-10-19, #8223). The same
+        # provenance helper and registry lookup the middleware uses apply here; a
+        # forged or unregistered assertion is terminal (403), never a fall-through.
+        if has_caller_identity_assertion(request):
+            from src.shared.exceptions import UnregisteredServiceAccountError
+
+            try:
+                token_context = extract_iam_identity_from_headers(request)
+            except UnregisteredServiceAccountError:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"error": "agent_not_registered", "message": "Agent not registered. Contact your org administrator."},
+                ) from None
+            if token_context is not None:
+                request.state.token_context = token_context
+                return token_context
         # Validate Cognito JWT token from Authorization header
         if authorization:
             token_context = await validate_cognito_jwt(authorization)
@@ -296,6 +380,37 @@ async def get_token_context(
 # ============================================================================
 # Error Handling
 # ============================================================================
+
+
+async def set_conversation_identity(
+    request: Request,
+    context: Annotated[TokenContext, Depends(get_token_context)],
+    _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
+) -> ConversationIdentity:
+    """Record which conversation this request belongs to, for the cost record (#9024).
+
+    ``async def`` for the same load-bearing reason as ``set_client_tool_from_header``: a contextvar set
+    in a sync dependency lands on a throwaway copy. Declared after the run-id dependency so a Dev Box
+    host call already carries its instance id, which is what makes the forwarded client user agent
+    trustworthy and the origin ``dev_box``. Reads the (cached) body; never raises; always sets the
+    contextvar so no request inherits another's conversation.
+    """
+    dev_box = bool(getattr(context, "_dev_box_instance_id", None))
+    try:
+        body = await request.body()
+    except Exception:  # noqa: BLE001 - reporting must not fail the request
+        body = None
+    conversation = identify(
+        user_agent=request.headers.get("user-agent"),
+        forwarded_user_agent=request.headers.get(FORWARDED_USER_AGENT_HEADER),
+        dev_box=dev_box,
+        headers=request.headers,
+        body_bytes=body,
+        principal=getattr(context, "_crew_owner_user_id", None) or context.user_id,
+        day=_datetime.now(_UTC).date().isoformat(),
+    )
+    _current_conversation.set(conversation)
+    return conversation
 
 
 def handle_proxy_error(error: Exception) -> HTTPException:
@@ -345,8 +460,8 @@ def _pricing_log_args(request: Request, context: TokenContext, capture: PricingC
         "account_type": "service" if context.account_type == "service" else "human",
         "model": capture.original_model,
         "api_format": "bedrock",
-        "request_body": body,
-        "headers": dict(request.headers),
+        "request_body": {} if context._dev_box_instance_id else body,
+        "headers": None if context._dev_box_instance_id else dict(request.headers),
         "pricing_capture": capture,
         "only_priced": True,
     }
@@ -372,7 +487,7 @@ async def _invoke_with_failure_logging(invoke, request: Request, context: TokenC
             try:
                 get_chat_logging_service().log_chat_async(
                     **_pricing_log_args(request, context, capture, body),
-                    response_body=capture.response_body,
+                    response_body={} if context._dev_box_instance_id else capture.response_body,
                     latency_ms=(time.monotonic() - started) * 1000,
                 )
             except Exception:
@@ -396,6 +511,8 @@ async def create_chat_completion(
     # exactly the routes that already carry the agent_run_id dependency — i.e. the
     # routes that write a usage_logs row.
     _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
+    # Default None so tests and internal callers that invoke the handler directly keep working (#9024).
+    _conversation: Annotated[ConversationIdentity | None, Depends(set_conversation_identity)] = None,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
     """Create a chat completion (OpenAI-compatible).
@@ -446,13 +563,18 @@ async def list_models(
     context: Annotated[TokenContext, Depends(get_token_context)],
     model_resolver: Annotated[ModelResolver, Depends(get_model_resolver)],
     authorization: Annotated[str | None, Header()] = None,
+    client: str | None = None,
 ) -> ModelsListResponse:
     """List available models (OpenAI-compatible).
 
-    Returns models filtered by the caller's org/team permissions.
+    Only ``client=claude-desktop`` selects full, entitled Claude profiles;
+    other requests retain the original alias list. Authentication is unchanged.
     """
     try:
-        models = model_resolver.get_available_models(context)
+        if client == "claude-desktop":
+            models = model_resolver.get_claude_desktop_models(context)
+        else:
+            models = model_resolver.get_available_models(context)
         return ModelsListResponse(object="list", data=models)
 
     except Exception as e:
@@ -475,6 +597,8 @@ async def create_message(
     # exactly the routes that already carry the agent_run_id dependency — i.e. the
     # routes that write a usage_logs row.
     _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
+    # Default None so tests and internal callers that invoke the handler directly keep working (#9024).
+    _conversation: Annotated[ConversationIdentity | None, Depends(set_conversation_identity)] = None,
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
     anthropic_version: Annotated[str | None, Header(alias="anthropic-version")] = None,
@@ -582,7 +706,9 @@ async def create_message(
 
 @router.post("/v1/messages/count_tokens", response_model=CountTokensResponse)
 async def count_tokens(
-    request: CountTokensRequest,
+    request: dict,
+    response: Response,
+    proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
     context: Annotated[TokenContext, Depends(get_token_context)],
     model_resolver: Annotated[ModelResolver, Depends(get_model_resolver)],
     authorization: Annotated[str | None, Header()] = None,
@@ -590,33 +716,46 @@ async def count_tokens(
 ) -> CountTokensResponse:
     """Count tokens for a messages request.
 
-    This is an estimate based on the request content.
+    This is an estimate based on the translated Bedrock request body.
     """
     try:
+        try:
+            count_request = CountTokensRequest.model_validate(request)
+        except ValidationError as exc:
+            if any(error["type"] == "extra_forbidden" for error in exc.errors()):
+                field = next(error["loc"][-1] for error in exc.errors() if error["type"] == "extra_forbidden")
+                raise HTTPException(status_code=400, detail=f"Unknown field: {field}") from exc
+            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
         # Resolve model and check access
-        bedrock_model_id = model_resolver.resolve_model(request.model)
+        bedrock_model_id = model_resolver.resolve_model(count_request.model)
         model_resolver.check_model_access(bedrock_model_id, context)
 
-        # Estimate token count
-        # This is a simple estimation - actual count would require API call
-        total_chars = 0
-        for msg in request.messages:
-            if isinstance(msg.content, str):
-                total_chars += len(msg.content)
-            else:
-                for block in msg.content:
-                    if hasattr(block, "text"):
-                        total_chars += len(block.text)
-
-        if request.system:
-            if isinstance(request.system, str):
-                total_chars += len(request.system)
+        bedrock_body = FormatTranslator().anthropic_to_bedrock(count_request).model_dump(exclude_none=True)
+        total_chars = len(json.dumps(bedrock_body, ensure_ascii=False))
 
         # Rough estimate: ~4 chars per token
         estimated_tokens = max(1, total_chars // 4)
+        try:
+            exact_tokens = await proxy_service.count_bedrock_tokens(bedrock_model_id, bedrock_body, context)
+        except ClientError as exc:
+            error = exc.response.get("Error", {})
+            if error.get("Code") in {"AccessDenied", "AccessDeniedException"}:
+                now = time.monotonic()
+                if now - _count_denied_logged_at.get(bedrock_model_id, -3600) >= 3600:
+                    logger.warning("Bedrock CountTokens denied for model %s; using estimate", bedrock_model_id)
+                    _count_denied_logged_at[bedrock_model_id] = now
+                exact_tokens = None
+            elif error.get("Code") == "ValidationException":
+                raise HTTPException(status_code=400, detail=error.get("Message", "Invalid count request")) from exc
+            else:
+                raise
 
-        return CountTokensResponse(input_tokens=estimated_tokens)
+        response.headers["X-ADP-Token-Count-Mode"] = "exact" if exact_tokens is not None else "estimate"
+        return CountTokensResponse(input_tokens=exact_tokens if exact_tokens is not None else estimated_tokens)
 
+    except HTTPException:
+        raise
     except BedrockGatewayError as e:
         raise handle_proxy_error(e)
     except Exception as e:
@@ -638,6 +777,8 @@ async def invoke_model(
     # exactly the routes that already carry the agent_run_id dependency — i.e. the
     # routes that write a usage_logs row.
     _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
+    # Default None so tests and internal callers that invoke the handler directly keep working (#9024).
+    _conversation: Annotated[ConversationIdentity | None, Depends(set_conversation_identity)] = None,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
     """Invoke Bedrock model (pass-through).
@@ -692,6 +833,8 @@ async def invoke_model_with_response_stream(
     # exactly the routes that already carry the agent_run_id dependency — i.e. the
     # routes that write a usage_logs row.
     _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
+    # Default None so tests and internal callers that invoke the handler directly keep working (#9024).
+    _conversation: Annotated[ConversationIdentity | None, Depends(set_conversation_identity)] = None,
     authorization: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
     """Invoke Bedrock model with streaming response (pass-through).
@@ -741,7 +884,31 @@ async def invoke_model_with_response_stream(
 # These routes match that pattern and delegate to the existing handlers.
 
 
-@router.post("/model/{model_id}/invoke")
+async def _authorized_host_target(context: TokenContext, agent_run_id: str | None):
+    """The owner's resolved target for a verified Dev Box host run, or 403.
+
+    Shared by the buffered and the streaming invoke routes so a host run is admitted
+    to both under exactly the same checks (#8223: the stream route had none and so
+    refused every host call; the box fell back to buffered replies).
+    """
+    from src.agentauth.chat_crew_run import current_crew_store
+    from src.crew.proxy import get_target_resolver
+    from src.crew.targets import CrewOwner
+
+    run_store = current_crew_store()
+    row = await asyncio.to_thread(run_store.read_run, agent_run_id)
+    if row is None or row.get("target_kind") != "ec2-instance":
+        raise HTTPException(403, "Host run is not authorized")
+    owner = CrewOwner(row["tenant_id"], row["user_id"])
+    target = await get_target_resolver().resolve(owner, now=int(time.time()))
+    if target.host_run_id != agent_run_id or target.host_instance_ref != context._dev_box_instance_id:
+        raise HTTPException(403, "Host run is not authorized")
+    # #9024: the human behind this host call, for the cost record's conversation list.
+    context._crew_owner_user_id = owner.user_id
+    return run_store, target
+
+
+@router.post(host_run_route("/model/{model_id}/invoke"))
 async def invoke_model_by_path(
     model_id: str,
     request: Request,
@@ -757,6 +924,8 @@ async def invoke_model_by_path(
     # exactly the routes that already carry the agent_run_id dependency — i.e. the
     # routes that write a usage_logs row.
     _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
+    # Default None so tests and internal callers that invoke the handler directly keep working (#9024).
+    _conversation: Annotated[ConversationIdentity | None, Depends(set_conversation_identity)] = None,
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
 ) -> Response:
@@ -768,12 +937,12 @@ async def invoke_model_by_path(
     timings = get_timings(request)
     try:
         body = await request.json()
-        request_body_copy = body.copy()  # Copy for logging
+        request_body_copy = {} if context._dev_box_instance_id else body.copy()
         logger.info(
             "Bedrock invoke request",
             extra={
                 "model_id": model_id,
-                "body_keys": list(body.keys()),
+                "body_keys": [] if context._dev_box_instance_id else list(body.keys()),
                 "has_tools": "tools" in body,
                 "has_tool_choice": "tool_choice" in body,
                 "has_anthropic_beta": "anthropic_beta" in body,
@@ -792,21 +961,36 @@ async def invoke_model_by_path(
             # route-dependency contextvar does NOT survive to _log_usage across the
             # service-call boundary, so agent_run_id was NULL on 100% of rows even
             # though the header arrives and the dependency (#1781) sets it.
-            response = await _invoke_with_failure_logging(
-                proxy_service.invoke_model(
-                    model_id,
-                    body,
+            async def invoke_provider():
+                return await _invoke_with_failure_logging(
+                    proxy_service.invoke_model(
+                        model_id,
+                        body,
+                        context,
+                        stream=False,
+                        request_id=request_id,
+                        agent_run_id=_agent_run_id,
+                        pricing_capture=pricing_capture,
+                    ),
+                    request,
                     context,
-                    stream=False,
-                    request_id=request_id,
-                    agent_run_id=_agent_run_id,
-                    pricing_capture=pricing_capture,
-                ),
-                request,
-                context,
-                pricing_capture,
-                request_body_copy,
-            )
+                    pricing_capture,
+                    request_body_copy,
+                )
+
+            if context._dev_box_instance_id:
+                from src.crew.model_usage import CrewModelUsage
+
+                run_store, target = await _authorized_host_target(context, _agent_run_id)
+                response = await CrewModelUsage(run_store).invoke(
+                    request.headers.get("x-adp-crew-model-token", ""),
+                    target,
+                    model_id,
+                    invoke_provider,
+                    now=int(time.time()),
+                )
+            else:
+                response = await invoke_provider()
         bedrock_ms = timings.get("bedrock")
 
         logger.info(
@@ -814,7 +998,7 @@ async def invoke_model_by_path(
             extra={
                 "model_id": model_id,
                 "bedrock_latency_ms": bedrock_ms,
-                "response_keys": list(response.keys()) if isinstance(response, dict) else "non-dict",
+                "response_keys": [] if context._dev_box_instance_id else list(response.keys()) if isinstance(response, dict) else "non-dict",
             },
         )
 
@@ -842,8 +1026,8 @@ async def invoke_model_by_path(
             api_format="bedrock",
             latency_ms=bedrock_ms,
             request_body=request_body_copy,
-            response_body=response if isinstance(response, dict) else {"raw": str(response)},
-            headers=dict(request.headers) if request.headers else None,
+            response_body={} if context._dev_box_instance_id else response if isinstance(response, dict) else {"raw": str(response)},
+            headers=None if context._dev_box_instance_id else dict(request.headers) if request.headers else None,
             pricing_capture=pricing_capture,
         )
 
@@ -859,7 +1043,7 @@ async def invoke_model_by_path(
         raise handle_proxy_error(e)
 
 
-@router.post("/model/{model_id}/invoke-with-response-stream")
+@router.post(host_run_route("/model/{model_id}/invoke-with-response-stream"))
 async def invoke_model_stream_by_path(
     model_id: str,
     request: Request,
@@ -873,6 +1057,8 @@ async def invoke_model_stream_by_path(
     # exactly the routes that already carry the agent_run_id dependency — i.e. the
     # routes that write a usage_logs row.
     _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
+    # Default None so tests and internal callers that invoke the handler directly keep working (#9024).
+    _conversation: Annotated[ConversationIdentity | None, Depends(set_conversation_identity)] = None,
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
 ) -> StreamingResponse:
@@ -885,7 +1071,9 @@ async def invoke_model_stream_by_path(
 
     try:
         body = await request.json()
-        request_body_copy = body.copy()  # Copy for logging
+        # A Dev Box host's prompt is the owner's private Crew context: never copied into
+        # the chat log, exactly as the buffered sibling does.
+        request_body_copy = {} if context._dev_box_instance_id else body.copy()  # Copy for logging
 
         # Get request metadata for logging
         request_id = getattr(request.state, "request_id", None) or str(id(request))
@@ -893,10 +1081,9 @@ async def invoke_model_stream_by_path(
         pricing_capture = PricingCapture(request_id, model_id)
         t0 = time.monotonic()
 
-        # Issue #144: Time to get the stream object (includes model resolution)
-        with timings.time_segment("bedrock_ttfb"):
+        async def open_stream():
             # Issue #1755: thread agent_run_id explicitly (see non-streaming route).
-            stream = await proxy_service.invoke_model(
+            return await proxy_service.invoke_model(
                 model_id,
                 body,
                 context,
@@ -905,6 +1092,25 @@ async def invoke_model_stream_by_path(
                 agent_run_id=_agent_run_id,
                 pricing_capture=pricing_capture,
             )
+
+        # Issue #144: Time to get the stream object (includes model resolution)
+        with timings.time_segment("bedrock_ttfb"):
+            if context._dev_box_instance_id:
+                # Same host gate and usage receipt as the buffered route (#8223 Dev Box
+                # latency): the receipt is reserved before Bedrock is opened and settled
+                # with the stream's own usage when it ends.
+                from src.crew.model_usage import CrewModelUsage
+
+                run_store, target = await _authorized_host_target(context, _agent_run_id)
+                stream = await CrewModelUsage(run_store).invoke_stream(
+                    request.headers.get("x-adp-crew-model-token", ""),
+                    target,
+                    model_id,
+                    open_stream,
+                    now=int(time.time()),
+                )
+            else:
+                stream = await open_stream()
         chat_logger = get_chat_logging_service()
 
         # Issue #143: Use shared streaming logging wrapper
@@ -927,7 +1133,7 @@ async def invoke_model_stream_by_path(
             model=model_id,
             api_format="bedrock",
             request_body=request_body_copy,
-            headers=dict(request.headers) if request.headers else None,
+            headers=None if context._dev_box_instance_id else dict(request.headers) if request.headers else None,
             start_time=t0,
             pricing_capture=pricing_capture,
         )
@@ -991,7 +1197,11 @@ def _mantle_model_configured(model: str) -> bool:
     return any(fnmatch.fnmatch(model, pattern) for pattern in patterns)
 
 
-@router.post("/openai/v1/responses")
+# A Dev Box host may call this route for the owner's Codex sessions on GPT models: the
+# loopback adapter forwards Codex's Responses request untouched under the host's signed
+# identity (same proof as the model route below), and the mantle passthrough attributes
+# the call to the owner through the same routing principal as Bedrock (dev 2026-10-26).
+@router.post(host_run_route("/openai/v1/responses"))
 async def create_openai_response(
     request: Request,
     context: Annotated[TokenContext, Depends(get_token_context)],
@@ -1002,6 +1212,8 @@ async def create_openai_response(
     # exactly the routes that already carry the agent_run_id dependency — i.e. the
     # routes that write a usage_logs row.
     _client_tool: Annotated[str | None, Depends(set_client_tool_from_header)],
+    # Default None so tests and internal callers that invoke the handler directly keep working (#9024).
+    _conversation: Annotated[ConversationIdentity | None, Depends(set_conversation_identity)] = None,
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
 ) -> Response:
@@ -1033,6 +1245,17 @@ async def create_openai_response(
             detail={"error": "invalid_request", "message": f"model '{model}' is not served by the OpenAI passthrough route"},
         )
 
+    if context._dev_box_instance_id:
+        # Same host proof as /model/{id}/invoke: the owner's current host run on this instance,
+        # plus the gateway-minted model token the host carries (fenced with the lease).
+        from src.crew import model_token as crew_model_token
+        from src.crew.host_tools import current_host_target
+
+        now = int(time.time())
+        _owner, target = await current_host_target(context, _agent_run_id, now=now)  # 409 lease_fenced when the lease ended
+        claims = await crew_model_token.verify_model_token(request.headers.get("x-adp-crew-model-token", ""), target, now=now)
+        if claims["run"] != _agent_run_id:
+            raise HTTPException(401, detail={"error": "crew_model_credential_denied"})
     # Per-tenant model-allowlist enforcement (same middleware as existing routes).
     # A tenant without an openai.* allowlist entry gets 403.
     try:

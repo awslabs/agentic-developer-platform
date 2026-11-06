@@ -1,0 +1,17 @@
+# S01 readiness and private fixture bindings
+
+Status: **unverified, not absent**. The POC lead keeps a private versioned owner/fixture manifest using the [binding fields](pilot-contract.json); do not commit actual target identities, tokens, resource IDs, operator names, endpoints or native evidence. This public inventory names required observations, roles and dependent phases. A missing signature blocks only its dependent step, not independent code.
+
+| Required observation in private manifest | Role and next action | Blocks |
+|---|---|---|
+| Registered Product/Project, catalog module/feature IDs, tenant/flow and two source connection refs | Lead/scope owner: inspect registry, binding, consent and three permitted primary scopes | Live source discovery and S10/S11 integration |
+| Named lead, build, connector, Profile, scope, source, Insights, access, verification, operator and acceptance owners/delegation | Lead: obtain each assignment, independent reviewer and signed rubric | Dependent review/resource/live stages |
+| GitHub and newly supported candidate Jira (or reviewed alternative): auth modes, source-reader grants, native objects/relationships/timestamps and exclusions | Source owners: approve real connections, capture independent native oracles and permitted fixtures | AC-02 native verification, S10/S03 live work |
+| Two tenants, two Projects in one tenant and shared/private evidence in at least four cells | Scope/source owners: approve fixture policy realms and private evidence refs separately from primary scopes | Isolation and full-mode tests |
+| Selected DevLake pin, entry points, Go package/DB-client closure, patches, schema guards and images | S09 build owner: qualify extraction and bootstrap artifact finalizer | Artifact publication and S02/S10 startup |
+| Existing PostgreSQL instance/version, TLS CA, IAM renewal, role/grant authority, measured connection/storage/staging headroom | DB/access owner with S02: qualify migration, DML-only runtime and finalizer | Cell provisioning and full collection, not connector-only |
+| Approved staging/polling/disable/escalation bounds, protected ledger and both scheduled/manual cleanup authority | Operator with S09/S02: approve limits, verify authority before creating each owned resource class | Publication/provisioning and removal receipts |
+| #8374 admission, #8375/V13 runtime, #8373 catalog, #7295 W2/#8239 reconciliation and S13 read policy | Insights owners: record compatible handoff/version and retain existing gates | S04/S06 live integration and full publication |
+| Approved update rubric, native timestamps, cost/retention baselines and cleanup holds | Acceptance/verification owners: approve independent oracle, measurement and decision record | AC-03 measurements and live acceptance |
+
+The private manifest records document/source/code/image/schema/policy revisions, real registered bindings and grants, native fixture/exclusion refs, signed owner decisions, effective flags, exact owned-resource ledger, DB IAM/TLS/headroom, retained-evidence holds and per-attempt acceptance/cleanup receipts. Use only opaque private references in public summaries; a changed scope, oracle, field map or limit requires a revised approval. The lead hands this table to S09/S02/S10/S11 and Insights; the coordinator binds the actual people and sources before live work. Offline mapping and gated implementation may begin now; none of these unknowns is evidence that access or infrastructure does not exist.

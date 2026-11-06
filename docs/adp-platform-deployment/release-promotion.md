@@ -8,6 +8,25 @@ For customer installs using `./deploy.sh --release <tag>`, use the
 [quickstart](deploy-quickstart.md). That path builds from a published GitHub
 Release's source; this guide covers the separate internal artifact pipeline.
 
+## Chat retirement in the current candidate
+
+The credentialed chat worker was retired in #7042. Its replacement remains gated
+pending delegated-runtime qualification (#6937). A platform release does not
+claim that qualification or enable chat. Ingress reports chat as unavailable
+instead of acknowledging messages that no worker can process.
+
+The full deploy script preserves observed legacy chat grants while publishing
+that ingress, requires an empty queue, pauses legacy admission, and waits for
+running jobs to finish. It never purges messages or kills running jobs. Only then
+does a saved-plan pass attach the broader authority denial while retaining the
+old grants. Only a subsequent plan that observes that denial already installed
+may remove the exact recorded legacy inline policies; the
+chat role, queues, stores and credentials remain. Unrelated IAM changes retain
+the ordinary destroy gate. The image cache is updated without launching the
+retired worker. Acceptance verifies no legacy ScaledJob, active legacy pods or
+legacy grants and reports `chat.status=retired` explicitly. Normal GitHub and
+Python gateway workers must still be ready and unpaused.
+
 ## What this pipeline calls a release
 
 An ADP release is an immutable, verified set of deployable artifacts built from
@@ -156,10 +175,10 @@ This dispatch is not a dry run. For a new release it:
 5. invokes the reusable upgrade workflow for integration-test;
 6. assumes `adp-release-deploy`, takes the account release lock and runs
    `deploy.sh --update` using only the selected artifacts;
-7. runs mandatory acceptance and uploads `acceptance-integration-test`.
+7. runs mandatory acceptance and retains `acceptance-integration-test` in private S3.
 
 Record the GitHub run ID, release ID, source SHA and manifest SHA256. Review the
-`release-manifest` and `acceptance-integration-test` artifacts. Do not continue
+`release-manifest` and `acceptance-integration-test` S3 evidence receipts in the job summaries. Do not continue
 if the run was cancelled, failed, or lacks acceptance evidence with
 `"status": "passed"`.
 
@@ -172,8 +191,8 @@ Dispatching this workflow is the approval decision.
 Before assuming any pre-production role, the workflow verifies the actor, source
 workflow, branch, successful conclusion, release ID, source SHA and manifest
 SHA256. It then downloads the exact artifacts that passed integration, upgrades
-account `000000000103`, runs the same acceptance checks and uploads
-`acceptance-pre-production`.
+account `000000000103`, runs the same acceptance checks and retains
+`acceptance-pre-production` in private S3.
 
 The approver must verify the pre-production run is successful and retain its run
 URL and acceptance evidence. There is currently no next automated production
@@ -198,8 +217,10 @@ During an upgrade, verified Lambda and layer packages are copied by content hash
 to `s3://adp-terraform-state-<target-account>/adp-releases/sha256/...`.
 Container images are copied into the target account's ECR with
 `skopeo --preserve-digests`; workloads reference the digest, not the transport
-tag. GitHub stores only the manifest and allowlisted acceptance evidence, not the
-canonical deployable artifacts.
+tag. Release jobs do not use GitHub artifact storage. The shared CI evidence
+uploader stores the manifest and allowlisted acceptance evidence in the runner
+account's private, versioned S3 evidence bucket, using its scoped IRSA identity.
+Deployment role credentials remain confined to deployment operations.
 
 An administrator who can change the bucket policy remains trusted. Release
 builds do not publish `latest`.
@@ -224,7 +245,18 @@ The WebSocket probe tests authentication/connectivity. It does not submit an
 agent task or post a GitHub issue/comment. A business-level agent round trip is
 an additional gate to implement before production promotion.
 
-GitHub receives only allowlisted acceptance results and the manifest. Private
+Job summaries record private S3 manifest URIs, versions and checksums. Evidence
+uses the same 90-day retention and write-once uploader as other ARC workflows.
+A write-once receipt under the repository/run/attempt/job/artifact prefix permits
+retrieval with object reads alone. Promotion requires a successful release run
+on main and verifies the latest attempt, workflow/source revisions, object
+versions and SHA256 checksums before using acceptance. Missing or corrupt evidence
+fails the job; there is no GitHub artifact fallback. Evidence tooling comes from
+the workflow revision when deploying an older candidate. Releases accepted before
+this S3 change must be retried through the release workflow to create S3 evidence
+before promotion.
+
+Private
 Terraform output remains in the local upgrade directory and is uploaded to the
 target state bucket at
 `adp-release-status/<stage>/private/<attempt>/upgrade.log`. State snapshots and

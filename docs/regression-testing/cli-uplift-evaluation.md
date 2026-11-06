@@ -19,6 +19,9 @@ The login checkpoint does not run admin setup, Bedrock, GitHub, or model calls.
 
 ## Private target configuration
 
+For a new target, use the [evaluator credential setup script](evaluator-setup.md)
+to provision its base OIDC identity, EC2 profile and gateway-observer access.
+
 Public examples contain fictional identifiers. They do not identify an approved
 or deployed environment. Keep real account IDs, gateway URLs, network resources,
 Cognito pool IDs, and fixture references in private configuration.
@@ -45,11 +48,16 @@ OIDC role. Use a dedicated CLI regression identity; store its password and TOTP
 seed in Secrets Manager. A login checkpoint validates the deployed CLI without
 upgrading the platform, and broader suites still require their own fixtures.
 
-Set `EVAL_ENVIRONMENT` and `EVAL_REVISION` from your private deployment record:
+Set `TARGET_ENVIRONMENT` and `EVAL_REVISION` from your private deployment record.
+`target_environment` selects protected GitHub configuration; the separate
+`environment=dev` input keeps the resource naming used by the coordinated pack.
+Review [platform targeting limits](platform-regression.md#platform-targeting-and-supported-environments)
+before using a different deployment:
 
 ```bash
 gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
-  -f environment="$EVAL_ENVIRONMENT" -f expected_revision="$EVAL_REVISION" \
+  -f environment=dev -f target_environment="$TARGET_ENVIRONMENT" \
+  -f expected_revision="$EVAL_REVISION" \
   -f mode=start -f suites=login
 ```
 
@@ -147,7 +155,92 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
 ```
 
 Suites: `assistant`, `capability-contrast`, `usage-exports`, `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `knowledge-lifecycle`, `knowledge`, `machine-lifecycle`, `budget-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
-`github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
+`github`, `parity`, `harness`, `multi-deployment`, `superplane`, `product-profile`, `product-scopes`, `full`.
+
+The `product-scopes` suite covers two-scope isolation (`PR04-C01`), access
+denials (`PR04-C02`) and dated Project binding history (`PR04-C03`). Each case
+also supports its `case:PR04-C01`, `case:PR04-C02` or `case:PR04-C03` selector.
+Protected run-owned fixtures and pinned release evidence are required; denial
+and history mutations remain blocked without durable, authorized fixture recovery.
+
+### Product installed-CLI handoff (#8247)
+
+The `product-profile` suite includes `PR01` (D01 release proof), the
+`PR03-C01` installed-CLI roundtrip (`AC-01`/`SCN-01`) and `PR03-C02`
+denial/retry (`AC-02`/`SCN-02`). Its preflight requires
+all four D01 release selections, a pinned receipt and independent API, schema,
+image and served-CLI observations. The disposable host installs the served CLI,
+checks installed helper hashes against the pinned release, runs Product commands,
+and compares their results with independent API reads. Denial/retry uses only
+the roundtrip's verified run-owned Product from the same attempt; selecting
+`PR03-C02` alone blocks before dispatch. `PR03-C03` is registered in the same
+suite but runs through the evaluator's existing recovery sweep after journeys,
+not an on-host CLI mutation. It records the sweep and cannot pass unless the
+run-owned Product was removed by an authorized, absence-verifying deleter.
+Missing cases or evidence cannot produce a passing report.
+After interruption the maintained recovery job calls the same runner with
+`--mode cleanup --config "$EVAL_RUN_CONFIG" --state-dir "$EVAL_STATE_DIR"`
+and `--evaluation-id "$EVALUATION_ID" --restore`. It restores the private
+manifest before sweeping; missing Product identity or failed removal remains
+failed, and connections recorded as reused are not deleted.
+
+For #8243's **protected workflow integration**, the callable entrypoint is
+`python -m tests.e2e.cli_uplift.runner` with `--mode start --suite product-profile`
+and `--config "$EVAL_RUN_CONFIG" --state-dir "$EVAL_STATE_DIR" --out-dir "$EVAL_OUT_DIR"`.
+The maintained workflow parses `suites=product-profile` into that selector;
+it also supplies `--run-url`, `--announce-id-to` (the evaluation ID before any
+mutation) and `--fault none`. This is an integration contract, **not** an
+authorization to dispatch a live job from a PR or a local shell. The workflow
+checks out reviewed main and uses the accepted served target, never a local CLI
+installation as acceptance evidence.
+
+Required non-secret inputs are the accepted 40-character `expected_revision`,
+the protected `target_environment`, resource `environment`, `region`, the
+`product-profile` suite selection, and the parent `product_run_id` from the
+same accepted Gateway dispatch. The protected environment supplies
+`CLI_UPLIFT_EVAL_BINDINGS_JSON`, `CLI_UPLIFT_EVAL_GATEWAY_CATALOG`,
+`CLI_UPLIFT_EVAL_STATE_BUCKET`, `CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL`,
+`AWS_CLI_UPLIFT_EVAL_ROLE_ARN`, and gateway release receipt/runtime observations.
+The `CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID` is used when configured. The maintained
+workflow creates the Product workspace and owner from the disposable host with
+the authenticated run-owned bootstrap administrator; the bootstrap's separate
+tenant is the foreign identity for denial/retry. It verifies their server-side
+identities and retains both sessions in encrypted private state before Product
+mutation. There is no pre-provisioned `product_profile` binding to supply.
+Never put target identities, credentials, fixture references or evidence in the
+public `fixtures_json` input or in this document.
+
+Before create, the evaluator persists the Product's original tenant, actor,
+source revision and idempotency key in its durable run-owned manifest. The
+production `deleters(cfg, ctx)` factory uses the reviewed protected Gateway
+Product-fixture retirement route under the scoped evaluator role; the same
+identity and key reconcile a lost create response after instance termination.
+It checks the current Product, revisions, changes and owner listing are absent
+before marking cleanup complete. Archive is not removal. Missing state, a
+mismatched actor, a denied retirement, or a visible historical route keeps the
+fixture outstanding and the result failed. The recovery job uses the same
+protected state and scope, with no new manual setup or test-only callback.
+
+With `--out-dir "$EVAL_OUT_DIR"`, the sanitized result is
+`$EVAL_OUT_DIR/report.json` and the JUnit result is
+`$EVAL_OUT_DIR/results.xml`. The separate mode-0600
+`$EVAL_OUT_DIR/product-profile-cli.private.json` contains Product CLI command
+arguments, JSON outputs, exit codes, every recorded attempt, independent API
+readback, pinned hashes, Product retirement receipt, reconciliation attempts and
+cleanup results. Missing, failed, foreign, or stale proof leaves that private
+report incomplete; the durable recovery state/manifest is private under
+`$EVAL_STATE_DIR`. The public workflow artifact still contains only sanitized
+files. When a protected V03 call supplies a matching Product run ID,
+the evaluator retains the private CLI report in its encrypted, scoped state bucket. The Gateway packet
+loader can read only the report bound to its selected run and revisions; missing,
+foreign, or unreadable proof leaves the packet incomplete. The protected Gateway delivery coordinator invokes V03 for that exact run
+before Gateway assembles combined B01 evidence; a standalone Gateway selection
+without a matching V03 run refuses. Installed configuration and live execution
+still require verification after reviewed merges. The
+private report references every CLI attempt and cleanup outcome separately from
+UI and API artifacts. A failed, absent or skipped required result prevents
+acceptance. The verification owner publishes that packet after reviewed merges
+and deployed checks; one human accepts or rejects the packet revision for `AC-04`/`SCN-04`. This driver does not decide acceptance.
 
 The `knowledge` checkpoint runs E01 installation, login and E32 knowledge command
 qualification only. It does not start indexing or inference. Engine dispatches
@@ -337,8 +430,100 @@ aws ec2 describe-instances --region us-east-1 \
 ## Fault injection
 
 Supported injections: `wrong_account`, `missing_usage`, `cleanup_failure`,
-`expired_token`, `instance_loss`; `none` disables injection. These apply to the
-corresponding scenarios; a login checkpoint does not test inference usage.
+`expired_token`, `instance_loss`, `assistant_duplicate_delivery`,
+`assistant_disconnect`, `assistant_worker_loss`, `assistant_queue_unavailable`,
+and `assistant_supervisor_restart`. `none` disables injection and the assistant
+suite then runs E46 without E47. These apply to the corresponding scenarios;
+a login checkpoint does not test inference usage. Assistant fault selectors
+require a run-owned session; all but `assistant_disconnect` additionally require
+a controller-verified, run-scoped injection receipt. Live worker/queue actions
+remain unavailable until their exact permissions and ownership check are approved.
+The harness controller must be able to read the actual session owner, worker/pod
+identity, lease generation, and evaluation ID, then register the server-issued
+session and worker in the durable run manifest **before** any mutation. It must
+independently observe worker teardown for E46 (including membership revocation)
+and for cleanup; a session's TTL or mode alone is not proof of pod absence. E47
+requires an independently prepared live session because E46 ends all its sessions.
+
+The scoped controller action required per selector is: redeliver one identified
+notification or result at most three times; drop and reconnect only the run's
+client; stop only the run-owned worker before result commit and prove the old
+lease is fenced; pause only that run's queue consumer for at most 30 seconds and
+resume it; or restart only a run-owned supervisor and prove its previous lease
+cannot write. The operator must verify the exact service/RBAC permissions and
+approve any IAM change separately. No controller capability exists by default,
+and ordinary-user tokens never carry it. Shared queues and shared supervisors
+must not be mutated. If the controller cannot verify scope or independently
+clean up a run-owned session and worker, the fault is refused or cleanup is
+reported non-clean; neither a fabricated receipt nor TTL expiry is a pass.
+
+### Assistant qualification handoff (#6937)
+
+E45 uses the registered `assistant_isolation` driver and a disabled-by-default
+qualification interface in the real per-user sandbox. The operator must bind
+`ADP_CHAT_QUALIFICATION_ENABLED=true`, `ADP_CHAT_QUALIFICATION_TARGET` and
+`ADP_CHAT_QUALIFICATION_CONFIG` on the approved gateway; this documentation does
+not authorize activation. The JSON configuration requires `target`, the exact
+`evaluation_id`, an integer `expires_at`, the approved sandbox `image_digest`,
+and `fixtures` containing `a1`, `a2`, and `b1` ordinary owners with `user_id`,
+`tenant_id`, and `team_id` (empty for personal scope). A1/A2 share a tenant; B1
+does not. `secret_canary` must identify an operator-provisioned synthetic secret,
+never a production secret. The gateway's existing memory, context and artifact
+storage must be configured. Keep real values in private target configuration.
+
+The ordinary readiness endpoint names missing capability or fixture admission
+as BLOCKED. A qualification session must be fresh and ephemeral. No client
+approval field, identity header, model output, arbitrary command, or arbitrary
+URL can select a probe. A1 writes synthetic history, draft, artifact and memory
+records through existing scoped handlers. The gateway derives bounded references
+from those committed writes. Only after trusted observation of A1 sandbox removal
+can A2/B1 receive the fixed references for cross-scope and residue probes. Each
+request is single-use, expires within 120 seconds, and allows zero model turns.
+
+The driver and stage verify the request nonce, actor/tenant/session/run,
+generation, manifest and fixture digests, deployed image, and all 94 executed
+observations. Exposure is represented by digests, not credential values. Failed
+owner controls, missing execution, stale or mismatched receipts and unexpected
+access fail E45. Report details retain named per-probe rows and the image digest;
+offline substituted-transport tests do not establish deployed isolation.
+
+Cancellation ends each created session. Cleanup requires the supervisor's
+matching removal observation and a sealed or aborted execution, then deletes
+only the bound run's synthetic data and verifies object absence. The private
+run-directory journal permits cleanup-only recovery with the same evaluation
+ID, even after qualification is disabled; it never replays the probes. Preserve
+that journal until cleanup succeeds. Missing ordinary credentials, unobserved
+teardown or unverified deletion remain explicit cleanup failures, not passes.
+Qualification receipts and replay reservations retain a one-day cleanup grace
+period after policy expiry; that retention never extends execution authority.
+Live E45 and fixture renewal remain separately owned by the #6937 operator.
+
+Only the authorized qualification operator runs these after merge. Verify the
+target revision, enabled persistent mode, renewed A1/A2/B1 fixtures and a
+run-owned membership before selecting `suites=assistant`. The controller must
+independently inspect run ownership, register the exact session and worker in
+the durable manifest, revoke the run-owned membership, observe worker teardown,
+and clean up both resources. E47 needs a separately prepared, run-owned
+persistent session: E46 explicitly ends its own sessions. For worker loss,
+duplicate delivery, queue outage or supervisor restart, verify the specific
+bounded action and IAM/RBAC scope described above before opting in. Do not
+grant ordinary-user clients those permissions or mutate shared consumers.
+
+Start with `fault=none` for E46, then use one explicit assistant fault per fresh
+run. Keep the immutable evaluation ID to resume or clean up an interrupted run.
+In the sanitized `report.json`, read `assistant_qualification` for each selected
+E46/E47 case: it preserves `expected_revision`, `deployed_revision`,
+`case_status`, the independently checked `cleanup_status`, E46 per-session
+`cleanup_seconds`, and E47 `fault`, `outcome`, `accounting_status` and
+`fault_proof`.
+Every row says `pending_operator_review`, even if its case passed; compare the
+case details and `known_limitations` against SES01–SES04, WARM03 and QUAL03
+under #6937. A missing deployed revision, unobserved teardown, unresolved
+reservation or residual manifest resource is not live acceptance. An E47 run
+without a prepared target or controller capability reports BLOCKED; E46 refuses
+to create sessions when revocation and teardown observation are unavailable.
+Record the exact missing capability, seek approval for any IAM/RBAC change
+separately, and do not substitute a fabricated receipt.
 
 ## Troubleshooting
 
@@ -551,11 +736,11 @@ not proof of sandbox isolation or durable/replay semantics. It uses the register
 from the production response router, including its one-based chunk sequence.
 `hosted-chat` (D01) remains a separate CLI Task diagnostic.
 
-E43–E49 retain the future feature contracts. They remain failed/unimplemented
-until their feature-story drivers exist; E48 also needs the installed ledger.
-They cannot pass merely because E50 passes. Missing ordinary-user fixtures block
+E43–E49 each require their own driver and oracle; E48 remains forced unimplemented
+and needs the installed ledger. E45 uses the fixed qualification path described
+above. None can pass merely because E50 passes. Missing ordinary-user fixtures block
 the cases. Nightly defaults and schedules remain unchanged. The approved design
-is [the merged epic design](../architecture/adp-assistant-6929.md#story-6939);
+is [the canonical assistant architecture](../chief-of-staff/architecture.md#story-6939);
 #6937 owns final live qualification. Synthetic E43/E44 oracle events describe
 future requirements, not claims about the currently deployed wire protocol.
 
@@ -650,11 +835,12 @@ privately by an operator, use the **existing** workflow (never a PR event):
 
 ```bash
 gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
-  -f environment="$EVAL_ENVIRONMENT" -f expected_revision="$EVAL_REVISION" \
+  -f environment=dev -f target_environment="$TARGET_ENVIRONMENT" \
+  -f expected_revision="$EVAL_REVISION" \
   -f mode=start -f suites=assistant -f fixtures_json="$ASSISTANT_FIXTURES_JSON"
 ```
 
-`EVAL_ENVIRONMENT`, `EVAL_REVISION` and `ASSISTANT_FIXTURES_JSON` are private
+`TARGET_ENVIRONMENT`, `EVAL_REVISION` and `ASSISTANT_FIXTURES_JSON` are private
 operator inputs, not values to paste from this public document. A baseline run
 requires explicit live/model-spend authorization; expect the suite verdict to
 remain non-passing while E43–E49 are unimplemented. For an

@@ -1,8 +1,8 @@
 """Bind a human-launched Operations run to its specifically approved intent flow.
 
-The worker supplies no flow or approval claims. Its protected launch issue must
-be the flow's intent issue in the configured repository, and a real human gate
-approval must exist. This grants explicit FLOW_NODE scope, not shared-root scope.
+The worker supplies no flow or approval claims. Its protected launch issue and
+repository must match an accepted flow reference and a real human gate approval.
+This grants explicit FLOW_NODE scope, not shared-root scope.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class CoordinatorAssignment:
     intent_issue: int
 
 
-async def resolve_repository_fan_out(*, session, execution, grant, target_repo: str, target_issue: int, orchestration_repo: str) -> bool:
+async def resolve_repository_fan_out(*, session, execution, grant, target_repo: str, target_issue: int) -> bool:
     """May this root coordinator dispatch to `target_issue` in its own repo? (#5365)
 
     The capability marker on the grant (written only by the HMAC-verified webhook
@@ -54,34 +54,41 @@ async def resolve_repository_fan_out(*, session, execution, grant, target_repo: 
       ``resolve_coordinator_assignment`` can bind it to ``gate_decision`` and
       keep every later dispatch on the graph path.
 
-    Ownership is resolved from SQL, server-written execution state and the
-    platform's configured orchestration repository. The requested target is
+    Ownership is resolved from SQL and server-written execution state. The requested target is
     checked again against the signed repository scope by the dispatch gate.
     """
-    # Flows store numeric issue references because the orchestration engine is
-    # bound to one configured repository. The same issue number in another
-    # repository is therefore not graph-owned by this engine. Without this
-    # repository check an unrelated `other/repo#42` flow could pin or block
-    # `target/repo#42` merely because the numbers collide.
-    # With no configured engine repository, check every matching tenant flow
-    # conservatively. Absence of configuration is not proof of graph ownership.
-    if orchestration_repo and target_repo != orchestration_repo:
-        return True
     try:
         launch_issue = int(execution["issue_number"]["N"])
     except (KeyError, TypeError, ValueError):
         return False
-    graph_owned = await session.scalar(
-        select(OrchestrationNode.id)
-        .join(OrchestrationFlow, OrchestrationFlow.id == OrchestrationNode.flow_id)
-        .where(
-            OrchestrationFlow.org_id == grant.tenant_id,
-            OrchestrationNode.issue_ref.in_([str(target_issue), f"#{target_issue}"]),
+    matching_nodes = (
+        await session.scalars(
+            select(OrchestrationNode)
+            .join(OrchestrationFlow, OrchestrationFlow.id == OrchestrationNode.flow_id)
+            .where(
+                OrchestrationFlow.org_id == grant.tenant_id,
+                OrchestrationNode.issue_ref.in_([str(target_issue), f"#{target_issue}"]),
+            )
+            .limit(257)
         )
-        .limit(1)
-    )
-    if graph_owned:
+    ).all()
+    if len(matching_nodes) > 256:
         return False
+    from src.orchestration.accepted_node import accepted_node_contract
+
+    for node in matching_nodes:
+        contract = await accepted_node_contract(session, node)
+        if (
+            contract is None
+            or contract.node.repository_identity != node.repository_identity
+            or contract.node.provider_repository_id != node.provider_repository_id
+            or (contract.node.repository_connection.model_dump(mode="json") if contract.node.repository_connection else None)
+            != node.repository_connection
+            or not node.provider_repository_id
+            or not node.repository_identity
+            or node.repository_identity.casefold() == target_repo.casefold()
+        ):
+            return False
     flow_owned_launch = await session.scalar(
         select(OrchestrationFlow.id)
         .where(
@@ -93,7 +100,7 @@ async def resolve_repository_fan_out(*, session, execution, grant, target_repo: 
     return not bool(flow_owned_launch)
 
 
-async def resolve_coordinator_assignment(*, session, execution, grant, configured_repo: str) -> CoordinatorAssignment | None:
+async def resolve_coordinator_assignment(*, session, execution, grant) -> CoordinatorAssignment | None:
     if (
         execution.get("persona", {}).get("S") not in {"operations", "aidlc"}
         or execution.get("parent_principal")
@@ -102,7 +109,7 @@ async def resolve_coordinator_assignment(*, session, execution, grant, configure
     ):
         return None
     repo = execution.get("repo", {}).get("S")
-    if not configured_repo or repo != configured_repo or repo not in grant.repo_scope:
+    if not repo or repo not in grant.repo_scope:
         return None
     try:
         issue = int(execution["issue_number"]["N"])
@@ -131,6 +138,34 @@ async def resolve_coordinator_assignment(*, session, execution, grant, configure
     decision = await _latest_approval_decision_id(session, org_id=grant.tenant_id, flow_id=flow.id)
     if not decision:
         return None  # No approval means no widening beyond the launch issue.
+    from src.orchestration.proposal import PlanningIssueReference
+    from src.orchestration.repository import OrchestrationRepository
+
+    plan = await OrchestrationRepository(session).get_accepted_plan(org_id=grant.tenant_id, flow_id=flow.id)
+    if plan is None or flow.origin_ref != plan.plan_document.get("origin_ref") or flow.tracker_refs != plan.plan_document.get("tracker_refs"):
+        return None
+    references = [plan.plan_document.get("origin_ref")]
+    references.extend(item.get("issue") for item in plan.plan_document.get("tracker_refs") or [])
+    try:
+        observed_id = execution.get("provider_repository_id", {}).get("N")
+        repository_id = int(observed_id) if observed_id is not None else None
+        installation_id = int(execution["installation_id"]["N"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    for raw in references:
+        try:
+            reference = PlanningIssueReference.model_validate(raw)
+        except ValueError:
+            continue
+        if (
+            reference.issue_number == issue
+            and reference.repository.casefold() == repo.casefold()
+            and (repository_id is None or reference.repository_id == repository_id)
+            and reference.installation_id == installation_id
+        ):
+            break
+    else:
+        return None
     genesis = await resolve_engine_genesis(session, org_id=grant.tenant_id, decision_id=decision)
     if genesis.flow_id != flow.id:
         raise BootstrapRefusedError("coordinator approval does not name this flow")

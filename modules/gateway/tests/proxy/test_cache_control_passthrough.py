@@ -5,12 +5,10 @@ field, and pydantic's default ``extra="ignore"`` dropped the key at validation
 time — before the translator ever ran. Requests still succeeded, answers still
 looked right, and the customer paid full price on every turn.
 
-These tests pin all four assertions that matter:
+These tests pin the assertions that matter:
 1. a breakpoint on any of the four content-block types reaches the Bedrock body
 2. the system and tools positions carry it too (the highest-value placements)
 3. a request WITHOUT markers translates identically to pre-fix behaviour
-4. unknown client keys still do not reach the Bedrock body (the fix is a typed
-   field, not ``extra: "allow"``)
 """
 
 from src.proxy.format_translator import FormatTranslator
@@ -20,7 +18,6 @@ from src.proxy.schemas import (
     AnthropicMessagesRequest,
     AnthropicTextContent,
     AnthropicTool,
-    AnthropicToolInput,
     AnthropicToolResultContent,
     AnthropicToolUseContent,
 )
@@ -180,45 +177,32 @@ class TestSystemPositionBreakpoint:
 
 
 class TestToolsPositionBreakpoint:
-    """Tool definitions are a high-value breakpoint position.
-
-    ``tools`` is not forwarded to Bedrock at all yet — that is #790 / EPIC #745,
-    deliberately kept OUT of this PR by operator decision. So the assertion this
-    PR can honestly make is that the marker survives validation and serialization
-    of the tool model; the boundary test below pins the #790 gap explicitly so it
-    is impossible to mistake for working end to end.
-    """
+    """Tool definitions are a high-value breakpoint position."""
 
     def test_tool_definition_retains_marker(self):
         tool = AnthropicTool(
             name="get_weather",
             description="Look up weather",
-            input_schema=AnthropicToolInput(type="object", properties={"city": {"type": "string"}}),
+            input_schema={"type": "object", "properties": {"city": {"type": "string"}}},
             cache_control=EPHEMERAL,
         )
         assert tool.cache_control is not None
         assert tool.model_dump(exclude_none=True)["cache_control"] == EPHEMERAL
 
-    def test_tools_not_yet_forwarded_to_bedrock(self):
-        """Boundary pin for #790: when tools ARE forwarded, update this test.
-
-        Without this, a reader would assume the tools-position breakpoint works
-        end to end. It does not — the whole `tools` field is dropped in
-        translation, independently of cache_control.
-        """
+    def test_tool_marker_forwarded_to_bedrock(self):
         translator = FormatTranslator()
         request = _request(
             "what's the weather?",
             tools=[
                 AnthropicTool(
                     name="get_weather",
-                    input_schema=AnthropicToolInput(type="object"),
+                    input_schema={"type": "object"},
                     cache_control=EPHEMERAL,
                 )
             ],
         )
         result = translator.anthropic_to_bedrock(request)
-        assert result.tools is None, "tools now forwarded — extend this test to assert the marker survives (#790)"
+        assert result.tools[0]["cache_control"] == EPHEMERAL
 
 
 class TestNoRegressionForNonCachingClients:

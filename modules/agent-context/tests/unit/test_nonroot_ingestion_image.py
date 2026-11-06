@@ -12,7 +12,9 @@ script is documented in the rollout checklist for build-time validation.
 
 from __future__ import annotations
 
+import ast
 import re
+import shlex
 import typing
 from pathlib import Path
 
@@ -23,9 +25,35 @@ _IMAGES = Path(__file__).resolve().parents[2] / "images"
 _MANIFESTS = Path(__file__).resolve().parents[2] / "manifests"
 _DOCKERFILE = _IMAGES / "ingestion" / "Dockerfile"
 
+
+def test_packaged_scripts_include_local_imports():
+    """Check deferred imports too: importing ingest-repo alone misses its first step."""
+    local_modules = {path.stem: path for path in _DOCKERFILE.parent.glob("*.py")}
+    copied = set()
+    for line in _DOCKERFILE.read_text().replace("\\\n", " ").splitlines():
+        if not line.startswith("COPY "):
+            continue
+        words = shlex.split(line)
+        if any(word.startswith("--from=") for word in words):
+            continue
+        copied.update(Path(word).stem for word in words[1:-1] if word.endswith(".py") and "/" not in word)
+    missing = []
+    for name in sorted(copied & local_modules.keys()):
+        for node in ast.walk(ast.parse(local_modules[name].read_text())):
+            if isinstance(node, ast.Import):
+                imports = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports = [node.module.split(".")[0]]
+            else:
+                continue
+            missing.extend(f"{name} -> {module}" for module in imports if module in local_modules and module not in copied)
+    assert not missing, f"Local runtime modules absent from the image: {missing}"
+
+
 # All five consumers that use the ingestion image, with their manifest filename,
 # resource kind, and the container path for extracting the security context.
 _CONSUMERS = [
+    ("knowledge-maintenance-cronjob.yaml", "CronJob", "refresh"),
     ("ingestion-scaledjob.yaml", "ScaledJob", "worker"),
     ("repo-refresh-cronjob.yaml", "CronJob", "refresh"),
     ("vuln-scan-cronjob.yaml", "CronJob", "vuln-scan"),
@@ -272,8 +300,7 @@ class TestPlatformDataPvcConsumers:
     """Consumers that mount platform-data must use fsGroup for group-write, not chmod."""
 
     _PVC_CONSUMERS: typing.ClassVar = [
-        ("ingestion-scaledjob.yaml", "ScaledJob", "worker"),
-        ("repo-refresh-cronjob.yaml", "CronJob", "refresh"),
+        ("knowledge-maintenance-cronjob.yaml", "CronJob", "refresh"),
     ]
 
     @pytest.fixture(params=_PVC_CONSUMERS, ids=[c[0] for c in _PVC_CONSUMERS])

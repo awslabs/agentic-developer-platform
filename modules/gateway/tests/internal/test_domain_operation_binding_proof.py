@@ -298,13 +298,14 @@ def test_proof_route_requires_internal_iam_authentication():
     assert any(dependency.call is verify_internal_or_irsa for dependency in proof.router.routes[0].dependant.dependencies)
 
 
-def test_prepared_worker_is_attested_only_while_paused(installed):
+@pytest.mark.parametrize("maximum", [1, 4])
+def test_prepared_worker_is_attested_only_while_paused(installed, maximum):
     binding, responses, _, runtime = installed
     with pytest.raises(HTTPException):
         proof.installed_worker(binding, runtime, "prepared")
     job = responses["scaledjobs"]
     job["metadata"]["annotations"] = {"autoscaling.keda.sh/paused": "true"}
-    job["spec"]["maxReplicaCount"] = 0
+    job["spec"]["maxReplicaCount"] = maximum
     assert proof.installed_worker(binding, runtime, "prepared")[0] == binding.worker_image_digests[0]
     with pytest.raises(HTTPException):
         proof.installed_worker(binding, runtime, "executable")
@@ -414,3 +415,13 @@ def test_binding_proof_checks_container_schema_overrides(installed, name, attrib
         with pytest.raises(HTTPException) as refusal:
             proof.installed_worker(binding, runtime)
         assert refusal.value.status_code == 503
+
+
+@pytest.mark.parametrize("maximum", [0, 5, True, "1"])
+def test_prepared_worker_refuses_invalid_or_unbounded_keda_capacity(installed, maximum):
+    binding, responses, _, runtime = installed
+    job = responses["scaledjobs"]
+    job["metadata"]["annotations"] = {"autoscaling.keda.sh/paused": "true"}
+    job["spec"]["maxReplicaCount"] = maximum
+    with pytest.raises(HTTPException):
+        proof.installed_worker(binding, runtime, "prepared")

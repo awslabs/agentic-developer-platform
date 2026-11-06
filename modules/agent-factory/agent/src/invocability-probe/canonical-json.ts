@@ -1,58 +1,139 @@
 import { createHash } from 'node:crypto';
 
-export const REQUEST_SHAPE_NORMALIZATION = 'claude-code-probe-context-v4';
-const SDK_DATE_REMINDER = /# currentDate\nToday's date is (\d{4}-\d{2}-\d{2})\./g;
-const SDK_INITIAL_BUDGET_REMINDER = /^<system-reminder>\nUSD budget: \$0\/\$(\d+(?:\.\d+)?); \$\1 remaining\n<\/system-reminder>\n$/;
-const SDK_SYSTEM_BUDGET_REMINDER = /<system-reminder>\nUSD budget: \$0\/\$(\d+(?:\.\d+)?); \$\1 remaining\n<\/system-reminder>$/;
+/**
+ * Bump whenever a normalization rule below changes: the gateway and agent
+ * manifests carry this value and both sides refuse a manifest generated under
+ * another revision.
+ *
+ * v5 (#7993): Claude Code 0.3.283 emits its probe context as an "# Environment"
+ * block (shell, kernel version, model, deferred tools, token budget) followed by
+ * the USD budget reminder and the date. Opus/Sonnet 5 place that block in a
+ * mid-conversation system message; the other models split it into separate
+ * `<system-reminder>` user blocks without a trailing newline. The v4 rules only
+ * matched the 0.3.220 wrappers, so shell, kernel, budget and date leaked into
+ * every digest and no committed manifest could equal a live probe.
+ */
+export const REQUEST_SHAPE_NORMALIZATION = 'claude-code-probe-context-v5';
+
+/** The SDK beta under which Claude Code moves its context into messages[1] (role system). */
+const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07';
+const PROBE_SESSION_ID = '00000000-0000-4000-8000-000000000002';
 
 /**
- * Sonnet 5 places the initial reminder at the end of its first mid-conversation
- * system message. Normalize that non-semantic reminder in the fingerprint only.
- * The actual SDK budget and reserved amount are unchanged. Never normalize subsequent spend updates,
- * unequal remaining amounts, provider limits, tool declarations or identities.
+ * Only the zero-spend, equal-remaining reminder for a positive budget is
+ * normalized. The runner receives the gateway's per-attempt budget unchanged;
+ * the generator uses a loopback-only budget. Spend updates, unequal remaining
+ * amounts and a zero budget stay in the digest.
  */
-function normalizeInitialSystemBudget(value: unknown): unknown {
-  const root = value as { messages?: unknown; anthropic_beta?: unknown };
-  if (!root || typeof root !== 'object' || !Array.isArray(root.messages)
-      || !Array.isArray(root.anthropic_beta)
-      || !root.anthropic_beta.includes('mid-conversation-system-2026-04-07')) return value;
-  const first = root.messages[0] as { role?: unknown } | undefined;
-  const system = root.messages[1] as { role?: unknown; content?: unknown } | undefined;
-  if (first?.role !== 'user' || system?.role !== 'system' || !Array.isArray(system.content)) return value;
-  const candidates = system.content.filter((block) => {
-    const text = (block as { text?: unknown })?.text;
-    if (typeof text !== 'string' || text.split('USD budget:').length !== 2) return false;
-    const match = text.match(SDK_SYSTEM_BUDGET_REMINDER);
-    return match !== null && Number.isFinite(Number(match[1])) && Number(match[1]) > 0;
-  });
-  if (candidates.length !== 1) return value;
-  const content = system.content.map((block) => block === candidates[0]
-    ? { ...(block as Record<string, unknown>), text: (block as { text: string }).text.replace(
-      SDK_SYSTEM_BUDGET_REMINDER,
-      () => '<system-reminder>\nUSD budget: $0/$<ADP_PROBE_BUDGET>; $<ADP_PROBE_BUDGET> remaining\n</system-reminder>',
-    ) }
-    : block);
-  const messages = [...root.messages];
-  messages[1] = { ...system, content };
-  return { ...(value as Record<string, unknown>), messages };
+const SDK_INITIAL_BUDGET_REMINDER = /USD budget: \$0\/\$(\d+(?:\.\d+)?); \$\1 remaining/g;
+/** Emitted from the wall clock even when CLAUDE_CODE_OVERRIDE_DATE is set. */
+const SDK_DATE_REMINDER = /Today's date is (\d{4}-\d{2}-\d{2})\./g;
+/** Host facts of the pod/node the SDK happens to run on; the platform line stays covered. */
+const SDK_ENVIRONMENT_HEADING = /^(?:<system-reminder>\n)?# Environment\n/;
+const SDK_ENVIRONMENT_HOST = /\n - Shell: [^\n]*\n - OS Version: [^\n]*/g;
+
+interface ContextRule {
+  name: string;
+  pattern: RegExp;
+  replacement: string;
+  /** Additional acceptance of one regex match (e.g. a positive budget). */
+  accept?: (match: RegExpMatchArray) => boolean;
+  /** Restrict the rule to text blocks of a known shape. */
+  applies?: (text: string) => boolean;
+}
+
+const PROBE_CONTEXT_RULES: readonly ContextRule[] = [
+  {
+    name: 'initial budget reminder',
+    pattern: SDK_INITIAL_BUDGET_REMINDER,
+    accept: (match) => Number.isFinite(Number(match[1])) && Number(match[1]) > 0,
+    replacement: 'USD budget: $0/$<ADP_PROBE_BUDGET>; $<ADP_PROBE_BUDGET> remaining',
+  },
+  {
+    name: 'current date reminder',
+    pattern: SDK_DATE_REMINDER,
+    replacement: "Today's date is <ADP_PROBE_DATE>.",
+  },
+  {
+    name: 'environment host lines',
+    pattern: SDK_ENVIRONMENT_HOST,
+    applies: (text) => SDK_ENVIRONMENT_HEADING.test(text),
+    replacement: '\n - Shell: <ADP_PROBE_SHELL>\n - OS Version: <ADP_PROBE_OS_VERSION>',
+  },
+];
+
+type JsonObject = Record<string, unknown>;
+
+function isObject(value: unknown): value is JsonObject {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * The SDK writes its probe context into the first (user) message and, under the
+ * mid-conversation-system beta, into a second system-role message. Nothing else
+ * (later turns, the top-level system prompt, tool declarations) is ever scanned.
+ */
+function contextMessageIndexes(root: JsonObject): number[] {
+  const messages = root.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return [];
+  const indexes = [0];
+  const second = messages[1];
+  if (Array.isArray(root.anthropic_beta) && root.anthropic_beta.includes(MID_CONVERSATION_SYSTEM_BETA)
+      && isObject(second) && second.role === 'system') {
+    indexes.push(1);
+  }
+  return indexes;
+}
+
+interface ContextMatch { messageIndex: number; blockIndex: number; match: RegExpMatchArray }
+
+function matchesOf(rule: ContextRule, text: string): RegExpMatchArray[] {
+  if (rule.applies && !rule.applies(text)) return [];
+  return [...text.matchAll(rule.pattern)].filter((match) => rule.accept?.(match) ?? true);
+}
+
+function applyRule(root: JsonObject, rule: ContextRule): JsonObject {
+  const messages = root.messages as unknown[];
+  const found: ContextMatch[] = [];
+  for (const messageIndex of contextMessageIndexes(root)) {
+    const message = messages[messageIndex];
+    if (!isObject(message) || !Array.isArray(message.content)) continue;
+    message.content.forEach((block, blockIndex) => {
+      if (!isObject(block) || typeof block.text !== 'string') return;
+      for (const match of matchesOf(rule, block.text)) found.push({ messageIndex, blockIndex, match });
+    });
+  }
+  // A rule fires only for exactly one occurrence. Zero means the SDK changed its
+  // context shape; more than one means the probe's own prompt or the runtime
+  // injected another copy. Both must surface as a shape mismatch, not be hidden.
+  if (found.length !== 1) return root;
+  const [{ messageIndex, blockIndex, match }] = found;
+  const message = messages[messageIndex] as JsonObject;
+  const content = [...(message.content as unknown[])];
+  const block = content[blockIndex] as JsonObject;
+  const text = block.text as string;
+  const start = match.index ?? 0;
+  content[blockIndex] = {
+    ...block,
+    text: `${text.slice(0, start)}${rule.replacement}${text.slice(start + match[0].length)}`,
+  };
+  const nextMessages = [...messages];
+  nextMessages[messageIndex] = { ...message, content };
+  return { ...root, messages: nextMessages };
 }
 
 /** Normalize only the SDK's per-installation identifier, never account/session identity. */
 function normalizeProbeDevice(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const root = value as Record<string, unknown>;
-  const metadata = root.metadata;
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return value;
-  const fields = metadata as Record<string, unknown>;
-  if (typeof fields.user_id !== 'string') return value;
+  if (!isObject(value) || !isObject(value.metadata) || typeof value.metadata.user_id !== 'string') return value;
+  const fields = value.metadata;
   try {
-    const identity = JSON.parse(fields.user_id) as Record<string, unknown>;
-    if (!identity || typeof identity !== 'object' || Array.isArray(identity)
+    const identity = JSON.parse(fields.user_id as string) as Record<string, unknown>;
+    if (!isObject(identity)
         || Object.keys(identity).sort().join(',') !== 'account_uuid,device_id,session_id'
         || identity.account_uuid !== ''
-        || identity.session_id !== '00000000-0000-4000-8000-000000000002'
+        || identity.session_id !== PROBE_SESSION_ID
         || typeof identity.device_id !== 'string' || !/^[0-9a-f]{64}$/.test(identity.device_id)) return value;
-    return { ...root, metadata: { ...fields, user_id: JSON.stringify({
+    return { ...value, metadata: { ...fields, user_id: JSON.stringify({
       ...identity, device_id: '<ADP_PROBE_DEVICE>',
     }) } };
   } catch {
@@ -61,64 +142,19 @@ function normalizeProbeDevice(value: unknown): unknown {
 }
 
 /**
- * Claude Code 0.3.220 injects the wall-clock date into one text block of the
- * first request message (the block index differs across model families),
- * even when CLAUDE_CODE_OVERRIDE_DATE is set. The date is non-semantic probe
- * context. Its device identifier is also random in fresh containers; normalize
- * only the known anonymous, fixed-session probe identity shape and the initial
- * SDK budget reminder. Provider model, tool, token, account and session fields
- * remain covered by the digest.
+ * Remove the run-specific probe context Claude Code injects into its request
+ * (random device id, initial USD budget reminder, wall-clock date, host shell
+ * and kernel version) so that the committed manifest, in-image generation and a
+ * live probe produce the same digest. Provider model, tool declarations, token
+ * limits, thinking configuration, prompts, account and session identity remain
+ * covered. Each rule fires for exactly one occurrence or not at all.
  */
 export function normalizeRequestShape(value: unknown): unknown {
   value = normalizeProbeDevice(value);
-  value = normalizeInitialSystemBudget(value);
-  const root = value as { messages?: unknown };
-  if (!root || typeof root !== 'object' || !Array.isArray(root.messages)) return value;
-  const first = root.messages[0] as { content?: unknown } | undefined;
-  if (!first || typeof first !== 'object' || !Array.isArray(first.content)) return value;
-  // The SDK reflects maxBudgetUsd into its first-message reminder. Admission
-  // still reserves the actual operator-approved amount and the SDK receives it
-  // unchanged. Only the exact zero-spend/equal-remaining reminder is normalized;
-  // provider max_tokens and thinking budgets remain part of the fingerprint.
-  const budgetBlocks = first.content.filter((block) => {
-    const text = (block as { text?: unknown })?.text;
-    if (typeof text !== 'string') return false;
-    const match = text.match(SDK_INITIAL_BUDGET_REMINDER);
-    return match !== null && Number.isFinite(Number(match[1])) && Number(match[1]) > 0;
-  });
-  if (budgetBlocks.length === 1) {
-    const content = first.content.map((block) => block === budgetBlocks[0]
-      ? { ...(block as Record<string, unknown>), text: '<system-reminder>\nUSD budget: $0/$<ADP_PROBE_BUDGET>; $<ADP_PROBE_BUDGET> remaining\n</system-reminder>\n' }
-      : block);
-    const messages = [...root.messages];
-    messages[0] = { ...first, content };
-    value = { ...(value as Record<string, unknown>), messages };
-  }
-  return normalizeDateReminder(value);
-}
-
-function normalizeDateReminder(value: unknown): unknown {
-  const root = value as { messages?: unknown };
-  if (!root || typeof root !== 'object' || !Array.isArray(root.messages)) return value;
-  const first = root.messages[0] as { content?: unknown } | undefined;
-  if (!first || typeof first !== 'object' || !Array.isArray(first.content)) return value;
-  const candidates = first.content.flatMap((block, index) => {
-    const reminder = block as { text?: unknown } | undefined;
-    if (!reminder || typeof reminder !== 'object' || typeof reminder.text !== 'string') return [];
-    const text = reminder.text;
-    return [...text.matchAll(SDK_DATE_REMINDER)].map(() => ({ index, reminder, text }));
-  });
-  if (candidates.length !== 1) return value;
-  const { index, reminder, text } = candidates[0];
-  const normalizedText = text.replace(
-    SDK_DATE_REMINDER,
-    "# currentDate\nToday's date is <ADP_PROBE_DATE>.",
-  );
-  const content = [...first.content];
-  content[index] = { ...reminder, text: normalizedText };
-  const messages = [...root.messages];
-  messages[0] = { ...first, content };
-  return { ...(value as Record<string, unknown>), messages };
+  if (!isObject(value) || !Array.isArray(value.messages)) return value;
+  let root: JsonObject = value;
+  for (const rule of PROBE_CONTEXT_RULES) root = applyRule(root, rule);
+  return root;
 }
 
 /**

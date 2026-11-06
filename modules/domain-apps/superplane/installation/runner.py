@@ -511,6 +511,9 @@ class Installer:
             or (not missing and result.returncode == 0),
             "Production image lacks trusted capabilities: " + ", ".join(missing),
         )
+        from .reader_image import verify as verify_reader_image
+
+        verify_reader_image(self)
         controller = self.commands.call(
             [
                 "docker",
@@ -646,6 +649,9 @@ class Installer:
             )
             if self.env.get("api_adapters") or self.control_plane_only:
                 self.receipt["image_contract"] = observed
+            from .reader_image import verify as verify_reader_image
+
+            verify_reader_image(self, probe)
             controller = probe.run(
                 "superplane-controller",
                 [
@@ -708,6 +714,8 @@ class Installer:
             # credential used by the workspace controller and must not be loaded
             # when the workspace cluster has not yet been provisioned.
             required["workspace_access"] = {"kubeconfig"}
+        if self.env.get("dedicated_readers"):
+            required["observation"].add("skypilot-health-token")
         for kind, keys in required.items():
             require(
                 set(self.secret_values[kind]) == keys
@@ -717,6 +725,14 @@ class Installer:
                 f"Missing or unexpected fields in {kind} secret",
             )
         observation = self.secret_values["observation"]
+        if self.env.get("dedicated_readers"):
+            health_token = observation["skypilot-health-token"]
+            require(
+                48 <= len(health_token) <= 8192
+                and all(33 <= ord(character) <= 126 for character in health_token)
+                and health_token != observation["skypilot-token"],
+                "SkyPilot health credential must be distinct and bounded",
+            )
         require(
             len(observation["skypilot-token"]) >= 32,
             "SkyPilot service credential is too short",
@@ -754,7 +770,13 @@ class Installer:
                 # verify only that the credential pair exists and is non-empty.
                 require(
                     len(selected) == 1
-                    and selected[0].get("workspaces") == []
+                    and selected[0].get("workspaces")
+                    == sorted(
+                        w["workspace_id"]
+                        for w in self.env.get("dedicated_readers", {}).get(
+                            "workspaces", []
+                        )
+                    )
                     and selected[0].get("signing_key")
                     == observation[component + "-signing-key"],
                     f"Observation secret must contain the {component} credential pair",
@@ -833,6 +855,12 @@ class Installer:
                 and not selected_kube.get("insecure-skip-tls-verify"),
                 "Workspace credential target/TLS does not match the selected EKS cluster",
             )
+        from .recovery_transport import load_material
+
+        load_material(self)
+        from .dedicated_readers import load_material as load_reader_material
+
+        load_reader_material(self)
         self.receipt["secret_versions"] = self.secret_versions
         for doc in self.docs:
             if doc["kind"] == "Deployment":
@@ -1225,6 +1253,9 @@ class Installer:
             "jwt_secret_name": self.env["secrets"]["observation"],
             "cors_allowed_origins": [self.env["origin"]],
             "api_producer_role": self.env.get("api_producer_role"),
+            "lifecycle_observation_regions": self.env.get(
+                "lifecycle_observation", {}
+            ).get("regions", []),
             "manage_image_builds": preserve_domain_builds(self.env),
             # workspace_cluster_context is deferred in control-plane-only mode;
             # the Terraform module must treat an absent/null value as no-op.
@@ -1591,6 +1622,8 @@ class Installer:
                     "PodDisruptionBudget",
                     "ScaledJob",
                     "TriggerAuthentication",
+                    "Role",
+                    "RoleBinding",
                 }
             ]
         )
@@ -1618,6 +1651,39 @@ class Installer:
                 {key: key for key in self.secret_values["observation"]},
             ),
         ]
+        if self.env.get("recovery_transport"):
+            mappings.append(
+                (
+                    "superplane-recovery-tls",
+                    self.env["namespace"],
+                    "recovery_tls",
+                    {key: key for key in ("tls.crt", "tls.key")},
+                )
+            )
+        if self.env.get("dedicated_readers"):
+            mappings.append(
+                (
+                    "superplane-reader-auth",
+                    self.env["namespace"],
+                    "dedicated_reader_auth",
+                    {"credential": "credential"},
+                )
+            )
+            mappings.append(
+                (
+                    "superplane-workspace-observations",
+                    self.env["namespace"],
+                    "observation",
+                    {
+                        w["workspace_id"] + suffix: source
+                        for w in self.env["dedicated_readers"]["workspaces"]
+                        for suffix, source in (
+                            (".credential", "controller-credential"),
+                            (".signing-key", "controller-signing-key"),
+                        )
+                    },
+                )
+            )
         if not self.control_plane_only:
             # workspace_access secret is only created when the workspace cluster
             # and its controller credential are both present and verified.
@@ -1649,7 +1715,14 @@ class Installer:
                     "superplane-skypilot-auth",
                     namespace,
                     "observation",
-                    {"token": "skypilot-token"},
+                    {
+                        "token": "skypilot-token",
+                        **(
+                            {"health-token": "skypilot-health-token"}
+                            if self.env.get("dedicated_readers")
+                            else {}
+                        ),
+                    },
                 )
             )
         for name, namespace, kind, keys in mappings:
@@ -2515,7 +2588,13 @@ class Installer:
                 "workspace_registration": "observed from the authenticated durable registry",
             }
 
-    def execute(self, approved_plan, token):
+    def execute(self, approved_plan, token, *, prepare_lifecycle_state=False):
+        require(
+            not prepare_lifecycle_state
+            or self.env.get("lifecycle_foundations")
+            and self.env.get("paid_worker", {}).get("mode") == "native-lifecycle",
+            "Lifecycle state preparation requires configured native lifecycle foundations",
+        )
         require(
             bool(token),
             "SUPERPLANE_VERIFICATION_TOKEN is required before any installation mutation",
@@ -2566,6 +2645,16 @@ class Installer:
                     prepare as prepare_lifecycle_foundations,
                 )
 
+                if prepare_lifecycle_state:
+                    self.phase(
+                        "lifecycle-state-binding",
+                        lambda: prepare_lifecycle_foundations(
+                            self, verify_volume=False
+                        ),
+                    )
+                    self.receipt["status"] = "awaiting-volume-read"
+                    self.save()
+                    return
                 if self.env.get("lifecycle_foundations"):
                     self.phase(
                         "lifecycle-foundations",
@@ -2731,7 +2820,13 @@ class Installer:
         )
         require(
             previous.get("status")
-            in {"failed", "preflight-passed", "planned", "recovery-required"}
+            in {
+                "failed",
+                "preflight-passed",
+                "planned",
+                "recovery-required",
+                "awaiting-volume-read",
+            }
             or (
                 previous.get("status") == "installed-and-verified"
                 and (previous.get("remote_lock") or previous.get("lock_attempt"))

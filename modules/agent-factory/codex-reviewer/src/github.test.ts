@@ -46,6 +46,24 @@ test("a repair push identifies the repaired tree as reviewed and approved", () =
   assert.doesNotMatch(body, /— APPROVE/);
 });
 
+test("review comments retain evidence gaps as non-blocking notes", () => {
+  const verdict = { verdict: "approve" as const, summary: "Required test is missing", findings: [],
+    validationGaps: ["Run the current-head regression test"] };
+  for (const body of [formatReviewComment(verdict, "a".repeat(40), "test"),
+    formatIssueReviewComment(verdict, 42, "test")]) {
+    assert.doesNotMatch(body, /CHANGES/);
+    assert.match(body, /Blockers:\*\* 0/);
+    assert.match(body, /Evidence notes \(non-blocking\)/);
+  }
+});
+
+test("review comments cannot publish request changes with zero blockers", () => {
+  const body = formatReviewComment({ verdict: "request_changes", summary: "Historical evidence remains a note",
+    findings: [], validationGaps: [] }, "a".repeat(40), "test");
+  assert.match(body, /— APPROVE/);
+  assert.match(body, /Blockers:\*\* 0/);
+});
+
 test("issue review comments identify the issue without claiming a PR merge", () => {
   const body = formatIssueReviewComment(
     { verdict: "approve", summary: "The issue is ready.", findings: [], validationGaps: [] },
@@ -374,3 +392,63 @@ for (const repository of [
     assert.equal(fetchRequests, 0);
   });
 }
+
+
+test("issue reads survive temporary GitHub 502 and 503 responses", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const signals: Array<AbortSignal | null | undefined> = [];
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    signals.push(init?.signal);
+    calls++;
+    return calls <= 2 ? new Response("Server Error", { status: calls === 1 ? 502 : 503 })
+      : Response.json({ number: 7208, title: "Executor", body: "Implement" });
+  };
+  const issue = await new GitHubClient("org/repo", async () => "test-token").getIssue(7208);
+  assert.equal(issue.number, 7208);
+  assert.equal(calls, 3);
+  assert.ok(signals[0]);
+  assert.ok(signals.every(signal => signal === signals[0]), "all attempts share one deadline");
+});
+
+test("temporary read failures exhaust a bounded retry allowance", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response("Unavailable", { status: 502 }); };
+  await assert.rejects(new GitHubClient("org/repo", async () => "test-token").getIssue(7), /returned 502/);
+  assert.equal(calls, 4);
+});
+
+test("permission refusals and uncertain writes are never transient-read retries", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const github = new GitHubClient("org/repo", async () => "test-token");
+  for (const status of [403, 404, 422]) {
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; return new Response("Refused", { status }); };
+    await assert.rejects(github.getIssue(7), new RegExp(`returned ${status}`));
+    assert.equal(calls, 1);
+  }
+  let writes = 0;
+  globalThis.fetch = async () => { writes++; return new Response("Server Error", { status: 502 }); };
+  await assert.rejects(github.comment(7, "review"), /returned 502/);
+  assert.equal(writes, 1);
+});
+
+
+test("cancellation stops a read retry during backoff", async t => {
+  const controller = new AbortController();
+  t.mock.method(AbortSignal, "timeout", () => controller.signal);
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    controller.abort();
+    return new Response("Server Error", { status: 502 });
+  };
+  await assert.rejects(new GitHubClient("org/repo", async () => "test-token").getIssue(7), { name: "AbortError" });
+  assert.equal(calls, 1);
+});

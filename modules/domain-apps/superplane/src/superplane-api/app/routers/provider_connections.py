@@ -179,8 +179,20 @@ async def _vault_evidence(request, org_id, workspace_id, reference, report=None)
         raise HTTPException(
             status_code=403, detail="provider observation time is not verified"
         )
+    if (evidence.authenticated_subject is None) != (evidence.authenticated_owner_principal is None):
+        raise HTTPException(status_code=403, detail=_DENIED)
+    if evidence.authenticated_subject is not None and (
+        evidence.authenticated_subject != principal
+        or not isinstance(evidence.authenticated_owner_principal, str)
+        or not evidence.authenticated_owner_principal.startswith("user:")
+        or not evidence.authenticated_owner_principal[5:]
+    ):
+        raise HTTPException(status_code=403, detail=_DENIED)
+    # Only the protected Gateway mapping can equate a Cognito subject with a
+    # canonical vault owner; an unrelated owner's credential still needs delegation.
+    acting_principal = evidence.authenticated_owner_principal or principal
     decision = authorize_delegation(
-        principal=principal,
+        principal=acting_principal,
         workspace_id=str(workspace_id),
         ownership=evidence.ownership,
         reference=reference,

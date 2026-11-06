@@ -59,47 +59,23 @@ Read all inception artifacts listed above. Build a mental model of:
 
 ### Step 2: Compose the EPIC issue body
 
-Create ONE EPIC issue per intent with this structure:
+Create ONE EPIC issue per intent using the canonical
+[epic-issue.md](../../rules/templates/epic-issue.md), following
+[issue-authoring.md](../../rules/agents/issue-authoring.md). In hosted execution,
+use `/app/rules/templates/epic-issue.md` and
+`/app/rules/agents/issue-authoring.md`. Do not maintain an inline alternative.
 
-```markdown
-## The problem in plain terms
-[Who needs what outcome and why, without implementation jargon.]
+Populate the six sections from accepted inception artifacts. Include the lineage
+table (Kind, Project reference, Parent epic, Module IDs, Feature IDs), delivery
+owner, completion boundary, native child index and one stable EC acceptance table.
+Map epic outcomes to qualified child AC references and cross-story integration
+evidence. Link long design/quality artifacts at their immutable revision.
 
-**The fix in one line:** [Observable outcome.]
-
-## Description
-[1-2 paragraphs: what the intent achieves and why it matters. Drawn from
-requirements + stories summary.]
-
-## Impact analysis
-- **Who benefits**: [from requirements]
-- **Who's impacted**: [systems/surfaces touched]
-- **What breaks if a bug slips through**: [table of bug-class -> blast-radius]
-- **Cost / quota footprint**: [new AWS resources, compute, DB rows]
-
-## Design
-[High-level architecture summary drawn from the application-design artifacts.
-Keep lean — deep design lives in committed `aidlc/` artifacts, linked not inlined.]
-
-**Audit trail**: See committed `aidlc/` directory on branch `<branch-name>` for
-full inception artifacts (requirements, stories, design, delivery plan).
-
-### Child issues (units)
-
-| # | Unit | Stories | Depends on | Status |
-|---|------|---------|------------|--------|
-| 1 | [Unit name] | [story IDs] | None | Planned |
-| 2 | [Unit name] | [story IDs] | Unit 1 | Planned |
-| ... | ... | ... | ... | ... |
-
-## Deployment
-See child issues — each child specifies its own deployment.
-
-## Validation
-- All required child acceptance criteria met, including named post-merge checks
-- E2E smoke test: [concrete command or URL]
-- N of M sub-issues complete (tracked via native sub-issue roll-up)
-```
+Before child issues exist, keep their references explicitly unresolved in the
+epic draft with an owner/action; do not invent issue numbers or claim readiness.
+After Step 6, replace those references with the actual issue URLs and AC keys,
+verify native links, and update the same epic without renumbering EC IDs.
+Child closure or implementation merge does not by itself prove the epic outcome.
 
 ### Step 3: Compose child issue bodies (one per AIDLC unit)
 
@@ -117,6 +93,21 @@ Keep the plain-terms opening and five technical sections in order.
 | Application design | Design: verified reuse, contracts, configuration and unresolved prerequisites |
 | Delivery plan | Deployment: setup, rollout, recovery and phase owners |
 | Quality/test strategy | Validation: stable acceptance IDs, action, expected result, evidence and phase/owner |
+
+#### Requirements-to-test lineage
+
+Populate the child lineage table with the actual parent epic URL after Step 5.
+Keep source requirement/story/unit IDs from the accepted artifacts as qualified
+references in Description or Design; do not overwrite them with GitHub numbers.
+Preserve the mapping when several source stories contribute to one unit issue.
+
+Every story AC needs a scenario mapping row with a stable scenario ID, linked
+AC IDs, Given/When/Then/Controls case contract, verification layer, exact test
+reference and planned/implemented/manual state. Reuse admitted catalog IDs;
+issue-local aliases stay scoped to the issue. Specify independent expected values,
+owned fixtures, relevant clock/randomness/async controls, isolation and cleanup.
+Keep manual procedures versioned and live model/provider evaluations distinct.
+Never report planned tests as executed coverage.
 
 #### Deterministic Validation gates (CRITICAL)
 
@@ -164,6 +155,12 @@ Before posting EACH issue (EPIC or child), verify:
 - [ ] Outcome, scope, completion boundary, phase owners and verified reuse points are explicit.
 - [ ] Configurable inputs are distinguished from selected environment/example values.
 
+**Lineage lint (epics and children):**
+- [ ] Lineage fields, source artifact references and stable EC/AC IDs are explicit.
+- [ ] Epic ECs name child AC references and integration evidence; unresolved pre-filing references are updated after Step 6.
+- [ ] Each child AC maps to scenarios/tests or a versioned manual procedure, with case controls and verification state.
+- [ ] Native links are verified after creation; source and requirements revisions remain attributable.
+
 **Validation lint (children only):**
 - [ ] Stable AC IDs each have action, expected result, evidence and phase/owner.
 - [ ] Existing commands/checks are verified; proposed deliverables are labelled proposed.
@@ -178,29 +175,26 @@ explicit first checkpoint; do not fill unknown facts with guesses.
 
 ### Step 5: Create the EPIC issue
 
+Write the reviewed epic body to `/tmp/aidlc-epic.md` before executing.
+
 ```bash
 EPIC_NUMBER=$(gh issue create \
   --title "[EPIC] <intent-summary>" \
-  --body "$(cat <<'EOF'
-<composed EPIC body>
-EOF
-)" --label "epic" | grep -oP '\d+$')
+  --body-file /tmp/aidlc-epic.md --label "epic" | grep -oP '\d+$')
 ```
 
 Record `$EPIC_NUMBER` for sub-issue linking.
 
 ### Step 6: Create child issues and link as sub-issues
 
-For each unit, in delivery-plan dependency order:
+For each unit, in delivery-plan dependency order, write its composed body to
+`/tmp/aidlc-child.md`, with the real parent epic URL from Step 5:
 
 ```bash
 # Create the child issue
 CHILD_URL=$(gh issue create \
   --title "<unit-name>: <one-line summary>" \
-  --body "$(cat <<'EOF'
-<composed child body>
-EOF
-)")
+  --body-file /tmp/aidlc-child.md)
 
 CHILD_NUMBER=$(echo "$CHILD_URL" | grep -oP '\d+$')
 
@@ -221,6 +215,11 @@ gh api graphql -f query='
 **Important**: Use typed `-F` (integer) for REST API or GraphQL mutation as
 shown above. Create children in dependency order so the EPIC's sub-issue list
 reflects the implementation sequence.
+
+After linking each child, verify the native parent from GitHub. Update the epic's
+child index and EC references with actual child URLs and stable AC keys. Record
+the source-artifact-to-issue mapping at the emitted revision. Incomplete links or
+unresolved mappings remain explicit blockers; do not claim complete emission.
 
 **Stories are created INERT — no dispatch triggers of any kind:**
 - NEVER apply agent-trigger labels (`agent-developer`, `agent-operations`,
@@ -335,19 +334,27 @@ is the ONLY permitted difference between the gated draft and the created issue.
 
 #### Step 7d: Emission lint rules
 
-Before committing the drafts, apply these five lint rules to EVERY draft
-(orchestrator and evaluation). Rules 1–4 were derived from gaps exposed in
-the GitLab CE dogfood run (#3299); Rule 5 from the dashboard crash #3675:
+Before committing the drafts, inspect the executor roles in each wave map.
+Apply Rules 1–4 **only** to the drafts for a wave containing a story with an
+explicit `operate` executor; in a mixed plan, do not apply them to code-only
+waves. Record each of Rules 1–4 as `N/A` with reason "no operate executor in
+this wave" for every code-only wave. In particular, do not demand an AWS
+account, credential label, infra workflow or ops hotfix protocol for code-only
+work. Evaluate Rule 5 independently for **every** wave, regardless of executor:
+include its contract check when its frontend/backend trigger is present, or
+record `N/A` with the reason the trigger is absent. Report all five results in
+the gate comment. Rules 1–4 were derived from gaps exposed in the GitLab CE
+dogfood run (#3299); Rule 5 from the dashboard crash #3675:
 
 **Rule 1 — CI apply path must exist:**
-Every story whose `## Deployment` section mentions "terraform apply" or
+In an operate wave, every story whose `## Deployment` section mentions "terraform apply" or
 "infrastructure deploy" MUST reference a dispatchable CI workflow (e.g.
 `gh workflow run <name>.yml`). If no such workflow exists, emit a story to
 CREATE it, sequenced as a dependency before the stories that need it.
 Fail the emission lint if a story requires infra apply but has no workflow ref.
 
 **Rule 2 — Account + credential label must be explicit:**
-Every story's `## Deployment` section and every orchestrator's "Deployment
+In an operate wave, every story's `## Deployment` section and every orchestrator's "Deployment
 target" section MUST specify:
 - The AWS account ID (12-digit number)
 - The `adp-cred` label (e.g. `adp-embark1`)
@@ -355,14 +362,14 @@ Never rely on ambient/IRSA credentials. If the delivery plan does not specify
 these, STOP and ask the user before emitting.
 
 **Rule 3 — Version pins must cite currently-maintained releases:**
-Every version pin in story `## Design` or `## Validation` sections must
+In an operate wave, every version pin in story `## Design` or `## Validation` sections must
 reference a version that is currently maintained by the vendor at emission
 time. If the delivery plan cites an EOL version (detectable from the
 requirements or from the vendor's documented lifecycle), WARN in the emission
 summary and update the pin to the latest LTS/stable.
 
 **Rule 4 — Hotfix-branch protocol:**
-Include in every orchestrator's "Guards" section:
+For an operate wave, include in its orchestrator's "Guards" section:
 ```
 - Hotfix branches: if the ops agent must self-fix a deployment blocker that
   isn't a story-scope defect, use branch `agent/issue-[ORCH]-hotfix-[N]`.
@@ -442,6 +449,7 @@ assignment you already hold.
   "flow_slug": "<kebab-case slug for this delivery loop, e.g. aidlc-delivery-loop-<N>>",
   "title": "<the intent's title>",
   "org_id": "",
+  "product_id": "<Product id from the intent's verified Product reference>",
   "spec_revision": "issue-<N>-r1",
   "intent_ref": "<N>",
   "description": "<the intent issue's plain-terms opening, one or two sentences, <=500 chars>",
@@ -466,16 +474,81 @@ assignment you already hold.
   ],
   "nodes": [
     {"address": "<flow_slug>/epic-<EPIC>/wave-<K>/<node-ref>",
-     "kind": "story", "title": "<story title>", "issue_ref": "<story issue number>"},
+     "kind": "story", "title": "<story title>", "issue_ref": "<story issue number>",
+     "repository_identity": "<owner>/<repository>",
+     "provider_repository_id": 12345,
+     "repository_connection": {"provider": "github", "installation_id": 67890}},
     {"address": "<flow_slug>/epic-<EPIC>/wave-<K>/eval",
      "kind": "eval", "title": "Wave <K> evaluation: <what it proves>"}
   ],
   "edges": [
     {"from_address": "<flow_slug>/epic-<EPIC>/wave-<K>/<node-ref>",
      "to_address": "<flow_slug>/epic-<EPIC>/wave-<K>/eval"}
-  ]
+  ],
+  "proposed_execution_policy": {
+    "schema_version": 1, "org_id": "<resolved tenant id>",
+    "team_ids": [], "repository_ids": ["<owner>/<repository>"],
+    "environment_connection_ids": [],
+    "allowed_actions": ["develop", "review", "repair", "merge"],
+    "human_gates": [],
+    "evaluation_acceptance": {"<flow_slug>/epic-<EPIC>/wave-<K>/eval": "human"},
+    "expires_at": "<UTC timestamp 14 days after emission>",
+    "limits": {"max_spend_usd": "600", "max_wall_clock_seconds": 1209600,
+               "max_attempts_per_node": 3, "max_concurrent_actions": 2}
+  }
 }
 ```
+
+Load the shared template at `modules/agent-factory/skills/_shared/policy.default.json`
+(in a hosted worker, `/app/skills/_shared/policy.default.json` if staged there).
+Copy it into `proposed_execution_policy` and replace placeholders with verified
+facts. Set its `org_id` from the run's resolved `ADP_TENANT_ID` (unlike the
+proposal's blank `org_id`, the worker does not stamp the nested policy). Set
+`repository_ids` to the verified repository identity and calculate `expires_at`
+as the current UTC time plus 14 days. Enumerate **all** eval node addresses in
+`evaluation_acceptance` and set each to `human`; an omitted entry silently
+defaults to human in the engine, but is not a complete authored policy. Stop if
+the tenant or repository is unavailable; do not fabricate either. This policy
+proposes bounds for human review; it does not authorize execution.
+
+Bind the flow to the intent's existing **Product id**, or to the Product
+selected in the interview; a Project reference is not a Product id. For every
+story node, set `repository_identity` to the verified target repository's full
+`owner/name`, `provider_repository_id` to its positive GitHub database id, and
+`repository_connection` to the matching GitHub App installation id. The worker
+exports `TARGET_REPO` from its run envelope and `GH_APP_INSTALLATION_ID` from
+the same envelope for App-backed runs; do not assume `GITHUB_REPOSITORY` is set.
+It also exports `TARGET_REPOS` (issue #9550): a comma-separated list, starting
+with `TARGET_REPO`, of every repository the run's GitHub token can reach. The
+list is wider than `TARGET_REPO` only when the gateway proved the run's
+repository is a source of exactly one Product that binds other repositories in
+the same installation. A story may target any repository in `TARGET_REPOS`; a
+repository outside it is not reachable with this token, so stop and name it in
+the gate comment rather than filing the story elsewhere.
+Read each target repository with `gh api --method GET "repos/<owner>/<name>"`.
+Check the returned `full_name` against the entry in `TARGET_REPOS` before using
+its positive numeric `id` for `provider_repository_id`. Do not substitute `gh repo view --json id`: that
+returns an opaque GraphQL identifier, not the numeric repository id. The skill
+path uses its preflight repository and installation facts instead. A PAT-backed run
+does not export `GH_APP_INSTALLATION_ID`: stop and request a verified installation
+binding rather than silently producing an unbound Product plan. Never infer a
+Product, repository id, or installation id from the issue number or examples.
+The policy's `repository_ids` must contain the bound repository identity.
+
+Before committing, run `python3 modules/agent-factory/skills/_shared/check_proposal.py
+aidlc/spaces/issue-<N>/construction/loop-proposal/proposal.json` (use the staged
+`/app/skills/_shared/` path in a hosted worker). A missing policy or omitted eval
+address is a failure even when the engine's structural validator accepts it.
+
+When preview access is available, POST the authored document to
+`/orchestration/flows/drafts/preview` with its *top-level* `org_id` set in the
+request body to the resolved tenant (leave the committed artifact blank). Save
+the JSON response to `preview.json` and run the same check with
+`--preview preview.json`. If the preview fails, `would_register` is not true,
+`proposed_execution_policy` is absent, or `execution_is_unbounded` is not
+explicitly false, STOP: correct the document and re-preview before committing.
+Do not treat a successful structural validator or a missing preview response
+as evidence that the proposal is bounded.
 
 **Epic description:** For every epic in a new plan, emit one `epic_metadata`
 entry keyed by its stable `epic_ref`. Write the title and description yourself
@@ -944,7 +1017,7 @@ startup was not observed, say so. Do not infer execution from issue creation.>
 
 | Check | Result | Evidence / remaining action |
 |-------|--------|-----------------------------|
-| Five-section story format and native links | <actual result> | <evidence or missing work> |
+| Six-section issue format, EC/AC/scenario mappings and native links | <actual result> | <evidence or missing work> |
 | Emission lint — <rule number and name; one row per Step 7d rule> | <PASS/FAIL/NOT RUN/N/A> | <evidence or applicability reason> |
 | Machine proposal validation | <actual result> | <validator result and revision> |
 
@@ -960,9 +1033,9 @@ and dispatch response/run link. Name incomplete or failed checks.>
 
 - If `gh issue create` fails, retry once. On second failure, post an error
   comment on the AIDLC issue and stop.
-- If sub-issue linking fails (API not available), fall back to adding
-  `Parent: #<epic>` in the child body and a text reference in the EPIC.
-  Post a warning that native sub-issue linking failed.
+- If native sub-issue linking fails, record the created issue URLs and the
+  missing relationship, report partial emission and stop dependent work. Retry
+  linking those existing issues; body references are not a successful fallback.
 - If a child body exceeds 8KB after composition, trim the `## Design` section
   by replacing inline detail with a link to the committed artifact file.
 
@@ -973,6 +1046,6 @@ The emitter's output is consumed by ADP's autonomous developer loop
 bad specs at scale (garbage amplification). Therefore:
 
 1. Every child MUST pass the self-lint before posting
-2. Validation MUST be deterministic (agent-verifiable without human judgment)
+2. Automated validation specifies deterministic assertions and relevant controls; manual evidence and live evaluations are explicitly classified.
 3. Body size MUST respect the orchestration guide's limits
 4. Native sub-issue links MUST be established at creation time

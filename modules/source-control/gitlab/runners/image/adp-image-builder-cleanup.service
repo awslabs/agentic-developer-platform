@@ -1,0 +1,16 @@
+[Unit]
+Description=Remove disposable image builder identity before snapshot
+DefaultDependencies=no
+After=local-fs.target
+# Ordering reverses at shutdown: stop these writers before removing their state.
+Before=amazon-ssm-agent.service cloud-final.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/true
+ExecStop=/usr/local/libexec/adp-image-builder-cleanup
+TimeoutStopSec=60
+
+# Intentionally not enabled. It is started only on the provisioning instance.

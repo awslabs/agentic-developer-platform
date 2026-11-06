@@ -1,0 +1,241 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+
+if (( EUID == 0 )); then
+  root=""
+  PATH=/usr/sbin:/usr/bin:/sbin:/bin
+else
+  root="${ADP_HOST_TEST_ROOT:?Only root may configure a job host}"
+  [[ "$root" == /tmp/* ]] || exit 1
+fi
+
+host_path() { printf '%s%s' "$root" "$1"; }
+installed=$(host_path /usr/local/libexec/adp-job-host)
+policy=$(host_path /etc/adp/job-firewall.nft)
+marker=$(host_path /etc/adp/job-host.sha256)
+ready=$(host_path /run/adp-job-ready)
+policy_hash=$(host_path /etc/adp/job-policy.sha256)
+loaded=$(host_path /etc/adp/job-firewall.loaded)
+
+ec2_interface() {
+  # The reviewed t3.large launch template has exactly one ENA network device.
+  # PCI hardware identity is available before DHCP; Docker bridges/veth devices
+  # have no PCI device and must never become SSH or DHCP ingress paths.
+  python3 - "$(host_path /sys/class/net)" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+try:
+    interfaces = [path for path in Path(sys.argv[1]).iterdir() if (path / "device").is_dir()]
+    if len(interfaces) != 1:
+        raise ValueError
+    interface = interfaces[0]
+    device = interface / "device"
+    if (not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", interface.name)
+            or (device / "vendor").read_text().strip() != "0x1d0f"
+            or (device / "class").read_text().strip() != "0x020000"
+            or (device / "driver").resolve(strict=True).name != "ena"):
+        raise ValueError
+    print(interface.name)
+except (OSError, ValueError):
+    sys.exit(1)
+PY
+}
+
+check_source() {
+  [[ -f "$marker" && -f "$installed" && -f "$policy" && -f "$policy_hash" ]] || exit 1
+  sha256sum --check --status "$marker"
+  sha256sum --check --status "$policy_hash"
+}
+
+check_firewall() {
+  check_source
+  local interface
+  interface=$(ec2_interface)
+  grep -Fxq "define adp_interface = \"$interface\"" "$policy"
+  [[ -s "$loaded" ]] && cmp -s "$loaded" <(nft list table inet adp_job)
+}
+
+replace_table() {
+  local transaction
+  transaction=$(mktemp "${policy}.reload.XXXXXX")
+  if nft list table inet adp_job >/dev/null 2>&1; then
+    printf 'delete table inet adp_job\n' > "$transaction"
+  fi
+  cat "$1" >> "$transaction"
+  if ! nft -c -f "$transaction" || ! nft -f "$transaction"; then
+    rm -f "$transaction"
+    return 1
+  fi
+  rm -f "$transaction"
+}
+
+record_firewall() {
+  nft list table inet adp_job > "$loaded"
+  chmod 0600 "$loaded"
+  check_firewall
+}
+
+case "${1:---boot}" in
+  --bake)
+    [[ "$0" != "$installed" ]] || exit 1
+    install -D -m 0500 "$0" "$installed"
+    install -d -m 0700 "$(host_path /etc/adp)"
+    cat > "$policy" <<'RULES'
+define adp_interface = "_unqualified_"
+table inet adp_job {
+  chain prerouting {
+    type filter hook prerouting priority -310; policy accept;
+    ip daddr 169.254.169.254 drop
+    ip6 daddr fd00:ec2::254 drop
+  }
+  chain input {
+    type filter hook input priority -150; policy drop;
+    iifname "lo" accept
+    iifname != $adp_interface tcp dport 22 drop
+    iifname != $adp_interface udp sport 67 udp dport 68 drop
+    ct state established,related accept
+    iifname $adp_interface udp sport 67 udp dport 68 accept
+  }
+  chain forward {
+    type filter hook forward priority -150; policy drop;
+    ip daddr 169.254.169.254 drop
+    ip6 daddr fd00:ec2::254 drop
+    ct state established,related accept
+  }
+  chain output {
+    type filter hook output priority -150; policy drop;
+    oifname "lo" accept
+    meta skuid 0 ip daddr 169.254.169.254 tcp dport 80 accept
+    meta skuid "ec2-instance-connect" ip daddr 169.254.169.254 tcp dport 80 accept
+    ip daddr 169.254.169.254 drop
+    ip6 daddr fd00:ec2::254 drop
+    ct state established,related accept
+    meta skuid 0 oifname $adp_interface ip daddr 255.255.255.255 udp sport 68 udp dport 67 accept
+    meta skuid 0 oifname $adp_interface ip daddr 10.0.0.0/8 udp sport 68 udp dport 67 accept
+    meta skuid 0 oifname $adp_interface ip daddr 172.16.0.0/12 udp sport 68 udp dport 67 accept
+    meta skuid 0 oifname $adp_interface ip daddr 192.168.0.0/16 udp sport 68 udp dport 67 accept
+  }
+}
+RULES
+    chmod 0600 "$policy"
+    sha256sum "$policy" > "$policy_hash"
+    sha256sum "$installed" > "$marker"
+    install -d -m 0755 "$(host_path /etc/systemd/system/docker.service.d)" "$(host_path /etc/systemd/system/sshd.service.d)"
+    cat > "$(host_path /etc/systemd/system/adp-job-firewall.service)" <<'UNIT'
+[Unit]
+Description=Fail-closed job host firewall
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Before=network-pre.target docker.service sshd.service
+Wants=network-pre.target systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/adp-job-host --enforce
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
+UNIT
+    cat > "$(host_path /etc/systemd/system/docker.service.d/10-adp-job-host.conf)" <<'DOCKER'
+[Unit]
+Requires=adp-job-firewall.service
+After=adp-job-firewall.service
+
+[Service]
+ExecStartPre=/usr/local/libexec/adp-job-host --network-verify
+DOCKER
+    cat > "$(host_path /etc/systemd/system/sshd.service.d/10-adp-job-host.conf)" <<'SSHD'
+[Unit]
+Requires=adp-job-firewall.service
+After=adp-job-firewall.service
+
+[Service]
+ExecStartPre=/usr/local/libexec/adp-job-host --verify
+SSHD
+    systemctl daemon-reload
+    systemctl enable adp-job-firewall.service
+    ;;
+  --enforce)
+    check_source
+    rm -f "$ready" "$loaded"
+    interface=$(ec2_interface)
+    temporary=$(mktemp "${policy}.XXXXXX")
+    trap 'rm -f "$temporary"' EXIT
+    # Resolve names on this host, not on the AMI builder, and preserve only
+    # the existing reviewed destination policy during a service restart.
+    sed "s/^define adp_interface = .*/define adp_interface = \"$interface\"/" "$policy" > "$temporary"
+    replace_table "$temporary"
+    mv "$temporary" "$policy"
+    sha256sum "$policy" > "$policy_hash"
+    record_firewall
+    ;;
+  --network-verify)
+    systemctl is-active --quiet adp-job-firewall.service
+    check_firewall
+    ;;
+  --allow)
+    rm -f "$ready"
+    check_source
+    systemctl is-active --quiet adp-job-firewall.service
+    check_firewall
+    systemctl stop sshd.service
+    [[ $# == 3 ]] || exit 1
+    python3 - "$2" "$3" <<'PY' || exit 1
+import ipaddress
+import sys
+addresses = [ipaddress.ip_address(value) for value in sys.argv[1:]]
+if len(set(addresses)) != 2 or not all(
+    isinstance(address, ipaddress.IPv4Address) and address.is_private
+    and not address.is_link_local and not address.is_loopback
+    for address in addresses
+):
+    sys.exit(1)
+PY
+    temporary=$(mktemp "${policy}.XXXXXX")
+    trap 'rm -f "$temporary"' EXIT
+    awk -v gitlab="$2" -v cache="$3" '
+      /  chain input \{/ { print; print "    iifname $adp_interface tcp dport 22 accept"; next }
+      /  chain forward \{/ || /  chain output \{/ {
+        print
+        print "    ip daddr " gitlab " tcp dport 443 accept"
+        print "    ip daddr " cache " tcp dport 443 accept"
+        next
+      }
+      { print }
+    ' "$policy" > "$temporary"
+    rm -f "$loaded"
+    replace_table "$temporary"
+    mv "$temporary" "$policy"
+    sha256sum "$policy" > "$policy_hash"
+    record_firewall
+    ;;
+  --ready)
+    [[ -x "$(host_path /opt/aws/bin/eic_run_authorized_keys)" ]] || exit 1
+    # Drain sshd's output: grep -q can close the pipe early and make a valid
+    # configuration fail with SIGPIPE under pipefail.
+    sshd -T | grep -Fx 'authorizedkeyscommand /opt/aws/bin/eic_run_authorized_keys %u %f' >/dev/null
+    sshd -T | grep -Fx 'authorizedkeyscommanduser ec2-instance-connect' >/dev/null
+    [[ "$(id -u ec2-instance-connect)" != 10001 ]]
+    systemctl is-active --quiet docker.service
+    systemctl is-active --quiet adp-job-firewall.service
+    check_firewall
+    install -d -m 0755 "$(host_path /run)"
+    touch "$ready"
+    ;;
+  --verify)
+    systemctl is-active --quiet adp-job-firewall.service
+    check_firewall
+    [[ -f "$ready" ]]
+    ;;
+  --boot)
+    rm -f "$ready"
+    check_source
+    systemctl is-active --quiet adp-job-firewall.service
+    check_firewall
+    ;;
+  *) exit 1 ;;
+esac

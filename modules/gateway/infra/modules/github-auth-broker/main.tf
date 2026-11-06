@@ -12,6 +12,26 @@ locals {
   function_name = "${var.name_prefix}-github-auth-broker"
 }
 
+# Separate lifecycle and entropy from the GitHub OAuth client credential.
+resource "random_password" "state_signing" {
+  length  = 64
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "state_signing" {
+  name                    = "${local.function_name}-state-signing"
+  recovery_window_in_days = 7
+  tags                    = var.common_tags
+}
+
+resource "aws_secretsmanager_secret_version" "state_signing" {
+  secret_id     = aws_secretsmanager_secret.state_signing.id
+  secret_string = random_password.state_signing.result
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
 # --- IAM Role for the Lambda ---
 
 resource "aws_iam_role" "broker" {
@@ -73,6 +93,7 @@ resource "aws_iam_role_policy" "broker_secrets" {
           "secretsmanager:GetSecretValue"
         ]
         Resource = compact([
+          aws_secretsmanager_secret.state_signing.arn,
           var.github_oauth_secret_arn,
           var.github_token_secret_arn
         ])
@@ -194,6 +215,7 @@ resource "aws_iam_role_policy" "broker_auth_codes" {
 # --- Lambda Function ---
 
 resource "aws_lambda_function" "broker" {
+  depends_on                     = [aws_secretsmanager_secret_version.state_signing, aws_iam_role_policy.broker_secrets]
   function_name                  = local.function_name
   role                           = aws_iam_role.broker.arn
   handler                        = "handler.handler"
@@ -212,18 +234,21 @@ resource "aws_lambda_function" "broker" {
 
   environment {
     variables = {
-      GITHUB_CLIENT_ID         = "" # Set after deploy from Secrets Manager
-      GITHUB_CLIENT_SECRET_ARN = var.github_oauth_secret_arn
-      COGNITO_USER_POOL_ID     = var.cognito_user_pool_id
-      COGNITO_CLIENT_ID        = var.cognito_client_id
-      CALLBACK_URL             = "" # Updated after Function URL is created
-      FRONTEND_URL             = var.frontend_url
-      ALLOWLIST_MODE           = var.allowlist_mode
-      ALLOWED_ORGS             = var.allowed_orgs
-      ALLOW_OPEN_SIGNUP        = var.allow_open_signup ? "true" : "false"
-      GITHUB_TOKEN_SECRET_ARN  = var.github_token_secret_arn
-      AUTH_CODE_TABLE          = aws_dynamodb_table.auth_codes.name
-      LOG_LEVEL                = "INFO"
+      GITHUB_CLIENT_ID          = "" # Set after deploy from Secrets Manager
+      GITHUB_CLIENT_SECRET_ARN  = var.github_oauth_secret_arn
+      STATE_SIGNING_SECRET_ARN  = aws_secretsmanager_secret.state_signing.arn
+      STATE_FORMAT_VERSION      = ""
+      STATE_LEGACY_ACCEPT_UNTIL = "0"
+      COGNITO_USER_POOL_ID      = var.cognito_user_pool_id
+      COGNITO_CLIENT_ID         = var.cognito_client_id
+      CALLBACK_URL              = "" # Updated after Function URL is created
+      FRONTEND_URL              = var.frontend_url
+      ALLOWLIST_MODE            = var.allowlist_mode
+      ALLOWED_ORGS              = var.allowed_orgs
+      ALLOW_OPEN_SIGNUP         = var.allow_open_signup ? "true" : "false"
+      GITHUB_TOKEN_SECRET_ARN   = var.github_token_secret_arn
+      AUTH_CODE_TABLE           = aws_dynamodb_table.auth_codes.name
+      LOG_LEVEL                 = "INFO"
 
       # Issue #4849: membership-eligibility projection tables (shadow-mode read).
       # Env var and code ship together by construction here — this apply sets the
@@ -246,6 +271,8 @@ resource "aws_lambda_function" "broker" {
     ignore_changes = [
       filename,
       source_code_hash,
+      environment[0].variables["STATE_FORMAT_VERSION"],
+      environment[0].variables["STATE_LEGACY_ACCEPT_UNTIL"],
       environment[0].variables["GITHUB_CLIENT_ID"],
       environment[0].variables["CALLBACK_URL"],
     ]

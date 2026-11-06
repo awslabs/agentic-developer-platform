@@ -54,6 +54,11 @@ on:
         description: 'True only after the cleanup sweep succeeds'
         value: ${{ jobs.eval.outputs.cleanup_ok }}
     inputs:
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
       environment:
         required: false
         type: string
@@ -80,8 +85,9 @@ on:
 # Never two live runs at once: both would fight over the same
 # BG_ENFORCE_ORG_ASSIGNMENT value and each would restore the other's mutation.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.environment || 'dev') }}
+  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.target_environment || inputs.environment || 'dev') }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -133,7 +139,7 @@ jobs:
     outputs:
       cleanup_ok: ${{ steps.cleanup.outcome == 'success' }}
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    environment: adp-deploy-${{ inputs.target_environment || inputs.environment || 'dev' }}
     timeout-minutes: 45
 
     # No job-level image: this job is the HARNESS, on the runner. The clean room

@@ -24,11 +24,33 @@ def token() -> str:
     return value
 
 
+def health_token() -> str:
+    value = os.environ.get("SKYPILOT_HEALTH_TOKEN", "")
+    if value and (
+        not 48 <= len(value) <= 8192
+        or any(not 33 <= ord(character) <= 126 for character in value)
+        or hmac.compare_digest(value.encode(), token().encode())
+    ):
+        raise RuntimeError("SkyPilot health credential must be distinct and bounded")
+    return value
+
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def forward(path: str, request: Request):
     supplied = request.headers.get("authorization", "")
-    if not hmac.compare_digest(supplied.encode(), ("Bearer " + token()).encode()):
+    service_authorized = hmac.compare_digest(
+        supplied.encode(), ("Bearer " + token()).encode()
+    )
+    reader = health_token()
+    health_authorized = bool(reader) and hmac.compare_digest(
+        supplied.encode(), ("Bearer " + reader).encode()
+    )
+    if not service_authorized and not health_authorized:
         raise HTTPException(401, "Service authentication required")
+    if not service_authorized and (
+        request.method != "GET" or path != "api/health" or request.url.query
+    ):
+        raise HTTPException(403, "Health-only credential cannot access this route")
     if (
         "\\" in path
         or b"%" in request.scope.get("raw_path", b"")
@@ -144,6 +166,7 @@ def main():
         except Exception:
             return 2
     token()
+    health_token()
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=46581, access_log=False)

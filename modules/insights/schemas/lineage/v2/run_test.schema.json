@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "run_test (section 11.8)",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "if": {
+        "properties": {
+          "requirement_binding": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "criterion_refs": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "requirement_binding": {
+            "const": "not_applicable"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "criterion_refs": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "const": "run_test"
+    },
+    "run_ref": {
+      "allOf": [
+        {
+          "$ref": "references.schema.json#/$defs/record_ref"
+        },
+        {
+          "properties": {
+            "record_type": {
+              "const": "test_run"
+            }
+          }
+        }
+      ]
+    },
+    "test_ref": {
+      "allOf": [
+        {
+          "$ref": "references.schema.json#/$defs/record_ref"
+        },
+        {
+          "properties": {
+            "record_type": {
+              "const": "test_definition"
+            }
+          }
+        }
+      ]
+    },
+    "instance_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parameter_digest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "required": {
+      "type": "boolean"
+    },
+    "scenario_refs": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "references.schema.json#/$defs/record_ref"
+          },
+          {
+            "properties": {
+              "record_type": {
+                "const": "coverage_definition"
+              }
+            }
+          }
+        ]
+      },
+      "uniqueItems": true
+    },
+    "criterion_refs": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "references.schema.json#/$defs/record_ref"
+          },
+          {
+            "properties": {
+              "record_type": {
+                "const": "acceptance_criterion"
+              }
+            }
+          }
+        ]
+      },
+      "uniqueItems": true
+    },
+    "requirement_binding": {
+      "enum": [
+        "complete",
+        "unknown",
+        "not_applicable"
+      ]
+    }
+  },
+  "required": [
+    "run_ref",
+    "test_ref",
+    "instance_id",
+    "parameter_digest",
+    "required",
+    "scenario_refs",
+    "criterion_refs",
+    "requirement_binding"
+  ],
+  "unevaluatedProperties": false
+}

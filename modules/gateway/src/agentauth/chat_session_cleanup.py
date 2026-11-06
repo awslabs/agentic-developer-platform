@@ -9,15 +9,14 @@ from botocore.exceptions import BotoCoreError, ClientError
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError
 from src.agentauth.chat_delivery import load_registered_delivery
 from src.agentauth.chat_pending_handoff import input_transport
-from src.agentauth.chat_session_mailbox import ChatSessionMailbox
+from src.agentauth.chat_session_mailbox import IDLE_SECONDS, ChatSessionMailbox
 from src.agentauth.chat_session_recovery import fence_expired_session
 from src.orchestration.chat_data_migration import _owns_context_row
 
-IDLE_SECONDS = 300
 RETRY_SECONDS = 30
 
 
-def request_session_end(table, *, session_id, owner, now, reason, expected_lease=None, expected_idle_snapshot=None):
+def request_session_end(table, *, session_id, owner, now, reason, expected_lease=None, expected_idle_snapshot=None, crew_store=None):
     if reason not in {"user", "mode_switch", "idle", "authority"}:
         raise ChatAuthorizationRefusedError("chat end reason unavailable")
     key = {"PK": f"session#{session_id}", "SK": "header"}
@@ -63,10 +62,12 @@ def request_session_end(table, *, session_id, owner, now, reason, expected_lease
     except BotoCoreError:
         raise ChatAuthorizationUnavailableError("chat session end unavailable") from None
 
+    if crew_store is not None:
+        crew_store.revoke_for_lease(tenant_id=owner[0], session_id=session_id, lease_generation=int(lease["generation"]))
     return {**header, "chatLease": {**lease, "expires_at": 1}, "sessionState": "ending", "sessionEndReason": reason, "sessionCleanupStartedAt": now}
 
 
-def publish_session_cleanup(authority, capabilities, item, *, now, transport=input_transport):
+def publish_session_cleanup(authority, capabilities, item, *, now, transport=input_transport, crew_store=None):
     if item.get("PK") != "chat-notifications" or not item.get("SK", "").startswith("cleanup#"):
         raise ChatAuthorizationRefusedError("chat cleanup key invalid")
     run_id = item["SK"].removeprefix("cleanup#")
@@ -156,10 +157,13 @@ def publish_session_cleanup(authority, capabilities, item, *, now, transport=inp
             now=now,
             reason=reason,
             expected_lease=lease,
+            crew_store=crew_store,
             expected_idle_snapshot=(header["lastActivityAt"], sequence) if reason == "idle" and lease.get("expires_at", 0) > now else None,
         )
     if same_lease:
         fence_expired_session(authority, capabilities, launch, now=now)
+        if crew_store is not None:
+            crew_store.revoke_for_lease(tenant_id=launch.tenant_id, session_id=launch.session_id, lease_generation=launch.lease_generation)
     if item.get("publishedAt", 0) + RETRY_SECONDS > now:
         return "waiting"
     pointer = store._read(f"INVOCATION#{run_id}", "DISPATCH") or {}

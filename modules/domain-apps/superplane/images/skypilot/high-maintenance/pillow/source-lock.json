@@ -1,0 +1,77 @@
+{
+  "sources": [
+    {
+      "filename": "upstream.tar.gz",
+      "url": "https://codeload.github.com/python-pillow/Pillow/tar.gz/293218ad059d994baf1777d882911bed6a49704a",
+      "sha256": "0458511ac96e7d44e574484efff9c6210f8211046b3e7ec1dca2381cea0f8430"
+    },
+    {
+      "filename": "multibuild.tar.gz",
+      "url": "https://codeload.github.com/multi-build/multibuild/tar.gz/c893f305c6066b6d940e10d3333be8cb27fa3947",
+      "sha256": "e50c410a625333404ba318f109b082ff04b1edb1e18e92109e38897c9561db09"
+    },
+    {
+      "filename": "depends.tar.gz",
+      "url": "https://codeload.github.com/python-pillow/pillow-depends/tar.gz/93950a8f9ada1165a4ab8c719326d5017e3f6c72",
+      "sha256": "bebb7e92376e98273c9c2de1cac027c73e0074174788f0e65abcf5a60b70fa57"
+    },
+    {
+      "filename": "pillow-12.2.0.tar.gz",
+      "url": "https://files.pythonhosted.org/packages/8c/21/c2bcdd5906101a30244eaffc1b6e6ce71a31bd0742a01eb89e660ebfac2d/pillow-12.2.0.tar.gz",
+      "sha256": "a830b1a40919539d07806aa58e1b114df53ddd43213d9c8b75847eee6c0182b5"
+    },
+    {
+      "filename": "pillow-12.3.0.tar.gz",
+      "url": "https://files.pythonhosted.org/packages/1c/3d/bb7fca845737cf9d7dbde16ed1843984665ff2e0a518f5db43e77ec540b9/pillow-12.3.0.tar.gz",
+      "sha256": "3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce"
+    },
+    {
+      "filename": "pillow-13.0.0.tar.gz",
+      "url": "https://files.pythonhosted.org/packages/ce/a4/9cc30690a394a8305e8be4c9036aa16d0dfddadd09079860b582f562496d/pillow-13.0.0.tar.gz",
+      "sha256": "cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510"
+    },
+    {
+      "filename": "brotli-1.2.1.tar.gz",
+      "url": "https://codeload.github.com/google/brotli/tar.gz/refs/tags/v1.2.1",
+      "sha256": "98d35d11a78dc453aebb7d10c3748f3f73ff78c8267c0dc697b8631f67bf7e8f"
+    }
+  ],
+  "patches": [
+    {
+      "cve": "CVE-2026-112393",
+      "url": "https://github.com/python-pillow/Pillow/commit/11582e5ffbdceb973d5ee593f3105af5a9852b40.patch",
+      "filename": "11582e5ffbdceb973d5ee593f3105af5a9852b40.patch",
+      "sha256": "f63092d4be964c91c33fbb8979fb5274894b0afef3819776fda40f2f00f8c7be",
+      "patch_header_commit": "78c08bd4d9c08037f77465a61d90633f669013f4",
+      "applied_filename": "tiff-backport.patch",
+      "applied_sha256": "7d1a7eaaec3b31ee3eb8bc951363ffc0556fdd92b530cfb85bef4f05110a5c51",
+      "adaptation": "Preserve the lowercase min macro and TRACE instrumentation from 12.x; production changes match upstream."
+    },
+    {
+      "cve": "CVE-2026-112403",
+      "url": "https://github.com/python-pillow/Pillow/commit/242a059aedc1935097d9aa1dc3f099750467ba75.patch",
+      "filename": "242a059aedc1935097d9aa1dc3f099750467ba75.patch",
+      "sha256": "dc0e90b2394c856b68cc694ebe279bfed78550216af2bd73de1a9e2af325fa38",
+      "patch_header_commit": "242a059aedc1935097d9aa1dc3f099750467ba75",
+      "additional_cves": [
+        "CVE-2026-112398"
+      ]
+    },
+    {
+      "cve": "CVE-2026-112900",
+      "url": "https://github.com/python-pillow/Pillow/commit/a2c363141da31a265dd536c945677db4b64f3ec9.patch",
+      "filename": "a2c363141da31a265dd536c945677db4b64f3ec9.patch",
+      "sha256": "12eebe41acbf481bcb8c5bf2bb27bc7202731aa462483a6eed1ba1dd04832f8a",
+      "patch_header_commit": "a2c363141da31a265dd536c945677db4b64f3ec9"
+    },
+    {
+      "cve": "CVE-2026-96639",
+      "url": "https://github.com/python-pillow/Pillow/commit/78d97d994579aef81aafe123773d525f40f2522a.patch",
+      "filename": "78d97d994579aef81aafe123773d525f40f2522a.patch",
+      "sha256": "1c9d458db18880a6652cd22c31c5632f050705187749cae6946746b6f7bd8938",
+      "applied_filename": "multiframe-backport.patch",
+      "applied_sha256": "afdafdb0bf94b0373bf784f44ba73319442fb54648f988e53b15f4a8b552d206",
+      "adaptation": "Recontextualize the four plugin seek calls for the 12.x source; retain the upstream Image.seek and JPEG changes."
+    }
+  ]
+}

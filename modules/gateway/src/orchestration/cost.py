@@ -75,7 +75,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, column, func, or_, select, true, union_all, values
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.usage import UsageLog
@@ -160,6 +160,7 @@ class UnknownReason(StrEnum):
     NOT_STARTED = "not_started"  # Node has not run yet
     NOT_COSTABLE = "not_costable"  # Gate/eval node with no model calls to bill
     NON_GATEWAY_PATH = "non_gateway_path"  # ADP_BEDROCK_VIA=direct: no row
+    REFRESH_UNAVAILABLE = "cost_refresh_unavailable"  # Bounded display read could not finish
 
 
 class JoinKeyError(ValueError):
@@ -272,6 +273,58 @@ def _classify(total: Decimal | None, call_count: int, *, absent_reason: UnknownR
     return CostStatus.KNOWN, amount, None
 
 
+def _address_prefix_predicate(db: AsyncSession, prefix: str):
+    address = UsageLog.graph_address
+    if db.get_bind().dialect.name == "postgresql":
+        # varchar_pattern_ops compares bytes independently of database collation.
+        # '/' is followed by '0' in UTF-8: [prefix+'/', prefix+'0') contains
+        # precisely the descendants, even for literal %, _, backslash or Unicode.
+        # Explicit bounds remain index conditions in prepared generic plans;
+        # LIKE with a bound pattern cannot derive those index conditions.
+        descendants = address.bool_op("~>=~")(prefix + "/") & address.bool_op("~<~")(prefix + "0")
+    else:
+        descendants = address.like(f"{escape_like(prefix)}/%", escape="\\")
+    return (address == prefix) | descendants
+
+
+def _cost_by_address_query(db: AsyncSession, *, org_id: str, address_prefixes: list[str]):
+    aggregate = (
+        select(
+            UsageLog.graph_address,
+            func.sum(UsageLog.cost_usd).label("total_cost_usd"),
+            func.sum(UsageLog.input_tokens + UsageLog.output_tokens).label("total_tokens"),
+            func.count(UsageLog.id).label("call_count"),
+        )
+        .where(UsageLog.org_id == org_id, UsageLog.graph_address.is_not(None))
+        .group_by(UsageLog.graph_address)
+    )
+    if db.get_bind().dialect.name != "postgresql":
+        return aggregate.where(or_(*[_address_prefix_predicate(db, prefix) for prefix in address_prefixes]))
+
+    # UNION ALL requires disjoint subtrees: repeated or covered prefixes must
+    # not return the same address twice. Lexical order puts parents first.
+    prefixes: list[str] = []
+    for prefix in sorted(set(address_prefixes)):
+        if not any(prefix.startswith(parent + "/") for parent in prefixes):
+            prefixes.append(prefix)
+    ranges = values(column("prefix", String), column("lower", String), column("upper", String), name="prefixes").data(
+        [(prefix, prefix + "/", prefix + "0") for prefix in prefixes]
+    )
+    # One OR across the page's prefixes produces BitmapOr/Bitmap Heap Scan,
+    # reading the wide ledger heap even with the covering index in place.
+    # Aggregate each exact address and descendant range separately so Postgres
+    # can use ix_usage_flow_cost_covering with index-only scans, including with
+    # prepared generic plans. LATERAL keeps statement size linear in prefixes.
+    aggregate = aggregate.correlate(ranges)
+    exact = aggregate.where(UsageLog.graph_address == ranges.c.prefix)
+    descendants = aggregate.where(
+        UsageLog.graph_address.bool_op("~>=~")(ranges.c.lower),
+        UsageLog.graph_address.bool_op("~<~")(ranges.c.upper),
+    )
+    costs = union_all(exact, descendants).lateral("costs")
+    return select(costs).select_from(ranges.join(costs, true()))
+
+
 async def get_cost_by_address(
     db: AsyncSession,
     *,
@@ -296,45 +349,7 @@ async def get_cost_by_address(
     Note: `org_id` is filtered in SQL, not in Python. An address from another
     tenant returns no rows rather than that tenant's costs.
     """
-    # Escape LIKE metacharacters: an address containing `%` would otherwise widen
-    # the match past its own subtree and pull in unrelated nodes' costs. The
-    # expression moved to `escape_like` verbatim when #4869 needed the same rule
-    # for a list of prefixes — same behaviour, one copy instead of two.
-    escaped = escape_like(address_prefix)
-
-    query = (
-        select(
-            UsageLog.graph_address,
-            func.sum(UsageLog.cost_usd).label("total_cost_usd"),
-            func.sum(UsageLog.input_tokens + UsageLog.output_tokens).label("total_tokens"),
-            func.count(UsageLog.id).label("call_count"),
-        )
-        .where(
-            UsageLog.org_id == org_id,
-            UsageLog.graph_address.is_not(None),
-            # Exact match OR descendant. The trailing `/` is what stops
-            # `flow/epic-1` from matching `flow/epic-10`.
-            (UsageLog.graph_address == address_prefix) | (UsageLog.graph_address.like(f"{escaped}/%", escape="\\")),
-        )
-        .group_by(UsageLog.graph_address)
-    )
-
-    rows = (await db.execute(query)).all()
-
-    costs: list[NodeCost] = []
-    for row in rows:
-        status, amount, reason = _classify(row.total_cost_usd, int(row.call_count or 0), absent_reason=UnknownReason.NO_USAGE_ROWS)
-        costs.append(
-            NodeCost(
-                address=row.graph_address,
-                status=status,
-                amount_usd=amount,
-                total_tokens=int(row.total_tokens or 0),
-                call_count=int(row.call_count or 0),
-                reason=reason,
-            )
-        )
-    return costs
+    return await get_cost_by_address_prefixes(db, org_id=org_id, address_prefixes=[address_prefix])
 
 
 async def get_cost_by_address_prefixes(
@@ -347,8 +362,8 @@ async def get_cost_by_address_prefixes(
 
     Issue #4869. The flows list needs a cost figure per flow for a whole page of
     flows, and `usage_logs.graph_address` is `{flow.slug}/{epic}/{wave}/{node}` —
-    so a flow's slug *is* its address prefix and one `or_()` of prefix predicates
-    covers the page. Callers attribute each returned address back to its flow by
+    so a flow's slug *is* its address prefix and one statement covers the page.
+    Callers attribute each returned address back to its flow by
     splitting on the first `/` (`proposal.split_address`).
 
     This is a sibling of `get_cost_by_address`, not a replacement, and it is
@@ -356,9 +371,9 @@ async def get_cost_by_address_prefixes(
     (it needs the node list per flow to distinguish `NOT_STARTED` from
     `NOT_COSTABLE`) and has a live caller whose semantics must not shift.
 
-    Each disjunct carries its own `prefix/` separator, so the boundary that stops
-    `loop-4645` matching `loop-46450` survives the `or_()` — the escaping and the
-    trailing `/` are per-prefix, not applied once to the whole clause.
+    Each prefix carries its own `prefix/` separator, so `loop-4645` never
+    matches `loop-46450`. PostgreSQL reads disjoint ranges through the covering
+    index; other databases use escaped LIKE predicates.
 
     Args:
         address_prefixes: Flow slugs (or any address prefix). Empty returns `[]`
@@ -373,29 +388,7 @@ async def get_cost_by_address_prefixes(
     if not address_prefixes:
         return []
 
-    clauses = [
-        # Identical escaping and boundary to `get_cost_by_address` — `_` is a legal
-        # slug character *and* a single-char LIKE wildcard, so without the escape
-        # `loop_4645` matches `loop-4645` and two flows' costs merge into one
-        # figure. The equality disjunct is kept because that one does use the index.
-        (UsageLog.graph_address == prefix) | (UsageLog.graph_address.like(f"{escape_like(prefix)}/%", escape="\\"))
-        for prefix in address_prefixes
-    ]
-
-    query = (
-        select(
-            UsageLog.graph_address,
-            func.sum(UsageLog.cost_usd).label("total_cost_usd"),
-            func.sum(UsageLog.input_tokens + UsageLog.output_tokens).label("total_tokens"),
-            func.count(UsageLog.id).label("call_count"),
-        )
-        .where(
-            UsageLog.org_id == org_id,
-            UsageLog.graph_address.is_not(None),
-            or_(*clauses),
-        )
-        .group_by(UsageLog.graph_address)
-    )
+    query = _cost_by_address_query(db, org_id=org_id, address_prefixes=address_prefixes)
 
     rows = (await db.execute(query)).all()
 
@@ -433,7 +426,13 @@ async def get_flow_cost(
     presence makes the aggregate `partial` (AC-21): the total is then a lower
     bound, because an unmeasured contribution is missing from it.
     """
-    measured = {cost.address: cost for cost in await get_cost_by_address(db, org_id=org_id, address_prefix=flow.slug)}
+    measured = await get_cost_by_address(db, org_id=org_id, address_prefix=flow.slug)
+    return roll_up_flow_cost(flow=flow, nodes=nodes, measured_costs=measured)
+
+
+def roll_up_flow_cost(*, flow: OrchestrationFlow, nodes: list[OrchestrationNode], measured_costs: list[NodeCost]) -> AggregateCost:
+    """Apply current node/unknown semantics to exact measured address totals."""
+    measured = {cost.address: cost for cost in measured_costs}
 
     node_costs: list[NodeCost] = []
     for node in nodes:

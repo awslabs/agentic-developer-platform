@@ -1,0 +1,14 @@
+{
+  "tenant_id": "tenant-example",
+  "project_id": "project-example",
+  "source_connection_id": "github-example",
+  "source_system": "github",
+  "source_event_id": "7062/merged",
+  "event_time": "2026-10-06T01:35:17Z",
+  "ingested_at": "2026-10-06T01:35:18Z",
+  "schema_version": "1.0",
+  "story_id": "7061",
+  "pr_id": "7062",
+  "commit_sha": "3889ab25c5a1d2f79dc80ab0d6165f78fe6fef65",
+  "merged_at": "2026-10-06T01:35:17Z"
+}

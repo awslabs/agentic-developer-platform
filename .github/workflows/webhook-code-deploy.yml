@@ -1,7 +1,7 @@
 name: Webhook Code Deploy
-# Unbound: committed manifest and protected-environment role variable are empty.
 on:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
   id-token: write
@@ -22,6 +22,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install deployment client
+        run: python3 -m pip install boto3==1.40.76
       - name: Prepare clean committed source
         shell: bash
         run: python3 platform/automation-infra/prepare-webhook-source.py
@@ -42,6 +47,7 @@ jobs:
           set -euo pipefail
           cd "$CLEAN_SOURCE/modules/agent-factory/webhook-ingress"
           scripts/package-lambdas.sh
+          python3 scripts/check-comment-authority-package.py dist/github.zip
       - name: Establish trusted webhook-code identity
         uses: ./.github/actions/trusted-webhook-code
         with:
@@ -56,9 +62,17 @@ jobs:
             --receipt "$RECEIPT"
       - name: Preserve local intent and evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: webhook-code-${{ github.run_id }}
           path: ${{ runner.temp }}/webhook-${{ github.run_id }}/receipt.json
           if-no-files-found: warn
           retention-days: 14
+
+  verify-webhooks:
+    name: Verify deployed webhook contracts and fleet
+    needs: deploy-code
+    uses: ./.github/workflows/gitlab-integration-tests.yml
+    permissions:
+      contents: read
+      id-token: write

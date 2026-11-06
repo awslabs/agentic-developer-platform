@@ -1,0 +1,233 @@
+{
+  "architecture_revision": "825583373982de3e370f121544c4a18026454077",
+  "issues": [
+    {
+      "issue": 6930,
+      "title": "Reconcile consolidated ADP Assistant / Chief-of-Staff design and delivery plans",
+      "change": "Remaining architecture/product contracts and single foundation qualification ownership remain open.",
+      "previous_body_sha256": "4fb9845612d35c17cafd7f30b2eed5d5096ae6bbe452c7b9d29a63e24d4c0dd9",
+      "revised_body_sha256": "887f467534dd96f17bf7479c2744c994c3d198509675e6cbf096033e95407a2e",
+      "body_bytes": 6210
+    },
+    {
+      "issue": 7197,
+      "title": "[COS-E1] EPIC: ADP Assistant / Personal Chief of Staff — product, foundation and runtime",
+      "change": "Canonical product epic with runtime/host waves, preserved completed foundation and explicit remaining product scope.",
+      "previous_body_sha256": "fc3a5aebed4a11ebbdc04165c9971af92c8986ffb34d8facb287526334c530e2",
+      "revised_body_sha256": "d909079f57bbd2da2b4fb47d2ea783827cf80defe5fe44cbba985da949ecc5bc",
+      "body_bytes": 6409
+    },
+    {
+      "issue": 7198,
+      "title": "[COS-S01] Add a crew-pod workload class for persistent chat sessions (admission, egress, narrow IRSA)",
+      "change": "Owner EBS PVC and admission/helper credential boundary; ephemeral isolation retained.",
+      "previous_body_sha256": "ff8d95cc564c38dc7e0e0ba4aa4323d808de24c75d7baf7ca31066b46d555eea",
+      "revised_body_sha256": "4f15c4ceff10460d730a397827fd689473dfc4f3fb4971ed15c6b24221800538",
+      "body_bytes": 7949
+    },
+    {
+      "issue": 7201,
+      "title": "[COS-S05] Package Kiro Crew into the crew-pod image with rendered config and headless start",
+      "change": "Unmodified upstream Crew profile, native configuration and retained home; no source patches.",
+      "previous_body_sha256": "c8036885160b09e0a9366647c1fcada36b54eb75413c984bc54edd5fb5cb7b23",
+      "revised_body_sha256": "8cd3d8463ba618bf47b3f1984dac16492a5dc470e2a8202851390c05e24b9eeb",
+      "body_bytes": 6651
+    },
+    {
+      "issue": 7202,
+      "title": "[COS-S08] Back up and restore Crew through verified S3 archives and checkpoint metadata",
+      "change": "Replaces Crew event sink with verified archive/manifest, checkpoint metadata/API, atomic latest pointer, external helper and retention.",
+      "previous_body_sha256": "42ca90194235c0158b00e3b3ac6cc94ff10f0ed9cbdde870fb32b06e23934a13",
+      "revised_body_sha256": "83de87f03512c7e5b47a3878d16933330f072269181f0bbdf51963ec2e10393d",
+      "body_bytes": 7950
+    },
+    {
+      "issue": 7203,
+      "title": "[COS-S09] Lease one crew executor per user across all persistent sessions",
+      "change": "One active owner writer, generation fencing and checkpoint-aware handoff.",
+      "previous_body_sha256": "4d383075ca55283517f272d123568e7210822932a868efc1ef7b6c7794fdb0b8",
+      "revised_body_sha256": "4239cc250a43025cf566f6d61e81c23d86f7d394be7febd3b43ce35d643c7ca2",
+      "body_bytes": 7835
+    },
+    {
+      "issue": 7207,
+      "title": "[COS-S13] Add \"Open my Crew\" to the ADP UI with on-demand pod wake and readiness",
+      "change": "Truthful restore and sync UI separate from AgentCore availability; native dashboard retained.",
+      "previous_body_sha256": "5dd380acc1ac30e2b03673256e65876fc62246210ca9dd650ff357c2a7f98348",
+      "revised_body_sha256": "99c5c01ee08364baecda64f5ff401769314fe93fe3d5d8c48fde3dccc5433563",
+      "body_bytes": 7185
+    },
+    {
+      "issue": 7209,
+      "title": "[COS-S06] Bridge ADP turns into the Kiro Crew session and consolidate memory on stop",
+      "change": "Retained session map, native consolidation and verified final checkpoint before normal stop.",
+      "previous_body_sha256": "e3f77bbc9294da65436b16ae055b583d658379c834d80238b1b85984d5303554",
+      "revised_body_sha256": "5fd636d4e49cc66edd252093244b58958535bf3a3c331bd93f97bfc851d40cfe",
+      "body_bytes": 6060
+    },
+    {
+      "issue": 7210,
+      "title": "[COS-S07] Provide shared AgentCore user memory through the ADP gateway",
+      "change": "Replaces Crew event store with gateway AgentCore capture/recall/management across unchanged assistants.",
+      "previous_body_sha256": "51b7f05b153b63d88e500a4e5d02d950bf4dbae529bbc08b7267f2087cf256e4",
+      "revised_body_sha256": "b3fbf3c6281113dd3c3ea7df79a3df42f68c3d8d455aeed56d6a0afb378a13b0",
+      "body_bytes": 7752
+    },
+    {
+      "issue": 7214,
+      "title": "[COS-EV1] Repository evaluation — runtime contracts, inventory and foundation drivers",
+      "change": "Repository contract/inventory/deployment/driver evidence; no cloud proof inferred from fixtures.",
+      "previous_body_sha256": "56db760267e32df78f0d6dd617020c3f95354d5c20159413d41b7e50583696d9",
+      "revised_body_sha256": "c17427a37bb70730e9de9577913745d5f9e762621490301c0aecec3f430d34cd",
+      "body_bytes": 4229
+    },
+    {
+      "issue": 7215,
+      "title": "[COS-EV2] Repository evaluation — gateway memory, Crew checkpoints and owner sessions",
+      "change": "Replaces fork/event checks with gateway memory, checkpoint failure/retry, scope and native container recovery.",
+      "previous_body_sha256": "55430ee67e24375104c01b104d8c86577fdc8aaa83e203b2e4130f53273b11c5",
+      "revised_body_sha256": "f6b304c38e7303b2edfd2c10a5c93f43735d4d8f6971bcfe8b41d44c627b53d3",
+      "body_bytes": 4710
+    },
+    {
+      "issue": 7216,
+      "title": "[COS-EV3] Repository evaluation — private Crew dashboard and EKS access",
+      "change": "Dashboard restore readiness and sync status repository evidence.",
+      "previous_body_sha256": "589d30556fa10089a211fde3578f687debaf8bea031b1557d7bbd53e502978fc",
+      "revised_body_sha256": "efd2aeb07d83970b15ba0b3b7f0b6d925f16ddacf1d149bb3f8a6b73f5c01763",
+      "body_bytes": 3464
+    },
+    {
+      "issue": 7217,
+      "title": "[COS-EVL] Live qualification — assistant runtime and managed EC2 hosting (EP-01–EP-06)",
+      "change": "Live EP-02/06 memory/recovery across assistants and targets, with actual service receipts and cleanup.",
+      "previous_body_sha256": "b2ddaa1e79255ef7092c09126078e1c327722df9e0c9508d962cd4c3bf84572f",
+      "revised_body_sha256": "453825657031c7c9c3f27f622929b7374f560469230217f7e625710c933a6587",
+      "body_bytes": 7982
+    },
+    {
+      "issue": 7221,
+      "title": "[COS-S14] Crew target abstraction and executor inventory: target_kind on leases, crew_executors table, resolver",
+      "change": "Stable owner/generation contract upstream; #7202 owns checkpoint migration and latest pointer.",
+      "previous_body_sha256": "1b83fd2480a9a4f334bac3c6d004f5855742521df76546780c1ef501531c076c",
+      "revised_body_sha256": "f6072b1212d237c316b84435f78582e24715b0670b93f525a0dff6038b1d30ee",
+      "body_bytes": 7482
+    },
+    {
+      "issue": 7222,
+      "title": "[COS-S15] Install and integrate the EC2 assistant on the managed Dev Box service",
+      "change": "External helper and exact-version restore on managed EC2; cross-target and stale-disk coverage.",
+      "previous_body_sha256": "574434adb801cab441382d1586ea09ef0c675f0fc857e8b42d49f9cbe350530a",
+      "revised_body_sha256": "584888f70fc98e140f76f18be892c5d463db993641d9b8691c26cfa188e7c57b",
+      "body_bytes": 7966
+    },
+    {
+      "issue": 7223,
+      "title": "[COS-EV4] Repository evaluation — Dev Box service and EC2 assistant installation",
+      "change": "Managed installer, checkpoint/AgentCore integration and host service repository checks.",
+      "previous_body_sha256": "5500b7f3048b357a708d29ef2184ab1d0996ea36cf634392e38d1b21ae9ea681",
+      "revised_body_sha256": "07b6f61965a45194f65ab24240b1ab79d0a663a344aafc7d33687696f058ef6a",
+      "body_bytes": 3935
+    }
+  ],
+  "native_blocker_changes": {
+    "7202": {
+      "before": [
+        7209,
+        7210
+      ],
+      "after": [
+        6930,
+        7221,
+        7201
+      ]
+    },
+    "7209": {
+      "before": [
+        7201
+      ],
+      "after": [
+        7201,
+        7202
+      ]
+    },
+    "7203": {
+      "before": [
+        7208,
+        7202,
+        7221
+      ],
+      "after": [
+        7208,
+        7202,
+        7209,
+        7221
+      ]
+    },
+    "7214": {
+      "before": [
+        7198,
+        7199,
+        7200,
+        7208,
+        7221,
+        7283
+      ],
+      "after": [
+        6930,
+        7198,
+        7199,
+        7200,
+        7208,
+        7221,
+        7283,
+        7172,
+        7173,
+        7174,
+        7175
+      ]
+    }
+  },
+  "retired_criteria": {
+    "7202": {
+      "COS-S08-AC01": [
+        "COS-S08-AC07",
+        "COS-S08-AC10"
+      ],
+      "COS-S08-AC02": [
+        "COS-S08-AC08",
+        "COS-S08-AC09"
+      ],
+      "COS-S08-AC04": [
+        "COS-S08-AC08"
+      ],
+      "COS-S08-AC05": [
+        "COS-S08-AC08",
+        "COS-S08-AC12"
+      ],
+      "COS-S08-AC06": [
+        "COS-S08-AC13"
+      ]
+    },
+    "7210": {
+      "COS-S07-AC01": [
+        "COS-S07-AC06",
+        "COS-S07-AC09"
+      ],
+      "COS-S07-AC02": [
+        "COS-S07-AC08"
+      ],
+      "COS-S07-AC03": [
+        "COS-S07-AC07"
+      ],
+      "COS-S07-AC04": [
+        "COS-S07-AC10",
+        "COS-S07-AC11"
+      ],
+      "COS-S07-AC05": [
+        "COS-S07-AC12"
+      ]
+    }
+  },
+  "retirement_note": "COS-S08-AC03 was retired before this revision. Retired criteria remain in issue history; old results do not pass new criteria. EP-02 retains its ID with revised acceptance; EP-01/03/04/05/06 remain required."
+}

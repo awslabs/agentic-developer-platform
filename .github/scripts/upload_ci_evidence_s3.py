@@ -2,6 +2,7 @@
 """Retain CI evidence in private, write-once S3 objects using runner IRSA."""
 import base64
 import gzip
+import glob
 import hashlib
 import json
 import io
@@ -16,6 +17,86 @@ import tempfile
 MAX_BYTES = 512 * 1024 * 1024
 
 
+def collect_paths(value, workspace, temporary, missing='error'):
+    """Collect explicit roots/globs, with the same confinement as a single path.
+
+    File roots retain their basename; directory roots retain relative paths.
+    Globs retain paths relative to their fixed directory prefix, so receipts
+    from multiple service directories cannot overwrite one another.
+    Conflicting names fail instead of silently replacing one source's evidence.
+    """
+    if missing not in {'error', 'warn', 'ignore'}:
+        raise ValueError('Unknown missing-file policy')
+    roots = [workspace.resolve(), temporary.resolve()]
+    files = {}
+    absent = []
+    total = 0
+    patterns = [line.strip() for line in value.splitlines() if line.strip()]
+    if not patterns:
+        raise ValueError('At least one evidence path is required')
+    for pattern in patterns:
+        if pattern.startswith('!'):
+            raise ValueError('Evidence exclusions are not supported; use explicit allowlists')
+        path = Path(pattern)
+        if not path.is_absolute():
+            path = workspace / path
+        if not any(path.resolve().is_relative_to(root) for root in roots):
+            raise ValueError('Evidence must be inside the checkout or runner temporary directory')
+        glob_root = None
+        if glob.has_magic(str(path)):
+            glob_root = path.parent
+            while glob.has_magic(str(glob_root)):
+                glob_root = glob_root.parent
+        matches = sorted(glob.glob(str(path), recursive=True)) if glob_root is not None else [str(path)]
+        found = False
+        for match in matches:
+            candidate = Path(match)
+            if not any(candidate.resolve().is_relative_to(root) for root in roots):
+                raise ValueError('Evidence must be inside the checkout or runner temporary directory')
+            if not candidate.exists() and not candidate.is_symlink():
+                continue
+            for source, name in collect(candidate, allow_empty=True):
+                if glob_root is not None:
+                    name = source.relative_to(glob_root).as_posix()
+                previous = files.get(name)
+                if previous is not None and previous != source:
+                    raise ValueError('Evidence roots contain conflicting archive paths')
+                if previous is None:
+                    total += source.stat().st_size
+                    if total > MAX_BYTES:
+                        raise ValueError('Evidence exceeds the 512 MiB single-upload bound')
+                    files[name] = source
+                found = True
+        if not found:
+            absent.append(pattern)
+    if absent and missing == 'error':
+        raise ValueError('Required evidence path has no files')
+    if absent and missing == 'warn':
+        print('::warning::Some requested evidence paths contain no files; publication is partial or missing')
+    return [(source, name) for name, source in sorted(files.items())], len(absent)
+
+
+def runner_credentials():
+    """Use only scoped runner IRSA in this process, never a deployment session.
+
+    Changing this child process cannot alter credentials of later workflow steps.
+    Offline jobs may intentionally disable metadata and ambient credentials for
+    their test commands; only the uploader restores the explicit IRSA binding.
+    """
+    role = os.environ.get('CI_EVIDENCE_RUNNER_ROLE_ARN') or os.environ.get('AWS_ROLE_ARN')
+    web_token = os.environ.get('CI_EVIDENCE_RUNNER_TOKEN_FILE') or os.environ.get('AWS_WEB_IDENTITY_TOKEN_FILE')
+    if not role or not web_token:
+        raise ValueError('CI evidence requires the existing runner IRSA binding')
+    for key in ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+                'AWS_SECURITY_TOKEN', 'AWS_PROFILE', 'AWS_DEFAULT_PROFILE',
+                'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+                'AWS_CONTAINER_AUTHORIZATION_TOKEN', 'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'):
+        os.environ.pop(key, None)
+    os.environ.update(AWS_ROLE_ARN=role, AWS_WEB_IDENTITY_TOKEN_FILE=web_token,
+                      AWS_EC2_METADATA_DISABLED='true', AWS_CONFIG_FILE='/dev/null',
+                      AWS_SHARED_CREDENTIALS_FILE='/dev/null', BOTO_CONFIG='/dev/null')
+
+
 def aws(*args):
     result = subprocess.run(['aws', *args, '--output', 'json'], check=True, capture_output=True, text=True)
     return json.loads(result.stdout or '{}')
@@ -27,7 +108,7 @@ def token(value, pattern, label):
     return value
 
 
-def collect(path):
+def collect(path, *, allow_empty=False):
     """Reject links and special files rather than following them into credentials."""
     if not path.exists() or path.is_symlink():
         raise ValueError('Evidence path is absent or is a symbolic link')
@@ -48,7 +129,7 @@ def collect(path):
             raise ValueError('Evidence exceeds the 512 MiB single-upload bound')
         name = entry.relative_to(path).as_posix() if path.is_dir() else entry.name
         files.append((entry, name))
-    if not files:
+    if not files and not allow_empty:
         raise ValueError('Evidence contains no files')
     return files
 
@@ -102,14 +183,20 @@ def main():
     retention = token(env.get('CI_EVIDENCE_RETENTION_DAYS', '90'), r'7|14|90', 'retention')
     environment = token(env.get('CI_EVIDENCE_ENVIRONMENT', 'dev'), r'[a-z][a-z0-9-]*', 'environment')
     workspace = Path(env['GITHUB_WORKSPACE'])
-    path = Path(env['CI_EVIDENCE_PATH'])
-    if not path.is_absolute():
-        path = workspace / path
-    allowed = [workspace.resolve(), Path(env['RUNNER_TEMP']).resolve()]
-    if not any(path.resolve().is_relative_to(root) for root in allowed):
-        raise ValueError('Evidence must be inside the checkout or runner temporary directory')
-    files = collect(path)
-    checked_out = subprocess.check_output(['git', '-C', str(workspace), 'rev-parse', 'HEAD'], text=True).strip()
+    files, missing = collect_paths(env['CI_EVIDENCE_PATH'], workspace, Path(env['RUNNER_TEMP']),
+                                   env.get('CI_EVIDENCE_IF_NO_FILES_FOUND', 'error'))
+    if not files:
+        summary = env.get('GITHUB_STEP_SUMMARY')
+        if summary:
+            with open(summary, 'a') as stream:
+                stream.write(f'\nCI evidence `{name}`: no matching files; no S3 artifact published.\n')
+        return None
+    source = Path(env.get('CI_EVIDENCE_SOURCE_DIRECTORY', str(workspace)))
+    if not source.is_absolute():
+        source = workspace / source
+    if not source.resolve().is_relative_to(workspace.resolve()):
+        raise ValueError('Source checkout must be inside the workspace')
+    checked_out = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
     token(checked_out, r'[0-9a-f]{40}', 'checked-out revision')
     workflow_sha = token(env['GITHUB_WORKFLOW_SHA'], r'[0-9a-f]{40}', 'workflow revision')
     account = token(aws('sts', 'get-caller-identity')['Account'], r'[0-9]{12}', 'AWS account')
@@ -124,6 +211,8 @@ def main():
                     'run_attempt': attempt, 'job': job, 'name': name, 'retention_days': int(retention),
                     'checked_out_revision': checked_out, 'workflow_revision': workflow_sha,
                     'artifact': artifact, 'files': records}
+        if missing:
+            manifest['missing_path_count'] = missing
         manifest_file = Path(temporary) / 'manifest.json'
         manifest_file.write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')
         manifest_sha = hashlib.sha256(manifest_file.read_bytes()).hexdigest()
@@ -140,7 +229,9 @@ def main():
     if output:
         with open(output, 'a') as stream:
             stream.write(f'manifest-uri={uri}\nmanifest-version={receipt["version_id"]}\n')
+    return receipt
 
 
 if __name__ == '__main__':
+    runner_credentials()
     main()

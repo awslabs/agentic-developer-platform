@@ -620,3 +620,59 @@ class TestTranscriptPointerIsolation:
         key = artifact_prefix(identity) + "transcript/" + "a" * 64 + ".md"
         service().record_status(credential_token=credential(run_id=RUN_A), pod=POD_A, status="in_progress", fields={"transcript_key": key})
         assert row(aws, run_id=RUN_A, arrived_at=ARRIVED_A)["transcript_key"]["S"] == key
+
+
+class TestModelAdmissionDiagnostics:
+    def test_late_wait_write_cannot_replace_a_newer_clear(self, aws, service, two_workers):
+        sequence = int(NOW.timestamp() * 1000)
+
+        def report(at, state, seq):
+            service(now=at).record_status(
+                credential_token=credential(run_id=RUN_A),
+                pod=POD_A,
+                status="in_progress",
+                fields={"model_admission_status": state, "model_admission_sequence": str(seq)},
+            )
+
+        report(NOW, "budget_reservations_pending", sequence)
+        report(NOW + timedelta(seconds=1), "not_waiting", sequence + 1000)
+        with pytest.raises(RegistrationRefusedError):
+            report(NOW + timedelta(seconds=2), "budget_reservations_pending", sequence)
+        written = row(aws, run_id=RUN_A, arrived_at=ARRIVED_A)
+        assert written["model_admission_status"] == {"S": "not_waiting"}
+        assert written["model_admission_sequence"] == {"N": str(sequence + 1000)}
+        assert row(aws, run_id=RUN_B, arrived_at=ARRIVED_B)["status"] == {"S": "webhook_received"}
+
+    def test_existing_worker_heartbeat_is_recognized_but_ordinary_liveness_does_not_refresh_it(self, aws, service, two_workers):
+        service().record_status(
+            credential_token=credential(run_id=RUN_A),
+            pod=POD_A,
+            status="in_progress",
+            fields={"summary": "Waiting for budget holds to settle; retrying model admission (up to 4200s remaining)"},
+        )
+        before = row(aws, run_id=RUN_A, arrived_at=ARRIVED_A)
+        assert before["model_admission_status"] == {"S": "budget_wait"}
+        service(now=NOW + timedelta(seconds=120)).record_status(
+            credential_token=credential(run_id=RUN_A),
+            pod=POD_A,
+            status="in_progress",
+            fields={},
+        )
+        after = row(aws, run_id=RUN_A, arrived_at=ARRIVED_A)
+        assert after["model_admission_updated_at"] == before["model_admission_updated_at"]
+        assert after["status_updated_at"] != before["status_updated_at"]
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"model_admission_status": "invented"},
+            {"model_admission_status": "budget_wait", "model_admission_sequence": "9999999999999999"},
+            {"model_admission_updated_at": "2099-01-01T00:00:00Z"},
+            {"model_admission_sequence": "1"},
+        ],
+    )
+    def test_untrusted_diagnostics_cannot_invent_freshness(self, aws, service, two_workers, fields):
+        before = row(aws, run_id=RUN_A, arrived_at=ARRIVED_A)
+        with pytest.raises(RegistrationRefusedError):
+            service().record_status(credential_token=credential(run_id=RUN_A), pod=POD_A, status="in_progress", fields=fields)
+        assert row(aws, run_id=RUN_A, arrived_at=ARRIVED_A) == before

@@ -31,12 +31,13 @@ jobs:
         run: |
           python platform/scripts/release/workflow.py --check-approver
           python platform/scripts/release/workflow.py --check-integration-run
-      - uses: actions/download-artifact@v7
-        with:
-          name: acceptance-integration-test
-          path: ${{ runner.temp }}/integration-evidence
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.integration_run_id }}
+      - name: Retrieve verified integration acceptance from S3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTEGRATION_RUN_ID: ${{ inputs.integration_run_id }}
+        run: |
+          python .github/scripts/release_evidence_s3.py download \
+            --run-id "$INTEGRATION_RUN_ID" --directory "$RUNNER_TEMP/integration-evidence"
       - name: Select the exact release that passed integration
         id: evidence
         run: python platform/scripts/release/workflow.py --integration-evidence "$RUNNER_TEMP/integration-evidence/acceptance.json"

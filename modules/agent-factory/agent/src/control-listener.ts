@@ -594,7 +594,8 @@ export class ControlListener {
       queuedAuthorization = { envelope: req.headers[ENVELOPE_HEADER] as string, action,
         command_id: validation.commandId, body_base64: raw.toString('base64'),
         principal: authorization.envelope.principal,
-        authorityKind: authorization.envelope.authorityKind ?? 'delegated_grant' };
+        authorityKind: authorization.envelope.authorityKind ?? 'delegated_grant',
+        queuedGrantRef: authorization.envelope.queuedGrantRef };
     }
 
     const outcome = this.config.store.submit(action, validation.commandId, fingerprintPayload(payload), queuedAuthorization);

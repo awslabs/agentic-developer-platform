@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
@@ -24,9 +24,29 @@ class Settings(BaseSettings):
     rds_pool_max_overflow: int = Field(default=5, ge=0, le=20)
     rds_pool_timeout_seconds: int = Field(default=10, ge=1, le=60)
     rds_pool_recycle_seconds: int = Field(default=600, ge=60, le=3600)
+    rds_split_pool_enabled: bool = False
+    rds_request_pool_size: int = Field(default=6, ge=1, le=6)
+    rds_accounting_pool_size: int = Field(default=4, ge=1, le=4)
+    rds_connect_timeout_seconds: int = Field(default=5, ge=1, le=10)
+    rds_lock_timeout_ms: int = Field(default=1000, ge=100, le=5000)
+    rds_statement_timeout_ms: int = Field(default=8000, ge=1000, le=20000)
+
+    @model_validator(mode="after")
+    def validate_split_pool(self) -> "Settings":
+        if self.rds_split_pool_enabled:
+            if not self.rds_pool_enabled:
+                raise ValueError("split RDS pooling requires RDS pooling to be enabled")
+            if self.rds_lock_timeout_ms >= self.rds_statement_timeout_ms:
+                raise ValueError("RDS lock timeout must be shorter than statement timeout")
+        return self
 
     # Redis (optional)
     redis_url: str | None = None
+    # Display-only flow cost summaries; admission always reads the ledger.
+    flow_cost_cache_enabled: bool = True
+    flow_activity_cache_enabled: bool = True
+    flow_read_cache_enabled: bool = True
+    request_log_queue_enabled: bool = True
 
     # Redis / ElastiCache IAM authentication (Issue #4342)
     # ElastiCache has the `default` user disabled and an IAM-auth user provisioned,
@@ -38,6 +58,13 @@ class Settings(BaseSettings):
 
     # AWS
     aws_region: str = "us-east-1"
+    oauth_workload_name: str = ""
+    oauth_return_url: str = ""
+    atlassian_config_ref: str = ""
+    atlassian_contract_revision: str = ""
+    atlassian_metadata_sha256: str = ""
+    atlassian_identity_compatibility_verified: bool = False
+    github_pat_grace_days: int = Field(default=30, ge=0)
     # Tenant -> workspace -> AWS EC2 read-only validation profile. Empty grants
     # no validation capability; deployment supplies actual placement identifiers.
     credential_validation_profiles: str = "{}"
@@ -149,12 +176,12 @@ class Settings(BaseSettings):
     # Issue #4076: Credential->host egress binding. When True, a credential whose
     # service appears in SERVICE_HOST_BINDINGS (see internal/credential_egress.py)
     # may only be injected into requests to that service's own hosts; anything
-    # else is 403 + an audit row. When False (default), shadow mode: violations
-    # are logged (WARN) but allowed, so the map's coverage gaps surface in logs
-    # before anyone gets a 403 — and rollback is a config flip, not a redeploy.
+    # else is 403 + an audit row. Enforced by default. Explicit False selects
+    # shadow mode: violations are logged (WARN) but allowed. Use only for a
+    # temporary compatibility review or rollback.
     # Services with no map entry are never bound (the service column is
     # deliberately free-form); the host allowlist above remains their control.
-    vault_enforce_credential_host_binding: bool = False
+    vault_enforce_credential_host_binding: bool = True
 
     # Issue #466: Well-known UUID for the adp-default free-tier tenant.
     # Every environment uses the same UUID so seed scripts and code agree.
@@ -191,9 +218,15 @@ class Settings(BaseSettings):
     # mantle_inference_profile_prefix below, which restores the bare-id UX.
     mantle_base_url: str = "https://bedrock-runtime.{region}.amazonaws.com"
     mantle_region: str = "us-east-1"
+    # Request-sized reservations include a conservative margin. Disable to
+    # reserve the entire published model context on every Responses call.
+    responses_request_estimates_enabled: bool = True
     # A thinking model can leave the upstream response body quiet for minutes.
     # Downstream SSE keep-alives do not extend HTTPX's upstream read deadline.
     mantle_stream_read_timeout_seconds: float = Field(default=600.0, gt=0, le=3600, allow_inf_nan=False)
+    mantle_operation_timeout_seconds: float | None = Field(default=None, gt=0, le=1440, allow_inf_nan=False)
+    mantle_stream_finalization_timeout_seconds: float = Field(default=3.0, gt=0, le=3.0, allow_inf_nan=False)
+    bedrock_stream_operation_timeout_seconds: float | None = Field(default=None, gt=0, le=1440, allow_inf_nan=False)
     # Geo prefix for the cross-region inference profile the mantle route forwards
     # under. bedrock-runtime rejects bare foundation-model ids for the flagship
     # OpenAI families on this path ("Invocation ... with on-demand throughput isn't
@@ -229,6 +262,7 @@ class Settings(BaseSettings):
     # SSM; an absent key inherits the versioned platform baseline, while a
     # present empty list denies all models for that scope.
     model_allowed_models_config: dict[str, list[str]] = Field(default_factory=dict)
+    product_onboarding_model_id: str = ""
 
     # DynamoDB table name for webhook-events (used by credential binding to
     # resolve authorized_user_id). Set via SSM in prod.
@@ -349,6 +383,17 @@ class Settings(BaseSettings):
     # exactly the audit this column exists to support.
     platform_bedrock_account_id: str = ""
 
+    # Exact IAM role ARNs inside the platform's own AWS accounts that the platform
+    # administrator has arranged for engine operations (deploy/verify targets that
+    # live in the platform account, e.g. the dev AgentCore tools gateway). A role
+    # listed here may be registered as a personal AWS connection even though its
+    # account is a platform account; every other platform-account role is still
+    # refused (`platform_account_not_allowed`). The connection is only usable once
+    # the role's trust policy names the connection's ExternalId and the owner's
+    # `adp:user_id` tag, exactly like a customer-account connection, so listing an
+    # ARN here grants nothing by itself. Comma-separated; empty means none.
+    platform_operator_role_arns: str = ""
+
     # Issue #4744: how long an assumed destination session is requested for, and
     # how early to refresh it. Same values and same reasoning as the pool's
     # PoolSettings (src/pool/config.py:42-46), which the design note (§2.3) says to
@@ -382,6 +427,20 @@ class Settings(BaseSettings):
     model_probe_cycle_ttl_hours: int = Field(default=24, ge=1, le=168)
     model_probe_evidence_ttl_hours: int = Field(default=24, ge=1, le=720)
     model_probe_timeout_seconds: int = Field(default=30, ge=1, le=300)
+
+    # Model policy posture for chat (#7997): how the delegated chat decision route
+    # (/v1/chat/model/decision) treats the live model-policy decision.
+    #   enforced  - a verified, enforcing decision backed by fresh invocability
+    #               evidence is required; otherwise the turn is refused (503).
+    #   advisory  - the decision is produced, signed and journaled as today, but a
+    #               rejected or unverified evidence check (probing_disabled,
+    #               evidence_stale, ...) no longer refuses the turn: the persona's
+    #               resolved model is returned with posture "advisory",
+    #               posture_verified false and the rejection reason in the body.
+    #   off       - no invocability evidence is consulted; posture "off".
+    # Tenant/persona allowlist refusals (not_permitted) refuse in every posture.
+    # Rendered from SSM /adp/<env>/gateway/chat-model-policy-posture.
+    chat_model_policy_posture: Literal["off", "advisory", "enforced"] = "advisory"
 
     @model_validator(mode="before")
     @classmethod

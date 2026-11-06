@@ -38,6 +38,7 @@ from src.admin.persona_models.catalogue import (
 )
 from src.admin.persona_models.catalogue_schemas import SelectionRejection
 from src.admin.persona_models.catalogue_service import validate_selection
+from src.agentauth.chat_authority import current_tenant_member, tenant_member_user
 from src.agentauth.envelope import MODEL_POLICY_AUDIENCE, EnvelopeError, sign_envelope
 from src.agentauth.grants import (
     AUTHORITY_GATE_DECISION,
@@ -57,6 +58,7 @@ from src.agentauth.runtime_posture import (
 from src.agentauth.store import AuthorityStoreError
 from src.shared.config import get_settings
 from src.shared.identity.resolver import resolve_root_user_entity_id
+from src.shared.models.organization import User
 from src.shared.models.persona_models import (
     ALIAS_SOURCES,
     PersonaModelPolicySetting,
@@ -78,6 +80,33 @@ PERSONA_DEFAULTS_SNAPSHOT_VERSION = 2
 #: mishandle the new payload, since bumping it refuses every older worker under
 #: enforcement.
 MODEL_POLICY_CONTRACT_VERSION = 1
+
+#: Admin-facing model-policy posture for chat (#7997), BG_CHAT_MODEL_POLICY_POSTURE.
+#: Distinct from the registry's per-class runtime posture: ``enforced`` keeps the
+#: fail-closed chat path, ``advisory`` still produces, signs and journals the
+#: decision but no longer refuses a turn over rejected or unverified invocability
+#: evidence, ``off`` consults no evidence at all.  Allowlist refusals
+#: (``not_permitted``) refuse in every posture.
+ChatModelPolicyPosture = Literal["off", "advisory", "enforced"]
+CHAT_MODEL_POLICY_POSTURES: tuple[ChatModelPolicyPosture, ...] = ("off", "advisory", "enforced")
+#: The runtime posture a signed chat decision carries under each chat posture: an
+#: advisory hop runs report-only, an off hop runs with enforcement disabled, and an
+#: enforced hop carries the registry's live posture (which must be ``enforcing``).
+CHAT_POSTURE_RUNTIME: dict[ChatModelPolicyPosture, str] = {"off": "disabled", "advisory": "report_only", "enforced": "enforcing"}
+#: Live-decision rejections that stay refusals under ``advisory`` and ``off``.
+CHAT_POLICY_REFUSALS = frozenset({"not_permitted"})
+
+
+def chat_model_policy_posture() -> ChatModelPolicyPosture:
+    """The configured chat posture; unreadable settings fail closed to ``enforced``."""
+    try:
+        posture = get_settings().chat_model_policy_posture
+    except Exception as exc:
+        logger.warning("Chat model policy posture unavailable; enforcing", extra={"error_type": type(exc).__name__})
+        return "enforced"
+    return posture if posture in CHAT_MODEL_POLICY_POSTURES else "enforced"
+
+
 SNAPSHOT_AUDIENCE = "adp-agent-model-policy"
 SNAPSHOT_SOURCE_LIVE = "live"
 MAX_SNAPSHOT_BYTES = 128 * 1024
@@ -93,12 +122,18 @@ _HUMAN_ROOT_AUTHORITY_KINDS = frozenset(
 
 
 class ModelPolicyError(Exception):
-    """A snapshot or decision was unavailable or invalid."""
+    """A snapshot or decision was unavailable or invalid.
 
-    def __init__(self, reason: str, *, evidence: dict[str, object] | None = None) -> None:
-        super().__init__(reason)
+    ``reason`` is the stable machine-readable code callers match on. An optional
+    ``detail`` names the concrete condition for operators and the user-facing
+    ``error_detail`` (#8048); it appears in ``str(error)`` as ``<reason>: <detail>``.
+    """
+
+    def __init__(self, reason: str, *, evidence: dict[str, object] | None = None, detail: str | None = None) -> None:
+        super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
         self.evidence = evidence
+        self.detail = detail
 
 
 def _iso(value: datetime) -> str:
@@ -659,6 +694,7 @@ async def validate_live_decision(
     snapshot: ModelPolicySnapshot,
     decision: ModelPolicyDecision,
     live: LivePosture | None = None,
+    require_evidence: bool | None = None,
 ) -> ModelPolicyDecision:
     """Re-evaluate live admission facts for one frozen per-persona choice.
 
@@ -675,6 +711,10 @@ async def validate_live_decision(
     result raises its stable PMM-03 reason (for example ``evidence_stale`` or
     ``not_invocable``), which report-only bootstrap returns as unavailable
     rather than signing a misleading proposal.
+
+    ``require_evidence=False`` (the chat ``off`` posture, #7997) keeps every
+    identity, allowlist and harness-compatibility check but reads no probe
+    evidence; ``None`` applies the persona's own rule.
     """
     try:
         settings = get_settings()
@@ -734,7 +774,7 @@ async def validate_live_decision(
     # personas. Keep live identity, policy and harness compatibility checks.
     from src.agentauth.codex_github_session import REPORT_PERSONAS
 
-    require_probe_evidence = decision.persona not in REPORT_PERSONAS
+    require_probe_evidence = decision.persona not in REPORT_PERSONAS if require_evidence is None else require_evidence
     validation = await validate_selection(
         session,
         org_id=snapshot.tenant_id,
@@ -779,6 +819,39 @@ async def validate_live_decision(
     )
 
 
+async def _resolve_human_principal(session: AsyncSession, *, tenant_id: str, supplied_id: str) -> str:
+    """The canonical ``users.id`` a human root authority names.
+
+    Issue #8010. Chat admission (``external_roots.canonical_human``) binds the root
+    to a human ``users.id`` that is a *current member* of the tenant, and the chat
+    decision route accepts a decision only when its ``principal_id`` equals that
+    launch ``user_id``. ``resolve_root_user_entity_id`` applies a different rule
+    (``users.org_id == tenant`` first, then the login's workspace mapping), so for
+    a GitHub-login human whose ``users.org_id`` is their personal org it re-routes
+    the principal to the tenant-local duplicate row and every chat turn is refused
+    as ``decision_unbound``. When the supplied id already satisfies admission's
+    rule it is canonical and is kept unchanged; only an id that is not such a
+    ``users.id`` (a legacy root carrying a Cognito sub or username) goes through
+    the resolver, and a resolution that lands on a different row is logged so
+    duplicate-row drift (#8011) stays visible.
+
+    Since #8011 chat admission (``chat_authority.tenant_member_principal``) binds
+    the root to the person's *tenant member row* (``users.org_id == tenant``) rather
+    than the Cognito-index canonical row, so the supplied id already carries the
+    tenant team; this function keeps it and must not re-bind it to another row.
+    """
+    canonical = await session.scalar(select(User.id).where(User.id == supplied_id, User.user_kind == "human", current_tenant_member(tenant_id)))
+    if canonical is not None:
+        return canonical
+    resolved = await resolve_root_user_entity_id(session, tenant_id, supplied_id)
+    if resolved != supplied_id:
+        logger.warning(
+            "Model policy principal re-resolved",
+            extra={"tenant_id": tenant_id, "supplied_id": supplied_id, "resolved_id": resolved},
+        )
+    return resolved
+
+
 async def _resolve_principal(
     session: AsyncSession,
     *,
@@ -787,7 +860,7 @@ async def _resolve_principal(
     authority: dict,
 ) -> tuple[Literal["human", "service_account"], str]:
     if grant.authority.kind in _HUMAN_ROOT_AUTHORITY_KINDS:
-        return "human", await resolve_root_user_entity_id(session, tenant_id, grant.authority.human_id)
+        return "human", await _resolve_human_principal(session, tenant_id=tenant_id, supplied_id=grant.authority.human_id)
     if grant.authority.kind != AUTHORITY_SERVICE_POLICY:
         raise ModelPolicyError("authority_kind_unsupported")
     service_identity = authority.get("service_identity", {}).get("S", "")
@@ -826,11 +899,17 @@ async def _resolve_active_allowlist_policy(
     """Resolve the exact live policy intersection used by every PMM-06 seam."""
     principal_status: str | None = None
     if principal_kind == "human":
-        from src.shared.identity.workspaces import primary_team_for_workspace, workspace_user
+        from src.shared.identity.workspaces import primary_team_for_workspace
 
         try:
-            user = await workspace_user(session, principal_id, tenant_id)
-            if user is None or user.id != principal_id:
+            # ``principal_id`` is already the canonical human ``users.id`` (see
+            # ``_resolve_human_principal``), so the only question left is whether
+            # that human currently belongs to the tenant -- answered with the same
+            # membership rule chat admission used (#8010). The login-to-workspace
+            # mapping is not used here: for a GitHub-login human with a tenant-local
+            # duplicate row it names the duplicate, not the admitted principal.
+            user = await tenant_member_user(session, tenant_id, principal_id)
+            if user is None:
                 raise ModelPolicyError("principal_unavailable")
             team = await primary_team_for_workspace(session, user, tenant_id)
         except ValueError:
@@ -1438,6 +1517,9 @@ def _sign_policy_decision(
     record,
     grant: DelegatedGrant,
     env: dict[str, str] | None,
+    chat_posture: ChatModelPolicyPosture | None = None,
+    rejection_reason: str | None = None,
+    evidence: dict[str, object] | None = None,
 ) -> dict:
     decision_body = canonical_json(decision.to_dict())
     assertion = sign_envelope(
@@ -1456,7 +1538,7 @@ def _sign_policy_decision(
         chain_id=snapshot.correlation_id,
         env=env,
     )
-    return {
+    response: dict[str, object] = {
         "posture": decision.runtime_posture,
         # True only because _sign_policy_decision is reached solely after the
         # per-hop live read succeeded; see apply_live_posture.
@@ -1465,6 +1547,18 @@ def _sign_policy_decision(
         "decision": decision.to_dict(),
         "assertion": assertion,
     }
+    if chat_posture in ("advisory", "off"):
+        # The chat posture names the body so the sandbox can tell an advisory
+        # decision from an enforcing one; the decision itself carries the
+        # report_only/disabled runtime posture the hop actually ran under.  A
+        # decision issued despite a rejected check says so and is not verified.
+        response["posture"] = chat_posture
+        if rejection_reason is not None:
+            response["posture_verified"] = False
+            response["rejection_reason"] = rejection_reason
+            if evidence is not None:
+                response["evidence"] = evidence
+    return response
 
 
 def _unavailable(
@@ -1560,8 +1654,19 @@ async def bootstrap_model_policy_live(
     record,
     grant: DelegatedGrant,
     env: dict[str, str] | None = None,
+    chat_posture: ChatModelPolicyPosture | None = None,
 ) -> dict:
-    """Return a signed proposal only after current per-hop admission succeeds."""
+    """Return a signed proposal only after current per-hop admission succeeds.
+
+    ``chat_posture`` (#7997) is set only by the chat decision route.  ``None``
+    and ``enforced`` keep the fail-closed behaviour.  Under ``advisory`` a live
+    decision whose validation was rejected for anything other than an allowlist
+    refusal is still signed for the persona's resolved model, marked
+    ``posture: "advisory"``, ``posture_verified: False`` with the
+    ``rejection_reason``; under ``off`` validation reads no probe evidence.  The
+    posture read, snapshot resolution and allowlist checks are unchanged, so an
+    outage or a refusal is still reported as unavailable.
+    """
     raw_execution = (
         await run_in_threadpool(
             store._read,
@@ -1612,18 +1717,48 @@ async def bootstrap_model_policy_live(
             record=record,
             live=live,
         )
-        decision = await validate_live_decision(
-            session,
-            snapshot=snapshot,
-            decision=decision,
-            live=live,
-        )
+        advisory = chat_posture in ("advisory", "off")
+        try:
+            decision = await validate_live_decision(
+                session,
+                snapshot=snapshot,
+                decision=decision,
+                live=live,
+                require_evidence=False if chat_posture == "off" else None,
+            )
+        except ModelPolicyError as exc:
+            if not advisory or exc.reason in CHAT_POLICY_REFUSALS:
+                raise
+            logger.warning(
+                "Chat model policy decision issued despite a rejected check",
+                extra={
+                    "invocation_id": record.invocation_id,
+                    "tenant_id": record.tenant_id,
+                    "persona": decision.persona,
+                    "model_id": decision.resolved_model_id,
+                    "chat_posture": chat_posture,
+                    "reason": exc.reason,
+                },
+            )
+            return _sign_policy_decision(
+                decision=replace(bind_established_posture(decision, live), runtime_posture=CHAT_POSTURE_RUNTIME[chat_posture]),
+                snapshot=snapshot,
+                record=record,
+                grant=grant,
+                env=env,
+                chat_posture=chat_posture,
+                rejection_reason=exc.reason,
+                evidence=exc.evidence,
+            )
+        if advisory:
+            decision = replace(decision, runtime_posture=CHAT_POSTURE_RUNTIME[chat_posture])
         return _sign_policy_decision(
             decision=decision,
             snapshot=snapshot,
             record=record,
             grant=grant,
             env=env,
+            chat_posture=chat_posture,
         )
     except ModelPolicyError as exc:
         return _unavailable(exc.reason, evidence=exc.evidence, live=live)

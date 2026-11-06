@@ -9,6 +9,7 @@
  */
 
 import { useState } from 'react';
+import { LineIcon } from '@/components/ui/LineIcon';
 import { usePollingStatus } from '@/hooks/usePollingStatus';
 import type { AssetIndexStage } from '@/types';
 
@@ -25,8 +26,14 @@ const STAGES = [
   'graphrag',
 ] as const;
 
+const DOCUMENT_STAGES = ['fetch', 'convert', 's3_upload', 'graphrag'] as const;
+const URL_STAGES = ['fetch', 's3_upload'] as const;
+
 /** Human-friendly labels for stages. */
 const STAGE_LABELS: Record<string, string> = {
+  fetch: 'Fetch',
+  convert: 'Document conversion',
+  s3_upload: 'Content storage',
   clone: 'Clone',
   cgc_structural: 'Code Graph',
   scip_structural: 'Code Graph (Deep SCIP)',
@@ -54,24 +61,14 @@ export function statusColor(status: string): string {
   }
 }
 
-/** Status icon for the 4-state rendering. */
-function statusIcon(status: string): string {
-  switch (status) {
-    case 'verified':
-      return '✓';
-    case 'failed':
-      return '✗';
-    default:
-      return '';
-  }
-}
-
 export interface AssetStatusChipsProps {
   assetId: string;
   /** Asset type — used to show appropriate empty-state for non-repo assets. */
   assetType?: string;
   /** Compact mode shows only chip icons inline in the asset list. */
   compact?: boolean;
+  /** Show only this import's stages, without unrelated repository capabilities. */
+  reportedStagesOnly?: boolean;
   /** Enable live polling (stops on terminal state). Defaults to true. */
   enablePolling?: boolean;
   /** Called when the run status changes (e.g. queued→indexing→indexed). */
@@ -92,6 +89,7 @@ export function AssetStatusChips({
   assetId,
   assetType,
   compact = false,
+  reportedStagesOnly = false,
   enablePolling = true,
   onStatusChange,
 }: AssetStatusChipsProps) {
@@ -145,11 +143,13 @@ export function AssetStatusChips({
 
   // Build a map for quick lookup
   const stageMap = new Map(status.stages.map((s) => [s.stage, s]));
+  const stageNames: readonly string[] = reportedStagesOnly ? [...stageMap.keys()]
+    : assetType === 'doc' ? DOCUMENT_STAGES : assetType === 'url' ? URL_STAGES : STAGES;
 
   if (compact) {
     return (
       <div className="flex gap-0.5" data-testid="asset-status-chips-compact">
-        {STAGES.map((stageName) => {
+        {stageNames.map((stageName) => {
           const stage = stageMap.get(stageName);
           // 4-state: no row = "not available" (gray), row present = real status
           const stageStatus = stage ? stage.status : 'not_available';
@@ -168,7 +168,7 @@ export function AssetStatusChips({
   return (
     <div className="space-y-2" data-testid="asset-status-chips">
       <div className="flex gap-1.5 flex-wrap">
-        {STAGES.map((stageName) => {
+        {stageNames.map((stageName) => {
           const stage = stageMap.get(stageName);
           return (
             <StageChip
@@ -180,7 +180,7 @@ export function AssetStatusChips({
         })}
         {/* Show additional stages not in the canonical list */}
         {status.stages
-          .filter((s) => !STAGES.includes(s.stage as (typeof STAGES)[number]))
+          .filter((s) => !stageNames.includes(s.stage))
           .map((s) => (
             <StageChip key={s.stage} stageName={s.stage} stage={s} />
           ))}
@@ -250,7 +250,6 @@ function StageChip({ stageName, stage }: StageChipProps) {
   }
 
   const { status, metrics, error: stageError } = stage;
-  const icon = statusIcon(status);
 
   // Skipped → muted rendering
   if (status === 'skipped') {
@@ -282,7 +281,14 @@ function StageChip({ stageName, stage }: StageChipProps) {
       title={tooltip}
       data-testid={`stage-chip-${stageName}`}
     >
-      {icon && <span className="mr-1">{icon}</span>}
+      {(status === 'verified' || status === 'failed') && (
+        <>
+          <LineIcon className="mr-1 h-3 w-3 shrink-0">
+            <path d={status === 'verified' ? 'M5 12l4 4L19 6' : 'M6 6l12 12M6 18 18 6'} />
+          </LineIcon>
+          <span className="sr-only">{status}: </span>
+        </>
+      )}
       {label}
       {metricsText && (
         <span className="ml-1 opacity-75" data-testid={`stage-metrics-${stageName}`}>

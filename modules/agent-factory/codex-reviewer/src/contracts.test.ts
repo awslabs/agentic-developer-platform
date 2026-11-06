@@ -154,14 +154,28 @@ test("a blocking finding always forces request_changes", () => {
   assert.equal(verdict.verdict, "request_changes");
 });
 
-test("an explicit request_changes verdict blocks approval without blocking findings", () => {
+test("evidence gaps cannot block approval regardless of the model headline", () => {
   assert.equal(
     requiresChanges({
-      verdict: "request_changes",
+      verdict: "approve",
       summary: "The validation gap must be resolved before approval.",
       findings: [],
       validationGaps: ["Required integration test was not run"],
     }),
-    true,
+    false,
   );
+});
+
+test("a request_changes headline alone cannot manufacture a blocker", () => {
+  const raw = { verdict: "request_changes" as const, summary: "Optional follow-up remains",
+    findings: [], validationGaps: [] };
+  assert.equal(requiresChanges(raw), false);
+  assert.equal(parseVerdict(JSON.stringify(raw)).verdict, "approve");
+});
+
+test("evidence gaps remain visible without changing approval", () => {
+  const verdict = parseVerdict(JSON.stringify({ verdict: "approve", summary: "Test not run",
+    findings: [], validationGaps: ["Run the changed input validation test"] }));
+  assert.equal(verdict.verdict, "approve");
+  assert.deepEqual(verdict.validationGaps, ["Run the changed input validation test"]);
 });

@@ -420,15 +420,22 @@ class TaskHost:
             "task_id": assignment.task_id,
             "turn_id": frame["turn_id"],
             "operation_status": status,
+            # SDK adapters consume extra usage/refusal evidence. Keep those
+            # fields out of the closed text-process protocol used by other agents.
             **(
                 {"pre_provider_refusal": response["error_code"]}
-                if status == "rejected"
+                if ("sdk_request" in frame or "responses_request" in prepared)
+                and status == "rejected"
                 and response.get("handoff") == "not_started"
                 and response.get("usage") is None
                 and response.get("error_code") in {"budget_exceeded", "model_access_denied"}
                 else {}
             ),
-            **({"usage": response["usage"]} if isinstance(response.get("usage"), dict) else {}),
+            **(
+                {"usage": response["usage"]}
+                if ("sdk_request" in frame or "responses_request" in prepared) and isinstance(response.get("usage"), dict)
+                else {}
+            ),
             **({"responses_response": response["responses_response"]} if "responses_request" in prepared and status == "confirmed" else {}),
             "content": response.get("content"),
             "stop_reason": response.get("stop_reason"),

@@ -18,7 +18,48 @@ ISSUER = "https://token.actions.githubusercontent.com"
 TRANSPORT = "s3-oidc-v1"
 MAX_PAYLOAD = 65536
 MAX_ENVELOPE = 128 * 1024
+MAX_SCAN_ARCHIVE = 16 * 1024 * 1024
 PREFIX = "deployment-evidence/v1"
+# Legacy release components remain explicitly registered. Workflow contexts and
+# version-2 delivery artifacts are generic: the verified definition and GitHub
+# signature, rather than a product-specific workflow list, authorize their origin.
+CONTEXT_WORKFLOWS = frozenset(
+    {
+        "gateway-deploy.yml",
+        "gateway-frontend-deploy.yml",
+        "run-gateway-migrations.yml",
+        "security-scan.yml",
+        "tools-interceptor-deploy.yml",
+        "tools-facade-deploy.yml",
+        "tools-platform-deploy.yml",
+        "chat-agent-deploy.yml",
+        # Knowledge Door (#7829): agent-context-deploy.yml publishes its context and
+        # release receipt here instead of GitHub Actions artifacts.
+        "agent-context-deploy.yml",
+    }
+)
+RELEASE_COMPONENTS = frozenset(
+    {
+        "gateway-backend",
+        "gateway-frontend",
+        "gateway-migrations",
+        "tools-interceptor",
+        "tools-facade",
+        "tools-platform",
+        "tool-adapters",
+        "agent-worker",
+        "chat-worker",
+        "knowledge-door",
+    }
+)
+REPOSITORY_ARTIFACT_WORKFLOWS = {
+    "scan": ".github/workflows/security-scan.yml",
+    "cleanup": ".github/workflows/security-scan.yml",
+    "reconciliation": ".github/workflows/security-scan.yml",
+    "identity-proof": ".github/workflows/gateway-deploy.yml",
+    "atlassian-foundation": ".github/workflows/tools-platform-deploy.yml",
+    "atlassian-identity": ".github/workflows/tools-platform-deploy.yml",
+}
 
 
 def bucket_name(account, environment):
@@ -31,11 +72,17 @@ def object_key(repository_id, run_id, attempt, kind, name):
     if any(type(v) is not int or v <= 0 for v in (repository_id, run_id, attempt)):
         raise ValueError("invalid evidence run identity")
     if kind == "context":
-        if name not in {"gateway-deploy.yml", "run-gateway-migrations.yml"}:
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}\.ya?ml", name):
             raise ValueError("unsupported context workflow")
     elif kind == "release":
-        if name not in {"gateway-backend", "gateway-frontend", "gateway-migrations"}:
+        if name not in RELEASE_COMPONENTS:
             raise ValueError("unsupported release component")
+    elif kind == "repository-artifact":
+        if name not in REPOSITORY_ARTIFACT_WORKFLOWS:
+            raise ValueError("unsupported repository artifact")
+    elif kind in {"delivery", "workflow-artifact"}:
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name):
+            raise ValueError("unsupported workflow artifact name")
     else:
         raise ValueError("unsupported evidence kind")
     return f"{PREFIX}/{repository_id}/{run_id}/{attempt}/{kind}/{name}.json"
@@ -101,6 +148,68 @@ class EvidenceStore:
     def __init__(self, *, s3=None, keys=None):
         self.s3 = s3
         self.keys = keys
+
+    def read_archive(self, *, source_revision, **expected):
+        """Authenticate the descriptor before reading its exact archive version."""
+        import boto3
+
+        if expected.get("kind") == "workflow-artifact":
+            workflow = expected.get("workflow_path", "")
+            if not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}\.ya?ml", workflow):
+                raise ValueError("unsupported workflow archive")
+        elif (
+            expected.get("kind") != "repository-artifact"
+            or expected.get("name") not in REPOSITORY_ARTIFACT_WORKFLOWS
+            or expected.get("workflow_path") != REPOSITORY_ARTIFACT_WORKFLOWS[expected["name"]]
+        ):
+            raise ValueError("unsupported repository archive")
+        result = self.read(**expected)
+        if result is None:
+            return None
+        payload, _, reference = result
+        descriptor = json.loads(payload)
+        bucket = bucket_name(expected["account"], expected["environment"])
+        base = object_key(expected["repository_id"], expected["run_id"], expected["attempt"], expected["kind"], expected["name"])
+        digest = descriptor.get("sha256", "")
+        key = base.removesuffix(".json") + "/" + digest + ".zip"
+        identity = {
+            "schema_version": 1,
+            "repository_id": expected["repository_id"],
+            "run_id": expected["run_id"],
+            "run_attempt": expected["attempt"],
+            "workflow_path": expected["workflow_path"],
+            "workflow_revision": expected["workflow_revision"],
+            "source_revision": source_revision,
+            "account_id": expected["account"],
+            "component": expected["name"],
+            "bucket": bucket,
+            "key": key,
+        }
+        if (
+            any(descriptor.get(k) != v for k, v in identity.items())
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or type(descriptor.get("size")) is not int
+            or not 0 < descriptor["size"] <= MAX_SCAN_ARCHIVE
+            or not isinstance(descriptor.get("version_id"), str)
+            or descriptor["version_id"] in {"", "null"}
+        ):
+            raise ValueError("repository archive descriptor mismatch")
+        s3 = self.s3 or boto3.client("s3", region_name=expected["region"])
+        response = s3.get_object(Bucket=bucket, Key=key, VersionId=descriptor["version_id"], ExpectedBucketOwner=expected["account"])
+        try:
+            if response.get("ContentLength") != descriptor["size"]:
+                raise ValueError("repository archive size mismatch")
+            content = response["Body"].read(MAX_SCAN_ARCHIVE + 1)
+        finally:
+            response["Body"].close()
+        if (
+            response.get("VersionId") != descriptor["version_id"]
+            or response.get("ServerSideEncryption") != "AES256"
+            or len(content) != descriptor["size"]
+            or hashlib.sha256(content).hexdigest() != digest
+        ):
+            raise ValueError("repository archive receipt mismatch")
+        return content, digest, reference
 
     def read(self, *, account, environment, region, repository, repository_id, run_id, attempt, kind, name, workflow_path, workflow_revision):
         import boto3

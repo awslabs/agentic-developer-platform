@@ -32,6 +32,9 @@ class AppliedRecovery(ProposalRecovery):
             operation, self.context, require_fresh=False
         )
         metadata = json.loads(row["artifact_metadata_json"])
+        from .partial_apply_execution import result_source
+
+        prepared = await result_source(operation, self.context, source, metadata)
         if (
             step.step_id not in APPLIED_PHASES
             or source is None
@@ -40,14 +43,14 @@ class AppliedRecovery(ProposalRecovery):
             or metadata.get("allocation_source_operation_id") != lease.operation_id
             or row["target_json"] != source["target_json"]
             or metadata.get("module_sha256")
-            != json.loads(source["artifact_metadata_json"]).get("module_sha256")
+            != json.loads(prepared["artifact_metadata_json"]).get("module_sha256")
             or not isinstance(metadata.get("provider_snapshot"), dict)
             or not metadata["provider_snapshot"]
         ):
             raise OperationRefused(
                 "completed apply lacks its original reviewed provider result"
             )
-        await asyncio.to_thread(verify_prepared_artifact, source, self.context)
+        await asyncio.to_thread(verify_prepared_artifact, prepared, self.context)
         facts = await self.context.authority.lifecycle(
             lease,
             key,
@@ -64,7 +67,7 @@ class AppliedRecovery(ProposalRecovery):
             )
         # Recheck the saved source after the external observation, as well as the
         # live claim. A changed file or revoked run cannot settle the paid task.
-        await asyncio.to_thread(verify_prepared_artifact, source, self.context)
+        await asyncio.to_thread(verify_prepared_artifact, prepared, self.context)
         current = await self.context.authority.resolve_recovery(lease)
         if not same_recovery_operation(current, operation):
             raise OperationRefused(
@@ -89,12 +92,28 @@ class AppliedRecovery(ProposalRecovery):
         return (
             CallOutcome.SUCCEEDED,
             "completed apply freshly observed; bootstrap approval remains required",
-            row["artifact_id"],
+            None,
         )
 
     async def accounting(self, lease, calls):
-        result = await super().accounting(lease, calls)
-        result["reason"] = (
-            "completed apply freshly observed; bootstrap and allocation settlement remain outstanding"
-        )
-        return result
+        from .artifacts import proposal
+
+        if len(calls) != 1 or calls[0].outcome is not CallOutcome.SUCCEEDED:
+            raise OperationRefused("original apply call is not confirmed")
+        operation, row = await self.verified(lease, calls[0].idempotency_key)
+        # Successful apply deliberately has no single physical provider handle.
+        # Keep that original observation intact; the immutable result is bound by
+        # original_result to its actual producer and the admitted call descriptor.
+        if calls[0].provider_ref is not None:
+            raise OperationRefused("confirmed apply reference changed")
+        return {
+            "allocation_id": operation.request.parameters["allocation_id"],
+            "inventory_complete": False,
+            "release_permitted": False,
+            "may_mark_released": False,
+            "resource_dispositions": {},
+            "unresolved_resources": [],
+            "exposure": "unresolved",
+            "reason": "completed apply freshly observed; bootstrap and allocation settlement remain outstanding",
+            "lifecycle_proposal": proposal(row),
+        }

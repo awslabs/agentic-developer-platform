@@ -108,3 +108,17 @@ resource "aws_security_group_rule" "instance_egress_all" {
   cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.instance.id
 }
+
+# Private DNS sends Secrets Manager requests to these endpoint ENIs. Instance
+# egress alone is insufficient when their ingress only admits existing callers.
+resource "aws_security_group_rule" "secretsmanager_endpoint_from_gitlab" {
+  for_each = var.secretsmanager_endpoint_security_group_ids
+
+  type                     = "ingress"
+  description              = "HTTPS from GitLab for reconciler credential bootstrap"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.instance.id
+  security_group_id        = each.value
+}

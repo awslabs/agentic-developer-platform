@@ -93,9 +93,9 @@ def cognito_tokens(test_creds: TestCredentials) -> dict[str, str]:
 # Playwright browser fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="package")
 def browser_instance():
-    """Session-scoped Playwright browser (Chromium, headless)."""
+    """Close this package's runtime before another suite starts Playwright."""
     pytest.importorskip("playwright")
     from playwright.sync_api import sync_playwright
 

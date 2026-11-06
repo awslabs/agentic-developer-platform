@@ -1,3 +1,33 @@
+variable "tools_agentcore_gateway_arn" {
+  description = "Reviewed AgentCore tools gateway ARN; empty disables façade invocation until provisioned."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.tools_agentcore_gateway_arn == "" || can(regex("^arn:aws:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:gateway/[A-Za-z0-9_-]+$", var.tools_agentcore_gateway_arn))
+    error_message = "Supply one specific AgentCore tools gateway ARN."
+  }
+}
+
+variable "tools_execution_table_arn" {
+  description = "Reviewed dedicated tools execution table ARN; empty disables façade storage access."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.tools_execution_table_arn == "" || can(regex("^arn:aws:dynamodb:[a-z0-9-]+:[0-9]{12}:table/adp-tools-(dev|prod)-executions$", var.tools_execution_table_arn))
+    error_message = "Supply only the dedicated tools execution table ARN."
+  }
+}
+
+variable "tools_internal_authorize_api_arn" {
+  description = "Specific internal tools-authorization POST route used by the façade; empty disables API invocation."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.tools_internal_authorize_api_arn == "" || can(regex("^arn:aws:execute-api:[a-z0-9-]+:[0-9]{12}:[a-z0-9]+/[a-z0-9-]+/POST/internal/v1/tools/authorize$", var.tools_internal_authorize_api_arn))
+    error_message = "Supply only the internal tools-authorization POST execution ARN."
+  }
+}
+
 variable "environment" {
   type        = string
   description = "Environment name (dev, test, prod)"
@@ -35,8 +65,18 @@ variable "private_subnet_availability_zones" {
   default     = []
 }
 
+variable "capacity_existing_cluster" {
+  type        = string
+  default     = ""
+  description = "Read this cluster's actual subnet membership before retaining exhausted subnets; empty on initial install."
+  validation {
+    condition     = var.capacity_existing_cluster == "" || var.capacity_existing_cluster == "${var.name_prefix}-eks-cluster"
+    error_message = "Capacity retention must inspect this exact cluster, never a different deployment."
+  }
+}
+
 variable "additional_private_subnet_ids_by_az" {
-  type        = map(string)
+  type        = any
   description = <<-DESC
     Additional ALREADY-EXISTING private subnets to add to this cluster's subnet
     set, keyed by the availability zone each subnet is expected to be in
@@ -70,10 +110,9 @@ variable "additional_private_subnet_ids_by_az" {
     subnet is in var.vpc_id, is really in the zone it is keyed by, assigns no
     public IPs, and reaches 0.0.0.0/0 via NAT rather than an internet gateway.
 
-    Keyed by zone deliberately: it makes "one subnet per availability zone"
-    structural rather than something a later reviewer has to verify by eye, and
-    it turns a subnet pasted under the wrong zone into a refused plan instead of
-    silent loss of zone coverage.
+    Each zone accepts a subnet ID or a nonempty list of IDs. Multiple additions
+    preserve earlier capacity when it too becomes exhausted. Every subnet is
+    still checked against its declared zone and the same private-route rules.
 
     Account-specific by nature, so it is NOT set in the shipped environment
     files. Supply it per-invocation:
@@ -98,13 +137,20 @@ variable "additional_private_subnet_ids_by_az" {
   default     = {}
 
   validation {
-    condition     = alltrue([for id in values(var.additional_private_subnet_ids_by_az) : can(regex("^subnet-[0-9a-f]{8,17}$", id))])
-    error_message = "Every additional_private_subnet_ids_by_az value must be an AWS subnet id such as subnet-0123456789abcdef0."
+    condition = can(keys(var.additional_private_subnet_ids_by_az)) && try(alltrue([
+      for zone, entries in var.additional_private_subnet_ids_by_az :
+      can(regex("^[a-z0-9-]+$", zone)) && length(try(tolist(entries), [tostring(entries)])) > 0 && alltrue([
+        for id in try(tolist(entries), [tostring(entries)]) : can(regex("^subnet-[0-9a-f]{8,17}$", id))
+      ])
+    ]), false)
+    error_message = "Every availability zone must name a subnet ID or a nonempty list of subnet IDs."
   }
 
   validation {
-    condition     = length(values(var.additional_private_subnet_ids_by_az)) == length(distinct(values(var.additional_private_subnet_ids_by_az)))
-    error_message = "additional_private_subnet_ids_by_az must not name the same subnet under two availability zones."
+    condition = try(
+      length(flatten([for entries in var.additional_private_subnet_ids_by_az : try(tolist(entries), [tostring(entries)])])) ==
+    length(distinct(flatten([for entries in var.additional_private_subnet_ids_by_az : try(tolist(entries), [tostring(entries)])]))), false)
+    error_message = "additional_private_subnet_ids_by_az must not repeat a subnet within or across availability zones."
   }
 }
 

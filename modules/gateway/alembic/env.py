@@ -11,6 +11,7 @@ import asyncio
 import os
 from logging.config import fileConfig
 
+from l5_services.models import Work as L5Work
 from sqlalchemy import create_engine, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -22,13 +23,14 @@ from src.shared.models.budget import BudgetConfig, BudgetUsage, PersonBudgetConf
 from src.shared.models.organization import Department, Organization, ServiceAccount, Team, TeamMembership, User  # noqa: F401
 from src.shared.models.persona_model_catalogue import ModelInvocabilityEvidence, ModelProbeCycle, ModelProbeSlot  # noqa: F401
 from src.shared.models.token import Token  # noqa: F401
+from src.shared.models.tool_entitlement import ToolEntitlement  # noqa: F401
 from src.shared.models.usage import BedrockPoolAccount, ModelAlias, ModelPricing, RateLimitConfig, UsageLog  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
+target_metadata = [Base.metadata, L5Work.metadata]
 
 
 def get_database_url_for_alembic() -> str:

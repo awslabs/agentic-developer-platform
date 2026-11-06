@@ -161,12 +161,12 @@ __all__ = [
 
 
 class DraftFlowConflictError(ProposalRejectedError):
-    """The target flow has already been approved, so it is not a registration target.
+    """The target flow has been approved or archived, so it is not a registration target.
 
     A subclass of `ProposalRejectedError` so a caller that only asks "was this
     refused?" catches it with everything else, while staying separately catchable:
-    this is the refusal that means *someone tried to extend an approved plan*, which
-    is a different event to an author's malformed document and deserves a different
+    this is the refusal that means *someone targeted an approved or archived flow*,
+    which is a different event to an author's malformed document and deserves a different
     status code (409, not 422) and a different level of operator attention.
 
     Raised **before** anything is created — the flow lookup is read-only — so a
@@ -500,7 +500,7 @@ async def _refuse_if_flow_is_live(
     org_id: str,
     document_hash: str,
 ) -> None:
-    """Refuse to register into a flow that has ever been approved.
+    """Refuse to register into a flow that has ever been approved or archived.
 
     The third inertness guard, and the only one scoped to the flow rather than to a
     node — see the module docstring for why the node-level guards are not enough on
@@ -519,8 +519,8 @@ async def _refuse_if_flow_is_live(
             different retry to the one it treats as a no-op.
 
     Raises:
-        DraftFlowConflictError: The flow carries an approval-kind decision, or an
-            in-force plan that is not this same document.
+        DraftFlowConflictError: The flow is archived, carries an approval-kind
+            decision, or has an in-force plan that is not this same document.
     """
     repo = OrchestrationRepository(session)
 
@@ -529,13 +529,19 @@ async def _refuse_if_flow_is_live(
         # The overwhelmingly common case: a new flow, nothing to conflict with.
         return
 
+    if flow.archived_at is not None:
+        raise DraftFlowConflictError(
+            f"flow {proposal.flow_slug!r} is archived. Its slug remains reserved; unarchive this flow "
+            "to continue it, or register a new flow under a different slug."
+        )
+
     in_force = await repo.get_accepted_plan(org_id=org_id, flow_id=flow.id)
 
-    # The exact idempotent retry, checked FIRST and deliberately so. `compile_proposal`
+    # For active flows, the exact idempotent retry is checked before approval refusals. `compile_proposal`
     # returns early for an identical in-force document and writes nothing at all — no
     # node, no edge, no decision, no plan row — so permitting it cannot grant any
     # authority, on an approved flow or otherwise. Checking it before the refusals
-    # below is what makes the fail-soft retry property unconditional: a worker whose
+    # below is what makes the fail-soft retry property hold for active flows: a worker whose
     # connection dropped gets the same answer whether or not a human has since
     # accepted the plan, instead of a 409 for a request that would change nothing.
     if in_force is not None and in_force.plan_hash == document_hash:
@@ -584,7 +590,7 @@ async def register_draft_proposal(
         actor: Server-resolved context. `actor.org_id` is the tenant.
 
     Registration **creates** flows and never extends one: a flow that has already
-    been approved is refused outright (see the module docstring, guard 3). That is
+    been approved or archived is refused outright (see the module docstring, guard 3). That is
     what keeps a draft unable to inherit a sibling node's human approval, and what
     makes `compile_proposal`'s unconditional `record_accepted_plan` safe to reach
     from here — there is nothing in force to supersede.
@@ -593,8 +599,8 @@ async def register_draft_proposal(
         `(result, acceptance_gate_address)`.
 
     Raises:
-        DraftFlowConflictError: The target flow has already been approved. Checked
-            first, and read-only, so this refusal writes nothing.
+        DraftFlowConflictError: The target flow has been approved or archived. Checked
+            before compilation, and read-only, so this refusal writes nothing.
         ProposalRejectedError: The transformed document failed validation.
         TenantMismatchError: The document declares another tenant.
     """
@@ -602,9 +608,17 @@ async def register_draft_proposal(
     document_hash = plan_hash(transformed)
     repo = OrchestrationRepository(session)
     flow = await session.scalar(
-        select(OrchestrationFlow).where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.slug == transformed.flow_slug).with_for_update()
+        select(OrchestrationFlow)
+        .where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.slug == transformed.flow_slug)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if flow is not None:
+        if flow.archived_at is not None:
+            raise DraftFlowConflictError(
+                f"flow {transformed.flow_slug!r} is archived. Its slug remains reserved; unarchive this flow "
+                "to continue it, or register a new flow under a different slug."
+            )
         # A bound acceptance promotes the policy and records a new plan version.
         # Replaying the original registration must return that original draft,
         # without replacing the granted plan or compiling additional nodes.

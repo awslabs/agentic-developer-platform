@@ -1,0 +1,12 @@
+{
+  "interceptorInputVersion": "1.0",
+  "mcp": {
+    "rawGatewayRequest": {"body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"},
+    "gatewayRequest": {
+      "path": "/mcp",
+      "httpMethod": "POST",
+      "headers": {"Accept": "application/json", "Mcp-Session-Id": "example-session"},
+      "body": {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import type { fromTokenFile } from '@aws-sdk/credential-provider-web-identity';
 import { buildSandboxPod } from './sandbox-pod';
-import { gatewayBinding } from './sandbox-gateway.fixture';
+import { gatewayBinding, runningSandboxPod } from './sandbox-gateway.fixture';
 import type { SandboxPodApi } from './sandbox-launcher';
 import { finalizeSandboxTurn, reconcileAdmittedSandbox, waitForSandboxRemoval } from './sandbox-supervisor-admission';
 
@@ -28,6 +28,7 @@ function fixture(result: unknown = terminal) {
   }) as jest.MockedFunction<typeof fetch>;
   const api: jest.Mocked<SandboxPodApi> = {
     resolveGateway: jest.fn(async () => gatewayBinding),
+    inspect: jest.fn(async (name: string, uid: string) => runningSandboxPod(name, uid)),
     create: jest.fn(async (_template: Parameters<SandboxPodApi['create']>[0]) => {
       events.push('create'); return { metadata: { ...template.metadata, ...pod }, spec: template.spec };
     }),
@@ -179,4 +180,89 @@ test.each(['teardown', 'finalize'])('bounds %s responses and refuses credential 
   const staticCredentials = jest.fn(() => async () => ({ accessKeyId: 'TESTKEY', secretAccessKey: 'TESTSECRET' })) as unknown as typeof load;
   await expect(invoke(staticCredentials)).rejects.toThrow('temporary identity unavailable');
   expect(send).toHaveBeenCalledTimes(1);
+});
+
+describe('removal wait with the supervisor pod API (#8047)', () => {
+  const terminatingPod = (name: string, uid: string, phase = 'Succeeded') => ({
+    metadata: { name, uid, deletionTimestamp: '2026-10-17T15:22:00Z' },
+    status: { phase, containerStatuses: [{ name: 'chat-agent', state: { terminated: { exitCode: 0 } } }] },
+  });
+  const teardownUntil = (send: jest.MockedFunction<typeof fetch>, timing: { now: () => number }, removedAt: number) => {
+    const original = send.getMockImplementation()!;
+    send.mockImplementation(async (url, request) => String(url).endsWith('/teardown') && timing.now() < removedAt ?
+      new Response(JSON.stringify({ run_id: assignment.runId, pod_uid: pod.uid, removed: false })) : original(url, request));
+  };
+
+  test('extends the wait past 60 s and force-deletes once the exited pod is Terminating', async () => {
+    const { api, send, timing } = fixture();
+    api.inspect.mockImplementation(async (name, uid) => terminatingPod(name, uid));
+    teardownUntil(send, timing, 150_000);
+    await expect(waitForSandboxRemoval(assignment, pod, identity, send, load, timing, api)).resolves.toBeUndefined();
+    expect(timing.now()).toBeGreaterThanOrEqual(150_000);
+    expect(api.remove.mock.calls).toEqual([[pod.name, pod.uid, { gracePeriodSeconds: 0 }]]);
+    const delays = timing.sleep.mock.calls.map(call => call[0]);
+    expect(delays.slice(0, 10)).toEqual(Array(10).fill(1000));
+    expect(delays).toContain(2000);
+    expect(delays).toContain(5000);
+    expect(Math.max(...delays)).toBe(5000);
+  });
+
+  test('gives up at five minutes for a pod that stays Terminating', async () => {
+    const { api, send, timing } = fixture();
+    api.inspect.mockImplementation(async (name, uid) => terminatingPod(name, uid, 'Failed'));
+    teardownUntil(send, timing, Number.POSITIVE_INFINITY);
+    await expect(waitForSandboxRemoval(assignment, pod, identity, send, load, timing, api)).rejects.toThrow('removal unverified');
+    expect(timing.now()).toBeGreaterThanOrEqual(300_000);
+    expect(timing.now()).toBeLessThan(310_000);
+    expect(api.remove).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the 60 s bound and never force-deletes a pod whose container is still running', async () => {
+    const { api, send, timing } = fixture();
+    teardownUntil(send, timing, Number.POSITIVE_INFINITY);
+    await expect(waitForSandboxRemoval(assignment, pod, identity, send, load, timing, api)).rejects.toThrow('removal unverified');
+    expect(timing.now()).toBeGreaterThanOrEqual(60_000);
+    expect(timing.now()).toBeLessThan(70_000);
+    expect(api.remove).not.toHaveBeenCalled();
+    expect(api.inspect).toHaveBeenCalled();
+  });
+
+  test('force-deletes an exited pod the API server has not started deleting, within the 60 s bound', async () => {
+    const { api, send, timing } = fixture();
+    api.inspect.mockImplementation(async (name, uid) => ({ metadata: { name, uid },
+      status: { phase: 'Succeeded', containerStatuses: [{ name: 'chat-agent', state: { terminated: { exitCode: 0 } } }] } }));
+    teardownUntil(send, timing, 3_000);
+    await expect(waitForSandboxRemoval(assignment, pod, identity, send, load, timing, api)).resolves.toBeUndefined();
+    expect(api.remove.mock.calls).toEqual([[pod.name, pod.uid, { gracePeriodSeconds: 0 }]]);
+  });
+
+  test('tolerates pod reads and forced deletes that fail, and does not inspect once the gateway confirms removal', async () => {
+    const { api, send, timing } = fixture();
+    api.inspect.mockRejectedValueOnce(new Error('API unavailable')).mockImplementation(async (name, uid) => terminatingPod(name, uid));
+    api.remove.mockRejectedValue(new Error('forbidden'));
+    teardownUntil(send, timing, 2_500);
+    await expect(waitForSandboxRemoval(assignment, pod, identity, send, load, timing, api)).resolves.toBeUndefined();
+    expect(api.remove).toHaveBeenCalledTimes(1);
+    expect(api.inspect).toHaveBeenCalledTimes(3);
+  });
+
+  test('reconciliation passes its pod API to the removal wait and finalizes after the forced delete', async () => {
+    const { api, send, events, timing } = fixture();
+    let inspected = false;
+    api.inspect.mockImplementation(async (name, uid) => {
+      if (!inspected) return runningSandboxPod(name, uid);
+      return terminatingPod(name, uid);
+    });
+    const original = send.getMockImplementation()!;
+    let teardowns = 0;
+    send.mockImplementation(async (url, request) => {
+      if (String(url).endsWith('/exit')) inspected = true;
+      if (!String(url).endsWith('/teardown') || teardowns++ >= 2) return original(url, request);
+      events.push('teardown');
+      return new Response(JSON.stringify({ run_id: assignment.runId, pod_uid: pod.uid, removed: false }));
+    });
+    await expect(reconcileAdmittedSandbox(assignment, api, identity, send, load, timing)).resolves.toEqual(terminal);
+    expect(events).toEqual(['create', 'admit', 'exit', 'delete', 'teardown', 'delete', 'teardown', 'teardown', 'finalize']);
+    expect(api.remove.mock.calls).toEqual([[pod.name, pod.uid], [pod.name, pod.uid, { gracePeriodSeconds: 0 }]]);
+  });
 });

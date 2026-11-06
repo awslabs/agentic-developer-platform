@@ -29,7 +29,17 @@ DEPLOYMENT_KIND = "deployment_verification"
 PHASES = (ExecutionPhase.AWAITING_RUNTIME_VERIFICATION,)
 ADAPTERS = {
     "gateway-health-verification": frozenset({"gateway-backend", "gateway-frontend"}),
+    "qualification-api-runtime-verification": frozenset({"qualification-api"}),
+    "qualification-client-job-verification": frozenset({"qualification-client"}),
+    "insights-health-verification": frozenset({"insights"}),
+    "crew-pod-verification": frozenset({"agent-worker", "chat-worker"}),
     "alembic-single-head-verification": frozenset({"gateway-migrations"}),
+    "dev-box-release-verification": frozenset({"dev-box"}),
+    "agentcore-gateway-verification": frozenset({"tools-platform"}),
+    "lambda-version-verification": frozenset({"tools-interceptor"}),
+    "door-identity-verification": frozenset({"knowledge-door"}),
+    "tools-facade-health-verification": frozenset({"tools-facade"}),
+    "tool-adapters-runtime-verification": frozenset({"tool-adapters"}),
 }
 # No rollback adapter is registered. A manifest name alone cannot authorize a
 # mutation; failed verification retains its lease and requires accepted repair.
@@ -99,7 +109,7 @@ class DeploymentServices(WorkflowServices):
         now = datetime.now(UTC)
         if outstanding:
             require(now < datetime.fromisoformat(outstanding[0].detail["observation_deadline"]), "deployment_runtime_observation_deadline_reached")
-        components = components_for_paths(await self.provider.changed_files(binding))
+        components = components_for_paths(await self.provider.changed_files(binding), manifest)
         if not outstanding:
             require(bool(handoffs), "deployment_handoff_missing")
             handoff = handoffs[0]
@@ -217,6 +227,7 @@ class DeploymentServices(WorkflowServices):
         require(workflow.conclusion == "success", "deployment_workflow_failed_requires_accepted_repair")
         entry = next((e for e in manifest.entries if e.entry_id == workflow.manifest_entry_id), None)
         require(entry is not None and entry.status is EntryStatus.ENABLED and not entry.docs_only, "deployment_verification_manifest_unavailable")
+        require(entry.release_group is None, "deployment_shared_release_admission_unavailable")
         require(set(workflow.components) == {c for c in components if entry.covers(c)}, "deployment_verification_components_changed")
         require(set(workflow.components) <= ADAPTERS.get(entry.verification_adapter, frozenset()), "deployment_verification_adapter_unsupported")
         target = PhysicalTarget(**{**workflow.target, "evidence": TargetEvidence(**workflow.target["evidence"])})
@@ -287,7 +298,7 @@ class DeploymentServices(WorkflowServices):
                     user_credential_id=credential_id,
                     aws_role_arn=role_arn,
                 ),
-                context.identity.accepted_plan_version,
+                auth.in_force_plan_version,
             )
             if not decision.permitted:
                 raise CycleBlockedError("deployment_runtime_authority_denied:" + decision.reason.value, BlockCode.AUTHORITY_UNVERIFIABLE)
@@ -418,6 +429,9 @@ class DeploymentServices(WorkflowServices):
             ),
         )
         require(recorded.kind is OutcomeKind.APPLIED, "deployment_verification_superseded")
+        from .story_acceptance import record_deployment_acceptance
+
+        await record_deployment_acceptance(session, context, receipt)
 
 
 class DeploymentController:

@@ -100,6 +100,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -108,16 +109,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.models.base import utcnow
 
 from .amend import AmendmentContext, AmendResult, FlowNotFoundError, amend_plan
-from .compile import plan_hash
+from .amendment_impact import assess_amendment, assignment_conflict_violations, new_work_issue_violations
+from .amendment_issue_publisher import PlannedPublication, apply_publications, permitted_repositories, publish_unbound_work
+from .compile import ProposalRejectedError, address_of, plan_hash
+from .execution_policy import ExecutionPolicy, summarize_policy
 from .models import (
     AmendmentRequestState,
+    DecisionKind,
     OrchestrationAcceptedPlan,
     OrchestrationAmendmentRequest,
+    OrchestrationDecision,
     OrchestrationFlow,
     OrchestrationPendingAmendment,
     PendingAmendmentState,
 )
 from .proposal import LoopProposal
+from .repository import OrchestrationRepository
+from .state import ActorKind
 
 logger = logging.getLogger("bedrockgateway.orchestration.pending_amendments")
 
@@ -127,17 +135,24 @@ __all__ = [
     "AmendmentDraftNotFoundError",
     "AmendmentRequest",
     "AmendmentRequestNotFoundError",
+    "AmendmentRevision",
+    "publish_for_acceptance",
     "GateDiff",
     "PendingAmendmentDraft",
+    "PendingAmendmentView",
     "accept_amendment",
     "assign_author_run",
     "gate_diff",
+    "get_pending_amendment",
     "in_force_plan",
+    "list_pending_amendments",
     "mark_request_dispatched",
     "owed_authoring_requests",
     "record_replan_request",
     "register_amendment_draft",
+    "reject_amendment",
     "resolve_authoring_request",
+    "revise_amendment",
 ]
 
 
@@ -229,6 +244,7 @@ class AmendmentRequest:
     author_run_id: str | None
     created_at: datetime
     created: bool = False
+    authoring_assignment: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -252,6 +268,76 @@ class PendingAmendmentDraft:
 
 
 @dataclass(frozen=True)
+class PendingAmendmentView:
+    """One draft as a reviewer sees it. Read-only projection, never the ORM row.
+
+    A snapshot for the same reason `AmendmentRequest` is one: a route holding a live row
+    could mutate draft state outside the three functions allowed to
+    (`accept_amendment`, `reject_amendment`, `revise_amendment`), and draft state is what
+    stands between a proposal and the graph.
+
+    `proposal_hash` is the **revision identity** an acceptance binds to. Carried on every
+    view so a client that previews, renders, then accepts can pass back the exact hash it
+    showed a human — which is how editing a draft invalidates an approval of the version
+    before it, without needing a separate approval token.
+    """
+
+    draft_id: str
+    flow_id: str
+    request_id: str
+    state: str
+    #: Canonical `plan_hash` of `proposal_document`: this revision's identity.
+    proposal_hash: str
+    base_plan_version: int | None
+    base_plan_hash: str | None
+    #: The human whose replan commissioned this, and their words. Verbatim **data**,
+    #: never an instruction — carried so a reviewer can see what was asked for.
+    requested_by: str
+    request_text: str
+    created_at: datetime
+    #: True when the recorded base still describes what is in force. False means
+    #: acceptance can only refuse, and the reviewer should be told before they try.
+    base_is_current: bool
+    gate_diff: GateDiff
+    #: Present only on `list`/`show` with the document requested. Omitted from list
+    #: responses by default: a flow's drafts are whole plan documents, and returning
+    #: twenty of them turns a list call into a multi-megabyte response.
+    proposal_document: dict | None = None
+    accepted_plan_version: int | None = None
+    accepted_by: str | None = None
+    decision_id: str | None = None
+    decision_reason: str | None = None
+    author_run_id: str | None = None
+    approved_diff: dict | None = None
+    superseded_by_draft_id: str | None = None
+    decided_at: datetime | None = None
+    #: The draft this one revised, when it came from an edit rather than an author.
+    revision_of_draft_id: str | None = None
+
+
+@dataclass(frozen=True)
+class AmendmentRevision:
+    """What editing a draft produced: a new draft, and the one it replaced.
+
+    Two ids rather than one mutated row, because a revision must **invalidate** any
+    approval of what came before. An in-place edit cannot do that — a human who read
+    revision 1 and typed `accept <id>` would apply revision 2 under the same id, which is
+    precisely the "approve one thing, apply another" failure the whole preview/approve
+    interaction exists to prevent. A new row means the prior hash is no longer
+    acceptable, and the acceptance path's exact-hash check enforces it for free.
+    """
+
+    draft_id: str
+    flow_id: str
+    proposal_hash: str
+    superseded_draft_id: str
+    gate_diff: GateDiff
+    #: True when the edit produced a document identical to the draft it edited, so no
+    #: new row was written. A no-op edit must not churn the revision a human is reading.
+    unchanged: bool = False
+
+
+@dataclass(frozen=True)
 class AmendmentAcceptResult:
     """What accepting a draft produced.
 
@@ -269,6 +355,10 @@ class AmendmentAcceptResult:
     gate_diff: GateDiff
     superseded_draft_ids: list[str] = field(default_factory=list)
     replayed: bool = False
+    receipts_preserved: list[dict] = field(default_factory=list)
+    receipts_dropped: list[dict] = field(default_factory=list)
+    effective_limits_before: dict | None = None
+    effective_limits_after: dict | None = None
 
 
 def _snapshot(row: OrchestrationAmendmentRequest, *, created: bool) -> AmendmentRequest:
@@ -282,9 +372,38 @@ def _snapshot(row: OrchestrationAmendmentRequest, *, created: bool) -> Amendment
         base_plan_hash=row.base_plan_hash,
         state=row.state,
         author_run_id=row.author_run_id,
+        authoring_assignment=row.authoring_assignment,
         created_at=row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at.astimezone(UTC),
         created=created,
     )
+
+
+def _approved_diff(base: dict | None, proposed: dict) -> dict:
+    before_by_address = {node["address"]: node for node in (base or {}).get("nodes", [])}
+    after_by_address = {node["address"]: node for node in proposed.get("nodes", [])}
+    before_nodes = set(before_by_address)
+    after_nodes = set(after_by_address)
+    before_edges = {(edge["from_address"], edge["to_address"]) for edge in (base or {}).get("edges", [])}
+    after_edges = {(edge["from_address"], edge["to_address"]) for edge in proposed.get("edges", [])}
+    return {
+        "nodes_added": sorted(after_nodes - before_nodes),
+        "nodes_removed": sorted(before_nodes - after_nodes),
+        "nodes_modified": [
+            {"address": address, "before": before_by_address[address], "after": after_by_address[address]}
+            for address in sorted(before_nodes & after_nodes)
+            if before_by_address[address] != after_by_address[address]
+        ],
+        "edges_added": [{"from_address": start, "to_address": end} for start, end in sorted(after_edges - before_edges)],
+        "edges_removed": [{"from_address": start, "to_address": end} for start, end in sorted(before_edges - after_edges)],
+        "execution_policy_before": _policy_summary((base or {}).get("execution_policy")),
+        "execution_policy_after": _policy_summary(proposed.get("execution_policy")),
+    }
+
+
+def _policy_summary(value: object) -> dict | None:
+    if value is None:
+        return None
+    return summarize_policy(ExecutionPolicy.model_validate(value)).model_dump(mode="json")
 
 
 def _gate_addresses(document: dict) -> set[str]:
@@ -443,7 +562,7 @@ async def record_replan_request(
     return _snapshot(request, created=True)
 
 
-async def assign_author_run(session: AsyncSession, *, org_id: str, request_id: str, author_run_id: str) -> None:
+async def assign_author_run(session: AsyncSession, *, org_id: str, request_id: str, author_run_id: str, assignment: dict | None = None) -> None:
     """Bind an authoring run id to a request, in the DB pass, before publishing.
 
     This write is what `resolve_authoring_request` later checks, so it is the whole
@@ -463,7 +582,7 @@ async def assign_author_run(session: AsyncSession, *, org_id: str, request_id: s
             OrchestrationAmendmentRequest.id == request_id,
             OrchestrationAmendmentRequest.author_run_id.is_(None),
         )
-        .values(author_run_id=author_run_id)
+        .values(author_run_id=author_run_id, authoring_assignment=assignment)
     )
 
 
@@ -498,6 +617,10 @@ async def owed_authoring_requests(
 ) -> list[tuple[str, AmendmentRequest, str | None]]:
     """Requests still owed an authoring job. **Read-only; the recovery pass's input.**
 
+    A stored draft satisfies authoring even if a publish acknowledgement was lost or
+    the proposal was supplied directly by a human. Reviewing or deciding that draft
+    must not trigger another authoring dispatch, regardless of its current state.
+
     The gap this closes. `mark_request_dispatched` is conditional on `QUEUED` and there
     is deliberately no `FAILED` state, so a publish that did not land leaves the row
     `QUEUED` — the retryable state. But nothing read that state back. The engine command
@@ -529,9 +652,9 @@ async def owed_authoring_requests(
     cannot indefinitely starve one request behind newer arrivals.
 
     Returns:
-        `(org_id, request_snapshot, flow_intent_ref)` per owed request. The flow's
-        `intent_ref` is joined in because a rebuilt envelope has to be *addressed* — the
-        request row carries no issue number, and the recovery pass must not invent one.
+        `(org_id, request_snapshot, flow_intent_ref)` per owed request. The flow join
+        retains the existing read contract, but its mutable `intent_ref` does not
+        authorize publication; the request's saved authoring assignment does.
     """
     rows = (
         await session.execute(
@@ -540,6 +663,13 @@ async def owed_authoring_requests(
             .where(
                 OrchestrationAmendmentRequest.state == AmendmentRequestState.QUEUED.value,
                 OrchestrationAmendmentRequest.created_at < older_than,
+                ~select(OrchestrationPendingAmendment.id)
+                .where(
+                    OrchestrationPendingAmendment.org_id == OrchestrationAmendmentRequest.org_id,
+                    OrchestrationPendingAmendment.flow_id == OrchestrationAmendmentRequest.flow_id,
+                    OrchestrationPendingAmendment.request_id == OrchestrationAmendmentRequest.id,
+                )
+                .exists(),
             )
             .order_by(OrchestrationAmendmentRequest.created_at.asc())
             .limit(limit)
@@ -721,12 +851,605 @@ async def register_amendment_draft(
     )
 
 
+async def _view_of(
+    session: AsyncSession,
+    row: OrchestrationPendingAmendment,
+    *,
+    org_id: str,
+    include_document: bool,
+    in_force: OrchestrationAcceptedPlan | None,
+    request: OrchestrationAmendmentRequest | None,
+) -> PendingAmendmentView:
+    """Project one draft row for reading, with its staleness and gate diff resolved.
+
+    `in_force` and `request` are passed in rather than read here so a list call does one
+    plan read and one request read for the whole page instead of one pair per draft.
+
+    `base_is_current` is computed with the **same** pair comparison `accept_amendment`
+    makes, not a version-only check. A hash difference at the same version means the plan
+    in force was rewritten — rarer, but exactly the case a version-only check would call
+    acceptable and acceptance would then refuse.
+    """
+    current_version = in_force.version if in_force is not None else None
+    current_hash = in_force.plan_hash if in_force is not None else None
+    approved_diff = None
+    decision_reason = None
+    if row.accepted_by_decision_id:
+        decision_reason = await session.scalar(
+            select(OrchestrationDecision.reason).where(
+                OrchestrationDecision.org_id == org_id,
+                OrchestrationDecision.id == row.accepted_by_decision_id,
+            )
+        )
+    if row.state == PendingAmendmentState.ACCEPTED.value:
+        base = await session.scalar(
+            select(OrchestrationAcceptedPlan).where(
+                OrchestrationAcceptedPlan.org_id == org_id,
+                OrchestrationAcceptedPlan.flow_id == row.flow_id,
+                OrchestrationAcceptedPlan.version == row.base_plan_version,
+            )
+        )
+        approved_diff = _approved_diff(base.plan_document if base is not None else None, row.proposal_document)
+    return PendingAmendmentView(
+        draft_id=row.id,
+        flow_id=row.flow_id,
+        request_id=row.request_id,
+        state=row.state,
+        proposal_hash=row.proposal_hash,
+        base_plan_version=row.base_plan_version,
+        base_plan_hash=row.base_plan_hash,
+        requested_by=request.requested_by if request is not None else "",
+        request_text=request.request_text if request is not None else "",
+        created_at=row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at.astimezone(UTC),
+        base_is_current=(row.base_plan_version, row.base_plan_hash) == (current_version, current_hash),
+        gate_diff=gate_diff(
+            base_document=in_force.plan_document if in_force is not None else None,
+            proposed_document=row.proposal_document,
+        ),
+        proposal_document=row.proposal_document if include_document else None,
+        accepted_plan_version=row.accepted_plan_version,
+        accepted_by=row.accepted_by,
+        decision_id=row.accepted_by_decision_id,
+        decision_reason=decision_reason,
+        author_run_id=row.author_run_id,
+        approved_diff=approved_diff,
+        superseded_by_draft_id=row.superseded_by_draft_id,
+        decided_at=(
+            None
+            if row.decided_at is None
+            else (row.decided_at.replace(tzinfo=UTC) if row.decided_at.tzinfo is None else row.decided_at.astimezone(UTC))
+        ),
+        revision_of_draft_id=_revision_of(row),
+    )
+
+
+#: Marker prefix for the edit provenance a revision carries. Encoded in the existing
+#: `author_run_id` column rather than in a new one: #5329 is explicitly not supposed to
+#: need a migration, and this column's purpose — "which run produced this document" — is
+#: exactly what an edit also answers, with the editor's identity in place of a run id.
+_REVISION_MARKER = "revision-of:"
+
+
+def _revision_of(row: OrchestrationPendingAmendment) -> str | None:
+    """The draft this row revised, or None if an author produced it directly."""
+    marker = row.author_run_id or ""
+    return marker[len(_REVISION_MARKER) :].split("/", 1)[0] or None if marker.startswith(_REVISION_MARKER) else None
+
+
+async def _revision_successor(session: AsyncSession, *, org_id: str, draft: OrchestrationPendingAmendment) -> str | None:
+    """The id of the still-pending revision that replaced `draft`, if that is why it went.
+
+    `superseded_by_draft_id` alone cannot answer this. It is set by two different causes:
+    `revise_amendment` names the edit that replaced this draft, and `accept_amendment`
+    names the *sibling whose acceptance* displaced it. Only the first has a successor a
+    human can go and read; the second names a draft that is already in force, and sending
+    someone to "review" it would be telling them to re-approve the plan of record.
+
+    Resolved by loading the named draft and checking it is still `PENDING`, rather than by
+    storing a cause column: the distinction is derivable, and a second column recording
+    *why* a draft was superseded would be a fact that could disagree with the states.
+    """
+    if not draft.superseded_by_draft_id:
+        return None
+    successor = (
+        await session.execute(
+            select(OrchestrationPendingAmendment).where(
+                OrchestrationPendingAmendment.org_id == org_id,
+                OrchestrationPendingAmendment.id == draft.superseded_by_draft_id,
+            )
+        )
+    ).scalar_one_or_none()
+    return successor.id if successor is not None and successor.state == PendingAmendmentState.PENDING.value else None
+
+
+async def _load_request(session: AsyncSession, *, org_id: str, request_id: str) -> OrchestrationAmendmentRequest | None:
+    return (
+        await session.execute(
+            select(OrchestrationAmendmentRequest).where(
+                OrchestrationAmendmentRequest.org_id == org_id,
+                OrchestrationAmendmentRequest.id == request_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def list_pending_amendments(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    flow_id: str,
+    states: list[str] | None = None,
+    author_run_id: str | None = None,
+) -> list[PendingAmendmentView]:
+    """A flow's amendment drafts, newest first. Reads only.
+
+    Newest first because the question a reviewer opens this with is "what am I being
+    asked to decide", and that is the recent end. Deterministic within one timestamp by
+    breaking ties on id, so a paging client cannot see one draft twice.
+
+    Args:
+        session: Caller-owned. No lock and no write — listing is advisory.
+        org_id: Server-resolved tenant, applied in the query.
+        flow_id: The flow whose drafts to list. Not optional: there is no cross-flow
+            listing, because a draft is only meaningful against the plan it amends.
+        states: Restrict to these `PendingAmendmentState` values. `None` returns all
+            states rather than only pending ones — a reviewer asking "what happened to
+            the amendment I rejected" needs the terminal rows too, and a default that
+            hid them would make the CLI's `list` look like the draft vanished.
+
+    Returns:
+        Views **without** documents. A caller that needs the document asks for one draft
+        by id; returning twenty plan documents would make a list call cost megabytes.
+    """
+    conditions = [
+        OrchestrationPendingAmendment.org_id == org_id,
+        OrchestrationPendingAmendment.flow_id == flow_id,
+    ]
+    if states:
+        conditions.append(OrchestrationPendingAmendment.state.in_(states))
+    if author_run_id is not None:
+        conditions.append(OrchestrationPendingAmendment.author_run_id == author_run_id)
+
+    rows = list(
+        (
+            await session.execute(
+                select(OrchestrationPendingAmendment)
+                .where(*conditions)
+                .order_by(OrchestrationPendingAmendment.created_at.desc(), OrchestrationPendingAmendment.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    in_force = await in_force_plan(session, org_id=org_id, flow_id=flow_id)
+    requests = {}
+    for request_id in {row.request_id for row in rows}:
+        requests[request_id] = await _load_request(session, org_id=org_id, request_id=request_id)
+
+    return [
+        await _view_of(
+            session,
+            row,
+            org_id=org_id,
+            include_document=False,
+            in_force=in_force,
+            request=requests.get(row.request_id),
+        )
+        for row in rows
+    ]
+
+
+async def get_pending_amendment(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    draft_id: str,
+    flow_id: str | None = None,
+    include_document: bool = True,
+    author_run_id: str | None = None,
+) -> PendingAmendmentView:
+    """One draft by id, with its document. Reads only.
+
+    Scoped exactly as `accept_amendment` scopes its lookup, and raising the same error
+    for absent, cross-tenant and wrong-flow. A `show` that distinguished them would be
+    the enumeration oracle `accept` is careful not to be — and `show` is the *easier*
+    call to make in a loop.
+
+    Raises:
+        AmendmentDraftNotFoundError: Absent, another tenant's, or another flow's.
+    """
+    conditions = [
+        OrchestrationPendingAmendment.org_id == org_id,
+        OrchestrationPendingAmendment.id == draft_id,
+    ]
+    if flow_id is not None:
+        conditions.append(OrchestrationPendingAmendment.flow_id == flow_id)
+    if author_run_id is not None:
+        conditions.append(OrchestrationPendingAmendment.author_run_id == author_run_id)
+
+    row = (await session.execute(select(OrchestrationPendingAmendment).where(*conditions))).scalar_one_or_none()
+    if row is None:
+        raise AmendmentDraftNotFoundError(f"no pending amendment {draft_id!r} in this tenant")
+
+    return await _view_of(
+        session,
+        row,
+        org_id=org_id,
+        include_document=include_document,
+        in_force=await in_force_plan(session, org_id=org_id, flow_id=row.flow_id),
+        request=await _load_request(session, org_id=org_id, request_id=row.request_id),
+    )
+
+
+async def reject_amendment(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    draft_id: str,
+    rejected_by: str,
+    reason: str | None = None,
+    flow_id: str | None = None,
+    decision: AmendmentContext | None = None,
+) -> PendingAmendmentView:
+    """Decline a draft. The first writer of `PendingAmendmentState.REJECTED`.
+
+    #4529 declared the state and left it unwritten, so a reviewer who disagreed with a
+    proposal had no way to say so: the draft stayed `PENDING` and kept appearing as work
+    owed, indistinguishable from one nobody had looked at. Refusing to decide is not a
+    decision, and a queue that cannot be emptied stops being read.
+
+    Writes **no graph state and no plan version** — that is the whole point of a
+    rejection. It sets the draft's state and time and appends an immutable attributed
+    rejection decision. The compatibility-named decision columns point at that record;
+    `accepted_plan_version` remains NULL.
+
+    Deliberately **not** idempotent-by-replay the way `accept_amendment` is: rejecting an
+    already-rejected draft returns the existing row unchanged rather than re-stamping the
+    decider, so a duplicated request cannot rewrite who declined it or when.
+
+    Args:
+        session: Caller-owned. Not committed here.
+        org_id: Server-resolved tenant.
+        draft_id: The draft being declined, by name. No "latest" selector, for the same
+            reason acceptance has none.
+        rejected_by: The deciding human's resolved identity. Server-supplied.
+        reason: Their words, bounded by the caller. Data, never an instruction.
+        flow_id: When given, the draft must belong to this flow.
+
+    Raises:
+        AmendmentDraftNotFoundError: Absent, another tenant's, or another flow's.
+        AmendmentConflictError: The draft was already accepted — its content is in force
+            and rejecting it now would report a decision that did not happen. Undoing an
+            applied amendment is a fresh replan, not a late rejection.
+    """
+    conditions = [
+        OrchestrationPendingAmendment.org_id == org_id,
+        OrchestrationPendingAmendment.id == draft_id,
+    ]
+    if flow_id is not None:
+        conditions.append(OrchestrationPendingAmendment.flow_id == flow_id)
+
+    row = (await session.execute(select(OrchestrationPendingAmendment).where(*conditions))).scalar_one_or_none()
+    if row is None:
+        raise AmendmentDraftNotFoundError(f"no pending amendment {draft_id!r} in this tenant")
+
+    async with session.begin_nested():
+        # Same flow row and same order as the acceptance path, so a concurrent
+        # accept/reject on one draft serializes rather than interleaving.
+        await session.execute(
+            select(OrchestrationFlow).where(OrchestrationFlow.org_id == org_id, OrchestrationFlow.id == row.flow_id).with_for_update()
+        )
+        await session.refresh(row)
+
+        if row.state == PendingAmendmentState.ACCEPTED.value:
+            raise AmendmentConflictError(
+                "draft_already_accepted",
+                f"amendment `{draft_id}` was already accepted as plan version "
+                f"{row.accepted_plan_version if row.accepted_plan_version is not None else 'unknown'} and is in force. "
+                "Request a fresh replan to change it back.",
+            )
+
+        if row.state == PendingAmendmentState.PENDING.value:
+            row.state = PendingAmendmentState.REJECTED.value
+            row.decided_at = utcnow()
+            if decision is not None:
+                decision_id = str(uuid5(NAMESPACE_URL, f"adp:amendment-rejected:{org_id}:{row.id}"))
+                session.add(
+                    OrchestrationDecision(
+                        id=decision_id,
+                        org_id=org_id,
+                        flow_id=row.flow_id,
+                        node_id=None,
+                        kind=DecisionKind.AMENDMENT_REJECTED.value,
+                        actor_id=decision.actor_id,
+                        actor_role=decision.actor_role,
+                        actor_kind=decision.actor_kind.value,
+                        reason=reason,
+                    )
+                )
+                row.accepted_by = decision.actor_id
+                row.accepted_by_decision_id = decision_id
+            # The append-only decision captures the rejecting actor and reason. Existing
+            # nullable decision columns are reused for compatibility; no graph state or
+            # accepted plan version is written.
+            logger.info(
+                "amendment_rejected flow=%s org=%s draft=%s by=%s reason=%s",
+                row.flow_id,
+                org_id,
+                row.id,
+                rejected_by,
+                (reason or "")[:200],
+            )
+            await session.flush()
+
+    return await _view_of(
+        session,
+        row,
+        org_id=org_id,
+        include_document=False,
+        in_force=await in_force_plan(session, org_id=org_id, flow_id=row.flow_id),
+        request=await _load_request(session, org_id=org_id, request_id=row.request_id),
+    )
+
+
+async def revise_amendment(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    draft_id: str,
+    proposal: LoopProposal,
+    revised_by: str,
+    flow_id: str | None = None,
+) -> AmendmentRevision:
+    """Replace a pending draft with an edited one, as a NEW revision. Writes no plan.
+
+    Editing produces a new row and supersedes the old one; it never mutates the document
+    in place. That is what makes an earlier approval invalid: a human who read revision 1
+    and typed `accept <old-id>` gets "that draft is superseded" rather than silently
+    applying revision 2 under the id they read. An in-place edit would make
+    "preview, then approve" unverifiable, because the thing approved could change between
+    the two steps with no trace.
+
+    The new draft inherits the **original's** recorded base version and hash, not a fresh
+    read. An edit changes what is proposed, not what it was proposed against — and
+    re-reading the base here would "refresh" a stale draft into one that passes the
+    conflict check it exists to fail, which is the same mistake `register_amendment_draft`
+    documents refusing.
+
+    Args:
+        session: Caller-owned. Not committed here.
+        org_id: Server-resolved tenant.
+        draft_id: The pending draft being edited.
+        proposal: The edited replacement document, whole. Not a patch: acceptance
+            re-validates a full document, and a patch format here would need its own
+            validator that could drift from it.
+        revised_by: The editing human's resolved identity, recorded as this revision's
+            provenance in place of an authoring run id.
+        flow_id: When given, the draft must belong to this flow.
+
+    Returns:
+        An `AmendmentRevision`. `unchanged=True` means the edit produced an identical
+        document and no new row was written — a no-op edit must not churn the revision a
+        reviewer is currently reading.
+
+    Raises:
+        AmendmentDraftNotFoundError: Absent, another tenant's, or another flow's.
+        AmendmentConflictError: The draft is not pending. An accepted draft's content is
+            in force and editing it would misrepresent the plan of record; a rejected or
+            superseded one is terminal.
+    """
+    conditions = [
+        OrchestrationPendingAmendment.org_id == org_id,
+        OrchestrationPendingAmendment.id == draft_id,
+    ]
+    if flow_id is not None:
+        conditions.append(OrchestrationPendingAmendment.flow_id == flow_id)
+
+    row = (await session.execute(select(OrchestrationPendingAmendment).where(*conditions))).scalar_one_or_none()
+    if row is None:
+        raise AmendmentDraftNotFoundError(f"no pending amendment {draft_id!r} in this tenant")
+
+    document = proposal.model_dump(mode="json")
+    document_hash = plan_hash(proposal)
+
+    async with session.begin_nested():
+        await session.execute(
+            select(OrchestrationFlow).where(OrchestrationFlow.org_id == org_id, OrchestrationFlow.id == row.flow_id).with_for_update()
+        )
+        await session.refresh(row)
+
+        if row.state != PendingAmendmentState.PENDING.value:
+            raise AmendmentConflictError(
+                "draft_not_pending",
+                f"amendment `{draft_id}` is `{row.state}` and can no longer be edited. Comment "
+                "`@agent-engine replan: <what should change>` to request a fresh one.",
+            )
+
+        in_force = await in_force_plan(session, org_id=org_id, flow_id=row.flow_id)
+        diff = gate_diff(
+            base_document=in_force.plan_document if in_force is not None else None,
+            proposed_document=document,
+        )
+
+        if row.proposal_hash == document_hash:
+            return AmendmentRevision(
+                draft_id=row.id,
+                flow_id=row.flow_id,
+                proposal_hash=row.proposal_hash,
+                superseded_draft_id=row.id,
+                gate_diff=diff,
+                unchanged=True,
+            )
+
+        revision = OrchestrationPendingAmendment(
+            org_id=org_id,
+            flow_id=row.flow_id,
+            # The same request: an edit refines the answer to one human ask, it does not
+            # create a second assignment. Keeping the request id is also what keeps the
+            # `(org, flow, request, hash)` uniqueness meaningful across revisions — two
+            # edits converging on the same document reconcile instead of forking.
+            request_id=row.request_id,
+            author_run_id=f"{_REVISION_MARKER}{row.id}/{revised_by}"[:255],
+            base_plan_version=row.base_plan_version,
+            base_plan_hash=row.base_plan_hash,
+            proposal_document=document,
+            proposal_hash=document_hash,
+            state=PendingAmendmentState.PENDING.value,
+        )
+
+        try:
+            async with session.begin_nested():
+                session.add(revision)
+                await session.flush()
+        except IntegrityError:
+            found = (
+                await session.execute(
+                    select(OrchestrationPendingAmendment).where(
+                        OrchestrationPendingAmendment.org_id == org_id,
+                        OrchestrationPendingAmendment.flow_id == row.flow_id,
+                        OrchestrationPendingAmendment.request_id == row.request_id,
+                        OrchestrationPendingAmendment.proposal_hash == document_hash,
+                    )
+                )
+            ).scalar_one_or_none()
+            if found is None:  # pragma: no cover - the unique index is the only constraint that can fire
+                raise
+            if found.state != PendingAmendmentState.PENDING.value:
+                raise AmendmentConflictError(
+                    "draft_not_pending",
+                    f"This content already belongs to {found.state} revision `{found.id}`. "
+                    "It cannot be reopened by editing. Your current pending revision is unchanged; "
+                    "request a fresh replan to propose that content again.",
+                )
+            revision = found
+
+        # The edited draft is no longer acceptable: an approval of it must not apply the
+        # revision. `SUPERSEDED` rather than `REJECTED` — nobody declined this content,
+        # it was replaced, and `superseded_by_draft_id` names what replaced it.
+        now = utcnow()
+        row.state = PendingAmendmentState.SUPERSEDED.value
+        row.superseded_by_draft_id = revision.id
+        row.decided_at = now
+        await session.flush()
+
+    logger.info(
+        "amendment_revised flow=%s org=%s draft=%s superseded=%s by=%s gates_added=%s gates_removed=%s",
+        row.flow_id,
+        org_id,
+        revision.id,
+        row.id,
+        revised_by,
+        len(diff.added),
+        len(diff.removed),
+    )
+
+    return AmendmentRevision(
+        draft_id=revision.id,
+        flow_id=revision.flow_id,
+        proposal_hash=revision.proposal_hash,
+        superseded_draft_id=row.id,
+        gate_diff=diff,
+    )
+
+
+async def publish_for_acceptance(
+    session: AsyncSession,
+    *,
+    draft_id: str,
+    actor: AmendmentContext,
+    flow_id: str,
+    expected_proposal_hash: str,
+    expected_base_plan_version: int,
+    expected_base_plan_hash: str,
+    publisher=None,
+) -> list[PlannedPublication]:
+    """Publish a draft's unbound new work, only if this exact acceptance could succeed.
+
+    Called by the human REST accept immediately before `accept_amendment`. It publishes
+    nothing unless every identity check `accept_amendment` makes would pass (pending
+    draft, exact reviewed revision, exact base version and hash, base still in force)
+    and the full impact assessment has no blocker. When any of those fails it returns
+    without side effects and `accept_amendment` raises the precise refusal.
+
+    COMMITS the session when it publishes: each binding row is committed before its
+    provider call (see `amendment_issue_publisher`). Nothing else has been written yet.
+    """
+    draft = (
+        await session.execute(
+            select(OrchestrationPendingAmendment).where(
+                OrchestrationPendingAmendment.org_id == actor.org_id,
+                OrchestrationPendingAmendment.id == draft_id,
+                OrchestrationPendingAmendment.flow_id == flow_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if (
+        draft is None
+        or ActorKind(actor.actor_kind) is not ActorKind.HUMAN
+        or draft.state != PendingAmendmentState.PENDING.value
+        or (draft.proposal_hash, draft.base_plan_version, draft.base_plan_hash)
+        != (expected_proposal_hash, expected_base_plan_version, expected_base_plan_hash)
+    ):
+        return []
+    in_force = await in_force_plan(session, org_id=actor.org_id, flow_id=flow_id)
+    if in_force is None or (in_force.version, in_force.plan_hash) != (draft.base_plan_version, draft.base_plan_hash):
+        return []
+    try:
+        proposal = LoopProposal.model_validate(draft.proposal_document)
+    except ValueError:
+        return []
+    impact = await assess_amendment(
+        session,
+        org_id=actor.org_id,
+        flow_id=flow_id,
+        proposal=proposal,
+        actor_kind=ActorKind.HUMAN,
+        actor_id=actor.actor_id,
+    )
+    if impact.blocking or all(plan.action == "reuse" and plan.parent_repository is None for plan in impact.issue_publications):
+        return []
+    repo = OrchestrationRepository(session)
+    flow = await repo.get_flow(org_id=actor.org_id, flow_id=flow_id)
+    existing = {address_of(flow.slug, node) for node in await repo.list_nodes(org_id=actor.org_id, flow_id=flow_id)}
+
+    async def require_current_revision() -> None:
+        await session.execute(
+            select(OrchestrationFlow).where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.id == flow_id).with_for_update()
+        )
+        await session.refresh(draft)
+        if draft.state != PendingAmendmentState.PENDING.value:
+            raise AmendmentConflictError("draft_not_pending", "The amendment changed before issue publication; refresh the draft and preview again.")
+        if (draft.proposal_hash, draft.base_plan_version, draft.base_plan_hash) != (
+            expected_proposal_hash,
+            expected_base_plan_version,
+            expected_base_plan_hash,
+        ):
+            raise AmendmentConflictError("revision_mismatch", "The amendment no longer matches the reviewed revision; preview again.")
+        current = await in_force_plan(session, org_id=actor.org_id, flow_id=flow_id)
+        if current is None or (current.version, current.plan_hash) != (expected_base_plan_version, expected_base_plan_hash):
+            raise AmendmentConflictError("stale_base", "The accepted plan changed before issue publication; request a fresh replan.")
+
+    return await publish_unbound_work(
+        session,
+        org_id=actor.org_id,
+        proposal=proposal,
+        existing_addresses=existing,
+        permitted=permitted_repositories(in_force.plan_document, proposal),
+        publisher=publisher,
+        before_claim=require_current_revision,
+    )
+
+
 async def accept_amendment(
     session: AsyncSession,
     *,
     draft_id: str,
     actor: AmendmentContext,
     flow_id: str | None = None,
+    expected_proposal_hash: str | None = None,
+    expected_base_plan_version: int | None = None,
+    expected_base_plan_hash: str | None = None,
 ) -> AmendmentAcceptResult:
     """Apply one named pending amendment as the accepting human. One transaction.
 
@@ -751,6 +1474,20 @@ async def accept_amendment(
             already resolved a flow (the command pass resolves one from the issue), so a
             draft id belonging to another flow in the same tenant cannot be applied to the
             flow the human was talking about.
+        expected_proposal_hash: The revision the accepting human actually reviewed
+            (#5329). When given, a draft whose document has since been revised is refused
+            as a conflict rather than applied. This is what binds an approval to a
+            *revision* rather than to an id: without it, an edit between preview and
+            accept would apply content nobody read. Optional because the GitHub comment
+            path has no way to carry a hash — that path is protected instead by
+            `revise_amendment` superseding the draft the human named, so the id they typed
+            is no longer acceptable.
+        expected_base_plan_version: The plan version the human was told this amendment
+            would supersede (#5329), compared against the draft's own recorded base. This
+            is not a duplicate of the in-force check below: that one asks "has the plan
+            moved since authoring", this one asks "is this the draft I previewed". A
+            mistyped id that happens to name a real draft on the same flow passes every
+            other check and applies a plan nobody reviewed; this is what catches it.
 
     Returns:
         An `AmendmentAcceptResult`. `replayed=True` means the draft was already accepted
@@ -794,6 +1531,15 @@ async def accept_amendment(
         # re-sending a comment, or a duplicated delivery, must see what they saw the first
         # time.
         if draft.state == PendingAmendmentState.ACCEPTED.value:
+            if expected_proposal_hash is not None and draft.proposal_hash != expected_proposal_hash:
+                raise AmendmentConflictError("revision_mismatch", "The retry does not name the revision that was accepted.")
+            if expected_base_plan_version is not None and draft.base_plan_version != expected_base_plan_version:
+                raise AmendmentConflictError("base_version_mismatch", "The retry does not name the base version that was accepted.")
+            if expected_base_plan_hash is not None and draft.base_plan_hash != expected_base_plan_hash:
+                raise AmendmentConflictError("base_hash_mismatch", "The retry does not name the base hash that was accepted.")
+            from .amend import _saved_receipt_dispositions
+
+            preserved, dropped, limits_before, limits_after = await _saved_receipt_dispositions(session, draft.accepted_by_decision_id)
             return AmendmentAcceptResult(
                 draft_id=draft.id,
                 flow_id=draft.flow_id,
@@ -802,16 +1548,75 @@ async def accept_amendment(
                 decision_id=draft.accepted_by_decision_id or "",
                 gate_diff=GateDiff(),
                 replayed=True,
+                receipts_preserved=preserved,
+                receipts_dropped=dropped,
+                effective_limits_before=limits_before,
+                effective_limits_after=limits_after,
             )
 
         if draft.state != PendingAmendmentState.PENDING.value:
             # Rejected or superseded. Terminal, and not re-openable: a superseded draft's base
             # describes a plan that is no longer in force, so "accept it anyway" is the
             # discard-someone-else's-amendment failure by another route.
+            #
+            # A draft superseded by an *edit* (#5329) lands here too, and that is exactly
+            # the intended effect: the human who read the pre-edit revision and typed its
+            # id is refused rather than silently applying the revision that replaced it.
+            #
+            # The two supersede causes need different advice, so they are distinguished
+            # rather than given one message. An edited draft has a live successor to read,
+            # and telling that human to replan would throw away an edit that is sitting
+            # there pending. A draft displaced by someone else's *acceptance* has no such
+            # successor — that plan is already in force — and pointing at it would send the
+            # human to "review" something already applied. Only replan resolves that one.
+            successor = await _revision_successor(session, org_id=actor.org_id, draft=draft)
             raise AmendmentConflictError(
                 "draft_not_pending",
-                f"amendment `{draft_id}` is `{draft.state}` and can no longer be accepted. Comment "
-                "`@agent-engine replan: <what should change>` to request a fresh one.",
+                f"amendment `{draft_id}` is `{draft.state}` and can no longer be accepted."
+                + (
+                    f" It was replaced by revision `{successor}`; review that one and accept it instead."
+                    if successor is not None
+                    else " Comment `@agent-engine replan: <what should change>` to request a fresh one."
+                ),
+            )
+
+        # --- The reviewed revision, bound exactly (#5329) -----------------------------
+        # Checked before the in-force comparison because it is the more specific question:
+        # "this is not the document you reviewed" is actionable in a way that "the plan
+        # moved" is not, and reporting the latter for an edited draft would send the human
+        # to request a replan when all they need is to re-read the current revision.
+        if expected_proposal_hash is not None and draft.proposal_hash != expected_proposal_hash:
+            logger.warning(
+                "amendment_revision_mismatch flow=%s org=%s draft=%s reviewed=%s current=%s",
+                draft.flow_id,
+                actor.org_id,
+                draft.id,
+                expected_proposal_hash[:12],
+                draft.proposal_hash[:12],
+            )
+            raise AmendmentConflictError(
+                "revision_mismatch",
+                f"amendment `{draft_id}` is now revision `{draft.proposal_hash[:12]}` but the approval names "
+                f"`{expected_proposal_hash[:12]}`. It was edited after you reviewed it. Preview the current "
+                "revision and accept that one — an approval never carries over to a revision it did not see.",
+            )
+
+        if expected_base_plan_version is not None and draft.base_plan_version != expected_base_plan_version:
+            raise AmendmentConflictError(
+                "base_version_mismatch",
+                f"amendment `{draft_id}` was authored against plan version "
+                f"{draft.base_plan_version if draft.base_plan_version is not None else 'none'}, but the approval "
+                f"names version {expected_base_plan_version}. Nothing was applied; confirm which amendment you "
+                "meant to accept.",
+            )
+
+        if expected_base_plan_hash is not None and draft.base_plan_hash != expected_base_plan_hash:
+            raise AmendmentConflictError(
+                "base_hash_mismatch",
+                f"amendment `{draft_id}` was authored against plan hash "
+                f"`{(draft.base_plan_hash or 'none')[:12]}`, but the approval names "
+                f"`{expected_base_plan_hash[:12]}`. Nothing was applied; preview the draft again and approve "
+                "the exact base revision shown there.",
             )
 
         in_force = await in_force_plan(session, org_id=actor.org_id, flow_id=draft.flow_id)
@@ -849,6 +1654,56 @@ async def accept_amendment(
         # since authoring. A document that no longer parses fails here, which is the
         # correct outcome: it is not acceptable.
         proposal = LoopProposal.model_validate(draft.proposal_document)
+
+        # The same assessment the preview showed, now under the flow lock: a preview
+        # saying "acceptable" and an accept that applies something else cannot differ.
+        # `require_published` turns any new work still without a recorded issue into a
+        # blocker; the REST accept publishes it just before this call.
+        impact = await assess_amendment(
+            session,
+            org_id=actor.org_id,
+            flow_id=draft.flow_id,
+            proposal=proposal,
+            actor_kind=ActorKind(actor.actor_kind),
+            actor_id=actor.actor_id,
+            require_published=True,
+        )
+        if impact.blocking:
+            raise ProposalRejectedError(
+                f"amendment acceptance is blocked by {len(impact.blocking)} diagnostic(s): "
+                + "; ".join(f"{item.rule}: {item.message}" for item in impact.blocking),
+                violations=list(impact.blocking),
+            )
+        # Hash semantics: the human approved `draft.proposal_hash`, the stored document
+        # WITHOUT the issue refs of work published at acceptance. Those refs come only
+        # from the durable binding rows keyed by (tenant, repository, proposal identity)
+        # for exactly the nodes the preview listed, so the applied document is a
+        # deterministic function of the approved one. The accepted plan's own hash
+        # covers the bound refs.
+        proposal = apply_publications(proposal, impact.issue_publications)
+        existing_addresses = {
+            node["address"]
+            for node in (in_force.plan_document.get("nodes", []) if in_force is not None else [])
+            if isinstance(node, dict) and isinstance(node.get("address"), str)
+        }
+        issue_violations = new_work_issue_violations(existing_addresses=existing_addresses, proposal=proposal)
+        if issue_violations:
+            raise ProposalRejectedError(
+                "new amendment work has no durable issue binding",
+                violations=issue_violations,
+            )
+        claim_violations = await assignment_conflict_violations(
+            session,
+            org_id=actor.org_id,
+            flow_id=draft.flow_id,
+            proposal=proposal,
+            existing_addresses=existing_addresses,
+        )
+        if claim_violations:
+            raise ProposalRejectedError(
+                "new amendment work conflicts with an active assignment",
+                violations=claim_violations,
+            )
 
         # The existing transaction, with the HUMAN's context. Uncaught: a draft that fails
         # authoritative validation must be refused exactly as a hand-submitted document
@@ -912,4 +1767,8 @@ async def accept_amendment(
         gate_diff=diff,
         superseded_draft_ids=[sibling.id for sibling in siblings],
         replayed=False,
+        receipts_preserved=result.receipts_preserved,
+        receipts_dropped=result.receipts_dropped,
+        effective_limits_before=result.effective_limits_before,
+        effective_limits_after=result.effective_limits_after,
     )

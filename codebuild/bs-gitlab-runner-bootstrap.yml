@@ -1,0 +1,12 @@
+version: 0.2
+
+phases:
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        test -n "${ADP_SOURCE_SHA:-}" || { echo 'Missing isolated reviewed source revision'; exit 1; }
+        [[ "$ADP_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+        [[ "${EXPECTED_ACCOUNT:-}" =~ ^[0-9]{12}$ ]]
+        umask 077
+        python3 modules/source-control/gitlab/runners/scripts/build_runtime_images.py --receipt /tmp/adp-runner-runtime-images.json

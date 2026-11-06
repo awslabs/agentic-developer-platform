@@ -6,6 +6,7 @@ Handles all proxy requests across OpenAI, Anthropic, and Bedrock API formats.
 import asyncio
 import contextvars
 import json
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -23,6 +24,7 @@ from src.proxy.bedrock_routing_errors import (
     REASON_MODEL_NOT_ENABLED,
     BedrockAccountUnavailableError,
 )
+from src.proxy.conversation_identity import _current_conversation
 from src.proxy.exceptions import (
     BedrockInvocationError,
 )
@@ -38,12 +40,15 @@ from src.proxy.schemas import (
     OpenAIChatCompletionResponse,
 )
 from src.proxy.stream_handler import StreamHandler
-from src.shared.database import get_session_factory
+from src.shared.accounting_health import METERING_UNCONFIRMED, METERING_WRITE_FAILURES, record_health_event
+from src.shared.database import get_accounting_session_factory as get_session_factory
+from src.shared.exceptions import BedrockGatewayError
 from src.shared.interfaces.pool import IPoolService
 from src.shared.interfaces.proxy import IProxyService
 from src.shared.logging import get_logger
 from src.shared.metrics import emit_error_count, emit_request_metrics
 from src.shared.schemas.auth import TokenContext
+from src.usage.persistence import persist_usage_with_retry, usage_write_error_details
 from src.usage.service import UsageService
 
 logger = get_logger(__name__)
@@ -52,6 +57,8 @@ logger = get_logger(__name__)
 # reservation work shares this budget, so a blocked write cannot withhold the
 # already-computed durable settlement event after a client disconnect.
 CLAUDE_PERSISTENCE_TIMEOUT_SECONDS = 10.0
+single_attempt_internal_model_call: contextvars.ContextVar[bool] = contextvars.ContextVar("single_attempt_internal_model_call", default=False)
+BEDROCK_STREAM_CLOSE_TIMEOUT_SECONDS = 3.0
 
 # Issue #1074: Context variable for request_id so internal methods can
 # propagate it to usage_logs without threading through every signature.
@@ -165,6 +172,7 @@ class ProxyService(IProxyService):
         model_resolver: ModelResolver | None = None,
         format_translator: FormatTranslator | None = None,
         stream_handler: StreamHandler | None = None,
+        bedrock_stream_operation_timeout: float | None = None,
     ) -> None:
         """Initialize the proxy service.
 
@@ -177,6 +185,7 @@ class ProxyService(IProxyService):
         self._pool_service = pool_service
         self._model_resolver = model_resolver or ModelResolver()
         self._translator = format_translator or FormatTranslator()
+        self._bedrock_stream_operation_timeout = bedrock_stream_operation_timeout
         self._stream_handler = stream_handler or StreamHandler()
 
     # =========================================================================
@@ -476,17 +485,33 @@ class ProxyService(IProxyService):
     # Usage Logging (Issue #992)
     # =========================================================================
 
-    async def _log_usage(self, **kwargs) -> None:
-        capture = kwargs.get("pricing_capture")
-        if capture is None or capture.routing is None:
-            await self._log_usage_impl(**kwargs)
-            return
-        # A disconnect may arrive after measured usage while pricing or usage
-        # persistence is awaiting I/O. Keep this one request's completion alive;
-        # the logging wrapper awaits it before emitting the durable S3 event.
-        task = asyncio.create_task(self._log_usage_impl(**kwargs), name=f"pricing_finalize_{capture.request_id}")
-        capture.finalization_task = task
-        await asyncio.shield(task)
+    async def _log_usage(self, **kwargs) -> bool:
+        try:
+            capture = kwargs.get("pricing_capture")
+            if capture is None or capture.routing is None:
+                return await self._log_usage_impl(**kwargs)
+            # A disconnect may arrive after measured usage while pricing or usage
+            # persistence is awaiting I/O. Keep this one request's completion alive;
+            # the logging wrapper awaits it before emitting the durable S3 event.
+            from src.proxy.mantle_service import register_usage_finalizer
+
+            task = asyncio.create_task(self._log_usage_impl(**kwargs), name=f"pricing_finalize_{capture.request_id}")
+            register_usage_finalizer(task)
+            capture.finalization_task = task
+            return await asyncio.shield(task)
+
+        except Exception:
+            logger.exception("Claude usage settlement could not be confirmed")
+            return False
+
+    @staticmethod
+    def _settlement_failure() -> BedrockGatewayError:
+        return BedrockGatewayError(
+            "usage_settlement_unconfirmed",
+            "Model usage could not be confirmed; do not retry this model call.",
+            502,
+            {"retryable": False},
+        )
 
     async def _log_usage_impl(
         self,
@@ -502,7 +527,7 @@ class ProxyService(IProxyService):
         cache_creation_input_tokens: int | None = None,
         routing_decision: RoutingDecision | None = None,
         pricing_capture: PricingCapture | None = None,
-    ) -> None:
+    ) -> bool:
         """Write a row to usage_logs for admin dashboard visibility.
 
         Issue #1074: Now includes request_id (from contextvar or explicit param)
@@ -548,6 +573,9 @@ class ProxyService(IProxyService):
         # so nothing here can raise and no raw User-Agent can reach the column.
         # None means "not captured" and is written as NULL — never a placeholder.
         client_tool = _current_client_tool.get()
+        # #9024: conversation identity from the route dependency; the Dev Box owner from the host proof.
+        conversation = _current_conversation.get()
+        owner_user_id = getattr(context, "_crew_owner_user_id", None)
 
         actual_cost = None
         pricing_failed = False
@@ -586,6 +614,7 @@ class ProxyService(IProxyService):
                     priced.usage["cache_creation_input_tokens"] if priced.usage["raw"]["cache_creation_input_tokens"] is not None else None
                 )
             except Exception as exc:
+                record_health_event(METERING_UNCONFIRMED)
                 logger.warning("Provider usage could not be priced", extra={"request_id": request_id, "error": str(exc)})
                 # Do not invent zero-token success or emit a legacy-priced event
                 # when the provider omitted usage or source verification failed.
@@ -595,7 +624,7 @@ class ProxyService(IProxyService):
         if pricing_capture is not None and pricing_capture.routing is None and rejection is None:
             pricing_failed = True
 
-        async def persist_usage():
+        async def persist_usage() -> bool:
             if pricing_failed:
                 await reconcile_budget_reservation(
                     context=context,
@@ -605,9 +634,14 @@ class ProxyService(IProxyService):
                     output_tokens=0,
                     actual_cost_usd=Decimal("0"),
                     usage_known=False,
+                    # An explicit upstream failure spent nothing beyond its admitted
+                    # bound. Retain that bound (as the Responses path already does)
+                    # instead of marking the flow's spend unknown, which refuses
+                    # every sibling worker's calls until the marker is abandoned.
+                    retain_failed_bound=status_code >= 500 or status_code < 400,
                 )
                 if status_code < 400:
-                    return
+                    return False
                 # Keep the existing diagnostic record for a failed invocation.
                 # Its error status and zero charge are not a measured success;
                 # no pricing decision exists, so no settlement event is emitted.
@@ -634,33 +668,43 @@ class ProxyService(IProxyService):
                 bedrock_account_id = shadow_target.account_id if shadow_target else None
 
             try:
-                session_factory = get_session_factory()
-                async with session_factory() as session:
-                    usage_service = UsageService(session)
-                    await usage_service.log_request(
-                        context=context,
-                        model=model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        cost_usd=cost_usd,
-                        latency_ms=latency_ms,
-                        status_code=status_code,
-                        request_id=request_id,
-                        agent_run_id=agent_run_id,
-                        cache_read_input_tokens=cache_read_input_tokens,
-                        cache_creation_input_tokens=cache_creation_input_tokens,
-                        client_tool=client_tool,
-                        # Issue #4743 (shadow) / #4744 (enforced): see the resolution above.
-                        bedrock_account_id=bedrock_account_id,
-                        pricing_decision=pricing_decision,
-                        reservation_usage_known=pricing_decision is not None and not pricing_failed,
-                        provider_request_id=pricing_capture.provider_request_id if pricing_capture else None,
-                        destination_region=pricing_capture.routing.endpoint_region if pricing_capture and pricing_capture.routing else None,
-                    )
+
+                async def write_usage() -> None:
+                    session_factory = get_session_factory()
+                    async with session_factory() as session:
+                        usage_service = UsageService(session)
+                        await usage_service.log_request(
+                            context=context,
+                            model=model,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            cost_usd=cost_usd,
+                            latency_ms=latency_ms,
+                            status_code=status_code,
+                            request_id=request_id,
+                            agent_run_id=agent_run_id,
+                            cache_read_input_tokens=cache_read_input_tokens,
+                            cache_creation_input_tokens=cache_creation_input_tokens,
+                            client_tool=client_tool,
+                            harness=conversation.harness,
+                            conversation_id=conversation.conversation_id,
+                            origin=conversation.origin,
+                            conversation_title=conversation.title,
+                            owner_user_id=owner_user_id,
+                            # Issue #4743 (shadow) / #4744 (enforced): see the resolution above.
+                            bedrock_account_id=bedrock_account_id,
+                            pricing_decision=pricing_decision,
+                            reservation_usage_known=pricing_decision is not None and not pricing_failed,
+                            provider_request_id=pricing_capture.provider_request_id if pricing_capture else None,
+                            destination_region=pricing_capture.routing.endpoint_region if pricing_capture and pricing_capture.routing else None,
+                        )
+
+                await persist_usage_with_retry(write_usage, request_id=request_id, retry_safe=pricing_decision is not None)
             except Exception as exc:
+                record_health_event(METERING_WRITE_FAILURES)
                 logger.warning(
                     "Failed to write usage_logs row",
-                    extra={"error": str(exc), "model": model},
+                    extra={"request_id": request_id, **usage_write_error_details(exc)},
                 )
                 await reconcile_budget_reservation(
                     context=context,
@@ -670,7 +714,9 @@ class ProxyService(IProxyService):
                     output_tokens=0,
                     actual_cost_usd=Decimal("0"),
                     usage_known=False,
+                    retain_failed_bound=True,
                 )
+                return False
             else:
                 if not pricing_failed:
                     await reconcile_budget_reservation(
@@ -681,12 +727,14 @@ class ProxyService(IProxyService):
                         output_tokens=output_tokens,
                         **({"actual_cost_usd": actual_cost} if actual_cost is not None else {}),
                     )
+            return not pricing_failed
 
         if pricing_capture is not None and pricing_capture.routing is not None:
             try:
                 async with asyncio.timeout(CLAUDE_PERSISTENCE_TIMEOUT_SECONDS):
-                    await persist_usage()
+                    return await persist_usage()
             except TimeoutError:
+                record_health_event(METERING_UNCONFIRMED)
                 # The existing estimate remains held; never perform an unbounded
                 # second Redis attempt after this finalizer's deadline.
                 context._budget_accounting_incomplete = True
@@ -694,8 +742,9 @@ class ProxyService(IProxyService):
                     "Claude usage persistence timed out; keeping measured pricing decision for settlement",
                     extra={"request_id": request_id, "pricing_decision_available": pricing_capture.decision is not None},
                 )
+                return False
         else:
-            await persist_usage()
+            return await persist_usage()
 
     @staticmethod
     def _cache_tokens_from_usage(usage: dict[str, Any]) -> tuple[int | None, int | None]:
@@ -767,11 +816,28 @@ class ProxyService(IProxyService):
         else:
             return response.model_dump()
 
+    async def count_bedrock_tokens(self, model_id: str, body: dict[str, Any], context: TokenContext) -> int | None:
+        """Count with the same selected Bedrock identity used for inference."""
+        decision = await resolve_routing_decision(context)
+        client = await self._client_for_request(decision, context)
+        try:
+            if not hasattr(client, "count_tokens"):
+                return None
+            count_model_id = model_id
+            if model_id.startswith(("global.anthropic.", "us.anthropic.", "eu.anthropic.")):
+                count_model_id = model_id.split(".", 1)[1]
+            result = await client.count_tokens(modelId=count_model_id, input={"invokeModel": {"body": json.dumps(body)}})
+            return result["inputTokens"]
+        finally:
+            if getattr(client, "_disposable", False):
+                with suppress(Exception):
+                    await client.aclose()
+
     async def _client_for_request(self, decision: RoutingDecision, context: TokenContext) -> Any:
         # SDK retries can repeat a billed invocation after an ambiguous response.
         # A bounded request reserves exactly one attempt; retries must return to
         # gateway admission with a new server-owned spend ID.
-        if context._policy_flow_target is not None:
+        if context._policy_flow_target is not None or context._dev_box_host_run_id is not None or single_attempt_internal_model_call.get():
             return await self._pool_service.get_client(decision.credentials, single_attempt=True)
         return await self._pool_service.get_client(decision.credentials)
 
@@ -816,12 +882,27 @@ class ProxyService(IProxyService):
                 try:
                     request_body = json.dumps(request.model_dump(exclude_none=True))
                     if context is not None:
+                        from src.agentauth.native_test_model import begin_native_model_dispatch
+
+                        await begin_native_model_dispatch(
+                            context,
+                            body=request_body.encode(),
+                            model=model_id,
+                            route="/v1/messages",
+                            request_id=pricing_capture.request_id if pricing_capture else None,
+                            client=client,
+                        )
                         context._budget_provider_started = True
                     response = await client.invoke_model(
                         modelId=model_id,
                         body=request_body,
                         contentType="application/json",
                         accept="application/json",
+                        **(
+                            {"_native_test_before_submit": context._native_test_handoff.before_submit}
+                            if context is not None and context._native_test_handoff is not None
+                            else {}
+                        ),
                     )
                 except Exception as exc:
                     if pricing_capture is not None:
@@ -840,6 +921,10 @@ class ProxyService(IProxyService):
             # indistinguishable, which meant the feature's single most common failure
             # mode read as an outage.
             raise _classify_bedrock_failure(e, model_id=model_id, target=target) from e
+        finally:
+            if getattr(client, "_disposable", False):
+                with suppress(Exception):
+                    await client.aclose()
 
     async def _invoke_bedrock_stream(
         self,
@@ -849,6 +934,7 @@ class ProxyService(IProxyService):
         target: BedrockTarget | None = None,
         pricing_capture: PricingCapture | None = None,
         context: TokenContext | None = None,
+        operation_timeout: float | None = None,
     ) -> AsyncIterator[bytes]:
         """Invoke Bedrock model with streaming.
 
@@ -875,6 +961,13 @@ class ProxyService(IProxyService):
             attributes={"bedrock.model_id": model_id},
         )
         span = span_ctx.__enter__()
+        loop = asyncio.get_running_loop()
+        if operation_timeout is None:
+            operation_timeout = getattr(self, "_bedrock_stream_operation_timeout", None)
+        deadline = loop.time() + operation_timeout if operation_timeout is not None else float("inf")
+        submission_guard = threading.Event() if hasattr(client, "_streaming_client") else None
+        pending_read: asyncio.Task | None = None
+        invoke_task: asyncio.Task | None = None
 
         if pricing_capture is not None:
             pricing_capture.forwarded(client, model_id, stream=True)
@@ -884,12 +977,35 @@ class ProxyService(IProxyService):
             try:
                 request_body = json.dumps(request.model_dump(exclude_none=True))
                 if context is not None:
+                    from src.agentauth.native_test_model import begin_native_model_dispatch
+
+                    await begin_native_model_dispatch(
+                        context,
+                        body=request_body.encode(),
+                        model=model_id,
+                        route="/v1/messages",
+                        request_id=pricing_capture.request_id if pricing_capture else None,
+                        client=client,
+                        stream=True,
+                    )
                     context._budget_provider_started = True
-                response = await client.invoke_model_with_response_stream(
-                    modelId=model_id,
-                    body=request_body,
-                    contentType="application/json",
-                    accept="application/json",
+                invoke_task = asyncio.create_task(
+                    client.invoke_model_with_response_stream(
+                        modelId=model_id,
+                        body=request_body,
+                        contentType="application/json",
+                        accept="application/json",
+                        **({"_submission_guard": submission_guard} if submission_guard is not None else {}),
+                        **(
+                            {"_native_test_before_submit": context._native_test_handoff.before_submit}
+                            if context is not None and context._native_test_handoff is not None
+                            else {}
+                        ),
+                    )
+                )
+                response = await asyncio.wait_for(
+                    asyncio.shield(invoke_task),
+                    timeout=max(0, deadline - loop.time()),
                 )
             except Exception as exc:
                 if pricing_capture is not None:
@@ -899,6 +1015,7 @@ class ProxyService(IProxyService):
             if pricing_capture is not None:
                 pricing_capture.response({}, response)
             event_stream = response.get("body")
+            invoke_task = None
             if event_stream is not None:
                 chunk_count = 0
                 iterator = iter(event_stream)
@@ -906,7 +1023,12 @@ class ProxyService(IProxyService):
                     # Pull one event at a time off the event loop. This preserves
                     # backpressure and propagates SDK reader exceptions directly,
                     # without a background reader writing to an asyncio.Queue.
-                    event = await asyncio.to_thread(next, iterator, None)
+                    pending_read = asyncio.create_task(asyncio.to_thread(next, iterator, None))
+                    try:
+                        event = await asyncio.wait_for(asyncio.shield(pending_read), timeout=max(0, deadline - loop.time()))
+                    finally:
+                        if pending_read.done():
+                            pending_read = None
                     if event is None:
                         break
                     chunk = event.get("chunk", {}).get("bytes")
@@ -924,12 +1046,46 @@ class ProxyService(IProxyService):
             # Issue #4744 (§5.1): same discrimination as the non-streaming path.
             raise _classify_bedrock_failure(e, model_id=model_id, target=target) from e
         finally:
-            # Closing the SDK body also releases a blocking read on disconnect.
-            close = getattr(event_stream, "close", None)
-            if close is not None:
-                with suppress(Exception):
-                    close()
-            span_ctx.__exit__(None, None, None)
+
+            async def close_resources() -> None:
+                if invoke_task is not None and event_stream is None:
+
+                    async def close_late_response() -> None:
+                        try:
+                            late_response = await invoke_task
+                            late_body = late_response.get("body")
+                            if late_body is not None:
+                                await asyncio.to_thread(late_body.close)
+                        except Exception:
+                            pass
+
+                    if invoke_task.done():
+                        asyncio.create_task(close_late_response())
+                    else:
+                        invoke_task.add_done_callback(lambda _: asyncio.create_task(close_late_response()))
+                # Closing the body also releases an in-flight SDK read.
+                close = getattr(event_stream, "close", None)
+                if close is not None:
+                    with suppress(Exception, asyncio.TimeoutError):
+                        await asyncio.wait_for(asyncio.to_thread(close), BEDROCK_STREAM_CLOSE_TIMEOUT_SECONDS)
+                if pending_read is not None:
+                    with suppress(Exception, asyncio.TimeoutError):
+                        await asyncio.wait_for(asyncio.shield(pending_read), BEDROCK_STREAM_CLOSE_TIMEOUT_SECONDS)
+                    if not pending_read.done():
+                        pending_read.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+                if getattr(client, "_disposable", False):
+                    with suppress(Exception, asyncio.TimeoutError):
+                        await asyncio.wait_for(client.aclose(), BEDROCK_STREAM_CLOSE_TIMEOUT_SECONDS)
+
+            close_task = asyncio.create_task(close_resources())
+            if submission_guard is not None:
+                submission_guard.set()
+            try:
+                completed, _ = await asyncio.wait({close_task}, timeout=min(BEDROCK_STREAM_CLOSE_TIMEOUT_SECONDS, max(0, deadline - loop.time())))
+                if not completed:
+                    close_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+            finally:
+                span_ctx.__exit__(None, None, None)
 
     async def _invoke_openai_response(
         self,
@@ -976,7 +1132,7 @@ class ProxyService(IProxyService):
             raise
         finally:
             latency_ms = (time.time() - start_time) * 1000
-            await self._log_usage(
+            confirmed = await self._log_usage(
                 context=context,
                 model=model,
                 input_tokens=tokens_in,
@@ -989,6 +1145,8 @@ class ProxyService(IProxyService):
                 routing_decision=decision,
                 pricing_capture=pricing_capture,
             )
+            if status_code < 400 and pricing_capture is not None and not confirmed:
+                raise self._settlement_failure()
 
     async def _stream_openai_response(
         self,
@@ -1012,6 +1170,9 @@ class ProxyService(IProxyService):
         start_time = time.time()
         usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         status_code = 200
+        usage_finalized = False
+        stream_completed = False
+        pending_finish: bytes | None = None
         # Issue #4744: see `invoke_stream` — set before the try so the `finally`
         # settlement path always has a decision to record, even if resolution failed.
         decision = RoutingDecision()
@@ -1024,30 +1185,80 @@ class ProxyService(IProxyService):
                 client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture, context=context
             )
 
-            async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "openai", model, response_id):
-                # Extract usage from streaming chunks for logging
-                self._extract_usage_from_sse_chunk(chunk, usage)
-                yield chunk
-        except Exception:
-            status_code = 500
-            raise
-        finally:
-            latency_ms = (time.time() - start_time) * 1000
-            await self._log_usage(
-                context=context,
-                model=model,
-                input_tokens=usage["input_tokens"],
-                output_tokens=usage["output_tokens"],
-                cost_usd=0.0,
-                latency_ms=int(latency_ms),
-                status_code=status_code,
-                # Issue #4180: absent keys stay absent in the accumulator, so
-                # .get() yields None for "provider never reported it".
-                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
-                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
-                routing_decision=decision,
-                pricing_capture=pricing_capture,
+            async with aclosing(self._stream_handler.create_sse_response(bedrock_stream, "openai", model, response_id)) as stream:
+                async for chunk in stream:
+                    # Extract usage from streaming chunks for logging
+                    self._extract_usage_from_sse_chunk(chunk, usage)
+                    if chunk != b"data: [DONE]\n\n" and b'"finish_reason": "' in chunk:
+                        pending_finish = chunk
+                        continue
+                    if chunk == b"data: [DONE]\n\n":
+                        stream_completed = True
+                    if chunk == b"data: [DONE]\n\n" and pricing_capture is not None and not usage_finalized:
+                        usage_finalized = True
+                        confirmed = await self._log_usage(
+                            context=context,
+                            model=model,
+                            input_tokens=usage["input_tokens"],
+                            output_tokens=usage["output_tokens"],
+                            cost_usd=0.0,
+                            latency_ms=int((time.time() - start_time) * 1000),
+                            status_code=status_code,
+                            cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                            cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                            routing_decision=decision,
+                            pricing_capture=pricing_capture,
+                        )
+                        if not confirmed:
+                            status_code = 502
+                            yield self._settlement_failure_event()
+                            return
+                    if chunk == b"data: [DONE]\n\n" and pending_finish is not None:
+                        yield pending_finish
+                    yield chunk
+        except Exception as exc:
+            status_code = 502
+            logger.warning("OpenAI provider stream interrupted", extra={"error_type": type(exc).__name__})
+            yield (
+                b"event: error\ndata: "
+                + json.dumps(
+                    {"type": "error", "error": {"type": "upstream_stream_error", "message": "Provider stream interrupted", "retryable": False}}
+                ).encode()
+                + b"\n\n"
             )
+        finally:
+            if not stream_completed and status_code == 200:
+                status_code = 502
+            latency_ms = (time.time() - start_time) * 1000
+            if not usage_finalized:
+                await self._log_usage(
+                    context=context,
+                    model=model,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    cost_usd=0.0,
+                    latency_ms=int(latency_ms),
+                    status_code=status_code,
+                    # Issue #4180: absent keys stay absent in the accumulator, so
+                    # .get() yields None for "provider never reported it".
+                    cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                    cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                    routing_decision=decision,
+                    pricing_capture=pricing_capture,
+                )
+
+    @staticmethod
+    def _settlement_failure_event() -> bytes:
+        return (
+            b"event: error\ndata: "
+            + json.dumps(
+                {
+                    "type": "error",
+                    "error": {"type": "usage_settlement_unconfirmed", "message": "Model usage could not be confirmed.", "retryable": False},
+                }
+            ).encode()
+            + b"\n\n"
+        )
 
     async def _invoke_anthropic_response(
         self,
@@ -1089,12 +1300,17 @@ class ProxyService(IProxyService):
             # Issue #4180: raw dict, no default — preserves unreported-vs-zero
             cache_read, cache_creation = self._cache_tokens_from_usage(bedrock_response.usage)
             return self._translator.bedrock_to_anthropic(bedrock_response, model)
+        except BedrockInvocationError as error:
+            status_code = 500
+            if error.details and error.details.get("bedrock_error_code") == "ValidationException":
+                raise BedrockInvocationError(error.message, bedrock_error_code="ValidationException", status_code=400) from error
+            raise
         except Exception:
             status_code = 500
             raise
         finally:
             latency_ms = (time.time() - start_time) * 1000
-            await self._log_usage(
+            confirmed = await self._log_usage(
                 context=context,
                 model=model,
                 input_tokens=tokens_in,
@@ -1107,6 +1323,8 @@ class ProxyService(IProxyService):
                 routing_decision=decision,
                 pricing_capture=pricing_capture,
             )
+            if status_code < 400 and pricing_capture is not None and not confirmed:
+                raise self._settlement_failure()
 
     async def _stream_anthropic_response(
         self,
@@ -1130,6 +1348,8 @@ class ProxyService(IProxyService):
         start_time = time.time()
         usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         status_code = 200
+        stream_started = False
+        usage_finalized = False
         # Issue #4744: see `invoke_stream` — set before the try so the `finally`
         # settlement path always has a decision to record, even if resolution failed.
         decision = RoutingDecision()
@@ -1144,27 +1364,55 @@ class ProxyService(IProxyService):
 
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "anthropic", model, response_id):
                 self._extract_usage_from_sse_chunk(chunk, usage)
+                stream_started = True
+                if chunk.startswith(b"event: error\n"):
+                    status_code = 500
+                if chunk.startswith(b"event: message_stop\n") and pricing_capture is not None:
+                    usage_finalized = True
+                    confirmed = await self._log_usage(
+                        context=context,
+                        model=model,
+                        input_tokens=usage["input_tokens"],
+                        output_tokens=usage["output_tokens"],
+                        cost_usd=0.0,
+                        latency_ms=int((time.time() - start_time) * 1000),
+                        status_code=status_code,
+                        cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                        cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                        routing_decision=decision,
+                        pricing_capture=pricing_capture,
+                    )
+                    if not confirmed:
+                        yield self._settlement_failure_event()
+                        return
                 yield chunk
+                if status_code == 500:
+                    break
         except Exception:
             status_code = 500
-            raise
+            if not stream_started:
+                raise
+            logger.exception("Anthropic stream interrupted after output started")
+            error = {"type": "error", "error": {"type": "api_error", "message": "Upstream stream interrupted"}}
+            yield f"event: error\ndata: {json.dumps(error)}\n\n".encode()
         finally:
             latency_ms = (time.time() - start_time) * 1000
-            await self._log_usage(
-                context=context,
-                model=model,
-                input_tokens=usage["input_tokens"],
-                output_tokens=usage["output_tokens"],
-                cost_usd=0.0,
-                latency_ms=int(latency_ms),
-                status_code=status_code,
-                # Issue #4180: absent keys stay absent in the accumulator, so
-                # .get() yields None for "provider never reported it".
-                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
-                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
-                routing_decision=decision,
-                pricing_capture=pricing_capture,
-            )
+            if not usage_finalized:
+                await self._log_usage(
+                    context=context,
+                    model=model,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    cost_usd=0.0,
+                    latency_ms=int(latency_ms),
+                    status_code=status_code,
+                    # Issue #4180: absent keys stay absent in the accumulator, so
+                    # .get() yields None for "provider never reported it".
+                    cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                    cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                    routing_decision=decision,
+                    pricing_capture=pricing_capture,
+                )
 
     async def _invoke_bedrock_response(
         self,
@@ -1209,7 +1457,7 @@ class ProxyService(IProxyService):
             raise
         finally:
             latency_ms = (time.time() - start_time) * 1000
-            await self._log_usage(
+            confirmed = await self._log_usage(
                 context=context,
                 model=bedrock_model_id,
                 input_tokens=tokens_in,
@@ -1222,6 +1470,8 @@ class ProxyService(IProxyService):
                 routing_decision=decision,
                 pricing_capture=pricing_capture,
             )
+            if status_code < 400 and pricing_capture is not None and not confirmed:
+                raise self._settlement_failure()
 
     async def _stream_bedrock_response(
         self,
@@ -1243,6 +1493,7 @@ class ProxyService(IProxyService):
         start_time = time.time()
         usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         status_code = 200
+        usage_finalized = False
         # Issue #4744: see `invoke_stream` — set before the try so the `finally`
         # settlement path always has a decision to record, even if resolution failed.
         decision = RoutingDecision()
@@ -1260,6 +1511,24 @@ class ProxyService(IProxyService):
                 async for chunk in stream:
                     has_chunks = True
                     self._extract_usage_from_sse_chunk(chunk, usage)
+                    if chunk.startswith(b"event: message_stop\n") and pricing_capture is not None:
+                        usage_finalized = True
+                        confirmed = await self._log_usage(
+                            context=context,
+                            model=bedrock_model_id,
+                            input_tokens=usage["input_tokens"],
+                            output_tokens=usage["output_tokens"],
+                            cost_usd=0.0,
+                            latency_ms=int((time.time() - start_time) * 1000),
+                            status_code=status_code,
+                            cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                            cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                            routing_decision=decision,
+                            pricing_capture=pricing_capture,
+                        )
+                        if not confirmed:
+                            yield self._settlement_failure_event()
+                            return
                     yield chunk
             if not has_chunks:
                 raise BedrockInvocationError("Bedrock returned an empty stream")
@@ -1271,21 +1540,22 @@ class ProxyService(IProxyService):
             raise
         finally:
             latency_ms = (time.time() - start_time) * 1000
-            await self._log_usage(
-                context=context,
-                model=bedrock_model_id,
-                input_tokens=usage["input_tokens"],
-                output_tokens=usage["output_tokens"],
-                cost_usd=0.0,
-                latency_ms=int(latency_ms),
-                status_code=status_code,
-                # Issue #4180: absent keys stay absent in the accumulator, so
-                # .get() yields None for "provider never reported it".
-                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
-                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
-                routing_decision=decision,
-                pricing_capture=pricing_capture,
-            )
+            if not usage_finalized:
+                confirmed = await self._log_usage(
+                    context=context,
+                    model=bedrock_model_id,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    cost_usd=0.0,
+                    latency_ms=int(latency_ms),
+                    status_code=status_code,
+                    cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                    cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                    routing_decision=decision,
+                    pricing_capture=pricing_capture,
+                )
+                if status_code < 400 and pricing_capture is not None and not confirmed:
+                    raise self._settlement_failure()
 
     # =========================================================================
     # Streaming Usage Extraction

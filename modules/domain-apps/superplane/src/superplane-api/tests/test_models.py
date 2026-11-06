@@ -246,9 +246,11 @@ def test_all_tables_registered():
         # `app/models/operation_budget.py`.
         "operation_budget_reservations",
         "operation_approvals",
+        "operation_reauthorizations",
         "operation_settlement_receipts",
         "workspace_bootstrap_read_tokens",
         "workspace_lifecycle_artifacts",
+        "workspace_partial_apply_preparations",
         "workspace_lifecycle_effects",
         "workspace_lifecycle_control_operations",
         # Governed controller assignments, async handles and accounting (018).

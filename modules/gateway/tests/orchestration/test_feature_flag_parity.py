@@ -282,3 +282,26 @@ class TestUnconfiguredRuntimeRemainsClosed:
         source = Path(inspect.getfile(features_routes)).read_text().lower()
         for signal in ("deprecationwarning", "deprecated", "will be removed", "sunset"):
             assert signal not in source, f"features/routes.py contains a deprecation signal ({signal!r})"
+
+
+# --- Chief-of-Staff surfaces (#7197): rendered per environment, never a literal ---------
+
+_COS_FLAGS = {
+    "FEATURE_CHAT_ENABLED": "/adp/${ENVIRONMENT}/gateway/feature-chat",
+    "FEATURE_ASSISTANT_UI_ENABLED": "/adp/${ENVIRONMENT}/gateway/feature-assistant-ui",
+    "FEATURE_CREW_DASHBOARD": "/adp/${ENVIRONMENT}/gateway/feature-crew-dashboard",
+    "CREW_PROXY_ENABLED": "/adp/${ENVIRONMENT}/gateway/crew-proxy-enabled",
+    "CREW_DASHBOARD_ORIGIN": "/adp/${ENVIRONMENT}/gateway/crew-dashboard-origin",
+}
+
+
+@pytest.mark.parametrize("env_var", sorted(_COS_FLAGS))
+def test_chief_of_staff_flags_are_rendered_per_environment_not_committed(env_var):
+    """A committed literal armed (or disarmed) every environment on its next deploy:
+    FEATURE_CHAT_ENABLED was hard-coded "false", so the delivered chat, assistant UI
+    and Crew surfaces could not be enabled on dev without editing the manifest."""
+    manifest = _K8S_DEPLOYMENT.read_text()
+    assert f"__{env_var}__" in manifest, f"{env_var} must be a per-environment placeholder in deployment.yaml"
+    workflow = _DEPLOY_WORKFLOW.read_text()
+    assert _COS_FLAGS[env_var] in workflow, f"gateway-deploy.yml must read {env_var} from {_COS_FLAGS[env_var]}"
+    assert f"s|__{env_var}__|${{{env_var}}}|g" in workflow, f"gateway-deploy.yml must render __{env_var}__"

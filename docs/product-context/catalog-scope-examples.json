@@ -1,0 +1,35 @@
+{
+  "clock":"2026-10-20T12:00:00Z",
+  "source_revision":"catalog-r1",
+  "projections":[
+    {"kind":"portfolio","id":"commerce","project_id":"project-checkout","source":"adp.example-catalog","record_revision":"1"},
+    {"kind":"portfolio","id":"commerce","project_id":"project-accounts","source":"adp.example-catalog","record_revision":"1"},
+    {"kind":"portfolio","id":"shared","project_id":"project-accounts","source":"adp.example-catalog","record_revision":"1"},
+    {"kind":"portfolio","id":"hidden","project_id":"project-foreign","source":"adp.example-catalog","record_revision":"1"}
+  ],
+  "memberships":[
+    {"portfolio_id":"commerce","product_id":"checkout","project_id":"project-checkout"},
+    {"portfolio_id":"commerce","product_id":"accounts","project_id":"project-accounts"},
+    {"portfolio_id":"shared","product_id":"accounts","project_id":"project-accounts"},
+    {"portfolio_id":"hidden","product_id":"foreign-product","project_id":"project-foreign"}
+  ],
+  "cases":[
+    {"name":"overlapping-projects-deduplicated","action":"list","grants":["project-checkout","project-accounts"],"expect":{"status":200,"items":["commerce","shared"]}},
+    {"name":"first-page-filter-before-fill","action":"list","grants":["project-checkout","project-accounts"],"limit":1,"expect":{"status":200,"items":["commerce"],"next_cursor":true}},
+    {"name":"second-page-no-duplicate","action":"list","grants":["project-checkout","project-accounts"],"limit":1,"cursor":{"actor":"example-actor","grants":["project-accounts","project-checkout"],"sources":["adp.example-catalog"],"filter":"portfolios","source_revision":"catalog-r1","limit":1,"last":"commerce","expires":"2026-10-20T12:15:00Z"},"expect":{"status":200,"items":["shared"]}},
+    {"name":"authorized-members-only","action":"members","id":"commerce","grants":["project-checkout"],"expect":{"status":200,"items":["checkout"]}},
+    {"name":"no-hidden-count","action":"list","grants":["project-checkout"],"expect":{"status":200,"items":["commerce"]}},
+    {"name":"revoked-project-cursor","action":"list","grants":["project-checkout"],"limit":1,"cursor":{"actor":"example-actor","grants":["project-accounts","project-checkout"],"sources":["adp.example-catalog"],"filter":"portfolios","source_revision":"catalog-r1","limit":1,"last":"commerce","expires":"2026-10-20T12:15:00Z"},"expect":{"status":400,"code":"invalid_cursor"}},
+    {"name":"expired-cursor","action":"list","grants":["project-checkout"],"cursor":{"actor":"example-actor","grants":["project-checkout"],"sources":["adp.example-catalog"],"filter":"portfolios","source_revision":"catalog-r1","limit":50,"last":"commerce","expires":"2026-10-20T11:59:59Z"},"expect":{"status":400,"code":"invalid_cursor"}},
+    {"name":"foreign-id","action":"get","id":"hidden","grants":["project-checkout"],"expect":{"status":404,"code":"not_found"}},
+    {"name":"nonexistent-id","action":"get","id":"absent","grants":["project-checkout"],"expect":{"status":404,"code":"not_found"}},
+    {"name":"foreign-mutation","action":"mutate","id":"hidden","grants":["project-checkout"],"editor":true,"writes":["project-checkout"],"expect":{"status":404,"code":"not_found"}},
+    {"name":"visible-but-no-edit-right","action":"mutate","id":"commerce","grants":["project-checkout"],"editor":false,"writes":["project-checkout"],"expect":{"status":403,"code":"permission_denied"}},
+    {"name":"visible-but-no-project-write","action":"mutate","id":"commerce","product_project":"project-accounts","grants":["project-checkout","project-accounts"],"editor":true,"writes":["project-checkout"],"expect":{"status":403,"code":"permission_denied"}},
+    {"name":"stale-expected-revision","action":"mutate","id":"commerce","product_project":"project-checkout","grants":["project-checkout"],"editor":true,"writes":["project-checkout"],"expected_revision":"0","current_revision":"1","expect":{"status":412,"code":"stale_revision"}},
+    {"name":"valid-membership-mutation","action":"mutate","id":"commerce","product_project":"project-checkout","grants":["project-checkout"],"editor":true,"writes":["project-checkout"],"expect":{"status":201,"receipt":true}},
+    {"name":"revoked-source","action":"get","id":"commerce","grants":["project-checkout"],"sources":[],"expect":{"status":404,"code":"not_found"}},
+    {"name":"revoked-project-mutation","action":"mutate","id":"commerce","product_project":"project-accounts","grants":["project-checkout"],"editor":true,"writes":["project-checkout"],"expect":{"status":404,"code":"not_found"}},
+    {"name":"foreign-member-rejected","action":"mutate","id":"commerce","product_project":"project-foreign","grants":["project-checkout"],"editor":true,"writes":["project-checkout"],"expect":{"status":404,"code":"not_found"}}
+  ]
+}

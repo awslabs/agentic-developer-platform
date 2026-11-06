@@ -26,7 +26,8 @@ resource "aws_iam_role_policy" "context_deployment" {
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     { Effect = "Allow", Action = ["eks:DescribeCluster"], Resource = "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${var.cluster_name}" },
     { Effect = "Allow", Action = ["ssm:GetParameter"], Resource = [for path in [
-      "agent-context/ingestion-queue-url", "agent-context/neptune-endpoint", "agent-context/neptune-port", "agent-context/neptune-bulk-load-role-arn", "rds/endpoint"
+      "agent-context/ingestion-queue-url", "agent-context/ingestion-receiver-role-arn",
+      "agent-context/neptune-endpoint", "agent-context/neptune-port", "agent-context/neptune-bulk-load-role-arn", "rds/endpoint"
     ] : "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/${path}"] },
     { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = data.aws_secretsmanager_secret.context_callback[0].arn },
     { Effect = "Allow", Action = ["ecr:DescribeImages"], Resource = [for image in [

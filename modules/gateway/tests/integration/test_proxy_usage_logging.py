@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from src.proxy.service import ProxyService
+from src.shared.exceptions import BedrockGatewayError
 from src.shared.schemas.auth import TokenContext
 
 
@@ -333,11 +334,10 @@ class TestMessagesUsageLogging:
 
 
 class TestUsageLoggingResilience:
-    """Verify usage logging failures don't break the proxy."""
+    """Verify usage persistence failures withhold successful model completion."""
 
     @pytest.mark.asyncio
-    async def test_usage_logging_failure_does_not_break_invoke_model(self, agent_token_context):
-        """If usage logging fails, invoke_model() should still succeed."""
+    async def test_usage_logging_failure_withholds_invoke_model_success(self, agent_token_context):
         from tests.proxy.conftest import MockBedrockClient, MockPoolService
 
         mock_client = MockBedrockClient()
@@ -350,18 +350,21 @@ class TestUsageLoggingResilience:
             "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
         }
 
-        # Make get_session_factory raise to simulate DB unavailability
-        with patch(
-            "src.proxy.service.get_session_factory",
-            side_effect=RuntimeError("DB down"),
+        with (
+            patch(
+                "src.proxy.service.get_session_factory",
+                side_effect=RuntimeError("DB down"),
+            ),
+            pytest.raises(BedrockGatewayError) as failure,
         ):
-            result = await proxy.invoke_model("claude-3.5-sonnet", body, agent_token_context, stream=False)
+            await proxy.invoke_model("claude-3.5-sonnet", body, agent_token_context, stream=False)
 
-        assert result is not None
+        assert failure.value.error == "usage_settlement_unconfirmed"
+        assert failure.value.status_code == 502
+        assert failure.value.details == {"retryable": False}
 
     @pytest.mark.asyncio
-    async def test_usage_logging_failure_does_not_break_chat_completions(self, agent_token_context):
-        """If usage logging fails, chat_completions() should still succeed."""
+    async def test_usage_logging_failure_withholds_chat_completions_success(self, agent_token_context):
         from src.proxy.schemas import OpenAIChatCompletionRequest, OpenAIMessage, OpenAIRole
         from tests.proxy.conftest import MockBedrockClient, MockPoolService
 
@@ -376,17 +379,21 @@ class TestUsageLoggingResilience:
             stream=False,
         )
 
-        with patch(
-            "src.proxy.service.get_session_factory",
-            side_effect=RuntimeError("DB down"),
+        with (
+            patch(
+                "src.proxy.service.get_session_factory",
+                side_effect=RuntimeError("DB down"),
+            ),
+            pytest.raises(BedrockGatewayError) as failure,
         ):
-            result = await proxy.chat_completions(request, agent_token_context)
+            await proxy.chat_completions(request, agent_token_context)
 
-        assert result is not None
+        assert failure.value.error == "usage_settlement_unconfirmed"
+        assert failure.value.status_code == 502
+        assert failure.value.details == {"retryable": False}
 
     @pytest.mark.asyncio
-    async def test_usage_logging_failure_does_not_break_messages(self, agent_token_context):
-        """If usage logging fails, messages() should still succeed."""
+    async def test_usage_logging_failure_withholds_messages_success(self, agent_token_context):
         from src.proxy.schemas import AnthropicMessage, AnthropicMessagesRequest, AnthropicRole
         from tests.proxy.conftest import MockBedrockClient, MockPoolService
 
@@ -401,13 +408,18 @@ class TestUsageLoggingResilience:
             stream=False,
         )
 
-        with patch(
-            "src.proxy.service.get_session_factory",
-            side_effect=RuntimeError("DB down"),
+        with (
+            patch(
+                "src.proxy.service.get_session_factory",
+                side_effect=RuntimeError("DB down"),
+            ),
+            pytest.raises(BedrockGatewayError) as failure,
         ):
-            result = await proxy.messages(request, agent_token_context)
+            await proxy.messages(request, agent_token_context)
 
-        assert result is not None
+        assert failure.value.error == "usage_settlement_unconfirmed"
+        assert failure.value.status_code == 502
+        assert failure.value.details == {"retryable": False}
 
 
 class TestStreamingUsageTokenCounts:

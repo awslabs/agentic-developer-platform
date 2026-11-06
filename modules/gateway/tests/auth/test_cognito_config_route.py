@@ -52,7 +52,23 @@ class TestCognitoConfigRoute:
             "cli_client_id": "cli-public-client",
             "identity_pool_id": "",
             "region": "us-east-1",
+            "native_credential_approval_enabled": False,
         }
+
+    @pytest.mark.parametrize("enabled", ["true", "false"])
+    def test_native_approval_advertised_only_after_complete_configuration(self, monkeypatch, enabled):
+        monkeypatch.setenv("ADP_NATIVE_CREDENTIALS_ENABLED", enabled)
+        monkeypatch.setenv("ADP_NATIVE_CREDENTIALS_ISSUER", "https://gateway.example.test")
+        monkeypatch.setenv("ADP_NATIVE_CREDENTIALS_APPROVAL_ORIGIN", "https://gateway.example.test")
+        monkeypatch.setenv("ADP_NATIVE_CREDENTIALS_KEY_ID", "native-v1")
+        monkeypatch.setenv("ADP_NATIVE_CREDENTIALS_KEY_ARN", "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-1111-1111-111111111111")
+        with (
+            patch("src.auth.routes.get_settings", return_value=_settings()),
+            patch("src.auth.native_credential_authority.get_settings", return_value=_settings()),
+        ):
+            assert client.get(ROUTE).json()["native_credential_approval_enabled"] is (enabled == "true")
+            monkeypatch.delenv("ADP_NATIVE_CREDENTIALS_KEY_ARN")
+            assert client.get(ROUTE).json()["native_credential_approval_enabled"] is False
 
     def test_identity_pool_id_is_always_empty(self):
         """The gateway does not know it, and neither `token` nor `import` uses it."""
@@ -91,7 +107,7 @@ class TestCognitoConfigRoute:
             resp = client.get(ROUTE)
 
         body = resp.json()
-        assert set(body) == {"user_pool_id", "client_id", "cli_client_id", "identity_pool_id", "region"}
+        assert set(body) == {"user_pool_id", "client_id", "cli_client_id", "identity_pool_id", "region", "native_credential_approval_enabled"}
         lowered = resp.text.lower()
         for forbidden in ("secret", "password", "email", "sub", "token"):
             assert forbidden not in lowered

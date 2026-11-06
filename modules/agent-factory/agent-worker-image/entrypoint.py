@@ -95,6 +95,64 @@ CODEX_PERSONA_PREFIX = "agent-codex-"
 SHARED_CODEX_PERSONAS = frozenset({"agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement"})
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
+
+def engine_operations_story(envelope: dict, environ: dict | None = None) -> bool:
+    env = environ if environ is not None else os.environ
+    graph = envelope.get("orchestration") or {}
+    return (
+        env.get("ADP_ENGINE_OPERATIONS_EXECUTOR", "").lower() in {"true", "1"}
+        and envelope.get("persona") in {"operations", "agent-codex-operations"}
+        and bool(graph.get("node_id"))
+        and graph.get("executor_role") == "operate"
+    )
+
+def record_failed_operations_report(run_report, raw: str | None, *, persona: str, run_id: str) -> bool:
+    """Attach a failed story's bounded report to its run before the terminal failure.
+
+    Returns True when a valid report was recorded. Invalid or missing reports are
+    skipped silently; the terminal failure is recorded by the caller either way.
+    """
+    if not raw:
+        return False
+    try:
+        validated = validated_operations_report(raw, persona=persona, run_id=run_id)
+        run_report.operations_report(validated)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    except run_report.RunReportError as exc:
+        logger.warning("Failed-story operations report deferred: %s", exc.code)
+        return False
+    logger.info("Operations report recorded for the failed attempt")
+    return True
+
+
+def operations_failure_details(result, *, aborted: bool) -> dict:
+    """Terminal failure body for an operations story, in the gateway's accepted shape.
+
+    The gateway's terminal report validates ``failure`` as ``{category, exit_code}``;
+    any other shape is a 422, the attempt is never recorded as failed, and the
+    engine only learns of it when the stall watchdog fires.
+    """
+    from lib.codex_failure import failure_details
+
+    returncode = int(getattr(result, "returncode", 0) or 0) if result is not None else 0
+    if result is not None and (returncode != 0 or aborted):
+        return failure_details(result, aborted=aborted)
+    # The worker finished but produced no bounded, verified report.
+    return {"category": "contract", "exit_code": 1}
+
+
+def validated_operations_report(raw: str, *, persona: str, run_id: str) -> str:
+    if len(raw.encode("utf-8")) > 24576:
+        raise ValueError("operations report exceeds bound")
+    report = json.loads(raw)
+    if not isinstance(report, dict) or not isinstance(report.get("report"), str) or not 0 < len(report["report"].encode()) <= 12000:
+        raise ValueError("operations report missing or exceeds bound")
+    if persona == "agent-codex-operations" and report.get("run_id") != run_id:
+        raise ValueError("operations report run mismatch")
+    return report["report"]
+
+
 # Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
 #
 # Issue #4747 (ruling 3 of #4692): `user` routed Bedrock through the customer's
@@ -181,16 +239,20 @@ def persona_runtime(persona: str) -> str:
     return "claude"
 
 
-def worker_command(persona: str) -> list[str]:
+def worker_command(persona: str, *, operations_story: bool = False) -> list[str]:
     """Return the packaged adapter command for a persona.
 
     New Codex personas extend this one allow-list without changing the queue
     contract, KEDA resources, or container image.
     """
     if persona_runtime(persona) == "claude":
+        if persona == "operations" and operations_story:
+            return ["node", "/app/dist/operations-story-entry.js"]
         return ["node", AGENT_BINARY]
     if persona == "agent-codex-reviewer":
         return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
+    if persona == "agent-codex-operations" and operations_story:
+        return ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]
     if persona in {"agent-codex-developer", "agent-codex-architect"}:
         return ["node", "/app/codex-reviewer/dist/developer-entry.js", "--embedded"]
     if persona in SHARED_CODEX_PERSONAS:
@@ -423,7 +485,33 @@ def _broker_installation_token(
             raise ValueError("missing token or app ID")
     except (ValueError, TypeError, AttributeError):
         raise RuntimeError("GitHub broker returned an unusable token or expiry") from None
+    _remember_broker_token_repositories(result.get("repositories"), f"{repo_owner}/{repo_name}")
     return result["token"], str(result["app_id"]), expires_at
+
+
+# Issue #9550: the repositories the gateway minted the run's token for. The run's
+# own repository is always present; more entries only when the gateway proved the
+# run's repository is a source of exactly one Product that binds others in the same
+# installation. Exported to the agent as ``TARGET_REPOS`` so the hosted AIDLC emit
+# step can file stories in their own repositories.
+_BROKER_TOKEN_REPOSITORIES: list[str] = []
+_REPOSITORY_FULL_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+
+
+def _remember_broker_token_repositories(listed: object, primary: str) -> None:
+    repositories = [primary]
+    if isinstance(listed, list):
+        for item in listed:
+            if isinstance(item, str) and _REPOSITORY_FULL_NAME.fullmatch(item) and item not in repositories:
+                repositories.append(item)
+    _BROKER_TOKEN_REPOSITORIES[:] = repositories
+
+
+def broker_token_repositories(primary: str) -> list[str]:
+    """Repositories the current GitHub token reaches; ``[primary]`` when not brokered."""
+    if _BROKER_TOKEN_REPOSITORIES and _BROKER_TOKEN_REPOSITORIES[0] == primary:
+        return list(_BROKER_TOKEN_REPOSITORIES)
+    return [primary]
 
 
 class PatResolutionResult:
@@ -1169,6 +1257,27 @@ def _handle_gitlab_mention(
     return 1 if ack_failed else 0
 
 
+def _refuse_codex_pr_bootstrap(message_id, arrived_at, bootstrap_log, acknowledge):
+    from lib.codex_pr_context import record_context_refusal
+
+    failure = "PR review context verification failed before review execution."
+    bootstrap_log.step_error(4, "pr_review_context", RuntimeError(failure))
+    try:
+        if authority_enabled():
+            from lib.status_gateway_client import record_status
+
+            record_context_refusal(record_status, acknowledge)
+        else:
+            _fail_bootstrap_status(message_id, arrived_at, failure)
+    except Exception:
+        # A lost/refused status or acknowledgement remains unresolved. No
+        # terminal claim or delivery removal without the authenticated receipt.
+        bootstrap_log.close()
+        return AGENT_EXIT_RETRYABLE
+    bootstrap_log.close()
+    return 1
+
+
 def _fail_bootstrap_status(message_id: str, arrived_at: str, error_message: str) -> None:
     """Mark the webhook-events row failed with a concrete reason. Issue #4030.
 
@@ -1569,6 +1678,13 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         raise
     tenant_id = envelope["tenant_id"]
     persona = envelope["persona"]
+    orchestration = envelope.get("orchestration")
+    orchestration = orchestration if isinstance(orchestration, dict) else {}
+    operations_story = engine_operations_story(envelope)
+    if orchestration.get("executor_role") == "operate" and not operations_story:
+        raise RuntimeError("Operations executor is unavailable")
+    if operations_story and not _protected_worker():
+        raise RuntimeError("Operations story requires protected worker identity")
     runtime = persona_runtime(persona)
     is_codex_review = persona == "agent-codex-reviewer"
     is_shared_codex = persona in SHARED_CODEX_PERSONAS
@@ -1898,7 +2014,9 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # destroyed, while the agent was simultaneously told no credential exists. The
     # flag is a pod-level env var, so "globally on" is its normal deployed state and
     # that divergence was reachable in ordinary operation, not just in tests.
-    _mediated_run = _mediated_github_enabled() and _token_mode != "pat" and _protected_worker()
+    if operations_story and _token_mode == "pat":
+        raise RuntimeError("Operations story cannot use a personal GitHub credential")
+    _mediated_run = (_mediated_github_enabled() or operations_story) and _token_mode != "pat" and _protected_worker()
 
     # Step 2: Fetch GitHub App credentials from vault (App path — skipped in PAT mode)
     if _mediated_run:
@@ -2185,6 +2303,8 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         "REPO_OWNER": repo_owner,
         "REPO_NAME": repo_name,
         "TARGET_REPO": repo,
+        # #9550: comma-separated ``owner/name`` list the token reaches; TARGET_REPO first.
+        "TARGET_REPOS": ",".join(broker_token_repositories(repo)),
         "WORK_DIR": str(WORK_DIR),
         "TENANT_ID": tenant_id,
         "CLAUDE_CODE_USE_BEDROCK": "1",
@@ -2295,7 +2415,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
 
     # Recovery is advisory context from the sealed launch envelope, not authority.
     # Clear inherited context for ordinary invocations in a reused worker.
-    recovery = (envelope.get("orchestration") or {}).get("developer_recovery")
+    recovery = orchestration.get("developer_recovery")
     env_vars["ADP_DEVELOPER_RECOVERY_CONTEXT"] = (
         json.dumps(recovery) if isinstance(recovery, dict) else ""
     )
@@ -2318,6 +2438,16 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         env_vars["ADP_AGENT_ID"] = persona
         env_vars["ADP_TASK_ID"] = task_id
 
+    orchestration = envelope.get("orchestration")
+    if isinstance(orchestration, dict) and orchestration.get("node_id"):
+        env_vars["ADP_BOARD_FLOW_ID"] = str(orchestration.get("flow_id") or "").strip()
+        env_vars["ADP_BOARD_NODE_ADDRESS"] = str(orchestration.get("graph_address") or "").strip()
+        node_context = orchestration.get("developer_node_context")
+        env_vars["ADP_DEVELOPER_NODE_CONTEXT"] = json.dumps(node_context) if node_context is not None else ""
+    else:
+        env_vars["ADP_BOARD_FLOW_ID"] = ""
+        env_vars["ADP_BOARD_NODE_ADDRESS"] = ""
+        env_vars["ADP_DEVELOPER_NODE_CONTEXT"] = ""
     os.environ.update(env_vars)
 
     bootstrap_log.step_success(4, "set_env")
@@ -2326,9 +2456,15 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     if is_codex_review and not is_codex_pr_review:
         from lib.codex_pr_context import hydrate_pr_comment
 
-        if hydrate_pr_comment(envelope, run_cmd):
-            is_codex_pr_review = True
-            raw_message = json.dumps(envelope)
+        try:
+            if hydrate_pr_comment(envelope, run_cmd):
+                is_codex_pr_review = True
+                raw_message = json.dumps(envelope)
+        except Exception:
+            return _refuse_codex_pr_bootstrap(
+                message_id, arrived_at, bootstrap_log,
+                lambda: _delete_message(queue_url, region, receipt_handle),
+            )
 
 
     # Step 4b: Compose OTEL_RESOURCE_ATTRIBUTES with per-run dimensions (#1630).
@@ -2358,6 +2494,11 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         os.environ["OTEL_RESOURCE_ATTRIBUTES"] = merged
 
     # Step 5: Acquire the repository
+    from lib.branch_reconciliation import (
+        reconcile_git_branch, reconcile_mediated_branch, reconciles_story_branch, verify_reconciled_snapshot,
+    )
+
+    reconcile_story = reconciles_story_branch(persona, review_cycle=cycle_input is not None)
     WORK_DIR.parent.mkdir(parents=True, exist_ok=True)
     if WORK_DIR.exists():
         shutil.rmtree(WORK_DIR)
@@ -2379,6 +2520,9 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         try:
             from lib import mediated_github
 
+            if reconcile_story:
+                reconciliation = reconcile_mediated_branch()
+                logger.info("Story base reconciliation: %s", json.dumps(reconciliation))
             _materialized = mediated_github.materialize_repository(
                 str(WORK_DIR),
                 repository=repo,
@@ -2389,6 +2533,8 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
                     else "adp-agent[bot]@users.noreply.github.com",
                 ),
             )
+            if reconcile_story:
+                verify_reconciled_snapshot(reconciliation, _materialized)
         except Exception as exc:
             bootstrap_log.step_error(5, "mediated_materialize", exc)
             # No fallback to a clone. Reaching for the installation token here would
@@ -2483,7 +2629,22 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
                 "agent-codex-reviewer requires the default GitHub token; "
                 "mediated comment/push support is not configured"
             )
-        if is_codex_pr_review:
+        if is_codex_pr_review and (envelope.get("payload") or {}).get("review_only") is True:
+            from lib.codex_pr_context import checkout_review_only_pr
+
+            try:
+                actual_review_sha = checkout_review_only_pr(envelope, run_cmd, WORK_DIR)
+                prepare_review_history(
+                    {"baseRefOid": envelope["payload"]["pull_request"]["base"]["sha"]},
+                    run=run_cmd, cwd=WORK_DIR,
+                )
+            except Exception:
+                return _refuse_codex_pr_bootstrap(
+                    message_id, arrived_at, bootstrap_log,
+                    lambda: _delete_message(queue_url, region, receipt_handle),
+                )
+            bootstrap_step = "review_only_head"
+        elif is_codex_pr_review:
             if not isinstance(branch_name, str) or not branch_name:
                 raise RuntimeError("agent-codex-reviewer envelope has no PR head branch")
             expected_review_sha = str(source.get("sha") or "")
@@ -2651,6 +2812,17 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             except Exception:
                 pass
 
+    if reconcile_story and not _mediated_run:
+        # Shared by Claude and every branch-writing Codex persona. Never run the
+        # model after an unknown fetch/merge failure on an outdated base.
+        try:
+            reconciliation = reconcile_git_branch(WORK_DIR)
+        except Exception as exc:
+            _fail_bootstrap_status(message_id, arrived_at, f"story base reconciliation failed: {exc}")
+            bootstrap_log.close()
+            raise
+        logger.info("Story base reconciliation: %s", json.dumps(reconciliation))
+
     # Create GitHub Check Run (best-effort — failure must NOT fail the pod)
     # Use the WIP commit sha so the check attaches to the agent branch.
     check_run_id: int | None = None
@@ -2698,7 +2870,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # label=None (which would silently pick a different account via the ranked
     # picker, reproducing the exact bug this fixes). When aws_label is None,
     # preserve today's non-fatal warning behavior for backward compat.
-    if persona in PERSONAS_NEEDING_AWS:
+    if persona in PERSONAS_NEEDING_AWS and not operations_story:
         try:
             sts_creds = _fetch_assumed_aws_credentials(
                 user_id=user_id,
@@ -2751,7 +2923,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             logger.warning("AWS role assumption failed (non-fatal): %s", exc)
 
     # Step 8: Remove trigger label. PR-opened Codex reviews have no trigger label.
-    if not is_codex_review:
+    if not is_codex_review and not operations_story:
         try:
             run_cmd(
                 ["gh", "issue", "edit", str(issue), "--remove-label", persona, "-R", repo],
@@ -2772,34 +2944,36 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # Prepend correlation marker (Phase 2-d)
     started_body = prepend_correlation_marker(started_body)
     try:
-        # Check for existing comment with this marker (idempotency)
-        existing = run_cmd(
-            [
-                "gh",
-                "issue",
-                "view",
-                str(issue),
-                "-R",
-                repo,
-                "--json",
-                "comments",
-                "--jq",
-                f'.comments[].body | select(contains("{started_marker}"))',
-            ],
-            env={**os.environ},
-        )
-        if not is_codex_review and not existing.stdout.strip():
-            run_cmd(
-                ["gh", "issue", "comment", str(issue), "--body", started_body, "-R", repo],
+        if not operations_story:
+            # Check for existing comment with this marker (idempotency)
+            existing = run_cmd(
+                [
+                    "gh",
+                    "issue",
+                    "view",
+                    str(issue),
+                    "-R",
+                    repo,
+                    "--json",
+                    "comments",
+                    "--jq",
+                    f'.comments[].body | select(contains("{started_marker}"))',
+                ],
                 env={**os.environ},
             )
-            # On success: write pointer + provenance (fail-soft)
-            _write_outbound_correlation(repo, f"issue:{issue}", "comment_post")
+            if not is_codex_review and not existing.stdout.strip():
+                run_cmd(
+                    ["gh", "issue", "comment", str(issue), "--body", started_body, "-R", repo],
+                    env={**os.environ},
+                )
+                # On success: write pointer + provenance (fail-soft)
+                _write_outbound_correlation(repo, f"issue:{issue}", "comment_post")
     except subprocess.CalledProcessError:
         logger.warning("Failed to post started comment (non-fatal)")
 
     # Stage personas and skills into workspace
-    _stage_personas_and_skills()
+    if not operations_story:
+        _stage_personas_and_skills()
 
     # Step 10: Every agent model call goes through the gateway, which applies
     # the verified owner's user/team/org routing. Tool AWS credentials stay
@@ -2811,6 +2985,16 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         str(_materialized.get("remote_head", "")) if _mediated_run else wip_sha
     )
     agent_env = os.environ.copy()
+    if operations_story:
+        agent_env["ADP_ENGINE_OPERATIONS_STORY"] = "true"
+        agent_env["ADP_OPERATIONS_STORY_CONTEXT"] = json.dumps({
+            "title": (envelope.get("orchestration") or {}).get("title", ""),
+            "workflows": (envelope.get("orchestration") or {}).get("workflow_allowlist", []),
+            "repository": repo,
+            "issue": issue,
+        })
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            agent_env.pop(name, None)
     # The feature flag is a POD-level variable, so `os.environ.copy()` inherits it
     # even for a run this deployment decided not to mediate. The TypeScript side
     # reads that raw variable in two places — the load-time constant that injects the
@@ -2827,9 +3011,14 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     from adp_trigger.transport_identity import preserve_worker_identity
 
     preserve_worker_identity(agent_env)
+    if operations_story:
+        for name in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE", "AWS_CONFIG_FILE",
+                     "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+                     "AWS_CONTAINER_CREDENTIALS_FULL_URI"):
+            agent_env.pop(name, None)
     from adp_cred.task_credentials import configure_task_credentials
 
-    task_config_path = configure_task_credentials(agent_env)
+    task_config_path = None if operations_story else configure_task_credentials(agent_env)
     bedrock_via_raw = os.environ.get("ADP_BEDROCK_VIA")
     bedrock_via = (bedrock_via_raw or "gateway").strip().lower()
 
@@ -2965,7 +3154,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             _stop_sigv4_proxy(proxy_process)
         return AGENT_EXIT_RETRYABLE
 
-    command = worker_command(persona)
+    command = worker_command(persona, operations_story=operations_story)
     logger.info(
         "Execing runtime=%s command=%s persona=%s branch=%s",
         runtime,
@@ -2981,10 +3170,27 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             run_options.update({"input": raw_message, "text": True, "capture_output": True})
         from lib.agent_process import run_agent
 
+        operations_report = None
         with tempfile.TemporaryDirectory(prefix="adp-failure-") as diagnostic_dir:
             diagnostic_file = Path(diagnostic_dir) / "failure.json"
             agent_env["ADP_FAILURE_REPORT_FILE"] = str(diagnostic_file)
-            result = run_agent(command, **run_options)
+            if operations_story:
+                report_file = Path(diagnostic_dir) / "operations-report.json"
+                report_file.touch(mode=0o600)
+                agent_env["ADP_OPERATIONS_REPORT_FILE"] = str(report_file)
+            from lib.task_board_reporter import TaskBoardReporter
+
+            board_file = Path(diagnostic_dir) / "task-board.json"
+            agent_env["ADP_TASK_BOARD_SNAPSHOT_FILE"] = str(board_file)
+            agent_env["ADP_STORY_CHECKPOINT_FILE"] = str(board_file) + ".checkpoint"
+            with TaskBoardReporter(board_file, message_id):
+                result = run_agent(command, **run_options)
+            if operations_story:
+                try:
+                    with report_file.open("r", encoding="utf-8") as source:
+                        operations_report = source.read(24577)
+                except (OSError, UnicodeError):
+                    operations_report = None
             if not is_codex_review and result.returncode != 0 and diagnostic_file.is_file():
                 with diagnostic_file.open() as diagnostic:
                     result.stdout = diagnostic.read(16 * 1024)
@@ -3071,9 +3277,10 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             _delete_message(queue_url, region, receipt_handle)
             logger.info("Codex review completed and shared queue message was acknowledged")
             return 0
-        from lib.codex_failure import failure_details, failure_summary
+        from lib.codex_failure import budget_stop_reason, failure_details, failure_summary
 
         error = failure_summary(result)
+        budget_reason = budget_stop_reason(result)
         if cycle_input is not None and run_report.enabled():
             try:
                 run_report.spool_undelivered_failure(failure=failure_details(result))
@@ -3082,12 +3289,53 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
                 logger.error("Codex failure reporting deferred (%s); original cause: %s", exc.code, error)
                 return AGENT_EXIT_RETRYABLE
             _delete_message(queue_url, region, receipt_handle)
+        if budget_reason and not run_report.enabled():
+            recorded = update_invocation_status(
+                message_id, arrived_at, "budget_stopped", stop_reason=budget_reason,
+                summary="Reviewer stopped because its budget was exhausted; review is incomplete.",
+            )
+            if not recorded:
+                return AGENT_EXIT_RETRYABLE
+            _delete_message(queue_url, region, receipt_handle)
+            logger.error("Codex review stopped: budget exhausted; terminal status recorded")
+            return result.returncode or 1
         update_invocation_status(message_id, arrived_at, "failed", error_message=error)
         if cycle_input is not None and run_report.enabled():
             logger.error("Codex review failed; terminal failure recorded and queue message acknowledged: %s", error)
         else:
             logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
         return result.returncode or 1
+
+    if operations_story:
+        report_recorded = False
+        try:
+            if result.returncode != 0 or abort_outcome is not None:
+                # The runtime now leaves a bounded report even when it fails (turn
+                # cap, SDK error, missing final text). Record it so the engine's
+                # retry and the operator see what the story attempted instead of
+                # an empty "unknown" failure.
+                report_recorded = record_failed_operations_report(run_report, operations_report, persona=persona, run_id=message_id)
+                raise ValueError("operations worker did not complete")
+            validated = validated_operations_report(operations_report or "", persona=persona, run_id=message_id)
+            run_report.operations_report(validated)
+            run_report.terminal("complete")
+            update_invocation_status(message_id, arrived_at, "complete", summary="Operations report recorded; runtime verification pending")
+            _delete_message(queue_url, region, receipt_handle)
+            return 0
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            error = "Operations worker did not complete; report recorded" if report_recorded else "Operations report unavailable"
+            logger.warning("%s: %s", error, type(exc).__name__)
+            try:
+                run_report.terminal("failed", failure=operations_failure_details(result, aborted=abort_outcome is not None))
+            except run_report.RunReportError as report_error:
+                logger.warning("Operations failure report deferred: %s", report_error.code)
+                return AGENT_EXIT_RETRYABLE
+            update_invocation_status(message_id, arrived_at, "failed", error_message=error)
+            _delete_message(queue_url, region, receipt_handle)
+            return 1
+        except run_report.RunReportError as exc:
+            logger.warning("Operations terminal report deferred: %s", exc.code)
+            return AGENT_EXIT_RETRYABLE
 
     # Issue #4186 (Phase 1): persist the SDK session id the Node worker
     # captured, so the identifier outlives the process that created it.
@@ -3150,8 +3398,16 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             review_only=review_delivery is not None, **review_options
         )
     else:
+        from lib.codex_failure import budget_stop_reason
+
+        # Native Codex developers do not run agent-worker.ts, so they never
+        # write its budget metadata. Select the spend-cap outcome BEFORE the
+        # first terminal write: protected authority cannot change failed into
+        # budget_stopped afterward, and failed would permit an engine retry.
+        budget_reason = budget_stop_reason(result) if runtime == "codex" else None
         exit_code = _handle_failure(
-            repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url, failure_error=error, **review_options
+            repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url,
+            failure_error=error, stop_reason=budget_reason, **review_options
         )
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
@@ -4807,17 +5063,25 @@ def _handle_failure(
     check_run_url: str = "",
     review_note: str = "",
     failure_error: str = "",
+    stop_reason: str | None = None,
 ) -> int:
-    """Step 12: Post failure comment, exit nonzero."""
-    summary = f"Agent `{persona}` failed with exit code {exit_code}."
-    _post_comment(repo, issue, message_id, "failed", _join_notes(summary, review_note), check_run_url)
-    update_invocation_status(
+    """Step 12: Record the selected terminal outcome once, and exit nonzero."""
+    status = "budget_stopped" if stop_reason else "failed"
+    summary = (
+        f"Agent `{persona}` stopped because its budget was exhausted; work is incomplete."
+        if stop_reason else f"Agent `{persona}` failed with exit code {exit_code}."
+    )
+    _post_comment(repo, issue, message_id, status, _join_notes(summary, review_note), check_run_url)
+    recorded = update_invocation_status(
         message_id,
         arrived_at,
-        "failed",
+        status,
         summary=summary,
         **({"error_message": failure_error} if failure_error else {}),
+        **({"stop_reason": stop_reason} if stop_reason else {}),
     )
+    if stop_reason and not recorded:
+        return AGENT_EXIT_RETRYABLE
     return exit_code
 
 

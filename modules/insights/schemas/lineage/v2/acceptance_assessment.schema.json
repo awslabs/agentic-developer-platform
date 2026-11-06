@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "acceptance_assessment (section 11.10)",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "if": {
+        "properties": {
+          "assessor_type": {
+            "const": "policy"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "policy_snapshot": {
+            "$ref": "references.schema.json#/$defs/artifact_ref"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "accepted"
+          }
+        }
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "result_refs": {
+                "minItems": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "artifact_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "record_type": {
+      "const": "acceptance_assessment"
+    },
+    "criterion_ref": {
+      "allOf": [
+        {
+          "$ref": "references.schema.json#/$defs/record_ref"
+        },
+        {
+          "properties": {
+            "record_type": {
+              "const": "acceptance_criterion"
+            }
+          }
+        }
+      ]
+    },
+    "result_refs": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "references.schema.json#/$defs/record_ref"
+          },
+          {
+            "properties": {
+              "record_type": {
+                "const": "test_result"
+              }
+            }
+          }
+        ]
+      },
+      "uniqueItems": true
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "references.schema.json#/$defs/artifact_ref"
+      },
+      "uniqueItems": true
+    },
+    "verdict": {
+      "enum": [
+        "accepted",
+        "rejected",
+        "blocked",
+        "inconclusive"
+      ]
+    },
+    "assessor_type": {
+      "enum": [
+        "human",
+        "policy"
+      ]
+    },
+    "assessor_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assessed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "policy_snapshot": {
+      "anyOf": [
+        {
+          "$ref": "references.schema.json#/$defs/artifact_ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "criterion_ref",
+    "result_refs",
+    "artifact_refs",
+    "verdict",
+    "assessor_type",
+    "assessor_id",
+    "assessed_at",
+    "policy_snapshot",
+    "rationale"
+  ],
+  "unevaluatedProperties": false
+}

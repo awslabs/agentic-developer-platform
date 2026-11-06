@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.org/insights/registry/v1/admission.schema.json",
+  "title": "Insights registry and context admission v1",
+  "description": "Normalized registry/context facts only; not a lineage v1 or v2 raw producer.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": "registry/1.0"},
+    "tenant_id": {"$ref": "#/$defs/id"},
+    "project_id": {"$ref": "#/$defs/id"},
+    "publisher_id": {"$ref": "#/$defs/id"},
+    "source_connection_id": {"$ref": "#/$defs/id"},
+    "source_event_id": {"$ref": "#/$defs/id"},
+    "source_event_time": {"$ref": "#/$defs/instant"},
+    "effective_at": {"$ref": "#/$defs/instant"},
+    "recorded_at": {"$ref": "#/$defs/instant"},
+    "ingested_at": {"$ref": "#/$defs/instant"},
+    "mapping_version": {"$ref": "#/$defs/revision"},
+    "normalized_revision": {"$ref": "#/$defs/revision"},
+    "record_type": {"enum": ["product", "project", "relationship", "context_record", "context_relationship"]},
+    "subject_ref": {"$ref": "#/$defs/record_ref"},
+    "source_ref": {"$ref": "#/$defs/record_ref"},
+    "source_revisions": {"type": "array", "items": {"$ref": "#/$defs/record_ref"}},
+    "relationship_version": {"type": "object"},
+    "source_snapshot": {"type": "object"}
+  },
+  "required": ["schema_version", "tenant_id", "project_id", "publisher_id", "source_connection_id", "source_event_id", "source_event_time", "effective_at", "recorded_at", "ingested_at", "mapping_version", "normalized_revision", "record_type", "subject_ref", "source_ref", "source_revisions", "source_snapshot"],
+  "additionalProperties": false,
+  "$defs": {
+    "id": {"type": "string", "minLength": 1},
+    "revision": {"type": "string", "minLength": 1, "not": {"enum": ["latest", "null"]}},
+    "instant": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "record_ref": {
+      "type": "object",
+      "properties": {
+        "tenant_id": {"$ref": "#/$defs/id"},
+        "project_id": {"$ref": "#/$defs/id"},
+        "source_connection_id": {"$ref": "#/$defs/id"},
+        "record_type": {"$ref": "#/$defs/id"},
+        "record_id": {"$ref": "#/$defs/id"},
+        "record_revision": {"$ref": "#/$defs/revision"}
+      },
+      "required": ["tenant_id", "project_id", "source_connection_id", "record_type", "record_id", "record_revision"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -41,6 +41,12 @@ NOW = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
 FIXTURE = Path(__file__).parent / "fixtures" / "responses-provider-contract-5226.json"
 
 
+@pytest.fixture(autouse=True)
+def full_context_contract(monkeypatch):
+    """Keep exercising the guaranteed-ceiling mode; request estimates have their own suite."""
+    monkeypatch.setenv("BG_RESPONSES_REQUEST_ESTIMATES_ENABLED", "false")
+
+
 def _row(**overrides) -> RateRow:
     """One published rate. Prices are per 1k tokens, as ``RateRow`` defines them."""
     fields = {

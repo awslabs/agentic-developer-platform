@@ -1,0 +1,301 @@
+{
+  "status": "source_audit_and_inert_registration_verified_no_runtime_qualification",
+  "backlog_revision": "252d51df354a4874973d9bcd1b5cf04edd3a57ed",
+  "engine_main_revision": "ecf16bb8de4132249c555df790721f654fcf9cf0",
+  "checked_on": "2026-10-19",
+  "source_paths": [
+    "docs/delivery-flow/README.md",
+    "modules/gateway/src/orchestration/proposal.py",
+    "modules/gateway/src/orchestration/executor_assignment.py",
+    "modules/gateway/src/orchestration/execution_policy.py",
+    "modules/gateway/src/orchestration/repository_evaluation_contract.py",
+    "modules/gateway/src/orchestration/cli_live_contract.py",
+    "modules/gateway/src/orchestration/workflow_evaluation_contract.py",
+    "modules/gateway/src/orchestration/manifests/orchestration-deployments.yaml",
+    ".github/workflows/gateway-deploy.yml",
+    ".github/workflows/gateway-frontend-deploy.yml",
+    "modules/gateway/src/orchestration/dispatch_pass.py",
+    "modules/gateway/src/orchestration/evaluation_plan.py",
+    "modules/gateway/src/orchestration/tick.py",
+    "scripts/check-assistant-deploy-boundary.sh",
+    "modules/gateway/src/orchestration/accepted_node.py",
+    "modules/gateway/src/orchestration/deployment_controller.py",
+    "modules/gateway/src/orchestration/deployment_workflow_provider.py",
+    "modules/gateway/src/agentauth/actions_routes.py",
+    "docs/architecture/deployment-workflow-controller.md"
+  ],
+  "issues": [
+    {
+      "key": "B01",
+      "url": "https://github.com/aws-e/adp/issues/8229",
+      "body_sha256": "9c58a3bc49cc06f57c49b4007b5b1a97275c420f2e32a940fab7d9893787add5"
+    },
+    {
+      "key": "B02",
+      "url": "https://github.com/aws-e/adp/issues/8230",
+      "body_sha256": "15b2b5b1d792267dff380dae5b5ee35818e6a350b537cb344eddbb25bc39c1ea"
+    },
+    {
+      "key": "B03",
+      "url": "https://github.com/aws-e/adp/issues/8231",
+      "body_sha256": "f47641818844c31503fde943b1b1de07bcb2aae69ab3cc629d0a0ce4294e3d5b"
+    },
+    {
+      "key": "B04",
+      "url": "https://github.com/aws-e/adp/issues/8232",
+      "body_sha256": "e86102238427511d089e8cc7ae060eae9d363ef3e7df02a8e71bc79ae00f78a8"
+    },
+    {
+      "key": "B05",
+      "url": "https://github.com/aws-e/adp/issues/8233",
+      "body_sha256": "25aa49181103c995205381e429d57ea8426ec27db132409f35a4c9829ca5659e"
+    },
+    {
+      "key": "B06",
+      "url": "https://github.com/aws-e/adp/issues/8234",
+      "body_sha256": "9a97cd40cb2f2b9496aca05c77702f28e16ebb94328b32a6836b1da714a395cb"
+    },
+    {
+      "key": "B07",
+      "url": "https://github.com/aws-e/adp/issues/8235",
+      "body_sha256": "c0710a64f5daf64987de50e6fe5555c6712cbab39c1f2ecd62e49175990bc79e"
+    },
+    {
+      "key": "B08",
+      "url": "https://github.com/aws-e/adp/issues/8236",
+      "body_sha256": "0c360baa12bb6b3ce4aac00d5aad0cf2ee718d660f98be321301984f0943072c"
+    },
+    {
+      "key": "B09",
+      "url": "https://github.com/aws-e/adp/issues/8237",
+      "body_sha256": "cc85423fc8eb45b94f9522fc24333505adb5ed6e7ba152ff0918b55a9def5b3b"
+    },
+    {
+      "key": "B10",
+      "url": "https://github.com/aws-e/adp/issues/8238",
+      "body_sha256": "843bc47d18d2e63f93b48731aea9104953eb6908c53bb67ae4b0b4b32325087d"
+    },
+    {
+      "key": "B11",
+      "url": "https://github.com/aws-e/adp/issues/8239",
+      "body_sha256": "f1118c38eb1333a87f69bd10349b58d1fa441978c95eb8f8d36f496e4a6c9d6b"
+    },
+    {
+      "key": "I01",
+      "url": "https://github.com/aws-e/adp/issues/8240",
+      "body_sha256": "63b8c51a4663e9a556e2c491eefd637248945ba85cb7f4767a8717694cb18548"
+    },
+    {
+      "key": "I02",
+      "url": "https://github.com/aws-e/adp/issues/8241",
+      "body_sha256": "cd123526b65093a142f335f6fcda67f4cdc2ddede1949a5070d6ebf73c9a8df4"
+    },
+    {
+      "key": "D01",
+      "url": "https://github.com/aws-e/adp/issues/8242",
+      "body_sha256": "5555eb524f9c6c96e718a20fa9c1d02b9145292bb495ac5429420d6d608c6936"
+    },
+    {
+      "key": "V01",
+      "url": "https://github.com/aws-e/adp/issues/8243",
+      "body_sha256": "425c977af51bdd63d364e26189d533a93c314541aa1d27d967aa10f67afe64fa"
+    },
+    {
+      "key": "I03",
+      "url": "https://github.com/aws-e/adp/issues/8244",
+      "body_sha256": "0d1dc37b63a06214e80f3f604d5bd832cac042f604b6ccfcf0b63f3570a3f5f4"
+    },
+    {
+      "key": "I04",
+      "url": "https://github.com/aws-e/adp/issues/8245",
+      "body_sha256": "23e5f3946ce11e6f570199153060ae77f7e2a9731fa22d63f256e3e24174f999"
+    },
+    {
+      "key": "V02",
+      "url": "https://github.com/aws-e/adp/issues/8246",
+      "body_sha256": "3ddca7d94a58443ec60a95fd437e4a422b57eadc156f09d2858c9e4dc57a4784"
+    },
+    {
+      "key": "V03",
+      "url": "https://github.com/aws-e/adp/issues/8247",
+      "body_sha256": "53f7bfa1cec510476994d2e4c5f85ed464eadff1e056310e4a0401fc33a6d426"
+    },
+    {
+      "key": "I05",
+      "url": "https://github.com/aws-e/adp/issues/8248",
+      "body_sha256": "087080d56f7b813e1cfe23070056868c95e7a773e959cb3cdbcfd8d0c901e32b"
+    },
+    {
+      "key": "I06",
+      "url": "https://github.com/aws-e/adp/issues/8249",
+      "body_sha256": "2ff394cec27138a8c39973dbf7ed2590132c263aa69f818b55e4f707e8a8d267"
+    },
+    {
+      "key": "V04",
+      "url": "https://github.com/aws-e/adp/issues/8250",
+      "body_sha256": "3c7d32e28fcedc1421f5a4c5bf3473cb0e3ac52e444d711c226d2330b804b64e"
+    },
+    {
+      "key": "I07",
+      "url": "https://github.com/aws-e/adp/issues/8251",
+      "body_sha256": "9ad82322bbe7c15d7d7a76ade505ebd36585fa9e5f2b914f398d8914d8937871"
+    },
+    {
+      "key": "V05",
+      "url": "https://github.com/aws-e/adp/issues/8252",
+      "body_sha256": "9f7b639e2987a88e136ee156c7820b12b1d1b1145072af107a757bce3daf572a"
+    },
+    {
+      "key": "I08",
+      "url": "https://github.com/aws-e/adp/issues/8253",
+      "body_sha256": "14ba99b6ecac7008262df3741a54803d1ae5f7c06f28dc1d826ecf1c7c0d72b2"
+    },
+    {
+      "key": "I09",
+      "url": "https://github.com/aws-e/adp/issues/8254",
+      "body_sha256": "3a940b2497efdd404e5e2c428b58176dd27ae7027a774e41685f83c0d1d6bf6f"
+    },
+    {
+      "key": "I10",
+      "url": "https://github.com/aws-e/adp/issues/8255",
+      "body_sha256": "fbc1084c8e5f89f9815ab40b56fb56f847d54342110800552f36622559e6fd93"
+    },
+    {
+      "key": "V06",
+      "url": "https://github.com/aws-e/adp/issues/8256",
+      "body_sha256": "0224aaf7b60c8f2c7d5bf4c6e46f6d14af5996071f6829522c22f239c1733652"
+    },
+    {
+      "key": "I11",
+      "url": "https://github.com/aws-e/adp/issues/8257",
+      "body_sha256": "433429ddb1a97d4d4a734e65ba3cfa904facf2fa91890acb3bf0cd7983014c87"
+    },
+    {
+      "key": "V07",
+      "url": "https://github.com/aws-e/adp/issues/8258",
+      "body_sha256": "1e86d253c2d0e4d49dfbecdd564d6647ba2348b63931e3c372926e8a481999f8"
+    },
+    {
+      "key": "I12",
+      "url": "https://github.com/aws-e/adp/issues/8259",
+      "body_sha256": "293d6cf48aab272e2aac62c101491d54cf83309f954c988d54e877ad98823d83"
+    },
+    {
+      "key": "I13",
+      "url": "https://github.com/aws-e/adp/issues/8260",
+      "body_sha256": "4632f69646c153ee7c2559105c2d42e17543aba5d1d1f03c24acea7f34f45cd9"
+    },
+    {
+      "key": "V08",
+      "url": "https://github.com/aws-e/adp/issues/8261",
+      "body_sha256": "b68c247876f9e46d0b5bcae185f0bff609f19fa4b090336e84fd75b51791f740"
+    },
+    {
+      "key": "I14",
+      "url": "https://github.com/aws-e/adp/issues/8262",
+      "body_sha256": "82d55d07b204a4e92590f863dbdd20869af9f2d542b36826c9c3c7ef2b4c936b"
+    },
+    {
+      "key": "I15",
+      "url": "https://github.com/aws-e/adp/issues/8263",
+      "body_sha256": "85081a4df5bbc4c5e6a0608366b7611bd952c81c99019ed1da5a66bfb8289f13"
+    },
+    {
+      "key": "V09",
+      "url": "https://github.com/aws-e/adp/issues/8264",
+      "body_sha256": "8a4bca33663885187a4c42be7ca2930e781b4f0dd4a75c413435b8eb90ddf379"
+    },
+    {
+      "key": "I16",
+      "url": "https://github.com/aws-e/adp/issues/8265",
+      "body_sha256": "a1aecb7c8c78c89b6eb48d6ec0e1d9723a89b93a86f739b3c437d7fcd333220d"
+    },
+    {
+      "key": "I17",
+      "url": "https://github.com/aws-e/adp/issues/8266",
+      "body_sha256": "2faa5d0c06bd17c7cfaff6a2c3fea1d5f626243c09183c676f3af2ec15078138"
+    },
+    {
+      "key": "V10",
+      "url": "https://github.com/aws-e/adp/issues/8267",
+      "body_sha256": "8a0b4ba098c286a0984a4170c48a3ba63ee6a9e161ba6e541aad189f0a924f83"
+    },
+    {
+      "key": "V11",
+      "url": "https://github.com/aws-e/adp/issues/8268",
+      "body_sha256": "d93f0d9e1ca157c94dac11f945d2d6da93417d50e364f441c15fb7d011452900"
+    },
+    {
+      "key": "C01",
+      "url": "https://github.com/aws-e/adp/issues/8269",
+      "body_sha256": "96c8e6100fba774313009a246a9a392568989853ad3e3743180a85de4e304a72"
+    },
+    {
+      "key": "I18",
+      "url": "https://github.com/aws-e/adp/issues/8270",
+      "body_sha256": "06fae8f8fb9964387e9b60ada230c787ad132af45a9bb521f75b0b51ff2885be"
+    },
+    {
+      "key": "I19",
+      "url": "https://github.com/aws-e/adp/issues/8271",
+      "body_sha256": "75c18fc1c54dd1bcdb5547bbb2363269e5b9179fe70dee6b2398c04b5e124398"
+    },
+    {
+      "key": "I20",
+      "url": "https://github.com/aws-e/adp/issues/8272",
+      "body_sha256": "6b816cabba4ecaa61971fb970c0e653671cd48196768bdcf98da411c0a58198f"
+    },
+    {
+      "key": "V12",
+      "url": "https://github.com/aws-e/adp/issues/8273",
+      "body_sha256": "953a463f3e8a1246da23595040e6c47b714b2f9215198819a3b17c3ac24a5240"
+    },
+    {
+      "key": "I21",
+      "url": "https://github.com/aws-e/adp/issues/8274",
+      "body_sha256": "f2df8be50e4b1eaea74053063fe5b50ec2563b24bbf255be2320660c484b9d8d"
+    },
+    {
+      "key": "I22",
+      "url": "https://github.com/aws-e/adp/issues/8275",
+      "body_sha256": "8a5dc7c68b29d37d63627aacfee369641e94cefe10a0db44288df59e5c64db24"
+    },
+    {
+      "key": "V13",
+      "url": "https://github.com/aws-e/adp/issues/8276",
+      "body_sha256": "107687468d1b47906dabfbf93feab8464590cbac2e74be13112f133aca387273"
+    },
+    {
+      "key": "I23",
+      "url": "https://github.com/aws-e/adp/issues/8294",
+      "body_sha256": "5c1397aa5bc23b797ac6377af4644f544740039c214908293f446eb3791e5417"
+    }
+  ],
+  "counts": {
+    "existing_stories": 38,
+    "bolts": 11,
+    "story_nodes": 52,
+    "eval_nodes": 22,
+    "gate_nodes": 0,
+    "nodes": 74,
+    "edges": 248,
+    "waves_with_stories": 22,
+    "additional_review_or_assessment_issues": 0,
+    "initial_flow_approval": 1,
+    "human_evidence_evaluations": 11,
+    "routine_human_decisions": 12,
+    "story_acceptance_criteria": 129,
+    "manual_evidence_review_criteria": 13
+  },
+  "structural_validator": "Same proposal.py, execution_policy.py and executor_assignment.py at backlog revision and inspected main; repository evaluation adds optional workflow-bound CI check identity at inspected main.",
+  "unresolved_automation": "Automatic verified-predecessor release handoff into operate-node revision/evidence bindings; see automatic-deployment.md. No runtime qualification claimed.",
+  "registered_draft": {
+    "flow_id": "00000000-0000-0000-0000-000000000000",
+    "plan_version": 1,
+    "plan_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "nodes": 75,
+    "edges": 249,
+    "receipt": "submission.json",
+    "public_copy": "Sanitized historical example; not operational provenance or current runtime status."
+  }
+}

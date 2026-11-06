@@ -4,6 +4,9 @@ import json
 from io import StringIO
 from unittest.mock import patch
 
+from src.admin.metrics import metrics_endpoint
+from src.shared import metrics as metric_module
+from src.shared.logging import clear_request_context, set_request_context
 from src.shared.metrics import (
     emit_auth_exchange_count,
     emit_budget_utilization,
@@ -15,6 +18,7 @@ from src.shared.metrics import (
     emit_request_count,
     emit_request_latency,
     emit_request_metrics,
+    emit_stream_outcome,
     emit_tokens,
 )
 
@@ -73,6 +77,82 @@ class TestEMFFormat:
         assert len(metrics) > 0
         assert metrics[0]["Name"] == "RequestCount"
         assert metrics[0]["Unit"] == "Count"
+
+    def test_export_probe_uses_no_request_dimensions(self):
+        captured = StringIO()
+        with patch("sys.stdout", captured):
+            emit_request_count(org_id="test-org", model="test-model")
+
+        data = json.loads(captured.getvalue())
+        probe = data["_aws"]["CloudWatchMetrics"][1]
+        assert probe["Namespace"] == "BedrockGateway"
+        assert probe["Dimensions"] == [[]]
+        assert probe["Metrics"] == [{"Name": "ExporterEmitAttempt", "Unit": "Count"}]
+        assert data["ExporterEmitAttempt"] == 1
+
+    def test_failed_emf_write_does_not_interrupt_request_or_disclose_context(self):
+        class BrokenOutput:
+            def write(self, value):
+                raise OSError("secret from output channel")
+
+            def flush(self):
+                raise OSError("secret from output channel")
+
+        warning = StringIO()
+        with patch("sys.stdout", BrokenOutput()), patch("sys.stderr", warning):
+            emit_request_count(org_id="sensitive-tenant", model="test-model")
+
+        assert warning.getvalue() == "gateway metric EMF write failed; export unverified\n"
+
+    def test_stream_outcome_rejects_untrusted_labels_and_context(self):
+        captured = StringIO()
+        set_request_context(request_id="private-request", org_id="private-tenant")
+        try:
+            with patch("sys.stdout", captured):
+                emit_stream_outcome("private-prompt-and-secret")
+        finally:
+            clear_request_context()
+
+        data = json.loads(captured.getvalue())
+        assert data["stream_outcome"] == "other"
+        assert data["StreamOutcome"] == 1
+        assert data["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["stream_outcome"]]
+        assert "private-request" not in captured.getvalue()
+        assert "private-tenant" not in captured.getvalue()
+        assert "private-prompt-and-secret" not in captured.getvalue()
+
+    def test_local_exporter_failures_remain_queryable_without_emf(self, monkeypatch):
+        class BrokenOutput:
+            def write(self, value):
+                raise OSError("private-secret")
+
+            def flush(self):
+                raise OSError("private-secret")
+
+        monkeypatch.setattr(metric_module, "_last_export_warning_at", None)
+        attempts = metric_module.EMF_WRITE_ATTEMPTS._value.get()
+        failures = metric_module.EMF_WRITE_FAILURES._value.get()
+        last_success = metric_module.EMF_LAST_SUCCESS._value.get()
+        warning = StringIO()
+        with patch("sys.stdout", BrokenOutput()), patch("sys.stderr", warning):
+            emit_stream_outcome("transport_error")
+            emit_stream_outcome("transport_error")
+
+        assert metric_module.EMF_WRITE_ATTEMPTS._value.get() == attempts + 2
+        assert metric_module.EMF_WRITE_FAILURES._value.get() == failures + 2
+        assert metric_module.EMF_LAST_SUCCESS._value.get() == last_success
+        assert warning.getvalue() == "gateway metric EMF write failed; export unverified\n"
+        scrape = metrics_endpoint().body
+        assert b"bedrock_gateway_emf_write_attempts_total" in scrape
+        assert b"bedrock_gateway_emf_write_failures_total" in scrape
+        assert b"bedrock_gateway_emf_last_success_timestamp_seconds" in scrape
+        assert b"private-secret" not in scrape
+
+    def test_success_updates_local_export_liveness(self):
+        before = metric_module.EMF_LAST_SUCCESS._value.get()
+        with patch("sys.stdout", StringIO()):
+            emit_stream_outcome("completed")
+        assert metric_module.EMF_LAST_SUCCESS._value.get() >= before
 
 
 class TestRequestMetrics:

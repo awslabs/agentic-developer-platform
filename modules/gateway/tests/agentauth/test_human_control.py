@@ -120,7 +120,7 @@ async def test_human_queued_command_revalidates_without_delegated_initiator(huma
     assert response.status_code == 200, response.text
     assert response.json()["allowed"] is True
     async with ctx.session_factory() as db:
-        await db.execute(update(TenantMembership).where(TenantMembership.user_id == "human").values(is_active=False))
+        await db.execute(update(TenantMembership).where(TenantMembership.user_id == "human").values(revoked_at=datetime.now(UTC)))
         await db.commit()
     # Revoking membership after acceptance invalidates the very same proof.
     response = await ctx.client.post("/internal/v1/agent/revalidate", json=body, headers=ctx.target_headers)
@@ -177,6 +177,8 @@ def test_both_human_routes_send_exact_signed_bytes(orchestration, monkeypatch, a
     service._authority_store = authority
     monkeypatch.setattr("src.activity.control_service.SUPPORTED_ACTIONS", frozenset({"pause", "resume"}))
     db = MagicMock(scalar=AsyncMock(return_value=CANONICAL_USER_ID))
+    membership = AsyncMock(return_value=True)
+    monkeypatch.setattr("src.agentauth.human_control.is_workflow_member", membership)
     raw = ('{ "command_id" : "' + COMMAND_ID + '", "reason": "hold" }').encode()
     context = human_context()
     signer = MagicMock(wraps=sign_envelope)
@@ -195,8 +197,7 @@ def test_both_human_routes_send_exact_signed_bytes(orchestration, monkeypatch, a
     elif attack == "expired_session":
         context.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     elif attack == "no_membership":
-        # Identity mapping resolves twice; the current membership lookup refuses.
-        db.scalar.side_effect = [CANONICAL_USER_ID, CANONICAL_USER_ID, None]
+        membership.return_value = False
     elif attack == "expired_during_ownership_read":
         grant = authority.live_grant.return_value
 

@@ -37,14 +37,18 @@ def test_supervisor_cannot_use_direct_owner_stores_or_dispatch_to_the_queue():
     ):
         assert f'"{action}"' in policy
     assert (
-        '"arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/admit"'
+        '"arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/admit"'
         in policy
     )
-    assert '"arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/exit"' in policy
+    assert (
+        '"arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/exit"'
+        in policy
+    )
     for path in ("reserve", "resume", "teardown", "finalize", "complete", "session/commit"):
         assert (
-            '"arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/'
-            + path + '"'
+            '"arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/internal/v1/agent/chat/data/'
+            + path
+            + '"'
         ) in policy
     assert "/chat/data/*" not in policy
     for action in (
@@ -67,7 +71,33 @@ def test_supervisor_pod_rbac_is_not_installed_before_enforcing_admission():
     account = block("kubernetes_service_account", "chat_supervisor")
     assert '"eks.amazonaws.com/role-arn" = aws_iam_role.chat_supervisor.arn' in account
     deploy_script = (ROOT / "agent/k8s/deploy-chat-scaledjob.sh").read_text()
-    assert "chat-supervisor-rbac.yaml" not in deploy_script
-    assert "chat-supervisor-pod-policy.yaml" not in deploy_script
+    rbac = deploy_script.index('kubectl apply -f "${SCRIPT_DIR}/chat-supervisor-rbac.yaml"')
+    for policy in (
+        "chat-supervisor-pod-policy.yaml",
+        "chat-sandbox-admission.yaml",
+        "chat-crew-pod-admission.yaml",
+    ):
+        assert deploy_script.index(f'kubectl apply -f "${{SCRIPT_DIR}}/{policy}"') < rbac
     assert 'resource "kubernetes_role_binding" "chat_supervisor"' not in ROLE
     assert 'resource "kubernetes_cluster_role_binding" "chat_supervisor"' not in ROLE
+
+
+def test_gateway_workload_verifier_rbac_is_applied_with_the_supervisor_rbac():
+    """The gateway admits sandbox/Crew pods only after reading them from the API server
+    (src/agentauth/workload.py). chat-model-rbac.yaml grants that read to the gateway
+    service account; it existed in the repository but nothing applied it (dev 2026-10-17)."""
+    deploy_script = (ROOT / "agent/k8s/deploy-chat-scaledjob.sh").read_text()
+    supervisor = deploy_script.index('kubectl apply -f "${SCRIPT_DIR}/chat-supervisor-rbac.yaml"')
+    verifier = deploy_script.index('kubectl apply -f "${SCRIPT_DIR}/chat-model-rbac.yaml"')
+    assert supervisor < verifier
+    import yaml
+
+    docs = list(yaml.safe_load_all((ROOT / "agent/k8s/chat-model-rbac.yaml").read_text()))
+    role = next(d for d in docs if d["kind"] == "Role")
+    binding = next(d for d in docs if d["kind"] == "RoleBinding")
+    assert role["metadata"]["namespace"] == "adp-gateway-agents"
+    assert {r["resources"][0] for r in role["rules"]} == {"pods", "jobs"}
+    assert all(r["verbs"] == ["get"] for r in role["rules"])
+    assert binding["subjects"] == [
+        {"kind": "ServiceAccount", "name": "gateway-service", "namespace": "adp-gateway"}
+    ]

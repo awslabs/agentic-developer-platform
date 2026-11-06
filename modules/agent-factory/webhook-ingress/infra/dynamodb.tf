@@ -299,6 +299,11 @@ resource "aws_dynamodb_table" "agent_authority" {
   hash_key     = "pk"
   range_key    = "sk"
 
+  ttl {
+    attribute_name = "knowledge_replay_ttl"
+    enabled        = true
+  }
+
   attribute {
     name = "pk"
     type = "S"

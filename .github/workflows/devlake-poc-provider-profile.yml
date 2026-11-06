@@ -1,0 +1,37 @@
+name: DevLake POC / independent provider and Profile measurement
+on:
+  workflow_dispatch:
+    inputs:
+      launch_manifest:
+        description: Path to approved private campaign manifest on the protected runner
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  observe:
+    if: github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: arc-runner-org
+    environment: adp-devlake-campaign
+    timeout-minutes: 20
+    env:
+      ADP_DEVLAKE_PROBE_CONFIG: ${{ secrets.ADP_DEVLAKE_PROBE_CONFIG }}
+      ADP_DEVLAKE_PROVIDER_SELECTION: ${{ secrets.ADP_DEVLAKE_PROVIDER_SELECTION }}
+      LAUNCH_MANIFEST: ${{ inputs.launch_manifest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python3 modules/insights/poc/devlake/provider_profile_source.py \
+            --config "$ADP_DEVLAKE_PROBE_CONFIG" --manifest "$LAUNCH_MANIFEST" \
+            --revision "$GITHUB_SHA" --require-providers --output "$RUNNER_TEMP/observation.json"
+      - uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: devlake-provider-profile-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observation.json
+          if-no-files-found: error
+          retention-days: 7

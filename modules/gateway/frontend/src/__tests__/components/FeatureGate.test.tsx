@@ -20,6 +20,7 @@ import type { FeatureFlags } from '@/services/features';
 // payload. Completed while adding agent_control (#3960) so the annotation is true
 // again — tsconfig.json excludes `__tests__`, so `tsc` never reported the drift.
 const mockFeatures: FeatureFlags = {
+  product_profile: true,
   chat: true,
   knowledge: true,
   indexing: true,
@@ -36,9 +37,19 @@ const mockFeatures: FeatureFlags = {
   agent_models: false,
 };
 
+/** The flag read's own outcome, not just its payload — #8246. A completed read
+ *  with no payload (the /features call was refused or failed) is a different
+ *  state from a completed read that answered `false`, and the gate owes the
+ *  actor a different thing in each. */
+const queryState: { data: FeatureFlags | undefined; isPending: boolean; isError: boolean } = {
+  data: mockFeatures,
+  isPending: false,
+  isError: false,
+};
+
 vi.mock('@/hooks/useFeatures', () => ({
   useFeatures: () => mockFeatures,
-  useFeaturesQuery: () => ({ data: mockFeatures, isPending: false }),
+  useFeaturesQuery: () => queryState,
 }));
 
 function renderWithRouter(initialPath: string) {
@@ -73,6 +84,9 @@ function renderWithRouter(initialPath: string) {
         <Route path="/superplane" element={
           <FeatureGate feature="superplane"><div data-testid="superplane-page">Superplane</div></FeatureGate>
         } />
+        <Route path="/products/:productId/projects/:projectId" element={
+          <FeatureGate feature="product_profile"><div data-testid="product-page">Product workspace</div></FeatureGate>
+        } />
       </Routes>
     </MemoryRouter>
   );
@@ -87,6 +101,10 @@ describe('FeatureGate', () => {
     mockFeatures.connections = true;
     mockFeatures.credentials = true;
     mockFeatures.system_dashboard = true;
+    mockFeatures.product_profile = true;
+    queryState.data = mockFeatures;
+    queryState.isPending = false;
+    queryState.isError = false;
   });
 
   it('renders children when feature is enabled', () => {
@@ -126,6 +144,36 @@ describe('FeatureGate', () => {
     renderWithRouter('/settings/connections');
     expect(screen.getByTestId('home-page')).toBeInTheDocument();
     expect(screen.queryByTestId('connections-page')).not.toBeInTheDocument();
+  });
+
+  // #8246: a revoked tenant membership makes GET /features fail, which leaves
+  // product_profile at its fail-closed default. The screen must stay withheld,
+  // but the actor has to be told that here — redirecting to "/" handed them a
+  // dashboard whose organization selector blamed a loading failure and offered
+  // a reload that a revoked membership can never satisfy.
+  it('reports a refused Product admission read in place, without the workspace', () => {
+    queryState.data = undefined;
+    queryState.isError = true;
+    renderWithRouter('/products/prod-1/projects/proj-1');
+    expect(screen.getByRole('alert')).toHaveTextContent('Product unavailable or you do not have access');
+    expect(screen.queryByTestId('product-page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+  });
+
+  it('still redirects when the server answers that product_profile is off', () => {
+    mockFeatures.product_profile = false;
+    renderWithRouter('/products/prod-1/projects/proj-1');
+    expect(screen.getByTestId('home-page')).toBeInTheDocument();
+    expect(screen.queryByTestId('product-page')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('leaves other fail-closed features redirecting on a failed flag read', () => {
+    queryState.data = undefined;
+    queryState.isError = true;
+    renderWithRouter('/superplane');
+    expect(screen.getByTestId('home-page')).toBeInTheDocument();
+    expect(screen.queryByTestId('superplane-page')).not.toBeInTheDocument();
   });
 
   it('renders children for enabled feature when other features are disabled', () => {

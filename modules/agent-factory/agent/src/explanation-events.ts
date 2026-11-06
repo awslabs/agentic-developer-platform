@@ -1,6 +1,7 @@
 /** Bounded, invocation-local authored explanations. No SDK objects or tool inputs. */
 import { truncateUtf8 } from './reporting-text';
 import { containsSecret } from './experience-save-hook';
+import { writeFileSync, renameSync } from 'node:fs';
 
 /** Provider-neutral identity for replaceable public messages and tool lifecycle. */
 export interface ProgressDetail {
@@ -43,7 +44,7 @@ export class ExplanationEvents {
       text = 'Inspection steps (not the assignment checklist)\n\n' + text;
     }
     if (containsSecret(text) || Object.entries(process.env).some(([key, value]) =>
-      /TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY/.test(key) && value && value.length >= 8 && text.includes(value))) {
+      /TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY|API_KEY/.test(key) && value && value.length >= 8 && text.includes(value))) {
       text = '[Explanation omitted because it contains credential-like content.]';
     }
     if (progress) {
@@ -69,7 +70,18 @@ export class ExplanationEvents {
     if (Buffer.byteLength(JSON.stringify(event)) > EVENT_BYTES && payload.text) {
       event.payload = { ...payload, text: truncateUtf8(payload.text, 2000, '\n[Live preview truncated; see final transcript.]') };
     }
-    if (event.payload.progress?.category === 'plan') this.latestPlan = event;
+    if (event.payload.progress?.category === 'plan') {
+      this.latestPlan = event;
+      // The story card observes this exact, already-redacted live board. The
+      // parent worker owns transport and retention; no second task list exists.
+      const path = process.env.ADP_TASK_BOARD_SNAPSHOT_FILE;
+      if (path) {
+        try {
+          writeFileSync(path + '.tmp', JSON.stringify(event), { mode: 0o600 });
+          renameSync(path + '.tmp', path);
+        } catch { /* Optional progress reporting must not interrupt work. */ }
+      }
+    }
     const bytes = Buffer.byteLength(JSON.stringify(event));
     this.history.push({ event, bytes }); this.bytes += bytes;
     while (this.bytes > HISTORY_BYTES - (this.latestPlan ? EVENT_BYTES : 0) || this.history.length > HISTORY_EVENTS - (this.latestPlan ? 1 : 0)) this.bytes -= this.history.shift()!.bytes;

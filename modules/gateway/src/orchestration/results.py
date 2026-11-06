@@ -69,7 +69,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.models.base import utcnow
 
 from .dispatch_pass import attempt_run_id, resolve_installation_id
-from .execution_state import TERMINAL_EXECUTION_STATUSES, BlockCode, ExecutionIdentity, ExecutionPhase, ExecutionStatus, OutcomeKind, PhaseAdvance
+from .execution_state import (
+    TERMINAL_EXECUTION_STATUSES,
+    UNRESOLVED_ACTION_STATUSES,
+    BlockCode,
+    ExecutionIdentity,
+    ExecutionPhase,
+    ExecutionStatus,
+    OutcomeKind,
+    PhaseAdvance,
+)
 from .execution_store import advance_execution, load_execution
 from .handoff import current_identity, handoff_required, missing_receipt_hold, outstanding_block, receipt_for
 from .merge_evidence import GitHubEvidenceSource
@@ -85,7 +94,7 @@ from .pr_bindings import (
     evidence_for_binding,
     hold_explanation,
 )
-from .run_reports import run_result_for_assignment
+from .run_reports import run_result_for_assignment, settle_unstarted_assignment
 from .run_store import EngineRunStore
 from .state import ActorKind, NodeState, transition
 
@@ -120,6 +129,11 @@ def binding_required(dispatch: dict[str, Any]) -> bool:
     closing keyword, which is the unregistered-PR case #5301 requires to be
     refused.
     """
+    if dispatch.get("conclusion_authority") == "evidence":
+        from .developer_personas import operations_executor_enabled
+
+        if not operations_executor_enabled():
+            return True
     return bool(dispatch.get("pr_binding_required"))
 
 
@@ -139,6 +153,23 @@ async def _story_evidence(
     generic "waiting for the issue to be completed" was not — it described, in U11's
     case, something that could never happen.
     """
+    if dispatch.get("conclusion_authority") == "evidence":
+        from .operations_evidence import observed_operations_evidence, operational_expectations
+
+        expected = await operational_expectations(session, node, dispatch)
+        if expected is not None:
+            result, hold = await observed_operations_evidence(session, node, dispatch, expected=expected, observation=observation)
+            if observation is not None:
+                observation["conclusion_authority"] = "evidence"
+                if hold:
+                    observation["hold_reason"] = hold
+            return result, hold
+        from .developer_personas import operations_executor_enabled
+
+        if operations_executor_enabled():
+            if observation is not None:
+                observation.update(conclusion_authority="evidence", hold_reason="operations_assignment_changed")
+            return None, "operations_assignment_changed"
     try:
         binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
     except BindingError as exc:
@@ -300,6 +331,23 @@ async def _persist_missing_handoff_block(
     }
 
 
+def _review_declined_handoff(record) -> bool:
+    """The review controller has blocked this lane because the developer's run failed (#7823).
+
+    `review_cycle_dispatch.development_complete` raises `worker_failed_or_halted` for a
+    protected run that ended other than `complete`; the review cycle persists it as a
+    `human_input_required` block whose detail is that reason. Nothing clears it: the
+    protected record is immutable. Only then does the results pass stop deferring to
+    the continuation and settle the developer failure so recovery can retry.
+    """
+    block = getattr(record, "block", None)
+    return (
+        getattr(record, "status", None) is ExecutionStatus.BLOCKED
+        and block is not None
+        and getattr(block, "detail", None) == "worker_failed_or_halted"
+    )
+
+
 async def observe_results(session: AsyncSession, *, run_store: Any | None = None, evidence: Any | None = None) -> ResultReport:
     report = ResultReport()
     deadline = time.monotonic() + 45
@@ -376,6 +424,66 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                 if row is None:
                     row = await protected_failure_for_assignment(node=node, dispatch=dispatch)
                     authenticated_assignment = row is not None
+                    if row is None and node.kind == NodeKind.STORY.value:
+                        # The work claim is gateway-owned authority, not an activity
+                        # hint. When the exiting worker released it as failed, or the
+                        # engine released it as abandoned once the pod was proven gone,
+                        # the run it still names as its last owner can never produce a
+                        # terminal receipt. Without this evidence the durable handler
+                        # refuses the execution (claim_not_held) while this pass keeps
+                        # waiting for that receipt, and the story runs forever (#7727).
+                        row = await released_claim_failure_for_assignment(session, node=node, dispatch=dispatch)
+                        authenticated_assignment = row is not None
+                elif (
+                    row.get("status") == "in_progress"
+                    and row.get("worker_started")
+                    and row.get("block_code") == "delivery_recovery_required"
+                    and row.get("retryable") is False
+                ):
+                    # #7511: the worker acknowledged /started and then vanished without
+                    # a terminal report. SQS redelivers its message only once the pod's
+                    # visibility heartbeat has stopped, and the redelivered pod found the
+                    # acknowledged owner's spool and refused to take over. That refusal
+                    # is positive evidence the owner is gone; without it the execution
+                    # stayed active until the six-hour watchdog burned another attempt.
+                    row = {
+                        "tenant_id": node.org_id,
+                        "engine_node_id": node.id,
+                        "engine_attempt": node.attempts,
+                        "status": "failed",
+                        "status_source": "owner_vanished",
+                        "terminal_outcome": "failed",
+                        "failure_reason": "delivery_recovery_required",
+                    }
+                elif row.get("status") == "in_progress" and not row.get("worker_started"):
+                    # #7393: an assignment whose worker never acknowledged /started can
+                    # never produce the terminal receipt this branch waits for. The
+                    # startup watchdog's fenced cancellation of the exact claim is the
+                    # only evidence that will ever exist, and it is already trusted for
+                    # unassigned protected dispatches above. A started worker keeps the
+                    # receipt requirement; an unfenced pending claim keeps waiting.
+                    fenced = await protected_failure_for_assignment(node=node, dispatch=dispatch)
+                    if fenced is None and row.get("block_code") and row.get("retryable") is False:
+                        # #7419 AC-04: the worker reached the gateway and was refused
+                        # at /started for a reason it recorded as non-retryable, then
+                        # exited. Its protected execution stays bound, so the startup
+                        # fence never fires; without this the story ran forever on a
+                        # worker that positively said it cannot start. A refusal the
+                        # worker marked retryable (a meter outage, a provider blip)
+                        # keeps waiting for the redelivered pod.
+                        fenced = {
+                            "tenant_id": node.org_id,
+                            "engine_node_id": node.id,
+                            "engine_attempt": node.attempts,
+                            "status": "failed",
+                            "status_source": "refused_start",
+                            "terminal_outcome": "failed",
+                            "failure_reason": row["block_code"],
+                        }
+                    if fenced is not None:
+                        if fenced.get("status_source") != "refused_start":
+                            await settle_unstarted_assignment(session, run_id=dispatch["run_id"], code=fenced["failure_reason"])
+                        row = fenced
                 if row is None:
                     store = run_store if run_store is not None else EngineRunStore.from_env()
                     row = await asyncio.to_thread(store.get, dispatch["run_id"], dispatch["arrived_at"])
@@ -421,13 +529,21 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     raise ValueError("run record does not match node/tenant/attempt")
                 status = row.get("status")
                 policy_failure = False
+                operational = False
                 if node.kind == NodeKind.STORY.value:
                     from .policy_admission import load_in_force_policy
 
                     policy = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
                     governed = policy.policy is not None or policy.refusal is not None
                     policy_failure = governed and authenticated_assignment and status == "failed"
-                    if governed and not policy_failure:
+                    if governed and dispatch.get("conclusion_authority") == "evidence":
+                        from .operations_evidence import operational_expectations
+
+                        operational = await operational_expectations(session, node, dispatch) is not None
+                    if operational and not authenticated_assignment:
+                        report.waiting += 1
+                        continue
+                    if governed and not policy_failure and not operational:
                         # The durable handler owns policy-enabled delivery. Neither
                         # worker exit nor a merged PR may bypass review/repair and
                         # the later merge/deployment/evaluation phase handlers.
@@ -443,6 +559,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     report.waiting += 1
                     continue
                 observation: dict = {}
+                operations_retry = False
                 receipt_identity = None
                 if recovered_without_run_record:
                     observation["recovered_without_run_record"] = True
@@ -454,12 +571,28 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     )
                 if status in {"failed", "budget_stopped", "aborted", "cancelled"}:
                     target = NodeState.FAILED
-                    detail = (
-                        "Worker did not start before the startup deadline; dispatch cancelled. "
-                        "Resume after resolving startup to retry within the accepted limits."
-                        if row.get("failure_reason") == "worker_startup_deadline_exceeded"
-                        else f"Worker reported {status}; inspect the run before retrying."
-                    )
+                    if row.get("failure_reason") == "worker_startup_deadline_exceeded":
+                        detail = (
+                            "Worker did not start before the startup deadline; dispatch cancelled. "
+                            "Resume after resolving startup to retry within the accepted limits."
+                        )
+                    elif row.get("status_source") == "owner_vanished":
+                        detail = (
+                            "Worker acknowledged its start and then disappeared; a redelivered worker refused to take over "
+                            "(delivery_recovery_required). Resume to retry within the accepted limits."
+                        )
+                    elif row.get("status_source") == "refused_start":
+                        detail = (
+                            f"Worker could not start under the current authority ({row.get('failure_reason')}); "
+                            "resume after the cause is fixed to retry within the accepted limits."
+                        )
+                    elif row.get("status_source") == "claim_released":
+                        detail = (
+                            f"Worker's claim was released as {row.get('claim_release_reason')} without a terminal report "
+                            "(claim_released); developer recovery or resume retries within the accepted limits."
+                        )
+                    else:
+                        detail = f"Worker reported {status}; inspect the run before retrying."
                 elif status == "complete":
                     if node.kind == NodeKind.EVAL.value:
                         # A green worker exit is not a test verdict. Require a real
@@ -490,8 +623,16 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                             report.errors += 1
                         if not url:
                             target, detail = NodeState.AWAITING_MERGE, hold
+                            operations_retry = operational and authenticated_assignment and hold == "evidence_missing"
                         else:
-                            target, detail = NodeState.PASSED, f"Story completed by merged pull request with successful checks: {url}"
+                            target, detail = (
+                                NodeState.PASSED,
+                                (
+                                    f"Runtime evidence verified for operational story: {url}"
+                                    if observation.get("conclusion_authority") == "evidence"
+                                    else f"Story completed by merged pull request with successful checks: {url}"
+                                ),
+                            )
                 else:
                     report.waiting += 1
                     continue
@@ -513,7 +654,9 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                 if locked.state != observed_state or locked.attempts != dispatch["attempt"]:
                     report.waiting += 1
                     continue
-                if policy_failure:
+                if operations_retry and await current_identity(session, org_id=locked.org_id, node_id=locked.id) is None:
+                    operations_retry = False
+                if policy_failure or operations_retry:
                     # A continuation can own the same node attempt. Serialize
                     # with its claim transfer before applying the original run's
                     # failure, using the existing node -> flow/claim/plan/execution
@@ -536,7 +679,19 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         or claim is None
                         or not (
                             claim.active_run_id == dispatch["run_id"]
-                            or (claim.state == "released" and claim.release_reason == "failed" and claim.claim_event_id == dispatch["run_id"])
+                            # A claim the exiting worker released as failed, or one the
+                            # engine released as abandoned once the pod was proven gone,
+                            # still names this run as its last owner (#7419). So does a
+                            # claim the worker released as completed — but only for the
+                            # operations retry, which settles a run that finished cleanly
+                            # and left no verifiable runtime evidence (#7826). A developer
+                            # whose protected record says failed never adopts a completed
+                            # release (test_policy_worker_failure: protected_released_completed).
+                            or (
+                                claim.state == "released"
+                                and (claim.release_reason in {"failed", "abandoned"} or (operations_retry and claim.release_reason == "completed"))
+                                and claim.claim_event_id == dispatch["run_id"]
+                            )
                         )
                     ):
                         report.waiting += 1
@@ -544,10 +699,19 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         continue
                     from .handoff import handoff_receipt_ref
 
-                    if current.record.handoff_receipt_ref == handoff_receipt_ref(identity, current.record.id):
+                    if current.record.handoff_receipt_ref == handoff_receipt_ref(identity, current.record.id) and not _review_declined_handoff(
+                        current.record
+                    ):
                         # A durable handoff transferred responsibility before the
                         # developer's cleanup failed. The review controller owns
                         # that continuation even before it queues a successor.
+                        #
+                        # Until the review controller has looked and declined (#7823):
+                        # once it has blocked the lane with `worker_failed_or_halted`
+                        # it will never start a reviewer, so deferring any longer only
+                        # deadlocks the story until the stall detector. A reviewer that
+                        # *was* dispatched is still protected by the successor check
+                        # below.
                         report.waiting += 1
                         report.reasons[node.id] = "The worker committed its handoff; reconcile the accepted continuation."
                         continue
@@ -572,7 +736,38 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         report.waiting += 1
                         report.reasons[node.id] = "A continuation was recorded for this attempt; reconcile it before retrying the original worker."
                         continue
-                if node.kind == NodeKind.STORY.value and status == "complete":
+                    if operations_retry:
+                        target = NodeState.FAILED
+                        detail = "Operations worker exited without verified runtime evidence; retry within the accepted limits."
+                        observation["operations_retry"] = True
+                if node.kind == NodeKind.STORY.value and status == "complete" and observation.get("conclusion_authority") == "evidence":
+                    from .operations_evidence import observed_operations_evidence
+
+                    revalidated = {}
+                    confirmed, hold = await observed_operations_evidence(session, locked, dispatch, observation=revalidated)
+                    if target is NodeState.PASSED and (
+                        confirmed != url
+                        or revalidated.get("evidence_ids") != observation.get("evidence_ids")
+                        or revalidated.get("native_release") != observation.get("native_release")
+                    ):
+                        target, detail = NodeState.AWAITING_MERGE, hold or "evidence_changed"
+                        observation.pop("evidence_ids", None)
+                        observation["hold_reason"] = detail
+                    if operations_retry and confirmed:
+                        target = NodeState.PASSED
+                        operations_retry = False
+                        observation.pop("operations_retry", None)
+                        observation.pop("hold_reason", None)
+                        observation["evidence_ids"] = revalidated["evidence_ids"]
+                        if "native_release" in revalidated:
+                            observation["native_release"] = revalidated["native_release"]
+                        detail = f"Runtime evidence verified for operational story: {confirmed}"
+                    elif operations_retry and hold != "evidence_missing":
+                        target, detail = NodeState.AWAITING_MERGE, hold
+                        operations_retry = False
+                        observation.pop("operations_retry", None)
+                        observation["hold_reason"] = detail
+                if node.kind == NodeKind.STORY.value and status == "complete" and observation.get("conclusion_authority") != "evidence":
                     try:
                         current = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
                     except BindingError as exc:
@@ -611,7 +806,66 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         detail = "The implementation binding changed during verification; its current head and scope will be verified again."
                         observation.pop("merge_receipt", None)
                         observation["binding"] = binding_snapshot(current) if current else None
+                native_release = observation.pop("native_release", None)
+                operations_success = operational and target is NodeState.PASSED
+                if operations_success:
+                    # Runtime evidence has just been revalidated under the node
+                    # lock. Settle its ledger in the same transaction as the pass:
+                    # a released worker otherwise disappears from the due scan,
+                    # leaving verified release consumers blocked indefinitely.
+                    identity = await current_identity(session, org_id=locked.org_id, node_id=locked.id)
+                    current = (
+                        await load_execution(session, identity=identity, for_update=True, released_failure_run_id=dispatch["run_id"])
+                        if identity is not None
+                        else None
+                    )
+                    claim = await session.get(OrchestrationWorkClaim, identity.claim_id) if identity is not None else None
+                    if (
+                        identity is None
+                        or identity.cycle != locked.attempts
+                        or current is None
+                        or current.kind is not OutcomeKind.APPLIED
+                        or current.record is None
+                        or current.record.status in TERMINAL_EXECUTION_STATUSES
+                        or current.record.pending_action_key is not None
+                        or current.record.handoff_receipt_ref is not None
+                        or claim is None
+                        or not (
+                            (claim.state == "held" and claim.active_run_id == dispatch["run_id"])
+                            or (
+                                claim.state == "released"
+                                and claim.release_reason == "completed"
+                                and claim.active_run_id is None
+                                and claim.claim_event_id == dispatch["run_id"]
+                            )
+                        )
+                    ):
+                        report.waiting += 1
+                        report.reasons[node.id] = "The operations result no longer owns a settleable execution; reconcile its current owner."
+                        continue
+                    outstanding = await session.scalar(
+                        select(OrchestrationAction.id)
+                        .where(
+                            OrchestrationAction.org_id == locked.org_id,
+                            OrchestrationAction.execution_id == current.record.id,
+                            # Only the exact dispatch proved by the revalidated
+                            # runtime receipt can be settled with this pass.
+                            OrchestrationAction.id != native_release["action_id"] if native_release else True,
+                            (OrchestrationAction.kind == "review_cycle_dispatch")
+                            | OrchestrationAction.status.in_([status.value for status in UNRESOLVED_ACTION_STATUSES]),
+                        )
+                        .limit(1)
+                    )
+                    if outstanding is not None:
+                        report.waiting += 1
+                        report.reasons[node.id] = "The operations execution has an unresolved action or continuation; reconcile it before completion."
+                        continue
                 payload = {"attempt": dispatch["attempt"], "run_id": dispatch["run_id"], "evidence": detail, **observation}
+                if row.get("status_source") == "claim_released":
+                    # Developer recovery reads the settlement kind from this durable
+                    # payload: a released claim leaves no terminal receipt to re-read.
+                    payload["status_source"] = "claim_released"
+                    payload["claim_release_reason"] = row.get("claim_release_reason")
                 if target.value == node.state:
                     previous = (
                         await session.execute(
@@ -661,7 +915,12 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     )
                 ).rowcount
                 if rows:
-                    if policy_failure:
+                    if operations_success and native_release:
+                        from .operations_result_settlement import settle_native_release
+
+                        await settle_native_release(session, execution=current.record, run_id=dispatch["run_id"], verified=native_release)
+                        payload["native_release_action_id"] = native_release["action_id"]
+                    if policy_failure or operations_retry or operations_success:
                         from .work_claims import Disposition, ReleaseReason, release_work
 
                         ended = await advance_execution(
@@ -676,18 +935,18 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                             ),
                         )
                         if ended.kind is not OutcomeKind.APPLIED:
-                            raise ValueError("failed-worker execution changed before settlement")
+                            raise ValueError("worker execution changed before settlement")
                         released = await release_work(
                             session,
                             org_id=node.org_id,
                             claim_id=identity.claim_id,
                             generation=identity.claim_generation,
-                            reason=ReleaseReason.FAILED,
+                            reason=ReleaseReason.COMPLETED if operations_success else ReleaseReason.FAILED,
                             terminal_evidence=f"{row.get('status_source', 'authenticated_run_report')}:{dispatch['run_id']}",
                         )
                         if released.disposition not in {Disposition.ADMITTED, Disposition.DUPLICATE}:
-                            raise ValueError("failed-worker claim release refused")
-                        payload["failed_execution_id"] = current.record.id
+                            raise ValueError("worker claim release refused")
+                        payload["completed_execution_id" if operations_success else "failed_execution_id"] = current.record.id
                     session.add(
                         OrchestrationDecision(
                             org_id=node.org_id,
@@ -724,6 +983,64 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
             )
             await session.flush()
     return report
+
+
+async def released_claim_failure_for_assignment(
+    session: AsyncSession, *, node: OrchestrationNode, dispatch: dict[str, Any], store=None
+) -> dict[str, Any] | None:
+    """Settle a run whose work claim was released as failed or abandoned.
+
+    `release_work` is gateway-owned authority: the exiting worker releases its
+    claim as `failed` through its authenticated claim credentials, and the engine
+    releases it as `abandoned` only once the pod was proven gone. Either release
+    leaves the claim naming this run as its last owner (`claim_event_id`) with no
+    active run, so no terminal receipt can ever follow. Only the current identity's
+    claim for this exact node attempt and flow qualifies; a held claim, a transferred
+    claim or a different generation keeps the normal receipt requirement.
+    """
+    identity = await current_identity(session, org_id=node.org_id, node_id=node.id)
+    if identity is None or identity.cycle != node.attempts or identity.claim_id is None:
+        return None
+    claim = await session.get(OrchestrationWorkClaim, identity.claim_id)
+    if (
+        claim is None
+        or claim.org_id != node.org_id
+        or claim.owner_kind != "engine_flow"
+        or claim.owner_ref != node.flow_id
+        or claim.generation != identity.claim_generation
+        or claim.state != "released"
+        or claim.release_reason not in {"failed", "abandoned"}
+        or claim.active_run_id is not None
+        or claim.claim_event_id != dispatch.get("run_id")
+    ):
+        return None
+    # The protected execution record outranks the claim's release reason. A run that
+    # committed `complete` finished its work (its PR binding and receipts follow by the
+    # normal delivery path); a mislabelled release must not fail and retry it (#7764).
+    if await protected_terminal_outcome(node=node, run_id=dispatch["run_id"], store=store) == "complete":
+        return None
+    return {
+        "tenant_id": node.org_id,
+        "engine_node_id": node.id,
+        "engine_attempt": node.attempts,
+        "status": "failed",
+        "status_source": "claim_released",
+        "terminal_outcome": "failed",
+        "failure_reason": f"worker_claim_{claim.release_reason}",
+        "claim_release_reason": claim.release_reason,
+    }
+
+
+async def protected_terminal_outcome(*, node, run_id: str, store=None) -> str | None:
+    """The terminal outcome this exact run committed in its protected EXEC record, or None."""
+    if store is None:
+        from src.agentauth.engine import get_engine_authority_writer
+
+        store = get_engine_authority_writer().store
+    raw = await asyncio.to_thread(store._read, f"TENANT#{node.org_id}", f"EXEC#{run_id}")
+    if not raw or raw.get("status") != {"S": "completed"} or raw.get("tenant_id") != {"S": node.org_id}:
+        return None
+    return raw.get("terminal_outcome", {}).get("S")
 
 
 async def protected_failure_for_assignment(*, node, dispatch, store=None):

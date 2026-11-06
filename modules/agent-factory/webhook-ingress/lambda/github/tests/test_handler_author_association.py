@@ -108,12 +108,13 @@ def _make_comment_payload(
     return {
         "action": "created",
         "installation": {"id": INSTALLATION_ID},
-        "repository": {"full_name": "test-org/test-repo"},
+        "repository": {"id": 34, "full_name": "test-org/test-repo"},
         "organization": {"login": "test-org"},
         "sender": {"id": SENDER_ID, "login": "testuser", "type": "User"},
         "issue": {"number": 42},
         "comment": {
             "id": 999,
+            "user": {"id": SENDER_ID},
             "body": body,
             "author_association": author_association,
         },
@@ -184,6 +185,7 @@ class TestMinAuthorAssociationEnforcement:
             org_id="target-org",
             user_id="user-123",
             user_provisioning_mode="strict",
+            verification_method="oauth",
         )
 
         # Installation row has min_author_association=COLLABORATOR
@@ -231,15 +233,24 @@ class TestMinAuthorAssociationEnforcement:
 
                         handler._identity_mod = identity_resolver
                         handler._metrics_mod = mock_metrics
+                        identity_resolver.last_tenant_item = tenant_item
 
                         payload = _make_comment_payload(author_association="NONE")
                         event = _make_event(payload)
-                        response = handler.handler(event, {})
+                        from common.github_actor_authority import ActorDecision
+
+                        with patch(
+                            "common.github_actor_authority.check_actor",
+                            return_value=ActorDecision(False, "insufficient_association"),
+                        ) as authority:
+                            response = handler.handler(event, {})
 
         assert response["statusCode"] == 403
         body = json.loads(response["body"])
         assert body["outcome"] == "insufficient_association"
         mock_metrics.record_rejected.assert_called_once_with(reason="insufficient_association")
+        assert authority.call_args.kwargs["floor"] == "COLLABORATOR"
+        assert authority.call_args.kwargs["association_actor_id"] == SENDER_ID
 
     def test_sufficient_association_passes(self, monkeypatch):
         """COLLABORATOR required and commenter is MEMBER → pass (no 403)."""

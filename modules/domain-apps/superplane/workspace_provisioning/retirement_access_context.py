@@ -183,7 +183,7 @@ async def load_access_context(operation, context, registration_store, *, current
     expected = access_request(
         plan,
         source,
-        load_policy(context, lease.org_id),
+        load_policy(context, lease.org_id, lease.workspace_id),
         allocation_source=producer if managed else None,
         prepare_destroy=parameters.get("retirement_prepare_destroy") == "v1",
     )

@@ -1,0 +1,24 @@
+[Unit]
+Description=Retain trusted GitLab job container observations
+Requires=docker.service
+After=docker.service adp-job-firewall.service
+Before=sshd.service
+BindsTo=docker.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/python3 /usr/local/libexec/adp-job-observer/host_journal.py
+TimeoutStartSec=10
+User=root
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/adp-job-observations
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

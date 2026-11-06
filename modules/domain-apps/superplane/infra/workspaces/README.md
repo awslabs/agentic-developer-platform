@@ -436,6 +436,12 @@ result is intentionally nonzero until the emitted destructive inventory is revie
 and authorized. Apply uses the same command above. Supplied networks/keys remain
 outside workspace ownership, and no AWS account is closed by this path.
 
+Destroy preparation binds the current operator's canonical IAM identity and
+immutable principal ID. It does not require provisioning outputs or KMS grant
+creation permissions, because a destroy plan removes those outputs. Apply still
+verifies the exact saved artifact, backend, ownership, account and operator;
+creation, updates and replacements cannot use this delete-only preflight.
+
 ### Supplied-key preflight
 
 A supplied ARN or policy template alone is insufficient. Preparation reads key

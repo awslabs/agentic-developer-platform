@@ -1,0 +1,73 @@
+{
+  "deployment_strategy": "one-coordinated-release-campaign",
+  "planned_campaigns": 1,
+  "per_story_deployments": 0,
+  "waves": [
+    {
+      "wave": "w01-build",
+      "stories": [
+        "S01",
+        "S09",
+        "S12",
+        "S02",
+        "S10",
+        "S11",
+        "S03",
+        "S04",
+        "S05",
+        "S13",
+        "S06",
+        "S07"
+      ],
+      "completion": "verified merges and code-evidence evaluation",
+      "deployments": 0
+    },
+    {
+      "wave": "w02-pilot",
+      "operation": "devlake-poc-8887/epic-8887/w02-pilot/release-and-qualify",
+      "acceptance": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "ordered_sections": [
+        "preflight-and-baseline",
+        "default-off",
+        "connector-only",
+        "full-collection",
+        "sealed-export-and-admission",
+        "lineage-and-current-policy",
+        "publication-api-cli",
+        "48-hour-soak",
+        "fault-upgrade-rollback",
+        "evidence-readback"
+      ],
+      "campaigns": 1
+    },
+    {
+      "wave": "w03-closure",
+      "stories": [
+        "S08"
+      ],
+      "operation": "devlake-poc-8887/epic-8887/w03-closure/finalize",
+      "acceptance": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence",
+      "deployments": 0,
+      "effects": "Launch-preapproved disable/removal, independent absence/hold readback and automatic post-verdict closure; adoption recommendations only."
+    }
+  ],
+  "additional_mutations": "Flag changes, first collection activation, required upgrade/rollback and justified component repairs are real mutations inside the campaign, not hidden zero-deploy claims.",
+  "failure_finalization": {
+    "entrypoint": ".github/workflows/insights-poc-finalize.yml",
+    "outside_success_dag": true,
+    "bootstrap_owner": "S09",
+    "runtime_owner": "S02",
+    "consumer": "S08",
+    "triggers": [
+      "terminal_failure",
+      "retries_exhausted",
+      "operator_abort",
+      "expiry",
+      "reuse_rejected",
+      "normal_completion"
+    ]
+  },
+  "execution_mode": "unattended_after_initial_acceptance",
+  "routine_human_evaluations": 0,
+  "soak_execution": "One campaign: twelve checkpointed four-hour jobs capped at 300 minutes, fresh job credentials, short final qualify job; existing runner pool and >=56-hour workflow/engine authority window. S07 qualifies actual actor recovery."
+}

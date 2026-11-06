@@ -67,6 +67,7 @@ class _Identity:
         self.user_kind = user_kind
         self.user_id = user_id
         self.tenant_id = tenant_id  # Issue #5663: server-resolved tenant of the job
+        self.identity_proven = user_kind == "human"
 
 
 def _payload() -> dict:
@@ -406,12 +407,14 @@ class TestPath3PointerOnly:
 class TestPath4MarkerOnly:
     """Rule 4 behaviour from #3179 is preserved by the refactor."""
 
-    def test_forged_marker_only_mints_new_bot_chain(self):
+    def test_forged_marker_without_pointer_cannot_start_chain(self):
         marker = _marker_text(correlation_id="corr-ATTACKER", key="attacker-key-xxx")
         ctx = _run(None, marker)
-        assert ctx["is_new_chain"] is True
+        assert ctx["is_new_chain"] is False
         assert ctx["is_human_rooted"] is False
-        assert ctx["chain_depth"] == 0
+        from intent_parser import MAX_CHAIN_DEPTH
+
+        assert ctx["chain_depth"] >= MAX_CHAIN_DEPTH
 
     def test_unsigned_marker_only_strips_human_rooted(self):
         marker = _marker_text(correlation_id="corr-U", root_human_id=VICTIM, key=None)
@@ -465,7 +468,7 @@ class TestHumanSenderUnaffected:
         store.read_pointer.return_value = _pointer()
         with patch("handler._get_correlation_store", return_value=store):
             ctx = determine_correlation(
-                {},
+                {"sender": {"id": 56, "type": "User", "login": "alice"}},
                 _Identity(user_kind="human", user_id="human-42"),
                 CHANNEL,
                 marker_text=_marker_text(correlation_id="corr-X", key=None),

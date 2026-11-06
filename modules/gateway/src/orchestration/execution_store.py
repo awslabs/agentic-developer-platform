@@ -96,6 +96,7 @@ from .models import (
     ClaimState,
     OrchestrationAcceptedPlan,
     OrchestrationAction,
+    OrchestrationDecision,
     OrchestrationExecution,
     OrchestrationFlow,
     OrchestrationNode,
@@ -111,7 +112,138 @@ __all__ = [
     "load_execution",
     "prepare_action",
     "record_observation",
+    "supersede_replaced_admission",
 ]
+
+
+async def supersede_replaced_admission(
+    session: AsyncSession,
+    *,
+    identity: ExecutionIdentity,
+    expected_revision: int,
+    successor_id: str,
+    successor_revision: int,
+    successor_cycle: int,
+    issue_number: int,
+    failed_settlement_decision_id: str | None = None,
+) -> bool:
+    """Retire an actionless admission after its positively exited worker was replaced.
+
+    Called by replaced_admission recovery or explicit owner failure settlement
+    after reading the old run's protected terminal record. Every SQL binding is
+    rechecked under locks; the only write retires that exact historical row.
+    The settled successor, claim, attempts, plan and all effects remain unchanged.
+    An explicit human failure-settlement receipt also permits a failed successor;
+    its old-worker proof and exact predecessor revision must be in that receipt.
+    """
+    flow_id = await _resolve_flow_id(session, identity)
+    if flow_id is None:
+        return False
+    flow = await session.scalar(
+        select(OrchestrationFlow)
+        .where(OrchestrationFlow.org_id == identity.org_id, OrchestrationFlow.id == flow_id, OrchestrationFlow.archived_at.is_(None))
+        .with_for_update(skip_locked=True)
+    )
+    if flow is None:
+        return False
+    if successor_cycle <= identity.cycle:
+        return False
+    if failed_settlement_decision_id:
+        decision = await session.get(OrchestrationDecision, failed_settlement_decision_id)
+        node = await session.get(OrchestrationNode, identity.node_id, populate_existing=True)
+        try:
+            data = json.loads(decision.reason) if decision else {}
+            old = next((item for item in data.get("retired_admission_evidence", []) if item.get("cycle") == identity.cycle), {})
+            if (
+                decision is None
+                or decision.kind != "failed_review_settled"
+                or decision.actor_kind != "human"
+                or decision.org_id != identity.org_id
+                or decision.node_id != identity.node_id
+                or decision.flow_id != flow_id
+                or node is None
+                or node.state != "failed"
+                or node.attempts != successor_cycle
+                or data.get("execution_id") != successor_id
+                or old.get("revision") != expected_revision
+                or old.get("claim_id") != identity.claim_id
+                or old.get("claim_generation") != identity.claim_generation
+                or old.get("accepted_plan_version") != identity.accepted_plan_version
+                or not old.get("terminal_digest")
+            ):
+                return False
+        except (ValueError, TypeError, AttributeError):
+            return False
+    claim = await session.scalar(
+        select(OrchestrationWorkClaim)
+        .where(OrchestrationWorkClaim.org_id == identity.org_id, OrchestrationWorkClaim.id == identity.claim_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        claim is None
+        or claim.owner_kind != "engine_flow"
+        or claim.owner_ref != flow_id
+        or claim.state != "released"
+        or claim.release_reason != ("failed" if failed_settlement_decision_id else "completed")
+        or claim.active_run_id is not None
+        or claim.generation <= identity.claim_generation
+        or issue_number != claim.issue_number
+    ):
+        return False
+    successor = await session.scalar(
+        select(OrchestrationExecution)
+        .where(
+            OrchestrationExecution.org_id == identity.org_id,
+            OrchestrationExecution.flow_id == flow_id,
+            OrchestrationExecution.node_id == identity.node_id,
+            OrchestrationExecution.id == successor_id,
+            OrchestrationExecution.cycle == successor_cycle,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        successor is None
+        or successor.revision != successor_revision
+        or successor.status != "concluded"
+        or successor.phase != "concluded"
+        or successor.pending_action_key is not None
+        or successor.claim_id != claim.id
+        or successor.claim_generation != claim.generation
+    ):
+        return False
+    row = await _locked_execution(session, identity)
+    if (
+        row is None
+        or _binding_conflict(row, identity)
+        or row.claim_generation != identity.claim_generation
+        or row.revision != expected_revision
+        or row.phase != "admitted"
+        or row.status not in {"runnable", "awaiting_external"}
+        or row.attempts != 0
+        or row.pending_action_key is not None
+        or row.handoff_receipt_ref is not None
+        or row.notification_receipt_ref is not None
+        or (failed_settlement_decision_id and old.get("execution_id") != row.id)
+    ):
+        return False
+    # An absent pending pointer does not establish that no effect was started.
+    # Refuse every action, even a terminal one; this narrow recovery handles only
+    # the initial admission that never entered the continuation runner.
+    action = await session.scalar(
+        select(OrchestrationAction.id).where(OrchestrationAction.org_id == identity.org_id, OrchestrationAction.execution_id == row.id).limit(1)
+    )
+    if action is not None:
+        return False
+    row.status, row.phase = ExecutionStatus.SUPERSEDED.value, ExecutionPhase.CONCLUDED.value
+    row.next_check_at = None
+    row.revision += 1
+    row.progressed_at = _now()
+    row.progress_note = f"Exited admission replaced by settled execution {successor.id}; historical authority and attempts retained."
+    await session.flush()
+    return True
+
 
 # How an observer's report maps onto a stored action status. `INDETERMINATE` maps
 # to `UNKNOWN` rather than to a guess: an observer that looked and could not tell
@@ -333,6 +465,8 @@ async def _live_authority_conflict(
     flow_id: str,
     lock: bool = True,
     released_failure_run_id: str | None = None,
+    require_unarchived: bool = False,
+    closing_superseded_lane: bool = False,
 ) -> str | None:
     """Verify the claim and accepted plan that are live in this transaction.
 
@@ -346,12 +480,16 @@ async def _live_authority_conflict(
     waits. A reader has nothing to protect between the check and a write it will
     never make, so the lock buys it no correctness.
     """
-    flow_stmt = select(OrchestrationFlow.id).where(OrchestrationFlow.org_id == identity.org_id, OrchestrationFlow.id == flow_id)
+    flow_stmt = select(OrchestrationFlow.id, OrchestrationFlow.archived_at).where(
+        OrchestrationFlow.org_id == identity.org_id, OrchestrationFlow.id == flow_id
+    )
     if lock:
         flow_stmt = flow_stmt.with_for_update()
-    flow = (await session.execute(flow_stmt)).scalar_one_or_none()
+    flow = (await session.execute(flow_stmt)).one_or_none()
     if flow is None:
         return "tenant_binding_mismatch"
+    if require_unarchived and flow.archived_at is not None:
+        return "flow_archived"
 
     claim_stmt = select(OrchestrationWorkClaim).where(
         OrchestrationWorkClaim.org_id == identity.org_id,
@@ -367,16 +505,30 @@ async def _live_authority_conflict(
     released_failure = (
         released_failure_run_id is not None
         and claim.state == ClaimState.RELEASED.value
-        and claim.release_reason == "failed"
+        # Released by the exiting worker as failed, or by the engine as abandoned
+        # once the pod was proven gone: either way this run was the last owner
+        # and the failure reconciler may settle it (#7419). A worker that released
+        # its claim as completed was equally the last owner; the operations retry
+        # settles such a run when its runtime evidence cannot be verified (#7826).
+        # The run id on the row is what binds every case — never the reason alone.
+        and claim.release_reason in {"failed", "abandoned", "completed"}
         and claim.active_run_id is None
         and claim.claim_event_id == released_failure_run_id
     )
-    if claim.state != ClaimState.HELD.value and not released_failure:
-        return "claim_not_held"
-    if released_failure_run_id is not None and not released_failure and claim.active_run_id != released_failure_run_id:
-        return "claim_run_mismatch"
-    if claim.generation != identity.claim_generation:
-        return "claim_generation_superseded" if claim.generation > identity.claim_generation else "claim_generation_mismatch"
+    # Closing a superseded node's lane is not adoption (#7810). The lane's stored
+    # claim generation is, by construction, behind wherever the issue's claim has
+    # moved on to — a successor address re-acquired it, or the exiting worker
+    # released it — and that is exactly why the lane must be closed rather than
+    # left open forever. Tenant, flow, claim identity and ownership above still
+    # bind; `advance_execution` permits only a conclusion under this flag; and the
+    # claim row itself is never written on this path.
+    if not closing_superseded_lane:
+        if claim.state != ClaimState.HELD.value and not released_failure:
+            return "claim_not_held"
+        if released_failure_run_id is not None and not released_failure and claim.active_run_id != released_failure_run_id:
+            return "claim_run_mismatch"
+        if claim.generation != identity.claim_generation:
+            return "claim_generation_superseded" if claim.generation > identity.claim_generation else "claim_generation_mismatch"
 
     plan_stmt = (
         select(OrchestrationAcceptedPlan)
@@ -397,6 +549,14 @@ async def _live_authority_conflict(
         from .plan_lineage import ancestor_plan
 
         if not plans or await ancestor_plan(session, plans[0], identity.accepted_plan_version, node_id=identity.node_id) is None:
+            # A superseded node's execution was, by definition, authorized under a
+            # plan the flow has moved past, and lineage can never preserve a node an
+            # amendment retired. The caller that settles such a lane has verified the
+            # node is superseded (this module never reads graph state); closing the
+            # lane — conclude only, enforced in `advance_execution` — is the one write
+            # the old authority may still make. Every other binding above applies (#7800).
+            if closing_superseded_lane:
+                return None
             return "accepted_plan_version_mismatch"
     return None
 
@@ -564,7 +724,7 @@ async def create_execution(
     resolved_flow_id = await _resolve_flow_id(session, identity, expected_flow_id=flow_id)
     if resolved_flow_id is None:
         return _unbound_conflict("tenant_binding_mismatch")
-    live_conflict = await _live_authority_conflict(session, identity, flow_id=resolved_flow_id)
+    live_conflict = await _live_authority_conflict(session, identity, flow_id=resolved_flow_id, require_unarchived=True)
     if live_conflict:
         return await _live_refusal(session, identity, live_conflict)
 
@@ -653,6 +813,7 @@ async def load_execution(
     identity: ExecutionIdentity,
     for_update: bool = False,
     released_failure_run_id: str | None = None,
+    closing_superseded_lane: bool = False,
 ) -> ExecutionOutcome | None:
     """Read one execution, optionally under a row lock.
 
@@ -676,7 +837,12 @@ async def load_execution(
     # A plain read takes no locks, here or in the authority check it delegates to:
     # the read model renders live work and must not block on — or block — a writer.
     live_conflict = await _live_authority_conflict(
-        session, identity, flow_id=flow_id, lock=for_update, released_failure_run_id=released_failure_run_id
+        session,
+        identity,
+        flow_id=flow_id,
+        lock=for_update,
+        released_failure_run_id=released_failure_run_id,
+        closing_superseded_lane=closing_superseded_lane,
     )
     if live_conflict:
         return await _live_refusal(session, identity, live_conflict, lock=for_update)
@@ -724,7 +890,7 @@ async def prepare_action(
             "unknown_execution",
             f"No execution exists for node {identity.node_id} cycle {identity.cycle}; create it before preparing actions.",
         )
-    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id)
+    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id, require_unarchived=True)
     if live_conflict:
         return await _live_refusal(session, identity, live_conflict)
 
@@ -921,6 +1087,99 @@ async def record_observation(
     return ExecutionOutcome(kind=OutcomeKind.APPLIED, record=_to_record(row), action=_to_action_record(action))
 
 
+async def settle_released_merge(
+    session: AsyncSession,
+    *,
+    identity: ExecutionIdentity,
+    expected_revision: int,
+    reviewer_run_id: str,
+    released_at: datetime,
+    receipt,
+    verification: dict,
+) -> ExecutionOutcome:
+    """Record an observed merge and conclude exactly its released generation.
+
+    The owner recovery service authenticates the successful reviewer, accepted
+    review and current provider evidence. This specialized writer permits no
+    dispatch, effect intent, claim adoption or attempt consumption. The ordinary
+    action writers still require held ownership.
+    """
+    from dataclasses import asdict
+    from hashlib import sha256
+
+    from .merge_controller import MERGE_KIND, MergeReceipt, encode
+
+    receipt = MergeReceipt.model_validate(receipt)
+    if (
+        receipt.verification_kind != "post_merge_verification"
+        or any(getattr(receipt, key) != value for key, value in asdict(identity).items())
+        or receipt.eligibility_digest != sha256(encode(verification).encode()).hexdigest()
+        or verification.get("review_state") != "approved"
+    ):
+        raise ExecutionStoreError("invalid_merge_settlement", "An exact, verified external merge is required.")
+    current = await load_execution(session, identity=identity, for_update=True, released_failure_run_id=reviewer_run_id)
+    if current is None or current.kind is not OutcomeKind.APPLIED:
+        return current or _unbound_conflict("unknown_execution")
+    row = await _locked_execution(session, identity)
+    claim = await session.get(OrchestrationWorkClaim, identity.claim_id, populate_existing=True)
+    if (
+        (row.phase, row.status)
+        not in {
+            (ExecutionPhase.MERGE_READY.value, ExecutionStatus.RUNNABLE.value),
+            (ExecutionPhase.AWAITING_REVIEW.value, ExecutionStatus.RUNNABLE.value),
+            (ExecutionPhase.AWAITING_REVIEW.value, ExecutionStatus.AWAITING_EXTERNAL.value),
+        }
+        or row.pending_action_key is not None
+        or row.claim_generation != identity.claim_generation
+        or row.id != receipt.execution_id
+        or row.flow_id != receipt.flow_id
+        or claim.state != ClaimState.RELEASED.value
+        or claim.release_reason != "completed"
+        or claim.claim_event_id != reviewer_run_id
+        or claim.active_run_id is not None
+        or claim.released_at != released_at
+        or released_at is None
+    ):
+        return _conflict(row, "released_merge_assignment_changed")
+    if await session.scalar(
+        select(OrchestrationAction.id)
+        .where(
+            OrchestrationAction.org_id == identity.org_id,
+            OrchestrationAction.execution_id == row.id,
+            OrchestrationAction.kind == MERGE_KIND,
+        )
+        .limit(1)
+    ):
+        return _conflict(row, "merge_action_requires_reconciliation")
+    advanced = await advance_execution(
+        session,
+        identity=identity,
+        released_failure_run_id=reviewer_run_id,
+        advance=PhaseAdvance(
+            phase=ExecutionPhase.CONCLUDED,
+            status=ExecutionStatus.CONCLUDED,
+            expected_revision=expected_revision,
+            progress_note="Owner accepted verified existing merge after premature claim release.",
+        ),
+    )
+    if advanced.kind is not OutcomeKind.APPLIED:
+        return advanced
+    action = OrchestrationAction(
+        org_id=identity.org_id,
+        execution_id=row.id,
+        operation_key=receipt.operation_key,
+        kind=MERGE_KIND,
+        status=ActionStatus.SUCCEEDED.value,
+        attempt=row.attempts,
+        receipt_ref=f"github/verified-merge/{receipt.merge_sha}",
+        detail={"post_merge_verification": verification, "merge_mutation_performed": False},
+        observed_at=receipt.observed_at,
+    )
+    session.add(action)
+    await session.flush()
+    return ExecutionOutcome(kind=OutcomeKind.APPLIED, record=advanced.record, action=_to_action_record(action))
+
+
 async def advance_execution(
     session: AsyncSession,
     *,
@@ -932,6 +1191,7 @@ async def advance_execution(
     notification_receipt_ref: str | None = None,
     handoff_receipt_ref: str | None = None,
     released_failure_run_id: str | None = None,
+    closing_superseded_lane: bool = False,
 ) -> ExecutionOutcome:
     """Compare-and-set the execution's phase, status and next check time — atomically.
 
@@ -988,7 +1248,11 @@ async def advance_execution(
             "unknown_execution",
             f"No execution exists for node {identity.node_id} cycle {identity.cycle}; create it before advancing.",
         )
-    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id, released_failure_run_id=released_failure_run_id)
+    if closing_superseded_lane and (advance.status is not ExecutionStatus.CONCLUDED or intent is not None or block is not None):
+        raise ExecutionStoreError("invalid_superseded_settlement", "A superseded node's lane may only be concluded.")
+    live_conflict = await _live_authority_conflict(
+        session, identity, flow_id=flow_id, released_failure_run_id=released_failure_run_id, closing_superseded_lane=closing_superseded_lane
+    )
     if live_conflict:
         return await _live_refusal(session, identity, live_conflict)
 
@@ -1056,6 +1320,39 @@ async def advance_execution(
         next_check_at = advance.next_check_at
 
     now = _now()
+    if (row.phase, row.status) != (advance.phase.value, status.value):
+        # Scheduling polls also change revision/progressed_at. Retain only actual
+        # transitions so an exact capture can reject A -> B -> A without treating
+        # a harmless next_check_at update as changed release authority.
+        from .models import OrchestrationDecision
+
+        session.add(
+            OrchestrationDecision(
+                org_id=row.org_id,
+                flow_id=row.flow_id,
+                node_id=row.node_id,
+                kind="execution_phase_changed",
+                actor_id="system:execution-store",
+                actor_role="engine",
+                actor_kind="service",
+                created_at=now,
+                reason=json.dumps(
+                    {
+                        "execution_id": row.id,
+                        "cycle": row.cycle,
+                        "previous_revision": row.revision,
+                        "revision": row.revision + 1,
+                        "from_phase": row.phase,
+                        "from_status": row.status,
+                        "to_phase": advance.phase.value,
+                        "to_status": status.value,
+                        "claim_id": row.claim_id,
+                        "claim_generation": row.claim_generation,
+                    },
+                    sort_keys=True,
+                ),
+            )
+        )
     row.phase = advance.phase.value
     row.status = status.value
     row.next_check_at = next_check_at

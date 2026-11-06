@@ -101,6 +101,7 @@ async def understand(
     prefix: str,
     depth: str = "overview",
     zoekt_backend: Any | None = None,
+    resolved_repo: str | None = None,
 ) -> list[SearchHit]:
     """Understand a symbol, file, or module from the structural index.
 
@@ -125,7 +126,7 @@ async def understand(
     List of SearchHit with structural information (definitions, callers, callees).
     """
     # Parse target: "org/repo/file" or "org/repo::symbol"
-    repo_id, query_target = _parse_target(target)
+    repo_id, query_target = _parse_resolved_target(target, resolved_repo)
     if not repo_id:
         return []
 
@@ -618,6 +619,7 @@ async def impact(
     prefix: str,
     cross_repo: bool = False,
     zoekt_backend: Any | None = None,
+    resolved_repo: str | None = None,
 ) -> list[SearchHit]:
     """Analyse what would be affected by changing a symbol, file, or pattern.
 
@@ -643,7 +645,7 @@ async def impact(
     -------
     List of SearchHit representing callers/dependents of the target.
     """
-    repo_id, query_target = _parse_target(target)
+    repo_id, query_target = _parse_resolved_target(target, resolved_repo)
     if not repo_id:
         return []
 
@@ -961,6 +963,18 @@ def _filter_null_collect(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     where all values are None (when no match exists). Remove those.
     """
     return [item for item in items if item and any(v is not None for v in item.values())]
+
+
+def _parse_resolved_target(target: str, resolved_repo: str | None) -> tuple[str, str]:
+    """Honor the Door's catalogued repository boundary; retain legacy API parsing."""
+    if resolved_repo is None:
+        return _parse_target(target)
+    if target == resolved_repo:
+        return resolved_repo, ""
+    prefix = resolved_repo + "::"
+    if target.startswith(prefix):
+        return resolved_repo, target[len(prefix):]
+    return "", ""
 
 
 def _parse_target(target: str) -> tuple[str, str]:

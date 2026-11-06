@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from typing import ClassVar
 
 import pytest
@@ -132,6 +133,7 @@ def isolated_deploy(tmp_path):
     scripts.mkdir()
     shutil.copy2(MODULE_ROOT / "scripts/ensure-zoekt-auth.py", scripts)
     shutil.copy2(MODULE_ROOT / "scripts/ensure-door-identity.py", scripts)
+    shutil.copy2(MODULE_ROOT / "scripts/deploy-door-gateway-ingress.sh", scripts)
     (scripts / "_common.sh").write_text(
         "template_file() { printf 'test-manifest\\n'; }\n"
         "resolve_acl_config() { :; }\n"
@@ -142,6 +144,7 @@ def isolated_deploy(tmp_path):
     backend.write_text('dynamodb_table = "adp-terraform-locks"\n')
     bindir = tmp_path / "bin"
     bindir.mkdir()
+    (bindir / "python3").symlink_to(sys.executable)
     log = tmp_path / "commands.log"
     for tool in ("aws", "kubectl", "terraform", "gh"):
         executable = bindir / tool
@@ -176,6 +179,9 @@ def isolated_deploy(tmp_path):
         "VULN_SCAN_ENABLED": "false",
         "GRAPHRAG_ENABLED": "false",
         "PERSONAL_CONTEXT_ONLY": "false",
+        "DOOR_MCP_HOST": "",
+        "DOOR_MCP_CERTIFICATE_ARN": "",
+        "DOOR_MCP_ALB_SOURCE_CIDR": "",
         "CONTEXT_MCP_IMAGE": "example.invalid/context@sha256:" + "a" * 64,
     }
 

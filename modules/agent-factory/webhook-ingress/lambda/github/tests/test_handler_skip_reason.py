@@ -101,7 +101,12 @@ class _HandlerHarness:
             patch("handler._get_identity_resolver") as mock_resolver,
             patch("handler._get_signature") as mock_sig,
             patch("handler._capture_invocation_event") as mock_capture,
+            patch("handler._pr_marker_text_with_issue_fallback", return_value=(None, False)),
+            patch("handler._authorize_github_dispatch") as admission,
         ):
+            from common.github_actor_authority import ActorDecision
+
+            admission.return_value = ActorDecision(True, "allowed")
             mock_sig.return_value.verify_github_signature.return_value = True
             mock_resolver.return_value.resolve.return_value = (
                 _mock_resolved_identity(),
@@ -242,10 +247,14 @@ class TestTriggeringPathUnaffected:
             patch("handler._get_identity_resolver") as mock_resolver,
             patch("handler._get_signature") as mock_sig,
             patch("handler._capture_invocation_event") as mock_noop_capture,
+            patch("handler._authorize_github_dispatch") as admission,
             patch("common.spawn_persona._capture_invocation_event") as mock_spawn_capture,
             patch("common.spawn_persona._write_pointer_and_provenance"),
             patch("common.sqs_publisher.publish_envelope", return_value="msg-1") as publish,
         ):
+            from common.github_actor_authority import ActorDecision
+
+            admission.return_value = ActorDecision(True, "allowed")
             mock_sig.return_value.verify_github_signature.return_value = True
             mock_resolver.return_value.resolve.return_value = (
                 _mock_resolved_identity(),

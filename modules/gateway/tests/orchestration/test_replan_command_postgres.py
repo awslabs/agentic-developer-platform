@@ -13,11 +13,13 @@ from src.orchestration.models import DecisionKind, OrchestrationAmendmentRequest
 
 from .signed_command_rows import signed_row, signing_keyring  # noqa: F401
 from .test_authoring_recovery import CONFIG, QUEUE, MarkerTable, replan_row, seed
+from .test_authoring_recovery import verified_recovery_repository as _verified_recovery_repository_fixture
 from .test_pending_amendments_postgres import factory as _factory_fixture
 from .test_pending_amendments_postgres import pg_server, pg_url  # noqa: F401
 from .test_replan_authoring_dispatch import REPO, FakeSQS
 
 factory = _factory_fixture
+verified_recovery_repository = _verified_recovery_repository_fixture
 
 
 @pytest.mark.usefixtures("signing_keyring")

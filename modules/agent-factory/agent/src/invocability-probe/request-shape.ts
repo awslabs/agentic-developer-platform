@@ -61,6 +61,36 @@ export function probeSdkOptions(args: {
   };
 }
 
+/**
+ * Host markers Claude Code reads to classify its client. GITHUB_ACTIONS makes
+ * the CLI report client type "github-action" instead of "sdk-typescript", and
+ * every non-SDK client type switches the AskUserQuestion tool description to
+ * the variant that documents option previews (CLI 2.1.283: no
+ * CLAUDE_CODE_QUESTION_PREVIEW_FORMAT and a client type outside sdk-*,
+ * claude-desktop, local-agent, remote => preview text appended). A tool
+ * declaration is semantic and must stay in the digest, so the environment is
+ * pinned instead of the body being normalized (#7993 CI run 39005333704).
+ */
+const HOST_CLIENT_MARKERS = new Set(['GITHUB_ACTIONS']);
+
+/**
+ * A shell that itself runs inside a Claude Code session (a developer terminal, a
+ * CI step started from an agent) carries CLAUDECODE / CLAUDE_CODE_* settings such
+ * as CLAUDE_CODE_ENTRYPOINT=cli, which the SDK reflects into the request's
+ * billing header, or CLAUDE_CODE_SKIP_BEDROCK_AUTH; a GitHub Actions runner
+ * carries GITHUB_ACTIONS. The probe pod carries none of them, so they are
+ * dropped before the pinned probe settings are applied; a generator run anywhere
+ * then emits the same body as the runtime image (#7993).
+ */
+export function inheritedProbeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const inherited: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (/^CLAUDE(CODE|_)/.test(key) || HOST_CLIENT_MARKERS.has(key)) continue;
+    inherited[key] = value;
+  }
+  return inherited;
+}
+
 export function probeSdkEnvironment(args: {
   baseUrl: string;
   region: string;
@@ -69,7 +99,7 @@ export function probeSdkEnvironment(args: {
   sessionToken: string;
 }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...inheritedProbeEnvironment(process.env),
     CLAUDE_CODE_USE_BEDROCK: '1',
     ANTHROPIC_BEDROCK_BASE_URL: args.baseUrl,
     AWS_REGION: args.region,
@@ -78,9 +108,9 @@ export function probeSdkEnvironment(args: {
     AWS_SECRET_ACCESS_KEY: args.secretAccessKey,
     AWS_SESSION_TOKEN: args.sessionToken,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-    // Ask the SDK to pin its reminder date. Version 0.3.220 still emits the
-    // wall-clock date, so canonical-json.ts additionally normalizes only that
-    // exact non-semantic reminder path and records the rule in the manifest.
+    // Ask the SDK to pin its reminder date. Versions 0.3.220-0.3.283 still emit
+    // the wall-clock date, so canonical-json.ts additionally normalizes only that
+    // exact non-semantic reminder and records the rule in the manifest.
     CLAUDE_CODE_OVERRIDE_DATE: PROBE_SDK_DATE,
     // Prevent installation- or host-dependent bundled content from changing
     // the request while retaining the real Claude Code tool-bearing shape.

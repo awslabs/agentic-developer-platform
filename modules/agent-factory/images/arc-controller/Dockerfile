@@ -1,6 +1,6 @@
 # Rebuild all upstream controller/listener tools with a fixed Go runtime and
 # exact compatible module versions, preserving the upstream runtime image.
-FROM public.ecr.aws/docker/library/golang:1.26-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
+FROM public.ecr.aws/docker/library/golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS builder
 WORKDIR /src
 ADD --checksum=sha256:aa216496c857e23849251eb53f0968e57a16336e48c563ba0bf8887d6d6a942d https://codeload.github.com/actions/actions-runner-controller/tar.gz/9bb16ae49d0ce585d8e682aa7e2668a6e832d5d8 /tmp/source.tar.gz
 RUN tar -xzf /tmp/source.tar.gz --strip-components=1 && rm /tmp/source.tar.gz

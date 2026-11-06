@@ -35,6 +35,7 @@ log = logging.getLogger("curricula")
 
 # Configuration (centralized via config.py)
 from config import settings
+from stored_code_index import load_code_index
 
 LEARNING_DIR = settings.learning_dir
 CODE_INDEX_DIR = settings.code_index_dir
@@ -116,14 +117,9 @@ def discover_topic_clusters(repos: list[str]) -> list[dict[str, Any]]:
                 pass
 
         # Load code-index dependencies
-        ci_path = os.path.join(CODE_INDEX_DIR, f"{safe_name(repo)}.json")
-        if os.path.isfile(ci_path):
-            try:
-                with open(ci_path) as f:
-                    ci = json.load(f)
-                data["deps"] = ci.get("dependencies", {}).get("external", [])
-            except (json.JSONDecodeError, OSError):
-                pass
+        ci = load_code_index(repo, bucket=settings.s3_bucket_name, directory=CODE_INDEX_DIR)
+        if ci:
+            data["deps"] = ci.get("dependencies", {}).get("external", [])
 
         if data["concepts"] or data["deps"]:
             repo_data[repo] = data
@@ -222,15 +218,10 @@ def generate_comparisons(cluster: dict[str, Any]) -> dict[str, Any] | None:
     repo_info = {}
     for repo in repos:
         info: dict[str, Any] = {}
-        ci_path = os.path.join(CODE_INDEX_DIR, f"{safe_name(repo)}.json")
-        if os.path.isfile(ci_path):
-            try:
-                with open(ci_path) as f:
-                    ci = json.load(f)
-                info["languages"] = ci.get("language_stats", {})
-                info["deps"] = ci.get("dependencies", {}).get("external", [])[:15]
-            except (json.JSONDecodeError, OSError):
-                pass
+        ci = load_code_index(repo, bucket=settings.s3_bucket_name, directory=CODE_INDEX_DIR)
+        if ci:
+            info["languages"] = ci.get("language_stats", {})
+            info["deps"] = ci.get("dependencies", {}).get("external", [])[:15]
         cm_path = os.path.join(LEARNING_DIR, safe_name(repo), "concept-map.json")
         if os.path.isfile(cm_path):
             try:

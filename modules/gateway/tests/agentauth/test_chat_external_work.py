@@ -13,7 +13,7 @@ from src.activity.routes import get_activity_service
 from src.activity.schemas import InvocationItem
 from src.activity.service import WorkActivityPage
 from src.agentauth import chat_data_routes
-from tests.agentauth.chat_activity_fixtures import HEADERS, workload_runtime
+from tests.agentauth.chat_activity_fixtures import HEADERS, pin_activity_query_clock, workload_runtime
 
 URL = "/v1/chat/data/activity/work"
 WINDOW = {"from": "2026-10-01T00:00:00Z", "to": "2026-10-04T00:00:00Z", "timezone": "UTC", "run_id": "run-a"}
@@ -95,6 +95,7 @@ def test_delegated_summary_merges_distinct_provider_history_and_preserves_run_pr
 
 
 def test_default_external_reader_fails_closed_with_explicit_coverage(monkeypatch):
+    pin_activity_query_clock(monkeypatch)
     monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
     monkeypatch.delenv("ADP_TASK_API_READ_ENABLED", raising=False)
     service = MagicMock()

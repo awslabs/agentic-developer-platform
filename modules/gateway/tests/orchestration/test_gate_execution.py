@@ -12,7 +12,7 @@ from src.orchestration.compile import PolicyNotAcceptableError
 from src.orchestration.dispatch import graph_address
 from src.orchestration.evaluation_acceptance import ACCEPTANCE_KIND, accepted_contract
 from src.orchestration.gate_execution import prepare_gate_execution
-from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationEdge, OrchestrationNode
+from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationEdge, OrchestrationExecution, OrchestrationNode
 from tests.orchestration.test_evaluation_acceptance import contract_request  # noqa: F401
 from tests.orchestration.test_repository_evaluation import repository_evaluation  # noqa: F401
 from tests.orchestration.test_repository_producer import scan  # noqa: F401
@@ -69,7 +69,7 @@ async def executable_gate(scan):  # noqa: F811
 async def answer(ctx, db, reviewed):
     return await apply_gate_answer_for_context(
         db,
-        context=SimpleNamespace(org_id=ctx.actor.org_id, user_id=ctx.actor.actor_id),
+        context=SimpleNamespace(org_id=ctx.actor.org_id, user_id=ctx.actor.actor_id, account_type="human", auth_source="jwt"),
         node_id=ctx.gate_id,
         approve=True,
         reason="Run reviewed qualification",
@@ -133,4 +133,93 @@ async def test_missing_contract_is_visible_before_approval(executable_gate):
         gate = await db.get(OrchestrationNode, ctx.gate_id)
         preview = await prepare_gate_execution(db, gate=gate, actor=ctx.actor)
         assert not preview["ready"] and "executable evaluation specification" in preview["problems"][0]
+        assert gate.state == "awaiting_gate"
+
+
+@pytest.fixture
+async def review_only_gate(executable_gate):
+    ctx = executable_gate
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        document = deepcopy(plan.plan_document)
+        document["nodes"][-2]["evaluation"] = {
+            "schema_version": 1,
+            "evidence_schema": "orchestration-evaluation/v1",
+            "acceptance_mode": "human",
+            "criteria": [{"criterion_id": "EC-01", "kind": "functional", "required": True}],
+        }
+        document["execution_policy"]["allowed_actions"] = ["develop", "review", "repair", "merge"]
+        plan.plan_document = document
+        await db.commit()
+    return ctx
+
+
+async def test_human_review_successor_needs_no_automated_evaluation_grant(review_only_gate):
+    from src.orchestration.dispatch_pass import DispatchPassConfig, DispatchPassReport, _dispatch_one
+    from src.orchestration.tick import run_tick
+
+    ctx = review_only_gate
+    async with ctx.factory() as db:
+        gate = await db.get(OrchestrationNode, ctx.gate_id)
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        policy_before = deepcopy(plan.plan_document["execution_policy"])
+        preview = await prepare_gate_execution(db, gate=gate, actor=ctx.actor)
+        assert preview["ready"], preview["problems"]
+        assert preview["runs"] == preview["grants"] == []
+        result = await answer(ctx, db, preview)
+        assert result.status.value == "applied"
+        await db.commit()
+
+        report = await run_tick(db)
+        assert report.success, report.blocked
+        node = await db.get(OrchestrationNode, ctx.eval_id)
+        assert node.state == "awaiting_gate" and node.attempts == 0
+        assert gate.state == "passed"
+        evidence = await db.scalar(
+            select(OrchestrationDecision).where(OrchestrationDecision.node_id == node.id, OrchestrationDecision.kind == "human_evaluation_evidence")
+        )
+        assert evidence is not None
+        dispatch = DispatchPassReport(enabled=True)
+        await _dispatch_one(db, node, config=DispatchPassConfig(queue_url="queue", repo="o/r"), report=dispatch)
+        assert dispatch.pending == []
+        assert await db.scalar(select(OrchestrationExecution.id).where(OrchestrationExecution.node_id == node.id)) is None
+        assert await db.scalar(select(OrchestrationDecision.id).where(OrchestrationDecision.kind == ACCEPTANCE_KIND)) is None
+        await db.refresh(plan)
+        assert plan.plan_document["execution_policy"] == policy_before
+
+
+async def test_machine_successor_still_requires_evaluation_authority(review_only_gate):
+    ctx = review_only_gate
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        document = deepcopy(plan.plan_document)
+        # Use the existing executable machine contract; a human label on the
+        # predecessor gate must not grant permission to execute it.
+        document["nodes"][-2]["evaluation"] = deepcopy(ctx.request.specification)
+        address = document["nodes"][-2]["address"]
+        document["execution_policy"]["evaluation_acceptance"][address] = "machine"
+        plan.plan_document = document
+        await db.flush()
+        gate = await db.get(OrchestrationNode, ctx.gate_id)
+        preview = await prepare_gate_execution(db, gate=gate, actor=ctx.actor)
+        assert not preview["ready"]
+        assert "evaluation authority is not configured" in preview["problems"][0]
+        with pytest.raises(PolicyNotAcceptableError, match="evaluation authority is not configured"):
+            await answer(ctx, db, preview)
+        await db.rollback()
+        assert (await db.get(OrchestrationNode, ctx.gate_id)).state == "awaiting_gate"
+
+
+async def test_unverifiable_policy_cannot_enable_human_review_successor(review_only_gate):
+    ctx = review_only_gate
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        document = deepcopy(plan.plan_document)
+        document["execution_policy"]["schema_version"] = 999
+        plan.plan_document = document
+        await db.flush()
+        gate = await db.get(OrchestrationNode, ctx.gate_id)
+        preview = await prepare_gate_execution(db, gate=gate, actor=ctx.actor)
+        assert not preview["ready"]
+        assert preview["runs"] == preview["grants"] == []
         assert gate.state == "awaiting_gate"

@@ -125,8 +125,11 @@ class OperationBudgetLedger:
         self,
         connect: Any,
         limits_for: Any = None,
+        *,
+        operation_connect: Any = None,
     ) -> None:
         self._connect = connect
+        self._operation_connect = operation_connect
         self._limits_for = limits_for
 
     # ------------------------------------------------------------------
@@ -341,9 +344,27 @@ class OperationBudgetLedger:
         may safely be redelivered after this process or its connections restart.
         """
         from app.adapters.operation_settlement import accept_settlement
+        from harness_jobs.admission import BudgetDenied
 
-        async with self._session() as connection:
-            return await accept_settlement(connection, **receipt)
+        if self._operation_connect is None:
+            async with self._session() as connection:
+                return await accept_settlement(connection, **receipt)
+        # Shared records are locked before domain reservation rows. Keep those
+        # locks until the domain receipt and budget effect commit together.
+        # A lost acknowledgement is safe to redeliver to the durable receipt.
+        try:
+            async with (
+                self._operation_connect() as operation_connection,
+                _transaction(operation_connection),
+            ):
+                async with self._session() as connection:
+                    return await accept_settlement(
+                        connection, operation_connection=operation_connection, **receipt
+                    )
+        except BudgetDenied:
+            raise
+        except Exception as error:
+            raise _translate(error) from error
 
     # ------------------------------------------------------------------
     # internals

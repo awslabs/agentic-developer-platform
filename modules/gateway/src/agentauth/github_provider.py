@@ -36,6 +36,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -93,7 +94,11 @@ MAX_COMMIT_CONTENT_BYTES = 6 * 1024 * 1024
 # 2.8 GB moved for one work tree. The bound is therefore concurrent-request memory
 # AND aggregate fetch cost. Raising it materially means holding the archive in
 # object storage instead of re-fetching it.
-MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
+# 64 MiB since 2026-10-15 (#7860): aws-e/adp's own tarball reached 33.6 MB and every
+# worker bootstrap died at the old 32 MiB ceiling. Eleven 6 MiB slices per work tree
+# is the cost; the structural answer (hold the archive in object storage once per
+# revision instead of re-streaming it per slice) is the follow-up named there.
+MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 
 # How much of the archive one mediated response carries, before base64. Base64 costs
 # 4/3, so 6 MiB becomes ~8.39 MB of JSON — inside the edge's 10 MB response limit
@@ -117,6 +122,20 @@ _SYMLINK_MODE = "120000"
 ALLOWED_FILE_MODES = frozenset({_BLOB_MODE, _EXECUTABLE_MODE, _SYMLINK_MODE})
 
 
+def _rate_limited(response: httpx.Response) -> bool:
+    """GitHub also uses 403 for exhausted primary and secondary rate limits."""
+    if response.status_code == 429:
+        return True
+    if response.status_code != 403:
+        return False
+    retry_after = response.headers.get("retry-after", "").strip()
+    return response.headers.get("x-ratelimit-remaining", "").strip() == "0" or (retry_after.isascii() and retry_after.isdecimal())
+
+
+class ProviderBranchRulesUnavailableError(OperationRefusedError):
+    """GitHub explicitly says branch rules are unavailable on this repository plan."""
+
+
 class ProviderNotFoundError(OperationRefusedError):
     """GitHub returned an explicit 404; other failures do not prove absence."""
 
@@ -133,7 +152,7 @@ class ProviderConflictError(OperationRefusedError):
 class ProviderUnavailableError(OperationRefusedError):
     """The provider did not give us a usable answer. Safe to reconcile and retry.
 
-    Raised for timeouts and 5xx. A timeout specifically does NOT mean the effect
+    Raised for timeouts, rate limits and 5xx. A timeout specifically does NOT mean the effect
     did not happen, which is why the caller reconciles by looking the intended
     object up before retrying.
 
@@ -299,9 +318,19 @@ class GitHubProvider:
         if response.status_code in (409, 422):
             # 422 on a ref update is how GitHub reports "not a fast-forward".
             raise ProviderConflictError(f"provider reports a conflict for {method} {path}")
-        if response.status_code >= 500 or response.status_code == 429:
+        if response.status_code >= 500 or _rate_limited(response):
             raise ProviderUnavailableError(f"provider is unavailable for {method} {path}")
         if response.status_code in (401, 403):
+            rules_path = f"/repos/{self.repo}/rules/branches/{quote(self.assignment.default_branch, safe='')}?per_page=100"
+            if response.status_code == 403 and method == "GET" and path == rules_path:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = None
+                if isinstance(payload, dict) and payload.get("message") == (
+                    "Upgrade to GitHub Pro or make this repository public to enable this feature."
+                ):
+                    raise ProviderBranchRulesUnavailableError("branch rules unavailable on repository plan")
             if response.status_code == 403 and method == "PUT" and path.endswith("/merge"):
                 try:
                     payload = response.json()
@@ -391,6 +420,66 @@ class GitHubProvider:
             if best is None or described["merged"]:
                 best = described
         return best
+
+    async def inspect_work_branch(self) -> dict:
+        """Read whether the story already contains the currently observed base."""
+        if self.assignment.branch == self.assignment.default_branch:
+            raise OperationRefusedError("work branch must differ from the default branch")
+        repository = await self._call("GET", f"/repos/{self.repo}")
+        if repository.get("id") != self.assignment.repository_id or repository.get("default_branch") != self.assignment.default_branch:
+            raise OperationRefusedError("reconciliation repository or default branch changed")
+        state = await self.read_repository()
+        head, base = state["branch_head"], state["default_branch_head"]
+        result = {"branch": self.assignment.branch, "base_revision": base, "head_revision": head}
+        if head is None:
+            return {**result, "status": "new_branch"}
+        comparison = await self._call("GET", f"/repos/{self.repo}/compare/{head}...{base}")
+        status = comparison.get("status") if isinstance(comparison, dict) else None
+        if status in {"identical", "behind"}:
+            return {**result, "status": "up_to_date"}
+        if status not in {"ahead", "diverged"}:
+            raise ProviderUnavailableError("work branch ancestry is unavailable")
+        return {**result, "status": "needs_merge"}
+
+    async def reconcile_work_branch(self, *, reauthorize) -> dict:
+        """Merge the trusted base into the same story branch without rewriting it.
+
+        GitHub's merge operation preserves the branch's history, including writes
+        racing this request. A lost response is reconciled by the ancestry read on
+        the next call. Conflicts never select one side or reset the work branch.
+        """
+        result = await self.inspect_work_branch()
+        if result["status"] != "needs_merge":
+            return result
+        head, base = result["head_revision"], result["base_revision"]
+        await reauthorize()
+        current = await self.read_repository()
+        if (current["branch_head"], current["default_branch_head"]) != (head, base):
+            raise ProviderConflictError("branch changed before base reconciliation")
+        await reauthorize()
+        try:
+            merged = await self._call(
+                "POST",
+                f"/repos/{self.repo}/merges",
+                json={
+                    "base": self.assignment.branch,
+                    "head": base,
+                    "commit_message": f"Merge {self.assignment.default_branch} into {self.assignment.branch}",
+                },
+                expect=(201, 204),
+            )
+        except ProviderConflictError:
+            # A 409 leaves the provider branch untouched. A 422 may be a branch
+            # race; either way do not run a model on an unreconciled snapshot.
+            return {**result, "status": "conflict"}
+        await reauthorize()
+        final = await self.read_repository()
+        observed = final["branch_head"]
+        if not isinstance(observed, str) or not re.fullmatch(r"[0-9a-f]{40}", observed):
+            raise ProviderUnavailableError("reconciled work branch is unavailable")
+        await self._require_ancestry(base, observed)
+        await self._require_ancestry(head, observed)
+        return {**result, "head_revision": observed, "status": "merged" if merged else "up_to_date"}
 
     async def fetch_repository_archive(self, *, ref: str | None = None, offset: int = 0, length: int | None = None) -> ArchiveSlice:
         """One window of a tarball of one ref of the assigned repository (#5223).
@@ -496,7 +585,7 @@ class GitHubProvider:
             raise ProviderUnavailableError("provider did not serve the repository archive") from exc
         if response.status_code == 404:
             raise ProviderNotFoundError("provider resource was not found")
-        if response.status_code >= 500 or response.status_code == 429:
+        if response.status_code >= 500 or _rate_limited(response):
             raise ProviderUnavailableError("provider is unavailable for the repository archive")
         raise OperationRefusedError("provider refused the repository archive")
 

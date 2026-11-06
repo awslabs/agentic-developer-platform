@@ -53,6 +53,7 @@ locals {
     "ecr:GetAuthorizationToken", "ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
     "ecr:CompleteLayerUpload", "ecr:CreateRepository", "ecr:DescribeImages", "ecr:DescribeRepositories",
     "ecr:GetDownloadUrlForLayer", "ecr:InitiateLayerUpload", "ecr:ListImages", "ecr:PutImage", "ecr:UploadLayerPart",
+    "ec2:DescribeImages",
     "kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKey", "sts:GetCallerIdentity",
   ]
   core_projects = {
@@ -103,6 +104,7 @@ locals {
     }
     "grype-scan" = {
       buildspec      = "codebuild/bs-grype-scan.yml"
+      compute_type   = "BUILD_GENERAL1_LARGE"
       build_timeout  = 150
       scan_upload    = true
       privileged     = true
@@ -110,6 +112,7 @@ locals {
     }
     "syft-scan" = {
       buildspec      = "codebuild/bs-syft-scan.yml"
+      compute_type   = "BUILD_GENERAL1_LARGE"
       build_timeout  = 150
       scan_upload    = true
       privileged     = true
@@ -117,7 +120,15 @@ locals {
     }
   }
 
-  projects = local.core_projects
+  projects = merge(local.core_projects, var.enable_gitlab_runner_build ? {
+    "gitlab-runner-bootstrap" = {
+      buildspec      = "codebuild/bs-gitlab-runner-bootstrap.yml"
+      ecr_repos      = ["adp-gitlab-runner-bootstrap", "adp-gitlab-runner-helper", "adp-gitlab-runner-job"]
+      runner_host    = true
+      privileged     = true
+      privileged_why = "trusted Docker image build; GitLab job containers never receive build privilege"
+    }
+  } : {})
 
   agent_context_images = toset([
     "ingestion",
@@ -128,6 +139,23 @@ locals {
   ])
 
   ecr_repo_arn_prefix = "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository"
+}
+
+resource "aws_ecr_repository" "gitlab_runner_runtime" {
+  for_each = var.enable_gitlab_runner_build ? toset(["bootstrap", "helper", "job"]) : toset([])
+
+  name                 = "adp-gitlab-runner-${each.key}"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = false
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -422,6 +450,31 @@ resource "aws_iam_role_policy" "project" {
         Sid      = "AppArtifactPublish${substr(sha256(output.prefix), 0, 12)}"
         Effect   = "Allow", Action = ["s3:PutObject"],
         Resource = "arn:aws:s3:::${var.name_prefix}-${output.bucket_suffix}/${output.prefix}/*"
+      }],
+      [for _ in range(lookup(each.value, "runner_host", false) ? 1 : 0) : {
+        Sid      = "RunnerHostArtifactRead"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource = "arn:aws:s3:::${var.state_bucket}/gitlab-runners/upstream/*"
+      }],
+      [for _ in range(lookup(each.value, "runner_host", false) ? 1 : 0) : {
+        Sid      = "RunnerHostArtifactPublish"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "arn:aws:s3:::${var.state_bucket}/gitlab-runners/artifacts/*"
+      }],
+      [for _ in range(lookup(each.value, "runner_host", false) ? 1 : 0) : {
+        Sid       = "RunnerHostAmiInspect"
+        Effect    = "Allow"
+        Action    = ["ec2:DescribeImages"]
+        Resource  = "*"
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.aws_region } }
+      }],
+      [for _ in range(lookup(each.value, "runner_host", false) ? 1 : 0) : {
+        Sid      = "RunnerHostCallerIdentity"
+        Effect   = "Allow"
+        Action   = ["sts:GetCallerIdentity"]
+        Resource = "*"
       }],
       # Scanners write findings to the security-scans bucket.
       [for _ in range(lookup(each.value, "scan_upload", false) ? 1 : 0) : {

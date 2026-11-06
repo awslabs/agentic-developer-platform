@@ -38,7 +38,7 @@ grant, rechecks both after probing adapters, and explicitly reports that credent
 metadata has not been verified. It grants no workspace authority. Real creation
 continues through its normal credential and approval checks.
 
-The maintained installer installs a paused zero-capacity ScaledJob and deny-all
+The maintained installer installs a paused ScaledJob with a schema-valid positive maximum and deny-all
 worker network policy. Live protected Gateway proofs have three explicit states:
 
 - `quiescent`: reads shared execution state, without claiming an installed worker;
@@ -107,6 +107,15 @@ policy and state are retained outside workload-cleanup inventory; normal cleanup
 cannot delete them. A changed policy needs a separately reviewed replacement
 procedure rather than silently rewriting the fixed immutable ConfigMap.
 
+For an app-owned retained StorageClass and bounded installer storage reads, use
+the optional [installer storage setup](../infra/installer-access/README.md#optional-native-lifecycle-storage).
+The `--execute --prepare-lifecycle-state` stage performs normal preflight,
+saved-plan approval and shared quiescence, binds the state claim and records its
+actual volume read request. It returns `awaiting-volume-read` before rollout or
+activation. After the infrastructure owner grants `get` on that exact PV, resume
+the original receipt through ordinary preflight/execute. Full volume verification
+remains mandatory; staged binding alone does not establish retention or readiness.
+
 The installer does not invent a lifecycle policy, organization ID, workspace
 Terraform backend, actor roles, bootstrap credential reference, management network
 inputs or image digests. It does not create a StorageClass or authorize a provider
@@ -143,3 +152,117 @@ and database TCP reachability. A changed RDS address or a private DNS override o
 a public service refuses; it requires an updated reviewed recipe. This transport
 probe does not replace the existing live network-policy enforcement, worker
 identity, database, current human grant or protected binding checks.
+
+### Recover an inherited listener in an installation Job
+
+Migration and bootstrap Jobs contain only their finite command container. Older
+installer releases copied the API recovery listener into these Jobs, leaving a
+successful command's Job running until its deadline. The API Deployment retains
+its listener; it is not part of migration or authenticated bootstrap execution.
+
+For a still-running affected Job, the installation operator can use the bounded
+recovery command without replacing the release, Job, pod or receipt:
+
+```bash
+python -m installation.job_sidecar_recovery --receipt /secure/run/receipt.json \
+  --phase migrate
+# Review the exact observation, including the successful main exit and identities.
+python -m installation.job_sidecar_recovery --receipt /secure/run/receipt.json \
+  --phase migrate --approved-observation-sha256 REVIEWED_OBSERVATION_SHA256
+```
+
+Use the installation's selected AWS identity and its recorded kubeconfig. The
+read-only default verifies the account/RoleId, live EKS endpoint/CA, recorded Job
+UID, owning pod, exact image/commands, zero restarts and main exit code zero. An
+approved invocation repeats the observation and sends SIGTERM only to the
+inherited listener, after checking its actual PID 1 command. It refuses terminal
+Jobs and Jobs too close to their deadline. It does not fabricate completion,
+restart a failed command, delete a Job, alter grants or edit the installation
+receipt. Verify actual listener exit code zero and Kubernetes Job completion;
+the running installer then observes completion itself. The same checks apply to
+`--phase bootstrap` after its authenticated bootstrap command succeeds. An
+expired/failed Job needs separate reconciliation; this command refuses it.
+
+### Recover stale historical Deployment image fences
+
+A retained post-bootstrap rollout can refuse because its original
+`deployment_image_recovery` entries describe an older live image/spec. Do not edit
+the immutable environment, release or receipt to adopt the new state. The explicit
+operator command renders the receipt's exact clean source, checks the original
+completed migration/bootstrap Jobs and retained installation lock, and prepares a
+fresh review of only its originally declared Deployment targets:
+
+```bash
+python -m installation.deployment_owner_recovery --receipt /secure/run/receipt.json \
+  --source /clean/selected-release --confirm-stopped RECORDED_RUN_ID
+# Review the exact old/new specs, image identities and emitted digest.
+# Repeat with --approved-review-sha256 REVIEWED_SHA256 to apply.
+```
+
+The run must be stopped at rollout with its route disabled and bootstrap token
+removed. The command acquires the same local lock, verifies the selected installer
+RoleId and live cluster CA/endpoint, and checks the retained S3 lock before each
+write. Original Deployment UIDs and installation ownership cannot change. Only existing image fields exclusively owned by `superplane-installer` are
+accepted. The entire selected manifest, including changed images, must pass an
+ordinary server-side dry run; this command never forces field conflicts. New
+containers come from the exact selected release, not caller input. The review pins current spec digests and UID/resource
+versions; raced changes refuse. No Job, approval, environment, release, storage
+policy or installation receipt is changed by this command.
+
+After applied-image readback, use ordinary confirmed-stopped lock recovery and
+resume the same installation. Its full preflight, plan match, rollout, activation,
+public authentication and persistence checks remain required. This operator repair
+is not installation readiness and does not authorize workspace execution.
+
+### Native command credentials
+
+Provider subprocesses use the SDK `credential_process` contract to reach the
+worker's authenticated loopback bridge. Container metadata clients impose short
+fixed timeouts that cannot accommodate live authority checks. The process client
+has a 55-second bound and returns the SDK's `Version: 1` response with the original
+STS expiration and session token. The bridge revalidates authority before and
+after reading credentials and refuses delivery after the owning process ends.
+
+Only the interpreter/helper command is written to a private temporary AWS config;
+AWS keys and the bridge authorization token are never written there. The config
+is deleted after the command. Children do not inherit host AWS profiles, keys or
+PATH. The fixed image `/bin` directory supplies the POSIX shell required internally
+by the Go SDK; direct commands still require the exact reviewed executable set.
+
+`workspace_provisioning/tests/fixtures/credential_process_clients.py` exercises
+actual native AWS CLI and Terraform credential loading against local endpoints
+with fixture keys and delayed authorization. Run it in the selected worker image
+with network access disabled, both before and after a source change.
+
+### Native command temporary storage
+
+Each provider command receives a private `TMPDIR` inside its existing operation
+directory on the retained state volume. Provider downloads can exceed the
+worker's 64 MiB memory-backed `/tmp`; they must not depend on that mount. Normal
+completion, failure and authority withdrawal remove command scratch after the
+owned process group stops. Backend metadata, installed providers and reviewed
+plans remain in their original operation directory.
+
+Workspace initialization uses `-lockfile=readonly` to verify pinned provider
+packages without changing the reviewed module's lock file. The native
+`workspace_provisioning/tests/fixtures/provider_install.py` probe exercises both
+provider downloads with a 64 MiB `/tmp` and a separate writable `/work`. It uses
+fixture credentials, disables the backend, verifies the unchanged lock, and
+checks scratch removal; public provider-download access is required.
+
+### Completed apply recovery
+
+Select `lifecycle_observation: {regions: [us-west-2]}` (using the workspace's
+actual permitted regions) to install the same-account API observation role.
+The normal installer includes it in the reviewed control-plane Terraform plan
+and renders `SUPERPLANE_RECOVERY_OBSERVATION_ROLE_ARN` on the API. Keep this
+selection on upgrades. The role trusts only this installation's API producer;
+its policy contains exact read actions, scoped regional reads and app-owned IAM
+identity reads. It cannot provision or delete resources.
+
+Recovery validates the original immutable apply result and original producer,
+then uses the shared inventory census under its live recovery fence. It preserves
+a previously observed successful call with a null provider reference. An intended
+call is freshly reconciled first; inventory is recorded before settlement.
+Failed reads or revoked authority retain the allocation and defer. No Terraform
+replay, approval renewal or attempt reset is performed by this path.

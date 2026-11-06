@@ -6,7 +6,10 @@ import sys
 
 
 def resolve(image):
-    match = re.fullmatch(r"([0-9]{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?/([a-z0-9._/-]+)(@sha256:[0-9a-f]{64}|:[0-9a-f]{40})", image)
+    # `sandbox-<sha>` is the restricted chat sandbox variant published next to the
+    # supervisor image by publish-chat-sandbox-image.sh; it is still pinned to the
+    # full source SHA, so it resolves like any other immutable tag.
+    match = re.fullmatch(r"([0-9]{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?/([a-z0-9._/-]+)(@sha256:[0-9a-f]{64}|:(?:sandbox-)?[0-9a-f]{40})", image)
     if not match:
         raise ValueError("Expected an ECR image pinned by full source SHA or sha256 digest")
     account, region, repository, selector = match.groups()

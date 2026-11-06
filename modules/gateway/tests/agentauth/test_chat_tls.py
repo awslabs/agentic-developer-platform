@@ -44,6 +44,27 @@ async def test_persistent_session_transport_reaches_original_authorization(opera
     assert sent[0]["status"] == 401
 
 
+@pytest.mark.parametrize("operation", ["upload-grant", "complete", "restore-grant", "restore-release"])
+async def test_checkpoint_transport_preserves_authentication_and_canonical_request(operation):
+    path = f"/internal/v1/agent/crew/checkpoints/00000000-0000-0000-0000-000000000001/{operation}"
+    reached, sent = await request(path)
+    assert len(reached) == 1 and sent[0]["status"] == 401
+    for changes in (
+        {"scheme": "http"},
+        {"raw_path": path.replace("crew", "%63rew").encode()},
+        {"headers": [(b"host", b"attacker.example")]},
+        {"root_path": "/admin"},
+    ):
+        reached, sent = await request(path, **changes)
+        assert not reached and sent[0]["status"] == 404
+    for refused_path in (path + "/", path + "/extra", path.replace("00000000-0000-0000-0000-000000000001", "unknown")):
+        reached, sent = await request(refused_path)
+        assert not reached and sent[0]["status"] == 404
+    for method in ("GET", "DELETE", "PUT"):
+        reached, sent = await request(path, method=method)
+        assert not reached and sent[0]["status"] == 404
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "path,method,changes",

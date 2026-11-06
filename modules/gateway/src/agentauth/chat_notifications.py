@@ -16,6 +16,7 @@ from src.agentauth.chat_capability import ChatAuthorizationRefusedError
 from src.agentauth.chat_delivery import ChatDelivery, load_registered_delivery, verify_delivery_session
 from src.agentauth.chat_pending_handoff import input_transport
 from src.agentauth.chat_session_cleanup import publish_session_cleanup
+from src.agentauth.chat_session_mailbox import CHAT_EXECUTORS
 from src.orchestration.chat_data_migration import _owns_context_row
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,10 @@ def publish_notification(authority, sessions, item, *, now, transport=input_tran
         "session_mode": "persistent",
         "envelope_digest": pointer["envelope_digest"]["S"],
     }
+    # A wake-up can make the supervisor create the session pod, so it carries the session's
+    # executor choice like the registered turn does (#8115); absent means the deployment default.
+    if header.get("sessionExecutor") in CHAT_EXECUTORS:
+        notification["executor"] = header["sessionExecutor"]
     client, queue = transport()
     response = client.send_message(
         QueueUrl=queue,
@@ -108,7 +113,7 @@ def publish_notification(authority, sessions, item, *, now, transport=input_tran
     return "published"
 
 
-def recover_notification_page(authority, sessions, *, now, cursor=None, transport=input_transport, capabilities=None):
+def recover_notification_page(authority, sessions, *, now, cursor=None, transport=input_transport, capabilities=None, crew_store=None):
     page = authority.context_table.query(
         KeyConditionExpression=Key("PK").eq("chat-notifications"),
         ConsistentRead=True,
@@ -120,7 +125,16 @@ def recover_notification_page(authority, sessions, *, now, cursor=None, transpor
             if item["SK"].startswith("cleanup#"):
                 if capabilities is None:
                     raise ChatAuthorizationRefusedError("chat cleanup authority unavailable")
-                publish_session_cleanup(authority, capabilities, item, now=now, transport=transport)
+                from src.agentauth.chat_crew_run import current_crew_store
+
+                publish_session_cleanup(
+                    authority,
+                    capabilities,
+                    item,
+                    now=now,
+                    transport=transport,
+                    crew_store=crew_store if crew_store is not None else current_crew_store(),
+                )
                 continue
             publish_notification(authority, sessions, item, now=now, transport=transport)
         except Exception:

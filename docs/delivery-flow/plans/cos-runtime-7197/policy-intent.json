@@ -1,0 +1,43 @@
+{
+ "status": "proposed_not_authorized",
+ "repository": "aws-e/adp",
+ "org_id": "aws-e",
+ "allowed_code_actions": [
+  "develop",
+  "review",
+  "repair",
+  "merge"
+ ],
+ "autonomous_deployment": false,
+ "automatic_live_dispatch": false,
+ "evaluation_acceptance": {
+  "cos-runtime-7197/epic-7197/runtime/runtime-evidence": "human",
+  "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence": "human",
+  "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence": "human",
+  "cos-runtime-7197/epic-7197/qualification/live-qualification": "human"
+ },
+ "developer": "agent-codex-developer",
+ "reviewer": "agent-codex-reviewer",
+ "limits": {
+  "max_spend_usd": "1500",
+  "max_wall_clock_seconds": 604800,
+  "max_attempts_per_node": 3,
+  "max_concurrent_actions": 2
+ },
+ "expires_at": "2026-10-22T11:11:14Z",
+ "unresolved_bindings": [
+  "dev hostname for the Crew dashboard (#7205)",
+  "execute-api reachability from adp-gateway-agents (#7198)",
+  "embedding space decision (#7202/#7210)",
+  "lease granularity per session now, per user in #7203 (#7199)",
+  "live fixtures from #6937 for the live-acceptance gate"
+ ],
+ "no_inheritance": "Do not reuse the 7e5ddb5d (#6929) budget, authority window or target approval.",
+ "live_rule": "The live-acceptance gate records authorization and evidence; it does not deploy. An authorized operator invokes the existing workflows under the deploy-boundary guard.",
+ "evaluation_issues": {
+  "runtime": 7214,
+  "kirocrew": 7215,
+  "dashboard": 7216,
+  "live-qualification": 7217
+ }
+}

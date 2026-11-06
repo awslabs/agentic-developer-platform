@@ -3,25 +3,59 @@ name: Gateway Live Tests
 # The scheduled coordinator owns cron; manual calls remain diagnostic.
 on:
   workflow_call:
+    inputs:
+      target_environment:
+        description: Protected regression target; resource environment remains unchanged
+        type: string
+        required: false
+        default: ''
+      product_cases:
+        description: Ordered Product API cases; private recovery state and matched runtime proof are required
+        type: string
+        required: false
+        default: ''
+      expected_revision:
+        description: Full source SHA of observed Gateway release
+        type: string
+        required: false
+        default: ''
     outputs:
       cleanup_ok:
         description: No test mutation started, or the live test teardown succeeded
-        value: ${{ jobs.live.outputs.cleanup_ok }}
-  workflow_dispatch: {}
+        value: ${{ jobs.recover_product.outputs.cleanup_ok == 'true' || ((inputs.product_cases == '' || inputs.product_cases == 'none') && jobs.live.outputs.cleanup_ok == 'true') }}
+  workflow_dispatch:
+    inputs:
+      product_cases:
+        description: Product API selection; partial selections are diagnostic, not complete B01 acceptance
+        type: choice
+        options:
+          - none
+          - api_product_lifecycle
+          - api_denial_oracle
+          - api_product_lifecycle,api_denial_oracle
+          - api_recovery_cleanup
+          - api_product_lifecycle,api_denial_oracle,api_recovery_cleanup
+        default: none
+      expected_revision:
+        description: Full SHA of deployed Gateway release
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: cli-live-eval-dev
+  group: cli-live-eval-${{ inputs.target_environment || 'dev' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   live:
     outputs:
       cleanup_ok: ${{ steps.boundary.outputs.cleanup_ok }}
     if: github.ref == 'refs/heads/main'
-    environment: adp-checks-dev
+    environment: ${{ (inputs.product_cases != '' && inputs.product_cases != 'none') && 'dev' || format('adp-checks-{0}', inputs.target_environment || 'dev') }}
     runs-on: arc-runner-org
     timeout-minutes: 45
     permissions:
@@ -37,15 +71,90 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Verify reviewed Product source has complete main history
+        if: inputs.product_cases != '' && inputs.product_cases != 'none'
+        env:
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          [[ "$PRODUCT_EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          git rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null
+          git merge-base --is-ancestor "$PRODUCT_EXPECTED_REVISION" refs/remotes/origin/main
+          git merge-base --is-ancestor 0af3d490af4f85ced80042367ee7071d864961ea "$PRODUCT_EXPECTED_REVISION"
+          git merge-base --is-ancestor 7c59980125ae38e5e5558df8c636547fb64f3242 "$PRODUCT_EXPECTED_REVISION"
       - name: Assume gateway checks identity
+        if: inputs.product_cases == '' || inputs.product_cases == 'none'
         uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Require protected Product evaluator configuration
+        if: inputs.product_cases != '' && inputs.product_cases != 'none'
+        env:
+          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+          CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
+          EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+          EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+          EVAL_INTERNAL_INVOKE_URL: ${{ vars.CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL }}
+          EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+          LEGACY_PRODUCT_FIXTURES_PRESENT: ${{ secrets.PRODUCT_API_FIXTURES_JSON != '' }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          PRODUCT_TARGET_ENV: ${{ inputs.target_environment || 'dev' }}
+        run: |
+          set -euo pipefail
+          if [ "$PRODUCT_TARGET_ENV" != dev ]; then
+            echo '::error::Product evaluation is limited to the reviewed dev environment.'
+            exit 1
+          fi
+          if [ -z "$EVAL_ROLE_ARN" ] || [ -z "$CLI_UPLIFT_EVAL_BINDINGS_JSON" ] ||
+             [ -z "$CLI_UPLIFT_EVAL_GATEWAY_CATALOG" ] || [ -z "$EVAL_CREDENTIAL_SECRET_NAME" ] ||
+             [ -z "$EVAL_INSTANCE_PROFILE" ] || [ -z "$EVAL_STATE_BUCKET" ] ||
+             [ -z "$EVAL_INTERNAL_INVOKE_URL" ]; then
+            echo '::error::Protected Product evaluator role, Gateway bindings/catalog or disposable evaluator references are missing.'
+            exit 1
+          fi
+          if [ "$LEGACY_PRODUCT_FIXTURES_PRESENT" = true ]; then
+            echo '::error::Static Product actor tokens are not an authorized fixture source; use disposable evaluator setup.'
+            exit 1
+          fi
+          if [[ ! "$EVAL_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/adp-cli-uplift-eval-orchestrator$ ]]; then
+            echo '::error::Product evaluator role differs from the reviewed dev orchestrator.'
+            exit 1
+          fi
+          [[ "$EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ ]]
+      - name: Assume scoped Product evaluator identity
+        if: inputs.product_cases != '' && inputs.product_cases != 'none'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-session-name: product-v01-${{ github.run_id }}
+      - name: Verify scoped Product evaluator identity
+        if: inputs.product_cases != '' && inputs.product_cases != 'none'
+        env:
+          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          [[ "$EVAL_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/adp-cli-uplift-eval-orchestrator$ ]]
+          account="${EVAL_ROLE_ARN#arn:aws:iam::}"
+          account="${account%%:*}"
+          role="${EVAL_ROLE_ARN##*/}"
+          caller="$(aws sts get-caller-identity --query Arn --output text)"
+          if [[ "$caller" != "arn:aws:sts::$account:assumed-role/$role/"* ]]; then
+            echo '::error::Product evaluator identity differs from the protected role.'
+            exit 1
+          fi
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Resolve reviewed live target and owned fixture
+        if: inputs.product_cases == '' || inputs.product_cases == 'none'
         env:
           GATEWAY_LIVE_TEST_BINDINGS_JSON: ${{ secrets.GATEWAY_LIVE_TEST_BINDINGS_JSON }}
         run: python .github/scripts/regression_gateway_config.py
@@ -54,35 +163,209 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/pip install -e ".[dev]"
+      - name: Run selected Product API cases against observed release
+        id: product
+        if: inputs.product_cases != '' && inputs.product_cases != 'none'
+        env:
+          CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+          CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
+          CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+          CLI_UPLIFT_EVAL_SECURITY_GROUP_ID: ${{ vars.CLI_UPLIFT_EVAL_SECURITY_GROUP_ID }}
+          CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+          CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+          CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL: ${{ vars.CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL }}
+          PRODUCT_CASES: ${{ inputs.product_cases }}
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.live
+          --cases "$PRODUCT_CASES" --expected-revision "$PRODUCT_EXPECTED_REVISION"
+          --dispatch-report test-results/product-v01-dispatch.json
+          --api-evidence test-results/product-v01-evidence.json
       - name: Run live tests
         id: tests
+        if: inputs.product_cases == '' || inputs.product_cases == 'none'
         working-directory: modules/gateway
         run: |
           .venv/bin/python -m pytest tests/ -v --tb=short \
             -m live_only -p regression_pytest --timeout=120 \
             --junitxml=../../test-results/gateway.xml
       - name: Verify complete scenario evidence
-        if: always()
+        if: always() && (inputs.product_cases == '' || inputs.product_cases == 'none')
         run: >-
           python .github/scripts/regression_report.py junit
           --suite gateway --junit test-results/gateway.xml
           --inventory test-results/gateway-inventory.json
           --output test-results/gateway-result.json
-      - uses: actions/upload-artifact@v7
+      - name: Load private installed Product CLI proof
+        if: always() && inputs.product_cases != '' && inputs.product_cases != 'none'
+        env:
+          CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+          CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
+        run: >-
+          python -m tests.e2e.cli_uplift.product_cli_handoff load
+          --dispatch test-results/product-v01-dispatch.json
+          --output "$RUNNER_TEMP/product-profile-cli.private.json"
+      - name: Bind signed Gateway release to observed Product API and CLI
+        if: always() && inputs.product_cases != '' && inputs.product_cases != 'none'
+        run: >-
+          python -m tests.e2e.product_onboarding.product_d01_release
+          --dispatch-report test-results/product-v01-dispatch.json
+          --api-evidence test-results/product-v01-evidence.json
+          --output test-results/product-d01-release.json
+      - name: Assemble selected B01 Product inputs
+        if: always() && inputs.product_cases != '' && inputs.product_cases != 'none'
+        run: >-
+          python -m tests.e2e.product_onboarding.product_inputs
+          --dispatch-report test-results/product-v01-dispatch.json
+          --api-evidence test-results/product-v01-evidence.json
+          --release-report test-results/product-d01-release.json
+          --cli-report "$RUNNER_TEMP/product-profile-cli.private.json"
+          --output test-results/product-b01-inputs.json
+          --packet-path test-results/product-b01.json
+      - name: Publish selected B01 Product packet
+        id: product_packet
+        if: always() && inputs.product_cases != '' && inputs.product_cases != 'none'
+        env:
+          PRODUCT_CASES: ${{ inputs.product_cases }}
+          PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: >-
+          python -m tests.e2e.product_onboarding.product_publish
+          --inputs test-results/product-b01-inputs.json
+          --dispatch-report test-results/product-v01-dispatch.json
+          --output test-results/product-b01.json
+          --cases "$PRODUCT_CASES" --expected-revision "$PRODUCT_EXPECTED_REVISION"
+          --workflow-revision "$GITHUB_SHA"
+      - name: Qualify preliminary D01 API and CLI cases before recovery
+        if: always() && inputs.product_cases != '' && inputs.product_cases != 'none'
+        run: >-
+          python -m tests.e2e.product_onboarding.product_d01_cases
+          --preliminary
+          --inputs test-results/product-b01-inputs.json
+          --dispatch test-results/product-v01-dispatch.json
+          --packet test-results/product-b01.json
+          --release test-results/product-d01-release.json
+          --output test-results/product-d01-cases.json
+      - uses: ./.github/actions/upload-ci-evidence-s3
+        id: published_evidence
         if: always()
         with:
           name: gateway-live-results
           path: test-results/
           if-no-files-found: error
           retention-days: 14
+      - name: Retain the signed automatic release eligible for recovery
+        if: >-
+          always() && inputs.product_cases == 'api_product_lifecycle,api_denial_oracle,api_recovery_cleanup' &&
+          steps.product.outcome == 'success' && steps.product_packet.outcome == 'success' &&
+          steps.published_evidence.outcome == 'success'
+        env:
+          CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+          CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
+        run: >-
+          python -m tests.e2e.product_onboarding.product_automatic_identity stage
+          --expected-revision "${{ inputs.expected_revision }}"
+          --inputs test-results/product-b01-inputs.json
+          --dispatch test-results/product-v01-dispatch.json
+          --packet test-results/product-b01.json
+          --release test-results/product-d01-release.json
+          --api test-results/product-v01-evidence.json
+          --cli "$RUNNER_TEMP/product-profile-cli.private.json"
+          --grades test-results/product-d01-cases.json
       - name: Publish mutation boundary
         id: boundary
         if: always()
         env:
           TEST_OUTCOME: ${{ steps.tests.outcome }}
+          PRODUCT_SELECTED: ${{ inputs.product_cases != '' && inputs.product_cases != 'none' }}
+          PRODUCT_OUTCOME: ${{ steps.product.outcome }}
+          PRODUCT_CLEANUP_OK: ${{ steps.product.outputs.cleanup_ok }}
         run: |
-          if [ "$TEST_OUTCOME" = success ] || [ "$TEST_OUTCOME" = skipped ]; then
+          if { [ "$TEST_OUTCOME" = success ] || [ "$TEST_OUTCOME" = skipped ]; } &&
+             { { { [ "$PRODUCT_SELECTED" = false ] || [ -z "$PRODUCT_SELECTED" ]; } &&
+                 { [ -z "$PRODUCT_OUTCOME" ] || [ "$PRODUCT_OUTCOME" = skipped ]; }; } ||
+               { [ "$PRODUCT_SELECTED" = true ] && [ "$PRODUCT_OUTCOME" = success ] &&
+                 [ "$PRODUCT_CLEANUP_OK" = true ]; }; }; then
             echo 'cleanup_ok=true' >> "$GITHUB_OUTPUT"
           else
             echo 'cleanup_ok=false' >> "$GITHUB_OUTPUT"
           fi
+
+  recover_product:
+    needs: live
+    if: always() && needs.live.result != 'skipped' && inputs.product_cases != '' && inputs.product_cases != 'none'
+    environment: dev
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      cleanup_ok: ${{ steps.recover.outputs.cleanup_ok }}
+    env:
+      AWS_REGION: us-east-1
+      PRODUCT_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+      PRODUCT_CASES: ${{ inputs.product_cases }}
+      CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+      CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
+      CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+      CLI_UPLIFT_EVAL_SECURITY_GROUP_ID: ${{ vars.CLI_UPLIFT_EVAL_SECURITY_GROUP_ID }}
+      CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
+      CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL: ${{ vars.CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify protected Product recovery configuration
+        env:
+          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          [[ "$EVAL_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/adp-cli-uplift-eval-orchestrator$ ]]
+          [[ "$PRODUCT_EXPECTED_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test -n "$CLI_UPLIFT_EVAL_STATE_BUCKET"
+          test -n "$CLI_UPLIFT_EVAL_INTERNAL_INVOKE_URL"
+      - name: Assume scoped Product evaluator identity for recovery
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-session-name: product-v01-recover-${{ github.run_id }}
+      - name: Verify scoped Product recovery identity
+        env:
+          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          account="${EVAL_ROLE_ARN#arn:aws:iam::}"
+          account="${account%%:*}"
+          role="${EVAL_ROLE_ARN##*/}"
+          caller="$(aws sts get-caller-identity --query Arn --output text)"
+          if [[ "$caller" != "arn:aws:sts::$account:assumed-role/$role/"* ]]; then
+            echo '::error::Product recovery identity differs from the protected role.'
+            exit 1
+          fi
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install recovery dependencies
+        working-directory: modules/gateway
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e ".[dev]"
+      - name: Restore and retire this Product evaluation
+        id: recover
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.recovery_job
+          --expected-revision "$PRODUCT_EXPECTED_REVISION" --cases "$PRODUCT_CASES"
+      - name: Qualify automatic release only after independent owned cleanup
+        if: inputs.product_cases == 'api_product_lifecycle,api_denial_oracle,api_recovery_cleanup'
+        env:
+          CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
+        run: >-
+          modules/gateway/.venv/bin/python -m tests.e2e.product_onboarding.product_automatic_identity complete
+          --expected-revision "$PRODUCT_EXPECTED_REVISION"

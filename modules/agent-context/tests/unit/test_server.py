@@ -17,10 +17,12 @@ The refusal itself is covered by the dedicated store-gate tests.
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from door import server
 from door.server import TOOLS, app
 
 
@@ -133,7 +135,10 @@ class TestSearchVerb:
         assert body["results"] == []
 
     @pytest.mark.asyncio
-    async def test_search_returns_valid_structure(self, client, acl_store_live):
+    async def test_search_returns_valid_structure(self, client, acl_store_live, monkeypatch):
+        zoekt = AsyncMock()
+        zoekt.search.return_value = []
+        monkeypatch.setattr(server.state, "zoekt", zoekt)
         resp = await client.post(
             "/call",
             content=json.dumps(
@@ -145,6 +150,7 @@ class TestSearchVerb:
         assert "results" in body
         assert "total" in body
         assert "query" in body
+        zoekt.search.assert_awaited_once_with("hello", limit=50)
 
 
 # ---------------------------------------------------------------------------

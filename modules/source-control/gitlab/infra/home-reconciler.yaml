@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitlab-home-reconciler
+  namespace: adp-gateway
+  annotations:
+    eks.amazonaws.com/role-arn: REPLACE_WITH_RECONCILER_ROLE_ARN
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab-home-reconciler
+  namespace: adp-gateway
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gitlab-home-reconciler
+  template:
+    metadata:
+      labels:
+        app: gitlab-home-reconciler
+    spec:
+      serviceAccountName: gitlab-home-reconciler
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reconciler
+          image: REPLACE_WITH_GATEWAY_IMAGE
+          command: ["python", "-m", "src.gitlab.home_worker"]
+          envFrom:
+            - configMapRef:
+                name: bedrockgateway-config
+          env:
+            - name: FEATURE_GITLAB_ENABLED
+              value: "true"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

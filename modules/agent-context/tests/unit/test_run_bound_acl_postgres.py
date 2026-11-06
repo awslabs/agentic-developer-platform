@@ -69,3 +69,16 @@ def test_legacy_callers_keep_the_existing_flag_behavior(pool):
         "one/source",
         "two/source",
     }
+
+
+@pytest.mark.parametrize("tenant,owner,expected", [
+    ("one", "owner", {"shared/public", "one/source", "one/personal"}),
+    ("two", "owner", {"shared/public", "two/source", "two/personal"}),
+    ("one", "other-owner", {"shared/public", "one/source", "one/other-person"}),
+])
+def test_canonical_asset_owner_is_independent_of_login_subject(pool, tenant, owner, expected):
+    principal = extract_caller_principal({
+        "x-github-login": "alice", "x-owner-sub": "different-login-subject",
+        "x-asset-owner-id": owner, "x-tenant-id": tenant, "x-adp-run-service": "true",
+    })
+    assert PostgresACLStore(pool, tenant_scope_enabled=False).get_allowed_repos(principal) == expected

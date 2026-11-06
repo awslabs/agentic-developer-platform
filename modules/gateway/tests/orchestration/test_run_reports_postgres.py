@@ -35,6 +35,10 @@ async def test_two_pods_cannot_start_one_assignment(reports):
     assert sorted(result.status_code for result in results) == [200, 409]
 
 
+async def test_task_board_snapshot_on_migrated_postgres(reports):
+    await route_tests.test_task_board_is_scoped_monotonic_and_retained_after_failure(reports)
+
+
 def test_063_064_migration_upgrade_downgrade_chain(pg_url):
     import psycopg2
 

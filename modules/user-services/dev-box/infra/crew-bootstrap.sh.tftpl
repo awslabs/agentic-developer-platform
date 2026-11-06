@@ -1,0 +1,180 @@
+#!/bin/bash
+# ADP Dev Box: first-boot Kiro Crew bootstrap from the pinned bundle (#8055).
+# Rendered by Terraform (crew_bootstrap.tf) into the launch template's user data.
+# It carries only S3 object paths, SHA-256 digests and revisions: no secret, no run
+# id, no owner data. cloud-init runs it once per instance (a stopped box that starts
+# again does not re-run it). The controller reads /run/adp/crew-bootstrap.json over
+# SSM and refuses the host unless this script recorded status "ok" for the pinned
+# profile, source revision and bundle digest.
+set -euo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+exec > >(tee -a /var/log/adp-crew-bootstrap.log) 2>&1
+
+export BUNDLE_URI='${bundle_s3_uri}'
+export MANIFEST_URI='${manifest_s3_uri}'
+export HELPER_PREFIX='${helper_s3_prefix}'
+export HELPER_PINS='${helper_pins}'
+export BUNDLE_SHA256='${bundle_sha256}'
+export PROFILE_REVISION='${profile_revision}'
+export SOURCE_REVISION='${source_revision}'
+export REGION='${region}'
+export STARTED_AT
+STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+export START_EPOCH
+START_EPOCH=$(date +%s)
+export STEP=start
+export GUEST_PYTHON_VERSION=""
+GUEST_PYTHON=python3
+WORK=""
+
+write_marker() { # write_marker <status> <detail>
+  install -d -m 0755 -o root -g root /run/adp /var/lib/adp
+  python3 - "$1" "$2" "$STEP" <<'PY'
+import json, os, sys, time
+status, detail, step = sys.argv[1:4]
+record = {
+    "schema_version": 1, "crew_bootstrap": "user-data", "status": status, "step": step, "detail": detail,
+    "profile_revision": os.environ["PROFILE_REVISION"], "source_revision": os.environ["SOURCE_REVISION"],
+    "bundle_sha256": os.environ["BUNDLE_SHA256"], "bundle_s3_uri": os.environ["BUNDLE_URI"],
+    "started_at": os.environ["STARTED_AT"], "duration_seconds": int(time.time()) - int(os.environ["START_EPOCH"]),
+    "interpreter": os.environ.get("GUEST_PYTHON_VERSION", ""),
+}
+# /var/lib keeps the receipt across stop/start; tmpfiles.d copies it back into /run/adp at boot.
+for path in ("/var/lib/adp/crew-bootstrap.json", "/run/adp/crew-bootstrap.json"):
+    pending = path + ".tmp"
+    with open(pending, "w") as out:
+        os.fchmod(out.fileno(), 0o600)
+        json.dump(record, out, sort_keys=True)
+        out.write("\n")
+    os.replace(pending, path)
+PY
+}
+
+on_error() {
+  local code=$?
+  echo "adp-crew-bootstrap: failed at step $STEP (exit $code)"
+  write_marker failed "exit $code at step $STEP" || true
+  [ -z "$WORK" ] || rm -rf "$WORK"
+  exit "$code"
+}
+trap on_error ERR
+
+fetch() { # fetch <s3-uri> <destination>; retries cover network and instance-credential warm-up
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if aws s3 cp --region "$REGION" --only-show-errors "$1" "$2"; then
+      return 0
+    fi
+    echo "adp-crew-bootstrap: fetch $1 failed (attempt $attempt); retrying"
+    sleep 10
+  done
+  return 1
+}
+
+echo "adp-crew-bootstrap: profile $PROFILE_REVISION source $SOURCE_REVISION bundle $BUNDLE_SHA256"
+write_marker running "bootstrap started"
+command -v aws >/dev/null || { STEP=prerequisites; echo "aws CLI is missing on the base image"; false; }
+command -v python3 >/dev/null || { STEP=prerequisites; echo "python3 is missing on the base image"; false; }
+
+STEP=workdir
+WORK=$(mktemp -d /var/tmp/adp-crew-bootstrap.XXXXXX)
+chmod 0700 "$WORK"
+install -d -m 0700 "$WORK/adp"
+
+STEP=fetch-bundle
+fetch "$BUNDLE_URI" "$WORK/crew.tar.gz"
+fetch "$MANIFEST_URI" "$WORK/profile.json"
+
+STEP=verify-bundle
+echo "$BUNDLE_SHA256  $WORK/crew.tar.gz" | sha256sum -c --quiet -
+python3 - "$WORK/profile.json" "$BUNDLE_SHA256" "$PROFILE_REVISION" "$SOURCE_REVISION" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+assert manifest.get("bundle_sha256") == sys.argv[2], "profile.json bundle_sha256 differs from the pinned digest"
+assert manifest.get("revision") == sys.argv[3], "profile.json revision differs from the pinned profile revision"
+assert manifest.get("source_revision") == sys.argv[4], "profile.json source_revision differs from the pinned source revision"
+PY
+
+# Interpreter: the bundle carries a relocatable CPython 3.12 (python/bin/python3, #8054).
+# The helpers run on it when present; AL2023's system python3 (3.9) is the fallback.
+# The systemd units and the controller's SSM commands run the installed helpers with
+# /usr/bin/python3 regardless, so every helper stays importable on 3.9 (tests/
+# test_guest_python_compat.py); the preflight below exercises that on this host.
+STEP=select-python
+install -d -m 0700 "$WORK/python-stage"
+if tar -tzf "$WORK/crew.tar.gz" | grep -Eqx 'python/bin/python3(\.[0-9]+)?'; then
+  tar -xzf "$WORK/crew.tar.gz" -C "$WORK/python-stage" --no-same-owner python
+  for candidate in "$WORK/python-stage/python/bin/python3" "$WORK/python-stage/python/bin/python3."*; do
+    if [ -x "$candidate" ] && "$candidate" -I -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+      GUEST_PYTHON="$candidate"
+      break
+    fi
+  done
+fi
+[ "$GUEST_PYTHON" != python3 ] || echo "adp-crew-bootstrap: the bundle carries no python/bin/python3; using the system python3"
+GUEST_PYTHON_VERSION=$("$GUEST_PYTHON" -I -c 'import platform, sys; print(sys.executable, platform.python_version())')
+echo "adp-crew-bootstrap: helpers run on $GUEST_PYTHON_VERSION"
+
+STEP=fetch-helpers
+for pin in $HELPER_PINS; do
+  name=$${pin%%=*}
+  digest=$${pin#*=}
+  fetch "$HELPER_PREFIX/$name" "$WORK/adp/$name"
+  echo "$digest  $WORK/adp/$name" | sha256sum -c --quiet -
+done
+
+# Same installer, same arguments as image/crew.pkr.hcl.
+STEP=install-crew
+"$GUEST_PYTHON" "$WORK/adp/install_crew.py" --manifest "$WORK/profile.json" --bundle "$WORK/crew.tar.gz" \
+  --expected-source-revision "$SOURCE_REVISION" --expected-profile-revision "$PROFILE_REVISION"
+
+# Same root-only helpers, same modes as image/crew.pkr.hcl.
+STEP=install-helpers
+openssl version >/dev/null
+install -m 0700 -o root -g root "$WORK/adp/write_enrollment.py" /opt/adp/crew/write_enrollment.py
+install -m 0700 -o root -g root "$WORK/adp/write_host_certificate.py" /opt/adp/crew/write_host_certificate.py
+install -m 0700 -o root -g root "$WORK/adp/verify_crew_ready.py" /opt/adp/crew/verify_crew_ready.py
+install -m 0700 -o root -g root "$WORK/adp/restore_crew_host.py" /opt/adp/crew/restore_crew_host.py
+install -m 0700 -o root -g root "$WORK/adp/checkpoint_crew_host.py" /opt/adp/crew/checkpoint_crew_host.py
+install -m 0600 -o root -g root "$WORK/adp/crew_checkpoint.py" /opt/adp/crew/crew_checkpoint.py
+
+# Readiness preflight: the layout the controller's crew_profile_command reads back,
+# a syntax pass over every installed helper, the verifier's entry point under the
+# SYSTEM python3 (what the controller and the units use) and the units the installer
+# wrote. Enrollment, restore and crew-ready remain the controller's job; nothing
+# here starts Crew.
+STEP=preflight
+"$GUEST_PYTHON" - "$PROFILE_REVISION" "$SOURCE_REVISION" <<'PY'
+import ast, json, sys
+from pathlib import Path
+current = Path("/opt/adp/crew/current")
+profile = json.loads((current / "profile.json").read_text())
+required = ("/etc/systemd/system/adp-crew.service", "/etc/systemd/system/adp-crew-host.service",
+            "/etc/systemd/system/adp-crew-checkpoint.service", "/etc/systemd/system/adp-crew-checkpoint.timer",
+            "/etc/systemd/system/adp-crew-checkpoint-final.service", "/opt/adp/crew/checkpoint_crew_host.py",
+            "/opt/adp/crew/current/venv/bin/kirocrew",
+            "/opt/adp/crew/current/host/crew-host-dashboard.js", "/opt/adp/crew/current/host/crew-host-model.js",
+            "/opt/adp/crew/current/host/crew-host-bootstrap.js")
+assert current.is_symlink() and current.readlink() == Path(sys.argv[1]), "current profile link differs from the pinned revision"
+assert profile.get("revision") == sys.argv[1] and profile.get("source_revision") == sys.argv[2], "installed profile differs from the pins"
+missing = [path for path in required if not Path(path).is_file()]
+assert not missing, f"installed profile is incomplete: {missing}"
+for helper in ("write_enrollment.py", "write_host_certificate.py", "verify_crew_ready.py",
+               "restore_crew_host.py", "checkpoint_crew_host.py", "crew_checkpoint.py"):
+    ast.parse(Path("/opt/adp/crew", helper).read_text(), helper)
+PY
+python3 -I /opt/adp/crew/verify_crew_ready.py --help >/dev/null
+python3 -I -c 'import sys; sys.path.insert(0, "/opt/adp/crew"); import checkpoint_crew_host, restore_crew_host, write_enrollment, write_host_certificate'
+systemctl cat adp-crew.service adp-crew-host.service adp-crew-checkpoint.service adp-crew-checkpoint.timer adp-crew-checkpoint-final.service >/dev/null
+
+STEP=receipt
+cat > /etc/tmpfiles.d/adp-crew-bootstrap.conf <<'EOF'
+d /run/adp 0755 root root -
+C /run/adp/crew-bootstrap.json 0600 root root - /var/lib/adp/crew-bootstrap.json
+EOF
+chmod 0644 /etc/tmpfiles.d/adp-crew-bootstrap.conf
+rm -rf "$WORK"
+WORK=""
+write_marker ok "crew profile installed from the pinned bundle"
+echo "adp-crew-bootstrap: ok ($(( $(date +%s) - START_EPOCH ))s)"

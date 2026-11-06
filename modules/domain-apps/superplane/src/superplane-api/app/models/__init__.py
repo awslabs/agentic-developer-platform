@@ -68,3 +68,5 @@ from app.models.controller_workload_submission import ControllerWorkloadSubmissi
 from app.models.controller_node_command import ControllerNodeCommand  # noqa: F401
 from app.models.controller_cleanup_snapshot import ControllerCleanupSnapshot  # noqa: F401
 from app.models.controller_cleanup import ControllerCleanupBinding  # noqa: F401
+
+from app.models.operation_reauthorization import OperationReauthorization  # noqa: F401

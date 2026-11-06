@@ -68,3 +68,19 @@ rechecks live identity rather than trusting a completed phase marker.
 Remote CI must cover default omission, exact Terraform trust/route plans,
 incorrect existing roles, plan substitution, post-apply identity mismatch and
 resume. Local validation is restricted to source/static checks.
+
+
+The dedicated producer policy includes the exact
+`POST /internal/v1/controller-execution/recover-settled-bootstrap` route. Review
+and decision are domain API actions; successful decisions alone do not establish
+that the producer may invoke this recovery route. The native verifier requires
+all 15 current routes, and recognizes the prior 14-route policy only during a
+reviewed identity-preserving upgrade. No wildcard invoke authority is needed.
+
+If recovery already holds a separate temporary dispatch Deny policy, an apply of
+the Terraform role's exclusive `inline_policy` set can remove that fence. Preserve
+the fence during a bounded owner repair of only the existing named Allow policy:
+retain the before/after documents and role identity, verify the sole added exact
+route, then read back the policy and verify recovery is allowed while dispatch
+remains explicitly denied. Reconcile Terraform state through its normal owner
+path after recovery; do not run a full deployment merely to add this route.

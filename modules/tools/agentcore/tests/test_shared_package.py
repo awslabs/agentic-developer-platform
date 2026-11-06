@@ -70,3 +70,16 @@ def test_migration_fixture_cannot_delete_or_replace_existing_resources():
     cyber_source = "\n".join(path.read_text() for path in (CYBER / "infra").glob("*.tf"))
     for address in ("aws_dynamodb_table\" \"operations", "aws_api_gateway_resource\" \"websearch", "aws_api_gateway_resource\" \"code_interpreter", "aws_sqs_queue\" \"browser"):
         assert address not in cyber_source
+
+
+def test_gateway_target_docs_explain_authority_and_unfinished_provider_work():
+    architecture = (ROOT / "docs/tools/architecture.md").read_text()
+    readme = (ROOT / "docs/tools/README.md").read_text()
+    assert "### Shared Lambda targets (TLS-S05 source checkpoint)" in architecture
+    assert "### Gateway Lambda tools (source checkpoint, not live availability)" in readme
+    for name in ("websearch___search", "code_interpreter___*", "code-interpreter___*", "browser___*"):
+        assert name in architecture + readme
+    for marker in ("adp_assertion", "kms:Verify", "receipt", "REST", "provider dispatch", "tools/list"):
+        assert marker in architecture
+    for marker in ("synthetic provider response", "fail closed", "retains REST compatibility routes", "live evaluation"):
+        assert marker in readme

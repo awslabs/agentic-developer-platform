@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.auth.vault_delivery import DELIVERY_PERMISSION, DeliveryRefusedError, OperationBinding, deliver_credential
 from src.auth.vault_evidence import read_credential_evidence, validation_digest
+from src.internal.vault_metadata_authority import VaultMetadataAuthority
 from src.shared.models.vault import CredentialValidationEvidence, UserCredential
 from tests.auth import test_vault_evidence as fixtures
 from tests.auth.test_vault_evidence import ORG, VERSION, WORKSPACE, _cred, _delegate, _validation
@@ -33,7 +34,11 @@ async def test_old_or_unversioned_validation_cannot_attest_current_material(db, 
         detail=validation.detail,
     )
     args = dict(
-        org_id=ORG, workspace_id=WORKSPACE, credential_id=credential.id, service=None, label=None, principal="user:user-alice", report_digest=digest
+        authority=VaultMetadataAuthority(ORG, "unit-reader", "user:user-alice", WORKSPACE),
+        credential_id=credential.id,
+        service=None,
+        label=None,
+        report_digest=digest,
     )
     assert await read_credential_evidence(db, sm, **args) is not None
     if version is None:

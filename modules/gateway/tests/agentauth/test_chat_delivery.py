@@ -308,10 +308,33 @@ async def test_ndjson_path_also_relays_before_returning_receipt(model, transport
 
 def test_registration_rejects_inconsistent_owner_and_keeps_canonical_identity():
     envelope = {**ROUTING, "message_id": "run-a", "session_id": "session-a", "tenant_id": "tenant"}
-    retained = protected_delivery(envelope, "canonical-human")
-    assert json.loads(retained["S"])["user_id"] == "canonical-human"
+    retained = json.loads(protected_delivery(envelope, "canonical-human", "")["S"])
+    # The comparison fields are the canonical owner tuple admission binds; the
+    # intake routing key the response Lambda needs is kept exactly as supplied.
+    assert (retained["user_id"], retained["team_id"]) == ("canonical-human", "")
+    assert retained["owner_principal"] == OWNER
     with pytest.raises(ValueError):
-        protected_delivery({**envelope, "owner_principal": "forged"}, "human")
+        protected_delivery({**envelope, "owner_principal": "forged"}, "human", "team")
+
+
+@pytest.mark.parametrize(
+    ("changes", "named"),
+    [
+        ({"team_id": "intake-team"}, "team_id"),
+        ({"team_id": ""}, "team_id"),
+        ({"user_id": "other"}, "user_id"),
+        ({"user_id": "other", "team_id": "intake-team"}, "user_id,team_id"),
+        ({"session_id": "other-session"}, "session_id"),
+    ],
+)
+def test_owner_delivery_refusal_names_only_the_differing_fields(model, changes, named):
+    launch = model.launch.model_copy(update=changes)
+    with pytest.raises(chat_delivery.ChatAuthorizationRefusedError, match=rf"^chat owner delivery mismatch: {named}$"):
+        chat_delivery.load_delivery(model.runtime[1], launch)
+    registered = chat_delivery.load_delivery(model.runtime[1], model.launch)
+    assert registered.team_id == "team"
+    with pytest.raises(chat_delivery.ChatAuthorizationRefusedError, match=rf"^chat stream delivery changed: {named}$"):
+        append_stream_event(model.runtime[1], launch, registered, "foreign", {}, now=int(time.time()))
 
 
 async def test_large_text_is_split_into_bounded_browser_frames(model, transport):
@@ -365,3 +388,26 @@ def test_transport_requires_session_store_and_has_no_automatic_queue_retry(monke
         assert factory.call_args.kwargs["region_name"] == "us-east-1"
     finally:
         chat_delivery.response_transport.cache_clear()
+
+
+async def test_reported_evidence_is_attached_to_the_streamed_reply_as_an_ag_ui_custom_event(model, transport):
+    """#8113: the sandbox's source coverage reaches the owner's screen with the message it describes."""
+    evidence = {
+        "status": "partial",
+        "observed_at": "2026-10-04T12:00:00Z",
+        "coverage": [{"source": "platform___my_work_items:github.work_items", "status": "partial", "reason": "repository_page_limit"}],
+        "sources": [{"label": "acme/widgets#14", "url": "https://github.com/acme/widgets/issues/14"}],
+        "has_more": True,
+    }
+    streaming_provider(model)
+    assert (await invoke(model, evidence={**evidence, "status": "guessed"})).status_code == 422
+    assert (await invoke(model, deliver_response=False, evidence=evidence)).status_code == 200
+    transport.client.send_message.assert_not_called()
+    result = await invoke(model, operation_id="call-2", evidence=evidence)
+    assert result.status_code == 200, result.text
+    envelopes = [json.loads(call.kwargs["MessageBody"]) for call in transport.client.send_message.call_args_list]
+    assert [value["event"]["event_type"] for value in envelopes] == ["RUN_STARTED", "TEXT_MESSAGE_START", "CUSTOM", "TEXT_MESSAGE_CONTENT"]
+    custom = envelopes[2]["event"]
+    assert custom["name"] == "answer_evidence"
+    assert custom["value"] == {"messageId": envelopes[1]["event"]["messageId"], "evidence": evidence}
+    assert [value["event"]["stream_sequence"] for value in envelopes] == [0, 1, 2, 3]

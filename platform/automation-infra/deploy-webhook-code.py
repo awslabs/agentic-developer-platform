@@ -117,6 +117,19 @@ def archive(path):
     return body, base64.b64encode(hashlib.sha256(body).digest()).decode()
 
 
+def configuration_digest(configuration):
+    # Lambda changes RevisionId as an asynchronous code update settles. Compare
+    # the actual configuration instead of treating its transient revision as a
+    # permanent lock. RuntimeVersionConfig is AWS-selected for code updates.
+    volatile = {
+        "CodeSha256", "CodeSize", "RevisionId", "LastModified",
+        "LastUpdateStatus", "LastUpdateStatusReason", "LastUpdateStatusReasonCode",
+        "State", "StateReason", "StateReasonCode", "RuntimeVersionConfig",
+        "ResponseMetadata",  # SDK request IDs/headers are transport metadata.
+    }
+    return hashlib.sha256(encode({k: v for k, v in configuration.items() if k not in volatile})).hexdigest()
+
+
 def deploy(
     manifest, artifacts, source_sha, run_id, s3, lambdas, receipt_path, sleep=time.sleep
 ):
@@ -171,6 +184,8 @@ def deploy(
         operation["before"] = {
             k: current[k] for k in ("Role", "RevisionId", "CodeSha256")
         }
+        expected_configuration = configuration_digest(current)
+        operation["configuration_sha256"] = expected_configuration
         operation["update_intent"] = True
         journal.save()
         # No Publish, alias change, role/configuration update, retry or fallback.
@@ -193,6 +208,7 @@ def deploy(
             k: updated[k] for k in ("Role", "RevisionId", "CodeSha256")
         }
         journal.save()
+        settled_revision = None
         for attempt in range(60):
             final = lambdas.get_function_configuration(
                 FunctionName=target["function_arn"]
@@ -202,22 +218,41 @@ def deploy(
                 and final["CodeSha256"] == digest
             ):
                 raise AssertionError("Code or role drift")
-            if not (final["RevisionId"] == updated["RevisionId"]):
-                raise AssertionError("Concurrent revision change")
+            if configuration_digest(final) != expected_configuration:
+                raise AssertionError("Configuration drift during code update")
+            if not final.get("RevisionId"):
+                raise AssertionError("Missing settled revision")
             if not (final["LastUpdateStatus"] in ("InProgress", "Successful")):
                 raise AssertionError("Lambda update failed")
             if final["LastUpdateStatus"] == "Successful":
-                break
+                if settled_revision is not None:
+                    if final["RevisionId"] != settled_revision:
+                        raise AssertionError("Concurrent revision change after completion")
+                    break
+                settled_revision = final["RevisionId"]
+            elif settled_revision is not None:
+                raise AssertionError("Concurrent update after completion")
             sleep(5)
         else:
             raise AssertionError(
                 "Update timeout; reconcile saved intent without replay"
             )
+        operation["settled_revision"] = settled_revision
         operation["verified"] = True
         journal.save()
     journal.data["complete"] = True
     journal.save()
     return journal.data
+
+
+def validate_execution_context(environment):
+    if not (
+        environment["GITHUB_REF"] == "refs/heads/main"
+        and environment["GITHUB_EVENT_NAME"] in {"workflow_dispatch", "workflow_call", "push"}
+    ):
+        raise AssertionError("Webhook code delivery requires main and a trusted event")
+    if environment["GITHUB_RUN_ATTEMPT"] != "1":
+        raise AssertionError("No workflow replay")
 
 
 def main():
@@ -229,13 +264,7 @@ def main():
     parser.add_argument("--artifacts", required=True)
     parser.add_argument("--receipt", required=True)
     args = parser.parse_args()
-    if not (
-        os.environ["GITHUB_REF"] == "refs/heads/main"
-        and os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
-    ):
-        raise AssertionError()
-    if not (os.environ["GITHUB_RUN_ATTEMPT"] == "1"):
-        raise AssertionError("No workflow replay")
+    validate_execution_context(os.environ)
     manifest = json.loads(Path(args.manifest).read_text())
     validate_manifest(manifest)
     session = boto3.Session(region_name=manifest["region"])

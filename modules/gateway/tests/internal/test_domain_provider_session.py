@@ -2,12 +2,15 @@
 
 import json
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from harness_jobs.identity import OperationRequest, encode_payload
 
+from src.agentauth.execution import ExecutionRecord, ExecutionStateError, ExecutionStatus, evaluate_execution_state
 from src.auth.vault_delivery import DeliveryRefusedError
 from src.internal import domain_provider_session as broker
 from src.internal.sts_assume_service import AssumeRoleResult
@@ -66,7 +69,7 @@ def context(monkeypatch):
         approval_expires_at=future,
         job_id="job",
         workspace_id="workspace",
-        request_payload="sealed",
+        request_payload=encode_payload(OperationRequest("provision", "operation", {"lifecycle_phase": "prepare-infrastructure"})),
     )
     lease = dict(
         operation_id="operation",
@@ -78,7 +81,8 @@ def context(monkeypatch):
         runtime_deadline=future,
     )
     binding = SimpleNamespace(org_id="domain", adp_org_id="tenant")
-    state = (binding, "run#1", "record", SimpleNamespace(expires_at=future), operation, lease)
+    record = ExecutionRecord("run", "tenant", 1, ExecutionStatus.ACTIVE, 1, 1, workload_binding="pod")
+    state = (binding, "run#1", record, SimpleNamespace(expires_at=future), operation, lease)
     credential = SimpleNamespace(
         id="credential", user_id="canonical-human", org_id="tenant", credential_type="aws_role", secret_arn="secret-arn", scopes={}
     )
@@ -195,6 +199,54 @@ def test_target_comes_from_sealed_request(monkeypatch):
 async def test_preflight_checks_current_connection_without_sts(context):
     answer = await broker.provider_session(None, context.body, context.db, context.sm, preflight_only=True)
     assert answer["admits_work"] is True and answer["operation_id"] == "operation" and context.changed.sts == 0
+
+
+@pytest.mark.parametrize("preflight_only", [True, False])
+@pytest.mark.parametrize("change", ["rotation", "expired-overlap", "superseded-attempt", "cancelled", "rebound-pod"])
+async def test_inflight_provider_check_honors_authenticated_credential_overlap(context, monkeypatch, preflight_only, change):
+    original = context.state[2]
+    calls = 0
+
+    async def current(request, operation_id):
+        nonlocal calls
+        calls += 1
+        record = original
+        if calls > 1:
+            record = replace(original, current_credential_epoch=2, epoch_overlap_expires_at=datetime.now(UTC) + timedelta(seconds=30))
+            if change == "expired-overlap":
+                record = replace(record, epoch_overlap_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+            elif change == "superseded-attempt":
+                record = replace(record, current_attempt=2)
+            elif change == "cancelled":
+                record = replace(record, status=ExecutionStatus.CANCELLED)
+            elif change == "rebound-pod":
+                record = replace(record, workload_binding="another-pod")
+        # Every refresh reauthenticates the same in-flight request credential.
+        # Rotation overlap is allowed by the shared authority; expiry, revocation,
+        # attempt supersession and workload drift still fail before comparison.
+        try:
+            evaluate_execution_state(
+                record=record,
+                invocation_id="run",
+                attempt=1,
+                tenant_id="tenant",
+                credential_epoch=1,
+                now=datetime.now(UTC),
+                presented_workload_binding="pod",
+            )
+        except ExecutionStateError as error:
+            raise HTTPException(403, "credential refused") from error
+        return (*context.state[:2], record, *context.state[3:])
+
+    monkeypatch.setattr(broker, "current", current)
+    if change != "rotation":
+        with pytest.raises(HTTPException):
+            await broker.provider_session(None, context.body, context.db, context.sm, preflight_only=preflight_only)
+    else:
+        answer = await broker.provider_session(None, context.body, context.db, context.sm, preflight_only=preflight_only)
+        assert answer["operation_id"] == "operation"
+        assert context.changed.sts == (0 if preflight_only else 1)
+    assert calls > 1
 
 
 def test_maintained_sts_preserves_sdk_identity_and_applies_narrow_policy(monkeypatch):

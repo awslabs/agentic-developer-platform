@@ -80,6 +80,19 @@ variables {
 # ---------------------------------------------------------------------------
 # ENDPOINT EXPOSURE
 # ---------------------------------------------------------------------------
+run "security_group_descriptions_use_the_ec2_character_set" {
+  command = plan
+  assert {
+    condition = alltrue([for description in [
+      aws_security_group.cluster.description,
+      aws_security_group.private_sts[0].description,
+      aws_vpc_security_group_egress_rule.cluster_all.description,
+      aws_vpc_security_group_ingress_rule.private_sts_nodes[0].description,
+    ] : can(regex("^[a-zA-Z0-9. _:/()#,@\\[\\]+=&;{}!$*-]{1,255}$", description))])
+    error_message = "EC2 security group and rule descriptions reject apostrophes and non-ASCII characters even when a mock provider accepts them."
+  }
+}
+
 run "the_api_endpoint_is_private_and_not_public_by_default" {
   command = plan
 

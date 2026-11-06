@@ -96,11 +96,16 @@ class _Identity:
         self.tenant_id = tenant_id
         self.user_kind = user_kind
         self.user_id = user_id
+        self.identity_proven = user_kind == "human"
 
 
 def _payload(*, repo=REPO, installation=INSTALLATION) -> dict:
     """A webhook payload, as it looks AFTER HMAC signature verification."""
-    return {"repository": {"full_name": repo}, "installation": {"id": installation}}
+    return {
+        "repository": {"full_name": repo},
+        "installation": {"id": installation},
+        "sender": {"id": 56, "type": "User", "login": "alice"},
+    }
 
 
 def _job_context(*, tenant=TENANT, repo=REPO, installation=INSTALLATION) -> dict:

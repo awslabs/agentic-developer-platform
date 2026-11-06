@@ -2,6 +2,10 @@ version: 0.2
 # The production helper checks source identity, reuses existing immutable artifacts,
 # preserves image selfchecks and verifies the published digest. No post-build push.
 phases:
+  install:
+    runtime-versions:
+      python: 3.12
   build:
     commands:
+      - python3 -m pip install uv==0.13.5
       - bash platform/scripts/publish-shared-image.sh adp-gateway

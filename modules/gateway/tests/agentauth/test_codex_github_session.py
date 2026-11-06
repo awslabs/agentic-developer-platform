@@ -159,3 +159,29 @@ def test_large_model_receipt_is_preserved_and_replayed_without_truncation(admitt
     receipt = operation(store, record, settled)
     assert receipt == {"status": "confirmed", "result": result}
     assert operation(store, record, request) == receipt
+
+
+def test_operations_story_freezes_actions_capabilities_only_with_feature_flag(admitted):
+    store, record, grant, env, file = admitted
+    store.client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "EXEC#github-run"}},
+        UpdateExpression="SET persona = :persona",
+        ExpressionAttributeValues={":persona": {"S": "agent-codex-operations"}},
+    )
+    file.write_text(json.dumps({"schemaVersion": 1, "snapshots": [snapshot("operations-story")]}))
+    with pytest.raises(ValueError, match="unsupported"):
+        frozen_context(store, record, grant, env, now=NOW)
+    env["ADP_ENGINE_OPERATIONS_EXECUTOR"] = "true"
+    result = frozen_context(store, record, grant, env, now=NOW)
+    assert result["persona"] == "agent-codex-operations"
+    assert result["capabilities"] == [
+        "artifacts.publish",
+        "repository.read",
+        "actions.read",
+        "actions.write",
+        "repository.write",
+        "change.create",
+        "change.merge",
+    ]
+    assert json.loads(result["snapshot"]["definition"])["key"] == "gpt-operations-story"

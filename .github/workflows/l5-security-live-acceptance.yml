@@ -1,0 +1,84 @@
+name: L5 Security Live Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: One bounded Security live scenario
+        required: true
+        type: choice
+        options: [setup, assessments, recovery, context]
+      environment:
+        description: Existing protected target
+        required: true
+        type: choice
+        options: [dev, test]
+      reviewed_source_sha:
+        description: Reviewed main commit used to run the selector
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: l5-security-live-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 40
+    environment: adp-deploy-${{ inputs.environment }}
+    steps:
+      - name: Verify existing environment protection before using private targets
+        env:
+          GH_TOKEN: ${{ secrets.ADP_L5_ENV_AUDIT_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_ENV: adp-deploy-${{ inputs.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          gh api "repos/$GH_REPO/environments/$TARGET_ENV" |
+            jq -e '.deployment_branch_policy.protected_branches == true or
+              ([.protection_rules[]?.type] | index("branch_policy") != null)' >/dev/null
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.reviewed_source_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify reviewed main history
+        env:
+          SOURCE_SHA: ${{ inputs.reviewed_source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install selector dependencies without deploying a service
+        shell: bash
+        run: |
+          python -m pip install -e 'modules/L5-services[dev]' -e 'modules/gateway[dev]' 'playwright==1.58.0'
+          python -m playwright install --with-deps chromium
+      - name: Run bounded authorized selector without printing private evidence
+        env:
+          ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON: ${{ secrets.ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON }}
+          PRIVATE_FIXTURE: ${{ secrets.ADP_L5_SECURITY_LIVE_CONFIG_PATH }}
+          PRIVATE_EVIDENCE_DIR: ${{ vars.ADP_L5_SECURITY_PRIVATE_EVIDENCE_DIR }}
+          SCENARIO: ${{ inputs.scenario }}
+          SOURCE_SHA: ${{ inputs.reviewed_source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_FIXTURE"
+          test -n "$PRIVATE_EVIDENCE_DIR"
+          test -n "$ADP_L5_SECURITY_LIVE_CREDENTIALS_JSON"
+          python modules/L5-services/tests/live/run_security_live.py \
+            "$SCENARIO" "$SOURCE_SHA" "$PRIVATE_FIXTURE" "$PRIVATE_EVIDENCE_DIR"

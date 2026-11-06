@@ -1,0 +1,84 @@
+name: L5 Services CI
+
+on:
+  pull_request:
+    branches: [main]
+    # Delivery evaluations and repository repairs require this check even when
+    # their implementation changes files outside the optional planning map.
+    # Keep this unprivileged offline check on every PR; it never deploys.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: L5 contract and module tests
+    runs-on: arc-runner-org
+    # The nested offline release selector has its own 25-minute bound; leave
+    # room for Terraform setup and the remaining module tests. Under runner
+    # load the old 25-minute job limit cancelled passing suites at 98-99%.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install offline verification dependencies
+        run: python -m pip install 'uv==0.13.5' 'pytest==9.0.3' 'jsonschema>=4,<5' 'openapi-spec-validator>=0.7,<0.8' 'PyYAML>=6,<7'
+      - name: Verify the versioned L5 specification
+        run: python docs/l5-services/contracts/v1/validate.py
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+          terraform_version: 1.14.0
+      - name: Validate independent roots and least-privilege policies without AWS
+        run: |
+          export TF_PLUGIN_CACHE_DIR="$RUNNER_TEMP/l5-terraform-providers"
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          terraform fmt -check -recursive modules/L5-services/infra
+          for root in modules/L5-services/infra/*/ modules/L5-services/infra/modules/*/; do
+            [[ -f "${root}main.tf" ]] || continue
+            terraform -chdir="$root" init -backend=false -input=false
+            terraform -chdir="$root" validate -no-color
+            terraform -chdir="$root" test -no-color
+          done
+      # SA02 introduces the package; subsequent stories maintain its dev extra
+      # and these offline suites. Provider/queue acceptance belongs to SA16's
+      # protected live workflow, never this unprivileged PR check.
+      - name: Install the module and mounted gateway test dependencies
+        shell: bash
+        run: |
+          if [[ -f modules/L5-services/pyproject.toml ]]; then
+            python -m pip install -e 'modules/L5-services[dev]' -e 'modules/gateway[dev]' -e 'libs/python/adp-common[l5-consumers]'
+          fi
+      # These explicitly selected unit tests use fakes only. Keep the broader
+      # live directory excluded below; no live runner or browser is invoked.
+      - name: Run offline headless configuration regressions
+        shell: bash
+        env:
+          PYTHONPATH: modules/L5-services/src:modules/L5-services/tests/live
+          AWS_EC2_METADATA_DISABLED: 'true'
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: |
+          python -m pytest -q \
+            modules/L5-services/tests/live/test_security_headless.py \
+            modules/L5-services/tests/live/test_l5_configuration_headless.py \
+            modules/L5-services/tests/live/test_scenarios.py
+      - name: Run implemented offline module tests
+        shell: bash
+        env:
+          AWS_EC2_METADATA_DISABLED: 'true'
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: |
+          if [[ -d modules/L5-services/tests ]]; then
+            python -m pytest modules/L5-services/tests \
+              --ignore=modules/L5-services/tests/live \
+              --ignore=modules/L5-services/tests/e2e \
+              -m 'not live' -q -n 2 --dist loadfile --durations=20
+          fi

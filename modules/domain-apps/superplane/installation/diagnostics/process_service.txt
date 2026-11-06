@@ -1,0 +1,12 @@
+import json;from pathlib import Path;rows=[]
+for p in Path("/proc").glob("[0-9]*/comm"):
+ try:
+  name=p.read_text().strip()
+  if name not in ("terraform","aws","kubectl"):continue
+  args=(p.parent/"cmdline").read_bytes().split(bytes([0]))
+  safe=[]
+  for i,a in enumerate(args):
+   if a in (b"sts",b"eks",b"ec2",b"s3",b"s3api"):safe=[a.decode(),args[i+1].decode()];break
+  rows.append({"pid":p.parent.name,"process":name,"service_operation":safe})
+ except OSError:pass
+print(json.dumps(rows))

@@ -130,7 +130,9 @@ class ApprovalEnforcementMiddleware:
                 return Verdict.NOT_APPROVED
             if ctx.auth_source == "iam" and ctx.agent_registry_id:
                 return Verdict.APPROVED
-            if ctx.account_type == "service" and ctx.canonical_service_principal_id:
+            if ctx.account_type == "service" and (
+                ctx.canonical_service_principal_id or (ctx.auth_source == "jwt" and ctx.canonical_alias_source == "cognito_m2m")
+            ):
                 return await self._db_has_org(ctx.user_id, context=ctx)
             return Verdict.NOT_APPROVED
         return await self._db_has_org(ctx.user_id, context=ctx)
@@ -149,6 +151,22 @@ class ApprovalEnforcementMiddleware:
                 from src.shared.models.persona_models import ServicePrincipal
 
                 if context is not None and context.account_type == "service":
+                    if context.auth_source == "jwt" and context.canonical_alias_source == "cognito_m2m":
+                        # Proxy middleware precedes route-level identity
+                        # enrichment. Resolve the exact authenticated alias here
+                        # and observe revocation on every paid request.
+                        from src.admin.persona_models.service import resolve_by_exact_source
+
+                        canonical_id, _ = await resolve_by_exact_source(
+                            session,
+                            alias_source="cognito_m2m",
+                            alias_id=context.user_id,
+                            org_id=context.org_id,
+                        )
+                        if not canonical_id or (context.canonical_service_principal_id and context.canonical_service_principal_id != canonical_id):
+                            return Verdict.NOT_APPROVED
+                        context.canonical_service_principal_id = canonical_id
+                        return Verdict.APPROVED
                     principal = await session.scalar(
                         select(ServicePrincipal.canonical_service_principal_id).where(
                             ServicePrincipal.canonical_service_principal_id == context.canonical_service_principal_id,
@@ -168,9 +186,14 @@ class ApprovalEnforcementMiddleware:
                 selected = context.org_id.strip() if context else ""
                 if not selected and len(tenant_ids) == 1:
                     selected = next(iter(tenant_ids))
-                    if context is not None:
-                        context.org_id = selected
                 approved = bool(selected and selected in tenant_ids)
+            if approved and context is not None and context.account_type == "human":
+                # Human spend belongs to the workspace whose current membership
+                # was just verified. TokenContext's attribution default only runs
+                # at construction, before an absent claim is resolved here.
+                # Machine attribution is handled by the separate branches above.
+                context.org_id = selected
+                context.attributed_org_id = selected
             return Verdict.APPROVED if approved else Verdict.NOT_APPROVED
         except Exception as e:
             if get_settings().approval_fail_open:

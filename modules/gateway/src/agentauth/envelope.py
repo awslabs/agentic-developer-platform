@@ -61,6 +61,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -215,6 +216,7 @@ class ControlEnvelope:
     authority_reference_id: str | None = None
     authority_kind: str = "delegated_grant"
     chain_id: str | None = None
+    queued_grant_ref: str | None = None
 
 
 def _b64e(raw: bytes) -> str:
@@ -261,6 +263,7 @@ def sign_envelope(
     authority_reference_id: str | None = None,
     audience: str = ENVELOPE_AUDIENCE,
     chain_id: str | None = None,
+    queued_grant_ref: str | None = None,
     ttl_seconds: int = MAX_ENVELOPE_TTL_SECONDS,
     now: datetime | None = None,
     env: dict[str, str] | None = None,
@@ -279,6 +282,13 @@ def sign_envelope(
             raise EnvelopeError("delegated authority requires a grant and revocation epoch")
     else:
         raise EnvelopeError("unknown authority kind")
+    if queued_grant_ref is not None and (
+        authority_kind != "human_session"
+        or action != "steer"
+        or not isinstance(queued_grant_ref, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", queued_grant_ref)
+    ):
+        raise EnvelopeError("invalid queued command grant")
     source = env if env is not None else os.environ
     key_id = source.get(SIGNING_KEY_ID_ENV, "")
     if not key_id:
@@ -319,6 +329,8 @@ def sign_envelope(
         payload["authority_reference_id"] = authority_reference_id
     if chain_id:
         payload["chain_id"] = chain_id
+    if queued_grant_ref is not None:
+        payload["queued_grant_ref"] = queued_grant_ref
 
     body = _canonical(payload)
     signature = _signing_key(env).sign(ENVELOPE_VERSION.encode() + b"." + body)
@@ -397,6 +409,15 @@ def verify_envelope(
     else:
         raise EnvelopeError("invalid envelope")
 
+    queued_grant_ref = payload.get("queued_grant_ref")
+    if queued_grant_ref is not None and (
+        authority_kind != "human_session"
+        or payload["action"] != "steer"
+        or not isinstance(queued_grant_ref, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", queued_grant_ref)
+    ):
+        raise EnvelopeError("invalid queued command grant")
+
     # Algorithm and key selection happen BEFORE signature verification, and the
     # algorithm is checked against the allowlist rather than used to dispatch.
     if payload["alg"] not in ALLOWED_ALGORITHMS:
@@ -471,6 +492,7 @@ def verify_envelope(
         authority_reference_id=str(authority_ref) if authority_ref else None,
         authority_kind=authority_kind,
         chain_id=str(chain_id) if chain_id else None,
+        queued_grant_ref=queued_grant_ref,
     )
 
 

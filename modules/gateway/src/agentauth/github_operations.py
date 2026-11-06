@@ -109,6 +109,7 @@ __all__ = [
     "GitHubOperation",
     "OperationAssignment",
     "OperationRefusedError",
+    "RepairScopeMissingError",
     "assigned_branch",
     "escalating_paths",
     "idempotency_key",
@@ -150,11 +151,21 @@ _OPERATION_KEY_VERSION = "adpgho1"
 class OperationRefusedError(Exception):
     """A mediated operation could not be authorized or could not be represented.
 
-    One exception type, and the message never distinguishes "unknown assignment"
-    from "not permitted for this action" — the same rule
+    Ordinary refusals never disclose "unknown assignment" versus "not permitted
+    for this action" to callers — the same rule
     :class:`~src.agentauth.run_credential.CredentialError` follows, for the same
     reason: an authorizer that reports *which* check failed tells a caller whether
     its asserted input at least had a plausible shape, and lets it probe from there.
+    A typed own-assignment prerequisite may expose fixed guidance only after the
+    route separately rechecks current authorization.
+    """
+
+
+class RepairScopeMissingError(OperationRefusedError):
+    """No repair paths or repository scope were accepted for this assignment.
+
+    Only disclose the static diagnostic after reauthorizing the caller's own
+    operation. This type grants no authority and carries no provider details.
     """
 
 
@@ -184,6 +195,12 @@ class GitHubOperation(StrEnum):
     # bounded archive, and the two deserve distinct authorization and size
     # statements. Read-only — it mints no write permission and cannot alter a ref.
     FETCH_REPOSITORY_ARCHIVE = "fetch_repository_archive"
+    # Incorporate only the assigned repository's default branch into its work
+    # branch. This is not a PR merge or a caller-selected source/destination.
+    RECONCILE_WORK_BRANCH = "reconcile_work_branch"
+    VALIDATE_REPAIR_EDIT = "validate_repair_edit"
+    READ_REPAIR_TASKS = "read_repair_tasks"
+    RECORD_REPAIR_TASK = "record_repair_task"
     # Publish a commit to the exact assigned working branch. Never to the default
     # branch and never to another branch — the branch is derived, not requested.
     PUBLISH_COMMIT = "publish_commit"
@@ -211,6 +228,10 @@ class GitHubOperation(StrEnum):
 _OPERATION_ACTIONS: dict[GitHubOperation, Action | None] = {
     GitHubOperation.READ_REPOSITORY: None,
     GitHubOperation.FETCH_REPOSITORY_ARCHIVE: None,
+    GitHubOperation.RECONCILE_WORK_BRANCH: None,
+    GitHubOperation.VALIDATE_REPAIR_EDIT: None,
+    GitHubOperation.READ_REPAIR_TASKS: None,
+    GitHubOperation.RECORD_REPAIR_TASK: None,
     GitHubOperation.PUBLISH_COMMIT: None,
     GitHubOperation.UPSERT_PULL_REQUEST: None,
     GitHubOperation.PUBLISH_REVIEW: None,
@@ -223,6 +244,9 @@ _OPERATION_ACTIONS: dict[GitHubOperation, Action | None] = {
 MUTATING_OPERATIONS: frozenset[GitHubOperation] = frozenset(
     {
         GitHubOperation.PUBLISH_COMMIT,
+        GitHubOperation.RECONCILE_WORK_BRANCH,
+        GitHubOperation.VALIDATE_REPAIR_EDIT,
+        GitHubOperation.RECORD_REPAIR_TASK,
         GitHubOperation.UPSERT_PULL_REQUEST,
         GitHubOperation.PUBLISH_REVIEW,
         GitHubOperation.MERGE_PULL_REQUEST,
@@ -249,6 +273,7 @@ MUTATING_OPERATIONS: frozenset[GitHubOperation] = frozenset(
 _ACTION_OPERATIONS: dict[Action, frozenset[GitHubOperation]] = {
     Action.DEVELOP: frozenset(
         {
+            GitHubOperation.RECONCILE_WORK_BRANCH,
             GitHubOperation.READ_REPOSITORY,
             GitHubOperation.FETCH_REPOSITORY_ARCHIVE,
             GitHubOperation.PUBLISH_COMMIT,
@@ -258,6 +283,7 @@ _ACTION_OPERATIONS: dict[Action, frozenset[GitHubOperation]] = {
     ),
     Action.REPAIR: frozenset(
         {
+            GitHubOperation.RECONCILE_WORK_BRANCH,
             GitHubOperation.READ_REPOSITORY,
             GitHubOperation.FETCH_REPOSITORY_ARCHIVE,
             GitHubOperation.PUBLISH_COMMIT,
@@ -271,6 +297,18 @@ _ACTION_OPERATIONS: dict[Action, frozenset[GitHubOperation]] = {
     # that reviewer back to a clone, which needs the credential this path removes.
     Action.REVIEW: frozenset({GitHubOperation.READ_REPOSITORY, GitHubOperation.FETCH_REPOSITORY_ARCHIVE, GitHubOperation.PUBLISH_REVIEW}),
     Action.EVALUATE: frozenset({GitHubOperation.READ_REPOSITORY, GitHubOperation.FETCH_REPOSITORY_ARCHIVE}),
+    Action.OPERATE: frozenset(
+        {
+            GitHubOperation.RECONCILE_WORK_BRANCH,
+            GitHubOperation.READ_REPOSITORY,
+            GitHubOperation.FETCH_REPOSITORY_ARCHIVE,
+            GitHubOperation.VALIDATE_REPAIR_EDIT,
+            GitHubOperation.READ_REPAIR_TASKS,
+            GitHubOperation.RECORD_REPAIR_TASK,
+            GitHubOperation.PUBLISH_COMMIT,
+            GitHubOperation.UPSERT_PULL_REQUEST,
+        }
+    ),
     Action.MERGE: frozenset({GitHubOperation.READ_REPOSITORY, GitHubOperation.FETCH_REPOSITORY_ARCHIVE}),
     Action.DEPLOY: frozenset({GitHubOperation.READ_REPOSITORY, GitHubOperation.FETCH_REPOSITORY_ARCHIVE}),
 }

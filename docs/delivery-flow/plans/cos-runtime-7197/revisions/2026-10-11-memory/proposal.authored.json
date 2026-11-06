@@ -1,0 +1,812 @@
+{
+  "edges": [
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy",
+      "to_address": "cos-runtime-7197/epic-7197/targets/ec2-target"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-qualification"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-readiness"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/targets/targets-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-host",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-host",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew",
+      "to_address": "cos-runtime-7197/epic-7197/targets/ec2-target"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/crew-checkpoints",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/crew-checkpoints",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/crew-checkpoints",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/crew-checkpoints",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/crew-checkpoints",
+      "to_address": "cos-runtime-7197/epic-7197/targets/ec2-target"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/gateway-user-memory",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge",
+      "to_address": "cos-runtime-7197/epic-7197/targets/ec2-target"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-qualification"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-readiness"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/crew-checkpoints"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/qualification/foundation-receipt",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-readiness"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/qualification/live-readiness",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-qualification"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/architecture-contracts",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/crew-checkpoints"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/architecture-contracts",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/gateway-user-memory"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/architecture-contracts",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/architecture-contracts",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/latency-driver"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/architecture-contracts",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/architecture-contracts",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/target-inventory"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/architecture-contracts",
+      "to_address": "cos-runtime-7197/epic-7197/targets/host-inventory"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/claude-code-executor",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/claude-code-executor",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/run-binding"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/deployment-contract",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-qualification"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/deployment-contract",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/isolation-driver",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/latency-driver",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/lifecycle-driver",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/claude-code-executor"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/run-binding",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/proxy-switch"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/run-binding",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/run-binding",
+      "to_address": "cos-runtime-7197/epic-7197/targets/host-identity"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/foundation-receipt"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-qualification"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-readiness"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/streaming-driver",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/target-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/target-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/target-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/crew-checkpoints"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/target-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/target-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/run-binding"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/target-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/target-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/targets/ec2-target"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/runtime/target-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/targets/targets-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/ec2-target",
+      "to_address": "cos-runtime-7197/epic-7197/targets/targets-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-identity",
+      "to_address": "cos-runtime-7197/epic-7197/targets/ec2-target"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-identity",
+      "to_address": "cos-runtime-7197/epic-7197/targets/targets-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-image-network",
+      "to_address": "cos-runtime-7197/epic-7197/targets/host-lifecycle"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-image-network",
+      "to_address": "cos-runtime-7197/epic-7197/targets/targets-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/targets/host-image-network"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/targets/host-lifecycle"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-inventory",
+      "to_address": "cos-runtime-7197/epic-7197/targets/targets-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-lifecycle",
+      "to_address": "cos-runtime-7197/epic-7197/targets/ec2-target"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-lifecycle",
+      "to_address": "cos-runtime-7197/epic-7197/targets/host-identity"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-lifecycle",
+      "to_address": "cos-runtime-7197/epic-7197/targets/host-policy-cost"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-lifecycle",
+      "to_address": "cos-runtime-7197/epic-7197/targets/targets-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-policy-cost",
+      "to_address": "cos-runtime-7197/epic-7197/targets/ec2-target"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/host-policy-cost",
+      "to_address": "cos-runtime-7197/epic-7197/targets/targets-evidence"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/targets-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-qualification"
+    },
+    {
+      "from_address": "cos-runtime-7197/epic-7197/targets/targets-evidence",
+      "to_address": "cos-runtime-7197/epic-7197/qualification/live-readiness"
+    }
+  ],
+  "nodes": [
+    {
+      "kind": "story",
+      "title": "[COS-S01] Add a crew-pod workload class for persistent chat sessions (admission, egress, narrow IRSA)",
+      "address": "cos-runtime-7197/epic-7197/runtime/crew-pod-class",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7198",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Mint and revoke human-rooted run bindings for long-lived crew pods",
+      "address": "cos-runtime-7197/epic-7197/runtime/run-binding",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7199",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Package the sigv4-proxy into the crew pod and add the ADP_EXECUTOR switch",
+      "address": "cos-runtime-7197/epic-7197/runtime/proxy-switch",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7200",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Run Claude Code as the persistent session turn executor behind the crew-pod switch",
+      "address": "cos-runtime-7197/epic-7197/runtime/claude-code-executor",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7208",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "[COS-S05] Package Kiro Crew into the crew-pod image with rendered config and headless start",
+      "address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-image",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7201",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "[COS-S06] Bridge ADP turns into the Kiro Crew session and consolidate memory on stop",
+      "address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-bridge",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7209",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "[COS-S07] Provide shared AgentCore user memory through the ADP gateway",
+      "address": "cos-runtime-7197/epic-7197/kirocrew/gateway-user-memory",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7210",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "[COS-S08] Back up and restore Crew through verified S3 archives and checkpoint metadata",
+      "address": "cos-runtime-7197/epic-7197/kirocrew/crew-checkpoints",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7202",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "[COS-S09] Lease one crew executor per user across all persistent sessions",
+      "address": "cos-runtime-7197/epic-7197/kirocrew/per-user-lease",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7203",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Open the crew pod's dashboard to the gateway only and mint Kiro Crew login links on request",
+      "address": "cos-runtime-7197/epic-7197/dashboard/dashboard-custody",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7204",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Provision the Crew dashboard hostname and edge routing to the gateway",
+      "address": "cos-runtime-7197/epic-7197/dashboard/dashboard-host",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7205",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Add the gateway crew-proxy: ADP identity gate, Kiro Crew handoff, streaming reverse proxy",
+      "address": "cos-runtime-7197/epic-7197/dashboard/crew-proxy",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7206",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "[COS-S13] Add \"Open my Crew\" to the ADP UI with on-demand pod wake and readiness",
+      "address": "cos-runtime-7197/epic-7197/dashboard/open-my-crew",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7207",
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "[COS-EV1] Repository evaluation — runtime contracts, inventory and foundation drivers",
+      "address": "cos-runtime-7197/epic-7197/runtime/runtime-evidence",
+      "issue_ref": "7214",
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "[COS-EV2] Repository evaluation — gateway memory, Crew checkpoints and owner sessions",
+      "address": "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence",
+      "issue_ref": "7215",
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "[COS-EV3] Repository evaluation — private Crew dashboard and EKS access",
+      "address": "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence",
+      "issue_ref": "7216",
+      "evaluation": null
+    },
+    {
+      "kind": "gate",
+      "title": "Pin deployed gateway/AgentCore, backup schema/S3, EKS and EC2 revisions; authorize bounded live target/fixtures/budget/cleanup after foundation receipt; gate does not deploy",
+      "address": "cos-runtime-7197/epic-7197/qualification/live-readiness",
+      "issue_ref": null,
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "Live EP-01–EP-06: gateway user memory, verified checkpoints and managed EC2; human acceptance",
+      "address": "cos-runtime-7197/epic-7197/qualification/live-qualification",
+      "issue_ref": "7217",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "[COS-S14] Crew target abstraction and executor inventory: target_kind on leases, crew_executors table, resolver",
+      "address": "cos-runtime-7197/epic-7197/runtime/target-inventory",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7221",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "[COS-S15] Install and integrate the EC2 assistant on the managed Dev Box service",
+      "address": "cos-runtime-7197/epic-7197/targets/ec2-target",
+      "executor": {
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer",
+        "schema_version": 1
+      },
+      "issue_ref": "7222",
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "[COS-EV4] Repository evaluation — Dev Box service and EC2 assistant installation",
+      "address": "cos-runtime-7197/epic-7197/targets/targets-evidence",
+      "issue_ref": "7223",
+      "evaluation": null
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/runtime/architecture-contracts",
+      "kind": "story",
+      "title": "Reconcile consolidated ADP Assistant / Chief-of-Staff design and delivery plans",
+      "issue_ref": "6930",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/runtime/deployment-contract",
+      "kind": "story",
+      "title": "[COS-C01] Engine deployment contract for chat-agent-deploy.yml, D1 manifest entries and crew-pod verification adapter",
+      "issue_ref": "7283",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/runtime/streaming-driver",
+      "kind": "story",
+      "title": "Implement E43/E44 assistant stream and source drivers in the EC2 harness",
+      "issue_ref": "7172",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/runtime/isolation-driver",
+      "kind": "story",
+      "title": "Implement E45 two-user/two-tenant sandbox isolation driver in the EC2 harness",
+      "issue_ref": "7173",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/runtime/lifecycle-driver",
+      "kind": "story",
+      "title": "Implement E46/E47 assistant session lifecycle and fault drivers in the EC2 harness",
+      "issue_ref": "7174",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/runtime/latency-driver",
+      "kind": "story",
+      "title": "Implement E49 assistant latency and cost protocol driver in the EC2 harness",
+      "issue_ref": "7175",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/targets/host-inventory",
+      "kind": "story",
+      "title": "[COS-DB01] Define owner-scoped Dev Box records, lifecycle API and admission for assistant hosts",
+      "issue_ref": "7368",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/targets/host-image-network",
+      "kind": "story",
+      "title": "[COS-DB02] Build and deploy the versioned private EC2 host foundation for the assistant",
+      "issue_ref": "7369",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/targets/host-lifecycle",
+      "kind": "story",
+      "title": "[COS-DB03] Reconcile durable EC2 provisioning, stop/start, replacement and release for assistant hosts",
+      "issue_ref": "7370",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/targets/host-identity",
+      "kind": "story",
+      "title": "[COS-DB04] Bind EC2 assistant-host identity to its owner and revoke retired machine generations",
+      "issue_ref": "7371",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/targets/host-policy-cost",
+      "kind": "story",
+      "title": "[COS-DB05] Enforce EC2 assistant-host quotas, idle shutdown and attributed infrastructure costs",
+      "issue_ref": "7372",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "cos-runtime-7197/epic-7197/qualification/foundation-receipt",
+      "kind": "gate",
+      "title": "Verify existing foundation #6937 acceptance and #6935 provider resolution at compatible revision; consume receipts only, never dispatch duplicate qualification"
+    }
+  ],
+  "title": "Chief-of-Staff runtime: gateway memory, verified Crew recovery and managed hosts",
+  "org_id": "aws-e",
+  "flow_slug": "cos-runtime-7197",
+  "intent_ref": "7197",
+  "description": "Inert runtime revision: gateway AgentCore user memory; native Crew on EBS with direct S3 archives and checkpoint metadata. Reuse completed foundation work; #6937 executes only in its original flow. #6930 owns unresolved contracts and broader product decomposition. Proposed code bounds grant no cloud or live-operation authority.",
+  "epic_metadata": [
+    {
+      "epic_ref": "epic-7197",
+      "title": "Chief of Staff runtime and recovery slice",
+      "description": "Canonical #7197; remaining broader product decomposition stays #6930. Runtime slice alone cannot close the product epic."
+    }
+  ],
+  "spec_revision": "825583373982de3e370f121544c4a18026454077",
+  "wave_metadata": [
+    {
+      "epic_ref": "epic-7197",
+      "wave_ref": "runtime",
+      "title": "Contracts, runtime and foundation-driver preparation",
+      "description": "#6930 contracts and #7221 inventory precede consumers. Existing runtime chain plus #7283 and #7172–#7175; #7214 repository gate. Foundation implementation remains reused."
+    },
+    {
+      "epic_ref": "epic-7197",
+      "wave_ref": "kirocrew",
+      "title": "Gateway user memory and native Crew recovery",
+      "description": "#7210 can progress independently after #6930/#6932. #7201 native image → #7202 checkpoints/metadata → #7209 bridge → #7203 owner sessions. #7215 repository gate."
+    },
+    {
+      "epic_ref": "epic-7197",
+      "wave_ref": "dashboard",
+      "title": "Private native Crew dashboard and EKS access",
+      "description": "#7204/#7205 custody/edge, #7206 proxy and #7207 truthful restore/sync UI; #7216 repository gate."
+    },
+    {
+      "epic_ref": "epic-7197",
+      "wave_ref": "targets",
+      "title": "Shared managed host service and EC2 integration",
+      "description": "#7368–#7372 shared host branch can progress after prerequisites; #7222 consumes runtime/checkpoint/dashboard contracts. #7223 integrated repository gate. Inventory #7221 is upstream in runtime wave."
+    },
+    {
+      "epic_ref": "epic-7197",
+      "wave_ref": "qualification",
+      "title": "Foundation evidence consumption and live qualification",
+      "description": "Retain #6937 execution in existing foundation flow; receipt gate verifies accepted evidence and #6935 provider resolution. Live-readiness binds actual target, revisions, budget and cleanup before human-accepted #7217 EP-01–06. No operate authority added."
+    }
+  ],
+  "design_history": null,
+  "execution_policy": null,
+  "proposed_execution_policy": {
+    "limits": {
+      "max_spend_usd": "1500",
+      "max_attempts_per_node": 3,
+      "max_concurrent_actions": 2,
+      "max_wall_clock_seconds": 604800
+    },
+    "org_id": "aws-e",
+    "team_ids": [],
+    "policy_id": null,
+    "expires_at": "2026-10-22T11:30:42Z",
+    "human_gates": [],
+    "policy_hash": null,
+    "principal_id": null,
+    "repository_ids": [
+      "aws-e/adp"
+    ],
+    "schema_version": 1,
+    "allowed_actions": [
+      "develop",
+      "review",
+      "repair",
+      "merge"
+    ],
+    "evaluation_acceptance": {
+      "cos-runtime-7197/epic-7197/runtime/runtime-evidence": "human",
+      "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence": "human",
+      "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence": "human",
+      "cos-runtime-7197/epic-7197/qualification/live-qualification": "human",
+      "cos-runtime-7197/epic-7197/targets/targets-evidence": "human"
+    },
+    "environment_connection_ids": []
+  }
+}

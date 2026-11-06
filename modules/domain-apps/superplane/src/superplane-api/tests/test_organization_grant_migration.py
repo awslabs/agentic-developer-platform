@@ -62,7 +62,7 @@ async def test_organization_revision_upgrade_retains_revocations_and_audit(
     async with engine.connect() as connection:
         assert (
             await connection.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "044_organization_grant_changes"
+        ).scalar_one() == "058_interrupted_planning"
         rows = (
             await connection.execute(
                 text(
@@ -116,7 +116,7 @@ async def test_organization_revision_upgrade_retains_revocations_and_audit(
     async with engine.connect() as connection:
         assert (
             await connection.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "044_organization_grant_changes"
+        ).scalar_one() == "058_interrupted_planning"
         assert (
             await connection.execute(
                 text("SELECT count(*) FROM organization_grant_changes")

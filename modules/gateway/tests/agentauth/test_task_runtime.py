@@ -1,8 +1,10 @@
 """Task acceptance, workload ownership and current-attempt authorization."""
 
 # ruff: noqa: F811
+import importlib.util
 import json
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +16,14 @@ from tests.tasks.test_store import NOW, _request, client, store  # noqa: F401
 
 @pytest.fixture
 def runtime(store, request):
-    request = _request(persona=getattr(request, "param", "agent-task-investigator"))
+    options = getattr(request, "param", "agent-task-investigator")
+    persona = options.get("persona", "agent-task-investigator") if isinstance(options, dict) else options
+    scope = options.get("work_scope") if isinstance(options, dict) else None
+    request = _request(
+        persona=persona, request_payload={"instructions": "investigate", "inputs": {"a": 1}, **({"product_id": scope["product_id"]} if scope else {})}
+    )
+    if scope:
+        request.immutable_input["work_scope"] = scope
     if request.persona != "agent-task-investigator":
         from src.tasks.records import task_authority_partition, task_policy_sort_key
         from src.tasks.store import _serialize
@@ -55,6 +64,52 @@ def test_bootstrap_from_accepted_task_needs_no_github(runtime):
     assert identity.task_id == body["task_id"]
     assert identity.runtime_attempt_id is None
     assert result["input"]["instructions"] == "investigate"
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_bootstrap_matches_worker_contract_and_preserves_server_scope(store, scoped):
+    from fastapi.encoders import jsonable_encoder
+
+    scope = {
+        "tenant_id": "tenant-a",
+        "product_id": str(uuid.uuid4()),
+        "project_id": str(uuid.uuid4()),
+        "relationship_revision": 1,
+        "run_id": None,
+        "flow_id": None,
+    }
+    request = _request(request_payload={"instructions": "investigate", "inputs": {"a": 1}, **({"product_id": scope["product_id"]} if scoped else {})})
+    if scoped:
+        request.immutable_input["work_scope"] = scope
+    store.accept(request)
+    service = TaskRuntime(store, env={"AGENT_RUN_CREDENTIAL_KEY": "task-runtime-test-key-01234567890123456789"}, clock=lambda: NOW)
+    pod = SimpleNamespace(uid=str(uuid.uuid4()), namespace="adp-agents")
+    body = {
+        "task_id": request.task_id,
+        "invocation_id": request.invocation_id,
+        "envelope_digest": envelope_digest(request.envelope),
+        "workload": {"pod_uid": pod.uid, "namespace": pod.namespace},
+    }
+    delivery = SimpleNamespace(require_assignment=lambda *args: None, read=lambda uid: {"body": json.dumps(request.envelope)})
+    task = service.repository.read_task(request.task_id)
+    worker_path = Path(__file__).resolve().parents[3] / "agent-factory/agent-worker-image/lib/task_protocol.py"
+    spec = importlib.util.spec_from_file_location("worker_bootstrap_contract", worker_path)
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+    result = jsonable_encoder(service.bootstrap(body=body, pod=pod, delivery=delivery))
+    assignment = SimpleNamespace(
+        task_id=task["task_id"],
+        invocation_id=task["invocation_id"],
+        generation=1,
+        persona=task["persona"],
+        input_digest=result["input"]["input_digest"],
+        artifact_refs=(),
+    )
+    assert worker.validate_bootstrap(result, assignment) == result
+    assert result["input"]["inputs"] == {"a": 1}
+    assert "work_scope" not in result["input"]
+    stored = service._grant(task["scope"]["tenant"], task["invocation_id"], 1)
+    assert stored["input"].get("work_scope") == (scope if scoped else None)
 
 
 def test_second_pod_cannot_claim_same_generation(runtime):

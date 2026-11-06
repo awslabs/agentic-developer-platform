@@ -71,6 +71,7 @@ def project_api(env, lock, docs):
             not in {
                 "SUPERPLANE_PAID_WORKER_BINDING_FILE",
                 "SUPERPLANE_LIFECYCLE_CONFIG_FILE",
+                "SUPERPLANE_RECOVERY_OBSERVATION_ROLE_ARN",
             }
         ]
         container["env"].append(
@@ -79,6 +80,15 @@ def project_api(env, lock, docs):
                 "value": "/run/paid-worker-binding/binding.json",
             }
         )
+        if env.get("lifecycle_observation"):
+            from .lifecycle_observation import role_arn
+
+            container["env"].append(
+                {
+                    "name": "SUPERPLANE_RECOVERY_OBSERVATION_ROLE_ARN",
+                    "value": role_arn(env),
+                }
+            )
         pod.setdefault("volumes", []).append(
             {"name": "paid-worker-binding", "configMap": {"name": config_name}}
         )
@@ -194,6 +204,25 @@ def contains(actual, expected):
     return actual == expected
 
 
+def projection_matches(actual, desired):
+    """Account for Kubernetes omitempty on explicit empty policy rule lists only."""
+    if (
+        isinstance(actual, dict)
+        and desired.get("kind") == "NetworkPolicy"
+        and actual.get("kind") == "NetworkPolicy"
+        and isinstance(actual.get("spec"), dict)
+    ):
+        actual = copy.deepcopy(actual)
+        for field, policy_type in (("ingress", "Ingress"), ("egress", "Egress")):
+            if (
+                desired.get("spec", {}).get(field) == []
+                and policy_type in desired["spec"].get("policyTypes", [])
+                and field not in actual["spec"]
+            ):
+                actual["spec"][field] = []
+    return contains(actual, desired)
+
+
 def installed_snapshot(installer, *, active=False):
     from .adapter_staging import secret_metadata
     from .lifecycle_foundations import snapshot
@@ -208,7 +237,7 @@ def installed_snapshot(installer, *, active=False):
         require(
             actual is not None
             and actual["metadata"].get("labels", {}).get(LABEL) == installer.owner
-            and contains(actual, desired),
+            and projection_matches(actual, desired),
             "installed native worker differs from reviewed projection",
         )
         if desired["kind"] == "ConfigMap":

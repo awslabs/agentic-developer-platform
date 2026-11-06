@@ -63,3 +63,22 @@ try {
   await new Promise(resolve => server.close(resolve));
   await rm(root, { recursive: true, force: true });
 }
+
+// Probe hashes must agree across hosts without hiding instruction/tool changes.
+const { normalizeReportProbeEnvironment } = await import('../scripts/report-probe.mjs');
+function probeFixture(shell, timezone, root) {
+  return { model: 'probe-model', tools: [{ name: 'review' }], input: [
+    { role: 'developer', content: [{ type: 'input_text', text: 'Keep <shell>zsh</shell> in persona instructions.' }] },
+    { role: 'user', content: [{ type: 'input_text', text: `<environment_context><cwd>${root}/workspace</cwd><shell>${shell}</shell><timezone>${timezone}</timezone><current_date>2026-10-30</current_date></environment_context>` }] },
+    { role: 'developer', content: [{ type: 'input_text', text: `<permissions instructions>Read-only ${root}/workspace; temporary root: \`${root.startsWith('/private/') ? '/private/tmp' : '/tmp'}\`</permissions instructions>` }] },
+  ] };
+}
+const mac = probeFixture('zsh', 'Europe/London', '/private/tmp/adp-codex-session-mac');
+const linux = probeFixture('bash', 'Etc/UTC', '/tmp/adp-codex-session-linux');
+normalizeReportProbeEnvironment(mac);
+normalizeReportProbeEnvironment(linux);
+assert.deepEqual(mac, linux);
+assert.equal(mac.input[0].content[0].text, 'Keep <shell>zsh</shell> in persona instructions.');
+assert.equal(mac.input[2].content[0].text, '<permissions instructions>Read-only /adp-report-probe/workspace; temporary root: `/tmp`</permissions instructions>');
+assert.equal(mac.model, 'probe-model');
+assert.deepEqual(mac.tools, [{ name: 'review' }]);

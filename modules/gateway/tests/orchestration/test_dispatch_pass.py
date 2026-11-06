@@ -68,6 +68,7 @@ from src.shared.models.base import Base
 from src.shared.models.organization import Organization, User
 from tests.agentauth.conftest import report_only_db as report_only_db_fixture
 from tests.agentauth.conftest import test_engine  # noqa: F401
+from tests.orchestration.legacy_plan import persist_legacy_plan
 
 report_only_db = report_only_db_fixture
 
@@ -522,6 +523,54 @@ class TestGenesisIsUnforgeable:
 # ---------------------------------------------------------------------------
 
 
+async def test_product_execution_hold_remains_patchable_by_compatibility_reader(session, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    flow, _, _ = await _ready_story(session)
+    hold = AsyncMock(return_value=True)
+    monkeypatch.setattr(dispatch_pass_module, "product_binding_pending_verification", hold)
+
+    report = await run_dispatch_pass(session, _config())
+
+    hold.assert_awaited_once_with(session, org_id=ORG_A, flow_id=flow.id)
+    assert report.dispatched == 0
+    assert report.pending == []
+    assert report.undispatchable == 1
+
+
+@pytest.mark.parametrize("accepted_product,projected_product", [("product-1", None), (None, "product-1")])
+async def test_accepted_product_holds_dispatch_before_continuation_and_preserves_legacy(session, monkeypatch, accepted_product, projected_product):
+    from unittest.mock import AsyncMock
+
+    from src.orchestration.models import OrchestrationAcceptedPlan
+
+    flow, node, decision = await _ready_story(session)
+    flow.product_id = projected_product
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=flow.org_id,
+            flow_id=flow.id,
+            version=1,
+            plan_hash="a" * 64,
+            accepted_by_decision_id=decision.id,
+            plan_document={"product_id": accepted_product} if accepted_product else {"flow_slug": flow.slug},
+        )
+    )
+    await session.flush()
+    continue_execution = AsyncMock(return_value=False)
+    monkeypatch.setattr(dispatch_pass_module, "_continue_stalled_execution", continue_execution)
+
+    report = await run_dispatch_pass(session, _config())
+
+    assert report.dispatched == (0 if accepted_product else 1)
+    assert report.undispatchable == (1 if accepted_product else 0)
+    assert report.continued == 0
+    assert len(report.pending) == (0 if accepted_product else 1)
+    assert continue_execution.await_count == (0 if accepted_product else 1)
+    assert await _state_of(session, node.id) == (NodeState.READY.value if accepted_product else NodeState.RUNNING.value)
+    assert (await session.get(OrchestrationNode, node.id)).attempts == (0 if accepted_product else 1)
+
+
 class TestSuccessfulDispatch:
     async def test_a_ready_story_node_is_dispatched_and_published(self, session):
         _flow, node, _decision = await _ready_story(session)
@@ -921,6 +970,98 @@ class TestDispatchScope:
         publish_pending(report, _config(), client=sqs)
         assert sqs.envelope()["source_ref"]["issue"] == 4196
 
+
+async def test_accepted_edited_amendment_preserves_completed_work_and_dispatches_new_work(session):
+    from src.orchestration.pending_amendments import (
+        accept_amendment,
+        assign_author_run,
+        record_replan_request,
+        register_amendment_draft,
+        resolve_authoring_request,
+        revise_amendment,
+    )
+    from src.orchestration.tick import run_tick
+    from tests.orchestration.test_pending_amendments import amended_proposal, amender, approval, base_proposal
+
+    await _make_org(session)
+    for user_id in ("cognito-sub-owner", "cognito-sub-accepter"):
+        session.add(User(id=user_id, org_id=ORG_A, team_id="team-test", email=f"{user_id}@example.com", cognito_sub=f"sub:{user_id}"))
+    compiled = await persist_legacy_plan(session, base_proposal(), approval())
+    # Flows compile paused and dispatch skips paused flows; resume it as a human would.
+    (await session.get(OrchestrationFlow, compiled.flow_id)).execution_paused = False
+    completed = await session.scalar(
+        select(OrchestrationNode).where(
+            OrchestrationNode.flow_id == compiled.flow_id,
+            OrchestrationNode.node_ref == "story-a",
+        )
+    )
+    completed.state = NodeState.PASSED.value
+    completed.attempts = 3
+
+    request = await record_replan_request(
+        session,
+        org_id=ORG_A,
+        flow_id=compiled.flow_id,
+        replan_decision_id="integrated-amendment-request",
+        requested_by="cognito-sub-owner",
+        request_text="add the adopted cleanup follow-up",
+    )
+    await assign_author_run(session, org_id=ORG_A, request_id=request.id, author_run_id="author:integrated")
+    assignment = await resolve_authoring_request(
+        session,
+        org_id=ORG_A,
+        request_id=request.id,
+        author_run_id="author:integrated",
+    )
+    draft = await register_amendment_draft(
+        session,
+        org_id=ORG_A,
+        request=assignment,
+        author_run_id="author:integrated",
+        proposal=amended_proposal(extra_gate=False),
+    )
+    edited = amended_proposal(extra_gate=False, description="reviewed cleanup placement")
+    next(node for node in edited.nodes if node.address.endswith("/story-b")).repository_identity = "alternate/repo"
+    revision = await revise_amendment(
+        session,
+        org_id=ORG_A,
+        draft_id=draft.draft_id,
+        proposal=edited,
+        revised_by="cognito-sub-owner",
+        flow_id=compiled.flow_id,
+    )
+    accepted = await accept_amendment(
+        session,
+        draft_id=revision.draft_id,
+        actor=amender(),
+        flow_id=compiled.flow_id,
+        expected_proposal_hash=revision.proposal_hash,
+        expected_base_plan_version=request.base_plan_version,
+        expected_base_plan_hash=request.base_plan_hash,
+    )
+    await session.commit()
+
+    tick = await run_tick(session)
+    report = await run_dispatch_pass(session, _config())
+
+    await session.refresh(completed)
+    assert accepted.plan_version == 2
+    assert completed.state == NodeState.PASSED.value
+    assert completed.attempts == 3
+    assert tick.transitions_effected == 1
+    assert report.dispatched == 1
+    assert report.pending[0].envelope["source_ref"]["issue"] == 5329
+    assert report.pending[0].envelope["source_ref"]["repo"] == "alternate/repo"
+    added = await session.scalar(
+        select(OrchestrationNode).where(
+            OrchestrationNode.flow_id == compiled.flow_id,
+            OrchestrationNode.node_ref == "story-b",
+        )
+    )
+    assert added.state == NodeState.RUNNING.value
+
+
+class TestDispatchScopeContinued:
     @pytest.mark.parametrize("installations", [[], [INSTALLATION_A, INSTALLATION_B]])
     async def test_an_ambiguous_installation_is_undispatchable(self, session, installations):
         # Fail closed on both zero and many. Guessing would dispatch into a
@@ -1025,14 +1166,50 @@ class TestPerTickCap:
 
 
 class TestUnconfigured:
-    @pytest.mark.parametrize("overrides", [{"queue_url": ""}, {"repo": ""}])
+    @pytest.mark.parametrize("overrides", [{"queue_url": ""}])
     async def test_an_unconfigured_pass_dispatches_nothing(self, session, overrides):
-        await _ready_story(session)
+        _flow, node, _decision = await _ready_story(session)
         report = await run_dispatch_pass(session, _config(**overrides))
 
         assert report.dispatched == 0
-        assert report.enabled is False
+        assert report.pending == []
+        assert node.state == NodeState.READY.value
+        assert node.attempts == 0
+        assert report.enabled is bool(overrides.get("queue_url", "present"))
         assert report.undispatchable == 1, "ready nodes must be counted, so an unwired env is not mistaken for an idle one"
+
+    async def test_missing_repository_records_actionable_refusal_without_consuming_attempt(self, session):
+        from src.orchestration.delivery_progress import node_progress
+        from src.orchestration.models import OrchestrationExecution, OrchestrationWorkClaim
+
+        flow, node, _decision = await _ready_story(session)
+        await _accept_execution_policy(session, flow)
+        for _ in range(2):
+            report = await run_dispatch_pass(session, _config(repo=""))
+            assert report.admission_refused == 1 and report.dispatched == 0
+            assert report.pending == []
+        assert (node.state, node.attempts) == (NodeState.READY.value, 0)
+        assert (await session.scalars(select(OrchestrationExecution))).all() == []
+        assert (await session.scalars(select(OrchestrationWorkClaim))).all() == []
+        assert await _decisions_of_kind(session, DecisionKind.NODE_DISPATCHED) == []
+        decisions = await _decisions_of_kind(session, DecisionKind.TRANSITION_REJECTED)
+        assert len(decisions) == 2
+        refusals = [json.loads(decision.rejection_reason) for decision in decisions]
+        assert all(item["block_code"] == "repository_binding_missing" for item in refusals)
+        refusal = refusals[-1]
+        progress = node_progress(
+            node=node,
+            binding=None,
+            dispatch={},
+            result={},
+            policy_enabled=True,
+            plan_version=refusal["accepted_plan_version"],
+            policy_hash=refusal["policy_hash"],
+            admission_refusal=refusal,
+        )
+        assert progress.automation == "blocked"
+        assert "no repository configured" in progress.detail
+        assert "Set the story repository" in progress.next_action
 
     async def test_an_unconfigured_pass_leaves_nodes_ready(self, session):
         _flow, node, _decision = await _ready_story(session)
@@ -1047,7 +1224,7 @@ class TestUnconfigured:
         assert not sqs.calls
         assert report.success
 
-    def test_config_from_env_reads_the_documented_variables(self, monkeypatch):
+    def test_config_from_env_ignores_the_retired_global_repository(self, monkeypatch):
         monkeypatch.setenv("BG_ORCH_DISPATCH_QUEUE_URL", "https://example/queue.fifo")
         monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "owner/name")
         monkeypatch.setenv("BG_ORCH_DISPATCH_PERSONA", "architect")
@@ -1055,7 +1232,7 @@ class TestUnconfigured:
 
         config = DispatchPassConfig.from_env()
         assert config.queue_url == "https://example/queue.fifo"
-        assert config.repo == "owner/name"
+        assert config.repo == ""
         assert config.persona == "architect"
         assert config.max_dispatches_per_tick == 3
         assert config.configured
@@ -2227,3 +2404,236 @@ async def test_protected_story_authority_refuses_unsupported_personas(session, p
         writer.provision(pending)
     assert store.client.scan(TableName="authority", Select="COUNT")["Count"] == 0
     assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 0
+
+
+async def test_unresolved_required_inputs_are_named_in_the_log_not_just_counted(session, caplog):
+    """A READY node the dispatcher refuses must say which inputs are missing (#7759).
+
+    Production shape (tools flow L2, 2026-10-15): two operations stories sat `ready` for
+    hours while every tick recorded `undispatchable` with no node, no input, no log line.
+    """
+    import logging
+
+    from src.orchestration.models import OrchestrationAcceptedPlan
+
+    flow, node, approval = await _ready_story(session)
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=flow.org_id,
+            flow_id=flow.id,
+            version=1,
+            plan_hash="b" * 64,
+            accepted_by_decision_id=approval.id,
+            plan_document={
+                "nodes": [
+                    {
+                        "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                        "kind": "story",
+                        "title": node.title,
+                        "required_inputs": [{"name": "deployment branch", "source": "deployment_branch:main"}],
+                    }
+                ]
+            },
+        )
+    )
+    await session.flush()
+    with caplog.at_level(logging.WARNING, logger="bedrockgateway.orchestration.dispatch_pass"):
+        report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 0 and report.undispatchable == 1
+    assert await _state_of(session, node.id) == NodeState.READY.value
+    (record,) = [r for r in caplog.records if "unresolved required inputs" in r.getMessage()]
+    assert node.id in record.getMessage() and "deployment branch (deployment_branch:main)" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    "refusal_code", ["connection_revoked", "repository_connection_ambiguous", "repository_not_permitted", "repository_binding_changed"]
+)
+async def test_rejected_accepted_connection_records_refusal_without_claim_or_dispatch(session, work_claims_enabled, monkeypatch, refusal_code):
+    from src.admin.installations.resolver import OwnerState
+    from src.orchestration import repository_binding
+    from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationWorkClaim
+    from src.shared.models.vault import ChannelTenantMap
+
+    flow, node, _ = await _ready_story(session)
+    session.add(
+        ChannelTenantMap(
+            provider="github",
+            provider_scope_id="111",
+            org_id=ORG_A,
+            installation_id="11",
+            install_metadata={"account_id": "111"},
+        )
+    )
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=ORG_A,
+            flow_id=flow.id,
+            version=1,
+            plan_hash="reviewed",
+            plan_document={
+                "nodes": [
+                    {
+                        "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                        "kind": "story",
+                        "title": node.title,
+                        "issue_ref": node.issue_ref,
+                        "repository_identity": "acme/a",
+                        "provider_repository_id": 1001,
+                        "repository_connection": {"provider": "github", "installation_id": 11},
+                    }
+                ]
+            },
+        )
+    )
+    node.repository_identity = "acme/a"
+    node.provider_repository_id = 1001
+    node.repository_connection = {"provider": "github", "installation_id": 11}
+    await session.flush()
+
+    async def revoked(installation_id, *, db):
+        assert installation_id == 11
+        return None, OwnerState.REVOKED
+
+    async def forbidden_read(*args):
+        pytest.fail("revoked connection must not request a provider token")
+
+    if refusal_code == "connection_revoked":
+        monkeypatch.setattr(repository_binding, "resolve_installation_owner", revoked)
+        monkeypatch.setattr(repository_binding, "_provider_read", forbidden_read)
+    elif refusal_code == "repository_binding_changed":
+        node.repository_connection = {"provider": "github", "installation_id": 22}
+        await session.flush()
+
+        async def verified(*args, **kwargs):
+            return repository_binding.VerifiedRepository("github", 1001, "acme/a", 11, "acme/a", 4196, "dispatch")
+
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", verified)
+    else:
+
+        async def refused(*args, **kwargs):
+            raise repository_binding.RepositoryBindingError(refusal_code)
+
+        monkeypatch.setattr(repository_binding, "resolve_story_repository", refused)
+    report = await run_dispatch_pass(session, _config())
+    assert report.pending == []
+    assert report.admission_refused == 1
+    assert (await session.scalars(select(OrchestrationWorkClaim))).all() == []
+    assert node.attempts == 0
+    refused = (
+        await session.scalars(
+            select(OrchestrationDecision).where(
+                OrchestrationDecision.kind == DecisionKind.TRANSITION_REJECTED.value,
+            )
+        )
+    ).one()
+    assert json.loads(refused.rejection_reason)["block_code"] == refusal_code
+
+
+@pytest.mark.parametrize("product_id", ["product-1", None])
+async def test_accepted_stories_dispatch_to_distinct_repositories_without_global_target(
+    session, work_claims_enabled, protected_engine, monkeypatch, product_id
+):
+    from src.orchestration import repository_binding
+    from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationWorkClaim
+
+    await _make_org(session, installations=[INSTALLATION_A, INSTALLATION_B])
+    flow = await _make_flow(session)
+    flow.product_id = product_id
+    approval = await _make_approval(session, flow)
+    first = await _make_node(session, flow, node_ref="story-a", issue_ref="42")
+    second = await _make_node(session, flow, node_ref="story-b", issue_ref="43")
+    targets = [(first, "example/a", 1001, INSTALLATION_A), (second, "example/b", 1002, INSTALLATION_B)]
+    accepted_nodes = []
+    for node, name, repository_id, installation_id in targets:
+        node.repository_identity = name
+        node.provider_repository_id = repository_id
+        node.repository_connection = {"provider": "github", "installation_id": installation_id}
+        accepted_nodes.append(
+            {
+                "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                "kind": "story",
+                "title": node.title,
+                "issue_ref": node.issue_ref,
+                "repository_identity": name,
+                "provider_repository_id": repository_id,
+                "repository_connection": node.repository_connection,
+                "criteria": [f"{node.node_ref}/C1: Verify only this accepted node."],
+                "delivery_mode": "code_only",
+                "evidence_expectations": ["verified-merge"],
+                "executor": {"kind": "agent", "role": "develop", "persona": "developer"},
+            }
+        )
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=flow.org_id,
+            flow_id=flow.id,
+            version=1,
+            plan_hash="a" * 64,
+            accepted_by_decision_id=approval.id,
+            plan_document={"nodes": accepted_nodes, **({"product_id": product_id} if product_id else {})},
+        )
+    )
+    await session.flush()
+
+    async def verified(_session, *, name, repository_id, installation_id, issue, **_kwargs):
+        return repository_binding.VerifiedRepository("github", repository_id, name, installation_id, name, issue, "dispatch")
+
+    monkeypatch.setattr(repository_binding, "resolve_story_repository", verified)
+    monkeypatch.setenv("ADP_PRODUCT_STORY_DISPATCH_ENABLED", "true")
+    monkeypatch.delenv("BG_ORCH_DISPATCH_REPO", raising=False)
+    report = await run_dispatch_pass(session, _config(repo=""))
+
+    assert report.dispatched == 2
+    assert report.errors == 0
+    await session.commit()
+    sqs = FakeSQS()
+    publish_pending(report, _config(repo=""), client=sqs)
+    assert len(sqs.calls) == 2
+    assert report.publish_failed == 0
+    claims = (await session.scalars(select(OrchestrationWorkClaim))).all()
+    assert {(claim.provider_repository_id, claim.owner_ref) for claim in claims} == {(1001, flow.id), (1002, flow.id)}
+    target_by_id = {node.id: (node, name, repository_id, installation_id) for node, name, repository_id, installation_id in targets}
+    for pending in report.pending:
+        node, name, repository_id, installation_id = target_by_id[pending.node_id]
+        envelope = pending.envelope
+        assert envelope["source_ref"] == {
+            "repo": name,
+            "provider_repository_id": repository_id,
+            "installation_id": installation_id,
+            "issue": int(node.issue_ref),
+        }
+        assert envelope["orchestration"]["flow_id"] == flow.id
+        assert envelope["orchestration"]["developer_node_context"] == {
+            "schema_version": 1,
+            "flow_id": flow.id,
+            "node_id": node.id,
+            "graph_address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+            "plan_version": 1,
+            "repository": name,
+            "issue_number": int(node.issue_ref),
+            "title": node.title,
+            "criteria": [f"{node.node_ref}/C1: Verify only this accepted node."],
+            "delivery_mode": "code_only",
+            "evidence_expectations": ["verified-merge"],
+        }
+        decision = await session.scalar(
+            select(OrchestrationDecision).where(
+                OrchestrationDecision.node_id == node.id,
+                OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value,
+            )
+        )
+        assert json.loads(decision.reason)["flow_id"] == flow.id
+        stored = protected_engine[0]._read(f"TENANT#{ORG_A}", f"EXEC#{envelope['message_id']}")
+        assert stored["source_ref"]["M"]["repo"]["S"] == name
+        grant = protected_engine[0].live_grant(invocation_id=envelope["message_id"], tenant_id=ORG_A, attempt=1, now=datetime.now(UTC))
+        assert grant.repo_scope == frozenset({name})
+        assert grant.flow_id == flow.id
+        assert (await session.get(OrchestrationFlow, envelope["orchestration"]["flow_id"])).product_id == "product-1"
+
+
+def test_disabled_global_repository_does_not_disable_queue_wiring(monkeypatch):
+    monkeypatch.setenv("BG_ORCH_DISPATCH_QUEUE_URL", "https://example.test/queue.fifo")
+    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "disabled")
+    config = DispatchPassConfig.from_env()
+    assert config.configured
+    assert config.repo == ""

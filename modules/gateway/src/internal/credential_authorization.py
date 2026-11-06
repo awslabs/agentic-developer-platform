@@ -16,6 +16,8 @@ from types import MappingProxyType
 
 from fastapi import HTTPException, Request
 
+from src.internal.credential_binding import GatewayCredentialAuthority
+
 logger = logging.getLogger(__name__)
 
 # Every user-credential broker has an explicit registry capability. Provider
@@ -59,6 +61,11 @@ def require_credential_capability(request: Request, capability: str) -> None:
         required capability is absent.  The response body includes the endpoint
         path and the missing capability but never secret values or raw bodies.
     """
+    if isinstance(getattr(request.state, "agent_tools_credential_authority", None), GatewayCredentialAuthority):
+        if capability == "credential:materialize":
+            return
+        raise HTTPException(403, {"error": "insufficient_scope"})
+
     identity = getattr(request.state, "token_context", None)
     if identity is None:
         logger.info(

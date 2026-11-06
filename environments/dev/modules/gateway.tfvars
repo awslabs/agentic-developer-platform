@@ -110,6 +110,18 @@ orchestration_dispatch_repo = "aws-e/adp"
 # silently disables the bridge until an operator re-sets the env var by hand.
 orchestration_engine_enabled = true
 
+# 2026-10-11: run the engine tick every minute in dev. Delivery flows lost 9-14
+# minutes between a developer hand-off and the reviewer starting, and similar
+# multiples at every other handoff, purely from the 5-minute schedule quantum
+# (the review cycle's own re-check interval is already 60s). The tick is built to
+# overlap and retry safely: guarded `UPDATE ... WHERE state = :observed` node
+# transitions, revision-fenced execution advances, unique operation keys on
+# actions and SKIP LOCKED dispatch selection (see tick.py). Runs take ~20s of a
+# 120s timeout, so overlap is rare and harmless. Applied live via `aws events
+# put-rule` at 17:12 UTC; this pin keeps the next gateway-infra apply from
+# reverting it to the module default of rate(5 minutes).
+orchestration_tick_schedule = "rate(1 minute)"
+
 # Prepare a Bedrock-only destination for bounded PMM qualification. Paid probe
 # admission and its recurring schedule remain disabled separately.
 persona_model_probe_destination_enabled = true
@@ -118,6 +130,67 @@ persona_model_probe_external_id = "adp-platform:316dd12b-70c0-4f00-9efc-e55a7a91
 
 # Saved persona preferences resolve before dispatch; worker authority stays independent.
 persona_model_mapping_enabled = true
+
+# Model policy posture for chat (#7997, owner decision 2026-10-17): the model
+# policy is advisory for chat. Delegated chat turns are answered on the persona's
+# resolved model even without fresh invocability evidence; the decision is still
+# signed and journaled with posture "advisory" and the rejection reason. Set
+# "enforced" only when probing below is armed and evidence is being recorded.
+chat_model_policy_posture = "advisory"
+
+# Model invocability probing (#7967). Evidence is REQUIRED only while
+# chat_model_policy_posture = "enforced" (the fail-closed chat path); it still
+# feeds agent runs and the model picker, so dev keeps it armed. Spend bound
+# approved in #7591 (<= 5 USD per daily cycle, <= 0.50 USD per attempt). The empty
+# allowlist means the whole catalogue, including the Claude models chat resolves
+# to. 48 h evidence TTL: one missed daily cycle must not take chat down. Pairs
+# with persona_model_probe_enabled = true in webhook-ingress.tfvars (the CronJob).
+model_probe_enabled                    = true
+model_probe_max_slots_per_cycle        = 24
+model_probe_budget_usd_per_cycle       = "12"
+model_probe_max_budget_usd_per_attempt = "0.50"
+model_probe_model_allowlist            = []
+model_probe_evidence_ttl_hours         = 48
+
+# Chief-of-Staff surfaces (#7197): chat and the assistant UI are on in dev; the Crew
+# edge stays off until the operator flips it (crew_dashboard_enabled).
+feature_chat_enabled         = true
+feature_assistant_ui_enabled = true
+
+# Crew dashboard edge (#7902). Dev serves the UI from the default CloudFront name
+# and has no public Route 53 zone, so the ALB edge (crew_dashboard_hostname +
+# crew_dashboard_zone_id, #7205) cannot be used here. The CloudFront edge serves
+# Crew on a dedicated distribution's own *.cloudfront.net name through the
+# frontend's VPC origin to the internal gateway ALB; it writes
+# /adp/dev/gateway/crew-dashboard-origin for the gateway Deployment. Preconditions:
+# apply only after the ALB second pass (wire-gateway-alb.sh / gateway-infra-apply
+# inject enable_vpc_origin + internal_alb_*), leave hostname/zone empty, and read
+# docs/chief-of-staff/crew-dashboard-edge.md (cross-site handoff caveat) first.
+# Enabled on dev 2026-10-16 (owner go: "enable the kiro crew dashboard"). The
+# first-party handoff (#7906) and stream keepalive (#7902) are on main; the
+# 15-minute idle acceptance from crew-dashboard-edge.md gates user exposure.
+crew_dashboard_enabled = true
+crew_dashboard_edge    = "cloudfront"
+#
+# Crew checkpoints (#7902): creates adp-dev-crew-checkpoints-<account>, the
+# gateway grant and /adp/dev/gateway/crew-checkpoint-bucket. Off until the
+# Deployment renders ADP_CREW_CHECKPOINT_* from SSM.
+crew_checkpoints_enabled = true
+# #8555: Dev Box gh/git and `adp github token` act as the owner via the connected GitHub account.
+github_user_access_enabled = true
+# The chat worker image served by adp-gateway-agents/chat-agent-worker.
+chat_authority_worker_images = ["sha256:58e3b93bb4d6bbaba6733b01a767a97b6b6ca94772315145c0f107ccc6548ed6"]
+
+# Model-root bindings for delegated chat (#7899). The ingest Lambda roots every
+# chat turn under a human of tenant aws-e through the separate chat supervisor
+# identity; the personas are the classifier's set plus the pinned intent-refinement.
+model_root_bindings = [{
+  source               = "chat"
+  producer_role        = "arn:aws:iam::879318057152:role/adp-dev-agent-gateway-ingest"
+  chat_supervisor_role = "arn:aws:iam::879318057152:role/adp-dev-chat-supervisor-role"
+  tenant_id            = "aws-e"
+  personas             = ["developer", "architect", "reviewer", "operations", "pm", "product", "intent-refinement"]
+}]
 
 # Operator-activated Task API bindings; acceptance evidence is recorded separately.
 task_api_prerequisites_enabled = true
@@ -141,3 +214,15 @@ task_api_lambda_invoke_arn    = "arn:aws:apigateway:us-east-1:lambda:path/2015-0
 
 # Match the protected worker and gateway dispatch protocol.
 orchestration_agent_authority_enabled = true
+
+# Gateway-owned shared AgentCore user memory (#7901; code from #7210 / PR #7547).
+# This is the OPERATOR'S switch: uncommenting it makes the next gateway-infra apply
+# (deploy-all.sh Step 3) create the AgentCore memory, its extraction strategy, the
+# gateway IAM grant and the SSM parameters agentcore_recall() expects
+# (modules/gateway/infra/agentcore-memory.tf). It is deliberately off in the
+# committed file: #7217 owns binding a live target, and the renderers must pass
+# ADP_AGENTCORE_* through before the pod uses it. Turning it off again destroys
+# the memory and every extracted record.
+# agentcore_memory_enabled = true
+# agentcore_memory_event_expiry_days = 90   # raw events; 3-365
+# agentcore_memory_strategy_type     = "SEMANTIC"  # or USER_PREFERENCE

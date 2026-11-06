@@ -37,7 +37,7 @@ class ProcessCrash(BaseException):
     pass
 
 
-async def interrupted_apply(harness, tmp_path, monkeypatch):
+async def interrupted_apply(harness, tmp_path, monkeypatch, *, observed=False):
     scenario = Scenario(
         harness, tmp_path, monkeypatch, OwnershipMode.EXISTING_ACCOUNT_MANAGED
     )
@@ -80,19 +80,31 @@ async def interrupted_apply(harness, tmp_path, monkeypatch):
             "worker died after immutable result, before outer confirmation"
         )
 
-    monkeypatch.setattr(runtime, "record_artifact", crash_after_commit)
+    if observed:
+        from workspace_provisioning import applied_inventory
+
+        async def remember(*args, **kwargs):
+            published.update(await record_artifact(*args, **kwargs))
+            return published
+
+        async def crash_inventory(*args):
+            raise ProcessCrash("inventory failed after successful provider observation")
+
+        monkeypatch.setattr(runtime, "record_artifact", remember)
+        monkeypatch.setattr(
+            applied_inventory, "seal_applied_inventory", crash_inventory
+        )
+    else:
+        monkeypatch.setattr(runtime, "record_artifact", crash_after_commit)
     with pytest.raises(BaseExceptionGroup):
         await runtime.run_lifecycle(applying, scenario.context)
     artifact = await scenario.row(published["artifact_id"])
     lease = applying.grant.lease
     async with harness.connect() as connection:
-        assert (
-            await connection.fetchval(
-                "SELECT stage FROM harness_provider_call_intent WHERE operation_id=$1",
-                lease.operation_id,
-            )
-            == "intended"
-        )
+        assert await connection.fetchval(
+            "SELECT stage FROM harness_provider_call_intent WHERE operation_id=$1",
+            lease.operation_id,
+        ) == ("observed" if observed else "intended")
         await connection.execute(
             "CREATE TABLE workspaces(id text PRIMARY KEY,org_id text,provisioning_operation_id text)"
         )
@@ -180,6 +192,20 @@ async def interrupted_apply(harness, tmp_path, monkeypatch):
                 artifact=artifact,
                 provider=SimpleNamespace(aws_read=read),
             )
+            from harness_jobs.execution import CallStage, read_call
+            from workspace_provisioning.applied_inventory import seal_verified_inventory
+
+            async with harness.connect() as connection:
+                call = await read_call(connection, idempotency_key=key)
+            if call.stage is not CallStage.INTENDED:
+                await seal_verified_inventory(
+                    current,
+                    context,
+                    artifact,
+                    key,
+                    scenario.session,
+                    lambda: self.resolve_recovery(claim),
+                )
             await self.resolve_recovery(claim)
             if state.tamper:
                 result["source_artifact_id"] = "f" * 64
@@ -203,13 +229,14 @@ async def interrupted_apply(harness, tmp_path, monkeypatch):
     return scenario, prepared, applying, artifact, recovery, state
 
 
+@pytest.mark.parametrize("observed", [False, True])
 @pytest.mark.parametrize("renew", [False, True])
 def test_completed_apply_recovers_same_paid_identity_with_fresh_reads_and_retains_budget(
-    harness, tmp_path, monkeypatch, renew
+    harness, tmp_path, monkeypatch, renew, observed
 ):
     async def run():
         scenario, _, applying, artifact, recovery, state = await interrupted_apply(
-            harness, tmp_path, monkeypatch
+            harness, tmp_path, monkeypatch, observed=observed
         )
         state.renew = renew
         before = tuple(scenario.process_calls)
@@ -227,6 +254,27 @@ def test_completed_apply_recovers_same_paid_identity_with_fresh_reads_and_retain
                 json.loads(row["accounting"])
                 if isinstance(row["accounting"], str)
                 else row["accounting"]
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM harness_allocation_seal WHERE operation_id=$1 AND sealed_revision IS NOT NULL",
+                    applying.grant.lease.operation_id,
+                )
+                == 1
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM harness_provider_report WHERE operation_id=$1",
+                    applying.grant.lease.operation_id,
+                )
+                >= 1
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT provider_ref FROM harness_provider_call_intent WHERE operation_id=$1",
+                    applying.grant.lease.operation_id,
+                )
+                is None
             )
             assert accounting["budget"] == "retain"
             assert accounting["inventory_complete"] is False
@@ -309,7 +357,8 @@ def test_recovery_subject_revoked_after_preparation_cannot_commit_settlement(
 
 
 @pytest.mark.parametrize(
-    "change", ["saved-plan", "provider-replaced", "response-binding", "revoked"]
+    "change",
+    ["saved-plan", "provider-replaced", "response-binding", "revoked", "census-denied"],
 )
 def test_changed_apply_evidence_defers_without_replay_or_release(
     harness, tmp_path, monkeypatch, change
@@ -330,6 +379,8 @@ def test_changed_apply_evidence_defers_without_replay_or_release(
             )
         elif change == "response-binding":
             state.tamper = True
+        elif change == "census-denied":
+            scenario.deny_census = True
         else:
             state.revoked = True
         (result,) = await recovery.run(limit=1)

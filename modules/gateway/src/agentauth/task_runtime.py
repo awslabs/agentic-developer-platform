@@ -164,7 +164,9 @@ class TaskRuntime:
             "run_credential": credential,
             "run_credential_expires_at": claims.expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "deadline_at": task["deadline_at"],
-            "input": grant["input"],
+            # Project attribution is server-owned metering authority. Preserve
+            # it in the grant, outside the worker's closed input contract.
+            "input": {key: value for key, value in grant["input"].items() if key != "work_scope"},
             "model_binding": grant["model_binding"],
             **({"harness": grant["harness"]} if "harness" in grant else {}),
             "limits": grant["limits"],

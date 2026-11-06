@@ -103,6 +103,48 @@ describe('groupIntoEpics', () => {
     expect(result[0].waves.map((w) => w.waveRef)).toEqual(['wave-2', 'wave-10']);
   });
 
+  // #7226: the server lists nodes by wave_ref, so first appearance is name order.
+  it('orders waves by the declared wave_metadata, not by name or appearance', () => {
+    const g = graph([
+      node({ node_ref: 'd1', wave_ref: 'dashboard' }),
+      node({ node_ref: 'k1', wave_ref: 'kirocrew' }),
+      node({ node_ref: 'r1', wave_ref: 'runtime' }),
+    ]);
+    g.wave_metadata = [
+      { epic_ref: 'epic-1', wave_ref: 'runtime', title: 'Wave 1' },
+      { epic_ref: 'epic-1', wave_ref: 'kirocrew', title: 'Wave 2' },
+      { epic_ref: 'epic-1', wave_ref: 'dashboard', title: 'Wave 3' },
+    ];
+    expect(groupIntoEpics(g)[0].waves.map((w) => w.waveRef)).toEqual(['runtime', 'kirocrew', 'dashboard']);
+  });
+
+  it('orders undeclared waves by dependency edges, then appearance', () => {
+    const y = node({ node_ref: 'y', wave_ref: 'wave-y' });
+    const x = node({ node_ref: 'x', wave_ref: 'wave-x' });
+    const z = node({ node_ref: 'z', wave_ref: 'wave-z' });
+    // Listed y, x, z; x must precede y because of the edge; z has no edges and keeps its place.
+    const result = groupIntoEpics(graph([y, x, z], [{ from_node_id: x.id, to_node_id: y.id }]));
+    expect(result[0].waves.map((w) => w.waveRef)).toEqual(['wave-x', 'wave-y', 'wave-z']);
+  });
+
+  it('lets dependencies win over a contradicting declaration and never drops a wave', () => {
+    const a = node({ node_ref: 'a', wave_ref: 'wave-a' });
+    const b = node({ node_ref: 'b', wave_ref: 'wave-b' });
+    const g = graph([a, b], [{ from_node_id: b.id, to_node_id: a.id }]);
+    g.wave_metadata = [
+      { epic_ref: 'epic-1', wave_ref: 'wave-a', title: 'A' },
+      { epic_ref: 'epic-1', wave_ref: 'wave-b', title: 'B' },
+    ];
+    expect(groupIntoEpics(g)[0].waves.map((w) => w.waveRef)).toEqual(['wave-b', 'wave-a']);
+  });
+
+  it('keeps waves in a wave-level cycle visible in fallback order', () => {
+    const a = node({ node_ref: 'a', wave_ref: 'wave-a' });
+    const b = node({ node_ref: 'b', wave_ref: 'wave-b' });
+    const result = groupIntoEpics(graph([a, b], [{ from_node_id: a.id, to_node_id: b.id }, { from_node_id: b.id, to_node_id: a.id }]));
+    expect(result[0].waves.map((w) => w.waveRef)).toEqual(['wave-a', 'wave-b']);
+  });
+
   it('returns no EPICs for an empty flow', () => { expect(groupIntoEpics(graph([]))).toEqual([]); });
 });
 
@@ -145,4 +187,48 @@ it('matches display metadata by epic and wave without changing layout', () => {
   expect(groups.map((e) => e.waves[0].title)).toEqual(['Contracts', 'Release']);
   expect(groups.map((e) => e.waves[0].description)).toEqual(['Freeze contracts.', 'Qualify release.']);
   expect(groups.map((e) => e.waves[0].waveRef)).toEqual(['wave-1', 'wave-1']);
+});
+
+describe('BOLT presentation', () => {
+  it('groups both phases without changing nodes, dependencies or scheduling boundaries', () => {
+    const build = node({ node_ref: 'build', wave_ref: 'b01-build', issue_ref: '10' });
+    const run = node({ node_ref: 'run', wave_ref: 'b01-live', issue_ref: '10', executor: { role: 'operate', persona: 'operations' } });
+    const next = node({ node_ref: 'next', wave_ref: 'b02-build' });
+    const nextRun = node({ node_ref: 'next-run', wave_ref: 'b02-live' });
+    const g = graph([nextRun, run, next, build], [
+      { from_node_id: build.id, to_node_id: run.id },
+      { from_node_id: run.id, to_node_id: next.id },
+      { from_node_id: next.id, to_node_id: nextRun.id },
+    ]);
+    g.wave_metadata = [{ epic_ref: 'epic-1', wave_ref: 'b01-build', title: 'B01: Build and review', description: 'Save a Product; native BOLT #100' }];
+    const before = JSON.stringify(g);
+    const [first, second] = groupIntoEpics(g)[0].waves;
+    expect(first.title).toBe('B01');
+    expect(first.description).toBe('Save a Product');
+    expect(first.phases?.map((phase) => phase.waveRef)).toEqual(['b01-build', 'b01-live']);
+    expect(first.nodes).toEqual([build, run]);
+    expect(first.stages).toEqual([[build], [run]]);
+    expect(first.dependsOn).toEqual([]);
+    expect(second.dependsOn).toEqual([{ epicRef: 'epic-1', waveRef: 'b01-live' }]);
+    expect(JSON.stringify(g)).toBe(before);
+    expect(first.nodes[1]).toBe(run);
+  });
+
+  it('keeps ordinary waves, unmatched phases and phases from different epics separate', () => {
+    const g = graph([
+      node({ node_ref: 'ordinary-build', wave_ref: 'build' }),
+      node({ node_ref: 'ordinary-live', wave_ref: 'live' }),
+      node({ node_ref: 'b1-build', wave_ref: 'b01-build' }),
+      node({ node_ref: 'b1-live', wave_ref: 'b01-live', epic_ref: 'epic-2' }),
+    ]);
+    expect(groupIntoEpics(g).flatMap((epic) => epic.waves).every((wave) => !wave.phases)).toBe(true);
+  });
+
+  it('preserves real waves whose ref would collide with a BOLT display group', () => {
+    const g = graph(['b01-build', 'b01-live', 'bolt-b01'].map((ref) => node({ node_ref: ref, wave_ref: ref })));
+    const waves = groupIntoEpics(g)[0].waves;
+    expect(waves).toHaveLength(3);
+    expect(waves.every((wave) => !wave.phases)).toBe(true);
+    expect(new Set(waves.map((wave) => wave.waveRef)).size).toBe(3);
+  });
 });

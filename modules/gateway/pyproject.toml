@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Multi-tenant SaaS proxy for Amazon Bedrock"
 requires-python = ">=3.12"
 dependencies = [
+    "certifi>=2026.10.19",
     "fastapi==0.136.3",
     # anyio is transitive (fastapi→starlette) but MUST be pinned: the Docker build
     # installs with bare `pip install .` (uv.lock is not consulted), and the OTel
@@ -21,8 +22,9 @@ dependencies = [
     "alembic==1.14.1",
     "pydantic==2.12.5",
     "pydantic-settings==2.14.2",
-    "boto3==1.36.0",
+    "boto3==1.43.111",
     "httpx==0.28.1",
+    "httpcore==1.0.9",
     "urllib3==2.8.0",
     "redis==5.2.1",
     "prometheus-client==0.22.0",
@@ -46,6 +48,8 @@ dependencies = [
     # modules (issue #5039) also import it; a runtime dep covers them too.
     "pyyaml>=6.0",
     "websockets==17.1",
+    "pyarrow==23.0.1",
+    "regex==2026.9.29",
 ]
 
 [project.optional-dependencies]
@@ -116,6 +120,9 @@ line-length = 150
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["contracts"]
+
 [tool.coverage.run]
 # Issue #4213. SQLAlchemy's asyncio layer runs awaited ORM work inside greenlets
 # (`greenlet_spawn`), and coverage.py's default thread-only tracer does not follow
@@ -132,6 +139,9 @@ concurrency = ["thread", "greenlet"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# Tests import the canonical harness and bootstrap packages directly; they must not depend on
+# another test first calling the production loader and mutating sys.path.
+pythonpath = [".", "../harness/jobs", "../domain-apps/superplane/workspace_bootstrap"]
 markers = [
     "unit: runs against fixtures/mocks (default)",
     "live: hits a deployed environment, requires env vars",
@@ -165,6 +175,7 @@ pricing_policy = ["snapshots/*.json"]
 # omitted from a wheel, it raises at runtime while every test passes from a
 # source checkout.
 "src.orchestration.manifests" = ["*.yaml"]
+"src.orchestration" = ["lineage_vocabulary.yaml", "decision_payload_qualification.sql"]
 "src.domain_proxy" = ["*.json"]
 
 [tool.ruff.lint.per-file-ignores]
@@ -176,6 +187,8 @@ pricing_policy = ["snapshots/*.json"]
 "tests/cli/test_adp_update.py" = ["N802"]
 "tests/cli/test_adp_install.py" = ["N802"]
 "tests/cli/test_adp_flow.py" = ["N802"]
+"tests/cli/test_host_run_mode.py" = ["N802"]
+"tests/products/test_collection_jobs.py" = ["N802"]
 # E402: pytestmark must appear before project imports for pytest collection;
 # this is a deliberate pattern across all e2e test files.
 "tests/e2e/test_*.py" = ["E402"]

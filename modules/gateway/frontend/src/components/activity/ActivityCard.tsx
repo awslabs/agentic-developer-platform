@@ -10,6 +10,7 @@
  */
 
 import { LiveStreamLink } from './LiveStreamLink';
+import { useActivityScope } from '@/contexts/ActivityScopeContext';
 import { useState, useCallback } from 'react';
 import type { InvocationItem, TriggerKind } from '@/types/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
@@ -21,6 +22,7 @@ import { formatRunCost } from '@/utils/cost';
 import { describeStatus } from '@/utils/status';
 import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
+import { CostBadge } from '@/components/shared/CostBadge';
 
 const TRIGGER_CONFIG: Record<TriggerKind, { label: string; icon: string }> = {
   human: { label: 'Started by you', icon: '👤' },
@@ -44,6 +46,7 @@ export interface ActivityCardProps {
 // ---------------------------------------------------------------------------
 
 export function ActivityCard({ item, onDetailClick, onTranscriptClick, liveStreamEnabled }: ActivityCardProps) {
+  const activityScope = useActivityScope();
   const [isExpanded, setIsExpanded] = useState(false);
 
   const statusConfig = describeStatus(item.status);
@@ -157,7 +160,7 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick, liveStrea
         )}
 
         <span className="ml-auto font-mono text-gray-700 dark:text-gray-300">
-          {formatRunCost(item.total_cost_usd, item.status)}
+          {item.channel === 'tool' ? <CostBadge item={item} /> : formatRunCost(item.total_cost_usd, item.status)}
         </span>
       </div>
 
@@ -187,7 +190,7 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick, liveStrea
             <span className="text-gray-500 dark:text-gray-500 w-16 flex-shrink-0">Trigger</span>
             <span>
               <span aria-hidden="true">{triggerConfig.icon}</span>{' '}
-              {triggerConfig.label}
+              {activityScope && triggerKind === 'human' ? 'Human-triggered' : triggerConfig.label}
             </span>
           </div>
 
@@ -199,6 +202,13 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick, liveStrea
               <span className="text-gray-400 dark:text-gray-500">({item.persona})</span>
             )}
           </div>
+
+          {item.channel === 'tool' && item.receipt_id && (
+            <div className="flex items-center gap-2">
+              <span className="text-gray-500 dark:text-gray-500 w-16 flex-shrink-0">Receipt</span>
+              <span className="font-mono break-all">{item.receipt_id}</span>
+            </div>
+          )}
 
           {/* Summary */}
           {item.summary && (

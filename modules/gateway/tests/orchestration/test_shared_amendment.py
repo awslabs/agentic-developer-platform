@@ -27,6 +27,7 @@ from src.orchestration.models import (
 from src.orchestration.run_reports import OrchestrationRunReport
 from src.orchestration.shared_amendment import SharedAppendError, SharedAppendRequest, accept_shared_append, preview_shared_append
 from src.orchestration.state import ActorKind
+from tests.orchestration.legacy_plan import persist_legacy_plan
 from tests.orchestration.test_amend import address, approval, session, valid_proposal  # noqa: F401
 
 ROLE = "arn:aws:iam::123456789012:role/worker"
@@ -34,7 +35,7 @@ ROLE = "arn:aws:iam::123456789012:role/worker"
 
 @pytest.fixture
 async def appendable(session, approval, monkeypatch):  # noqa: F811
-    result = await compile_proposal(session, valid_proposal(), approval)
+    result = await persist_legacy_plan(session, valid_proposal(), approval)
     plan = await session.scalar(select(OrchestrationAcceptedPlan))
     now = datetime.now(UTC)
     policy = stamp_policy(
@@ -227,6 +228,45 @@ async def test_unfinished_work_blocks_plan_version_change(session, appendable, c
     assert len(list(await session.scalars(select(OrchestrationAcceptedPlan)))) == 1
 
 
+async def test_released_worker_report_does_not_block_amendment_or_gain_terminal_evidence(session, appendable):  # noqa: F811
+    ctx = appendable
+    state = await settled_history(session, ctx)
+    state.claim.state, state.claim.active_run_id = "released", None
+    state.report.terminal_receipt = None
+    await session.commit()
+    result, _ = await accept(session, ctx)
+    assert result["created"] is True
+    await session.refresh(state.report)
+    await session.refresh(state.node)
+    assert state.report.terminal_receipt is None
+    assert state.node.state == "passed" and state.node.attempts == 2
+
+
+@pytest.mark.parametrize("unsettled", ["execution", "effect"])
+async def test_released_claim_does_not_hide_unsettled_execution_or_effect(session, appendable, unsettled):  # noqa: F811
+    ctx = appendable
+    state = await settled_history(session, ctx)
+    state.claim.state, state.claim.active_run_id = "released", None
+    state.report.terminal_receipt = None
+    if unsettled == "execution":
+        state.execution.status = "awaiting_external"
+    else:
+        state.action.status = "unknown"
+    await session.commit()
+    with pytest.raises(SharedAppendError):
+        await preview(session, ctx)
+
+
+@pytest.mark.parametrize("field,value", [("run_id", "foreign"), ("attempt", 99), ("outcome", "unknown"), ("recorded_at", None)])
+async def test_retained_claim_requires_matching_terminal_worker_receipt(session, appendable, field, value):  # noqa: F811
+    ctx = appendable
+    state = await settled_history(session, ctx)
+    state.report.terminal_receipt = {**state.report.terminal_receipt, field: value}
+    await session.commit()
+    with pytest.raises(SharedAppendError, match="unsettled_work_claim"):
+        await preview(session, ctx)
+
+
 @pytest.mark.parametrize("case", ["existing_node", "kind", "new_wave", "cycle", "started_target", "service", "different_owner", "stale_snapshot"])
 async def test_append_refuses_scope_changes_and_stale_preview(session, appendable, case):  # noqa: F811
     ctx = appendable
@@ -308,7 +348,7 @@ async def test_create_flow_http_resubmission_preserves_active_shared_plan(sessio
     node = await session.get(OrchestrationNode, ctx.nodes[address("story-a")])
     node.state, node.attempts = "running", 1
     await session.commit()
-    user = SimpleNamespace(org_id=ctx.actor.org_id, user_id=ctx.actor.actor_id)
+    user = SimpleNamespace(org_id=ctx.actor.org_id, user_id=ctx.actor.actor_id, cognito_username="")
     access = SimpleNamespace(check_permission=AsyncMock())
     app = FastAPI()
     app.include_router(routes.router)

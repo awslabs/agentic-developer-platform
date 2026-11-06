@@ -75,6 +75,37 @@ class TestRateLimitService:
         )
 
     @pytest.mark.asyncio
+    async def test_tool_limits_are_isolated_by_tenant_user_and_tool(self, service, human_context, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(service, "_load_from_db", AsyncMock())
+        tool = "websearch___search"
+        key = service._get_entity_key(EntityType.USER, f"tool___{tool}___{human_context.user_id}", human_context.org_id)
+        service._rate_limits[key] = {"rpm": 1}
+
+        assert (await service.consume_tool_rate_limit(human_context, tool)).allowed
+        denied = await service.consume_tool_rate_limit(human_context, tool)
+        assert not denied.allowed and denied.limit_type == "rpm" and denied.retry_after_seconds >= 1
+        assert (await service.consume_tool_rate_limit(human_context, "browser___navigate")).allowed
+        assert (await service.consume_tool_rate_limit(human_context.model_copy(update={"user_id": "other-user"}), tool)).allowed
+        other_tenant = human_context.model_copy(update={"org_id": "other-org", "attributed_org_id": "other-org"})
+        assert (await service.consume_tool_rate_limit(other_tenant, tool)).allowed
+        assert (await service.check_rate_limit(human_context)).allowed
+
+    @pytest.mark.asyncio
+    async def test_tool_tenant_limit_aggregates_distinct_users(self, service, human_context, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(service, "_load_from_db", AsyncMock())
+        tool = "websearch___search"
+        key = service._get_entity_key(EntityType.ORGANIZATION, f"tool___{tool}", human_context.org_id)
+        service._rate_limits[key] = {"rpm": 1}
+        assert (await service.consume_tool_rate_limit(human_context, tool)).allowed
+        other = human_context.model_copy(update={"user_id": "other-user"})
+        denied = await service.consume_tool_rate_limit(other, tool)
+        assert not denied.allowed and denied.limit == 1 and denied.retry_after_seconds >= 1
+
+    @pytest.mark.asyncio
     async def test_check_rate_limit_allowed(self, service, human_context):
         """Test check_rate_limit returns allowed for new user."""
         result = await service.check_rate_limit(human_context)

@@ -34,6 +34,7 @@ async def test_optional_history_cannot_upgrade_original_operation_or_bypass_auth
         request_payload=encode_payload(request),
         plan_digest=payload_digest(request),
         state="pending",
+        version=1,
         detail="original still pending",
     )
 
@@ -87,6 +88,7 @@ async def test_optional_history_cannot_upgrade_original_operation_or_bypass_auth
         incoming, db, org_id, request.idempotency_key, by_request=True
     )
     assert result["state"] == "pending"
+    assert result["version"] == 1
     assert result["reason"] == "original still pending"
     assert result["request_id"] == request.idempotency_key
     assert result["provisioning_operation_id"] == operation_id

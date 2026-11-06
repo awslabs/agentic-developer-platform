@@ -53,7 +53,12 @@ resource "aws_sqs_queue" "operations" {
   sqs_managed_sse_enabled    = true
   visibility_timeout_seconds = 3600
   message_retention_seconds  = 345600
-  tags                       = local.tags
+  # Explicit empty intent lets the saved-plan checker distinguish provider
+  # computed CREATE values from an unresolved policy supplied by configuration.
+  policy               = ""
+  redrive_policy       = ""
+  redrive_allow_policy = ""
+  tags                 = local.tags
 
   lifecycle {
     prevent_destroy = true
@@ -65,7 +70,8 @@ resource "aws_sqs_queue" "operations" {
 }
 
 resource "aws_iam_role" "worker" {
-  name = local.worker
+  name                = local.worker
+  managed_policy_arns = []
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -103,7 +109,8 @@ resource "aws_iam_role_policy" "worker" {
 }
 
 resource "aws_iam_role" "observer" {
-  name = local.observer
+  name                = local.observer
+  managed_policy_arns = []
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

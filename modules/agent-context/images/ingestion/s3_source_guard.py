@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import unquote, urlsplit
 
-from scope import IngestionScope
+from scope import IngestionScope, ScopeValidationError, parse_scope
 
 # S3 bucket naming rules (the DNS-compatible subset, which is all that is valid
 # for new buckets). Enforced so a bucket field cannot smuggle a path separator or
@@ -174,19 +174,19 @@ def check_s3_source(
     if bucket == default_bucket.strip().lower():
         root = ""
         if scope is not None:
-            if scope.visibility == "tenant":
-                component = scope.tenant_id
-                kind = "tenants"
-            elif scope.visibility == "personal":
-                component = scope.owner_sub
-                kind = "users"
-            else:
-                component = None
-                kind = ""
-            if isinstance(component, str) and re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9._@:-]*", component
-            ):
-                root = f"{kind}/{component}"
+            try:
+                verified = parse_scope(scope.to_dict())
+            except ScopeValidationError:
+                verified = None
+            if verified and verified.is_product:
+                root = f"tenants/{verified.tenant_id}/products/{verified.product_id}"
+            elif verified and verified.is_tenant:
+                root = f"tenants/{verified.tenant_id}"
+                # Product content is not tenant-wide content.
+                if _prefix_matches(key, f"{root}/products"):
+                    root = ""
+            elif verified and verified.is_personal:
+                root = f"users/{verified.owner_sub}"
         if root and _prefix_matches(key, root):
             return S3SourceDecision(allowed=True, bucket=bucket, key=key)
         if key.split("/", 1)[0] in {"tenants", "users"}:

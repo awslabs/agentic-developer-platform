@@ -291,6 +291,9 @@ export function failureCodeFor(error: unknown): ChildErrorCode {
  * into an exfiltration path for whatever the model happened to be holding.
  */
 export function safeMessageFor(error: unknown): string {
+  if (error instanceof ModelRejectedError && error.code === 'budget_exceeded') {
+    return 'The model operation was refused because its budget was exceeded.';
+  }
   const raw =
     error instanceof ModelOutcomeUnknownError ||
     error instanceof InvalidAgentOutputError ||

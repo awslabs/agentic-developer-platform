@@ -79,9 +79,12 @@ class Permission(str, Enum):
     # properties are structural, which is what makes the weaker permission safe
     # rather than merely convenient.
     PLAN_DRAFT = "plan:draft"
+    TOOLS_MANAGE = "tools:manage"
 
 
-# Role to permissions mapping
+# Role defaults for administration and service drafting. Human workflow writes
+# are authorized separately from live workspace membership in AccessControl;
+# this table alone never proves that a caller may approve or run a workflow.
 ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
     AdminRole.PLATFORM_ADMIN: {
         Permission.ORG_CREATE,
@@ -103,6 +106,7 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.METRICS_READ,
         Permission.AGENT_REGISTER,
         Permission.PLAN_APPROVE,
+        Permission.TOOLS_MANAGE,
         Permission.PLAN_DRAFT,
     },
     AdminRole.ORG_ADMIN: {
@@ -124,6 +128,7 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         # Issue #4200: an org admin may accept and amend plans for their OWN
         # org's flows; the target_org_id scope check enforces the boundary.
         Permission.PLAN_APPROVE,
+        Permission.TOOLS_MANAGE,
         Permission.PLAN_DRAFT,
     },
     AdminRole.DEPT_ADMIN: {

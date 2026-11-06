@@ -37,7 +37,7 @@ async def assets(pg_url, monkeypatch):  # noqa: F811
     async with factory() as db:
         await db.execute(
             text("""CREATE TABLE knowledge_assets (
-            id UUID PRIMARY KEY, tenant_id TEXT, status TEXT NOT NULL, source_ref TEXT,
+            id UUID PRIMARY KEY, tenant_id TEXT, owner_sub VARCHAR(256), status TEXT NOT NULL, source_ref TEXT,
             status_detail JSONB, last_error TEXT, retry_count INT NOT NULL DEFAULT 0,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
         )
@@ -87,13 +87,15 @@ async def post(client, asset, token=None, status="complete", **extra):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tenant", ["tenant-a", None])
-async def test_current_grant_updates_exact_private_or_explicit_shared_asset(assets, tenant):
+@pytest.mark.parametrize("status", ["complete", "partial"])
+async def test_current_grant_updates_exact_private_or_explicit_shared_asset(assets, tenant, status):
     factory, client = assets
     asset, token = await seed(factory, tenant)
     foreign, _ = await seed(factory, "tenant-b")
     assert (await post(client, asset, token, "indexing")).status_code == 200
-    assert (await post(client, asset, token)).status_code == 200
-    assert (await read(factory, asset)).status == "complete"
+    assert (await post(client, asset, token, status)).status_code == 200
+    assert (await read(factory, asset)).status == status
+    assert (await post(client, asset, token, "complete")).status_code == 404
     assert (await read(factory, foreign)).status == "queued"
 
 

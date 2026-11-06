@@ -12,6 +12,10 @@ from .runner import Installer, local_lock
 
 def main(argv=None):
     selected_args = list(sys.argv[1:] if argv is None else argv)
+    if "--prepare-recovery-transport" in selected_args:
+        from .recovery_preparation import main as recovery_main
+
+        return recovery_main(selected_args)
     if "--prepare-domain-runtime" in selected_args:
         from .runtime_cli import main as runtime_main
 
@@ -51,12 +55,21 @@ def main(argv=None):
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--approved-plan-sha256")
     parser.add_argument(
+        "--prepare-lifecycle-state",
+        action="store_true",
+        help="With --execute, bind owned lifecycle state and stop before rollout for exact PV read provisioning",
+    )
+    parser.add_argument(
         "--apply-preparation",
         action="store_true",
         help="With --prepare-database and a release lock, create owned credentials and authenticate all database roles",
     )
     args = parser.parse_args(argv)
     try:
+        if args.prepare_lifecycle_state and (
+            not args.execute or args.prepare_paid_build
+        ):
+            raise Refusal("--prepare-lifecycle-state requires normal --execute")
         environment = load(args.environment)
         # control_plane_only: CLI flag takes precedence; environment YAML may also set it.
         control_plane_only = control_plane_mode(environment, args.control_plane_only)
@@ -209,7 +222,12 @@ def main(argv=None):
                 installer.plan()
             token = os.environ.get("SUPERPLANE_VERIFICATION_TOKEN", "")
             if args.execute:
-                installer.execute(args.approved_plan_sha256, token)
+                if args.prepare_lifecycle_state:
+                    installer.execute(
+                        args.approved_plan_sha256, token, prepare_lifecycle_state=True
+                    )
+                else:
+                    installer.execute(args.approved_plan_sha256, token)
             elif args.rollback:
                 installer.rollback(load(args.rollback), token)
             elif args.cleanup:

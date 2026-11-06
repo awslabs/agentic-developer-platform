@@ -10,7 +10,7 @@ import json
 import os
 import uuid
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -413,6 +413,63 @@ async def test_real_preview_approval_admission_registers_once_and_does_not_claim
         assert await connection.fetchval("SELECT count(*) FROM workspaces") == 1
 
 
+async def test_original_preview_recipe_reaches_paid_dispatch_unchanged(lifecycle):
+    _, review, result = await lifecycle.prepare()
+    assert "lifecycle_phase" not in review["approval_request"]["parameters"]
+    binding = json.loads(open(settings.superplane_paid_worker_binding_file).read())
+    calls = []
+    installed = False
+
+    async def producer(route, payload):
+        calls.append(route)
+        if route == "/binding-proof":
+            return {
+                "version": 1,
+                "installed": installed,
+                "checked_at": datetime.now(UTC).isoformat(),
+                "domain": "superplane",
+                "org_id": str(lifecycle.org_id),
+                "adp_org_id": "adp-test",
+                **binding,
+            }
+        assert route == "/dispatch"
+        return {
+            **payload,
+            "version": 1,
+            "domain_org_id": str(lifecycle.org_id),
+            "adp_org_id": "adp-test",
+            "status": "pending",
+            "invocation_id": "paid",
+            "principal": "paid#1",
+            "not_after": (datetime.now(UTC) + timedelta(minutes=1)).isoformat(),
+        }
+
+    dispatcher = OperationDispatcher(
+        lifecycle.connections.connect,
+        SimpleNamespace(post=producer),
+        domain_connect=lifecycle.connections.connect,
+        policy_for=lambda _: SimpleNamespace(adp_org_id="adp-test"),
+    )
+    refused = await dispatcher.drain_once()
+    assert refused.delivered == 0 and refused.failed == 1
+    assert calls == ["/binding-proof"]
+    calls.clear()
+    installed = True
+    report = await dispatcher.drain_once()
+    assert report.delivered == 1 and report.failed == report.exhausted == 0
+    assert calls == ["/binding-proof", "/dispatch"]
+    async with lifecycle.connections.connect() as connection:
+        row = await connection.fetchrow(
+            "SELECT * FROM harness_operations WHERE operation_id=$1",
+            result.provisioning_operation_id,
+        )
+        assert row["state"] == "running"
+        assert (
+            dict(decode_payload(row["request_payload"]).parameters)
+            == review["approval_request"]["parameters"]
+        )
+
+
 async def test_continuation_replay_recovers_registration_after_approval_and_artifact_expire(
     lifecycle,
 ):
@@ -713,7 +770,9 @@ async def test_capabilities_only_advertise_executable_policy_modes(
     assert "provider-connection-operation-id-v1" in features
 
 
-async def test_lifecycle_proposals_read_domain_artifacts_with_shared_admission(lifecycle):
+async def test_lifecycle_proposals_read_domain_artifacts_with_shared_admission(
+    lifecycle,
+):
     """A real schema split must still allow list, preview and source verification."""
     from contextlib import asynccontextmanager
     from app.routers.onboarding import lifecycle_proposals as list_proposals
@@ -730,21 +789,33 @@ async def test_lifecycle_proposals_read_domain_artifacts_with_shared_admission(l
 
     @asynccontextmanager
     async def domain_connect():
-        async with lifecycle.connections.connect() as connection, connection.transaction():
+        async with (
+            lifecycle.connections.connect() as connection,
+            connection.transaction(),
+        ):
             await connection.execute(f'SET LOCAL search_path TO "{artifact_schema}"')
             yield connection
 
     lifecycle.composition.domain_connect = domain_connect
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(trust_composition=lifecycle.composition)))
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(trust_composition=lifecycle.composition)
+        )
+    )
     try:
         with lifecycle.actor(workspace_id=workspace.id):
             async with lifecycle.sessions() as session:
-                result = await list_proposals(workspace.id, request, lifecycle.org_id, session)
+                result = await list_proposals(
+                    workspace.id, request, lifecycle.org_id, session
+                )
         assert [row["artifact_id"] for row in result["proposals"]] == [artifact_id]
         review = await lifecycle.review(workspace.id, artifact_id, uuid.uuid4())
         assert review["phase"] == "apply-infrastructure"
         async with lifecycle.connections.connect() as connection:
-            await connection.execute("UPDATE harness_operations SET state='failed' WHERE operation_id=$1", workspace.provisioning_operation_id)
+            await connection.execute(
+                "UPDATE harness_operations SET state='failed' WHERE operation_id=$1",
+                workspace.provisioning_operation_id,
+            )
         with pytest.raises(ProvisioningRefused, match="has not completed"):
             await lifecycle.review(workspace.id, artifact_id, uuid.uuid4())
     finally:
@@ -753,3 +824,59 @@ async def test_lifecycle_proposals_read_domain_artifacts_with_shared_admission(l
                 f'ALTER TABLE "{artifact_schema}".workspace_lifecycle_artifacts SET SCHEMA "{shared_schema}"'
             )
             await connection.execute(f'DROP SCHEMA "{artifact_schema}"')
+
+
+async def test_workspace_profile_selects_regional_recipe_and_preserves_existing_preview(
+    lifecycle,
+):
+    from copy import deepcopy
+    from workspace_provisioning.lifecycle_policy import policy_digest
+
+    original = CreateWorkspaceRequest(
+        name="original",
+        mode="managed",
+        account="target",
+        region="us-west-2",
+        isolation_mode="dedicated",
+        operation_id=uuid.uuid4(),
+    )
+    alternate = original.model_copy(
+        update={"name": "regional", "region": "us-east-2", "operation_id": uuid.uuid4()}
+    )
+    workspace = onboarding.workspace_id_for(lifecycle.org_id, alternate.operation_id)
+    with lifecycle.actor():
+        async with lifecycle.sessions() as db:
+            prior = await onboarding.preview(db, lifecycle.org_id, original)
+    profile = deepcopy(lifecycle.document["tenants"][str(lifecycle.org_id)])
+    profile["permitted_regions"] = ["us-east-2"]
+    profile["workspace_defaults"]["availability_zones"] = ["us-east-2a", "us-east-2b"]
+    profile["runtime"]["workspace_variables"][
+        "workspace_role_permissions_boundary_arn"
+    ] = "arn:aws:iam::000000000002:policy/fixture-child-boundary"
+    reference = profile["credential_references"]["000000000002"]
+    reference["credential_id"] = "spda1:" + str(
+        uuid.uuid5(uuid.NAMESPACE_URL, "regional-provider")
+    )
+    lifecycle.document["workspace_policies"] = {
+        str(lifecycle.org_id): {str(workspace): profile}
+    }
+    lifecycle.config.write_text(canonical(lifecycle.document))
+    with lifecycle.actor():
+        async with lifecycle.sessions() as db:
+            current = await onboarding.preview(db, lifecycle.org_id, original)
+            regional = await onboarding.preview(db, lifecycle.org_id, alternate)
+    assert current == prior
+    params = regional["approval_request"]["parameters"]
+    request = json.loads(params["lifecycle_request"])
+    assert request["region"] == "us-east-2"
+    assert request["availability_zones"] == ["us-east-2a", "us-east-2b"]
+    assert params["credential_id"] == reference["credential_id"]
+    assert params["lifecycle_policy_sha256"] == policy_digest(profile)
+    assert params["runtime_config_sha256"] == digest(profile["runtime"])
+    # A personal vault handle still needs its independent account registration.
+    reference["credential_id"] = "unregistered-personal-credential"
+    lifecycle.config.write_text(canonical(lifecycle.document))
+    with lifecycle.actor():
+        async with lifecycle.sessions() as db:
+            with pytest.raises(ProvisioningRefused, match="not registered"):
+                await onboarding.preview(db, lifecycle.org_id, alternate)

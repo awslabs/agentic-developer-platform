@@ -1,130 +1,93 @@
-"""
-Pre Token Generation Lambda Trigger (V3) for AWS Cognito.
+"""Cognito V3 pre-token trigger with protected human and registry-bound service claims."""
 
-This Lambda function injects custom claims into access tokens for both:
-1. Human users (TokenGeneration_Authentication): Copy custom attributes to access token
-2. Agents/Services (TokenGeneration_ClientCredentials): Look up org/team from DynamoDB
-
-Issue #119: Unified Cognito JWT Auth
-
-GitHub Sign-In Decision Logic (Issue #309):
--------------------------------------------
-When a user signs in via GitHub (federated identity provider), Cognito fires
-TokenGeneration_Authentication with the same event shape as email/password users.
-The key difference: GitHub-federated users may not have custom:org_id set yet
-(it's assigned by an admin after first sign-up). In that case, the claims dict
-will be empty for org_id/team_id/department_id — the backend treats this as an
-"unassigned" user with limited access until an admin assigns them to an org.
-
-The Pre-Sign-Up Lambda (separate function) runs BEFORE this one and handles:
-- Allowlist enforcement (org membership, explicit username list, or open mode)
-- Auto-confirming the user (external providers skip email verification)
-- Linking external identity attributes (GitHub username → custom:github_username)
-
-This Lambda does NOT need to differentiate between auth methods — it simply
-copies whatever custom attributes exist on the user record into the access token.
-Both email/password and GitHub users flow through handle_user_token_generation().
-"""
-
-import json
 import logging
 import os
 
 import boto3
 from botocore.exceptions import ClientError
 
-# Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Initialize DynamoDB client
 dynamodb = boto3.resource("dynamodb")
 AGENT_CLIENTS_TABLE = os.environ.get("AGENT_CLIENTS_TABLE", "agent_clients")
 
+HUMAN_AUTHORITY_ATTRIBUTES = (
+    "custom:org_id",
+    "custom:team_id",
+    "custom:department_id",
+    "custom:role",
+)
+
 
 def handler(event: dict, context) -> dict:
-    """
-    Pre Token Generation Lambda handler (V3 trigger).
-
-    This function is called before Cognito issues tokens and allows us to
-    customize the claims in the access token.
-
-    Args:
-        event: Cognito trigger event containing user/client information
-        context: Lambda context
-
-    Returns:
-        Modified event with custom claims added
-    """
-    logger.info(f"Pre Token Generation trigger: {event.get('triggerSource')}")
-    logger.debug(f"Full event: {json.dumps(event, default=str)}")
-
     trigger_source = event.get("triggerSource", "")
-
     try:
         if trigger_source in (
             "TokenGeneration_Authentication",
-            # Managed login (newer Hosted UI) sends HostedAuth instead of
-            # Authentication — without it, Hosted-UI access tokens get NO
-            # custom claims and org-scoped lists return empty (Issue #2697).
             "TokenGeneration_HostedAuth",
             "TokenGeneration_RefreshTokens",
             "TokenGeneration_NewPasswordChallenge",
         ):
-            # Human user authentication - copy custom attributes to access token
             return handle_user_token_generation(event)
-        elif trigger_source == "TokenGeneration_ClientCredentials":
-            # M2M client credentials - look up agent metadata
+        if trigger_source == "TokenGeneration_ClientCredentials":
             return handle_client_credentials_token_generation(event)
-        else:
-            logger.warning(f"Unknown trigger source: {trigger_source}")
-            return event
-
-    except Exception as e:
-        logger.error(f"Error in pre token generation: {e}")
-        # Return unmodified event on error to not block authentication
+        logger.warning("Unknown trigger source: %s", trigger_source)
         return event
+    except Exception:
+        logger.error("Pre-token claim authority unavailable")
+        raise
+
+
+def _protected_user_attributes(event: dict) -> dict[str, str]:
+    pool_id = event.get("userPoolId")
+    username = event.get("userName")
+    request = event.get("request")
+    event_attributes = request.get("userAttributes") if isinstance(request, dict) else None
+    subject = event_attributes.get("sub") if isinstance(event_attributes, dict) else None
+    if not all(isinstance(value, str) and value for value in (pool_id, username, subject)):
+        raise ValueError("Cognito identity is incomplete")
+
+    user = boto3.client("cognito-idp").admin_get_user(
+        UserPoolId=pool_id, Username=username
+    )
+    if not isinstance(user, dict) or user.get("Username") != username or user.get("Enabled") is False:
+        raise ValueError("Cognito user identity does not match")
+    attributes = user.get("UserAttributes")
+    if not isinstance(attributes, list):
+        raise ValueError("Cognito user attributes unavailable")
+    protected = {}
+    for attribute in attributes:
+        if (
+            not isinstance(attribute, dict)
+            or not isinstance(attribute.get("Name"), str)
+            or not isinstance(attribute.get("Value"), str)
+            or attribute["Name"] in protected
+        ):
+            raise ValueError("Cognito user attributes invalid")
+        protected[attribute["Name"]] = attribute["Value"]
+    if protected.get("sub") != subject:
+        raise ValueError("Cognito subject does not match")
+    return protected
 
 
 def handle_user_token_generation(event: dict) -> dict:
-    """
-    Handle token generation for human user authentication.
-
-    Copies custom attributes from user attributes to access token claims.
-
-    Args:
-        event: Cognito trigger event
-
-    Returns:
-        Modified event with custom claims
-    """
-    user_attributes = event.get("request", {}).get("userAttributes", {})
-
-    # Extract custom attributes
-    org_id = user_attributes.get("custom:org_id", "")
-    team_id = user_attributes.get("custom:team_id", "")
-    department_id = user_attributes.get("custom:department_id", "")
-    role = user_attributes.get("custom:role", "")
-
-    logger.info(f"User token generation for org_id={org_id}, team_id={team_id}")
-
-    # Build claims to add to access token
-    claims_to_add = {
-        "custom:org_id": org_id,
-        "custom:team_id": team_id,
-        "custom:department_id": department_id,
-        "custom:role": role,
-        "custom:account_type": "human",
+    protected = _protected_user_attributes(event)
+    organization = protected.get("custom:org_id")
+    claims = {
+        attribute: protected[attribute]
+        for attribute in HUMAN_AUTHORITY_ATTRIBUTES
+        if organization and protected.get(attribute)
     }
-
-    # Remove empty claims
-    claims_to_add = {k: v for k, v in claims_to_add.items() if v}
-
-    # Set the claims override in the response
-    event["response"] = event.get("response", {})
-    event["response"]["claimsAndScopeOverrideDetails"] = {"accessTokenGeneration": {"claimsToAddOrOverride": claims_to_add}}
-
-    logger.info(f"Added claims to access token: {list(claims_to_add.keys())}")
+    claims["custom:account_type"] = "human"
+    suppressed = [
+        attribute for attribute in HUMAN_AUTHORITY_ATTRIBUTES if attribute not in claims
+    ]
+    event["response"] = event.get("response") or {}
+    event["response"]["claimsAndScopeOverrideDetails"] = {
+        token: {"claimsToAddOrOverride": dict(claims), "claimsToSuppress": list(suppressed)}
+        for token in ("idTokenGeneration", "accessTokenGeneration")
+    }
     return event
 
 

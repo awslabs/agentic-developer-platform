@@ -105,14 +105,14 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .dispatch_pass import message_deduplication_id, message_group_id, resolve_installation_id
-from .models import DecisionKind, OrchestrationDecision, OrchestrationNode
+from .dispatch_pass import message_deduplication_id, message_group_id
+from .models import DecisionKind, OrchestrationDecision, OrchestrationExecution, OrchestrationNode, OrchestrationPullRequestBinding
 from .state import NodeState
 from .tick import _ITEM_BACKSTOP, _PAGE_SIZE
 
@@ -137,10 +137,6 @@ __all__ = [
 # this is part of the engine path, and a second flag would let the two disagree —
 # a diagnoser summoning against an engine that is switched off.
 FEATURE_FLAG_ENV = "FEATURE_ORCHESTRATION_ENGINE_ENABLED"
-
-# The dispatch story's target-repo var, reused rather than duplicated. A diagnoser
-# goes where the engine's other work goes; a second var could disagree with it.
-REPO_ENV = "BG_ORCH_DISPATCH_REPO"
 
 # Envelope schema version. Must match the dispatch story's `_ENVELOPE_VERSION` and
 # the webhook path's, so one worker code path parses every producer's messages.
@@ -253,7 +249,7 @@ class DiagnosisConfig:
         return cls(
             enabled=enabled,
             max_summons_per_pass=cap,
-            repo=(os.environ.get(REPO_ENV) or "").strip(),
+            repo="",
         )
 
 
@@ -492,6 +488,7 @@ class _Candidate:
     """A node in a diagnosable state, with the trigger event that flagged it."""
 
     node: OrchestrationNode
+    trigger_id: str
     trigger_kind: str
     trigger_reason: str | None
 
@@ -562,8 +559,10 @@ async def _fetch_candidate_page(session: AsyncSession, *, after_id: str | None, 
     return list((await session.execute(stmt.order_by(OrchestrationNode.id).limit(limit))).scalars().all())
 
 
-async def _resolve_dispatch_target(session: AsyncSession, node: OrchestrationNode, *, config: DiagnosisConfig) -> tuple[int, int] | None:
-    """The `(installation_id, issue)` a diagnoser envelope needs, or None.
+async def _resolve_dispatch_target(
+    session: AsyncSession, node: OrchestrationNode, *, config: DiagnosisConfig
+) -> tuple[int, int, str, int | None] | None:
+    """The saved story target and issue a diagnoser envelope needs, or None.
 
     None means "record the diagnosis, dispatch nothing". That asymmetry is
     deliberate: the diagnosis *record* is this story's deliverable and is always
@@ -576,10 +575,6 @@ async def _resolve_dispatch_target(session: AsyncSession, node: OrchestrationNod
     reimplemented: it is a fail-closed check, and a second copy of a fail-closed
     check is free to drift from the original in the direction that matters.
     """
-    if not config.repo:
-        logger.warning("orchestration diagnose: %s is unset; recorded a diagnosis for node %s but dispatching no diagnoser", REPO_ENV, node.id)
-        return None
-
     if not node.issue_ref:
         logger.info("orchestration diagnose: node %s has no issue_ref; diagnosis recorded but no diagnoser dispatched", node.id)
         return None
@@ -594,16 +589,76 @@ async def _resolve_dispatch_target(session: AsyncSession, node: OrchestrationNod
         )
         return None
 
-    installation_id = await resolve_installation_id(session, org_id=node.org_id)
-    if installation_id is None:
-        logger.warning(
-            "orchestration diagnose: org %s has no single unambiguous GitHub installation; diagnosis recorded for node %s, no diagnoser sent",
-            node.org_id,
-            node.id,
-        )
-        return None
+    from .accepted_node import accepted_node_contract, requires_verified_repository_connection
 
-    return installation_id, issue
+    requires_connection = await requires_verified_repository_connection(session, node)
+    if node.repository_identity or requires_connection:
+        from .execution_state import BlockCode
+        from .pr_bindings import active_binding_for_node, continuation_binding_hold
+        from .repository_binding import RepositoryBindingError, resolve_story_repository
+
+        execution = await session.scalar(
+            select(OrchestrationExecution).where(
+                OrchestrationExecution.org_id == node.org_id,
+                OrchestrationExecution.node_id == node.id,
+                OrchestrationExecution.cycle == node.attempts,
+            )
+        )
+        if execution is not None and execution.block_code in {BlockCode.BUDGET_EXHAUSTED.value, BlockCode.ATTEMPTS_EXHAUSTED.value}:
+            return None
+        binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
+        if binding is not None:
+            if await continuation_binding_hold(session, node, binding):
+                return None
+        elif await session.scalar(
+            select(OrchestrationPullRequestBinding.id).where(
+                OrchestrationPullRequestBinding.org_id == node.org_id,
+                OrchestrationPullRequestBinding.node_id == node.id,
+                OrchestrationPullRequestBinding.attempt == node.attempts,
+            )
+        ):
+            return None
+        contract = await accepted_node_contract(session, node)
+        if (
+            contract is None
+            or contract.node.repository_identity != node.repository_identity
+            or contract.node.provider_repository_id != node.provider_repository_id
+            or (requires_connection and contract.node.repository_connection is None)
+            or (contract.node.repository_connection.model_dump(mode="json") if contract.node.repository_connection else None)
+            != node.repository_connection
+            or str(contract.node.issue_ref).lstrip("#") != str(issue)
+        ):
+            return None
+        try:
+            verified = await resolve_story_repository(
+                session,
+                tenant_id=node.org_id,
+                name=contract.node.repository_identity,
+                repository_id=node.provider_repository_id,
+                installation_id=binding.installation_id if binding is not None else (node.repository_connection or {}).get("installation_id"),
+                issue=issue,
+                operation="diagnose",
+                permitted_names=tuple(contract.repository_ids) if contract.repository_ids else None,
+            )
+        except RepositoryBindingError:
+            return None
+        if binding is not None and (
+            binding.repo.casefold() != verified.full_name.casefold()
+            or binding.provider_repository_id != verified.repository_id
+            or binding.installation_id != verified.installation_id
+        ):
+            return None
+        return verified.installation_id, issue, verified.full_name, verified.repository_id
+
+    from .pr_bindings import active_binding_for_node, binding_scope_matches
+
+    binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
+    if binding is not None:
+        if not binding_scope_matches(binding, node):
+            return None
+        return binding.installation_id, issue, binding.repo, binding.provider_repository_id
+
+    return None
 
 
 async def _diagnose_one(session: AsyncSession, candidate: _Candidate, report: DiagnosisReport, *, config: DiagnosisConfig) -> None:
@@ -642,19 +697,23 @@ async def _diagnose_one(session: AsyncSession, candidate: _Candidate, report: Di
         report.record(node.org_id, "undispatchable")
         return
 
-    installation_id, issue = dispatchable
+    installation_id, issue, repo, repository_id = dispatchable
+
+    envelope = _build_envelope(
+        node=node,
+        diagnosis=diagnosis,
+        installation_id=installation_id,
+        issue=issue,
+        config=replace(config, repo=repo),
+    )
+    if repository_id is not None:
+        envelope["source_ref"]["provider_repository_id"] = repository_id
 
     report.pending.append(
         PendingDiagnosis(
             node_id=node.id,
             org_id=node.org_id,
-            envelope=_build_envelope(
-                node=node,
-                diagnosis=diagnosis,
-                installation_id=installation_id,
-                issue=issue,
-                config=config,
-            ),
+            envelope=envelope,
             group_id=message_group_id(org_id=node.org_id, node_id=node.id),
             deduplication_id=message_deduplication_id(
                 node_id=node.id,
@@ -662,7 +721,7 @@ async def _diagnose_one(session: AsyncSession, candidate: _Candidate, report: Di
                 # a diagnosis is rooted in the stall/halt that caused it, and this
                 # makes a second genuine incident a distinct message while a
                 # re-examined node inside the dedup window is not.
-                decision_id=f"diagnose:{candidate.trigger_kind}",
+                decision_id=f"diagnose:{candidate.trigger_id}",
                 attempt=node.attempts,
             ),
         )
@@ -736,7 +795,7 @@ async def run_diagnosis_pass(session: AsyncSession, config: DiagnosisConfig | No
 
                 await _diagnose_one(
                     session,
-                    _Candidate(node=node, trigger_kind=trigger.kind, trigger_reason=trigger.reason),
+                    _Candidate(node=node, trigger_id=trigger.id, trigger_kind=trigger.kind, trigger_reason=trigger.reason),
                     report,
                     config=cfg,
                 )

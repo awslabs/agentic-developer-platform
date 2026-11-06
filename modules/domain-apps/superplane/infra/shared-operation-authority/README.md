@@ -5,6 +5,16 @@ Gateway queue and database-read permissions, and namespaced runtime metadata
 RBAC. The protected webhook Terraform owner composes it with explicit inputs.
 The registry, Gateway role, shared cluster and shared state keep their owners.
 
+Every configured native binding sets `current_identity_enforced: true`. The
+owner supplies this mandatory setting after Terraform's typed input conversion,
+so it cannot be discarded as an extra input field or disabled by callers. The
+published binding revision hashes the same complete payload sent to Gateway.
+Empty/default installations still publish no binding or additional authority.
+
+Producer readiness also needs `dynamodb:DescribeTable` on the existing shared
+authority table. The shared root passes its exact ARN into the app-owned Gateway
+policy. This grants no table data access, mutation or ownership of that table.
+
 The shared root contains six whole-resource `moved` blocks, including indexed
 instances. Existing names, registration documents, backend keys, trust and
 permission scopes remain unchanged. Review the saved plan before applying;

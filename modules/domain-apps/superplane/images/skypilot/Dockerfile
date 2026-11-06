@@ -1,10 +1,10 @@
-FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:0a5115d0840164c9cf9b17d5c455322bda2c35f68902f28f91ef6d9dd84214c2 AS high-maintenance
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:7b3df072a13b928bddbf70d71735fdc8572006442048868914627ebc8e635b68 AS high-maintenance
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:46c383b2c236e48d58734e26a44da734a0ef6b7baf6cdb867430bfdbf4d92a86 AS rsync-security
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2ea72b3f76d6e2f8b584c9ec780811a14bc94dc983d94382bc751363bb59a020 AS openssh-security
 # Official CPython patch release on the same Debian Trixie ABI. Keep SkyPilot's
 # provider packages; do not copy the official image's pip/site-packages tree.
-FROM public.ecr.aws/docker/library/python:3.10.21-slim@sha256:31dd4d9529d02d7436659061cb7564cd4733fc90e5e152709a942d53382ec8d0 AS python-security
+FROM public.ecr.aws/docker/library/python:3.10.22-slim@sha256:6ff506466f8b1e981719b468cc0023b8ef000b983cdec0eafe119d01f379e31d AS python-security
 RUN rm -rf /usr/local/lib/python3.10/site-packages
 
 # Preserve the reviewed S03 SkyPilot 0.12.3 + setuptools artifact, then apply
@@ -12,9 +12,7 @@ RUN rm -rf /usr/local/lib/python3.10/site-packages
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec
 
 USER root
-# Keep kubectl within one minor of EKS 1.35 and replace its vulnerable Go runtime.
-ADD --checksum=sha256:3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb https://dl.k8s.io/release/v1.35.9/bin/linux/amd64/kubectl /usr/local/bin/kubectl
-RUN chmod 0755 /usr/local/bin/kubectl && kubectl version --client=true
+# The final maintenance layer supplies the patched kubectl 1.35.9 build.
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get -y upgrade \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -32,9 +30,9 @@ COPY --from=python-security /usr/local/lib/libpython3.10.so.1.0 /usr/local/lib/l
 COPY --from=python-security /usr/local/lib/libpython3.so /usr/local/lib/libpython3.so
 COPY --from=python-security /usr/local/lib/python3.10/ /usr/local/lib/python3.10/
 COPY --from=python-security /usr/local/include/python3.10/ /usr/local/include/python3.10/
-ENV PYTHON_VERSION=3.10.21 \
-    PYTHON_SHA256=a0da1e72132e950154eca0f6f47d5db828454700de20e5113667940d81e0db04
-RUN python -m pip check && python -c "import sys, ssl, sqlite3, bz2, lzma, ctypes; assert sys.version_info[:3] == (3, 10, 21)"
+ENV PYTHON_VERSION=3.10.22 \
+    PYTHON_SHA256=c61fe9b1a1a7ec2a0b0388e664187c378a5325a89e3606d220abf5bdfccb2543
+RUN python -m pip check && python -c "import sys, ssl, sqlite3, bz2, lzma, ctypes; assert sys.version_info[:3] == (3, 10, 22)"
 
 # Keep the upstream entrypoint/command and API behavior; deployment supplies
 # the API process command. Health/compatibility tests must use this final image.
@@ -86,3 +84,6 @@ COPY --from=rsync-security /provenance/ /opt/adp-rsync-security/
 # The installer rejects unreviewed inputs and checks the full provider environment.
 RUN --network=none --mount=type=bind,from=high-maintenance,source=/,target=/maintenance-input \
     python3 /maintenance-input/maintenance/install.py /maintenance-input
+
+COPY high-maintenance/distrust_system_root.py /opt/adp-system-ca-security/distrust_system_root.py
+RUN --network=none python /opt/adp-system-ca-security/distrust_system_root.py

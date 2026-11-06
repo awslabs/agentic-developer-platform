@@ -17,7 +17,7 @@ async function publish(result: EngineReviewResult, envelope: CodexEngineReviewEn
     input: JSON.stringify({ result, cycle: envelope.cycle }),
   });
   const receipt = JSON.parse(output.stdout);
-  if (receipt.error) throw Object.assign(new Error(receipt.error), { retryable: receipt.retryable });
+  if (receipt.error) throw Object.assign(new Error(receipt.error), { code: receipt.error, retryable: receipt.retryable });
   if (receipt.recorded !== true || receipt.head_sha !== result.sha) throw new Error("Review evidence was not acknowledged");
 }
 
@@ -39,11 +39,14 @@ export async function deliverEngineReview(
     // Other authorization, CI or merge blocks must remain effective.
     if (result.report.verdict !== "approve"
         || Object.values(result.report.stages).some(stage => stage !== "completed")
-        || result.report.findings.length > 0 || !github.markReady || !observed.pr_node_id
+        || result.report.findings.some(finding => finding.severity === "blocking") || !github.markReady || !observed.pr_node_id
         || observed.state !== "passed" || observed.base_repair_required
-        || observed.head_sha !== result.sha || observed.base_sha !== result.reviewed_base_sha
+        || observed.head_sha !== result.sha
         || observed.merge_reasons?.some(reason => reason !== "draft")) {
       return { state: "blocked", reason: "Recovery draft is not ready for delivery" };
+    }
+    if (observed.base_sha !== result.reviewed_base_sha) {
+      return { state: "pending", reason: "Revalidate the current base before delivery" };
     }
     const fresh = await github.getPullRequest(number);
     if (fresh.head.sha !== result.sha || fresh.state !== "open") return { state: "blocked", reason: "Recovery head changed" };
@@ -56,8 +59,14 @@ export async function deliverEngineReview(
   if (observed.merge_method === "queue" && observed.pr_node_id && await github.queueEntry(observed.pr_node_id, result.sha)) {
     return { state: "pending", queued: true };
   }
-  if (observed.base_sha !== result.reviewed_base_sha || observed.base_repair_required || observed.state === "failed") {
+  if (observed.base_repair_required || observed.state === "failed") {
     return { state: "repair", reason: JSON.stringify(observed) };
+  }
+  // A clean base can advance between the review loop's observation and this
+  // merge admission read. Let that loop revalidate the unchanged head against
+  // the new base; only the canonical conflict/strict-check signal needs repair.
+  if (observed.base_sha !== result.reviewed_base_sha) {
+    return { state: "pending", reason: "Revalidate the current base before delivery" };
   }
   if (observed.state === "pending" || observed.merge_state === "waiting") return { state: "pending" };
   if (observed.merge_state !== "eligible" || !observed.merge_method || !observed.pr_node_id) {
@@ -65,7 +74,7 @@ export async function deliverEngineReview(
   }
   // Check the live target once more before the expected-head GitHub mutation.
   if ((await github.getBranch(current.base.ref)).commit.sha !== observed.base_sha) {
-    return { state: "repair", reason: "Repair out-of-date base" };
+    return { state: "pending", reason: "Reobserve the advanced base before delivery" };
   }
   try {
     if (observed.merge_method === "queue") {

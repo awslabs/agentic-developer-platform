@@ -285,6 +285,66 @@ async def _dispatch_transition(
     return rows, True, None
 
 
+async def continue_node_execution(
+    session: AsyncSession,
+    *,
+    node: OrchestrationNode,
+    execution_id: str,
+    phase: str,
+    claim_id: str,
+    claim_generation: int,
+) -> bool:
+    """Move a stalled-then-resumed story back to `running` so its live execution continues (#7467).
+
+    The second audited state write in this module, kept beside `_dispatch_transition`
+    deliberately: the same `transition()` authority check and the same conditional
+    UPDATE on the observed state, but **no** attempt increment, because nothing new
+    is dispatched. The execution runner owns the story again from the phase it was
+    in when the watchdog interrupted it. The decision row says so in a form an
+    operator can read without the log.
+    """
+    import json
+
+    result = transition(NodeState.READY, NodeState.RUNNING, actor_kind=_DISPATCH_ACTOR, reason="execution continuation")
+    if not result.allowed:
+        return False
+    stmt = (
+        update(OrchestrationNode)
+        .where(OrchestrationNode.id == node.id, OrchestrationNode.org_id == node.org_id, OrchestrationNode.state == NodeState.READY.value)
+        .values(state=NodeState.RUNNING.value, updated_at=utcnow())
+    )
+    rows = (await session.execute(stmt)).rowcount or 0
+    if rows == 0:
+        return False
+    session.add(
+        OrchestrationDecision(
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            kind=DecisionKind.NODE_RESUMED.value,
+            actor_id=_DISPATCH_ACTOR_ID,
+            actor_role=_DISPATCH_ACTOR_ROLE,
+            actor_kind=_DISPATCH_ACTOR.value,
+            from_state=NodeState.READY.value,
+            to_state=NodeState.RUNNING.value,
+            reason=json.dumps(
+                {
+                    "mode": "execution_continuation",
+                    "attempt": node.attempts,
+                    "execution_id": execution_id,
+                    "phase": phase,
+                    "claim_id": claim_id,
+                    "claim_generation": claim_generation,
+                    "detail": "the stall watchdog interrupted a live execution; it continues from its current phase instead of a new attempt",
+                }
+            ),
+        )
+    )
+    await session.flush()
+    logger.info("orchestration dispatch: node %s re-enters execution %s at %s instead of a new attempt", node.id, execution_id, phase)
+    return True
+
+
 async def dispatch_node(
     session: AsyncSession,
     node: OrchestrationNode | str,

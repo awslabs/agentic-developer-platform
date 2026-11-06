@@ -41,7 +41,7 @@ import { AdminRole } from '@/types';
 import { ApprovalLookup } from './ApprovalPanel';
 import { CREATE_INTENT, CreateWorkspaceFlow } from './CreateWorkspaceFlow';
 import { LifecycleProposalPanel } from './LifecycleProposalPanel';
-import { ProviderConnectionPanel } from './ProviderConnectionPanel';
+import { WorkspaceProviderPanel } from './WorkspaceProviderPanel';
 import { ReadinessPanel } from './ReadinessPanel';
 import { RetirementPanel } from './RetirementPanel';
 import { WorkspaceDetails } from './WorkspaceDetails';
@@ -50,6 +50,8 @@ import { BatchPanel } from './BatchPanel';
 import {
   ScopeGuard,
   getCapabilities,
+  getControlPlaneHealth,
+  type ControlPlaneHealth,
   isSuperseded,
   listWorkspaces,
   type Outcome,
@@ -115,6 +117,7 @@ export function OnboardingView() {
 
   const [state, setState] = useState<LoadState>({ phase: 'loading' });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [health, setHealth] = useState<ControlPlaneHealth | null>(null);
   /**
    * Why create is unavailable in this environment, if it is.
    *
@@ -345,6 +348,39 @@ export function OnboardingView() {
     // rebuilds the guard and reloads, and the old guard's replies are discarded.
   }, [orgId, principalId, token, isLoading, load, store]);
 
+  useEffect(() => {
+    const guard = new ScopeGuard();
+    setHealth(null);
+    if (!token || !orgId || !principalId || isLoading) return () => guard.supersede();
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function observe() {
+      const result = await getControlPlaneHealth(guard);
+      if (stopped || isSuperseded(result) || getAccessToken() !== token) return;
+      setHealth(result.ok ? result.value : null);
+      timer = setTimeout(() => { void observe(); }, 30_000);
+    }
+    void observe();
+    return () => { stopped = true; clearTimeout(timer); guard.supersede(); };
+  }, [orgId, principalId, token, isLoading]);
+
+  useEffect(() => {
+    if (!token || !orgId || !principalId || isLoading) return;
+    const guard = new ScopeGuard();
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      const result = await listWorkspaces(guard);
+      if (stopped || isSuperseded(result) || getAccessToken() !== token) return;
+      if (result.ok) setState(previous => previous.phase === 'loaded' &&
+        previous.orgId === orgId && previous.principalId === principalId && previous.sessionToken === token
+        ? { ...previous, workspaces: result.value.workspaces } : previous);
+      timer = setTimeout(() => { void poll(); }, 30_000);
+    }
+    timer = setTimeout(() => { void poll(); }, 30_000);
+    return () => { stopped = true; clearTimeout(timer); guard.supersede(); };
+  }, [token, orgId, principalId, isLoading]);
+
   const workspaces = state.phase === 'loaded' && state.orgId === orgId &&
     state.principalId === principalId && state.sessionToken === token ? state.workspaces : [];
   let savedReceipt: ReturnType<typeof readReceipt> = null;
@@ -368,13 +404,8 @@ export function OnboardingView() {
   /**
    * The readiness readings.
    *
-   * `health: null` deliberately: the control plane's `/health` route is not in
-   * the gateway proxy allowlist, so the browser genuinely cannot observe it. The
-   * reading therefore reports "not reached yet" rather than inferring health from
-   * the fact that the workspace list happened to answer. Inferring it would be
-   * the precise error AC-04 forbids, arrived at sideways — and it is worth noting
-   * that a successful list *does* prove the API is up, which is exactly why the
-   * temptation exists. It still would not license any claim about a workspace.
+   * Control-plane health comes from its own authenticated observation. Workspace
+   * and provider readiness remain independent; a successful list is not health.
    *
    * The provider readings are whatever the connection panel actually observed, or
    * `null` until it observes something. They are NOT invented here and no synthetic
@@ -402,8 +433,8 @@ export function OnboardingView() {
     const observed = observationFor(providerObservation, selected?.id ?? null);
     return buildReadiness(
       {
-        health: null,
-        healthObservedAt: null,
+        health,
+        healthObservedAt: health?.observed_at ?? null,
         workspace: selected,
         validation: observed?.validation ?? null,
         admitsNewWork: observed?.admitsNewWork ?? null,
@@ -411,7 +442,7 @@ export function OnboardingView() {
       },
       now,
     );
-  }, [selected, providerObservation, capabilityProblem, now]);
+  }, [selected, providerObservation, capabilityProblem, now, health]);
 
   if (state.phase === 'loading' || state.orgId !== orgId ||
     state.principalId !== principalId || state.sessionToken !== token) {
@@ -513,7 +544,7 @@ export function OnboardingView() {
           <ReadinessPanel report={readiness} workspaceName={selected?.display_name} />
           {selected && token && (
             <WorkspaceDetails key={`details:${scope.orgId}:${principalId}:${selected.id}`} workspaceId={selected.id}
-              scope={scope} guard={guardRef.current} sessionToken={token} now={now} />
+              scope={scope} expectedOrgId={selected.org_id} guard={guardRef.current} sessionToken={token} now={now} />
           )}
           {selected && mayOnboard && token && !selected.is_default && (
             <RetirementPanel key={`retirement:${scope.orgId}:${principalId}:${selected.id}`} workspaceId={selected.id}
@@ -529,7 +560,7 @@ export function OnboardingView() {
           {/* Only for a selected workspace: a connection is bound to one
               workspace, and there is no meaningful "bind to whichever" action. */}
           {selected && (
-            <ProviderConnectionPanel
+            <WorkspaceProviderPanel sessionToken={token ?? ''}
               // Remounts on selection change, which resets the panel's in-flight
               // state and its bound-connection view. Without this the connection
               // just bound to workspace A would still be on screen after

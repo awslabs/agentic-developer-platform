@@ -99,11 +99,13 @@ def vault_credential_body() -> dict:
         "service": "aws",
         "label": "prod-account",
         "credential_type": "aws_access_key",
+        "provider": None,
         "scope": "user",
         "scopes": None,
         "expires_at": None,
         "last_used_at": None,
         "strict": False,
+        "agent_consent": False,
         "created_at": "2026-09-17T12:00:00Z",
         "updated_at": None,
     }

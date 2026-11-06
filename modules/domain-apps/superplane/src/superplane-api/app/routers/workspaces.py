@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_session
 from app.middleware.auth import get_current_org
 from app.models.cluster import Cluster
+from app.models.cloud_account import CloudAccount
 from app.models.workspace import STATUS_ACTIVE, Workspace
 from app.schemas.workspace import (
     CreateWorkspaceRequest,
@@ -80,14 +81,23 @@ def _effective_health_status(cluster: Cluster) -> str:
 
 
 def _workspace_to_response(
-    ws: Workspace, cluster: Cluster | None = None
+    ws: Workspace, cluster: Cluster | None = None, account: CloudAccount | None = None
 ) -> WorkspaceResponse:
     """Convert a Workspace model + optional Cluster to a response schema."""
     cluster_health = None
     if cluster:
         cluster_health = _effective_health_status(cluster)
 
+    placement = json.loads(ws.operation_request_json or "{}")
+    arn_parts = (cluster.eks_cluster_arn or "").split(":") if cluster else []
+    observed_region = arn_parts[3] if len(arn_parts) == 6 else None
     return WorkspaceResponse(
+        account_id=account.account_identifier if account else None,
+        requested_region=placement.get("region"),
+        cluster_id=cluster.id if cluster else None,
+        cluster_name=cluster.name if cluster else None,
+        cluster_region=observed_region,
+        cloud_provider=cluster.cloud_provider if cluster else (account.provider if account else None),
         id=ws.id,
         org_id=ws.org_id,
         name=ws.name,
@@ -460,8 +470,16 @@ async def list_workspaces(
         .order_by(Workspace.created_at.desc())
     )
     workspaces = result.scalars().all()
+    cluster_ids = {ws.cluster_id for ws in workspaces if ws.cluster_id}
+    account_ids = {ws.aws_account_id for ws in workspaces if ws.aws_account_id}
+    clusters = {c.id: c for c in (await db.scalars(
+        select(Cluster).where(Cluster.org_id == org_id, Cluster.id.in_(cluster_ids))
+    )).all()} if cluster_ids else {}
+    accounts = {c.id: c for c in (await db.scalars(
+        select(CloudAccount).where(CloudAccount.org_id == org_id, CloudAccount.id.in_(account_ids))
+    )).all()} if account_ids else {}
     return WorkspaceListResponse(
-        workspaces=[_workspace_to_response(ws) for ws in workspaces],
+        workspaces=[_workspace_to_response(ws, clusters.get(ws.cluster_id), accounts.get(ws.aws_account_id)) for ws in workspaces],
         total=len(workspaces),
     )
 
@@ -509,6 +527,7 @@ async def get_workspace(
     workspace_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    request: Request = None,
 ) -> WorkspaceResponse:
     """Get workspace details including cluster health from last heartbeat."""
     result = await db.execute(
@@ -529,11 +548,62 @@ async def get_workspace(
     cluster: Cluster | None = None
     if workspace.cluster_id:
         cluster_result = await db.execute(
-            select(Cluster).where(Cluster.id == workspace.cluster_id)
+            select(Cluster).where(Cluster.id == workspace.cluster_id, Cluster.org_id == org_id)
         )
         cluster = cluster_result.scalar_one_or_none()
 
-    return _workspace_to_response(workspace, cluster)
+    account = await db.scalar(select(CloudAccount).where(
+        CloudAccount.id == workspace.aws_account_id, CloudAccount.org_id == org_id
+    )) if workspace.aws_account_id else None
+    response = _workspace_to_response(workspace, cluster, account)
+    composition = getattr(request.app.state, "trust_composition", None) if request else None
+    if composition is not None and workspace.provisioning_operation_id:
+        from app.services.provisioning_progress import read_progress
+        from app.schemas.workspace import ProvisioningProgress
+
+        try:
+            response.provisioning_progress = ProvisioningProgress.model_validate(
+                await read_progress(composition, workspace)
+            )
+        except Exception:
+            logger.exception("Workspace provisioning progress unavailable for %s", workspace.id)
+    return response
+
+
+@router.get("/{workspace_id}/provider-authority")
+async def workspace_provider_authority(
+    workspace_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+    request: Request = None,
+):
+    """Workspace-authorized metadata; Gateway resolves live provider evidence."""
+    workspace = await db.scalar(select(Workspace).where(
+        Workspace.id == workspace_id, Workspace.org_id == org_id
+    ))
+    if workspace is None:
+        raise HTTPException(404, "Workspace not found")
+    account = await db.scalar(select(CloudAccount).where(
+        CloudAccount.id == workspace.aws_account_id, CloudAccount.org_id == org_id
+    )) if workspace.aws_account_id else None
+    handles = json.loads(account.adp_credential_ids_json or "[]") if account else []
+    if workspace.provisioning_operation_id:
+        from app.services.workspace_provider_reading import provisioning_credential
+
+        composition = getattr(request.app.state, "trust_composition", None) if request else None
+        if composition is None:
+            raise HTTPException(503, "Workspace provider observation is unavailable")
+        # Multiple workspaces can share one account, but their installation-owned
+        # provider credentials are bound to individual provisioning requests.
+        handles = [await provisioning_credential(composition, workspace)]
+    managed = [h for h in handles if h.startswith("spda1:")]
+    if managed and (len(managed) != 1 or len(handles) != 1):
+        raise HTTPException(409, "Workspace provider authority is ambiguous")
+    return {
+        "workspace_id": str(workspace_id), "org_id": str(org_id),
+        "managed": bool(managed), "credential_id": managed[0] if managed else None,
+        "account_id": account.account_identifier if account else None,
+    }
 
 
 @router.get("/{workspace_id}/lifecycle")

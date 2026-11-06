@@ -3,6 +3,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -80,6 +81,21 @@ class CreateWorkspaceRequest(BaseModel):
         return self
 
 
+class ProvisioningStep(BaseModel):
+    id: str
+    label: str
+    state: Literal["pending", "running", "waiting", "completed", "failed", "paused", "unknown"]
+
+
+class ProvisioningProgress(BaseModel):
+    steps: list[ProvisioningStep]
+    completed: int
+    total: int
+    current_step: str | None
+    message: str
+    observed_at: datetime
+
+
 class WorkspaceResponse(BaseModel):
     """Single workspace representation."""
 
@@ -89,8 +105,15 @@ class WorkspaceResponse(BaseModel):
     isolation_mode: str
     display_name: str = Field(description="Name with isolation tag for display")
     status: str
+    cluster_id: uuid.UUID | None = None
+    account_id: str | None = None
+    requested_region: str | None = None
+    cluster_name: str | None = None
+    cluster_region: str | None = None
+    cloud_provider: str | None = None
     provisioning_operation_id: str | None = None
     operation_state: str | None = None
+    provisioning_progress: ProvisioningProgress | None = None
     is_default: bool = Field(
         default=False, description="Platform default workspace (not deletable via CLI)"
     )

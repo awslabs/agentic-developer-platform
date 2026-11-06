@@ -5,6 +5,12 @@ variable "enable_browser_checks" {
   default = false
 }
 
+variable "enable_product_regression_checks" {
+  description = "Allow the protected gateway deployment environment to run the Product browser regression with a three-hour checks session."
+  type        = bool
+  default     = false
+}
+
 data "aws_secretsmanager_secret" "browser_credentials" {
   count = var.enable_browser_checks ? 1 : 0
   name  = "adp/${var.environment}/gateway/test-admin-credentials"
@@ -14,14 +20,18 @@ data "aws_ssm_parameter" "browser_user_pool" {
   name  = "/adp/${var.environment}/gateway/cognito-user-pool-id"
 }
 resource "aws_iam_role" "browser_checks" {
-  count = var.enable_browser_checks ? 1 : 0
-  name  = "${var.name_prefix}-browser-trusted-checks"
+  count                = var.enable_browser_checks ? 1 : 0
+  name                 = "${var.name_prefix}-browser-trusted-checks"
+  max_session_duration = var.enable_product_regression_checks ? 10800 : 3600
   assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{
     Effect    = "Allow", Action = "sts:AssumeRoleWithWebIdentity",
     Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
     Condition = { StringEquals = {
       "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com",
-      "token.actions.githubusercontent.com:sub" = "repo:${var.repository}:environment:adp-browser-checks-${var.environment}"
+      "token.actions.githubusercontent.com:sub" = concat(
+        ["repo:${var.repository}:environment:adp-browser-checks-${var.environment}"],
+        var.enable_product_regression_checks ? ["repo:${var.repository}:environment:adp-gateway-deploy-${var.environment}"] : []
+      )
     } }
   }] })
 }

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
@@ -27,7 +28,10 @@ class RecoveryRoute(APIRoute):
                 return await handler(request)
             except (HTTPException, RequestValidationError):
                 raise
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Recovery observation failed (%s)", type(exc).__name__
+                )
                 # Provider/database errors may carry response bodies or credentials.
                 raise HTTPException(503, "recovery observation unavailable") from None
 

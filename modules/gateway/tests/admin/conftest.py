@@ -23,11 +23,10 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture
-async def db_engine():
+async def db_engine(sqlite_schemas):
     """Create a test database engine."""
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
+    await sqlite_schemas.create_all(engine, Base.metadata)
     yield engine
     await engine.dispose()
 

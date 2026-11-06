@@ -17,13 +17,15 @@ from src.agentauth.grants import AUTHORITY_GATE_DECISION, AUTHORITY_GITHUB_EVENT
 from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
 from src.shared.models.base import utcnow
 
-from .developer_personas import DEVELOPER_PERSONAS
+from .developer_personas import DEVELOPER_PERSONAS, OPERATIONS_PERSONAS, operations_executor_enabled
 from .dispatch import graph_address
 from .execution_policy import Action, CredentialScope, Decision, DenyReason, ExecutionPolicy, ResourceRef, authorize_action
 from .models import DecisionKind, NodeKind, OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from .policy_admission import AdmissionInputs, SpendObservation, load_in_force_policy, resolve_authorization_context
 from .stage_attempts import stage_attempts
 from .state import NodeState
+
+ACTIONS_OPERATION_PATH = "/internal/v1/agent/actions"
 
 
 @dataclass(frozen=True)
@@ -37,7 +39,7 @@ class WorkerCredentialDecision(Decision):
     aws_role_arns: tuple[str, ...] = ()
     policy_id: str | None = None
     plan_version: int | None = None
-    # The action resolved from engine-written execution state, and the immutable
+    # The action resolved from protected assignment state, and the immutable
     # provider repository this assignment was admitted against. Broker routes may
     # use the action as authority; a request body must never choose it. Both are
     # reported so the mediated operation service can build its assignment from
@@ -53,7 +55,7 @@ class WorkerCredentialDecision(Decision):
 def policy_github_permissions(policy: ExecutionPolicy, action: Action) -> dict[str, str] | None:
     """GitHub contents-write also authorizes merge; never disguise that scope."""
     permissions = {"contents": "read", "pull_requests": "read", "issues": "read", "checks": "read", "metadata": "read"}
-    if action is Action.EVALUATE:
+    if action in {Action.EVALUATE, Action.OPERATE}:
         return permissions
     if action is Action.COORDINATE:
         # Read-only, deliberately. A coordinator's job is to read progress and
@@ -133,11 +135,33 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
     if node.kind == NodeKind.EVAL.value and persona == "operations":
         return Action.EVALUATE
     if node.kind == NodeKind.STORY.value:
+        if persona in OPERATIONS_PERSONAS and operations_executor_enabled():
+            return Action.OPERATE
         if persona == "reviewer":
             return Action.REVIEW
         if persona in DEVELOPER_PERSONAS:
             return Action.REPAIR if node.attempts > 1 else Action.DEVELOP
     return None
+
+
+async def _assignment_preserved(session, *, grant: DelegatedGrant, node, accepted_version, current_version) -> bool:
+    """Whether the plan a worker's approval accepted still authorizes its node.
+
+    The policy in force is always the current plan's (#7535). The approval that
+    rooted a worker is older once the plan is amended, so comparing plan versions
+    stranded every in-flight protected worker at its next credential mint: the
+    reviewer's installation token, the developer's refresh. The right question is
+    whether this node's execution definition and prerequisites survived every hop
+    between the approval's plan and the one in force — the same lineage the engine
+    authority and the review cycle already accept.
+    """
+    if node is None or type(accepted_version) is not int:
+        return False
+    from .plan_lineage import execution_plan_matches
+
+    return await execution_plan_matches(
+        session, org_id=grant.tenant_id, flow_id=grant.flow_id, node_id=node.id, version=accepted_version, current_version=current_version
+    )
 
 
 async def authorize_worker_credential(
@@ -148,6 +172,7 @@ async def authorize_worker_credential(
     broker_path: str,
     inputs: AdmissionInputs | None = None,
     credential_request: dict | None = None,
+    dispatch_envelope: dict | None = None,
 ) -> Decision:
     """Authorize the existing assignment; this never admits another attempt.
 
@@ -159,7 +184,8 @@ async def authorize_worker_credential(
     # which read "not the engine kind, therefore legacy, therefore unrestricted" and
     # so treated an *unrecognized* authority as an unpoliced one — at the function
     # that fronts GitHub installation-token minting and model credentials. The three
-    # kinds below keep exactly their current behaviour; anything else is denied.
+    # kinds below are explicit; anything else is denied. A standalone human PR
+    # reviewer additionally proves its original assignment for reviewer identity.
     #
     # `replan_request` is denied here rather than permitted-and-bounded, deliberately.
     # An authoring run's job is to read a bounded request and file a proposed
@@ -167,6 +193,14 @@ async def authorize_worker_credential(
     # and no worker credential to do that. So the honest answer for it at a
     # *credential* boundary is refusal, not a narrower grant — and that refusal is
     # what stops an authoring assignment from reaching installation-token minting.
+    if (
+        grant.authority.kind == AUTHORITY_GITHUB_EVENT
+        and broker_path == "/internal/v1/github-installation-token"
+        and (credential_request or {}).get("identity") == "review"
+    ):
+        from src.agentauth.human_review_identity import authorize_human_review
+
+        return authorize_human_review(execution=execution, grant=grant, dispatch=dispatch_envelope)
     if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY}:
         return Decision.permit("no accepted engine policy binding")
     if grant.authority.kind != AUTHORITY_GATE_DECISION:
@@ -223,7 +257,11 @@ async def authorize_worker_credential(
             .limit(1)
         )
     if accepted_version != inputs.plan_version:
-        return Decision.block(DenyReason.STALE_POLICY_VERSION, "worker authority does not bind the policy version in force")
+        if not await _assignment_preserved(session, grant=grant, node=node, accepted_version=accepted_version, current_version=inputs.plan_version):
+            return Decision.block(DenyReason.STALE_POLICY_VERSION, "worker authority does not bind the policy version in force")
+        # The amendment preserved this assignment, so the worker acts under the
+        # policy in force from here on — limits, permissions and expiry included.
+        accepted_version = inputs.plan_version
     started = await flow_started_at(session, org_id=grant.tenant_id, flow_id=grant.flow_id)
     now = utcnow()
     if started is None or (now - started).total_seconds() >= policy.limits.max_wall_clock_seconds:
@@ -238,9 +276,9 @@ async def authorize_worker_credential(
         return Decision.block(DenyReason.MEMBERSHIP_REVOKED, "policy principal no longer resolves in this tenant")
     if principal != accepted_principal:
         return Decision.block(DenyReason.MEMBERSHIP_REVOKED, "worker authority does not belong to the policy principal")
-    from .flow_meter import read_flow_meter
+    from .flow_meter import reconcile_flow_meter
 
-    meter = await read_flow_meter(org_id=grant.tenant_id, flow_id=grant.flow_id, policy=policy)
+    meter = await reconcile_flow_meter(session, org_id=grant.tenant_id, flow_id=grant.flow_id, policy=policy)
     spend = SpendObservation(total_usd=meter.total_usd if meter is not None else None)
     repo = execution.get("repo", {}).get("S")
     repository_id = execution.get("provider_repository_id", {}).get("N", "")
@@ -273,6 +311,8 @@ async def authorize_worker_credential(
         # This grants no action the assignment lacks. `authorize_action` below
         # still gates the assignment's own action, and merge is a separate typed
         # operation the caller must be separately authorized for.
+        scope = CredentialScope.SCOPED
+    elif broker_path == ACTIONS_OPERATION_PATH and repo in policy.repository_ids and repo in grant.repo_scope:
         scope = CredentialScope.SCOPED
     elif broker_path == "model" and repo in policy.repository_ids and repo in grant.repo_scope:
         # Model execution remains inside the policy-checking gateway boundary.
@@ -407,6 +447,17 @@ async def authorize_worker_credential(
         # outside the accepted policy or the grant is already refused by
         # `authorize_action`. Report the proven action and immutable repository ID
         # so the operation service never has to re-derive either one.
+        return WorkerCredentialDecision(
+            permitted=True,
+            detail=decision.detail,
+            not_after=not_after,
+            action=action,
+            provider_repository_id=int(repository_id) if repository_id.isdigit() else None,
+            policy=policy,
+            policy_id=policy.policy_id,
+            plan_version=inputs.plan_version,
+        )
+    if decision.permitted and broker_path == ACTIONS_OPERATION_PATH:
         return WorkerCredentialDecision(
             permitted=True,
             detail=decision.detail,

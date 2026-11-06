@@ -10,10 +10,10 @@ vi.mock('@/services/api', () => ({ apiClient: { post: vi.fn() } }));
 const hasPermission = vi.fn();
 vi.mock('@/hooks/usePermissions', () => ({ usePermissions: () => ({ hasPermission }) }));
 
-function control(paused: boolean | undefined, compact = false) {
+function control(paused: boolean | undefined, compact = false, recoveryEnabled?: boolean) {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   const invalidate = vi.spyOn(client, 'invalidateQueries');
-  render(<QueryClientProvider client={client}><FlowExecutionControl flowId="flow-1" paused={paused} compact={compact} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><FlowExecutionControl flowId="flow-1" paused={paused} compact={compact} recoveryEnabled={recoveryEnabled} /></QueryClientProvider>);
   return invalidate;
 }
 
@@ -24,6 +24,20 @@ beforeEach(() => {
 });
 
 describe('Flow execution controls', () => {
+  it.each([true, false])('updates retry recovery independently of pausing (enabled=%s)', async recoveryEnabled => {
+    const invalidate = control(true, false, recoveryEnabled);
+    await userEvent.click(screen.getByRole('button', { name: recoveryEnabled ? 'Turn recovery off' : 'Turn recovery on' }));
+    await waitFor(() => expect(apiClient.post).toHaveBeenCalledWith('/orchestration/flows/flow-1/recovery', { enabled: !recoveryEnabled }));
+    await waitFor(() => expect(invalidate).toHaveBeenCalled());
+    expect(screen.getByText('Paused')).toBeVisible();
+  });
+
+  it('shows the saved recovery state without controls to a reader', () => {
+    hasPermission.mockReturnValue(false);
+    control(false, false, false);
+    expect(screen.getByText('Off')).toBeVisible();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
   it.each([true, false])('saves the opposite pause state and refreshes list/detail queries (paused=%s)', async (paused) => {
     const invalidate = control(paused);
     await userEvent.click(screen.getByRole('button', { name: paused ? 'Resume flow' : 'Pause flow' }));

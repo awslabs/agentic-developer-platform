@@ -40,10 +40,21 @@ on:
         description: 'Optional. Space-separated Terraform resource addresses to scope this run to (passed as -target to plan). Empty = full plan/apply (default). Use to publish a specific resource without dragging in unrelated pending drift, e.g. "aws_ssm_parameter.redis_iam_username[0] aws_ssm_parameter.redis_cache_name[0]". WARNING (#4932): a scoped run converges ONLY these addresses. Its "Plan: N to change" counts just the targeted subset, so a green scoped run does NOT prove main''s Terraform is live for any other module — the post-apply convergence guard cannot assert convergence and will say so in the summary.'
         required: false
         default: ''
+      publish_atlassian_mcp_plan:
+        description: 'After the Terraform secret containers exist, publish the protected provider plan and apply its pins. Requires a separate reviewed manual run.'
+        required: false
+        type: boolean
+        default: false
+      enable_atlassian_setup_observer_roles:
+        description: 'Opt in to two separately scoped GitHub OIDC setup-observer roles after reviewing the IAM plan. Retained from Terraform state on later runs.'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: gateway-release-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
+  queue: max
 
 env:
   AWS_REGION: us-east-1
@@ -190,6 +201,43 @@ jobs:
             -backend-config="bucket=${STATE_BUCKET}" \
             -input=false -reconfigure
 
+      - name: Retain native credential owner input
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -euo pipefail
+          umask 077
+          NATIVE_INPUTS="$RUNNER_TEMP/gateway-native-inputs.tfvars.json"
+          terraform show -json | python3 ../../../platform/scripts/native_credential_inputs.py > "$NATIVE_INPUTS"
+          echo "ADP_NATIVE_INPUTS=$NATIVE_INPUTS" >> "$GITHUB_ENV"
+
+      - name: Retain Product dispatch input
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          # Empty retains live intent; explicit true/false is a protected rollout.
+          ADP_PRODUCT_STORY_DISPATCH_ENABLED: ${{ vars.ADP_PRODUCT_STORY_DISPATCH_ENABLED }}
+        run: |
+          set -euo pipefail
+          umask 077
+          DISPATCH_INPUTS="$RUNNER_TEMP/gateway-dispatch-inputs.tfvars.json"
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          terraform show -json | python3 ../../../platform/scripts/product_dispatch_inputs.py \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$TF_VAR_environment" > "$DISPATCH_INPUTS"
+          echo "ADP_DISPATCH_INPUTS=$DISPATCH_INPUTS" >> "$GITHUB_ENV"
+
+      - name: Retain protected Atlassian MCP provider pins
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          GATEWAY_URL: ${{ vars.ADP_FOUNDATION_GATEWAY_URL }}
+          ENABLE_ATLASSIAN_SETUP_OBSERVER_ROLES: ${{ inputs.enable_atlassian_setup_observer_roles }}
+          PUBLISH_ATLASSIAN_MCP_PLAN: ${{ inputs.publish_atlassian_mcp_plan }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH_ATLASSIAN_MCP_PLAN" == 'true' ]]; then
+            bash ../../../scripts/atlassian-mcp-gateway-pins.sh publish
+          else
+            bash ../../../scripts/atlassian-mcp-gateway-pins.sh reuse
+          fi
+
       - name: State fixups (import drift, clean stale jobs)
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
@@ -216,6 +264,22 @@ jobs:
           # On accounts where the scaledjob-worker entry was hand-seeded before
           # PR #3116 added it to IaC, terraform create fails with
           # ConditionalCheckFailedException. Import it into state instead.
+          # Chief-of-Staff flag parameters (#7197) were first set by an operator on dev;
+          # adopt any that already exist so the declared value takes over instead of
+          # failing with ParameterAlreadyExists. A fresh environment has none.
+          for pair in \
+            "aws_ssm_parameter.feature_chat=/adp/${TF_VAR_environment:-dev}/gateway/feature-chat" \
+            "aws_ssm_parameter.feature_assistant_ui=/adp/${TF_VAR_environment:-dev}/gateway/feature-assistant-ui" \
+            "aws_ssm_parameter.feature_crew_dashboard=/adp/${TF_VAR_environment:-dev}/gateway/feature-crew-dashboard" \
+            "aws_ssm_parameter.crew_proxy_enabled=/adp/${TF_VAR_environment:-dev}/gateway/crew-proxy-enabled" \
+            "aws_ssm_parameter.chat_authority_worker_images=/adp/${TF_VAR_environment:-dev}/gateway/chat-authority-worker-images" \
+            "aws_ssm_parameter.github_user_access_enabled=/adp/${TF_VAR_environment:-dev}/gateway/github-user-access-enabled"; do
+            ADDR="${pair%%=*}"; PARAM="${pair#*=}"
+            if ! terraform state show "$ADDR" >/dev/null 2>&1 && aws ssm get-parameter --name "$PARAM" --region "$AWS_REGION" >/dev/null 2>&1; then
+              echo "Importing existing $PARAM into $ADDR..."
+              terraform import -var-file="../../../${{ env.VAR_FILE }}" "$ADDR" "$PARAM" || echo "Import failed — continuing (will retry on next apply)"
+            fi
+          done
           TABLE_NAME="bedrockgw-${TF_VAR_environment:-dev}-agent-registry"
           RESOURCE_ADDR='module.lambda_authorizer[0].aws_dynamodb_table_item.scaledjob_worker'
           if ! terraform state show "$RESOURCE_ADDR" >/dev/null 2>&1; then
@@ -424,6 +488,7 @@ jobs:
           # where k8s/ingress-internal.yaml has not produced its ALB yet: the
           # Terraform then falls back to the edge ALB, i.e. pre-#4010 behavior.
           TF_VAR_internal_plane_alb_arn: ${{ steps.alb_pre.outputs.INTERNAL_PLANE_ALB_ARN }}
+          TF_VAR_atlassian_forge: ${{ vars.ADP_ATLASSIAN_FORGE_CONFIG_JSON || 'null' }}
           TF_VAR_internal_plane_alb_dns: ${{ steps.alb_pre.outputs.INTERNAL_PLANE_ALB_DNS }}
           TF_VAR_internal_plane_alb_security_group_ids: ${{ steps.alb_pre.outputs.INTERNAL_PLANE_ALB_SG_IDS }}
           TF_VAR_internal_alb_arn: ${{ steps.alb_pre.outputs.ALB_ARN }}
@@ -526,7 +591,12 @@ jobs:
             fi
           done
 
+          PIN_ARGS=()
+          if [[ -n "${ADP_ATLASSIAN_PINS:-}" ]]; then PIN_ARGS=(-var-file="$ADP_ATLASSIAN_PINS"); fi
           terraform plan -var-file="../../../${{ env.VAR_FILE }}" \
+            -var-file="$ADP_NATIVE_INPUTS" \
+            "${PIN_ARGS[@]}" \
+            -var-file="$ADP_DISPATCH_INPUTS" \
             "${TARGET_ARGS[@]}" \
             -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
           echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
@@ -654,10 +724,17 @@ jobs:
         id: converge
         if: steps.apply.outcome == 'success'
         working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_atlassian_forge: ${{ vars.ADP_ATLASSIAN_FORGE_CONFIG_JSON || 'null' }}
         run: |
           set -uo pipefail
           EXIT_CODE=0
+          PIN_ARGS=()
+          if [[ -n "${ADP_ATLASSIAN_PINS:-}" ]]; then PIN_ARGS=(-var-file="$ADP_ATLASSIAN_PINS"); fi
           terraform plan -var-file="../../../${{ env.VAR_FILE }}" \
+            -var-file="$ADP_NATIVE_INPUTS" \
+            "${PIN_ARGS[@]}" \
+            -var-file="$ADP_DISPATCH_INPUTS" \
             -detailed-exitcode -no-color 2>&1 | tee /tmp/converge-plan.txt || EXIT_CODE=$?
 
           # Residual resource addresses, for the summary. Terraform prints one

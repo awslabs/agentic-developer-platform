@@ -1012,7 +1012,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E42",
         "E25",
         "E27",
-        *[f"E{number}" for number in range(43, 51)],
+        *[f"E{number}" for number in range(43, 52)],
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E28"]["status"] == cases.NOT_RUN
@@ -1741,7 +1741,9 @@ def test_a_real_report_satisfies_the_published_schema():
     assert report.validate(published_report()) == []
 
 
-@pytest.mark.parametrize("suite", cases.SUITES)
+@pytest.mark.parametrize(
+    "suite", (*cases.SUITES, "case:PR04-C01", "case:PR04-C02", "case:PR04-C03")
+)
 @pytest.mark.parametrize(
     "status", (cases.PASSED, cases.FAILED, cases.BLOCKED, cases.NOT_RUN)
 )
@@ -1769,7 +1771,7 @@ def test_schema_accepts_owned_diagnostic_namespace(diagnostic):
     assert report.validate(document) == []
 
 
-@pytest.mark.parametrize("invalid_id", ("D00", "D07", "E51", "C02", "diagnostic"))
+@pytest.mark.parametrize("invalid_id", ("D00", "D07", "E52", "C02", "diagnostic"))
 def test_schema_still_rejects_unknown_case_identifiers(invalid_id):
     document = published_report()
     document["cases"][0]["id"] = invalid_id
@@ -3954,6 +3956,28 @@ class RunResult:
         return json.loads(self._path.read_text())
 
 
+@pytest.mark.parametrize(
+    "suite,case_id",
+    [
+        ("product-profile", "PR01"),
+        ("case:PR01-C01", "PR01-C01"),
+        ("case:PR01-C02", "PR01-C02"),
+        ("case:PR01-C03", "PR01-C03"),
+        ("case:PR01-C04", "PR01-C04"),
+    ],
+)
+def test_product_preflight_without_runtime_reader_stops_before_allocating(
+    tmp_path, suite, case_id
+):
+    result = run_live_stages(tmp_path, extra=("--suite", suite))
+    assert result.code == 1
+    assert result.document["stages"]["preflight"] == "failed"
+    assert result.document["matrix"][case_id]["status"] == cases.NOT_RUN
+    assert "product_release_check" not in result.document["preflight"]
+    assert not result.document.get("instance_id")
+    assert not any(call[1] == "run_instances" for call in result.ports["aws"].calls)
+
+
 def test_default_stages_are_the_live_implementations_not_an_empty_mapping():
     """The exact regression: no `stages` argument must mean live, never nothing.
 
@@ -4135,13 +4159,25 @@ def test_live_stages_block_github_cases_when_no_isolated_fixture_exists(tmp_path
 def test_assistant_only_reports_gaps_without_allocating_ec2(
     tmp_path, configured, monkeypatch
 ):
-    # No runnable drivers: retain the pre-allocation guard even if a baseline
-    # module is unavailable in the selected release.
+    # No runnable drivers: retain the pre-allocation guard if the baseline and
+    # session modules are unavailable in the selected release.
     purposes = bundle.purposes()
     monkeypatch.setattr(
         bundle,
         "purposes",
-        lambda: tuple(k for k in purposes if k != "assistant_baseline"),
+        lambda: tuple(
+            k
+            for k in purposes
+            if k
+            not in {
+                "assistant_baseline",
+                "assistant_sessions",
+                "assistant_faults",
+                "assistant_stream",
+                "assistant_sources",
+                "assistant_isolation",
+            }
+        ),
     )
     users = {
         label: {
@@ -4162,15 +4198,26 @@ def test_assistant_only_reports_gaps_without_allocating_ec2(
     assert result.code == 1
     assert not document.get("instance_id")
     assert document["stages"]["ec2"] != "complete"
+    assert document["matrix"]["E51"]["status"] == cases.BLOCKED
+    assert (
+        cases.DEV_BOX_LIFECYCLE
+        in document["matrix"]["E51"]["detail"]["missing_fixtures"]
+    )
     for case_id in (f"E{number}" for number in range(43, 51)):
         entry = document["matrix"][case_id]
-        if configured and case_id != "E48":
+        if configured and case_id not in {"E44", "E48", "E49"}:
             assert entry["status"] == cases.FAILED
             assert entry["detail"]["unimplemented"] is True
         else:
             assert entry["status"] == cases.BLOCKED
             expected = (
-                [cases.ASSISTANT_LEDGER] if configured else [cases.ASSISTANT_USERS]
+                ["assistant_provider_activity"]
+                if configured and case_id == "E44"
+                else ["assistant_latency explicit opt-in and approved budget"]
+                if configured and case_id == "E49"
+                else [cases.ASSISTANT_LEDGER]
+                if configured
+                else [cases.ASSISTANT_USERS]
             )
             if case_id == "E48" and not configured:
                 expected = sorted((cases.ASSISTANT_LEDGER, cases.ASSISTANT_USERS))
@@ -5105,19 +5152,13 @@ def test_every_purpose_a_stage_can_ask_for_is_shipped_or_named_as_missing():
             raised.value
         )
     # Today's honest state, asserted so shipping a script has to update it.
-    # E13's `api_parity` has left this list: it is implemented and registered.
+    # E13's `api_parity` and E43/E44/E49 have left this list: they are registered.
     # The five pre-existing purposes need fixtures that are still BLOCKED (a second
     # destination account, an isolated GitHub App/repo, a hosted queue), and each
     # must be reported as an implementation gap rather than a skip.
     assert sorted(asked - shipped) == [
         "agent_task",
-        "assistant_faults",
         "assistant_installations",
-        "assistant_isolation",
-        "assistant_latency",
-        "assistant_sessions",
-        "assistant_sources",
-        "assistant_stream",
         "bedrock_rungs",
         "github_app",
         "github_login",
@@ -6554,7 +6595,7 @@ def test_both_e02_identities_and_the_fixture_secret_are_deleted_by_the_sweep(tmp
 # --------------------------------------------------------------------------
 
 
-def onboard_gateway(tmp_path, *, listing=None, created=None, status=201):
+def onboard_gateway(tmp_path, *, listing=None, teams=None, created=None, status=201):
     """Drive the shipped `_onboard` over a recording double of `common.api`.
 
     The script, not a copy of it: `shipped_script` imports from the extracted
@@ -6574,12 +6615,26 @@ def onboard_gateway(tmp_path, *, listing=None, created=None, status=201):
             }
         )
         if method == "GET":
-            answer = (
-                listing
-                if listing is not None
-                else {"users": [{"id": "someone", "team_id": "org-eval-team"}]}
+            if path.endswith("/users"):
+                answer = (
+                    listing
+                    if listing is not None
+                    else {"users": [{"id": "someone", "team_id": "org-eval-team"}]}
+                )
+                return 200, answer
+            assert path.endswith("/teams?page=1&page_size=100")
+            items = (
+                teams
+                if teams is not None
+                else [{"id": "org-eval-team", "org_id": "org-eval"}]
             )
-            return 200, answer
+            return 200, {
+                "items": items,
+                "total": len(items),
+                "page": 1,
+                "page_size": 100,
+                "has_more": False,
+            }
         if status not in expect:
             raise common.RemoteError(
                 f"{path} returned HTTP {status}, expected {expect}"
@@ -6674,6 +6729,7 @@ def test_the_team_is_read_from_the_organization_not_constructed(tmp_path):
     script, _common, config, evidence, calls = onboard_gateway(
         tmp_path,
         listing={"users": [{"id": "u1"}, {"id": "u2", "team_id": "acd514aa-real"}]},
+        teams=[{"id": "acd514aa-real", "org_id": "org-eval"}],
     )
     script._onboard(config, evidence, "<token>")
     posted = next(call for call in calls if call["method"] == "POST")
@@ -6690,11 +6746,11 @@ def test_an_organization_with_no_resolvable_team_fails_loudly(tmp_path):
     to remove.
     """
     script, common, config, evidence, calls = onboard_gateway(
-        tmp_path, listing={"users": []}
+        tmp_path, listing={"users": []}, teams=[]
     )
     with pytest.raises(common.RemoteError) as raised:
         script._onboard(config, evidence, "<token>")
-    assert "no existing team could be resolved" in str(raised.value)
+    assert "No unambiguous, verified organization team" in str(raised.value)
     assert not [call for call in calls if call["method"] == "POST"]
 
 
@@ -6706,12 +6762,15 @@ def test_an_account_bound_to_a_different_login_is_a_failure(tmp_path):
     defect, now silent. So the returned subject is checked against the one that
     asked.
     """
-    script, common, config, evidence, _calls = onboard_gateway(
+    script, common, config, evidence, calls = onboard_gateway(
         tmp_path, created={"id": "adp-user-eval", "cognito_sub": "sub-somebody-else"}
     )
     with pytest.raises(common.RemoteError) as raised:
         script._onboard(config, evidence, "<token>")
     assert "not bound to the login that created it" in str(raised.value)
+
+    assert len([call for call in calls if call["method"] == "POST"]) == 1
+    assert not evidence.get("resources")
 
 
 def test_the_account_is_registered_before_setup_and_every_later_journey(tmp_path):
@@ -6996,6 +7055,62 @@ def test_every_manifest_kind_has_a_live_deleter_or_an_explicit_refusal():
     deleters = live.wire(cfg, {"aws": FakeAws()})["deleters"](cfg)
     for kind in cleanup.ORDER:
         assert kind in deleters, f"no deleter registered for {kind}"
+
+
+def test_live_product_cleanup_refuses_without_removal_authority(tmp_path):
+    cfg = config.validate(config_fixture())
+    aws = FakeAws()
+    deleters = live.wire(cfg, {"aws": aws})["deleters"](cfg)
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "owned-run")
+    manifest.record("product_fixture", "owned-run")
+    manifest.record("adp_connection", "shared-connection", reused=True)
+
+    with pytest.raises(ports.PortError, match="No live deleter for product_fixture"):
+        deleters["product_fixture"]("owned-run")
+
+    ok, results = cleanup.sweep(manifest, deleters)
+    assert ok is False
+    assert results[0]["status"] == cleanup.FAILED
+    assert manifest.outstanding()[0]["kind"] == "product_fixture"
+    assert manifest.outstanding()[0]["status"] == cleanup.FAILED
+    assert manifest.read()["resources"][1]["status"] == cleanup.REUSED
+    assert not aws.calls
+
+
+@pytest.mark.parametrize("case_id", ["PR03-C01", "PR03-C02"])
+@pytest.mark.parametrize("use_factory", [False, True])
+def test_live_product_cleanup_refusal_blocks_mutation_with_durable_manifest(
+    tmp_path, case_id, use_factory
+):
+    cfg = config.validate(config_fixture())
+    factory = live.wire(cfg, {"aws": FakeAws()})["deleters"]
+    deleters = factory if use_factory else factory(cfg)
+    manifest = cleanup.Manifest(
+        tmp_path / "manifest.json",
+        "owned-run",
+        on_change=lambda *_args, **_kwargs: None,
+    )
+    matrix = cases.new_matrix(("case:PR03-C01", f"case:{case_id}"))
+    if case_id == "PR03-C02":
+        matrix["PR03-C01"]["status"] = cases.PASSED
+    outcomes = []
+    context = {
+        "document": {"instance_id": "owned-host"},
+        "matrix": matrix,
+        "manifest": manifest,
+        "owned_product": {"product_id": "owned-product"},
+        "record": lambda *result: outcomes.append(result),
+    }
+    stages.journeys_stage(
+        cfg,
+        {
+            "deleters": deleters,
+            "journey": lambda _purpose: pytest.fail("worker must not be dispatched"),
+        },
+    )(context)
+    assert outcomes[0][0:2] == (case_id, cases.BLOCKED)
+    assert "durable, authorized deleter" in outcomes[0][2]["detail"]
+    assert not manifest.read()["resources"]
 
 
 def test_live_wiring_never_purges_a_shared_queue():
@@ -7304,6 +7419,196 @@ def store_fixture(clock=None):
     return aws, statestore.S3StateStore(
         aws, "eval-state-bucket", kms_key_id="key-1", clock=clock or (lambda: NOW)
     )
+
+
+def test_private_product_cli_report_is_encrypted_and_bound_to_one_run():
+    aws, store = store_fixture()
+    run_id = "product-12345-1"
+    report = {"workflow_run_id": run_id, "evaluation_id": EVAL_ID, "attempt_id": "one"}
+    reference = store.retain_product_cli(run_id, report)
+    assert reference == f"private:product-v03/{run_id}/{EVAL_ID}/report.json"
+    assert store.product_cli(run_id) == {**report, "artifact_ref": reference}
+    assert store.retain_product_cli(run_id, report) == reference
+    assert len(aws.puts) == 2
+    assert all(
+        put["ServerSideEncryption"] == "aws:kms"
+        and put["ACL"] == "bucket-owner-full-control"
+        and put["SSEKMSKeyId"] == "key-1"
+        for put in aws.puts
+    )
+
+
+@pytest.mark.parametrize("run_id", ["product-12345-2", "../other", "product-0-1"])
+def test_private_product_cli_refuses_wrong_run(run_id):
+    aws, store = store_fixture()
+    with pytest.raises(statestore.StateStoreError):
+        store.retain_product_cli(
+            run_id, {"workflow_run_id": "product-12345-1", "evaluation_id": EVAL_ID}
+        )
+    assert not aws.puts
+
+
+def test_private_product_cli_refuses_missing_tampered_or_replaced_proof():
+    aws, store = store_fixture()
+    run_id = "product-12345-1"
+    with pytest.raises(statestore.StateStoreError, match="No run-bound"):
+        store.product_cli(run_id)
+    report = {"workflow_run_id": run_id, "evaluation_id": EVAL_ID, "attempt_id": "one"}
+    store.retain_product_cli(run_id, report)
+    with pytest.raises(statestore.StateStoreError, match="another attempt"):
+        store.retain_product_cli(run_id, {**report, "attempt_id": "two"})
+    with pytest.raises(statestore.StateStoreError, match="reference differs"):
+        store.retain_product_cli(run_id, {**report, "artifact_ref": "private:other"})
+    key = statestore.product_cli_key(run_id, EVAL_ID)
+    aws.objects[key] = json.dumps({**report, "artifact_ref": "private:wrong"}).encode()
+    with pytest.raises(statestore.StateStoreError, match="missing or mismatched"):
+        store.product_cli(run_id)
+    assert len(aws.puts) == 2
+
+
+def test_private_product_cli_handoff_retains_and_loads_exact_dispatch(tmp_path):
+    from tests.e2e.cli_uplift import product_cli_handoff
+
+    aws, store = store_fixture()
+    run_id = "product-12345-1"
+    source_revision = "a" * 40
+    workflow_revision = "b" * 40
+    report = {
+        "workflow_run_id": run_id,
+        "evaluation_id": EVAL_ID,
+        "status": "passed",
+        "cleanup": "complete",
+        "cleanup_outstanding": [],
+        "source_revision": source_revision,
+        "workflow_revision": workflow_revision,
+    }
+    private_path = tmp_path / "v03-private.json"
+    private_path.write_text(json.dumps(report))
+    reference = product_cli_handoff.retain(
+        store, run_id, private_path, source_revision, workflow_revision
+    )
+    assert reference.startswith("private:product-v03/")
+    dispatch = tmp_path / "dispatch.json"
+    dispatch.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "expected_revision": source_revision,
+                "workflow_revision": workflow_revision,
+            }
+        )
+    )
+    output = tmp_path / "gateway-private.json"
+    product_cli_handoff.load(store, dispatch, output)
+    assert json.loads(output.read_text()) == {**report, "artifact_ref": reference}
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert all("product-v03" in key or "product-runs" in key for key in aws.objects)
+    dispatch.write_text(json.dumps({"run_id": run_id, "expected_revision": "c" * 40}))
+    with pytest.raises(statestore.StateStoreError, match="differs from dispatch"):
+        product_cli_handoff.load(store, dispatch, output)
+
+
+def test_private_product_cli_handoff_refuses_unretained_or_stale_proof(tmp_path):
+    from tests.e2e.cli_uplift import product_cli_handoff
+
+    _aws, store = store_fixture()
+    run_id = "product-12345-1"
+    dispatch = tmp_path / "dispatch.json"
+    dispatch.write_text(json.dumps({"run_id": run_id}))
+    output = tmp_path / "private.json"
+    with pytest.raises(statestore.StateStoreError, match="No run-bound"):
+        product_cli_handoff.load(store, dispatch, output)
+    assert not output.exists()
+    path = tmp_path / "report.json"
+    path.write_text(
+        json.dumps(
+            {
+                "workflow_run_id": run_id,
+                "evaluation_id": EVAL_ID,
+                "status": "passed",
+                "cleanup": "complete",
+                "cleanup_outstanding": [],
+                "source_revision": "a" * 40,
+                "workflow_revision": "b" * 40,
+            }
+        )
+    )
+    with pytest.raises(statestore.StateStoreError, match="incomplete or mismatched"):
+        product_cli_handoff.retain(store, run_id, path, "c" * 40, "b" * 40)
+    with pytest.raises(statestore.StateStoreError, match="incomplete or mismatched"):
+        product_cli_handoff.retain(store, "product-12345-2", path, "a" * 40, "b" * 40)
+
+
+def test_private_product_cli_workflow_never_publishes_private_report_as_public_artifact():
+    from pathlib import Path
+
+    v03 = Path(".github/workflows/eval-cli-uplift.yml").read_text()
+    gateway = Path(".github/workflows/gateway-live-tests.yml").read_text()
+    assert "product_cli_handoff retain" in v03
+    assert v03.index("product_cli_handoff retain") < v03.index(
+        "Retain sanitized evidence in S3"
+    )
+    assert "product_cli_handoff load" in gateway
+    assert gateway.index("product_cli_handoff load") < gateway.index(
+        "Assemble selected B01 Product inputs"
+    )
+    assert '--output "$RUNNER_TEMP/product-profile-cli.private.json"' in gateway
+    assert (
+        "${{ runner.temp }}/cli-uplift-evidence/product-profile-cli.private.json"
+        not in v03
+    )
+
+
+def test_private_product_run_id_cannot_change_on_resume():
+    selected = {"expected_revision": "a" * 40, "product_run_id": "product-12345-1"}
+    changed = {**selected, "product_run_id": "product-12345-2"}
+    assert runner.fingerprint(selected) != runner.fingerprint(changed)
+
+
+def test_private_product_run_binding_is_validated_in_config():
+    base = config.load("tests/e2e/cli_uplift/config.example.json")
+    selected = config.from_environment(
+        {"CLI_UPLIFT_EVAL_PRODUCT_RUN_ID": "product-12345-1"}, base=base
+    )
+    assert selected["product_run_id"] == "product-12345-1"
+    with pytest.raises(config.ConfigError, match="product_run_id"):
+        config.from_environment(
+            {"CLI_UPLIFT_EVAL_PRODUCT_RUN_ID": "../../another-run"}, base=base
+        )
+
+
+def test_deployment_dispatch_requires_bound_v03_before_product_packet():
+    from pathlib import Path
+
+    import yaml
+
+    document = yaml.safe_load(Path(".github/workflows/gateway-deploy.yml").read_text())
+    jobs = document["jobs"]
+    v03 = jobs["product-cli-evidence"]
+    product = jobs["product-acceptance"]
+    assert v03["needs"] == "product-acceptance-guard"
+    assert v03["uses"] == "./.github/workflows/eval-cli-uplift.yml"
+    assert v03["with"]["target_environment"] == "dev"
+    selection = tuple(v03["with"]["suites"].split(","))
+    assert {case.id for case in cases.resolve_suites(selection)} == {
+        "E01",
+        "C01",
+        "PR03-C01",
+        "PR03-C02",
+        "PR03-C03",
+    }
+    # Passing the CLI checkpoint cannot silently pass D01's release scenarios.
+    full = cases.new_matrix(("product-profile",))
+    for case_id in ("PR03-C01", "PR03-C02", "PR03-C03"):
+        cases.record(full, case_id, cases.PASSED)
+    status, reasons = cases.accept(full, ("product-profile",))
+    assert status != cases.PASSED
+    assert any("PR01-C03" in reason for reason in reasons)
+    assert v03["with"]["product_run_id"] == (
+        "${{ format('product-{0}-{1}', github.run_id, github.run_attempt) }}"
+    )
+    assert v03["with"]["expected_revision"] == "${{ inputs.adp_source_revision }}"
+    assert product["needs"] == ["product-acceptance-guard", "product-cli-evidence"]
 
 
 def test_durable_state_is_written_encrypted_and_owner_only():
@@ -7826,9 +8131,14 @@ def test_durable_state_is_never_uploaded_as_an_ordinary_artifact():
         for job in document["jobs"].values()
         for step in job["steps"]
         if "upload-artifact" in (step.get("uses") or "")
+        or "CI_EVIDENCE_PATH" in step.get("env", {})
     ]
     for step in uploads:
-        paths = str(step.get("with", {}).get("path", ""))
+        paths = str(
+            step.get("with", {}).get(
+                "path", step.get("env", {}).get("CI_EVIDENCE_PATH", "")
+            )
+        )
         assert "state.json" not in paths
         assert "manifest.json" not in paths
         assert "run-config.json" not in paths
@@ -8366,12 +8676,15 @@ def test_workflow_uploads_only_sanitized_artifacts():
     upload = next(
         step
         for step in document["jobs"]["evaluate"]["steps"]
-        if step.get("name") == "Upload sanitized evidence"
+        if step.get("name") == "Retain sanitized evidence in S3"
     )
-    paths = upload["with"]["path"]
-    assert "report.json" in paths and "results.xml" in paths
-    assert "state.json" not in paths
-    assert "manifest.json" not in paths
+    assert upload["env"]["CI_EVIDENCE_PATH"].splitlines() == [
+        "${{ runner.temp }}/cli-uplift-evidence/report.json",
+        "${{ runner.temp }}/cli-uplift-evidence/results.xml",
+        "${{ runner.temp }}/cli-uplift-evidence/assistant-latency-samples.jsonl",
+    ]
+    assert upload["env"]["CI_EVIDENCE_IF_NO_FILES_FOUND"] == "error"
+    assert 'git show "$GITHUB_WORKFLOW_SHA:' in upload["run"]
 
 
 def test_workflow_configures_durable_state_so_a_run_is_recoverable_by_id():
@@ -8501,6 +8814,27 @@ def test_dispatch_faults_match_the_runner_and_exclude_anything_destructive():
     assert set(offered) == set(runner.FAULTS)
 
 
+def test_ac05_workflow_preserves_legacy_faults_and_defaults():
+    from tests.e2e.cli_uplift import assistant_fault_control
+
+    _, triggers = workflow()
+    dispatch = triggers["workflow_dispatch"]["inputs"]["inject_fault"]
+    called = triggers["workflow_call"]["inputs"]["inject_fault"]
+    legacy = (
+        "none",
+        "wrong_account",
+        "missing_usage",
+        "cleanup_failure",
+        "expired_token",
+        "instance_loss",
+    )
+    for choices in (dispatch["options"], runner.FAULTS):
+        assert tuple(fault for fault in choices if fault in legacy) == legacy
+        assert set(choices) == set(legacy) | assistant_fault_control.ASSISTANT_FAULTS
+    assert dispatch["default"] == called["default"] == "none"
+    assert runner.parse_args(["--config", "synthetic.json"]).fault == "none"
+
+
 def test_dispatch_requires_the_expected_revision():
     """Results must be bound to a deployment, so there is no 'whatever is live'."""
     _, triggers = workflow()
@@ -8577,7 +8911,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E42",
         "E25",
         "E27",
-        *[f"E{number}" for number in range(43, 51)],
+        *[f"E{number}" for number in range(43, 52)],
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.
@@ -8655,7 +8989,11 @@ def test_runbook_names_only_real_suites():
 
 def test_runbook_names_only_real_faults():
     doc = runbook()
-    section = doc[doc.index("## Fault injection") : doc.index("## Troubleshooting")]
+    section = doc[
+        doc.index("## Fault injection") : doc.index(
+            "### Assistant qualification handoff"
+        )
+    ]
     offered = {
         name for name in re.findall(r"`(\w+)`", section) if not name.startswith("test_")
     }
@@ -8674,6 +9012,27 @@ def test_runbook_documents_every_runner_mode():
         "status",
         "cleanup",
     }
+
+
+def test_ac06_runbook_keeps_assistant_qualification_with_authorized_operator():
+    doc = runbook()
+    section = doc[
+        doc.index("### Assistant qualification handoff") : doc.index(
+            "## Troubleshooting"
+        )
+    ]
+    for field in (
+        "assistant_qualification",
+        "known_limitations",
+        "deployed_revision",
+        "cleanup_seconds",
+        "fault_proof",
+    ):
+        assert field in section
+    assert "pending_operator_review" in section
+    assert "#6937" in section
+    assert "run-owned" in section
+    assert "IAM/RBAC" in section
 
 
 def test_runbook_does_not_tell_an_operator_to_read_the_revision_from_health():
@@ -9680,14 +10039,15 @@ def test_ci_fails_closed_when_oidc_secret_is_missing():
 
 
 def test_ci_points_both_jobs_at_the_same_reviewed_bindings_file():
-    """Divergence here is what made the recovery sweep report clean falsely."""
+    """Evaluation/recovery share legacy files or explicit private smoke bindings."""
     document, _ = workflow()
     paths = {
         document["jobs"][job]["env"]["CLI_UPLIFT_EVAL_BINDINGS"]
         for job in ("evaluate", "recover")
     }
     assert paths == {
-        "tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json"
+        "${{ inputs.smoke_target_digest == '' && "
+        "format('tests/e2e/cli_uplift/bindings.{0}.json', inputs.environment || 'dev') || '' }}"
     }
     for environment in ("dev", "pre-production"):
         assert pathlib.Path(

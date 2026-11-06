@@ -1,6 +1,17 @@
 {
-  "account_id": "",
-  "region": "",
-  "archive_prefix": "",
-  "targets": []
+  "account_id": "879318057152",
+  "region": "us-east-1",
+  "archive_prefix": "lambda-artifacts/webhook-ingress",
+  "targets": [
+    {
+      "artifact": "github.zip",
+      "function_arn": "arn:aws:lambda:us-east-1:879318057152:function:adp-dev-github-webhook",
+      "execution_role": "arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role"
+    },
+    {
+      "artifact": "gitlab.zip",
+      "function_arn": "arn:aws:lambda:us-east-1:879318057152:function:adp-dev-gitlab-webhook",
+      "execution_role": "arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role"
+    }
+  ]
 }

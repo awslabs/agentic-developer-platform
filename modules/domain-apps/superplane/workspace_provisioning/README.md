@@ -4,6 +4,16 @@ The [authoritative Superplane design](../DESIGN.md) governs architecture and own
 This document provides supporting implementation detail or historical evidence;
 its availability statements do not imply that pending design requirements are implemented.
 
+An installation in an AWS account outside Organizations can explicitly select
+`aws_organization_id: "standalone"` in its deployment-owned lifecycle policy.
+This permits only managed/adopt in the same management account, with no OU or
+other-account credential references. The target account remains explicitly
+allowlisted and verified through the existing provider authority and STS checks.
+Missing organization identity does not select standalone; account creation still
+requires a real AWS Organization and its authorized OU. API and paid worker must
+both support this policy value before it is installed. Existing organization
+policy serialization and approval hashes are unchanged.
+
 Public retirement review reads completed bootstrap ownership and verifies the
 original source operation and historical artifact. It returns
 `admission_available: false` and no approval request until staged cleanup access

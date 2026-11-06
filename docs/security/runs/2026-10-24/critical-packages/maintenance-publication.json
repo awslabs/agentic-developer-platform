@@ -1,0 +1,20 @@
+{
+  "record_type": "sanitized-publication-summary",
+  "review_date": "2026-10-24",
+  "source_revision": "e589e06d171587a49daa2d2aeb51a4fd552394b2",
+  "source_recipe": "modules/domain-apps/superplane/images/skypilot/high-maintenance/Dockerfile",
+  "recipe_sha256": "96143e0e5703e4d884209303bb9222d6ca631fb29e6641ff2c2f2943067f98bc",
+  "repository": "adp-superplane-skypilot",
+  "status": "published",
+  "tag": "skypilot-7b3df072a13b928bddbf70d71735fdc8572006442048868914627ebc8e635b68",
+  "digest": "sha256:7b3df072a13b928bddbf70d71735fdc8572006442048868914627ebc8e635b68",
+  "platform_digest": "sha256:7b3df072a13b928bddbf70d71735fdc8572006442048868914627ebc8e635b68",
+  "config_digest": "sha256:16d556c0554999df851854b49937b7222cd80c1799764f8f95fc71669f7b1478",
+  "tested_image_id": "sha256:232920846889b72f91831b047499e0cbc121704342d2f2382e9ab4687b748547",
+  "registry_manifest_verified": true,
+  "manifest_byte_identity_verified": true,
+  "published_rootfs_and_runtime_configuration_identical_to_tested_image": true,
+  "review_evidence_sha256": "sha256:b4dcc9b16551e4cc5fcb6b0a6d6f01c242db7c705b77874900205173dac4a138",
+  "public_validation_sha256": "b57ae91b6e032d399098d8c80f5cd109335f8e6d0d54602b02ec64d41b786d53",
+  "scope": "Candidate artifact publication only; no workload deployment. Operational registry identity and raw receipts remain private."
+}

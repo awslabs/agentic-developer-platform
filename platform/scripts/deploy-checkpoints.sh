@@ -17,7 +17,9 @@ deploy_checkpoint_init() {
   [ "$RESUME" = false ] || flags+=(--resume)
   [ -z "$FROM_PHASE" ] || flags+=(--from "$FROM_PHASE")
   # Confirmation and pricing recovery flags may change when retrying a failure.
-  local options="$UPDATE_MODE:$LOCAL_MODE:$GATEWAY_ONLY:$AGENT_FACTORY_ONLY:$AGENT_CONTEXT_ONLY:$SKIP_AGENT_CONTEXT:$AGENT_CONTEXT_ENABLED:$SKIP_FRONTEND:$SKIP_BROKER:$SKIP_ADMIN_BOOTSTRAP:$SKIP_WEBHOOK_INGRESS"
+  # The chat rollout mode is part of the binding: resuming a run under a different
+  # mode would mix delegated activation with legacy retirement.
+  local options="$UPDATE_MODE:$LOCAL_MODE:$GATEWAY_ONLY:$AGENT_FACTORY_ONLY:$AGENT_CONTEXT_ONLY:$SKIP_AGENT_CONTEXT:$AGENT_CONTEXT_ENABLED:$SKIP_FRONTEND:$SKIP_BROKER:$SKIP_ADMIN_BOOTSTRAP:$SKIP_WEBHOOK_INGRESS:${CHAT_MODE:-retire}:${CHAT_EXCEPTION:-}:${DEV_BOX_MODE:-off}:${DEV_BOX_ONLY:-false}"
   deploy_checkpoint init --root "$ROOT_DIR" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
     --environment "$ENVIRONMENT" --source "$(git -C "$ROOT_DIR" rev-parse HEAD)" \
     --options "$options" "${flags[@]}" || fail "Cannot initialize deployment checkpoints"

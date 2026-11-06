@@ -15,7 +15,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from src.orchestration.execution_policy import Action, ExecutionPolicy, PolicyLimits
-from src.orchestration.proposal import EpicDisplay, EpicMetadata, LoopProposal, ProposedEdge, ProposedNode, WaveDisplay, WaveMetadata
+from src.orchestration.proposal import (
+    EpicDisplay,
+    EpicMetadata,
+    LoopProposal,
+    PlanningIssueReference,
+    ProposedEdge,
+    ProposedNode,
+    RepositoryConnection,
+    TrackerReference,
+    WaveDisplay,
+    WaveMetadata,
+)
 
 __all__ = [
     "MAX_OUTCOMES",
@@ -126,6 +137,13 @@ class ResolvedRepository:
     # snapshot. Surfaced rather than hidden: a match against a stale snapshot is
     # weaker evidence, and the operator is entitled to know which one they got.
     verified_live: bool
+    repository_id: int | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedChild:
+    repository: ResolvedRepository
+    issue_number: int
 
 
 @dataclass(frozen=True)
@@ -149,6 +167,10 @@ class PlanningInputs:
     # sourcing it from the caller's own identity means the two can never disagree and
     # the refusal is unreachable rather than merely handled.
     org_id: str
+    product_id: str | None = None
+    project_id: str | None = None
+    planning_issue: PlanningIssueReference | None = None
+    children: tuple[ResolvedChild, ...] = ()
     wave_display: WaveDisplay | None = None
     epic_display: EpicDisplay | None = None
     repository: ResolvedRepository | None = None
@@ -175,7 +197,9 @@ def slugify(text: str, *, fallback: str) -> str:
     return slug[:48].strip("-") or fallback
 
 
-def resolve_repository(requested: str | None, available: list[tuple[int, list[str], bool]]) -> ResolvedRepository | None:
+def resolve_repository(
+    requested: str | None, available: list[tuple[int, list[str], bool]], *, installation_id: int | None = None
+) -> ResolvedRepository | None:
     """Match a requested repository against the tenant's real installations.
 
     `available` is `(installation_id, repository_full_names, live)` per installation,
@@ -213,10 +237,16 @@ def resolve_repository(requested: str | None, available: list[tuple[int, list[st
     # forward is the name as the INSTALLATION reports it, not as the caller typed it,
     # because that is the form dispatch will compare.
     folded = name.casefold()
-    for installation_id, repositories, live in available:
-        for repository in repositories:
-            if repository.casefold() == folded:
-                return ResolvedRepository(full_name=repository, installation_id=installation_id, verified_live=live)
+    matches = [
+        ResolvedRepository(full_name=repository, installation_id=connected_id, verified_live=live)
+        for connected_id, repositories, live in available
+        for repository in repositories
+        if repository.casefold() == folded and (installation_id is None or installation_id == connected_id)
+    ]
+    if len(matches) > 1:
+        raise PlanningError("repository_connection_ambiguous", "Select the intended repository installation before previewing this plan.")
+    if matches:
+        return matches[0]
 
     raise PlanningError(
         "repository_not_connected",
@@ -321,6 +351,8 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
             "Outcomes are not dropped to fit, because a plan that silently omitted some would look complete. "
             "Split this into separate flows.",
         )
+    if inputs.planning_issue is not None and len(inputs.children) != len(inputs.outcomes):
+        raise PlanningError("epic_children_unmatched", "Match each planned outcome to one verified native child before proposing work.")
 
     # Resolved before any node is built, so a conversation that cannot carry a usable
     # grant is refused without having produced a document first. Only consulted when a
@@ -328,7 +360,7 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
     # grant to be spent, and refusing would break the module's own documented case of a
     # plan whose missing binding the preview reports as a real prerequisite.
     expires_at = datetime.fromtimestamp(inputs.last_activity_epoch, tz=UTC) + POLICY_LIFETIME
-    if inputs.repository and expires_at - datetime.now(tz=UTC) < MIN_POLICY_REMAINDER:
+    if (inputs.repository or inputs.children) and expires_at - datetime.now(tz=UTC) < MIN_POLICY_REMAINDER:
         raise PlanningError(
             "planning_session_idle",
             "This conversation has been idle too long for the bounded authority a plan proposes to still be usable, so "
@@ -342,6 +374,8 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
     used: set[str] = set()
 
     for index, outcome in enumerate(inputs.outcomes, start=1):
+        child = inputs.children[index - 1] if inputs.planning_issue is not None else None
+        target = child.repository if child else inputs.repository
         # The index prefix guarantees uniqueness even when two outcomes slugify
         # identically ("Faster" / "faster!"), which rule 1 would otherwise reject as
         # a duplicate address — a collision in the generator surfacing as the user's
@@ -360,7 +394,10 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
                 # length of a sentence would be pedantry. The full text survives in
                 # the draft the conversation keeps.
                 title=outcome.strip()[:512],
-                issue_ref=inputs.issue_ref,
+                issue_ref=str(child.issue_number) if child else inputs.issue_ref,
+                repository_identity=target.full_name if target else None,
+                provider_repository_id=target.repository_id if target else None,
+                repository_connection=RepositoryConnection(provider="github", installation_id=target.installation_id) if target else None,
             )
         )
 
@@ -370,12 +407,12 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
             address=eval_address,
             kind="eval",
             title="Assess whether the declared outcomes were met",
-            issue_ref=inputs.issue_ref,
+            issue_ref=None if inputs.planning_issue else inputs.issue_ref,
         )
     )
     story_addresses = [node.address for node in nodes if node.kind == "story"]
 
-    if inputs.issue_ref is not None:
+    if inputs.issue_ref is not None and inputs.planning_issue is None:
         # Forced by rule 6, not inferred: see the docstring. Every story is work on
         # one issue, so they are a sequence whether or not the prose said so, and a
         # document that left them unordered would be refused by `validate_proposal`
@@ -393,6 +430,12 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
         flow_slug=flow,
         title=inputs.title,
         org_id=inputs.org_id,
+        product_id=inputs.product_id,
+        project_id=inputs.project_id,
+        origin_ref=inputs.planning_issue,
+        tracker_refs=[TrackerReference(scope="epic", address=f"{flow}/{DEFAULT_EPIC}", issue=inputs.planning_issue)]
+        if inputs.planning_issue
+        else None,
         spec_revision=PLANNER_SPEC_REVISION,
         # The intent issue this plan came from, when the conversation opened one.
         # Same normalized form as the nodes' refs, so "which issue is this flow
@@ -425,7 +468,9 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
         proposed_execution_policy=(
             ExecutionPolicy(
                 org_id=inputs.org_id,
-                repository_ids=[inputs.repository.full_name],
+                repository_ids=list(dict.fromkeys(child.repository.full_name for child in inputs.children))
+                if inputs.planning_issue
+                else [inputs.repository.full_name],
                 allowed_actions=[Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.EVALUATE],
                 expires_at=expires_at,
                 limits=PolicyLimits(
@@ -435,7 +480,7 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
                     max_concurrent_actions=1,
                 ),
             )
-            if inputs.repository
+            if inputs.repository or inputs.children
             else None
         ),
     )

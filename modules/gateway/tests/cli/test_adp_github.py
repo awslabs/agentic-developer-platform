@@ -265,6 +265,19 @@ def test_verified_requires_a_live_read():
     assert run(["status", "--repo", REPO], api)["status"] == "verified"
 
 
+def test_repository_id_is_reported_only_for_a_live_verified_repository():
+    current = connection(repositories_live=True)
+    current["repository_details"] = [{"full_name": REPO, "repository_id": 9876}]
+    result = run(["status", "--repo", REPO], FakeApi(connections=[current]))
+    assert result["detail"]["repository_id"] == 9876
+    assert result["detail"]["repository_access"] == "verified"
+
+    current["verification"]["repositories_live"] = False
+    stale = run(["status", "--repo", REPO], FakeApi(connections=[current]))
+    assert stale["detail"]["repository_id"] is None
+    assert stale["detail"]["repository_access"] == "unproven"
+
+
 # ---------------------------------------------------------------------------
 # Wrong repository: a different install cannot satisfy the request
 # ---------------------------------------------------------------------------
@@ -569,3 +582,82 @@ def test_main_returns_4_while_an_approval_is_pending(monkeypatch):
 def test_main_returns_0_when_access_is_verified(monkeypatch):
     monkeypatch.setattr(cli, "Api", lambda: FakeApi(connections=[connection()]))
     assert cli.main(["status", "--repo", REPO]) == 0
+
+
+# ---------------------------------------------------------------------------
+# #8555: the owner's own GitHub token (no Dev Box needed) and the git credential helper
+# ---------------------------------------------------------------------------
+
+
+class TokenApi(FakeApi):
+    def __init__(self, response=None):
+        super().__init__()
+        self.response = response if response is not None else {"token": "gho_fixture", "login": "alice", "expires_at": 1_800_000_000}
+
+    def request(self, method, path, body=None, **kwargs):
+        self.calls.append((method, path, body))
+        if path == cli.OWNER_TOKEN:
+            if isinstance(self.response, Exception):
+                raise self.response
+            return self.response
+        raise AssertionError(f"unexpected call: {method} {path}")
+
+
+def test_token_prints_only_the_bare_token_so_it_pipes(capsys):
+    api = TokenApi()
+    assert run(["token"], api) is None
+    assert capsys.readouterr().out == "gho_fixture\n"
+    assert api.calls == [("POST", cli.OWNER_TOKEN, {})]
+
+
+def test_token_json_envelope_carries_login_and_expiry():
+    result = run(["token", "--json"], TokenApi())
+    assert result["status"] == "issued" and result["command"] == "github token"
+    assert result["detail"] == {"token": "gho_fixture", "login": "alice", "expires_at": 1_800_000_000}
+
+
+@pytest.mark.parametrize(
+    "code,hint",
+    [
+        ("github_not_connected", "Connect your GitHub account with repository access"),
+        ("github_repository_consent_required", "Grant repository access"),
+        ("github_consent_required", "Allow agents to use this account"),
+        ("github_reconnect_required", "Reconnect GitHub"),
+        ("github_user_access_disabled", "platform administrator"),
+    ],
+)
+def test_token_refusals_name_the_one_step_that_fixes_them(code, hint):
+    api = TokenApi(cli.CliError("refused", code, 5, status_code=403))
+    with pytest.raises(cli.CliError) as refused:
+        run(["token"], api)
+    assert refused.value.code == code and hint in str(refused.value)
+
+
+def test_token_refuses_an_unusable_gateway_response():
+    with pytest.raises(cli.CliError) as refused:
+        run(["token"], TokenApi({"token": "has space", "login": "alice", "expires_at": 1}))
+    assert refused.value.code == "invalid_response"
+
+
+def test_credential_helper_answers_get_for_github_https_only(capsys):
+    import io
+
+    api = TokenApi()
+    args = cli.parser().parse_args(["credential-helper", "get"])
+    out = io.StringIO()
+    cli.credential_helper(args, api, stdin=io.StringIO("protocol=https\nhost=github.com\npath=aws-e/adp.git\n\n"), stdout=out)
+    assert out.getvalue() == "username=x-access-token\npassword=gho_fixture\n"
+    assert api.calls == [("POST", cli.OWNER_TOKEN, {})]
+    # Another host, or plain http, never reaches the gateway and prints nothing.
+    for request in ("protocol=https\nhost=gitlab.com\n\n", "protocol=http\nhost=github.com\n\n"):
+        api = TokenApi()
+        out = io.StringIO()
+        cli.credential_helper(args, api, stdin=io.StringIO(request), stdout=out)
+        assert out.getvalue() == "" and api.calls == []
+    # store/erase are accepted and ignored: ADP never writes a token to disk.
+    for action in ("store", "erase"):
+        api = TokenApi()
+        parsed = cli.parser().parse_args(["credential-helper", action])
+        cli.credential_helper(parsed, api, stdin=io.StringIO("protocol=https\nhost=github.com\n\n"), stdout=out)
+        assert api.calls == []
+    assert capsys.readouterr().out == ""

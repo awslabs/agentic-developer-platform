@@ -82,6 +82,8 @@ RFC3339_UTC_PATTERN = re.compile(
 
 SUBMIT_REQUIRED_FIELDS = ("schema_version", "persona", "instructions")
 SUBMIT_OPTIONAL_FIELDS = (
+    "product_id",
+    "project_id",
     "inputs",
     "artifact_ids",
     "external_reference",

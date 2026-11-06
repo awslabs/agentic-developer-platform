@@ -1,0 +1,211 @@
+/* DevOps uses the same ADP tokens in the Product workspace and standalone route. */
+.devops-workspace {
+  --devops-surface: var(--color-white, #fff);
+  --devops-subtle: var(--color-gray-50, #f8fafc);
+  --devops-line: var(--color-gray-200, #e2e8f0);
+  --devops-ink: var(--color-gray-900, #172033);
+  --devops-muted: var(--color-gray-500, #64748b);
+  color-scheme: light; color: var(--devops-ink); font-size: 14px; line-height: 1.6; min-width: 0;
+}
+.devops-workspace .l5-service-section { border: 0; padding: 8px 0 24px; }
+.devops-workspace .l5-service-section > header { margin-bottom: 20px; }
+.devops-workspace h2 { font-size: 20px; font-weight: 650; letter-spacing: -.3px; }
+.devops-workspace h3 { font-size: 16px; font-weight: 650; line-height: 1.4; }
+.devops-workspace h4 { font-size: 14px; font-weight: 600; }
+.devops-workspace p { line-height: 1.6; }
+.devops-workspace .product-muted, .devops-workspace small { color: var(--devops-muted); font-size: 12px; }
+.devops-workspace.devops-panel,
+.devops-workspace .devops-panel,
+.devops-workspace .l5-setup-overview > section,
+.devops-workspace .l5-capability,
+.devops-workspace .l5-disclosure {
+  border: 1px solid var(--devops-line); border-radius: 10px; background: var(--devops-surface);
+  padding: 20px; min-width: 0;
+}
+.devops-workspace.devops-panel > * + *,
+.devops-workspace .devops-panel > * + * { margin-top: 16px; }
+.devops-workspace .devops-panel .devops-panel { background: var(--devops-subtle); box-shadow: none; }
+.devops-workspace .devops-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.devops-workspace .devops-panel-heading h3 { margin: 0; }
+.devops-workspace .devops-panel-heading p { margin: 4px 0 0; color: var(--devops-muted); font-size: 13px; }
+.devops-workspace .l5-setup-overview, .devops-workspace .devops-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.devops-workspace .l5-setup-overview h3 { margin-bottom: 16px; }
+.devops-workspace .l5-setup-overview dl > div { grid-template-columns: 100px minmax(0, 1fr); border-top: 1px solid var(--devops-line); padding: 10px 0; }
+.devops-workspace .l5-capability-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.devops-workspace .l5-capability { display: flex; flex-direction: column; align-items: stretch; gap: 10px; }
+.devops-workspace .l5-capability .l5-capability-state { font-size: 12px; }
+.devops-workspace .l5-capability > details { margin-top: auto; }
+.devops-workspace .l5-disclosure { padding: 0; overflow-wrap: anywhere; }
+.devops-workspace .l5-disclosure > summary { padding: 16px 20px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.devops-workspace .l5-disclosure > summary > span { margin-left: 18px; line-height: 1.5; }
+.devops-workspace .l5-disclosure[open] > summary { border-bottom: 1px solid var(--devops-line); }
+.devops-workspace .l5-disclosure > .l5-disclosure-content { padding: 20px; margin: 0; }
+.devops-workspace .l5-disclosure:not(:has(> .l5-disclosure-content)) > :not(summary) { margin: 16px 20px; }
+.devops-workspace .devops-panel > details:not(.l5-disclosure) { padding: 12px 0; border-top: 1px solid var(--devops-line); }
+.devops-workspace :is(input, select, textarea):not([type=checkbox]):not([type=radio]) {
+  display: block; width: 100%; max-width: 100%; min-height: 42px; margin-top: 6px; padding: 9px 12px;
+  border: 1px solid var(--color-gray-300, #cbd5e1); border-radius: 6px; background: var(--devops-surface); color: var(--devops-ink); font: inherit; font-weight: 400;
+}
+.devops-workspace textarea { min-height: 90px; resize: vertical; }
+.devops-workspace input:is([type=checkbox], [type=radio]) { width: 16px; height: 16px; flex: 0 0 16px; accent-color: var(--color-primary-600, #2563eb); margin-top: 3px; }
+.devops-workspace label { display: block; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.devops-workspace label:has(> input[type=checkbox]) { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; }
+.devops-workspace fieldset { min-width: 0; }
+.devops-workspace fieldset > label + label { margin-top: 14px; }
+.devops-workspace legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
+.devops-workspace .devops-form-grid > label { margin-top: 0; }
+.devops-workspace button { cursor: pointer; border-radius: 6px; min-height: 40px; padding: 8px 14px; font-size: 13px; font-weight: 600; border: 1px solid var(--devops-line); background: var(--devops-surface); }
+.devops-workspace button.product-primary { color: white; background: var(--color-primary-600, #2563eb); border-color: transparent; }
+.devops-workspace button.product-text-button { border: 0; background: transparent; color: var(--color-primary-600, #2563eb); }
+.devops-workspace button:disabled { opacity: .5; cursor: not-allowed; }
+.devops-workspace :is(button, a, input, select, textarea, summary):focus-visible { outline: 3px solid #6d9bea; outline-offset: 3px; }
+.devops-workspace .devops-note, .devops-workspace [role=alert] { padding: 12px 16px; border-radius: 8px; font-size: 13px; background: var(--devops-subtle); }
+.devops-workspace [role=alert] { color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; }
+.devops-workspace .devops-empty { padding: 32px 20px; text-align: center; color: var(--devops-muted); background: var(--devops-subtle); border-radius: 8px; }
+.devops-workspace .devops-badge { display: inline-flex; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 650; line-height: 1.5; text-transform: capitalize; background: #f1f5f9; color: #475569; white-space: nowrap; }
+.devops-workspace .devops-badge--success { color: #166534; background: #dcfce7; }
+.devops-workspace .devops-badge--danger { color: #991b1b; background: #fee2e2; }
+.devops-workspace .devops-badge--warning { color: #854d0e; background: #fef9c3; }
+.devops-workspace .devops-badge--active { color: #1e40af; background: #dbeafe; }
+.devops-workspace .devops-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; }
+.devops-workspace .devops-metric { padding: 16px; border-radius: 8px; background: var(--devops-subtle); }
+.devops-workspace .devops-metric strong { display: block; font-size: 24px; line-height: 1.3; font-weight: 650; }
+.devops-workspace .devops-metric span { color: var(--devops-muted); font-size: 12px; }
+.devops-workspace .devops-list { display: grid; gap: 8px; }
+.devops-workspace button.devops-list-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; max-width: 100%; margin: 0; padding: 14px 16px; text-align: left; font-weight: 400; }
+.devops-workspace .devops-list-row[aria-pressed=true] { border-color: #739ce0; background: #eff6ff; box-shadow: inset 3px 0 #2563eb; }
+.devops-workspace .devops-list-row > span:first-child { min-width: 0; }
+.devops-workspace .devops-list-row strong, .devops-workspace .devops-list-row small { display: block; }
+.devops-workspace .devops-list-row strong { font-weight: 600; font-size: 13px; }
+.devops-workspace .devops-list-row small { margin-top: 3px; }
+.devops-workspace .devops-phases { display: flex; flex-wrap: wrap; gap: 12px; padding: 0; list-style: none; }
+.devops-workspace .devops-phases li { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.devops-workspace .devops-finding-list { max-height: 420px; overflow-y: auto; padding: 3px; }
+.devops-workspace .devops-claim { font-size: 16px; line-height: 1.6; font-weight: 500; }
+.devops-workspace .devops-mitigations { padding: 16px 20px; border-left: 3px solid #3b82f6; background: var(--devops-subtle); border-radius: 0 8px 8px 0; }
+.devops-workspace .devops-mitigations ul { list-style: disc; padding-left: 20px; }
+.devops-workspace .devops-mitigations li + li { margin-top: 8px; }
+.devops-workspace .devops-technical { color: var(--devops-muted); font-size: 12px; overflow-wrap: anywhere; }
+.devops-workspace .devops-technical p + p { margin-top: 8px; }
+.devops-workspace .devops-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.devops-workspace .devops-actions button { margin: 0; }
+@media (max-width: 700px) {
+  .devops-workspace .l5-setup-overview, .devops-workspace .devops-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .devops-workspace .devops-panel, .devops-workspace .l5-setup-overview > section, .devops-workspace .l5-capability { padding: 16px; }
+  .devops-workspace .l5-disclosure > summary, .devops-workspace .l5-disclosure > .l5-disclosure-content { padding: 16px; }
+  .devops-workspace .devops-list-row { align-items: flex-start; }
+}
+
+.devops-workspace .devops-metric > .devops-badge { display: table; margin-bottom: 8px; }
+
+.devops-workspace .devops-list[aria-label="Assessment history"] { max-height: 360px; overflow-y: auto; padding: 3px; }
+.devops-workspace .devops-finding-list strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.devops-workspace .devops-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.devops-workspace .devops-summary > div { padding: 16px; background: var(--devops-subtle); border-radius: 8px; }
+.devops-workspace .devops-summary dt { font-size: 12px; color: var(--devops-muted); margin-bottom: 6px; }
+.devops-workspace .devops-summary dd { font-weight: 600; margin: 0; }
+.devops-workspace .devops-report { max-width: 900px; }
+.devops-workspace .devops-report :is(ul, ol) { padding-left: 22px; list-style: revert; }
+.devops-workspace .devops-report li + li { margin-top: 8px; }
+.devops-workspace .devops-report :is(p, ul, ol, table, pre) + * { margin-top: 12px; }
+.devops-workspace .devops-report table { width: 100%; border-collapse: collapse; }
+.devops-workspace .devops-report :is(th, td) { padding: 10px; border-bottom: 1px solid var(--devops-line); text-align: left; }
+.devops-workspace pre { overflow: auto; max-height: 360px; padding: 16px; border-radius: 8px; background: var(--devops-subtle); font-size: 12px; }
+.devops-workspace .devops-history { list-style: none; padding: 0; display: grid; gap: 10px; }
+.devops-workspace .devops-history > li { border: 1px solid var(--devops-line); border-radius: 8px; padding: 16px; }
+.devops-workspace .devops-history .devops-actions { margin-top: 12px; }
+.devops-workspace .devops-next-step { border-left: 3px solid var(--color-primary-600, #2563eb); padding: 14px 18px; background: var(--devops-subtle); border-radius: 0 8px 8px 0; }
+@media (max-width: 700px) { .devops-workspace .devops-summary { grid-template-columns: 1fr; } }
+
+/* Keep the saved setup, the next action and the work itself at the top level. */
+.devops-workspace .l5-service-journey { gap: 16px; }
+.devops-workspace .l5-service-journey > form:not(:has(.l5-service-section:not([hidden]))) { display: none; }
+.devops-workspace .devops-status-toolbar { display: flex; justify-content: flex-end; }
+.devops-workspace .devops-status-toolbar button { min-height: 32px; padding: 4px 10px; font-weight: 500; }
+.devops-workspace .devops-saved-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.devops-workspace .devops-saved-settings dt { color: var(--devops-muted); font-size: 12px; margin-bottom: 6px; }
+.devops-workspace .devops-saved-settings dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.devops-workspace .devops-saved-settings small { display: block; margin-top: 5px; font-weight: 400; }
+.devops-workspace .devops-panel .l5-disclosure { border: 0; border-top: 1px solid var(--devops-line); border-radius: 0; }
+.devops-workspace .devops-panel .l5-disclosure > summary { padding: 14px 0 0; font-weight: 500; font-size: 13px; }
+.devops-workspace .devops-panel .l5-disclosure > .l5-disclosure-content { padding: 16px 0 0; }
+.devops-workspace .devops-workload-selection { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border-radius: 8px; background: var(--devops-subtle); }
+.devops-workspace .devops-workload-selection > div { min-width: 0; overflow-wrap: anywhere; }
+.devops-workspace .devops-workload-selection p { font-size: 13px; margin-top: 4px; }
+.devops-workspace .devops-workload-selection button { flex-shrink: 0; }
+.devops-workspace .devops-secondary-actions { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--devops-line); }
+.devops-workspace .devops-secondary-actions .devops-panel { background: var(--devops-subtle); border: 0; }
+.devops-workspace .devops-secondary-actions .devops-panel p { margin-top: 6px; }
+.devops-workspace .devops-history .devops-panel-heading { align-items: flex-start; flex-wrap: nowrap; }
+.devops-workspace .devops-history .devops-panel-heading strong { min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.devops-workspace .devops-history .devops-panel-heading .devops-badge { flex-shrink: 0; }
+.devops-workspace .devops-readiness { padding: 12px 16px; background: var(--devops-subtle); border-radius: 8px; }
+.devops-workspace .devops-investigation-input textarea { min-height: 110px; }
+.devops-workspace details:not(.l5-disclosure) > summary { cursor: pointer; font-size: 13px; font-weight: 500; }
+.devops-workspace details:not(.l5-disclosure)[open] > summary { margin-bottom: 12px; }
+.devops-workspace .l5-disclosure-content > * + * { margin-top: 16px; }
+.devops-workspace .devops-connection-setup[open] { padding-bottom: 16px; }
+.devops-workspace .devops-connection-setup > * + * { margin-top: 14px; }
+.devops-workspace .devops-capability-list { list-style: none; padding: 0; }
+.devops-workspace .devops-capability-list li { display: flex; justify-content: space-between; align-items: baseline; gap: 24px; padding: 12px 0; border-bottom: 1px solid var(--devops-line); }
+.devops-workspace .devops-capability-list strong { font-size: 13px; font-weight: 600; }
+.devops-workspace .devops-capability-list p { color: var(--devops-muted); font-size: 12px; margin-top: 3px; }
+.devops-workspace .devops-capability-list li > span { color: var(--devops-muted); font-size: 12px; flex-shrink: 0; }
+@media (max-width: 700px) {
+  .devops-workspace .devops-saved-settings { grid-template-columns: 1fr; gap: 16px; }
+  .devops-workspace .devops-workload-selection { align-items: flex-start; flex-direction: column; }
+  .devops-workspace .devops-workload-selection button { width: 100%; }
+  .devops-workspace .l5-disclosure > summary > span { display: block; margin-left: 0; }
+  .devops-workspace .devops-capability-list li { flex-direction: column; gap: 6px; }
+}
+
+/* Three plain-language setup groups, with technical controls inside each group. */
+.devops-workspace .devops-setup-group + .devops-setup-group { margin-top: 20px; }
+.devops-workspace #l5-devops-capabilities > header { display: none; }
+.devops-workspace .devops-saved-overview > * + * { margin-top: 16px; }
+.devops-workspace .devops-native-access { border: 1px solid var(--devops-line); border-radius: 10px; padding: 18px 20px; background: var(--devops-subtle); }
+.devops-workspace .devops-native-access > * + * { margin-top: 12px; }
+.devops-workspace .devops-native-access label { max-width: 460px; }
+.devops-workspace .devops-native-access .devops-actions { align-items: center; flex-wrap: nowrap; }
+.devops-workspace .devops-native-access .devops-actions button { flex-shrink: 0; }
+@media (max-width: 700px) {
+  .devops-workspace .devops-native-access { padding: 16px; }
+  .devops-workspace .devops-native-access .devops-actions { align-items: flex-start; flex-direction: column; }
+}
+
+/* Ordinary setup values and forms stay visible; only diagnostic details collapse. */
+.devops-workspace .devops-setup-fields { padding-top: 20px; border-top: 1px solid var(--devops-line); }
+.devops-workspace .devops-setup-fields > * + * { margin-top: 14px; }
+.devops-workspace .devops-setup-fields > .devops-form-grid { align-items: start; }
+.devops-workspace .devops-setup-fields > label { max-width: 720px; }
+.devops-workspace .devops-saved-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.devops-workspace .devops-connection-setup { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .devops-workspace .devops-saved-settings { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The everyday setup is a compact summary; editing happens in retained side panels. */
+.devops-workspace .devops-setup-overview { display: grid; gap: 16px; }
+.devops-workspace .devops-setup-overview .devops-panel { padding: 20px 24px; }
+.devops-workspace .devops-setup-overview .devops-panel-heading { margin-bottom: 18px; }
+.devops-workspace .devops-setup-overview .devops-panel-heading button { min-height: 34px; padding: 5px 12px; }
+.devops-workspace .devops-setup-overview .devops-saved-settings { gap: 14px 28px; }
+.devops-workspace .devops-access-summary { font-size: 13px; }
+.devops-workspace .devops-access-summary small { display: block; margin-top: 3px; }
+.devops-workspace .devops-setup-footer { display: flex; justify-content: space-between; margin-top: 12px; }
+.devops-workspace .devops-setup-dialog { position: fixed; inset: 0 0 0 auto; margin: 0; width: min(680px, 100vw); max-width: 100vw; height: 100dvh; max-height: 100dvh; padding: 0; border: 0; background: var(--devops-surface); color: var(--devops-ink); box-shadow: -12px 0 40px #0f172a26; }
+.devops-workspace .devops-setup-dialog::backdrop { background: #0f172a66; }
+.devops-workspace .devops-setup-dialog > header { position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 24px; border-bottom: 1px solid var(--devops-line); background: var(--devops-surface); z-index: 1; }
+.devops-workspace .devops-setup-dialog-content { padding: 24px; }
+.devops-workspace .devops-setup-dialog-content > * + *,
+.devops-workspace .devops-edit-form > * + *,
+.devops-workspace .devops-reference-details > * + *,
+.devops-workspace .devops-edit-form details > * + * { margin-top: 20px; }
+.devops-workspace .devops-setup-dialog .devops-native-access { border: 0; padding: 0; background: transparent; }
+@media (max-width: 700px) {
+  .devops-workspace .devops-setup-overview .devops-panel { padding: 16px; }
+  .devops-workspace .devops-setup-dialog-content, .devops-workspace .devops-setup-dialog > header { padding: 16px; }
+  .devops-workspace .devops-setup-overview .devops-panel-heading { flex-wrap: nowrap; align-items: center; }
+  .devops-workspace .devops-setup-overview .devops-panel-heading button { flex-shrink: 0; }
+}

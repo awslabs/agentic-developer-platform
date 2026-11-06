@@ -1,4 +1,5 @@
 name: Gateway Frontend Deploy
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || '' }}
 
 on:
   push:
@@ -15,10 +16,36 @@ on:
       - '!**/*.rst'
   workflow_dispatch:
     inputs:
+      adp_correlation:
+        description: 'Engine delivery correlation; empty preserves manual operation.'
+        required: false
+        type: string
+        default: ''
+      adp_source_revision:
+        description: 'Engine-approved immutable source commit.'
+        required: false
+        type: string
+        default: ''
+      adp_definition_revision:
+        description: 'Expected workflow revision; checked before deployment.'
+        required: false
+        type: string
+        default: ''
       environment:
         description: Deployment environment
         type: string
         default: dev
+      product_cases:
+        description: 'Fixed B02 or B03 browser inventory; none preserves ordinary publication.'
+        required: false
+        type: choice
+        options: [none, 'live_browser_create,live_browser_conflict_denial,live_browser_evidence', 'live_scope_isolation,live_scope_denials,live_scope_history_cleanup']
+        default: none
+      adp_approved_revision:
+        description: 'Assistant rollout approval for non-dev targets only (dev needs none): full 40-hex commit whose frontend files this candidate must match (see docs/architecture/assistant-deploy-boundary.md).'
+        required: false
+        type: string
+        default: ''
 
 concurrency:
   group: gateway-frontend-release-${{ inputs.environment || 'dev' }}
@@ -36,9 +63,35 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Guard engine delivery revisions
+        env:
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
+          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
+          INPUT_PRODUCT_CASES: ${{ inputs.product_cases || 'none' }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
+            [[ "$ADP_CORRELATION" =~ ^([0-9a-f]{64}|orch:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$ ]] || exit 1
+            [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test "$ACTUAL_DEFINITION" = "$ADP_DEFINITION"
+          fi
+          if [ "${INPUT_PRODUCT_CASES:-none}" != none ]; then
+            case "$INPUT_PRODUCT_CASES" in
+              'live_browser_create,live_browser_conflict_denial,live_browser_evidence'|'live_scope_isolation,live_scope_denials,live_scope_history_cleanup') ;;
+              *) exit 1 ;;
+            esac
+            test "$INPUT_ENVIRONMENT" = dev
+            test -n "$ADP_CORRELATION"
+          fi
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
 
       - name: Verify reviewed main source
         shell: bash
@@ -46,6 +99,27 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Load maintained frontend deployment guard
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "$ADP_WORKFLOW_REVISION"
+          git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"
+          git show "$ADP_WORKFLOW_REVISION:scripts/check-assistant-deploy-boundary.sh" > "$RUNNER_TEMP/adp-frontend-assistant-guard.sh"
+
+      - name: Guard assistant frontend deployment
+        env:
+          ADP_ASSISTANT_DEPLOY_COMPONENT: frontend
+          ADP_ASSISTANT_DEPLOY_TARGET: adp-frontend-deploy-${{ inputs.environment || 'dev' }}
+          ADP_ASSISTANT_DEPLOY_CANDIDATE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_ASSISTANT_APPROVED_TARGET: ${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}
+          ADP_ASSISTANT_APPROVED_REVISION: ${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}
+          ADP_ASSISTANT_DISPATCH_APPROVED_REVISION: ${{ inputs.adp_approved_revision }}
+          ADP_DEPLOYED_BASELINE: ''
+        run: bash "$RUNNER_TEMP/adp-frontend-assistant-guard.sh"
 
       - name: Establish frontend publishing identity
         uses: ./.github/actions/trusted-deployment
@@ -57,6 +131,36 @@ jobs:
         uses: ./.github/actions/load-deploy-config
         with:
           environment: ${{ inputs.environment || 'dev' }}
+
+      - name: Load maintained deployment evidence publishers
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          for file in scripts/publish-deployment-evidence.py scripts/deployment-workflow-context.py scripts/deployment-release-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_WORKFLOW_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+
+      - name: Record deployment workflow context
+        if: inputs.adp_correlation != ''
+        env:
+          CONTEXT_WORKFLOW: .github/workflows/gateway-frontend-deploy.yml
+          CONTEXT_REVISION: ${{ github.workflow_sha }}
+          CONTEXT_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
+          CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          INPUT_ADP_APPROVED_REVISION: ${{ inputs.adp_approved_revision || '' }}
+          INPUT_PRODUCT_CASES: ${{ inputs.product_cases || 'none' }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-workflow-context.py"
+
+      - name: Publish deployment workflow context to S3
+        if: inputs.adp_correlation != ''
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context gateway-frontend-deploy.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
 
       - name: Resolve frontend configuration
         id: config
@@ -136,12 +240,31 @@ jobs:
       - name: Record frontend release evidence
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
-          ADP_RELEASE_SOURCE: ${{ github.sha }}
+          ADP_RELEASE_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
           ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
           ADP_RELEASE_WORKFLOW: .github/workflows/gateway-frontend-deploy.yml
-        run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-frontend
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-release-evidence.py" gateway-frontend
 
       - name: Publish frontend release evidence to S3
         env:
           ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
-        run: python3 modules/gateway/scripts/publish-deployment-evidence.py release gateway-frontend "$RUNNER_TEMP/adp-release-gateway-frontend/release.json"
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" release gateway-frontend "$RUNNER_TEMP/adp-release-gateway-frontend/release.json"
+
+  # Native completion observes this entire correlated run. Browser failures,
+  # cleanup failures and missing private evidence all fail the deployment.
+  product-browser:
+    needs: [publish]
+    if: inputs.product_cases != '' && inputs.product_cases != 'none'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/e2e-new-ui-playwright.yml
+    with:
+      environment: dev
+      expected_flag: 'on'
+      product_v11: false
+      product_scope: ${{ inputs.product_cases == 'live_scope_isolation,live_scope_denials,live_scope_history_cleanup' }}
+      product_source_revision: ${{ inputs.adp_source_revision }}
+      product_release_run_id: ${{ github.run_id }}
+      product_release_attempt: ${{ github.run_attempt }}
+      product_release_workflow_revision: ${{ github.workflow_sha }}

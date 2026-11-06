@@ -13,8 +13,14 @@ from src.orchestration.review_cycle import CycleBlockedError
 
 @pytest.fixture
 async def issues(monkeypatch):
-    ctx = SimpleNamespace(rows=[], posts=0, lose_response=False, authorized=False)
+    ctx = SimpleNamespace(
+        rows=[], posts=0, lose_response=False, authorized=False, app_receipt={"id": 900}, parent=None, link_posts=0, link_fails=False
+    )
+    ctx.author = {"id": 1900, "login": "fixture-app[bot]", "type": "Bot"}
+    ctx.app = {"id": 900, "slug": "fixture-app"}
+    ctx.bot = dict(ctx.author)
     ctx.binding = SimpleNamespace(org_id="org-a", repo="org/repo", provider_repository_id=123, installation_id=42)
+    ctx.epic = SimpleNamespace(org_id="org-a", repo="org/planning", provider_repository_id=124, installation_id=42, issue_number=4, issue_id=904)
     ctx.content = issue_content(
         operation_key="operation",
         evaluation_id="evaluation",
@@ -31,19 +37,37 @@ async def issues(monkeypatch):
 
     def response(request):
         assert request.headers["Authorization"] == "Bearer scoped-token"
+        if request.url.path == "/apps/fixture-app":
+            return httpx.Response(200, json=ctx.app)
+        if request.url.path == "/users/fixture-app[bot]":
+            return httpx.Response(200, json=ctx.bot)
         if request.url.path == "/repos/org/repo":
             return httpx.Response(200, json={"id": 123, "full_name": "org/repo"})
+        if request.url.path == "/repos/org/planning":
+            return httpx.Response(200, json={"id": 124, "full_name": "org/planning"})
+        if request.url.path == "/repos/org/repo/issues/71/parent":
+            return httpx.Response(200, json=ctx.parent) if ctx.parent is not None else httpx.Response(404)
+        if request.url.path == "/repos/org/planning/issues/4/sub_issues":
+            assert request.method == "POST" and ctx.authorized and request.headers["Authorization"] == "Bearer scoped-token"
+            assert request.read() == b'{"sub_issue_id":871}'
+            ctx.link_posts += 1
+            if ctx.link_fails:
+                return httpx.Response(503)
+            ctx.parent = {"id": 904, "repository_url": "https://api.github.com/repos/org/planning"}
+            return httpx.Response(201)
         if request.method == "POST":
             assert ctx.authorized
             ctx.posts += 1
             row = dict(
                 number=71,
+                id=871,
                 node_id="I_correction",
                 title=ctx.content["title"],
                 body=ctx.content["body"],
                 state="open",
                 html_url="https://github.com/org/repo/issues/71",
-                performed_via_github_app={"id": 900},
+                performed_via_github_app=ctx.app_receipt,
+                user=dict(ctx.author),
             )
             ctx.rows.append(row)
             if ctx.lose_response:
@@ -74,6 +98,63 @@ async def test_create_uses_only_scoped_issue_permission_after_authorization(issu
     assert "claim" not in ctx.content["body"]
 
 
+async def test_native_parent_is_verified_across_repositories_before_correction_delivery(issues):
+    ctx = issues
+    issue = await ctx.provider.create(ctx.binding, ctx.content, reauthorize=ctx.authorize)
+    ctx.authorized = False
+    assert not await ctx.provider.read_native_parent(ctx.binding, ctx.epic, issue)
+    assert ctx.link_posts == 0
+    await ctx.provider.confirm_native_parent(ctx.binding, ctx.epic, issue, ctx.content, reauthorize=ctx.authorize)
+    assert ctx.link_posts == 1
+    assert ctx.mint.await_args.kwargs["repositories"] == ["planning", "repo"]
+    await ctx.provider.confirm_native_parent(ctx.binding, ctx.epic, issue, ctx.content, reauthorize=ctx.authorize)
+    assert ctx.link_posts == 1
+
+
+async def test_native_parent_failure_retains_issue_and_refuses_dispatch(issues):
+    ctx = issues
+    issue = await ctx.provider.create(ctx.binding, ctx.content, reauthorize=ctx.authorize)
+    ctx.link_fails = True
+    with pytest.raises(CycleBlockedError, match="evaluation_correction_link_unconfirmed"):
+        await ctx.provider.confirm_native_parent(ctx.binding, ctx.epic, issue, ctx.content, reauthorize=ctx.authorize)
+    assert ctx.posts == 1 and ctx.parent is None
+    ctx.link_fails = False
+    await ctx.provider.confirm_native_parent(ctx.binding, ctx.epic, issue, ctx.content, reauthorize=ctx.authorize)
+    assert ctx.posts == 1 and ctx.link_posts == 2
+    ctx.parent = {"id": 555, "repository_url": "https://api.github.com/repos/org/planning"}
+    with pytest.raises(CycleBlockedError, match="evaluation_correction_parent_conflict"):
+        await ctx.provider.confirm_native_parent(ctx.binding, ctx.epic, issue, ctx.content, reauthorize=ctx.authorize)
+    assert ctx.link_posts == 2
+
+
+async def test_native_parent_write_requires_fresh_authorization_after_readback(issues):
+    ctx = issues
+    issue = await ctx.provider.create(ctx.binding, ctx.content, reauthorize=ctx.authorize)
+    ctx.authorized = False
+
+    async def withdrawn():
+        if not ctx.authorized:
+            raise CycleBlockedError("evaluation_correction_link_authority_changed")
+
+    with pytest.raises(CycleBlockedError, match="evaluation_correction_link_authority_changed"):
+        await ctx.provider.confirm_native_parent(ctx.binding, ctx.epic, issue, ctx.content, reauthorize=withdrawn)
+    assert ctx.link_posts == 0 and ctx.posts == 1
+
+
+@pytest.mark.parametrize("fault", ["tenant", "owner", "identity"])
+async def test_related_repository_scope_rejects_foreign_or_invalid_target_before_mint(issues, fault):
+    related = SimpleNamespace(org_id="org-a", repo="org/planning", provider_repository_id=124, installation_id=42)
+    if fault == "tenant":
+        related.org_id = "other-tenant"
+    elif fault == "owner":
+        related.repo = "other/planning"
+    else:
+        related.provider_repository_id = 0
+    with pytest.raises(CycleBlockedError):
+        await issues.provider.credentials(issues.binding, related_binding=related)
+    issues.mint.assert_not_awaited()
+
+
 async def test_lost_creation_response_is_observed_by_exact_correlation(issues):
     ctx = issues
     ctx.lose_response = True
@@ -82,6 +163,36 @@ async def test_lost_creation_response_is_observed_by_exact_correlation(issues):
     found = await ctx.provider.find(ctx.binding, ctx.content, since=datetime.now(UTC))
     assert found.number == 71 and ctx.posts == 1
     assert ctx.mint.await_args.kwargs["permissions"] == {"issues": "read", "metadata": "read"}
+
+
+async def test_null_app_receipt_uses_verified_bot_ownership_for_create_and_recovery(issues):
+    issues.app_receipt = None
+    issue = await issues.provider.create(issues.binding, issues.content, reauthorize=issues.authorize)
+    recovered = await issues.provider.find(issues.binding, issues.content, since=datetime.now(UTC))
+    read = await issues.provider.find(issues.binding, issues.content, since=datetime.now(UTC), issue_number=71)
+    assert issue == recovered == read
+    assert issues.posts == 1
+
+
+@pytest.mark.parametrize("fault", ["foreign_app", "wrong_slug", "wrong_user_id", "human", "invalid_login", "explicit_foreign_app", "malformed_app"])
+async def test_null_app_receipt_cannot_adopt_unverified_authors(issues, fault):
+    issues.app_receipt = None
+    if fault == "foreign_app":
+        issues.app["id"] = 901
+    elif fault == "wrong_slug":
+        issues.app["slug"] = "another-app"
+    elif fault == "wrong_user_id":
+        issues.author["id"] = 1901
+    elif fault == "human":
+        issues.author["type"] = "User"
+    elif fault == "invalid_login":
+        issues.author["login"] = "../fixture-app[bot]"
+    elif fault == "explicit_foreign_app":
+        issues.app_receipt = {"id": 901}
+    else:
+        issues.app_receipt = {"slug": "fixture-app"}
+    with pytest.raises(CycleBlockedError):
+        await issues.provider.create(issues.binding, issues.content, reauthorize=issues.authorize)
 
 
 @pytest.mark.parametrize("fault", ["app", "body", "title", "number", "url", "pr", "duplicate"])

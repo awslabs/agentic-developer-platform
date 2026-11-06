@@ -1,0 +1,523 @@
+{
+  "epic": "https://github.com/aws-e/adp/issues/8394",
+  "design_revision": "df61f74723fb2d78107166fbf8f5793d463b5445",
+  "source_revision": "44b8e127deb53d5e014030994b1780f490f747db",
+  "status": "draft_not_registered_not_accepted_not_started",
+  "native_dependency_edges": 36,
+  "original_native_dependencies_preserved": 18,
+  "epic_criteria": [
+    "EC-01",
+    "EC-02",
+    "EC-03",
+    "EC-04",
+    "EC-05",
+    "EC-06"
+  ],
+  "stories": [
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8395",
+      "alias": "MR-01",
+      "size": "M",
+      "stage": 1,
+      "node": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-01",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8516"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8396",
+      "alias": "MR-02",
+      "size": "M",
+      "stage": 1,
+      "node": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-02",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8395"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8397",
+      "alias": "MR-03",
+      "size": "M",
+      "stage": 2,
+      "node": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-03",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8396",
+        "https://github.com/aws-e/adp/issues/8517"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8398",
+      "alias": "MR-04",
+      "size": "M",
+      "stage": 2,
+      "node": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-04",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8397"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8399",
+      "alias": "MR-05",
+      "size": "M",
+      "stage": 2,
+      "node": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-05",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8397"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8400",
+      "alias": "MR-06",
+      "size": "M",
+      "stage": 2,
+      "node": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-06",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8396",
+        "https://github.com/aws-e/adp/issues/8517"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8401",
+      "alias": "MR-07",
+      "size": "M",
+      "stage": 2,
+      "node": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-07",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8396",
+        "https://github.com/aws-e/adp/issues/8400"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8402",
+      "alias": "MR-08",
+      "size": "M",
+      "stage": 2,
+      "node": "product-epic-delivery-8394/epic-8394/s02-journey-build/mr-08",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8401"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s02-journey-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8403",
+      "alias": "MR-09",
+      "size": "M",
+      "stage": 1,
+      "node": "product-epic-delivery-8394/epic-8394/s01-foundation-build/mr-09",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8395"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s01-foundation-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8404",
+      "alias": "MR-10",
+      "size": "M",
+      "stage": 3,
+      "node": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-10",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8398",
+        "https://github.com/aws-e/adp/issues/8403",
+        "https://github.com/aws-e/adp/issues/8518"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s03-evidence-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8405",
+      "alias": "MR-11",
+      "size": "M",
+      "stage": 3,
+      "node": "product-epic-delivery-8394/epic-8394/s03-evidence-build/mr-11",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8401",
+        "https://github.com/aws-e/adp/issues/8404"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s03-evidence-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8406",
+      "alias": "MR-12",
+      "size": "M",
+      "stage": 4,
+      "node": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-12",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8399",
+        "https://github.com/aws-e/adp/issues/8400",
+        "https://github.com/aws-e/adp/issues/8402",
+        "https://github.com/aws-e/adp/issues/8405",
+        "https://github.com/aws-e/adp/issues/8519"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s04-qualification-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8407",
+      "alias": "MR-13",
+      "size": "M",
+      "stage": 4,
+      "node": "product-epic-delivery-8394/epic-8394/s04-qualification-build/mr-13",
+      "node_kind": "story",
+      "executor": "develop",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8519"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "reviewed merge and pre-merge AC evidence",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s04-qualification-build/code-evidence"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8408",
+      "alias": "MR-14",
+      "size": "M",
+      "stage": 4,
+      "node": "product-epic-delivery-8394/epic-8394/s04-qualification-live/mr-14",
+      "node_kind": "story",
+      "executor": "operate assistance plus operator",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8406",
+        "https://github.com/aws-e/adp/issues/8407"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "deployed evidence and human outcome acceptance",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s04-qualification-live/outcome-acceptance"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8516",
+      "alias": "MR-15",
+      "size": "M",
+      "stage": 0,
+      "node": "product-epic-delivery-8394/epic-8394/s00-baseline/baseline-acceptance",
+      "node_kind": "eval",
+      "executor": "operator with human evidence review",
+      "depends_on": [],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "deployed evidence and human outcome acceptance",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s00-baseline/baseline-acceptance"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8517",
+      "alias": "MR-16",
+      "size": "M",
+      "stage": 1,
+      "node": "product-epic-delivery-8394/epic-8394/s01-foundation-live/mr-16",
+      "node_kind": "story",
+      "executor": "operate assistance plus operator",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8395",
+        "https://github.com/aws-e/adp/issues/8396",
+        "https://github.com/aws-e/adp/issues/8403"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "deployed evidence and human outcome acceptance",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s01-foundation-live/outcome-acceptance"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8518",
+      "alias": "MR-17",
+      "size": "M",
+      "stage": 2,
+      "node": "product-epic-delivery-8394/epic-8394/s02-journey-live/mr-17",
+      "node_kind": "story",
+      "executor": "operate assistance plus operator",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8397",
+        "https://github.com/aws-e/adp/issues/8398",
+        "https://github.com/aws-e/adp/issues/8399",
+        "https://github.com/aws-e/adp/issues/8400",
+        "https://github.com/aws-e/adp/issues/8401",
+        "https://github.com/aws-e/adp/issues/8402"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "deployed evidence and human outcome acceptance",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s02-journey-live/outcome-acceptance"
+    },
+    {
+      "issue": "https://github.com/aws-e/adp/issues/8519",
+      "alias": "MR-18",
+      "size": "M",
+      "stage": 3,
+      "node": "product-epic-delivery-8394/epic-8394/s03-evidence-live/mr-18",
+      "node_kind": "story",
+      "executor": "operate assistance plus operator",
+      "depends_on": [
+        "https://github.com/aws-e/adp/issues/8404",
+        "https://github.com/aws-e/adp/issues/8405"
+      ],
+      "acceptance_ids": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04"
+      ],
+      "scenario_ids": [
+        "SCN-01",
+        "SCN-02",
+        "SCN-03",
+        "SCN-04"
+      ],
+      "completion": "deployed evidence and human outcome acceptance",
+      "evaluation": "product-epic-delivery-8394/epic-8394/s03-evidence-live/outcome-acceptance"
+    }
+  ],
+  "dependency_amendment": {
+    "review": "parallelism-review.md",
+    "removed": [
+      [
+        8406,
+        8407
+      ]
+    ],
+    "added": [
+      [
+        8519,
+        8407
+      ],
+      [
+        8406,
+        8408
+      ]
+    ],
+    "note": "Original feature criteria remain; final qualification joins migration and harness after parallel implementation."
+  }
+}

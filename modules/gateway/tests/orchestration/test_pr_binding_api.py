@@ -241,7 +241,6 @@ async def test_operator_can_explicitly_replace_abandoned_pr(session, app_with_ro
 async def test_explicit_historical_adoption_never_dispatches_and_reconciles_attempt_zero(session, app_with_router, monkeypatch):
     from tests.orchestration.test_delivery_adoption import NoWorker, story
 
-    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", REPO)
     monkeypatch.setattr("src.orchestration.delivery_adoption.resolve_installation_id", AsyncMock(return_value=INSTALLATION))
     monkeypatch.setattr("src.orchestration.merge_evidence.GitHubEvidenceSource.bound_pull_request", AsyncMock(return_value=_green()))
     node = await story(session)
@@ -256,6 +255,21 @@ async def test_explicit_historical_adoption_never_dispatches_and_reconciles_atte
     assert report.advanced == 1 and node.state == "passed" and node.attempts == 0
     decisions = (await session.scalars(select(OrchestrationDecision))).all()
     assert not any(row.kind == DecisionKind.NODE_DISPATCHED.value for row in decisions)
+
+
+async def test_historical_adoption_refuses_unbound_story_even_with_global_setting(session, app_with_router, providers, monkeypatch):
+    from tests.orchestration.test_delivery_adoption import story
+
+    node = await story(session)
+    node.repository_identity = None
+    node.provider_repository_id = None
+    await session.flush()
+    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", REPO)
+    response = read.client_for(app_with_router).post(recovery_url(node), json=body(adopt_delivery=True))
+    assert response.status_code == 409
+    assert "saved story repository" in response.json()["detail"]
+    providers.assert_not_awaited()
+    assert await session.scalar(select(OrchestrationPullRequestBinding)) is None
 
 
 async def test_historical_adoption_api_refuses_active_attempt_before_provider(session, app_with_router, providers):

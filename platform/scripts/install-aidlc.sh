@@ -2,18 +2,34 @@
 # =============================================================================
 # install-aidlc.sh — Install AIDLC v2 Claude Code distribution into a target repo
 # =============================================================================
-# Clones awslabs/aidlc-workflows at a pinned tag, copies dist/claude/.claude/
-# and dist/claude/aidlc/ into the target, strips model/env pins from
+# Resolves an AIDLC v2 distribution (the ``dist/claude`` layout: ``.claude/`` +
+# ``aidlc/``), copies it into the target, strips model/env pins from
 # settings.json so they cannot override ADP worker model config, merges
 # additively with any existing .claude/settings.json, and commits the result.
+#
+# Sources (issue #9539):
+#   default               clone awslabs/aidlc-workflows at DEFAULT_TAG (or [tag])
+#   --from-git URL[@REF]  clone another git source (a fork, a mirror, a vendored
+#                         copy) at REF; the same layout detection applies
+#   --from-dir PATH       use a prepared checkout or distribution on disk; no network
+#
+# The tag is verified with ``git ls-remote`` before anything is cloned and the
+# layout is verified before anything is written, so a missing tag or a changed
+# upstream layout fails with a precise message and leaves the target untouched.
+# Upstream v2.2.1 - v2.2.3 were never published (the release tags jump from
+# v2.2.0 to v2.3.0) and from v2.8 upstream moved to a ``harness/<client>``
+# layout this installer does not consume; v2.2.0 is what the hosted
+# ``@agent-aidlc`` persona was qualified against.
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Defaults ----------------------------------------------------------------
-DEFAULT_TAG="v2.2.3"
-AIDLC_REPO="https://github.com/awslabs/aidlc-workflows.git"
+# The last published tag of the AIDLC 2.2 line with the dist/claude layout.
+DEFAULT_TAG="v2.2.0"
+# Overridable so tests and mirrors can point at a local or alternate repository.
+AIDLC_REPO="${AIDLC_REPO:-https://github.com/awslabs/aidlc-workflows.git}"
 
 # --- Deny-list: top-level keys to strip from settings.json -------------------
 # These keys would override ADP's runtime model/provider config if left in.
@@ -34,56 +50,171 @@ DENIED_ENV_PREFIXES=(
 
 # --- Usage --------------------------------------------------------------------
 usage() {
-  cat <<EOF
-Usage: $(basename "$0") <target-repo-path> [tag]
+  cat <<USAGE
+Usage: $(basename "$0") <target-repo-path> [tag] [--from-git URL[@REF] | --from-dir PATH]
 
 Arguments:
   target-repo-path   Path to the target git repository
-  tag                AIDLC version tag to install (default: $DEFAULT_TAG)
+  tag                AIDLC release tag to install from $AIDLC_REPO
+                     (default: $DEFAULT_TAG). Must carry the dist/claude layout
+                     (published tags up to v2.7.0 do).
 
-Example:
-  $(basename "$0") /path/to/my-repo v2.2.3
-EOF
-  exit 1
+Options:
+  --from-git URL[@REF]  Install from another git repository at REF (a fork,
+                        mirror or vendored copy with the dist/claude layout, or
+                        a repository whose root is already a distribution).
+  --from-dir PATH       Install from a checkout or distribution on disk. PATH may
+                        be an upstream checkout (contains dist/claude), a
+                        distribution root (contains .claude and aidlc), or a
+                        repository that already has AIDLC installed.
+  -h, --help            Show this help.
+
+Environment:
+  AIDLC_REPO            Default git source (currently: $AIDLC_REPO)
+
+Examples:
+  $(basename "$0") /path/to/my-repo
+  $(basename "$0") /path/to/my-repo v2.3.0
+  $(basename "$0") /path/to/my-repo --from-dir /path/to/aidlc-workflows
+  $(basename "$0") /path/to/my-repo --from-git https://github.com/org/aidlc-fork.git@v2.2.0
+USAGE
+  exit "${1:-1}"
 }
 
 # --- Argument parsing ---------------------------------------------------------
-if [ $# -lt 1 ]; then
-  usage
-fi
+TARGET_ARG=""
+TAG=""
+SOURCE_MODE="tag"
+SOURCE_GIT=""
+SOURCE_REF=""
+SOURCE_DIR=""
 
-TARGET_REPO="$(cd "$1" && pwd)"
-TAG="${2:-$DEFAULT_TAG}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage 0 ;;
+    --from-git)
+      [ $# -ge 2 ] || { echo "ERROR: --from-git requires URL[@REF]"; usage; }
+      SOURCE_MODE="git"
+      case "$2" in
+        *@*) SOURCE_GIT="${2%@*}"; SOURCE_REF="${2##*@}" ;;
+        *)   SOURCE_GIT="$2"; SOURCE_REF="" ;;
+      esac
+      shift 2 ;;
+    --from-dir)
+      [ $# -ge 2 ] || { echo "ERROR: --from-dir requires PATH"; usage; }
+      SOURCE_MODE="dir"
+      SOURCE_DIR="$2"
+      shift 2 ;;
+    --*) echo "ERROR: unknown option $1"; usage ;;
+    *)
+      if [ -z "$TARGET_ARG" ]; then TARGET_ARG="$1"
+      elif [ -z "$TAG" ]; then TAG="$1"
+      else echo "ERROR: unexpected argument $1"; usage
+      fi
+      shift ;;
+  esac
+done
+
+[ -n "$TARGET_ARG" ] || usage
+if [ "$SOURCE_MODE" != "tag" ] && [ -n "$TAG" ]; then
+  echo "ERROR: a tag argument cannot be combined with --from-git or --from-dir (use URL@REF for a git ref)."
+  exit 1
+fi
+TAG="${TAG:-$DEFAULT_TAG}"
+
+if [ ! -d "$TARGET_ARG" ]; then
+  echo "ERROR: $TARGET_ARG is not a directory."
+  exit 1
+fi
+TARGET_REPO="$(cd "$TARGET_ARG" && pwd)"
 
 if [ ! -d "$TARGET_REPO/.git" ]; then
   echo "ERROR: $TARGET_REPO is not a git repository."
   exit 1
 fi
 
-echo "Installing AIDLC $TAG into $TARGET_REPO"
-
-# --- Clone AIDLC at pinned tag ------------------------------------------------
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-echo "Cloning awslabs/aidlc-workflows at tag $TAG..."
-git clone --depth 1 --branch "$TAG" "$AIDLC_REPO" "$TMPDIR/aidlc-workflows" 2>/dev/null || {
-  echo "ERROR: Failed to clone $AIDLC_REPO at tag $TAG"
-  echo "Ensure the tag exists and you have access to the repository."
-  exit 1
+# --- Source resolution --------------------------------------------------------
+# resolve_dist_dir ROOT LABEL: print the distribution directory inside ROOT, or
+# return 1 after naming what was found instead. Nothing is written to the
+# target before this succeeds.
+resolve_dist_dir() {
+  local root="$1" label="$2"
+  if [ -d "$root/dist/claude/.claude" ] && [ -d "$root/dist/claude/aidlc" ]; then
+    echo "$root/dist/claude"; return 0
+  fi
+  if [ -d "$root/.claude" ] && [ -d "$root/aidlc" ]; then
+    echo "$root"; return 0
+  fi
+  echo "ERROR: $label does not carry an AIDLC dist/claude distribution." >&2
+  if [ -d "$root/harness/claude" ]; then
+    echo "  It uses the upstream 'harness/<client>' layout (AIDLC v2.8 and later), which this" >&2
+    echo "  installer does not consume. Use a release tag up to v2.7.0 (for example $DEFAULT_TAG)," >&2
+    echo "  or --from-dir with a prepared distribution." >&2
+  elif [ -d "$root/dist/claude" ]; then
+    echo "  dist/claude exists but lacks .claude/ and/or aidlc/." >&2
+  else
+    echo "  Expected either dist/claude/{.claude,aidlc} or {.claude,aidlc} at its root." >&2
+  fi
+  return 1
 }
 
-DIST_DIR="$TMPDIR/aidlc-workflows/dist/claude"
-
-if [ ! -d "$DIST_DIR/.claude" ]; then
-  echo "ERROR: dist/claude/.claude/ not found in the cloned repo at tag $TAG"
-  exit 1
-fi
-
-if [ ! -d "$DIST_DIR/aidlc" ]; then
-  echo "ERROR: dist/claude/aidlc/ not found in the cloned repo at tag $TAG"
-  exit 1
-fi
+case "$SOURCE_MODE" in
+  dir)
+    if [ ! -d "$SOURCE_DIR" ]; then
+      echo "ERROR: --from-dir $SOURCE_DIR does not exist or is not a directory."
+      exit 1
+    fi
+    SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
+    DIST_DIR="$(resolve_dist_dir "$SOURCE_DIR" "--from-dir $SOURCE_DIR")" || exit 1
+    INSTALLED_VERSION="dir:$(basename "$SOURCE_DIR")"
+    if [ -f "$SOURCE_DIR/aidlc/.aidlc-version" ]; then
+      INSTALLED_VERSION="$(head -n1 "$SOURCE_DIR/aidlc/.aidlc-version")"
+    elif git -C "$SOURCE_DIR" describe --tags --exact-match >/dev/null 2>&1; then
+      INSTALLED_VERSION="$(git -C "$SOURCE_DIR" describe --tags --exact-match)"
+    fi
+    echo "Installing AIDLC ($INSTALLED_VERSION) from $SOURCE_DIR into $TARGET_REPO"
+    ;;
+  git)
+    CLONE_ARGS=(--depth 1)
+    [ -n "$SOURCE_REF" ] && CLONE_ARGS+=(--branch "$SOURCE_REF")
+    echo "Cloning $SOURCE_GIT${SOURCE_REF:+ at $SOURCE_REF}..."
+    if ! git clone "${CLONE_ARGS[@]}" "$SOURCE_GIT" "$TMPDIR/aidlc-source" 2>"$TMPDIR/clone.err"; then
+      echo "ERROR: Failed to clone $SOURCE_GIT${SOURCE_REF:+ at ref $SOURCE_REF}."
+      sed 's/^/  git: /' "$TMPDIR/clone.err" | head -n 5
+      exit 1
+    fi
+    DIST_DIR="$(resolve_dist_dir "$TMPDIR/aidlc-source" "$SOURCE_GIT${SOURCE_REF:+@$SOURCE_REF}")" || exit 1
+    INSTALLED_VERSION="${SOURCE_REF:-$(git -C "$TMPDIR/aidlc-source" rev-parse --short HEAD)}"
+    echo "Installing AIDLC $INSTALLED_VERSION from $SOURCE_GIT into $TARGET_REPO"
+    ;;
+  tag)
+    echo "Checking that tag $TAG exists in $AIDLC_REPO..."
+    if ! TAG_REF="$(git ls-remote --tags "$AIDLC_REPO" "refs/tags/$TAG" 2>"$TMPDIR/ls-remote.err")"; then
+      echo "ERROR: Cannot reach $AIDLC_REPO to verify tag $TAG."
+      sed 's/^/  git: /' "$TMPDIR/ls-remote.err" | head -n 5
+      exit 1
+    fi
+    if [ -z "$TAG_REF" ]; then
+      echo "ERROR: Tag $TAG does not exist in $AIDLC_REPO."
+      echo "  Published release tags can be listed with: git ls-remote --tags $AIDLC_REPO"
+      echo "  Tags with the dist/claude layout this installer consumes run up to v2.7.0; the default is $DEFAULT_TAG."
+      echo "  To install from a fork, mirror or local checkout use --from-git URL@REF or --from-dir PATH."
+      exit 1
+    fi
+    echo "Cloning $AIDLC_REPO at tag $TAG..."
+    if ! git clone --depth 1 --branch "$TAG" "$AIDLC_REPO" "$TMPDIR/aidlc-workflows" 2>"$TMPDIR/clone.err"; then
+      echo "ERROR: Failed to clone $AIDLC_REPO at tag $TAG."
+      sed 's/^/  git: /' "$TMPDIR/clone.err" | head -n 5
+      exit 1
+    fi
+    DIST_DIR="$(resolve_dist_dir "$TMPDIR/aidlc-workflows" "$AIDLC_REPO at tag $TAG")" || exit 1
+    INSTALLED_VERSION="$TAG"
+    echo "Installing AIDLC $TAG into $TARGET_REPO"
+    ;;
+esac
 
 # --- Strip settings.json ------------------------------------------------------
 strip_settings() {
@@ -368,8 +499,8 @@ fi
 echo ""
 echo "=== Phase 6: Write version file ==="
 mkdir -p "$TARGET_REPO/aidlc"
-echo "$TAG" > "$TARGET_REPO/aidlc/.aidlc-version"
-echo "  Wrote aidlc/.aidlc-version: $TAG"
+echo "$INSTALLED_VERSION" > "$TARGET_REPO/aidlc/.aidlc-version"
+echo "  Wrote aidlc/.aidlc-version: $INSTALLED_VERSION"
 
 echo ""
 echo "=== Phase 7: Commit ==="
@@ -381,11 +512,11 @@ fi
 if [ -d "$TARGET_REPO/.github/ISSUE_TEMPLATE" ]; then
   git add .github/ISSUE_TEMPLATE/
 fi
-git commit -m "chore: install AIDLC $TAG (ADP-hosted distribution)" || {
+git commit -m "chore: install AIDLC $INSTALLED_VERSION (ADP-hosted distribution)" || {
   echo "WARNING: Nothing to commit (files may already be up to date)."
 }
 
 echo ""
 echo "=== Done ==="
-echo "AIDLC $TAG installed successfully into $TARGET_REPO"
+echo "AIDLC $INSTALLED_VERSION installed successfully into $TARGET_REPO"
 echo "Version: $(cat "$TARGET_REPO/aidlc/.aidlc-version")"

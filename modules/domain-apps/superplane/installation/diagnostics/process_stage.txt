@@ -1,0 +1,10 @@
+import json,os;from pathlib import Path;rows=[]
+for p in Path("/proc").glob("[0-9]*/comm"):
+ try:
+  name=p.read_text().strip()
+  if name not in ("terraform","aws","kubectl"):continue
+  args=(p.parent/"cmdline").read_bytes().split(bytes([0]))
+  stage=next((a.decode() for a in args if a in (b"init",b"plan",b"apply",b"show",b"output")),None)
+  rows.append({"pid":p.parent.name,"process":name,"stage":stage})
+ except OSError:pass
+print(json.dumps({"processes":rows,"worker_stdout_kind":os.readlink("/proc/10/fd/1")}))

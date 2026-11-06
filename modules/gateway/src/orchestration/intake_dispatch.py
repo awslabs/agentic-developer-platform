@@ -210,6 +210,7 @@ class IntakeDispatcher:
         department_id: str = "",
         repository: str = "",
         issue: str = "",
+        product_id: str = "",
     ) -> IntakeTurn:
         """Dispatch one turn of an intake conversation.
 
@@ -282,6 +283,7 @@ class IntakeDispatcher:
             "message_id": message_id,
             "repository": repository,
             "issue": issue,
+            "product_id": product_id,
         }
 
         assert self._lambda is not None  # guarded by is_configured above

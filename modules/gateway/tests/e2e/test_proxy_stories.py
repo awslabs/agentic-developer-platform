@@ -499,10 +499,10 @@ class TestLiveBedrockProxyOAuth:
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
-        if response.status_code == 200:
-            resp_req_id = response.headers.get("x-request-id", "")
-            assert str(uuid.UUID(resp_req_id)) == resp_req_id
-            assert resp_req_id != req_id
+        assert response.status_code == 200, response.text[:200]
+        resp_req_id = response.headers.get("x-request-id", "")
+        assert str(uuid.UUID(resp_req_id)) == resp_req_id
+        assert resp_req_id != req_id
 
     async def test_agent_jwt_bedrock_completion(self, api_client, jwt_for_agent):
         """Agent M2M JWT can invoke Bedrock via /v1/messages."""
@@ -516,8 +516,7 @@ class TestLiveBedrockProxyOAuth:
                 "messages": [{"role": "user", "content": "Say hi."}],
             },
         )
-        # Agent should be able to invoke; 200 or a non-auth error
-        assert response.status_code != 401, f"Agent JWT should not get 401: {response.text[:200]}"
+        assert response.status_code == 200, f"Agent model request failed: {response.text[:200]}"
 
     async def test_health_endpoint_no_auth(self, api_client):
         """GET /health returns 200 without authentication."""
@@ -550,12 +549,9 @@ class TestLiveBedrockProxyIAM:
                 "messages": [{"role": "user", "content": "Say hello in one word."}],
             },
         )
-        # Should succeed or get a business-logic error, not auth rejection
-        assert response.status_code != 401, f"IAM auth should not return 401: {response.text[:200]}"
-        # Ideally 200
-        if response.status_code == 200:
-            body = response.json()
-            assert "content" in body or "choices" in body
+        assert response.status_code == 200, f"IAM model request failed: {response.text[:200]}"
+        body = response.json()
+        assert "content" in body or "choices" in body
 
     async def test_iam_streaming_sse_response(self, iam_signed_client):
         """Streaming invoke via IAM SigV4 returns SSE chunks."""
@@ -570,12 +566,12 @@ class TestLiveBedrockProxyIAM:
                 "messages": [{"role": "user", "content": "Count to 3."}],
             },
         ) as resp:
-            if resp.status_code == 200:
-                chunks: list[str] = []
-                async for line in resp.aiter_lines():
-                    chunks.append(line)
-                all_text = "\n".join(chunks)
-                assert "data:" in all_text or len(chunks) > 0
+            assert resp.status_code == 200
+            chunks: list[str] = []
+            async for line in resp.aiter_lines():
+                chunks.append(line)
+            all_text = "\n".join(chunks)
+            assert "data:" in all_text and "message_stop" in all_text
 
     async def test_iam_error_passthrough(self, iam_signed_client):
         """IAM-authed request for an inaccessible model returns 4xx, not 500."""
@@ -607,7 +603,7 @@ class TestLiveBedrockProxyIAM:
             },
             headers={"X-Request-ID": req_id},
         )
-        if response.status_code == 200:
-            resp_req_id = response.headers.get("x-request-id", "")
-            assert str(uuid.UUID(resp_req_id)) == resp_req_id
-            assert resp_req_id != req_id
+        assert response.status_code == 200, response.text[:200]
+        resp_req_id = response.headers.get("x-request-id", "")
+        assert str(uuid.UUID(resp_req_id)) == resp_req_id
+        assert resp_req_id != req_id

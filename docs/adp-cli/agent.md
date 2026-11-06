@@ -31,6 +31,23 @@ Pause acknowledgement does not prove quiescence: inspect state for `paused`. An 
 
 Live acceptance remains open for #5629. Source tests and API probes do not establish served installed-CLI acceptance, full pause quiescence, or steering comprehension. Reuse the existing nightly regression scenarios and bounded owned fixtures; preserve ordinary/admin identity separation and record exact client/server/worker revisions.
 
+## Recover a worker that exited during bootstrap
+
+A standalone GitHub worker can fail before registering live controls. After its pod is removed, `agent state` correctly remains unavailable. `recover-exit` records a failed outcome only when the gateway can independently retrieve a successful Kubernetes audit response containing the exact original, terminated Pod.
+
+```bash
+adp agent recover-exit --run RUN_ID --operation-id UUID \
+  --expected-attempt 1 --expected-credential-epoch 1 \
+  --expected-workload-uid POD_UID --audit-id AUDIT_UUID \
+  --audit-at 2026-10-18T11:44:12Z --dry-run --json
+# Repeat the identical identity, evidence hint and operation ID with --yes to commit.
+adp agent recovery-status --run RUN_ID --operation-id UUID --json
+```
+
+The dry run verifies protected ownership and provider evidence through the preview API without changing the run. The server selects its configured EKS audit log group; an audit ID and timestamp only locate evidence. It requires your current human session and membership, the original protected launch owner, unchanged attempt/credential epoch/pod binding, no control registration, and a terminal worker from an approved runtime image. Graph continuations, delegated children and partial lineage metadata are refused. Missing or expired audit evidence remains unavailable; a missing pod or old heartbeat is insufficient.
+
+Commit atomically records the failed Activity outcome, protected execution outcome and recovery receipt. It preserves attempts, binding, grants, spend and budgets. It never sends or receives queue messages, schedules another review or changes a delivery node. A lost acknowledgement is reconciled by reading the same operation ID; the CLI does not repeat the mutation. Recovery success means the failure was durably recorded, not that the original assignment succeeded. The gateway and CLI source plus the Terraform-owned exact audit-log read permission/configuration must be deployed before this command is available.
+
 Task discovery includes only Tasks admitted after the owner-list rollout; historical
 Tasks remain readable by ID and are not backfilled automatically. The owner list
 uses `/me/agent-invocations/tasks`, independently paginated from native runs/chains,

@@ -1,0 +1,6 @@
+body { font: 16px/1.5 system-ui, sans-serif; color: #172b4d; padding: 24px; }
+main { max-width: 640px; margin: auto; }
+form { display: grid; gap: 12px; margin: 24px 0; }
+input, button { font: inherit; padding: 10px; border: 1px solid #8590a2; border-radius: 4px; }
+button { background: #0052cc; color: white; cursor: pointer; }
+button:disabled { opacity: .6; cursor: wait; }

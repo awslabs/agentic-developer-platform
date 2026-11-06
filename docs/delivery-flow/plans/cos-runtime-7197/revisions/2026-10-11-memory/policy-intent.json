@@ -1,0 +1,47 @@
+{
+  "status": "proposed_not_authorized",
+  "execution_policy": null,
+  "proposed_execution_policy": {
+    "limits": {
+      "max_spend_usd": "1500",
+      "max_attempts_per_node": 3,
+      "max_concurrent_actions": 2,
+      "max_wall_clock_seconds": 604800
+    },
+    "org_id": "aws-e",
+    "team_ids": [],
+    "policy_id": null,
+    "expires_at": "2026-10-22T11:30:42Z",
+    "human_gates": [],
+    "policy_hash": null,
+    "principal_id": null,
+    "repository_ids": [
+      "aws-e/adp"
+    ],
+    "schema_version": 1,
+    "allowed_actions": [
+      "develop",
+      "review",
+      "repair",
+      "merge"
+    ],
+    "evaluation_acceptance": {
+      "cos-runtime-7197/epic-7197/runtime/runtime-evidence": "human",
+      "cos-runtime-7197/epic-7197/kirocrew/kirocrew-evidence": "human",
+      "cos-runtime-7197/epic-7197/dashboard/dashboard-evidence": "human",
+      "cos-runtime-7197/epic-7197/qualification/live-qualification": "human",
+      "cos-runtime-7197/epic-7197/targets/targets-evidence": "human"
+    },
+    "environment_connection_ids": []
+  },
+  "cloud_authority_added": false,
+  "automatic_live_dispatch": false,
+  "unresolved_bindings": [
+    "#6930 ARC-01–07: credentials, owner/session fences, checkpoint consistency, AgentCore adapter/privacy/visibility and compatibility",
+    "#6930 registered project/catalog mapping and remaining product decomposition",
+    "#6935 real provider capability and #6937 accepted foundation live evidence in its existing flow",
+    "#7283 deployment contract and #7369 managed-host pipeline; actual deployed source/profile/controller versions",
+    "Live target, two-owner fixtures, budgets, time bounds and independently verified cleanup"
+  ],
+  "no_inheritance": "Foundation receipts may be consumed; its budget and target authority are not inherited."
+}

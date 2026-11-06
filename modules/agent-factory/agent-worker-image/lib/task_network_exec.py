@@ -13,9 +13,14 @@ _PR_SET_SECCOMP = 22
 _SECCOMP_MODE_FILTER = 2
 _BPF_LD_W_ABS = 0x20
 _BPF_JMP_JEQ_K = 0x15
+_BPF_JMP_JSET_K = 0x45
 _BPF_RET_K = 0x06
+_SECCOMP_RET_KILL_PROCESS = 0x80000000
 _SECCOMP_RET_ALLOW = 0x7FFF0000
 _SECCOMP_RET_ERRNO = 0x00050000
+_AUDIT_ARCH_X86_64 = 0xC000003E
+_AUDIT_ARCH_AARCH64 = 0xC00000B7
+_X32_SYSCALL_BIT = 0x40000000
 
 
 class _Filter(ctypes.Structure):
@@ -32,16 +37,35 @@ class _Program(ctypes.Structure):
 
 
 def _deny_network() -> None:
-    numbers = {
-        "x86_64": (41, 42, 53),
-        "amd64": (41, 42, 53),
-        "aarch64": (198, 199, 203),
-        "arm64": (198, 199, 203),
+    architecture = {
+        "x86_64": (_AUDIT_ARCH_X86_64, (41, 42, 53)),
+        "amd64": (_AUDIT_ARCH_X86_64, (41, 42, 53)),
+        "aarch64": (_AUDIT_ARCH_AARCH64, (198, 199, 203)),
+        "arm64": (_AUDIT_ARCH_AARCH64, (198, 199, 203)),
     }.get(platform.machine().lower())
-    if numbers is None:
+    if architecture is None:
         raise RuntimeError("unsupported architecture for task network isolation")
-    instructions = [_Filter(_BPF_LD_W_ABS, 0, 0, 0)]
-    for number in numbers:
+    audit_arch, numbers = architecture
+    # seccomp_data.arch (offset 4) must match before interpreting nr (offset 0).
+    # Otherwise an x86-64 process can use int 0x80/i386 socket or socketcall
+    # numbers that are absent from the native denylist. Fail closed for any ABI
+    # other than the worker's native one, including AArch32 on an ARM64 worker.
+    instructions = [
+        _Filter(_BPF_LD_W_ABS, 0, 0, 4),
+        _Filter(_BPF_JMP_JEQ_K, 1, 0, audit_arch),
+        _Filter(_BPF_RET_K, 0, 0, _SECCOMP_RET_KILL_PROCESS),
+        _Filter(_BPF_LD_W_ABS, 0, 0, 0),
+    ]
+    if audit_arch == _AUDIT_ARCH_X86_64:
+        # x32 shares AUDIT_ARCH_X86_64 but sets a bit in the syscall number.
+        instructions.extend([
+            _Filter(_BPF_JMP_JSET_K, 0, 1, _X32_SYSCALL_BIT),
+            _Filter(_BPF_RET_K, 0, 0, _SECCOMP_RET_KILL_PROCESS),
+        ])
+    # socket/connect/socketpair remain denied. io_uring can perform networking
+    # without those syscalls; deny setup, enter and register on both native ABIs.
+    # The host passes only protocol pipes and closes other inherited descriptors.
+    for number in (*numbers, 425, 426, 427):
         instructions.extend(
             [
                 _Filter(_BPF_JMP_JEQ_K, 0, 1, number),

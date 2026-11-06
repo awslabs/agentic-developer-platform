@@ -1,11 +1,13 @@
 """Pydantic schemas for organization endpoints."""
 
+import ipaddress
+import re
 import uuid
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, EmailStr, Field
-
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 # -- Allowed cloud / quota types --
 
@@ -20,6 +22,31 @@ VALID_SSO_PROVIDERS = {
     "custom-oidc",
 }
 VALID_SSO_TYPES = {"SAML", "OIDC"}
+SSO_HOSTNAME = re.compile(
+    r"[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?)+"
+)
+
+
+def sso_https_origin(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        if (
+            not value.startswith("https://") or not hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment or "?" in value or "#" in value
+            or parsed.port not in (None, 443)
+            or parsed.netloc not in (hostname, f"{hostname}:443")
+            or not SSO_HOSTNAME.fullmatch(hostname)
+        ):
+            raise ValueError()
+        try:
+            ipaddress.ip_address(hostname)
+        except ValueError:
+            return f"https://{hostname}"
+    except ValueError:
+        pass
+    raise ValueError("SSO metadata URL must use an approved canonical HTTPS origin")
 
 
 class OrgResponse(BaseModel):
@@ -79,6 +106,28 @@ class OrgUpdateResponse(BaseModel):
 
 class SSOConfigRequest(BaseModel):
     """PATCH /orgs/current/sso — configure SSO provider."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("sso_provider")
+    @classmethod
+    def valid_provider(cls, value: str) -> str:
+        if value not in VALID_SSO_PROVIDERS:
+            raise ValueError("unsupported SSO provider")
+        return value
+
+    @field_validator("sso_provider_type")
+    @classmethod
+    def valid_type(cls, value: str) -> str:
+        if value not in VALID_SSO_TYPES:
+            raise ValueError("unsupported SSO provider type")
+        return value
+
+    @field_validator("metadata_url")
+    @classmethod
+    def valid_metadata_url(cls, value: str) -> str:
+        sso_https_origin(value)
+        return value
 
     sso_provider: str = Field(
         ...,

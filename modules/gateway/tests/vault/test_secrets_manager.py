@@ -319,3 +319,26 @@ class TestIdempotentSecretCreation:
                 operation_id=self.OPERATION_ID,
                 operation_fingerprint="fingerprint-1",
             )
+
+
+def test_versioned_secret_reads_follow_exact_arn_region(monkeypatch, helper, mock_sm_client):
+    regional = MagicMock()
+    regional.get_secret_value.return_value = {"SecretString": "opaque", "VersionId": "v1"}
+    regional.describe_secret.return_value = {"VersionIdsToStages": {"v1": ["AWSCURRENT"]}}
+    factory = MagicMock(side_effect=lambda service, *, region_name: mock_sm_client if region_name == "us-east-1" else regional)
+    monkeypatch.setattr("src.shared.services.secrets_manager.boto3.client", factory)
+    helper = SecretsManagerHelper()
+    factory.reset_mock()
+    arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:adp/domain-apps/superplane/provider-abcdef"
+    assert helper.get_secret_at_version(arn, "v1") == ("opaque", "v1")
+    assert helper.current_version_id(arn) == "v1"
+    regional.get_secret_value.assert_called_once_with(SecretId=arn, VersionId="v1")
+    regional.describe_secret.assert_called_once_with(SecretId=arn)
+    assert all(call.args == ("secretsmanager",) and call.kwargs == {"region_name": "us-west-2"} for call in factory.call_args_list)
+    mock_sm_client.get_secret_value.assert_not_called()
+    mock_sm_client.describe_secret.assert_not_called()
+
+
+def test_injected_secret_client_cannot_fall_back_to_ambient_identity(helper):
+    with pytest.raises(ValueError, match="credential/region scope"):
+        helper.current_version_id("arn:aws:secretsmanager:us-west-2:123456789012:secret:provider-abcdef")

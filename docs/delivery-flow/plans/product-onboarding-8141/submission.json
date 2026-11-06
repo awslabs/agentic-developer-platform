@@ -1,0 +1,45 @@
+{
+  "flow_id": "00000000-0000-0000-0000-000000000000",
+  "plan_version": 1,
+  "plan_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "decision_id": "00000000-0000-0000-0000-000000000000",
+  "nodes_created": 75,
+  "edges_created": 249,
+  "already_registered": false,
+  "acceptance_gate_address": "product-onboarding-8141/epic-8141/b01-build/accept",
+  "acceptance_gate_id": "00000000-0000-0000-0000-000000000000",
+  "registered_at": "2030-01-01T00:00:00Z",
+  "status": "registered_inert_not_accepted",
+  "execution_authorized": false,
+  "observed_node_states": {
+    "awaiting_gate": 1,
+    "pending": 74
+  },
+  "execution_is_unbounded": false,
+  "proposed_limits": {
+    "max_spend_usd": "2000",
+    "max_wall_clock_seconds": 604800,
+    "max_attempts_per_node": 3,
+    "max_concurrent_actions": 8
+  },
+  "proposed_expires_at": "2030-01-08T00:00:00Z",
+  "human_decisions": {
+    "initial_flow_approval": 1,
+    "bolt_evidence_reviews": 11,
+    "design_readiness_release_or_final_gates": 0
+  },
+  "submitted_document_sha256": "aa0f8ec1c4b9ffd52255505e76b32e67a384bfb8e8914e64e38307e85d31b854",
+  "readback_checks": [
+    "All 74 authored nodes and 248 edges preserved; one initial acceptance gate/edge inserted",
+    "Proposed policy and all 22 acceptance modes match; no active execution policy",
+    "Only plan_drafted recorded; no acceptance or dispatch observed"
+  ],
+  "remaining_before_activation": [
+    "Bind the 11 repository machine evidence specifications to real provider/check/verifier identities; no human fallback",
+    "Deliver/qualify the bounded automatic verified-release handoff; reconcile its owner and budget",
+    "Bind actual dev environment, workflow/credential authority, repair scope and operations runtime evidence",
+    "Resolve runtime Project/catalog/executor/peer contracts and fixture availability for their dependent work",
+    "Refresh expiry if needed, preview the final revision, then obtain the single revision-bound initial acceptance"
+  ],
+  "public_copy": "Sanitized historical example; IDs, tenant, timestamps and plan hash are illustrative. Payload digest identifies the sanitized public file, not the actual submission. Consult private records for operational provenance and current state."
+}

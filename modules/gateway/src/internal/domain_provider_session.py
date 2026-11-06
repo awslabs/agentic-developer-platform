@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -93,10 +94,16 @@ async def current(request, operation_id):
 
 def snapshot(state):
     binding, principal, record, grant, operation, lease = state
+    # current() reauthenticates this request against the live credential epoch
+    # and its bounded rotation overlap on every read. Rotation metadata is not
+    # a change of execution authority; comparing it would kill a valid in-flight
+    # check whenever the worker renews its credential. Preserve every other
+    # execution field, including status, attempt, workload and lineage.
+    execution = replace(record, current_credential_epoch=0, min_acceptable_credential_epoch=0, epoch_overlap_expires_at=None)
     return (
         binding,
         principal,
-        record,
+        execution,
         grant,
         operation["requester"],
         operation["plan_digest"],
@@ -135,6 +142,10 @@ async def verify_cleanup_session(result, entry_identity, entry_arn, region):
 async def provider_session(request, body, db, sm, *, preflight_only=False):
     initial = await current(request, body.operation_id)
     binding, principal, _, grant, operation, lease = initial
+    from src.internal.domain_partial_apply import verify_preparation, verify_repair_delivery
+
+    await verify_preparation(binding, operation, db)
+    await verify_repair_delivery(binding, operation)
     (credential_id, service, label), account = sealed_target(operation, body.region)
     deadline = session_deadline(grant, operation, lease, require_session=not preflight_only)
     authority = snapshot(initial)
@@ -147,6 +158,8 @@ async def provider_session(request, body, db, sm, *, preflight_only=False):
 
     async def refresh(*, issued_expiry=None):
         latest = await current(request, body.operation_id)
+        await verify_preparation(binding, latest[4], db)
+        await verify_repair_delivery(binding, latest[4])
         if snapshot(latest) != authority:
             raise HTTPException(403, REFUSED)
         if await cleanup_policy(binding, operation, entry_arn) != (policy, entry_identity):
@@ -333,7 +346,11 @@ async def governed_session(
         service=service,
         label=label,
     )
-    await refresh()
+    # The caller has already authenticated the current operation. Read-only
+    # preflight brackets provider I/O once; credential issuance retains its
+    # additional checks around STS and audit publication below.
+    if not preflight_only:
+        await refresh()
     record = await resolve(db, sm, credential_id, **args)
     require(record["account_id"] == account and record["region"] == body.region)
     deadline = min(deadline, datetime.fromisoformat(record["expires_at"]))
@@ -353,7 +370,10 @@ async def governed_session(
             require(datetime.now(UTC) < expiry <= deadline)
 
     if preflight_only:
-        await revalidate()
+        await asyncio.to_thread(read_report, record, None)
+        require(await resolve(db, sm, credential_id, **args) == record)
+        await refresh()
+        require(datetime.now(UTC) < deadline)
         return {"admits_work": True, "operation_id": body.operation_id, "authority_expires_at": deadline.isoformat()}
     secret = await material(sm, record)
     await revalidate()

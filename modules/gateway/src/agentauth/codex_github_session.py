@@ -19,8 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from src.agentauth.github_operation_service import OperationRefusedError
 from src.agentauth.routes import AgentRuntime, ModelDecisionRequest, _agent_call, get_agent_runtime, require_agent_transport, resolved_model_response
+from src.agentauth.store import AuthorityStoreError
 from src.agentauth.task_harness import REVISION, validate_snapshot
+from src.orchestration.review_cycle import CycleBlockedError
 from src.shared.database import get_db
 
 router = APIRouter(prefix="/internal/v1/agent", tags=["agent-authority"], dependencies=[Depends(require_agent_transport)])
@@ -38,7 +41,21 @@ class OperationRequest(BaseModel):
 
 # Only the report adapter is qualified here. Executable capabilities are added
 # with their host tools, never by a definition requesting more authority.
-REPORT_PERSONAS = frozenset({"agent-codex-architect", "agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement"})
+REPORT_PERSONAS = frozenset(
+    {"agent-codex-architect", "agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement", "agent-codex-operations"}
+)
+OPERATIONS_STORY_PERSONA = "agent-codex-operations"
+
+
+async def _require_operations_story(session, store, record, grant):
+    execution = store._read(f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}") or {}
+    if execution.get("persona", {}).get("S") != OPERATIONS_STORY_PERSONA:
+        return
+    from src.agentauth.github_operation_service import authorize_operations_grant
+    from src.orchestration.runtime_policy import ACTIONS_OPERATION_PATH, authorize_worker_credential
+
+    decision = await authorize_worker_credential(session, execution=execution, grant=grant, broker_path=ACTIONS_OPERATION_PATH)
+    await authorize_operations_grant(session, execution=execution, grant=grant, decision=decision)
 
 
 def _snapshot(env, key):
@@ -74,14 +91,15 @@ def frozen_context(store, record, grant, env, *, now=None):
     pk = f"TENANT#{record.tenant_id}"
     execution = store._read(pk, f"EXEC#{record.invocation_id}") or {}
     persona = execution.get("persona", {}).get("S")
-    if persona not in REPORT_PERSONAS or record.repo not in grant.repo_scope:
+    operations_story = persona == OPERATIONS_STORY_PERSONA and env.get("ADP_ENGINE_OPERATIONS_EXECUTOR", "").lower() in {"1", "true"}
+    if (persona not in REPORT_PERSONAS or persona == OPERATIONS_STORY_PERSONA and not operations_story) or record.repo not in grant.repo_scope:
         raise ValueError("unsupported GitHub persona")
     enabled = {p.strip() for p in env.get("ADP_CODEX_GITHUB_PERSONAS", "").split(",") if p.strip()}
-    if persona not in enabled:
+    if persona not in enabled and not operations_story:
         raise ValueError("GitHub persona disabled")
     if not grant.is_live(now):
         raise ValueError("expired grant")
-    key = "gpt-" + persona.removeprefix("agent-codex-")
+    key = "gpt-operations-story" if operations_story else "gpt-" + persona.removeprefix("agent-codex-")
     sk = f"CODEX_GITHUB#{record.invocation_id}"
     existing = store._read(pk, sk)
     if not existing:
@@ -92,6 +110,8 @@ def frozen_context(store, record, grant, env, *, now=None):
         capabilities = ["artifacts.publish"]
         if "repository.read" in definition.requiredCapabilities + definition.optionalCapabilities:
             capabilities.append("repository.read")
+        if operations_story:
+            capabilities.extend(["actions.read", "actions.write", "repository.write", "change.create", "change.merge"])
         if persona == "agent-codex-architect" and "story.create" in definition.optionalCapabilities:
             capabilities.append("story.create")
         if persona == "agent-codex-pm" and "agents.delegate" in definition.optionalCapabilities:
@@ -185,7 +205,7 @@ def operation(store, record, body):
             raise ValueError("claim cannot supply result")
         session = store._read(pk, session_key["sk"]["S"])
         frozen = json.loads(session["context"]["S"])
-        if body.kind == "tool" and "repository.read" not in frozen["capabilities"]:
+        if body.kind == "tool" and not set(frozen["capabilities"]) & {"repository.read", "actions.read", "actions.write"}:
             raise ValueError("tool capability unavailable")
         counter = {"model": "model_count", "tool": "tool_count", "report": "report_count", "planning": "planning_count"}[body.kind]
         # Model and tool counters are accounting, not hidden run ceilings.
@@ -248,13 +268,16 @@ def operation(store, record, body):
 
 
 @router.post("/codex-persona-operation")
-async def codex_persona_operation(body: OperationRequest, request: Request, runtime: AgentRuntime = Depends(get_agent_runtime)):
+async def codex_persona_operation(
+    body: OperationRequest, request: Request, runtime: AgentRuntime = Depends(get_agent_runtime), db: AsyncSession = Depends(get_db)
+):
     async def execute(_body, _credential, _workload, *, context):
         _, _, record, grant = context
         try:
+            await _require_operations_story(db, runtime.store, record, grant)
             await run_in_threadpool(frozen_context, runtime.store, record, grant, runtime.env)
             return await run_in_threadpool(operation, runtime.store, record, body)
-        except (ValueError, KeyError, TypeError, ClientError):
+        except (ValueError, KeyError, TypeError, ClientError, OperationRefusedError, CycleBlockedError, AuthorityStoreError):
             raise HTTPException(409, "Codex operation unavailable; reconciliation may be required") from None
 
     return await _agent_call(request, runtime, execute, body)
@@ -270,8 +293,9 @@ async def codex_persona_session(
 
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         try:
+            await _require_operations_story(db, runtime.store, record, grant)
             frozen = await run_in_threadpool(frozen_context, runtime.store, record, grant, runtime.env)
-        except (ValueError, KeyError, OSError, TypeError):
+        except (ValueError, KeyError, OSError, TypeError, OperationRefusedError, CycleBlockedError, AuthorityStoreError):
             raise HTTPException(409, "Codex persona admission unavailable") from None
         # Signing binds the same current execution to both the selected model and
         # immutable persona context. This does not change existing SDK postures.

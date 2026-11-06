@@ -35,6 +35,7 @@ class BootstrapClients:
     supervisor_kubernetes: object
     installer_access: object
     supervisor_access: object
+    identity_snapshot: object = None
 
     def verify(self, *, recovery=False):
         from superplane_contracts.provisioning import OperationBinding
@@ -63,8 +64,14 @@ class BootstrapClients:
             raise BootstrapRefused(
                 "bootstrap actor credential identities are incomplete"
             )
-        for actor, reader in self.identity_readers.items():
-            identity = reader()
+        identities = (
+            self.identity_snapshot()
+            if self.identity_snapshot is not None
+            else {actor: reader() for actor, reader in self.identity_readers.items()}
+        )
+        if not isinstance(identities, dict) or set(identities) != set(self.principals):
+            raise BootstrapRefused("bootstrap actor identity snapshot is incomplete")
+        for actor, identity in identities.items():
             if (identity.account_id, identity.principal_arn) != (
                 self.target.account_id,
                 self.principals[actor],
@@ -101,6 +108,15 @@ class BootstrapClients:
             raise BootstrapRefused(
                 "bootstrap requires EKS API authentication; legacy aws-auth mappings are not covered by the tenant inventory"
             )
+        # Read-only identity and cluster queries cannot extend permission. The
+        # original operation must still be current when this check returns.
+        latest = self.binding_resolver(self.binding.operation_id, recovery=recovery)
+        if latest != current:
+            raise BootstrapRefused(
+                "bootstrap credential operation binding changed during verification"
+            )
+        if not recovery:
+            _binding_identity(latest)
 
 
 class BootstrapGrantBackend:
@@ -250,9 +266,9 @@ class BootstrapGrantBackend:
                 policies = []
             from .grant_plan import ADMIN_POLICY
 
-            self.registrar_removed = not any(
-                p.get("policyArn") == ADMIN_POLICY for p in policies
-            )
+            if not any(p.get("policyArn") == ADMIN_POLICY for p in policies):
+                # Monotonic even when independent grant reads overlap.
+                self.registrar_removed = True
         return (
             self.eks
             if spec["kind"].startswith("eks-")
@@ -417,11 +433,14 @@ class BootstrapGrantBackend:
             self.registrar_removed = True
 
     def verify_worker_binding(self):
+        from concurrent.futures import ThreadPoolExecutor
+
         self.clients.verify()
+        # SQL and the reservation fence stay on the bootstrap thread. Only
+        # independent provider reads use the bounded pool, never journal writes.
         plan, progress = self.journal.read_locked()
-        for spec in plan["grants"]:
-            if spec.get("lifetime") == "resource":
-                continue
+
+        def check(spec):
             observed = self.observe(spec)
             if observed != progress.get(spec["key"], {}).get("identity"):
                 raise BootstrapRefused(
@@ -447,59 +466,97 @@ class BootstrapGrantBackend:
                         "bootstrap EKS entry has unplanned additive policy authority"
                     )
 
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            reads = [
+                executor.submit(check, spec)
+                for spec in plan["grants"]
+                if spec.get("lifetime") != "resource"
+            ]
+            for read in reads:
+                read.result()
+        # All reads have joined, including on failure. No check result survives
+        # this call, and the original operation must still authorize the caller.
+        self.clients.verify()
+
     def verify_worker_permissions(self):
+        from concurrent.futures import ThreadPoolExecutor
+
         self.verify_worker_binding()
         r, access = self.release, self.clients.installer_access
-        verify_install_permissions(
-            access, r.namespace, r.service_account, r.controller, r.crds
-        )
-        if getattr(access, "controller_mode", None) == "management":
-            for verb, name in (("create", None), ("patch", r.controller)):
-                if (
-                    access.bootstrap_permission(
-                        verb=verb,
-                        resource="deployments.apps",
-                        namespace=r.namespace,
-                        name=name,
-                    )
-                    is not False
-                ):
-                    raise BootstrapRefused(
-                        "management bootstrap installer can write workspace deployments"
-                    )
-        for actor in ("installer", "supervisor"):
-            access = getattr(self.clients, actor + "_access")
-            for verb, resource, namespace, name in (
-                ("patch", "namespaces", None, r.namespace),
-                ("create", "namespaces", None, None),
-                ("get", "secrets", r.namespace, None),
-                ("create", "pods/exec", r.namespace, None),
-                ("impersonate", "users", None, None),
-                (
-                    "bind",
-                    "clusterroles.rbac.authorization.k8s.io",
-                    None,
-                    "cluster-admin",
-                ),
-                (
-                    "escalate",
-                    "clusterroles.rbac.authorization.k8s.io",
-                    None,
-                    "cluster-admin",
-                ),
-            ):
-                if (
-                    access.bootstrap_permission(
-                        verb=verb, resource=resource, namespace=namespace, name=name
-                    )
-                    is not False
-                ):
-                    raise BootstrapRefused(
-                        "bootstrap actor has forbidden or unanswered permissions"
-                    )
-        self.verify_supervisor_permissions()
 
-    def verify_supervisor_permissions(self):
+        def require_denied(access, verb, resource, namespace, name, message):
+            if (
+                access.bootstrap_permission(
+                    verb=verb, resource=resource, namespace=namespace, name=name
+                )
+                is not False
+            ):
+                raise BootstrapRefused(message)
+
+        # Only independent permission reads overlap. Each keeps its transport's
+        # fresh authority checks and token lock; journal/identity checks stay on
+        # the owning thread. Exiting the pool joins every read even on failure.
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            reads = []
+
+            def submit(check, *args):
+                reads.append(executor.submit(check, *args))
+
+            verify_install_permissions(
+                access,
+                r.namespace,
+                r.service_account,
+                r.controller,
+                r.crds,
+                submit=submit,
+            )
+            if getattr(access, "controller_mode", None) == "management":
+                for verb, name in (("create", None), ("patch", r.controller)):
+                    submit(
+                        require_denied,
+                        access,
+                        verb,
+                        "deployments.apps",
+                        r.namespace,
+                        name,
+                        "management bootstrap installer can write workspace deployments",
+                    )
+            for actor in ("installer", "supervisor"):
+                access = getattr(self.clients, actor + "_access")
+                for verb, resource, namespace, name in (
+                    ("patch", "namespaces", None, r.namespace),
+                    ("create", "namespaces", None, None),
+                    ("get", "secrets", r.namespace, None),
+                    ("create", "pods/exec", r.namespace, None),
+                    ("impersonate", "users", None, None),
+                    (
+                        "bind",
+                        "clusterroles.rbac.authorization.k8s.io",
+                        None,
+                        "cluster-admin",
+                    ),
+                    (
+                        "escalate",
+                        "clusterroles.rbac.authorization.k8s.io",
+                        None,
+                        "cluster-admin",
+                    ),
+                ):
+                    submit(
+                        require_denied,
+                        access,
+                        verb,
+                        resource,
+                        namespace,
+                        name,
+                        "bootstrap actor has forbidden or unanswered permissions",
+                    )
+            self.verify_supervisor_permissions(submit=submit)
+            for read in reads:
+                read.result()
+        self.clients.verify()
+
+    def verify_supervisor_permissions(self, *, submit=None):
         access = self.clients.supervisor_access
         policies = _pages(
             self.clients.eks,
@@ -512,6 +569,21 @@ class BootstrapGrantBackend:
             raise BootstrapRefused(
                 "workspace supervisor has unplanned EKS policy authority"
             )
+
+        def require(verb, resource, namespace, expected, message):
+            if (
+                access.bootstrap_permission(
+                    verb=verb, resource=resource, namespace=namespace
+                )
+                is not expected
+            ):
+                raise BootstrapRefused(message)
+
+        if submit is None:
+
+            def submit(check, *args):
+                check(*args)
+
         for verb, resource, namespace in (
             ("list", "clusterrolebindings.rbac.authorization.k8s.io", None),
             ("list", "clusterroles.rbac.authorization.k8s.io", None),
@@ -520,41 +592,42 @@ class BootstrapGrantBackend:
             ("list", "serviceaccounts", self.release.namespace),
             ("patch", "nodes", None),
         ):
-            if (
-                access.bootstrap_permission(
-                    verb=verb, resource=resource, namespace=namespace
-                )
-                is not True
-            ):
-                raise BootstrapRefused(
-                    "workspace supervisor permissions were not verified"
-                )
+            submit(
+                require,
+                verb,
+                resource,
+                namespace,
+                True,
+                "workspace supervisor permissions were not verified",
+            )
         for verb, resource in (
             ("create", "pods"),
             ("create", "roles.rbac.authorization.k8s.io"),
             ("get", "secrets"),
             ("patch", "deployments.apps"),
         ):
-            if (
-                access.bootstrap_permission(
-                    verb=verb, resource=resource, namespace=self.release.namespace
-                )
-                is not False
-            ):
-                raise BootstrapRefused(
-                    "workspace supervisor retains installation authority"
-                )
+            submit(
+                require,
+                verb,
+                resource,
+                self.release.namespace,
+                False,
+                "workspace supervisor retains installation authority",
+            )
 
     def verify_revoked(self, plan, progress):
+        from concurrent.futures import ThreadPoolExecutor
+
         self.clients.verify(recovery=True)
         retained = progress.get("retain_workspace") is True
         self.registrar_removed = True
-        for spec in plan["grants"]:
+
+        def check(spec):
             status = progress.get(spec["key"])
             if not status:
-                continue
+                return
             if spec.get("lifetime") == "resource":
-                continue
+                return
             if spec.get("lifetime") == "workspace" and retained:
                 observed = self.observe(spec)
                 if observed != status.get("identity"):
@@ -562,9 +635,9 @@ class BootstrapGrantBackend:
                         "retained workspace grant immutable identity changed"
                     )
                 self.verify(spec, observed)
-                continue
+                return
             if status.get("phase") == "adopted":
-                continue
+                return
             # Kube deletion already had an immediate positive absence read before
             # deleting the parent registrar entry. On success, independently read
             # again through the surviving, bounded supervisor.
@@ -573,6 +646,24 @@ class BootstrapGrantBackend:
                     raise BootstrapRefused("temporary bootstrap authority remains")
             if status.get("phase") != "revoked":
                 raise BootstrapRefused("temporary grant revocation is unverified")
+
+        # Keep the fence, journal and any namespace-state handling on the owner.
+        # Other grant checks only read providers; registrar removal is already
+        # fixed above, so all Kubernetes reads use the surviving supervisor.
+        independent = []
+        for spec in plan["grants"]:
+            if spec.get("lifetime") == "resource" or not progress.get(spec["key"]):
+                continue
+            if spec["key"] == "workspace-namespace":
+                check(spec)
+            else:
+                independent.append(spec)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            reads = [executor.submit(check, spec) for spec in independent]
+            for read in reads:
+                read.result()
+        # All independent reads join, including on failure, before inventories
+        # or the caller's journal publication can proceed.
         # An EKS group must not be reachable through some other access entry.
         temporary_groups = {
             g
@@ -598,7 +689,17 @@ class BootstrapGrantBackend:
                 raise BootstrapRefused("temporary bootstrap group remains reachable")
         if retained:
             self._verify_cleanup_unmapped(plan)
-            self.verify_supervisor_permissions()
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                reads = []
+
+                def submit(check, *args):
+                    reads.append(executor.submit(check, *args))
+
+                # This method keeps its EKS policy inventory on the owner and
+                # delegates only independent supervisor permission reads.
+                self.verify_supervisor_permissions(submit=submit)
+                for read in reads:
+                    read.result()
 
     def _aws_inventory(self, service, action, *args):
         if service != "eks":

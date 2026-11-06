@@ -1914,3 +1914,67 @@ async def test_exhausted_stage_does_not_consume_another_stage(session_factory, e
         authority_verifier=verify_live_authority,
     )
     assert result.effects_succeeded == 1
+
+
+@pytest.mark.parametrize("lost_authority", ["released", "generation", "owner"])
+async def test_invalid_claims_do_not_consume_the_due_scan_limit(session_factory, execution, lost_authority):
+    """More stale rows than the scan cap must not hide a valid later execution."""
+    async with session_factory() as session:
+        first = (await session.scalars(select(OrchestrationExecution))).one()
+        first.next_check_at = NOW - timedelta(hours=2)
+        for ref, claim_id, due in [("stale-copy", CLAIM, NOW - timedelta(hours=1)), ("valid-later", "claim-valid-later", NOW)]:
+            node = OrchestrationNode(
+                org_id=ORG,
+                flow_id=first.flow_id,
+                epic_ref="E1",
+                wave_ref="W1",
+                node_ref=ref,
+                kind="story",
+                state="running",
+                title=ref,
+            )
+            session.add(node)
+            if claim_id != CLAIM:
+                session.add(
+                    OrchestrationWorkClaim(
+                        id=claim_id,
+                        org_id=ORG,
+                        provider_repository_id=125,
+                        issue_number=999,
+                        owner_kind=OwnerKind.ENGINE_FLOW.value,
+                        owner_ref=first.flow_id,
+                        state=ClaimState.HELD.value,
+                        generation=1,
+                        active_run_id="valid-later-run",
+                    )
+                )
+            await session.flush()
+            await create_execution(session, identity=ExecutionIdentity(ORG, node.id, 1, 1, claim_id, 1), flow_id=first.flow_id, next_check_at=due)
+        claim = await session.get(OrchestrationWorkClaim, CLAIM)
+        if lost_authority == "released":
+            claim.state = ClaimState.RELEASED.value
+        elif lost_authority == "generation":
+            claim.generation += 1
+        else:
+            claim.owner_ref = "another-flow"
+        await session.commit()
+
+    handler = SyntheticHandler(decision=HandlerDecision(DecisionKind.WAIT))
+    report = await run_execution_runner(
+        session_factory,
+        handlers={ExecutionPhase.ADMITTED: handler},
+        config=_config(max_actions=1),
+        clock=FrozenClock(),
+        authority_verifier=_allow,
+    )
+    assert report.examined == 1
+    assert handler.observe_count == 1
+    assert handler.perform_count == 0
+    async with session_factory() as session:
+        rows = (await session.scalars(select(OrchestrationExecution))).all()
+        stale = [row for row in rows if row.claim_id == CLAIM]
+        valid = next(row for row in rows if row.claim_id == "claim-valid-later")
+        assert len(stale) == 2
+        assert all(row.next_check_at.replace(tzinfo=UTC) < NOW for row in stale)
+        assert valid.next_check_at.replace(tzinfo=UTC) > NOW
+        assert (await session.scalar(select(func.count()).select_from(OrchestrationAction))) == 0

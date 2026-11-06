@@ -1,0 +1,1 @@
+import json,time;from pathlib import Path;p=Path('/sys/fs/cgroup');read=lambda:{n:(p/n).read_text() for n in ['cpu.max','cpu.stat','cpu.pressure'] if (p/n).exists()};a=read();time.sleep(10);print(json.dumps({'before':a,'after':read()}))

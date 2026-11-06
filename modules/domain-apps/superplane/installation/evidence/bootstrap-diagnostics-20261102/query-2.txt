@@ -1,0 +1,10 @@
+from pathlib import Path; import json,os; from workspace_provisioning.terraform import operation_directory
+p=operation_directory(os.environ["SUPERPLANE_LIFECYCLE_STATE_DIR"],"a79914b7-45b6-4520-adeb-e09351267194","53125337-0501-5b0d-bdab-66c8d8d94ff7","d571ca63-73bc-543a-836e-a9e448b38a98")
+rows=[]
+for f in Path("/proc").glob("[0-9]*/cmdline"):
+ try:
+  a=f.read_bytes().decode().strip("\0").split("\0"); name=Path(a[0]).name
+  if name in ("terraform","aws","kubectl") or (name.startswith("python") and len(a)>1 and a[1].endswith(".py")):
+   rows.append({"pid":f.parent.name,"executable":name,"stage":Path(a[1]).name if len(a)>1 else "","method":a[2] if name=="aws" and len(a)>2 else None})
+ except (OSError,UnicodeError,IndexError): pass
+print(json.dumps({"processes":rows,"files":[x.name for x in p.iterdir()]}))

@@ -1,0 +1,191 @@
+name: DevLake POC / offline qualification
+on:
+  pull_request:
+    paths:
+      - 'modules/insights/poc/devlake/**'
+      - 'modules/insights/tests/devlake_poc/test_s07.py'
+      - '.github/workflows/devlake-poc-qualify.yml'
+      - '.github/workflows/_devlake-poc-window.yml'
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Qualification phase
+        type: choice
+        options: [pilot]
+        required: true
+      launch_manifest:
+        description: Path to the approved private campaign manifest on the protected runner
+        type: string
+        required: true
+      adp_correlation:
+        description: Engine-selected operation correlation
+        type: string
+        required: true
+      adp_source_revision:
+        description: Engine-selected source revision
+        type: string
+        required: true
+      adp_definition_revision:
+        description: Engine-selected workflow definition revision
+        type: string
+        required: true
+      adp_contract_digest:
+        description: Engine-selected generic delivery contract digest
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  contracts:
+    if: github.event_name == 'pull_request'
+    runs-on: arc-runner-org
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r modules/insights/schemas/requirements.txt
+      - run: python3 -m unittest discover -s modules/insights/tests/devlake_poc -p test_s07.py -q
+  window-00:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 0
+  window-01:
+    needs: [window-00]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 1
+  window-02:
+    needs: [window-01]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 2
+  window-03:
+    needs: [window-02]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 3
+  window-04:
+    needs: [window-03]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 4
+  window-05:
+    needs: [window-04]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 5
+  window-06:
+    needs: [window-05]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 6
+  window-07:
+    needs: [window-06]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 7
+  window-08:
+    needs: [window-07]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 8
+  window-09:
+    needs: [window-08]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 9
+  window-10:
+    needs: [window-09]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 10
+  window-11:
+    needs: [window-10]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: ./.github/workflows/_devlake-poc-window.yml
+    with:
+      launch_manifest: ${{ inputs.launch_manifest }}
+      window: 11
+  qualify:
+    if: github.event_name == 'workflow_dispatch' && inputs.phase == 'pilot' && github.repository == 'aws-e/adp' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: [window-11]
+    permissions:
+      contents: read
+      actions: read
+    runs-on: arc-runner-org
+    environment: adp-devlake-campaign
+    timeout-minutes: 20
+    env:
+      ADP_DEVLAKE_CAMPAIGN_ROOT: ${{ secrets.ADP_DEVLAKE_CAMPAIGN_ROOT }}
+      LAUNCH_MANIFEST: ${{ inputs.launch_manifest }}
+      ADP_DEVLAKE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      ADP_DEVLAKE_SOURCE_BINDINGS: ${{ secrets.ADP_DEVLAKE_SOURCE_BINDINGS }}
+      ADP_DEVLAKE_DELIVERY_TARGET: ${{ secrets.ADP_DEVLAKE_DELIVERY_TARGET }}
+      adp_correlation: ${{ inputs.adp_correlation }}
+      adp_source_revision: ${{ inputs.adp_source_revision }}
+      adp_definition_revision: ${{ inputs.adp_definition_revision }}
+      adp_contract_digest: ${{ inputs.adp_contract_digest }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r modules/insights/schemas/requirements.txt
+      - run: |
+          python3 modules/insights/poc/devlake/resume_campaign.py \
+            --root "$ADP_DEVLAKE_CAMPAIGN_ROOT" --launch-manifest "$LAUNCH_MANIFEST" \
+            --revision "$GITHUB_SHA" --qualify
+      - run: |
+          python3 modules/insights/poc/devlake/verify_campaign.py \
+            --phase pilot --manifest "$LAUNCH_MANIFEST" \
+            --plan docs/engineering-insights/devlake-poc/delivery-flow/acceptance-mapping.json \
+            --output "$RUNNER_TEMP/summary.json"
+      # The repository evaluator reads this exact run/attempt summary archive.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devlake-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/summary.json
+          if-no-files-found: error
+          retention-days: 7
+      - run: |
+          python3 modules/insights/poc/devlake/delivery_receipt.py \
+            --manifest "$LAUNCH_MANIFEST" \
+            --plan docs/engineering-insights/devlake-poc/delivery-flow/acceptance-mapping.json \
+            --summary "$RUNNER_TEMP/summary.json" \
+            --output "$RUNNER_TEMP/delivery.json"
+      # ReleaseProvider reads delivery.json using the accepted delivery contract.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devlake-pilot-delivery-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/delivery.json
+          if-no-files-found: error
+          retention-days: 7

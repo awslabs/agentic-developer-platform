@@ -1,0 +1,70 @@
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2748,9 +2748,15 @@
+         """
+ 
+         # overridden by file handlers
+-        if frame != 0:
++        if frame != self.tell():
++            # The file handler likely did not override this method
+             msg = "no more images in file"
+             raise EOFError(msg)
++
++        if self._im is not None and (
++            self.im.size != self.size or self.im.mode != self.mode
++        ):
++            self._im = None
+ 
+     def show(self, title: str | None = None) -> None:
+         """
+--- a/src/PIL/JpegImagePlugin.py
++++ b/src/PIL/JpegImagePlugin.py
+@@ -197,8 +197,6 @@
+     n = i16(self.fp.read(2)) - 2
+     s = ImageFile._safe_read(self.fp, n)
+     self._size = i16(s, 3), i16(s, 1)
+-    if self._im is not None and self.size != self.im.size:
+-        self._im = None
+ 
+     self.bits = s[0]
+     if self.bits != 8:
+--- a/src/PIL/DcxImagePlugin.py
++++ b/src/PIL/DcxImagePlugin.py
+@@ -74,6 +74,7 @@
+         self.fp = self._fp
+         self.fp.seek(self._offset[frame])
+         PcxImageFile._open(self)
++        Image.Image.seek(self, frame)
+ 
+     def tell(self) -> int:
+         return self.frame
+--- a/src/PIL/MicImagePlugin.py
++++ b/src/PIL/MicImagePlugin.py
+@@ -80,6 +80,7 @@
+         TiffImagePlugin.TiffImageFile._open(self)
+ 
+         self.frame = frame
++        Image.Image.seek(self, frame)
+ 
+     def tell(self) -> int:
+         return self.frame
+--- a/src/PIL/MpoImagePlugin.py
++++ b/src/PIL/MpoImagePlugin.py
+@@ -163,6 +163,7 @@
+             ImageFile._Tile("jpeg", (0, 0) + self.size, self.offset, self.tile[0][-1])
+         ]
+         self.__frame = frame
++        Image.Image.seek(self, frame)
+ 
+     def tell(self) -> int:
+         return self.__frame
+--- a/src/PIL/PsdImagePlugin.py
++++ b/src/PIL/PsdImagePlugin.py
+@@ -183,6 +183,7 @@
+         self.tile = tile
+         self.frame = layer
+         self.fp = self._fp
++        Image.Image.seek(self, layer)
+ 
+     def tell(self) -> int:
+         # return layer number (0=image, 1..max=layers)

@@ -396,3 +396,140 @@ def test_failure_diagnostics_survive_terminal_outage(spool, monkeypatch):
     monkeypatch.setattr(run_report, "terminal", terminal)
     assert resume_handoff() is True
     terminal.assert_called_once_with("failed", failure=failure)
+
+
+def test_operations_report_requires_acknowledged_bounded_digest(monkeypatch):
+    from hashlib import sha256
+
+    text = "Observed runtime verification"
+    digest = sha256(text.encode()).hexdigest()
+    monkeypatch.setattr(run_report, "request", lambda path, body: {
+        "contract_version": 1, "run_id": "run-1", "attempt": 1,
+        "operations_report_receipt": {"recorded": True, "run_id": "run-1", "attempt": 1, "sha256": digest},
+    })
+    assert run_report.operations_report(text)["operations_report_receipt"]["sha256"] == digest
+    with pytest.raises(run_report.RunReportError, match="operations_report_unacknowledged"):
+        run_report.operations_report("An unacknowledged different report")
+
+
+# --- Gateway-held spool for protected worker identities (#7392) -------------
+
+
+@pytest.fixture
+def gateway_spool(monkeypatch):
+    """A protected worker: no bucket, S3 forbidden, the gateway holds the marker."""
+    assignment = {
+        "credential": "adprpt1." + "x" * 43,
+        "ownership_nonce": "a" * 32,
+        "run_id": "run-1",
+        "attempt": 1,
+        "tenant_id": "org",
+        "repo": "org/repo",
+        "spool": "gateway",
+    }
+    monkeypatch.setattr(run_report, "_assignment", assignment)
+    monkeypatch.delenv("AGENT_RUN_LOGS_BUCKET", raising=False)
+    monkeypatch.setattr(run_report, "_spool_client", lambda: pytest.fail("protected worker must never touch S3"))
+    state = {"spool": None, "receipt": None, "calls": [], "fail": None}
+    base = {"contract_version": 1, "run_id": "run-1", "attempt": 1}
+
+    def request(path="", body=None, **kwargs):
+        state["calls"].append((path, body))
+        if state["fail"] is not None and path == "/spool":
+            raise run_report.RunReportError(state["fail"])
+        if path == "/spool":
+            if body is None:
+                return base | {"spool_document": state["spool"]}
+            if body["create"] and state["spool"] is not None:
+                raise run_report.RunReportError("run_report_http_409", retryable=False)
+            state["spool"] = json.loads(json.dumps(body["document"]))
+            return base | {"spool_document": state["spool"]}
+        if path == "/started":
+            state["receipt"] = {"ownership_nonce": body["ownership_nonce"]}
+        elif path:
+            raise AssertionError(path)
+        return base | unstarted_snapshot() | {"worker_receipt": state["receipt"]}
+
+    monkeypatch.setattr(run_report, "request", request)
+    return state
+
+
+def test_protected_worker_starts_through_gateway_spool_without_s3(gateway_spool):
+    run_report.begin_delivery()
+    assert gateway_spool["spool"]["phase"] == "executing" and gateway_spool["spool"]["candidate_pr"] is None
+    assert gateway_spool["receipt"] == {"ownership_nonce": "a" * 32}
+    assert ("/spool", {"document": gateway_spool["spool"], "create": True}) in gateway_spool["calls"]
+    assert "credential" not in json.dumps(gateway_spool["spool"])
+
+
+def test_gateway_spool_redelivery_reuses_exact_marker_without_rewriting(gateway_spool):
+    gateway_spool["spool"] = run_report._spool_document("executing")
+    run_report.begin_delivery()
+    assert not any(body for path, body in gateway_spool["calls"] if path == "/spool" and body)
+    assert gateway_spool["receipt"]["ownership_nonce"] == "a" * 32
+
+
+def test_gateway_spool_second_creator_needs_recovery_like_s3_precondition(gateway_spool, monkeypatch):
+    reads = iter([None])
+    original = run_report.request
+
+    def racing(path="", body=None, **kwargs):
+        if path == "/spool" and body is None:
+            try:
+                return {"contract_version": 1, "run_id": "run-1", "attempt": 1, "spool_document": next(reads)}
+            except StopIteration:
+                pass
+        return original(path, body, **kwargs)
+
+    gateway_spool["spool"] = run_report._spool_document("executing")
+    monkeypatch.setattr(run_report, "request", racing)
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required") as error:
+        run_report.begin_delivery()
+    assert error.value.retryable is False and gateway_spool["receipt"] is None
+
+
+def test_gateway_spool_outage_is_retryable_and_never_starts(gateway_spool):
+    gateway_spool["fail"] = "run_report_unavailable"
+    with pytest.raises(run_report.RunReportError, match="report_spool_unavailable") as error:
+        run_report.begin_delivery()
+    assert error.value.retryable is True and gateway_spool["receipt"] is None
+
+
+@pytest.mark.parametrize("change", [{"run_id": "other"}, {"repo": "org/other"}, {"phase": "done"}, {"attempt": 2}])
+def test_gateway_spool_is_untrusted_and_scope_checked_by_worker(gateway_spool, change):
+    gateway_spool["spool"] = run_report._spool_document("executing") | change
+    with pytest.raises(run_report.RunReportError, match="report_spool_scope_mismatch"):
+        run_report.begin_delivery()
+    assert gateway_spool["receipt"] is None
+
+
+def test_gateway_spool_candidate_and_failure_markers_round_trip(gateway_spool):
+    run_report.begin_delivery()
+    run_report.spool_undelivered_failure(failure={"category": "deadline", "exit_code": 124})
+    failed = run_report.read_spool()
+    assert failed["phase"] == "failed" and failed["ownership_nonce"] == "a" * 32 and failed["failure"]["exit_code"] == 124
+    gateway_spool["spool"] = run_report._spool_document("executing")
+    candidate = {"repo": "org/repo", "pr_number": 7, "head_sha": "b" * 40}
+    run_report.spool_candidate(candidate)
+    assert run_report.read_spool()["candidate_pr"] == candidate
+    run_report.spool_undelivered_failure()
+    assert run_report.read_spool()["phase"] == "candidate"
+
+
+@pytest.mark.parametrize("contract, expected", [({}, "s3"), ({"spool": "gateway"}, "gateway")])
+def test_configure_selects_spool_transport_from_dispatch_contract(monkeypatch, tmp_path, contract, expected):
+    monkeypatch.setattr(run_report, "_assignment", None)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    for key in ("ADP_RUN_REPORT_CREDENTIAL_FILE", "ADP_RUN_ATTEMPT", "ADP_ORCHESTRATION_ATTEMPT", "ADP_RUN_REPORT_OWNERSHIP_NONCE"):
+        monkeypatch.setenv(key, "")  # configure() writes these; monkeypatch restores them afterwards
+    envelope = {
+        "message_id": "run-1",
+        "tenant_id": "org",
+        "orchestration": {"attempt": 1},
+        "source_ref": {"repo": "org/repo"},
+        "run_report": {"contract_version": 1, "credential": "adprpt1." + "x" * 43} | contract,
+    }
+    run_report.configure(envelope)
+    assert run_report._assignment["spool"] == expected
+    with pytest.raises(run_report.RunReportError, match="unsupported_run_report"):
+        run_report.configure(envelope | {"run_report": envelope["run_report"] | {"spool": "sftp"}})

@@ -28,6 +28,8 @@ import sys
 import time
 from typing import Any
 
+from prometheus_client import Counter, Gauge
+
 from src.shared.logging import get_request_id, org_id_var
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,20 @@ NAMESPACE = "BedrockGateway"
 
 # Default dimensions
 DEFAULT_DIMENSIONS = ["Environment"]
+
+EMF_WRITE_ATTEMPTS = Counter("bedrock_gateway_emf_write_attempts_total", "Local EMF writes attempted before log collection")
+EMF_WRITE_FAILURES = Counter("bedrock_gateway_emf_write_failures_total", "Local EMF writes rejected before log collection")
+EMF_LAST_SUCCESS = Gauge("bedrock_gateway_emf_last_success_timestamp_seconds", "Last successful local EMF write")
+_last_export_warning_at: float | None = None
+
+
+def get_emf_export_health() -> dict[str, float]:
+    """Return process-local EMF write health, not downstream delivery evidence."""
+    return {
+        "emf_write_attempts": EMF_WRITE_ATTEMPTS._value.get(),
+        "emf_write_failures": EMF_WRITE_FAILURES._value.get(),
+        "emf_last_success_timestamp_seconds": EMF_LAST_SUCCESS._value.get(),
+    }
 
 
 def _get_timestamp() -> int:
@@ -50,6 +66,7 @@ def _emit_emf(
     namespace: str = NAMESPACE,
     timestamp: int | None = None,
     properties: dict[str, Any] | None = None,
+    include_context: bool = True,
 ) -> None:
     """
     Emit metrics in CloudWatch EMF format.
@@ -73,33 +90,54 @@ def _emit_emf(
                     "Namespace": namespace,
                     "Dimensions": dimensions,
                     "Metrics": [{"Name": name, "Unit": _get_unit(name)} for name in metrics.keys()],
-                }
+                },
+                {
+                    "Namespace": namespace,
+                    "Dimensions": [[]],
+                    "Metrics": [{"Name": "ExporterEmitAttempt", "Unit": "Count"}],
+                },
             ],
         }
     }
 
     # Add metric values
     emf_data.update(metrics)
+    emf_data["ExporterEmitAttempt"] = 1
     if properties:
         emf_data.update(properties)
 
     # Add standard context
-    request_id = get_request_id()
-    if request_id:
-        emf_data["request_id"] = request_id
+    if include_context:
+        request_id = get_request_id()
+        if request_id:
+            emf_data["request_id"] = request_id
 
-    org_id = org_id_var.get()
-    if org_id:
-        emf_data["org_id"] = org_id
+        org_id = org_id_var.get()
+        if org_id:
+            emf_data["org_id"] = org_id
 
-    # Output EMF JSON to stdout (CloudWatch agent picks this up)
-    print(json.dumps(emf_data), file=sys.stdout, flush=True)
+    global _last_export_warning_at
+    EMF_WRITE_ATTEMPTS.inc()
+    try:
+        print(json.dumps(emf_data), file=sys.stdout, flush=True)
+    except Exception:
+        EMF_WRITE_FAILURES.inc()
+        now = time.monotonic()
+        if _last_export_warning_at is None or now - _last_export_warning_at >= 60:
+            _last_export_warning_at = now
+            try:
+                sys.stderr.write("gateway metric EMF write failed; export unverified\n")
+            except OSError:
+                pass
+    else:
+        EMF_LAST_SUCCESS.set(time.time())
 
 
 def _get_unit(metric_name: str) -> str:
     """Get the unit for a metric."""
     units = {
         "RequestCount": "Count",
+        "StreamOutcome": "Count",
         "PricingCacheAgeSeconds": "Seconds",
         "PricingCacheRefreshFailure": "Count",
         "PricingUnknownVariant": "Count",
@@ -118,6 +156,28 @@ def _get_unit(metric_name: str) -> str:
         "CallerProvenanceRejected": "Count",
     }
     return units.get(metric_name, "None")
+
+
+def emit_stream_outcome(outcome: str) -> None:
+    """Publish only a fixed outcome class; never dimension by request or tenant."""
+    allowed = {
+        "completed",
+        "incomplete",
+        "failed",
+        "error",
+        "premature_eof",
+        "read_timeout",
+        "transport_error",
+        "client_cancelled",
+        "settlement_unconfirmed",
+    }
+    safe_outcome = outcome if outcome in allowed else "other"
+    _emit_emf(
+        metrics={"StreamOutcome": 1},
+        dimensions=[["stream_outcome"]],
+        properties={"stream_outcome": safe_outcome},
+        include_context=False,
+    )
 
 
 # ============================================================================

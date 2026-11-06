@@ -79,7 +79,7 @@ async def admit_other_user(client, runtime, db_session_factory, monkeypatch, ten
         "message": "Another user's prompt",
         "attachments": [],
     }
-    provision_root(runtime[1].store, envelope, source="chat", human_id="other-human", now=datetime.fromtimestamp(runtime[-1], UTC))
+    provision_root(runtime[1].store, envelope, source="chat", human_id="other-human", team_id=team, now=datetime.fromtimestamp(runtime[-1], UTC))
     runtime[4]["uid"] = "other-chat-pod"
     response = await admit(client, runtime, run_id="run-other", envelope_digest=envelope_digest(envelope), pod_uid="other-chat-pod")
     assert response.status_code == 200, response.text
@@ -148,7 +148,9 @@ async def test_paginated_context_compaction_expansion_and_lost_response_recovery
         return result
 
     monkeypatch.setattr(runtime[1].store.client, "transact_write_items", commit)
-    result = await node_tools(gateway_http, runtime[-1], driver=DRIVER, mode="compact", message=envelope["message"])
+    # This driver runs a complete multi-page compaction/replay/expansion journey,
+    # including 104 messages through Moto. Its process bound covers all calls.
+    result = await node_tools(gateway_http, runtime[-1], driver=DRIVER, timeout=45, mode="compact", message=envelope["message"])
     assert bool(lost) is lost_response
     assert result["firstPage"]["status"] == "partial" and not result["firstPage"]["coverage"]["complete"]
     assert len(result["firstPage"]["entries"]) == 100
@@ -215,7 +217,7 @@ async def test_other_users_cannot_reuse_history_ids_or_cursors(client, runtime, 
     seed_owned_history(runtime, 104)
     envelope = prepare(runtime)
     assert (await accept(client, runtime, envelope)).status_code == 200
-    owner = await node_tools(gateway_http, runtime[-1], driver=DRIVER, mode="compact", message=envelope["message"])
+    owner = await node_tools(gateway_http, runtime[-1], driver=DRIVER, timeout=45, mode="compact", message=envelope["message"])
     await admit_other_user(client, runtime, db_session_factory, monkeypatch, tenant)
     result = await node_tools(
         gateway_http,

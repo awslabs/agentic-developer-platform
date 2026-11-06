@@ -23,11 +23,13 @@ set -euo pipefail
 #   --resume               Resume this checkout’s interrupted deployment
 #   --from PHASE           Rerun a named phase and all later phases
 #   --update               Upgrade an existing deployment (no fresh setup)
+#   --reuse-images-from PROFILE  Copy unchanged release images from this AWS profile (update + release only)
 #   --release VERSION      Install or upgrade a published aws-e/adp GitHub Release tag
 #   --env ENV              Environment (default: dev)
 #   --region REGION        Target AWS region (default: us-east-1, or AWS_REGION env)
 #   --local                Use local Docker builds instead of CodeBuild
 #   --skip-agents          Deploy gateway only, skip webhook agent stack
+#   --agent-factory-only   Upgrade factory + webhook stack (requires --update)
 #   --dry-run              Show what would be done without executing
 #   --anthropic-use-case FILE  Organization first-use JSON, used only when needed
 #
@@ -50,9 +52,11 @@ ENVIRONMENT="${ENVIRONMENT:-dev}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 LOCAL_MODE=false
 SKIP_AGENTS=false
+AGENT_FACTORY_ONLY=false
 DRY_RUN=false
 UPDATE_MODE=false
 RELEASE=""
+REUSE_IMAGES_FROM=""
 EXTRA_ARGS=()
 RESUME=false
 CONFIRM_DESTRUCTIVE=false
@@ -78,6 +82,9 @@ while [[ $# -gt 0 ]]; do
       [ "$#" -ge 2 ] && [[ "$2" != -* ]] || { echo "--from requires a phase" >&2; exit 2; }
       RESUME=true; EXTRA_ARGS+=("$1" "$2"); shift 2 ;;
     --update)        UPDATE_MODE=true; shift ;;
+    --reuse-images-from)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] || { echo "--reuse-images-from requires a profile" >&2; exit 2; }
+      REUSE_IMAGES_FROM="$2"; EXTRA_ARGS+=("$1" "$2"); shift 2 ;;
     --release)
       [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] || { echo "--release requires a release tag" >&2; exit 2; }
       RELEASE="$2"; shift 2 ;;
@@ -85,6 +92,17 @@ while [[ $# -gt 0 ]]; do
     --region)        AWS_REGION="$2"; shift 2 ;;
     --local)         LOCAL_MODE=true; shift ;;
     --skip-agents)   SKIP_AGENTS=true; shift ;;
+    --agent-factory-only) AGENT_FACTORY_ONLY=true; EXTRA_ARGS+=("$1"); shift ;;
+    # Chat rollout mode (#7899): retire (default) | delegated | keep-legacy;
+    # delegated requires the qualification/exception record reference.
+    --chat|--chat-exception)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] || { echo "$1 requires a value" >&2; exit 2; }
+      EXTRA_ARGS+=("$1" "$2"); shift 2 ;;
+    # Dev Box (#7998): optional module; on|off, or --dev-box-only for an existing environment.
+    --dev-box)
+      [ "$#" -ge 2 ] && [[ "$2" =~ ^(on|off)$ ]] || { echo "--dev-box requires on or off" >&2; exit 2; }
+      EXTRA_ARGS+=("$1" "$2"); shift 2 ;;
+    --dev-box-only)  EXTRA_ARGS+=("$1"); shift ;;
     --dry-run)       DRY_RUN=true; shift ;;
     --anthropic-use-case)
       [ "$#" -ge 2 ] || { echo "--anthropic-use-case requires a JSON file" >&2; exit 2; }
@@ -95,6 +113,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [ -n "$REUSE_IMAGES_FROM" ] && { [ "$UPDATE_MODE" = false ] || [ -z "$RELEASE" ]; }; then
+  echo "--reuse-images-from requires --update --release" >&2; exit 2
+fi
+if [ "$AGENT_FACTORY_ONLY" = true ] && { [ "$UPDATE_MODE" = false ] || [ "$SKIP_AGENTS" = true ]; }; then
+  echo "--agent-factory-only requires --update and cannot combine with --skip-agents" >&2; exit 2
+fi
 if [ -n "${ADP_WORKER_MIGRATION_EVIDENCE:-}" ] && { [ "$UPDATE_MODE" = false ] || [ "$SKIP_AGENTS" = true ]; }; then
   echo "--migrate-workers requires a full --update" >&2; exit 2
 fi
@@ -121,6 +145,15 @@ if [ "$UPDATE_MODE" = true ] || [ -n "$RELEASE" ] || [ "$RESUME" = true ]; then
       export ADP_BEDROCK_USE_CASE_FILE
     fi
     exec python3 "$PLATFORM_SCRIPTS/upgrade-github-release.py" --release "$RELEASE" "${UPDATE_ARGS[@]}"
+  fi
+  if [ "$RESUME" = true ]; then
+    # Published release launches set these internally. Restore only the fixed
+    # build modes from a verified receipt; checkpoints still validate all inputs.
+    RESUME_CONTEXT=$(python3 "$PLATFORM_SCRIPTS/release-resume-context.py" \
+      --root "$ROOT_DIR" --env "$ENVIRONMENT" --region "$AWS_REGION" --update "$UPDATE_MODE") || exit 2
+    if [ "$RESUME_CONTEXT" = github-release ]; then
+      export ADP_RELEASE_BUILD=true ADP_PORTABLE_RELEASE_CONFIG=true
+    fi
   fi
   if [ "$DRY_RUN" = true ]; then
     printf 'Would run:'; printf ' %q' bash "$PLATFORM_SCRIPTS/deploy-all.sh" "${UPDATE_ARGS[@]}"; printf '\n'
@@ -233,17 +266,8 @@ else
   echo "[dry-run] Would rewrite environments/**/*.tfvars with region=$AWS_REGION account=$ACCOUNT_ID"
 fi
 
-# Create the IAM placeholder role terraform expects (adp-dev-agent-runner-role)
-if ! aws iam get-role --role-name "adp-${ENVIRONMENT}-agent-runner-role" >/dev/null 2>&1; then
-  if [ "$DRY_RUN" = false ]; then
-    aws iam create-role --role-name "adp-${ENVIRONMENT}-agent-runner-role" \
-      --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"codebuild.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
-      --description "ADP CI runner role placeholder" >/dev/null 2>&1
-    ok "Created placeholder IAM role: adp-${ENVIRONMENT}-agent-runner-role"
-  fi
-else
-  ok "IAM role adp-${ENVIRONMENT}-agent-runner-role already exists"
-fi
+# No adp-<env>-agent-runner-role placeholder is created here: agent-factory's
+# runner-iam owns that name, and the platform phase tolerates its absence (#2563).
 
 # =============================================================================
 # Deploy all requested components through the checkpointed orchestrator.
@@ -296,16 +320,8 @@ step "Deployment Complete"
 echo "Platform URL: https://${CF:-<pending>}/"
 echo ""
 
-# Print credentials
-CREDS=$(aws secretsmanager get-secret-value --secret-id "adp/${ENVIRONMENT}/gateway/test-admin-credentials" \
-  --query SecretString --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-if [ -n "$CREDS" ]; then
-  ADMIN_EMAIL=$(echo "$CREDS" | python3 -c "import sys,json;print(json.load(sys.stdin).get('username',''))" 2>/dev/null)
-  ADMIN_PASS=$(echo "$CREDS" | python3 -c "import sys,json;print(json.load(sys.stdin).get('password',''))" 2>/dev/null)
-  echo "Login credentials:"
-  echo "  Email:    $ADMIN_EMAIL"
-  echo "  Password: $ADMIN_PASS"
-fi
+echo "Sign in with your selected bootstrap administrator and complete the Cognito invitation password change."
+echo "Bootstrap guidance: docs/adp-platform-deployment/bootstrap-administrator.md"
 
 if [ "$SKIP_AGENTS" = false ]; then
   echo ""

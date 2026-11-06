@@ -11,7 +11,7 @@ Epic (type: epic)
               └── PR → merge
 ```
 
-GitHub does not have native Epic/Story/Task types. We model them using **labels**, **Tasklists** (for parent-child linking), and **Projects** (for board views and custom fields).
+Use the repository’s configured issue types or labels for classification, **native sub-issue relationships** for hierarchy, and Projects for views. Body tables/tasklists supplement native relationships. The [issue-authoring contract](issue-authoring.md#requirements-lineage-contract-epics-and-stories) governs stable IDs, deterministic verification and acceptance; title prefixes are aliases, not source identities.
 
 ---
 
@@ -143,7 +143,7 @@ bd ready --json
 
 1. **ALWAYS identify dependencies** before creating units
 2. **Set blocked_by field** on project board for blocked items
-3. **Create Beads dependencies** with `bd dep add`
+3. **Preserve source links in any existing local dependency mirror**; GitHub remains authoritative for the issue contract.
 4. **Add status: blocked label** if item cannot start
 5. **Document in issue body** with specific blocker details
 6. **Never create circular dependencies** — if detected, flag to human
@@ -152,46 +152,21 @@ bd ready --json
 
 ## 3. Creating Epics
 
-An Epic is a GitHub Issue with the `type: epic` label that contains a Tasklist of child stories.
+An epic is a GitHub issue classified by the configured type/label, with native child-story relationships and a readable child index.
 
 ### Epic Template
 
-```markdown
-## Epic {N}: {Epic Title}
-
-### Description
-{1-3 sentence summary of the feature or initiative}
-
-### Goals
-- {Goal 1}
-- {Goal 2}
-
-### Acceptance Criteria
-- [ ] {High-level criterion 1}
-- [ ] {High-level criterion 2}
-
-### Scope
-**In scope:** {what's included}
-**Out of scope:** {what's excluded}
-
-```[tasklist]
-### Stories
-- [ ] #{story_issue_number} {Story title}
-- [ ] #{story_issue_number} {Story title}
-```
-
-### Dependencies
-- **Blocked by**: (none or list blockers)
-- **Blocks**: (list what this epic enables)
-```
+Use [epic-issue.md](../templates/epic-issue.md). It keeps one stable EC table,
+qualified child-story/AC references and explicit cross-story integration proof.
+The GitHub Engineering epic template exposes the same body for human authors.
 
 ### Agent Rules for Epics
 
 1. Create the epic issue FIRST, before creating child stories.
 2. Apply labels: `type: epic`, `phase: inception`, relevant `area:` labels.
-3. After creating child stories, EDIT the epic body to add story issue numbers to the Tasklist.
-4. Epic titles: `Epic {N}: {Title}` (e.g., `Epic 1: MCP Gateway Deployment`).
-5. Create Beads epic: `bd create "Epic N: Title" -t epic -p 1 --json`
+3. Establish native child-story relationships and update the readable child index with full issue URLs and EC mappings.
+4. Give the epic an outcome-oriented title; an `Epic N` prefix is an optional display alias, not its identity.
+5. GitHub remains authoritative for this authoring contract. If an existing local tracker mirror is used, preserve the provider link; do not create an independent acceptance source.
 
 ---
 
@@ -209,12 +184,12 @@ Use native sub-issue links for children; text/tasklists supplement the hierarchy
 ### Agent Rules for Stories
 
 1. Every story states who benefits, the desired outcome and why, using the canonical template.
-2. Every story MUST have at least 2 testable acceptance criteria.
+2. Every story has enough independently testable ACs for its bounded outcome, including relevant negative/boundary behavior; do not add meaningless rows to meet a count.
 3. Apply labels: `type: story`, `phase: inception`, `priority:` label.
-4. Story IDs: `US-{Epic}.{Story}` (e.g., `US-1.2`).
+4. The provider supplies stable issue identity. `US-{Epic}.{Story}` may be a display alias; AC/scenario IDs remain stable when the parent or title changes.
 5. Reference the parent epic issue number in the body.
 6. After creating child units, EDIT the story body to add unit issue numbers to the Tasklist.
-7. Create Beads task: `bd create "US-X.Y: Title" -p 2 --json` then link to epic.
+7. Keep any existing local mirror linked to the GitHub issue; do not treat a mirror status as acceptance evidence.
 
 ---
 

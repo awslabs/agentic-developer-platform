@@ -158,6 +158,34 @@ it('control requests use caller cancellation without a ten-second subdeadline', 
   } finally { timeout.mockRestore(); }
 });
 
+it.each([
+  'https://attacker.example/internal/v1/agent',
+  'https://api123.execute-api.us-east-1.amazonaws.com.attacker.example/dev/internal/v1/agent',
+  'http://api123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent',
+  'https://user@api123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent',
+  'https://api123.execute-api.us-east-1.amazonaws.com:444/dev/internal/v1/agent',
+  'https://api123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent?next=evil',
+  'https://api123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent#evil',
+  'https://169.254.169.254/dev/internal/v1/agent',
+])('refuses an untrusted operation destination before acquiring credentials: %s', async endpoint => {
+  process.env.ADP_AGENT_CONTROL_ENDPOINT = endpoint;
+  await expect(codexPersonaOperation({ operation_id: 'fixture', request_digest: 'a'.repeat(64),
+    action: 'claim', kind: 'model' }, new AbortController().signal)).rejects.toThrow(CodexPersonaAdmissionRefused);
+  expect(workerAwsCredentialProvider).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it('keeps caller operation fields in the body and refuses HTTP redirects', async () => {
+  global.fetch = jest.fn(async () => new Response(JSON.stringify({ status: 'admitted' })));
+  const body = { operation_id: 'https://attacker.example/operation', request_digest: 'a'.repeat(64),
+    action: 'claim' as const, kind: 'model' as const };
+  await codexPersonaOperation(body, new AbortController().signal);
+  const [url, options] = (fetch as jest.Mock).mock.calls[0];
+  expect(String(url)).toBe('https://api123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent/codex-persona-operation');
+  expect(options.redirect).toBe('error');
+  expect(JSON.parse(options.body)).toEqual(body);
+});
+
 it('uncertain operation transport is never replayed automatically', async () => {
   global.fetch = jest.fn(async () => { throw new Error('transport unavailable'); });
   await expect(codexPersonaOperation({ operation_id: 'fixture', request_digest: 'a'.repeat(64), action: 'claim', kind: 'model' }, new AbortController().signal)).rejects.toThrow();

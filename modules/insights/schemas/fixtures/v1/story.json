@@ -1,0 +1,14 @@
+{
+  "tenant_id": "tenant-example",
+  "project_id": "project-example",
+  "source_connection_id": "github-example",
+  "source_system": "github",
+  "source_event_id": "7061/closed",
+  "event_time": "2026-10-06T01:35:19Z",
+  "ingested_at": "2026-10-06T01:35:20Z",
+  "schema_version": "1.0",
+  "story_id": "7061",
+  "title": "Preserve explicit PR reviewer handoff scope through standalone review",
+  "status": "done",
+  "type": "feature"
+}

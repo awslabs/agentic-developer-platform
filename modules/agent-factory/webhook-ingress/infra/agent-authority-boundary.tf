@@ -151,6 +151,12 @@ locals {
         Resource = "*"
       },
       {
+        Sid      = "DenyDirectAgentCoreTools"
+        Effect   = "Deny"
+        Action   = ["bedrock-agentcore:*"]
+        Resource = "*"
+      },
+      {
         # Blocks IAM/boundary changes, STS role chaining/federation, EKS access
         # entries, compute/job mutation, webhook invocation, SSM and state reads.
         Sid       = "DenyUnlistedActions"

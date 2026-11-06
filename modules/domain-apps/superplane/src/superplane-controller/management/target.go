@@ -91,7 +91,7 @@ func (m *Manager) inspectTarget(ctx context.Context, target Target) string {
 	rules, err := client.AuthorizationV1().SelfSubjectRulesReviews().Create(ctx, &authorizationv1.SelfSubjectRulesReview{
 		Spec: authorizationv1.SelfSubjectRulesReviewSpec{Namespace: target.Namespace},
 	}, metav1.CreateOptions{})
-	if err != nil || !scopedReaderRules(rules.Status, target.SharedMembership) {
+	if err != nil || rules == nil || !dedicatedReaderRules(ctx, client, target, rules.Status) {
 		return "credential_not_read_only"
 	}
 	resources, err := dynamic.NewForConfig(config)
@@ -118,7 +118,11 @@ func (m *Manager) inspectTarget(ctx context.Context, target Target) string {
 	if target.Provisional {
 		return "observed_execution_unavailable"
 	}
-	if m.config.EnableExecution {
+	// Health reporting uses its own scoped credential. Native lifecycle workers
+	// execute outside this manager and do not configure its execution socket.
+	// Keep the provisional return above: bootstrap discovery must never publish
+	// a heartbeat for a workspace that has not completed registration.
+	if m.config.EnableExecution || m.config.ObservationCredentialsDir != "" {
 		if m.config.ObservationCredentialsDir == "" {
 			return "observation_credential_unavailable"
 		}

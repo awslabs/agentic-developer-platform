@@ -10,7 +10,7 @@ These tests verify:
 
 import os
 import ssl
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -690,3 +690,161 @@ class TestRdsTlsVerification:
                     with patch("src.shared.database.logger") as mock_logger:
                         get_engine()
                         mock_logger.warning.assert_called_once_with("RDS TLS verification disabled (BG_RDS_TLS_VERIFY=false). MITM risk!")
+
+
+def test_split_pool_settings_reject_oversize_or_unbounded_modes():
+    from pydantic import ValidationError
+
+    from src.shared.config import Settings
+
+    assert Settings(_env_file=None).rds_split_pool_enabled is False
+    for overrides in (
+        {"rds_split_pool_enabled": True},
+        {"rds_pool_enabled": True, "rds_split_pool_enabled": True, "rds_request_pool_size": 7},
+        {"rds_pool_enabled": True, "rds_split_pool_enabled": True, "rds_accounting_pool_size": 5},
+        {"rds_pool_enabled": True, "rds_split_pool_enabled": True, "rds_lock_timeout_ms": 8000},
+        {"rds_pool_enabled": True, "rds_split_pool_enabled": True, "rds_statement_timeout_ms": 1000},
+    ):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **overrides)
+
+
+@pytest.mark.parametrize("iam_auth", [False, True])
+async def test_split_factories_share_no_connections_and_preserve_auth(monkeypatch, iam_auth):
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from src.shared import database
+    from src.shared.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql+asyncpg://test:test@localhost/test",
+        rds_pool_enabled=True,
+        rds_split_pool_enabled=True,
+        rds_iam_auth=iam_auth,
+        rds_host="db.invalid" if iam_auth else "",
+    )
+    monkeypatch.setattr(database, "get_settings", lambda: settings)
+    monkeypatch.setattr(database, "get_database_url", lambda: settings.database_url)
+    database.reset_engine()
+    with (
+        patch.object(database.ssl, "create_default_context", return_value=MagicMock()) as create_ssl,
+        patch.object(database, "get_rds_auth_token", side_effect=["token-a", "token-b"]) as token,
+        patch.object(database, "create_async_engine", wraps=create_async_engine) as create,
+    ):
+        try:
+            request_factory = database.get_session_factory()
+            accounting_factory = database.get_accounting_session_factory()
+            assert request_factory is not accounting_factory
+            assert request_factory.kw["bind"] is database.get_engine()
+            assert accounting_factory.kw["bind"] is database.get_accounting_engine()
+            assert request_factory.kw["bind"] is not accounting_factory.kw["bind"]
+            assert create.call_count == 2
+            request_options, accounting_options = (call.kwargs for call in create.call_args_list)
+            assert request_options["pool_size"] == 6
+            assert accounting_options["pool_size"] == 4
+            for options in (request_options, accounting_options):
+                assert options["pool_pre_ping"] is True
+                assert options["max_overflow"] == 0
+                assert options["pool_timeout"] == settings.rds_pool_timeout_seconds
+                assert options["pool_recycle"] == settings.rds_pool_recycle_seconds
+                assert options["connect_args"]["timeout"] == settings.rds_connect_timeout_seconds
+                if iam_auth:
+                    assert options["connect_args"]["password"]() in {"token-a", "token-b"}
+                    assert "ssl" in options["connect_args"]
+                else:
+                    assert "password" not in options["connect_args"]
+            assert create_ssl.call_count == (1 if iam_auth else 0) * 2
+            assert token.call_count == (2 if iam_auth else 0)
+        finally:
+            await database.get_engine().dispose()
+            await database.get_accounting_engine().dispose()
+            database.reset_engine()
+
+
+@pytest.mark.parametrize("database_url", ["sqlite+aiosqlite:///:memory:", "postgresql+asyncpg://test:test@localhost/test"])
+async def test_default_off_keeps_combined_factory_and_engine(monkeypatch, database_url):
+    from src.shared import database
+    from src.shared.config import Settings
+
+    settings = Settings(_env_file=None, database_url=database_url, rds_pool_enabled=True)
+    monkeypatch.setattr(database, "get_settings", lambda: settings)
+    database.reset_engine()
+    try:
+        assert database.get_accounting_engine() is database.get_engine()
+        assert database.get_accounting_session_factory() is database.get_session_factory()
+    finally:
+        await database.get_engine().dispose()
+        database.reset_engine()
+
+
+async def test_cancelled_request_invalidates_only_unusable_connection(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from src.shared import database
+
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    session.rollback.side_effect = OSError("connection unusable")
+    monkeypatch.setattr(database, "get_session_factory", lambda: lambda: session)
+    dependency = database.get_db()
+    assert await anext(dependency) is session
+    with pytest.raises(asyncio.CancelledError):
+        await dependency.athrow(asyncio.CancelledError())
+    session.rollback.assert_awaited_once()
+    session.invalidate.assert_awaited_once()
+
+
+async def test_sqlite_split_setting_keeps_single_static_pool(monkeypatch):
+    from sqlalchemy.pool import StaticPool
+
+    from src.shared import database
+    from src.shared.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        database_url="sqlite+aiosqlite:///:memory:",
+        rds_pool_enabled=True,
+        rds_split_pool_enabled=True,
+    )
+    monkeypatch.setattr(database, "get_settings", lambda: settings)
+    database.reset_engine()
+    try:
+        assert isinstance(database.get_engine().pool, StaticPool)
+        assert database.get_accounting_engine() is database.get_engine()
+        assert database.get_accounting_session_factory() is database.get_session_factory()
+    finally:
+        await database.get_engine().dispose()
+        database.reset_engine()
+
+
+async def test_post_provider_unbounded_marker_uses_accounting_factory(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from src.budget import enforcement_service
+    from src.shared.config import Settings
+    from src.shared.schemas.auth import TokenContext
+
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    session.__aexit__.return_value = False
+    session.get.return_value = None
+    accounting_factory = MagicMock(return_value=session)
+    accounting = MagicMock(return_value=accounting_factory)
+    request_factory = MagicMock(side_effect=AssertionError("request pool used for post-provider marker"))
+    settings = Settings(_env_file=None, database_url="sqlite+aiosqlite:///:memory:", rds_pool_enabled=True)
+    monkeypatch.setattr("src.shared.config.get_settings", lambda: settings)
+    monkeypatch.setattr(enforcement_service, "get_accounting_session_factory", accounting)
+    monkeypatch.setattr(enforcement_service, "get_session_factory", request_factory)
+    context = TokenContext(
+        user_id="caller", org_id="tenant", team_id="", department_id="", account_type="human", expires_at=datetime.now(UTC) + timedelta(hours=1)
+    )
+    context._budget_enforcement_enabled = False
+
+    await enforcement_service.BudgetEnforcementService().reconcile_reservation(context, "request-1", "model", 0, 0, usage_known=False)
+
+    accounting.assert_called_once_with()
+    request_factory.assert_not_called()
+    session.add.assert_called_once()
+    session.commit.assert_awaited_once()

@@ -19,7 +19,7 @@ from src.auth import dependencies
 from src.auth.cognito_jwt import CognitoTokenClaims
 from src.shared.database import get_db
 from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import User
+from src.shared.models.organization import Organization, User
 from tests.agentauth import test_chat_delivery as delivery_fixtures
 from tests.agentauth.test_chat_model_execution import REQUEST, reserved_amount
 
@@ -121,6 +121,17 @@ async def test_http_authentication_context_reaches_owner_authorization(owner, db
     response = await owner.client.post(PATH, json=BODY, headers={"Authorization": "Bearer synthetic-browser-login"})
     assert response.status_code == 202
     validator.validate_token.assert_called_once_with("synthetic-browser-login")
+
+
+async def test_tenant_member_whose_own_org_differs_can_cancel(owner, model, db_session_factory):
+    """The workspace claim is a tenant the GitHub-login human holds through membership,
+    not through their own users.org_id (personal org on dev)."""
+    async with db_session_factory() as db:
+        db.add(Organization(id="personal", name="Personal"))
+        await db.execute(update(User).where(User.id == "human").values(org_id="personal"))
+        await db.commit()
+    assert (await owner.client.post(PATH, json=BODY)).status_code == 202
+    assert model.runtime[1].store.authority.abort_intent(invocation_id="run-user", tenant_id="tenant") is not None
 
 
 async def test_revoked_member_cannot_cancel(owner, model, db_session_factory):

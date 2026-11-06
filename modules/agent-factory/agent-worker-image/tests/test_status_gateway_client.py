@@ -681,3 +681,43 @@ def test_reviewer_transport_distinguishes_temporary_failures(enabled, http, monk
     with pytest.raises(StatusGatewayError) as caught:
         status_gateway_client._post("/review-checks", {"head_sha": "a" * 40})
     assert caught.value.retryable is retryable
+
+
+@pytest.mark.parametrize("status,reason,retryable", [
+    (409, "spend_unknown", True), (409, "budget_unavailable", True),
+    (503, "review_checks_unavailable", True), (403, "spend_unknown", False),
+    (409, "grant_revoked", False), (409, "policy_expired", False),
+    (409, "review_checks_head_changed", False), (409, "work_not_owned", False),
+    (409, "spend_limit_exceeded", False),
+])
+def test_review_refusal_retains_safe_code_and_requires_fresh_authorization(enabled, http, monkeypatch, status, reason, retryable):
+    original = FakeResponse.__init__
+    def response_init(self, **kwargs):
+        original(self, status_code=status, body={"detail": reason})
+    monkeypatch.setattr(FakeResponse, "__init__", response_init)
+    with pytest.raises(StatusGatewayError) as caught:
+        status_gateway_client._post("/review-checks", {"head_sha": "a" * 40})
+    assert caught.value.code == reason
+    assert caught.value.retryable is retryable
+    calls, _ = http
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/review-checks", {"detail": CREDENTIAL}),
+    ("/review-checks", {"detail": "unknown_internal_reason"}),
+    ("/review-checks", {"detail": {"secret": CREDENTIAL}}),
+    ("/review-checks", {"detail": "spend_unknown", "extra": "x" * 4096}),
+    ("/status", {"detail": "spend_unknown"}),
+])
+def test_refusal_does_not_expose_bodies_or_change_other_operations(enabled, http, monkeypatch, path, body):
+    original = FakeResponse.__init__
+    def response_init(self, **kwargs):
+        original(self, status_code=409, body=body)
+    monkeypatch.setattr(FakeResponse, "__init__", response_init)
+    with pytest.raises(StatusGatewayError) as caught:
+        status_gateway_client._post(path, {})
+    assert caught.value.code == "agent_authority_http_409"
+    assert caught.value.retryable is False
+    assert CREDENTIAL not in str(caught.value)
+    assert "spend_unknown" not in str(caught.value)

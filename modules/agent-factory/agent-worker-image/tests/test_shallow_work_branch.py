@@ -297,6 +297,7 @@ def bootstrap(monkeypatch, tmp_path, request):
         return subprocess.CompletedProcess(args, 0, "123\n", "")
 
     monkeypatch.setattr(entrypoint.subprocess, "run", execute)
+    monkeypatch.setattr("lib.branch_reconciliation.reconcile_git_branch", lambda *_: {"status": "up_to_date"})
     monkeypatch.setattr("lib.agent_process.run_agent", execute)
     return logger, status, commands
 

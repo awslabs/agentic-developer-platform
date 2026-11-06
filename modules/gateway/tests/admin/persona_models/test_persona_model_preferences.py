@@ -95,7 +95,6 @@ behaviour:
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -125,12 +124,8 @@ from src.shared.models.persona_models import (
 from src.shared.models.usage import UsageLog
 from src.shared.schemas.auth import TokenContext
 
-os.environ["TESTING"] = "1"
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
-os.environ["AWS_REGION"] = "us-east-1"
-os.environ["JWT_SECRET_KEY"] = "test-secret-key"
-os.environ["BG_TOKEN_SECRET_KEY"] = "test-secret-key"
-os.environ["REDIS_URL"] = ""
+# Shared test environment comes from tests/conftest.py. Importing this module
+# must not change the signing key used by other tests collected in the shard.
 
 TEST_ORG_A = "org-a"
 TEST_ORG_B = "org-b"
@@ -146,10 +141,9 @@ TEST_ADMIN_USER_ID = "user-admin-001"
 
 
 @pytest.fixture
-async def engine():
+async def engine(sqlite_schemas):
     e = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    async with e.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    await sqlite_schemas.create_all(e, Base.metadata)
     yield e
     await e.dispose()
 

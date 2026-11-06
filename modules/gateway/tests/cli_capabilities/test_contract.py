@@ -297,6 +297,16 @@ def test_known_gateway_release_is_reported_with_its_source(clean_flags, monkeypa
     )
 
 
+def test_product_rollback_keeps_cli_reads_but_fences_writes(clean_flags, monkeypatch):
+    monkeypatch.setenv("BG_PRODUCT_PROFILE_ENABLED", "false")
+    client = build_client(token_context(), FakeAccessControl())
+    found = operations(client.get("/me/cli-capabilities").json())
+    for operation in ("product.list", "product.show"):
+        assert found[operation]["enabled"] == contract.YES
+    for operation in ("product.create", "product.update", "product.lifecycle"):
+        assert found[operation]["enabled"] == contract.NO
+
+
 def test_response_states_its_schema_version_and_tenant(clean_flags):
     client = build_client(token_context(), FakeAccessControl())
     payload = client.get("/me/cli-capabilities").json()

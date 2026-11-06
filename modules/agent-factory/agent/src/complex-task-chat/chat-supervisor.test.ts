@@ -4,7 +4,7 @@ import { canonicalJson } from '../invocability-probe/canonical-json';
 import type { fromTokenFile } from '@aws-sdk/credential-provider-web-identity';
 import { createSupervisorQueue, runOneSupervisorDispatch } from './chat-supervisor';
 import { buildSandboxPod, sandboxCreationName } from './sandbox-pod';
-import { gatewayBinding } from './sandbox-gateway.fixture';
+import { gatewayBinding, runningSandboxPod } from './sandbox-gateway.fixture';
 import type { SandboxPodApi } from './sandbox-launcher';
 
 const settings = {
@@ -39,6 +39,7 @@ const send = jest.fn(async (url: string | URL | Request, _init?: RequestInit) =>
 
 function podApi(): SandboxPodApi {
   return { resolveGateway: jest.fn(async () => gatewayBinding),
+  inspect: jest.fn(async (name: string, uid: string) => runningSandboxPod(name, uid)),
     create: jest.fn(async () => ({ metadata: { ...template.metadata, ...pod }, spec: template.spec })),
     remove: jest.fn(async () => {}) };
 }
@@ -74,6 +75,9 @@ test.each([
   { queueUrl: 'https://sqs.us-east-1.amazonaws.com/000000000000/chat-tasks.fifo?x=1' },
   { image: 'registry.example.test/chat:latest' },
   { gatewayUrl: 'http://gateway.example.test' },
+  { gatewayUrl: 'https://abc123def4.execute-api.us-east-1.amazonaws.com/dev/agent' },
+  { gatewayUrl: 'https://abc123def4.execute-api.eu-west-1.amazonaws.com/dev' },
+  { gatewayUrl: 'https://gateway.example.test/dev' },
 ])('refuses unsafe queue, identity or pod configuration before reading: %j', async override => {
   const queue = { receive: jest.fn(async () => []), acknowledge: jest.fn() };
   await expect(runOneSupervisorDispatch({ ...settings, ...override }, queue, podApi(), send, load)).rejects.toThrow();
@@ -83,6 +87,13 @@ test.each([
 test('returns idle without creating a pod if there is no delivery', async () => {
   const api = podApi();
   await expect(runOneSupervisorDispatch(settings, { receive: async () => [], acknowledge: jest.fn() }, api, send, load)).resolves.toBe('idle');
+  expect(api.create).not.toHaveBeenCalled();
+});
+
+test('accepts the API Gateway stage URL in its own region as the gateway target', async () => {
+  const staged = { ...settings, gatewayUrl: 'https://abc123def4.execute-api.us-east-1.amazonaws.com/dev' };
+  const api = podApi();
+  await expect(runOneSupervisorDispatch(staged, { receive: async () => [], acknowledge: jest.fn() }, api, send, load)).resolves.toBe('idle');
   expect(api.create).not.toHaveBeenCalled();
 });
 
@@ -100,8 +111,23 @@ test('recovers a durable wake-up through the original protected digest without r
   expect(queue.acknowledge).toHaveBeenCalledWith('recovered');
 });
 
+test('a durable wake-up may name the session executor the gateway stored (#8115)', async () => {
+  const digest = createHash('sha256').update(body).digest('hex');
+  const notice = JSON.stringify({ ...JSON.parse(body), notification_version: 1, session_mode: 'persistent', envelope_digest: digest, executor: 'claude-code' });
+  const api = podApi();
+  const queue = { receive: async () => [{ Body: notice, ReceiptHandle: 'recovered' }], acknowledge: jest.fn() };
+  send.mockResolvedValueOnce(new Response(JSON.stringify({ ...unstarted, state: 'admitted', session_mode: 'persistent',
+    session_run_id: 'run-a', pod_name: pod.name, sandbox_uid: pod.uid, attempt: 1, lease_generation: 1,
+    image_digest: settings.image.split('@')[1] })));
+  await expect(runOneSupervisorDispatch(settings, queue, api, send, load)).resolves.toBe('completed');
+  expect(JSON.parse(send.mock.calls[0][1]!.body as string)).toEqual({ run_id: 'run-a', envelope_digest: digest });
+  expect(api.create).not.toHaveBeenCalled();
+  expect(queue.acknowledge).toHaveBeenCalledWith('recovered');
+});
+
 test.each([
   { notification_version: 2 }, { envelope_digest: 'invalid' }, { session_mode: 'ephemeral' }, { message: 'untrusted input' },
+  { executor: 'bogus' }, { executor: 'claude-code', session_mode: 'ephemeral' },
 ])('rejects malformed durable notification before contacting the gateway: %j', async change => {
   const notice = JSON.stringify({ ...JSON.parse(body), notification_version: 1, session_mode: 'persistent', envelope_digest: 'a'.repeat(64), ...change });
   const api = podApi();
@@ -155,9 +181,52 @@ test('acknowledges only after matching completion follows exit, UID removal and 
   }
 });
 
+test('admits the sandbox only after the created pod is Running, and tolerates one gateway 404 before it sees the pod', async () => {
+  const api = podApi();
+  let reads = 0;
+  (api.inspect as jest.Mock).mockImplementation(async (name: string, uid: string) => ++reads < 3
+    ? { metadata: { name, uid }, status: { phase: 'Pending', containerStatuses: [{ name: 'chat-agent', state: { waiting: {} } }] } }
+    : runningSandboxPod(name, uid));
+  const original = send.getMockImplementation()!;
+  let admits = 0;
+  send.mockImplementation(async (url, init) => String(url).endsWith('/admit') && ++admits === 1
+    ? new Response('{}', { status: 404 }) : original(url, init));
+  let elapsed = 0;
+  const timing = { now: () => elapsed, sleep: jest.fn(async (ms: number) => { elapsed += ms; }) };
+  const queue = { receive: async () => [{ Body: body, ReceiptHandle: 'receipt' }], acknowledge: jest.fn() };
+  try {
+    await expect(runOneSupervisorDispatch(settings, queue, api, send, load, timing)).resolves.toBe('completed');
+  } finally { send.mockImplementation(original); }
+  const operations = send.mock.calls.map(call => String(call[0]).split('/').pop());
+  expect(operations).toEqual(['resume', 'reserve', 'admit', 'admit', 'exit', 'teardown', 'finalize', 'complete']);
+  const firstAdmit = send.mock.invocationCallOrder[2];
+  expect((api.inspect as jest.Mock).mock.invocationCallOrder).toHaveLength(3);
+  expect((api.inspect as jest.Mock).mock.invocationCallOrder.every(order => order < firstAdmit)).toBe(true);
+  expect((api.create as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan((api.inspect as jest.Mock).mock.invocationCallOrder[0]);
+  expect(timing.sleep.mock.calls).toEqual([[500], [500], [1000]]);
+  expect(queue.acknowledge).toHaveBeenCalledWith('receipt');
+});
+
+test('fails the turn, deletes the pod and leaves delivery pending when the sandbox never starts', async () => {
+  const api = podApi();
+  (api.inspect as jest.Mock).mockResolvedValue({ metadata: { ...pod }, status: { phase: 'Pending' } });
+  let elapsed = 0;
+  const timing = { now: () => elapsed, sleep: jest.fn(async (ms: number) => { elapsed += ms; }) };
+  const queue = { receive: async () => [{ Body: body, ReceiptHandle: 'receipt' }], acknowledge: jest.fn() };
+  await expect(runOneSupervisorDispatch(settings, queue, api, send, load, timing)).rejects.toThrow('Chat sandbox did not start');
+  // After deleting the pod the supervisor resumes once more naming it (#8061); this gateway has no
+  // cleanup to offer, so the original failure stands and the delivery stays pending.
+  expect(send.mock.calls.map(call => String(call[0]).split('/').pop())).toEqual(['resume', 'reserve', 'resume']);
+  expect(JSON.parse(String((send.mock.calls[2][1] as RequestInit).body))).toMatchObject({ run_id: 'run-a', pod_name: pod.name, pod_uid: pod.uid });
+  expect(elapsed).toBe(60_000);
+  expect(api.remove).toHaveBeenCalledWith(pod.name, pod.uid);
+  expect(queue.acknowledge).not.toHaveBeenCalled();
+});
+
 test('creates a session-bound persistent pod only from the gateway reservation', async () => {
   const api: SandboxPodApi = {
     resolveGateway: jest.fn(async () => gatewayBinding),
+    inspect: jest.fn(async (name: string, uid: string) => runningSandboxPod(name, uid)),
     create: jest.fn(async created => ({ metadata: { ...created.metadata, ...pod }, spec: created.spec })),
     remove: jest.fn(async () => {}),
   };
@@ -166,7 +235,8 @@ test('creates a session-bound persistent pod only from the gateway reservation',
   const queue = { receive: async () => [{ Body: body, ReceiptHandle: 'receipt' }], acknowledge: jest.fn() };
   await runOneSupervisorDispatch(settings, queue, api, send, load);
   const created = (api.create as jest.Mock).mock.calls[0][0];
-  expect(created.metadata.labels['adp.io/session-hash']).toMatch(/^[a-f0-9]{64}$/);
+  expect(created.metadata.annotations['adp.io/session-hash']).toMatch(/^[a-f0-9]{64}$/);
+  expect(created.metadata.labels).not.toHaveProperty(['adp.io/session-hash']);
   expect(created.spec).not.toHaveProperty('activeDeadlineSeconds');
   expect(api.remove).not.toHaveBeenCalled();
   expect(send.mock.calls.some(([url]) => String(url).endsWith('/session/commit'))).toBe(true);

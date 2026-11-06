@@ -23,6 +23,33 @@ from tests.orchestration.test_controls import (
 session = fixtures.session
 
 
+async def test_recovery_switch_is_audited_idempotent_and_preserves_pause(session, controls):
+    from src.orchestration.recovery_control import automatic_recovery_enabled
+
+    flow = await seed_flow(session)
+    assert await automatic_recovery_enabled(session, org_id=ORG_A, flow_id=flow.id)
+    route = f"/orchestration/flows/{flow.id}/recovery"
+    for enabled in [False, False, True, True]:
+        response = await controls[0].post(route, json={"enabled": enabled})
+        assert response.status_code == 200, response.text
+        assert response.json()["recovery_enabled"] is enabled
+        assert await automatic_recovery_enabled(session, org_id=ORG_A, flow_id=flow.id) is enabled
+    assert flow.execution_paused is True
+    decisions = list(await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.flow_id == flow.id)))
+    assert [row.kind for row in decisions] == ["flow_recovery_disabled", "flow_recovery_enabled"]
+    assert all(row.actor_kind == "human" and row.actor_id == "human-1" for row in decisions)
+
+
+async def test_recovery_control_rejects_service_and_foreign_tenant(session, controls):
+    flow = await seed_flow(session)
+    client, context, _, _ = controls
+    context.org_id = "other-tenant"
+    assert (await client.post(f"/orchestration/flows/{flow.id}/recovery", json={"enabled": False})).status_code == 404
+    context.org_id = ORG_A
+    context.account_type = "service"
+    assert (await client.post(f"/orchestration/flows/{flow.id}/recovery", json={"enabled": False})).status_code == 403
+
+
 @pytest.fixture
 async def controls(session, monkeypatch):
     app = FastAPI()

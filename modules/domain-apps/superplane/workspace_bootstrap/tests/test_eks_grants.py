@@ -164,3 +164,74 @@ def test_wrong_target_refuses_before_sdk(clients):
     with pytest.raises(BootstrapRefused, match="different cluster"):
         backend.observe({**SPEC, "cluster_arn": CLUSTER_ARN + "-other"})
     assert not requested
+
+
+def test_cluster_policy_empty_namespaces_can_be_created_and_revoked(clients):
+    from datetime import UTC, datetime
+
+    backend, ordinary, scoped, requested = clients
+    policy = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+    spec = {
+        **SPEC,
+        "kind": "eks-policy",
+        "policy_arn": policy,
+        "scope": {"type": "cluster"},
+    }
+    association = {
+        "policyArn": policy,
+        "accessScope": {"type": "cluster", "namespaces": []},
+        "associatedAt": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+    ordinary.add_response("describe_access_entry", {"accessEntry": ENTRY}, ARGS)
+    ordinary.add_response(
+        "associate_access_policy",
+        {},
+        {**ARGS, "policyArn": policy, "accessScope": {"type": "cluster"}},
+    )
+    for _ in range(2):
+        ordinary.add_response("describe_access_entry", {"accessEntry": ENTRY}, ARGS)
+        ordinary.add_response(
+            "list_associated_access_policies",
+            {"associatedAccessPolicies": [association]},
+            ARGS,
+        )
+    scoped.add_response("disassociate_access_policy", {}, {**ARGS, "policyArn": policy})
+    identity = backend.create(spec)
+    assert identity["scope"] == association["accessScope"]
+    backend.delete(spec, identity)
+    assert requested == [ENTRY_ARN]
+    ordinary.add_response("describe_access_entry", {"accessEntry": ENTRY}, ARGS)
+    ordinary.add_response(
+        "list_associated_access_policies", {"associatedAccessPolicies": []}, ARGS
+    )
+    assert backend.observe(spec) is None
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"type": "cluster", "namespaces": ["foreign"]},
+        {"type": "namespace", "namespaces": []},
+        {"type": "namespace", "namespaces": ["foreign"]},
+        {"type": "cluster", "namespaces": None},
+        {"type": "cluster", "namespaces": [], "unknown": True},
+        None,
+    ],
+)
+def test_cluster_scope_normalization_refuses_different_authority(clients, scope):
+    backend, _, _, requested = clients
+    policy = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+    spec = {
+        **SPEC,
+        "kind": "eks-policy",
+        "policy_arn": policy,
+        "scope": {"type": "cluster"},
+    }
+    identity = {
+        **backend._entry_identity(spec, ENTRY),
+        "policy_arn": policy,
+        "scope": scope,
+    }
+    with pytest.raises(BootstrapRefused, match="different authority"):
+        backend.verify(spec, identity)
+    assert requested == []

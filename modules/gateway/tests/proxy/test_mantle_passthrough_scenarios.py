@@ -91,7 +91,7 @@ def make_service(handler, *, no_log: bool = True) -> MantlePassthroughService:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     svc = MantlePassthroughService(StubAuth(), MANTLE_URL, http_client=client)
     if no_log:
-        svc._log_usage = AsyncMock()  # type: ignore[method-assign]
+        svc._log_usage = AsyncMock(return_value=True)  # type: ignore[method-assign]
     return svc
 
 
@@ -188,8 +188,9 @@ class TestMeteringAccuracy:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None, **kwargs):
             captured.update(usage=dict(usage), model=model, status=status_code, request_id=request_id)
+            return True
 
         svc._log_usage = spy  # type: ignore[method-assign]
         body = b'{"model":"openai.gpt-5.5","input":"x"}'
@@ -211,8 +212,9 @@ class TestMeteringAccuracy:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None, **kwargs):
             captured.update(usage=dict(usage), status=status_code)
+            return True
 
         svc._log_usage = spy  # type: ignore[method-assign]
         result = await svc.create_response(b"{}", token_context, stream=False, model="openai.gpt-5.5")
@@ -238,7 +240,8 @@ class TestMeteringAccuracy:
             patch("src.proxy.mantle_service.get_session_factory", return_value=lambda: fake_session),
             patch("src.proxy.mantle_service.UsageService", return_value=mock_usage),
         ):
-            await svc.create_response(b"{}", token_context, stream=False, model="openai.gpt-5.5")
+            with pytest.raises(MantleUpstreamError):
+                await svc.create_response(b"{}", token_context, stream=False, model="openai.gpt-5.5")
 
         mock_usage.log_request.assert_awaited_once()
         kwargs = mock_usage.log_request.await_args.kwargs
@@ -283,8 +286,9 @@ class TestStreamingIntegrity:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None, **kwargs):
             captured.update(usage=dict(usage))
+            return True
 
         svc._log_usage = spy  # type: ignore[method-assign]
         result = await svc.create_response(b"{}", token_context, stream=True, model="openai.gpt-5.5")
@@ -295,8 +299,9 @@ class TestStreamingIntegrity:
         """Run a streaming call, returning (received_bytes, captured_usage)."""
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None, **kwargs):
             captured.update(usage=dict(usage))
+            return True
 
         svc._log_usage = spy  # type: ignore[method-assign]
         result = await svc.create_response(b"{}", token_context, stream=True, model="openai.gpt-5.5")
@@ -391,10 +396,9 @@ class TestStreamingIntegrity:
 
         svc = make_service(handler, no_log=False)
         with caplog.at_level(logging.WARNING, logger="src.proxy.mantle_service"):
-            received, usage = await self._drive_stream(svc, token_context)
-        assert received == b"".join(chunks)  # byte-fidelity preserved
-        assert usage == {}  # no usage extracted, but no crash
-        assert any("buffer exceeded cap" in rec.message for rec in caplog.records)
+            with pytest.raises(httpx.RemoteProtocolError, match="settlement buffer limit"):
+                await self._drive_stream(svc, token_context)
+        assert any("mantle stream transport_error" in rec.message for rec in caplog.records)
 
     async def test_malformed_sse_lines_do_not_break_stream(self, token_context):
         # Garbage / non-JSON data lines must be passed through verbatim and must
@@ -507,8 +511,9 @@ class TestStreamingUpstreamErrors:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None, **kwargs):
             captured.update(status_code=status_code, usage=dict(usage))
+            return True
 
         svc._log_usage = spy  # type: ignore[method-assign]
         with pytest.raises(MantleUpstreamError) as exc_info:
@@ -526,8 +531,9 @@ class TestStreamingUpstreamErrors:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None, **kwargs):
             captured.update(status_code=status_code)
+            return True
 
         svc._log_usage = spy  # type: ignore[method-assign]
         with pytest.raises(MantleUpstreamError) as exc_info:
@@ -549,8 +555,9 @@ class TestStreamingUpstreamErrors:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None, **kwargs):
             captured.update(usage=dict(usage), status_code=status_code)
+            return True
 
         svc._log_usage = spy  # type: ignore[method-assign]
         result = await svc.create_response(b"{}", token_context, stream=True, model="openai.gpt-5.5")
@@ -594,7 +601,7 @@ def _profile_service(handler, prefix: str, *, on_demand_models: str = "openai.gp
         http_client=client,
     )
     if no_log:
-        svc._log_usage = AsyncMock()  # type: ignore[method-assign]
+        svc._log_usage = AsyncMock(return_value=True)  # type: ignore[method-assign]
     return svc
 
 
@@ -626,8 +633,9 @@ class TestInferenceProfileRewrite:
         svc = _profile_service(handler, "us", no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None, **kwargs):
             captured.update(model=model)
+            return True
 
         svc._log_usage = spy  # type: ignore[method-assign]
         body = b'{"model":"openai.gpt-6-astra","input":"hi"}'

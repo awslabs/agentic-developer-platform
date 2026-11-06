@@ -10,6 +10,7 @@ from botocore.exceptions import BotoCoreError
 from moto import mock_aws
 
 from src.agentauth.bootstrap import BootstrapStore, envelope_digest
+from src.agentauth.store import AuthorityStoreError
 from src.agentauth.task_delivery import TaskDelivery, TaskDeliveryError
 
 
@@ -58,6 +59,67 @@ def test_one_task_per_pod_and_no_second_task_after_ack(tasks, monkeypatch):
         tasks.delivery.acquire("pod-one")
     assert json.loads(tasks.delivery.acquire("pod-two")) == tasks.envelopes[1]
     assert receive.call_count == 2
+
+
+def test_domain_prebootstrap_discard_archives_ack_before_next_assignment(tasks):
+    tasks.delivery.acquire("pod-one")
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    acknowledgement = tasks.delivery.read("pod-one")
+    assert tasks.delivery.resume_after_obsolete("pod-one", acknowledgement)
+    assert json.loads(tasks.delivery.acquire("pod-one", wait_seconds=0)) == tasks.envelopes[1]
+    current = tasks.delivery.read("pod-one")
+    assert current["discarded_acknowledgements"] == [acknowledgement["version"]]
+    archive = tasks.delivery.store._read("PODTASK#pod-one", "DISCARDED#" + acknowledgement["version"])
+    assert archive["invocation_id"] == {"S": "run-1"}
+    assert archive["sqs_http_status"] == {"N": "200"}
+    assert archive["receipt_handle_sha256"] and "receipt" not in archive
+    assert current["invocation_id"] == "run-2"
+
+
+def test_bound_pod_cannot_resume_after_acknowledgement(tasks):
+    tasks.delivery.acquire("pod-one")
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    acknowledgement = tasks.delivery.read("pod-one")
+    tasks.ddb.put_item(TableName="authority", Item={"pk": {"S": "POD#pod-one"}, "sk": {"S": "BINDING"}})
+    with pytest.raises(AuthorityStoreError):
+        tasks.delivery.resume_after_obsolete("pod-one", acknowledgement)
+    assert tasks.delivery.read("pod-one") == acknowledgement
+    assert tasks.delivery.store._read("PODTASK#pod-one", "DISCARDED#" + acknowledgement["version"]) is None
+
+
+def test_stale_discard_cannot_overwrite_a_new_assignment(tasks):
+    tasks.delivery.acquire("pod-one")
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    acknowledgement = tasks.delivery.read("pod-one")
+    assert tasks.delivery.resume_after_obsolete("pod-one", acknowledgement)
+    body = tasks.delivery.acquire("pod-one", wait_seconds=0)
+    with pytest.raises(AuthorityStoreError):
+        tasks.delivery.resume_after_obsolete("pod-one", acknowledgement)
+    assert tasks.delivery.acquire("pod-one") == body
+
+
+def test_lost_discard_transaction_response_keeps_archive_and_assignment_recoverable(tasks, monkeypatch):
+    tasks.delivery.acquire("pod-one")
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    acknowledgement = tasks.delivery.read("pod-one")
+    write = tasks.ddb.transact_write_items
+
+    def lost(**kwargs):
+        write(**kwargs)
+        monkeypatch.setattr(tasks.ddb, "transact_write_items", write)
+        raise BotoCoreError()
+
+    monkeypatch.setattr(tasks.ddb, "transact_write_items", lost)
+    with pytest.raises(AuthorityStoreError):
+        tasks.delivery.resume_after_obsolete("pod-one", acknowledgement)
+    assert tasks.delivery.store._read("PODTASK#pod-one", "DISCARDED#" + acknowledgement["version"])
+    assert json.loads(tasks.delivery.acquire("pod-one", wait_seconds=0)) == tasks.envelopes[1]
+
+
+def test_unconfirmed_acknowledgement_cannot_resume(tasks):
+    tasks.delivery.acquire("pod-one")
+    with pytest.raises(TaskDeliveryError, match="finished"):
+        tasks.delivery.resume_after_obsolete("pod-one", tasks.delivery.read("pod-one"))
 
 
 def test_bootstrap_cannot_substitute_a_task_or_digest(tasks):

@@ -299,15 +299,17 @@ def cleanup(
         if record.state in {PLANNED, RECONCILE_FAILED}:
             # Never created (or never reconciled): there is no verified resource
             # to delete, and guessing an id could delete something else.
-            refused.append(
-                (
-                    record.fixture_id,
-                    (
-                        "fixture is still 'planned' with no observed resource id; run --resume "
-                        "first so it can be reconciled rather than guessed at"
-                    ),
+            if record.state == RECONCILE_FAILED:
+                reason = (
+                    "fixture could not be reconciled; manual verification required: "
+                    f"{record.detail or 'provider state unknown'}"
                 )
-            )
+            else:
+                reason = (
+                    "fixture is still 'planned' with no observed resource id; run --resume "
+                    "first so it can be reconciled rather than guessed at"
+                )
+            refused.append((record.fixture_id, reason))
             continue
 
         provider = providers.get(record.kind)

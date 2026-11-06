@@ -31,8 +31,8 @@ that session commits. The flush uses a separate session only to hold a target-sc
 advisory lock. No row or transition lock is held across the GitHub round trip.
 
 **Projection failure cannot touch execution (AC3).** The flush never raises. A
-provider error is counted, forces a non-success report, and is retried by the next
-tick from freshly-read state. Because the flush runs post-commit and its lock session
+provider error is counted, forces a non-success report, and the stored
+operation is retried on the next tick. Because the flush runs post-commit and its lock session
 never reads or writes engine rows, there is no code path from a failed GitHub call
 back to a node's state — the isolation is structural rather than a promise to be
 careful.
@@ -51,8 +51,8 @@ refused because its counters are not comparable. A post-commit PostgreSQL adviso
 lock serializes each issue's engine writers across tick invocations; inside that lock
 the flush reads the current body, compares its markers, and only then writes. The
 markers decide identity and freshness while the lock closes the read/modify/write
-race. This deliberately stores no new column — the durable execution ledger is
-#5142's scope, not this story's.
+race. A separate outbox stores the publication target, rendered content and
+operation identity without changing execution state.
 
 Idempotence (AC1) falls out of rendering being pure: an unchanged graph renders
 byte-identical text, which compares equal to what is already on the issue, so the
@@ -71,8 +71,9 @@ from the submitted node address, so the nodes *are* caller data. Combined with a
 process-wide `BG_ORCH_DISPATCH_REPO`, the target was author-chosen. Since `PLAN_DRAFT`
 reaches every ordinary member and a draft still compiles a graph, that let an
 unprivileged user have the engine overwrite another team's tracker region under its own
-bot identity. :func:`_is_approved` now requires the same human approval that arms
-dispatch, so the authority to publish about an EPIC is the authority to run work there.
+bot identity. :func:`resolve_parent_reference` now requires human approval, the matching accepted
+tracker binding and current tenant-owned access to the exact planning repository.
+Story execution authority does not grant permission to write this tracker.
 
 **Author text cannot forge the region's structure.** Everything interpolated into the
 rendered region is author-supplied, and a literal sentinel inside it would make
@@ -118,6 +119,7 @@ __all__ = [
     "TrackerProjectionReport",
     "flush_tracker_projections",
     "render_region",
+    "resolve_parent_reference",
     "run_tracker_projection_pass",
     "splice_region",
 ]
@@ -150,11 +152,6 @@ _FLOW_RE = re.compile(r"<!--\s*aidlc-tracker-flow:\s*([A-Za-z0-9-]{1,64})\s*-->"
 # progress claims about an engine that is switched off. Reusing it also keeps this
 # story out of the three-place parity contract in `test_feature_flag_parity.py`.
 FEATURE_FLAG_ENV = "FEATURE_ORCHESTRATION_ENGINE_ENABLED"
-
-# The repository the engine delivers into, same variable `dispatch_pass` reads.
-# `OrchestrationNode` carries no repository column, so there is no per-node
-# alternative to read instead.
-REPO_ENV = "BG_ORCH_DISPATCH_REPO"
 
 # Flows projected per invocation. Bounds one very large tenant's cost so it cannot
 # starve every other tenant's projection, following `_ITEM_BACKSTOP` in `tick.py`.
@@ -368,12 +365,8 @@ class TrackerProjectionConfig:
 
     @property
     def configured(self) -> bool:
-        """Whether this config can actually reach an issue.
-
-        An empty repository means there is nothing to write to. Reported as a
-        disabled pass rather than raising: the tick has five other passes to run.
-        """
-        return bool(self.repo)
+        """Whether the projection pass is enabled; its target comes from the accepted plan."""
+        return self.enabled
 
     @classmethod
     def from_env(cls) -> TrackerProjectionConfig:
@@ -409,7 +402,7 @@ class TrackerProjectionConfig:
 
         return cls(
             enabled=enabled,
-            repo=(os.environ.get(REPO_ENV) or "").strip(),
+            repo="",
             max_flows_per_pass=cap,
         )
 
@@ -420,8 +413,8 @@ class PendingTrackerProjection:
 
     Frozen, and carrying everything the flush needs — including `installation_id`,
     resolved during the pass while the session is open, exactly as `PendingEngineAck`
-    does. The flush therefore touches no database, which is what lets it run after
-    the commit with no risk of reopening a transaction.
+    does. The outbox stores this snapshot before commit; the flush rechecks its
+    accepted target in a separate session before each provider call.
     """
 
     org_id: str
@@ -434,6 +427,9 @@ class PendingTrackerProjection:
     #: Compared against the marker already on the issue to refuse going backwards.
     version: int
     watermark: int
+    repository_id: int | None = None
+    epic_ref: str | None = None
+    operation_id: str | None = None
 
 
 @dataclass
@@ -468,7 +464,7 @@ class TrackerProjectionReport:
     #: True when the per-pass cap stopped the pass early. Work is delayed, not
     #: dropped.
     capped: bool = False
-    #: False when the flag is off or no repository is configured. Surfaced so a
+    #: False when the flag is off. Surfaced so a
     #: disabled path is visible as disabled rather than looking like a clean pass.
     enabled: bool = True
     pending: list[PendingTrackerProjection] = field(default_factory=list)
@@ -700,6 +696,9 @@ def render_region(
         # the snapshot marker, and `|` is escaped so it cannot forge a table cell.
         issue = _neutralized(node.issue_ref or "").replace("|", "\\|").lstrip("#").strip()
         label = f"#{issue}" if issue else _neutralized(node.node_ref).replace("|", "\\|").strip()
+        repository = node.repository_identity or ""
+        if issue.isdigit() and node.provider_repository_id and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+            label = f"[#{issue}](https://github.com/{repository}/issues/{issue})"
         title = _neutralized(node.title or "").replace("|", "\\|").strip()
         if len(title) > 80:
             title = title[:77] + "…"
@@ -719,29 +718,47 @@ def render_region(
     return "\n".join(lines)
 
 
-async def _epic_issue_number(nodes: list[OrchestrationNode]) -> int | None:
-    """The EPIC issue this flow's nodes agree on, or None.
+async def resolve_parent_reference(session: AsyncSession, *, org_id: str, flow_id: str, epic_ref: str, operation: str = "link"):
+    from .proposal import TrackerReference
+    from .repository import OrchestrationRepository
+    from .repository_binding import RepositoryBindingError, resolve_story_repository
 
-    The EPIC number lives in the graph address as the `epic-<N>` segment — the
-    emission skill writes `<flow>/epic-<EPIC>/wave-<K>/<node>` — because containers
-    are derived and no EPIC table exists to read instead.
-
-    **Ambiguity is a refusal, not a choice** (the rule `_resolve_target` in
-    `engine_commands.py` applies for the same reason). A flow whose nodes name two
-    different EPICs gives no basis to pick, and guessing would publish one EPIC's
-    progress onto another's issue.
-    """
-    refs = {node.epic_ref for node in nodes if node.epic_ref}
-    numbers = set()
-    for ref in refs:
-        found = re.fullmatch(r"epic-#?(\d+)", ref.strip())
-        if found is None:
-            return None
-        numbers.add(int(found.group(1)))
-    if len(numbers) != 1:
+    flow = await session.scalar(select(OrchestrationFlow).where(OrchestrationFlow.id == flow_id, OrchestrationFlow.org_id == org_id))
+    if flow is None:
         return None
-    number = numbers.pop()
-    return number if number > 0 else None
+    plan = await OrchestrationRepository(session).get_accepted_plan(org_id=org_id, flow_id=flow_id)
+    if plan is None or not await _is_approved(session, org_id=org_id, flow_id=flow_id):
+        return None
+    document = plan.plan_document or {}
+    if flow.tracker_refs != document.get("tracker_refs") or flow.origin_ref != document.get("origin_ref"):
+        return None
+    matches = [
+        item for item in document.get("tracker_refs") or [] if item.get("scope") == "epic" and item.get("address") == f"{flow.slug}/{epic_ref}"
+    ]
+    if len(matches) != 1:
+        return None
+    try:
+        reference = TrackerReference.model_validate(matches[0]).issue
+        verified = await resolve_story_repository(
+            session,
+            tenant_id=org_id,
+            name=reference.repository,
+            repository_id=reference.repository_id,
+            installation_id=reference.installation_id,
+            issue=reference.issue_number,
+            operation=operation,
+        )
+    except (RepositoryBindingError, ValueError):
+        return None
+    if (
+        verified.repository_id != reference.repository_id
+        or verified.installation_id != reference.installation_id
+        or verified.full_name.casefold() != reference.repository.casefold()
+        or verified.issue_number != reference.issue_number
+        or (operation == "link" and (type(verified.issue_id) is not int or verified.issue_id < 1 or not verified.issue_node_id))
+    ):
+        return None
+    return verified
 
 
 async def _is_approved(session: AsyncSession, *, org_id: str, flow_id: str) -> bool:
@@ -798,7 +815,7 @@ async def run_tracker_projection_pass(
     """
     cfg = config if config is not None else TrackerProjectionConfig.from_env()
     report = TrackerProjectionReport()
-    if not cfg.enabled or not cfg.configured:
+    if not cfg.enabled:
         report.enabled = False
         return report
 
@@ -846,7 +863,7 @@ async def run_tracker_projection_pass(
 
     for flow_id in flow_ids:
         try:
-            await _project_one(session, flow_id=flow_id, config=cfg, report=report)
+            await _project_one(session, flow_id=flow_id, report=report)
         except Exception:
             # Counted and skipped. Projection is a display concern; a flow whose
             # render fails must not stop the others, and must not fail the tick's
@@ -863,12 +880,9 @@ async def _project_one(
     session: AsyncSession,
     *,
     flow_id: str,
-    config: TrackerProjectionConfig,
     report: TrackerProjectionReport,
 ) -> None:
     """Render one flow's region and queue it, or record why it was refused."""
-    from .dispatch_pass import resolve_installation_id
-
     flow = await session.get(OrchestrationFlow, flow_id)
     if flow is None:  # pragma: no cover - the id came from a node in this session
         return
@@ -894,28 +908,9 @@ async def _project_one(
         report.record(org_id, "projections_refused")
         return
 
-    issue_number = await _epic_issue_number(nodes)
-    if issue_number is None:
+    epics = {node.epic_ref for node in nodes}
+    if len(epics) != 1:
         # No unambiguous EPIC issue to write to (AC3: a wrong target is refused).
-        report.record(org_id, "projections_refused")
-        return
-
-    if not await _is_approved(session, org_id=org_id, flow_id=flow_id):
-        # Review finding, PR #5337. The write target comes out of `epic_ref`, which
-        # plan registration stores verbatim from the author's node address, and the
-        # repository is one process-wide variable. So without this check a holder of
-        # `PLAN_DRAFT` — which `admin/config.py` grants to every ordinary member,
-        # including read-only ones — could register an inert draft naming *another
-        # team's* EPIC and have the engine overwrite that issue's tracker region
-        # under its own bot identity, with content the drafter chose. Requiring the
-        # same human approval that arms dispatch means the authority to make the
-        # engine write about an EPIC is the authority that decides what runs there.
-        report.record(org_id, "projections_refused")
-        return
-
-    installation_id = await resolve_installation_id(session, org_id=org_id)
-    if installation_id is None:
-        # Fail-closed on zero and on more than one installation, by the shared rule.
         report.record(org_id, "projections_refused")
         return
 
@@ -937,6 +932,10 @@ async def _project_one(
             .limit(1)
         )
     ).scalar_one_or_none()
+    target = await resolve_parent_reference(session, org_id=org_id, flow_id=flow_id, epic_ref=next(iter(epics)), operation="tracker_write")
+    if target is None:
+        report.record(org_id, "projections_refused")
+        return
     version = plan.version if plan is not None else 0
 
     bindings = await active_bindings_for_flow(session, org_id=org_id, flow_id=flow_id)
@@ -971,9 +970,11 @@ async def _project_one(
         PendingTrackerProjection(
             org_id=org_id,
             flow_id=flow_id,
-            repo=config.repo,
-            issue_number=issue_number,
-            installation_id=installation_id,
+            repo=target.full_name,
+            repository_id=target.repository_id,
+            epic_ref=next(iter(epics)),
+            issue_number=target.issue_number,
+            installation_id=target.installation_id,
             body_region=region,
             version=version,
             watermark=watermark,
@@ -1130,14 +1131,15 @@ async def flush_tracker_projections(
     `await`. Mutates `report` in place and **never raises**: the tick's durable work
     is already committed by the time this runs, and a projection failure must not
     turn into a failed tick that retries transitions (AC3). A failure is counted,
-    which forces a non-success report, and the next tick re-renders from current
-    state — so a transient outage self-heals and converges rather than losing the
-    update.
+    which forces a non-success report, and the next tick resumes the stored
+    operation without moving its write to a different target.
 
     Per-projection containment: one issue's failure never stops the others.
     """
     if not report.pending:
         return
+
+    from .tracker_outbox import complete_publication, record_publication_attempt
 
     # Every caller gets a lock independently of which provider implementation it
     # supplies. Keying safety off "default provider" would let a future production
@@ -1149,12 +1151,13 @@ async def flush_tracker_projections(
 
     for pending in report.pending:
         try:
-            await _write_one(
+            if await _write_one(
                 pending,
                 client_factory=client_factory,
                 session_factory=session_factory,
                 report=report,
-            )
+            ):
+                await complete_publication(pending, session_factory)
         except Exception:
             # Never re-raised. The region stays stale until the next tick, which is
             # the recoverable outcome; counting it forces non-success so a
@@ -1165,6 +1168,12 @@ async def flush_tracker_projections(
                 pending.org_id,
             )
             report.record(pending.org_id, "projections_failed")
+        finally:
+            try:
+                await record_publication_attempt(pending, session_factory)
+            except Exception:
+                logger.exception("orchestration tracker projection: could not record attempt for issue %s", pending.issue_number)
+                report.record(pending.org_id, "projections_failed")
 
 
 async def _write_one(
@@ -1173,7 +1182,7 @@ async def _write_one(
     client_factory: object | None,
     session_factory: async_sessionmaker[AsyncSession] | None,
     report: TrackerProjectionReport,
-) -> None:
+) -> bool:
     """Read the issue, splice the region, write it back if that is safe and needed.
 
     Read-then-write rather than blind write, because preserving the user's text
@@ -1181,6 +1190,7 @@ async def _write_one(
     the read/modify/write window across tick invocations; the snapshot marker then
     tells the serialized writer whether its pending render is stale.
     """
+    from .tracker_outbox import pending_authorized
     from .tracker_provider import GitHubTrackerProvider
 
     provider = client_factory if client_factory is not None else GitHubTrackerProvider()
@@ -1189,11 +1199,16 @@ async def _write_one(
     # before this lock is not a compare-and-swap: two ticks can both read the old
     # body, the newer one can PATCH, and the older one can then overwrite it.
     async with _projection_write_lock(pending, session_factory=session_factory):
+        if session_factory is not None and not await pending_authorized(pending, session_factory):
+            report.record(pending.org_id, "projections_refused")
+            return False
+        provider_identity = {"repository_id": pending.repository_id} if pending.operation_id and client_factory is None else {}
         body = await provider.read_issue_body(  # type: ignore[attr-defined]
             org_id=pending.org_id,
             installation_id=pending.installation_id,
             repo=pending.repo,
             issue_number=pending.issue_number,
+            **provider_identity,
         )
 
         published_flow = _read_flow_identity(body)
@@ -1208,14 +1223,14 @@ async def _write_one(
                 pending.flow_id,
             )
             report.record(pending.org_id, "projections_refused")
-            return
+            return False
 
         published = read_snapshot(body)
         if published is not None and published > (pending.version, pending.watermark):
             # A newer snapshot landed before this writer acquired the lock.
             # Regressing the display to an older truth is worse than doing nothing.
             report.record(pending.org_id, "projections_stale")
-            return
+            return True
 
         spliced = splice_region(body, pending.body_region)
         if isinstance(spliced, RegionRefusal):
@@ -1226,14 +1241,18 @@ async def _write_one(
                 str(spliced),
             )
             report.record(pending.org_id, "projections_refused")
-            return
+            return False
 
         if spliced == body:
             # Nothing changed, so nothing is written. This is what makes a repeated
             # identical pass idempotent (AC1) and keeps the issue's edit history free
             # of a no-op revision on every tick.
             report.record(pending.org_id, "projections_unchanged")
-            return
+            return True
+
+        if session_factory is not None and not await pending_authorized(pending, session_factory):
+            report.record(pending.org_id, "projections_refused")
+            return False
 
         await provider.write_issue_body(  # type: ignore[attr-defined]
             org_id=pending.org_id,
@@ -1241,5 +1260,7 @@ async def _write_one(
             repo=pending.repo,
             issue_number=pending.issue_number,
             body=spliced,
+            **provider_identity,
         )
         report.record(pending.org_id, "projections_written")
+        return True

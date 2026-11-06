@@ -36,8 +36,9 @@ WHAT IT ENFORCES, IN ORDER
 3. Public routes proceed. Internal routes are left to their machine
    authenticators: the shared-token check for the existing internal surface,
    or the observation receiver's workspace credential and HMAC verification.
-4. Domain routes require a verified access token admitted by U9's policy, then a
-   server-held grant re-read for THIS operation — workspace-scoped against the
+4. Domain routes validate an access-token candidate, require live membership
+   for its subject and tenant, then bind a principal and re-read a server-held
+   grant for THIS operation — workspace-scoped against the
    workspace resolved from the path, organization-scoped against the separate
    organization path that a workspace grant deliberately cannot satisfy.
 5. The acting principal is published for the harness trust ports, from the same
@@ -92,12 +93,11 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import replace
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
-from superplane_auth.policy import Permission, strip_identity_headers
+from superplane_auth.policy import DomainPrincipal, Permission, strip_identity_headers
 
 from app import auth as domain_auth
 from app.adapters.operation_authority_source import (
@@ -232,29 +232,71 @@ async def _authorize(
         return None
 
     scope, permission = requirement  # type: ignore[misc]
-    caller = await domain_auth.require_verified_caller(request, credentials)
-    if identity_checks_enabled() and caller.principal.account_type != "human":
+    membership_denial = (
+        "not authorized for this workspace"
+        if scope is Scope.WORKSPACE
+        else "current domain membership required"
+    )
+    candidate, safe_headers = await domain_auth.require_verified_candidate(
+        request, credentials
+    )
+    if candidate.account_type != "human":
         raise HTTPException(403, "human domain identity required")
-    # Signature/policy verification established the actor even if tenant binding
-    # or the later grant check refuses this request. Never publish an unbound tenant.
-    request.state.audit_principal = caller.principal.subject
+    request.state.audit_principal = candidate.subject
+    from sqlalchemy import select
+
+    from app.models.organization import Organization
+    from app.models.user import USER_STATUS_ACTIVE, User
     from app.organization_binding import bind_caller
 
-    caller = await bind_caller(db, caller)
-    reader = getattr(request.app.state, "current_identity_reader", None)
-    if caller.source_org_id and identity_checks_enabled():
+    try:
+        legacy_id = uuid.UUID(candidate.org_id)
+    except (TypeError, ValueError):
+        legacy_id = None
+    legacy_organization = await db.get(Organization, legacy_id) if legacy_id else None
+    if legacy_id is not None and (
+        legacy_organization is None or legacy_organization.adp_org_id is not None
+    ):
+        mapped_id = await db.scalar(
+            select(Organization.id).where(Organization.adp_org_id == candidate.org_id)
+        )
+        if mapped_id is None:
+            raise HTTPException(403, membership_denial)
+    if legacy_organization is not None and legacy_organization.adp_org_id is None:
+        membership_id = await db.scalar(
+            select(User.id).where(
+                User.org_id == legacy_id,
+                User.cognito_sub == candidate.subject,
+                User.status == USER_STATUS_ACTIVE,
+            )
+        )
+        if membership_id is None:
+            raise HTTPException(403, membership_denial)
+    else:
         try:
             identity = await require_current_identity(
-                reader,
-                subject=caller.principal.subject,
-                principal_type=caller.principal.account_type,
-                adp_org_id=caller.source_org_id,
+                getattr(request.app.state, "current_identity_reader", None),
+                subject=candidate.subject,
+                principal_type=candidate.account_type,
+                adp_org_id=candidate.org_id,
             )
         except IdentityDenied:
-            raise HTTPException(403, "current ADP identity required") from None
+            raise HTTPException(403, membership_denial) from None
         except IdentityUnavailable:
             raise HTTPException(503, "current ADP identity unavailable") from None
-        caller = replace(caller, identity_evidence=identity.membership_id)
+        membership_id = identity.membership_id
+
+    caller = domain_auth.VerifiedCaller(
+        principal=DomainPrincipal(
+            candidate.subject,
+            candidate.org_id,
+            candidate.client_id,
+            candidate.account_type,
+        ),
+        safe_headers=safe_headers,
+        identity_evidence=str(membership_id),
+    )
+    caller = await bind_caller(db, caller)
     request.state.caller = caller
 
     if scope is Scope.WORKSPACE:

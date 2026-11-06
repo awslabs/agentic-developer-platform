@@ -1,0 +1,224 @@
+{
+  "source_revision": "2f5c454dd27e1c3456c338e0bf196099ab9b4168",
+  "milestones": [
+    {
+      "milestone": "chat",
+      "repository_evaluation": 7214,
+      "live_evaluation": 7400,
+      "deployment_handoff": "cos-runtime-7197/epic-7197/chat-review/deployed-environment",
+      "human_product_review": "cos-runtime-7197/epic-7197/chat-review/product-review",
+      "blocks": [
+        7201,
+        7210
+      ],
+      "criteria": [
+        "CHAT-L01",
+        "CHAT-L02",
+        "CHAT-L03",
+        "CHAT-L04"
+      ]
+    },
+    {
+      "milestone": "memory",
+      "repository_evaluation": 7215,
+      "live_evaluation": 7401,
+      "deployment_handoff": "cos-runtime-7197/epic-7197/memory-review/deployed-environment",
+      "human_product_review": "cos-runtime-7197/epic-7197/memory-review/product-review",
+      "blocks": [
+        7206
+      ],
+      "criteria": [
+        "MEM-L01",
+        "MEM-L02",
+        "MEM-L03",
+        "MEM-L04",
+        "MEM-L05"
+      ]
+    },
+    {
+      "milestone": "container",
+      "repository_evaluation": 7216,
+      "live_evaluation": 7402,
+      "deployment_handoff": "cos-runtime-7197/epic-7197/container-review/deployed-environment",
+      "human_product_review": "cos-runtime-7197/epic-7197/container-review/product-review",
+      "blocks": [
+        7222
+      ],
+      "criteria": [
+        "UI-L01",
+        "UI-L02",
+        "UI-L03",
+        "UI-L04"
+      ]
+    },
+    {
+      "milestone": "ec2",
+      "repository_evaluation": 7223,
+      "live_evaluation": 7403,
+      "deployment_handoff": "cos-runtime-7197/epic-7197/ec2-review/deployed-environment",
+      "human_product_review": "cos-runtime-7197/epic-7197/ec2-review/product-review",
+      "blocks": [
+        7217
+      ],
+      "criteria": [
+        "EC2-L01",
+        "EC2-L02",
+        "EC2-L03",
+        "EC2-L04",
+        "EC2-L05"
+      ]
+    },
+    {
+      "milestone": "integrated",
+      "live_evaluation": 7217,
+      "deployment_handoff": "cos-runtime-7197/epic-7197/qualification/deployed-review-environment",
+      "human_product_review": "cos-runtime-7197/epic-7197/qualification/product-review",
+      "blocks": [
+        "runtime journey acceptance"
+      ],
+      "criteria": [
+        "EP-01",
+        "EP-02",
+        "EP-03",
+        "EP-04",
+        "EP-05",
+        "EP-06"
+      ]
+    }
+  ],
+  "issue_revisions": [
+    {
+      "issue": 7197,
+      "change": "updated",
+      "body_bytes": 7570,
+      "body_sha256": "01dcf60ecd7f567192ff7673aa466fa1698bbda2afdf5d1816bc5225d82b2b58",
+      "previous_body_sha256": "d909079f57bbd2da2b4fb47d2ea783827cf80defe5fe44cbba985da949ecc5bc"
+    },
+    {
+      "issue": 7201,
+      "change": "updated",
+      "body_bytes": 6867,
+      "body_sha256": "380ee20336e8746e322e9924c14ca650ee92c7060735b1ea08c8907e86d545bb",
+      "previous_body_sha256": "8cd3d8463ba618bf47b3f1984dac16492a5dc470e2a8202851390c05e24b9eeb"
+    },
+    {
+      "issue": 7206,
+      "change": "updated",
+      "body_bytes": 7601,
+      "body_sha256": "acb71f46cf10d51e8b7bdd627eb88f71cbef4345566e345817156313823a00ec",
+      "previous_body_sha256": "5ed8df957e36a04a38f58c72b12dc97485c02e4ca981114869c5b6732f5523ad"
+    },
+    {
+      "issue": 7210,
+      "change": "updated",
+      "body_bytes": 7968,
+      "body_sha256": "2e8bfa03a9d8b8421ca680f9c5dce8099b66fa0bee7d75b64285e45788532357",
+      "previous_body_sha256": "b3fbf3c6281113dd3c3ea7df79a3df42f68c3d8d455aeed56d6a0afb378a13b0"
+    },
+    {
+      "issue": 7214,
+      "change": "updated",
+      "body_bytes": 4590,
+      "body_sha256": "c42071ceb4e9d2693727075845fb9e7650e2906d22f742dee70daeaa81657ea3",
+      "previous_body_sha256": "c17427a37bb70730e9de9577913745d5f9e762621490301c0aecec3f430d34cd"
+    },
+    {
+      "issue": 7215,
+      "change": "updated",
+      "body_bytes": 5078,
+      "body_sha256": "8ad631a541e85e5b8e946f5205cf45ccc118f8709c253a14d52030eda4125b34",
+      "previous_body_sha256": "f6b304c38e7303b2edfd2c10a5c93f43735d4d8f6971bcfe8b41d44c627b53d3"
+    },
+    {
+      "issue": 7216,
+      "change": "updated",
+      "body_bytes": 3841,
+      "body_sha256": "e8c61ebab1f0ace6dee83335e8aba575193ef5370ad85634eaee777d81059fa4",
+      "previous_body_sha256": "efd2aeb07d83970b15ba0b3b7f0b6d925f16ddacf1d149bb3f8a6b73f5c01763"
+    },
+    {
+      "issue": 7217,
+      "change": "updated",
+      "body_bytes": 7932,
+      "body_sha256": "36e584bcc66c57d0a064756aa882fddea93dc7ae578cd7b3da0b287c041a4a4b",
+      "previous_body_sha256": "453825657031c7c9c3f27f622929b7374f560469230217f7e625710c933a6587"
+    },
+    {
+      "issue": 7222,
+      "change": "updated",
+      "body_bytes": 7899,
+      "body_sha256": "72d64bed355a95e99d6273c70d015082a7f06b75db1ab6512580aad0b7ee2540",
+      "previous_body_sha256": "584888f70fc98e140f76f18be892c5d463db993641d9b8691c26cfa188e7c57b"
+    },
+    {
+      "issue": 7223,
+      "change": "updated",
+      "body_bytes": 4297,
+      "body_sha256": "a3fd23e460ce77717d6b128bb9525728c8a785960c2a7d7aaa0fb5d8a7350fc7",
+      "previous_body_sha256": "07b6f61965a45194f65ab24240b1ab79d0a663a344aafc7d33687696f058ef6a"
+    },
+    {
+      "issue": 7400,
+      "change": "created",
+      "body_bytes": 5901,
+      "body_sha256": "1fbf6d7c321dd7f40b1dc15f58bc9160cec83689b14b9a754f24431de84611a2"
+    },
+    {
+      "issue": 7402,
+      "change": "created",
+      "body_bytes": 6046,
+      "body_sha256": "46d6e69a233d2cbffebae884385b470da3d3a4fd17cbe1378d63d783791ac5ba"
+    },
+    {
+      "issue": 7403,
+      "change": "created",
+      "body_bytes": 6421,
+      "body_sha256": "bd9e4c80e4ab0f1a2b247dc7364813b67521f4602121a5a169818cc01d8d3bcf"
+    },
+    {
+      "issue": 7401,
+      "change": "created",
+      "body_bytes": 6438,
+      "body_sha256": "89871f778e85303db7b35117db509b66c5005126c275aedeb54f66791cdd5a21"
+    }
+  ],
+  "native_blocker_additions": {
+    "7201": [
+      7200,
+      7400
+    ],
+    "7210": [
+      6930,
+      6932,
+      7400
+    ],
+    "7206": [
+      7204,
+      7205,
+      7203,
+      7221,
+      7401
+    ],
+    "7222": [
+      7221,
+      7209,
+      7202,
+      7206,
+      7207,
+      7370,
+      7371,
+      7372,
+      7402
+    ],
+    "7217": [
+      6937,
+      7214,
+      7215,
+      7216,
+      7223,
+      7283,
+      7403
+    ]
+  },
+  "acceptance_note": "Native blockers require live evidence. Product acceptance is separately enforced by graph gates; closing an issue cannot pass a gate. Deployment evidence is an operator attestation followed by independent live evaluation, not automatic semantic validation of attachments."
+}

@@ -3,9 +3,12 @@
 import hashlib
 import os
 from datetime import UTC, datetime
+from decimal import Decimal
+from ipaddress import IPv4Address, IPv4Network
 
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
+from pydantic import ValidationError
 
 from src.agentauth.chat_authority import ChatRuntimeAuthority, ChatSessionLease
 from src.agentauth.chat_capability import (
@@ -18,11 +21,13 @@ from src.agentauth.chat_capability import (
 from src.agentauth.chat_user_turn import consume_user_turn, load_user_turn, user_turn_records, verify_user_turn
 from src.agentauth.execution import ExecutionStatus
 from src.agentauth.workload import VerifiedPod
+from src.crew.targets import CrewLease
 from src.orchestration.chat_data_migration import _owner_fields, _owns_context_row
 
 OPERATIONS = frozenset(
     {
         "model.invoke",
+        "tools.invoke",
         "turn.next",
         "turn.result",
         "history.read",
@@ -75,7 +80,166 @@ def root_identity(authority: ChatRuntimeAuthority, run_id: str, digest: str, now
     return execution, grant, execution.repo.removeprefix("chat/")
 
 
-def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: VerifiedPod, team_id: str, now: int) -> ChatLaunch:
+def _crew_owner_checks(
+    authority: ChatRuntimeAuthority,
+    run_id: str,
+    pod: VerifiedPod,
+    now: int,
+    store_factory,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    expected_owner_key: str | None,
+) -> tuple[list[dict], bool]:
+    creation = authority.store._read(f"CHAT-LAUNCH#{run_id}", "CREATION") or {}
+    bound_run = creation.get("crew_run_id", {}).get("S")
+    if not bound_run:
+        return [], False
+    crew_store = store_factory()
+    row = crew_store.read_run(bound_run)
+    if not row or row.get("kind") != "crew":
+        raise ChatAuthorizationRefusedError("Crew run unavailable")
+    if row.get("executor_scope") == "session":
+        return [], False
+    if row.get("executor_scope") != "user":
+        raise ChatAuthorizationRefusedError("Crew run unavailable")
+    generation = row.get("lease_generation")
+    if (
+        not isinstance(row.get("session_id"), str)
+        or isinstance(generation, bool)
+        or not isinstance(generation, int | Decimal)
+        or int(generation) != generation
+        or generation < 1
+    ):
+        raise ChatAuthorizationRefusedError("Crew founding session unavailable")
+    shared = row["session_id"] != session_id
+    marker = (
+        crew_store.table.get_item(
+            Key={"event_id": f"crew-lease#{tenant_id}#{session_id}#{generation}", "arrived_at": "crew"}, ConsistentRead=True
+        ).get("Item")
+        if shared
+        else None
+    )
+    owner = crew_store.table.get_item(Key={"event_id": f"crew-owner#{tenant_id}#{user_id}", "arrived_at": "crew"}, ConsistentRead=True).get("Item")
+    lease_row = authority.context_table.get_item(Key={"PK": f"crew#{tenant_id}#{user_id}", "SK": "executor"}, ConsistentRead=True).get("Item")
+    try:
+        lease = CrewLease.model_validate(lease_row["crewLease"])
+    except (TypeError, KeyError, ValidationError):
+        raise ChatAuthorizationRefusedError("Crew owner lease unavailable") from None
+    try:
+        pod_ip = IPv4Address(pod.ip)
+    except (TypeError, ValueError):
+        raise ChatAuthorizationRefusedError("Crew pod address unavailable") from None
+    if not any(pod_ip in IPv4Network(network) for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")):
+        raise ChatAuthorizationRefusedError("Crew pod address unavailable")
+    if (
+        row.get("status") != "active"
+        or row.get("root_human_id") != user_id
+        or row.get("tenant_id") != tenant_id
+        or row.get("user_id") != user_id
+        or row.get("target_kind") != "eks-pod"
+        or row.get("target_ref") != pod.name
+        or row.get("pod_uid") != pod.uid
+        or row.get("lease_generation") != lease.generation
+        or row.get("lease_expires_at", 0) <= now
+        or not owner
+        or owner.get("run_id") != bound_run
+        or owner.get("pod_uid") != pod.uid
+        or owner.get("generation") != lease.generation
+        or owner.get("lease_expires_at", 0) <= now
+        or owner.get("target_ref") != pod.name
+        or owner.get("session_count") not in range(1, 21)
+        or owner.get("executor_scope") != "user"
+        or owner.get("target_kind") != "eks-pod"
+        or not lease_row
+        or lease_row.get("tenantId") != tenant_id
+        or lease_row.get("ownerUserId") != user_id
+        or lease_row.get("crewLeaseState") not in {"provisioning", "ready"}
+        or lease.tenant_id != tenant_id
+        or lease.user_id != user_id
+        or lease.target_ref != pod.uid
+        or lease.target_kind != "eks-pod"
+        or lease.endpoint != f"http://{pod_ip}:5476"
+        or lease.expires_at <= now
+        or pod.owner_key is None
+        or pod.owner_key != expected_owner_key
+        or creation.get("binding", {}).get("M", {}).get("session_id") != {"S": session_id}
+        or creation.get("binding", {}).get("M", {}).get("tenant_id") != {"S": tenant_id}
+        or creation.get("binding", {}).get("M", {}).get("user_id") != {"S": user_id}
+        or creation.get("crew_lease_generation") != {"N": str(lease.generation)}
+        or (
+            shared
+            and (
+                lease_row.get("crewLeaseState") != "ready"
+                or pod.session_hash != hashlib.sha256(row["session_id"].encode()).hexdigest()
+                or not marker
+                or marker.get("status") != "active"
+                or marker.get("run_id") != bound_run
+                or marker.get("run_arrived_at") != row["arrived_at"]
+                or marker.get("expires_at", 0) <= now
+            )
+        )
+    ):
+        raise ChatAuthorizationRefusedError("Crew owner admission unavailable")
+    return [
+        *(
+            [
+                {
+                    "ConditionCheck": {
+                        "TableName": crew_store.table.name,
+                        "Key": _encoded({"event_id": marker["event_id"], "arrived_at": "crew"}),
+                        "ConditionExpression": "#status = :active AND run_id = :run AND run_arrived_at = :arrived AND expires_at > :now",
+                        "ExpressionAttributeNames": {"#status": "status"},
+                        "ExpressionAttributeValues": _encoded({":active": "active", ":run": bound_run, ":arrived": row["arrived_at"], ":now": now}),
+                    }
+                }
+            ]
+            if shared
+            else []
+        ),
+        {
+            "ConditionCheck": {
+                "TableName": crew_store.table.name,
+                "Key": _encoded({"event_id": row["event_id"], "arrived_at": row["arrived_at"]}),
+                "ConditionExpression": "#status = :active AND pod_uid = :pod AND lease_generation = :generation AND lease_expires_at > :now",
+                "ExpressionAttributeNames": {"#status": "status"},
+                "ExpressionAttributeValues": _encoded({":active": "active", ":pod": pod.uid, ":generation": lease.generation, ":now": now}),
+            }
+        },
+        {
+            "ConditionCheck": {
+                "TableName": crew_store.table.name,
+                "Key": _encoded({"event_id": owner["event_id"], "arrived_at": "crew"}),
+                "ConditionExpression": "run_id = :run AND pod_uid = :pod AND generation = :generation AND lease_expires_at > :now",
+                "ExpressionAttributeValues": _encoded({":run": bound_run, ":pod": pod.uid, ":generation": lease.generation, ":now": now}),
+            }
+        },
+        {
+            "ConditionCheck": {
+                "TableName": authority.context_table.name,
+                "Key": _encoded({"PK": lease_row["PK"], "SK": "executor"}),
+                "ConditionExpression": (
+                    "tenantId = :tenant AND ownerUserId = :user AND crewLease = :lease AND crewLeaseState = :state AND crewLease.expires_at > :now"
+                ),
+                "ExpressionAttributeValues": _encoded(
+                    {":tenant": tenant_id, ":user": user_id, ":lease": lease_row["crewLease"], ":state": lease_row["crewLeaseState"], ":now": now}
+                ),
+            }
+        },
+    ], shared
+
+
+def admit(
+    authority: ChatRuntimeAuthority,
+    *,
+    run_id: str,
+    digest: str,
+    pod: VerifiedPod,
+    team_id: str,
+    now: int,
+    crew_store_factory=None,
+    crew_owner_key: str | None = None,
+) -> ChatLaunch:
     from src.agentauth.chat_sandbox_creation import admission_creation_check
 
     require_sandbox_run(pod, run_id)
@@ -88,10 +252,24 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
     selected = table.get_item(Key=key, ConsistentRead=True).get("Item")
     selected_mode = selected.get("sessionMode", "ephemeral") if selected else "ephemeral"
     expected_session_hash = hashlib.sha256(session_id.encode()).hexdigest() if selected_mode == "persistent" else None
-    if selected_mode not in {"ephemeral", "persistent"} or pod.session_hash != expected_session_hash:
+    crew_checks, shared = (
+        _crew_owner_checks(authority, run_id, pod, now, crew_store_factory, execution.tenant_id, grant.authority.human_id, session_id, crew_owner_key)
+        if crew_store_factory
+        else ([], False)
+    )
+    if (
+        selected_mode not in {"ephemeral", "persistent"}
+        or (shared and selected_mode != "persistent")
+        or (not shared and pod.session_hash != expected_session_hash)
+    ):
         raise ChatAuthorizationRefusedError("chat session sandbox mode changed")
-    creation_check = admission_creation_check(authority, run_id, execution.tenant_id, pod)
-    execution = store.bind(invocation_id=run_id, digest=digest, pod=pod, now=datetime.fromtimestamp(now, UTC))
+    creation_check = None if shared else admission_creation_check(authority, run_id, execution.tenant_id, pod)
+    if shared:
+        if execution.status != ExecutionStatus.PENDING or execution.workload_binding is not None:
+            if store._read(f"CHAT-LAUNCH#{run_id}", "LAUNCH") is None:
+                raise ChatAuthorizationRefusedError("chat shared launch already bound")
+    else:
+        execution = store.bind(invocation_id=run_id, digest=digest, pod=pod, now=datetime.fromtimestamp(now, UTC))
     if store.authority.abort_intent(invocation_id=run_id, tenant_id=execution.tenant_id) is not None:
         raise ChatAuthorizationRefusedError("chat run ended")
     user_turn = load_user_turn(store, execution, digest)
@@ -112,6 +290,8 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
         if user_turn is not None:
             verify_user_turn(authority.context_table, launch, user_turn)
         return launch
+    if shared:
+        creation_check = admission_creation_check(authority, run_id, execution.tenant_id, pod, reused=True)
     header = table.get_item(Key=key, ConsistentRead=True).get("Item")
     if header and (header.get("sessionPendingMode") or header.get("sessionState") in {"ending", "recovering", "ended"}):
         raise ChatAuthorizationRefusedError("chat session ending")
@@ -259,6 +439,70 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
                     update["ExpressionAttributeValues"].update(_encoded({value: header[field]}))
                 else:
                     update["ConditionExpression"] += f" AND attribute_not_exists({name})"
+    execution_guard = {
+        "ConditionCheck": {
+            "TableName": store.table,
+            "Key": {"pk": {"S": f"TENANT#{launch.tenant_id}"}, "sk": {"S": f"EXEC#{run_id}"}},
+            "ConditionExpression": (
+                "#status = :active AND workload_binding = :pod AND current_attempt = :attempt "
+                "AND current_credential_epoch = :epoch AND attribute_not_exists(abort_command_id) "
+                "AND attribute_not_exists(chat_pre_admission_cleanup)"
+            )
+            + (" AND chat_user_turn = :user_turn" if user_turn is not None else ""),
+            "ExpressionAttributeNames": {"#status": "status"},
+            "ExpressionAttributeValues": _encoded(
+                {
+                    ":active": "active",
+                    ":pod": pod.uid,
+                    ":attempt": launch.attempt,
+                    ":epoch": launch.credential_epoch,
+                    **({":user_turn": user_turn} if user_turn is not None else {}),
+                }
+            ),
+        }
+    }
+    if shared:
+        execution_metadata = store._read(f"TENANT#{execution.tenant_id}", f"EXEC#{run_id}") or {}
+        run_hash = hashlib.sha256(run_id.encode()).hexdigest()
+        reserved_name = f"chat-turn-{run_hash[:12]}-{run_hash[12:32]}"
+        if (
+            execution_metadata.get("status") != {"S": "pending"}
+            or execution_metadata.get("pod_name") != {"S": reserved_name}
+            or "chat_sandbox_creation" not in execution_metadata
+        ):
+            raise ChatAuthorizationRefusedError("chat shared creation changed")
+        execution_guard = {
+            "Update": {
+                "TableName": store.table,
+                "Key": _encoded({"pk": f"TENANT#{launch.tenant_id}", "sk": f"EXEC#{run_id}"}),
+                "UpdateExpression": "SET #status = :active, workload_binding = :pod, pod_name = :name, pod_ip = :ip",
+                "ConditionExpression": (
+                    "#status = :pending AND current_attempt = :attempt AND current_credential_epoch = :epoch "
+                    "AND attribute_not_exists(workload_binding) AND envelope_digest = :digest AND pod_name = :reserved "
+                    "AND chat_sandbox_creation = :creation AND attribute_not_exists(abort_command_id) "
+                    "AND attribute_not_exists(chat_pre_admission_cleanup)"
+                )
+                + (" AND chat_user_turn = :user_turn" if user_turn is not None else ""),
+                "ExpressionAttributeNames": {"#status": "status"},
+                "ExpressionAttributeValues": {
+                    **_encoded(
+                        {
+                            ":active": "active",
+                            ":pending": "pending",
+                            ":pod": pod.uid,
+                            ":name": pod.name,
+                            ":ip": pod.ip,
+                            ":attempt": launch.attempt,
+                            ":epoch": launch.credential_epoch,
+                            ":digest": digest,
+                            ":reserved": reserved_name,
+                            **({":user_turn": user_turn} if user_turn is not None else {}),
+                        }
+                    ),
+                    ":creation": execution_metadata["chat_sandbox_creation"],
+                },
+            }
+        }
     try:
         store.client.transact_write_items(
             TransactItems=[
@@ -287,33 +531,13 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
                 ),
                 context_write,
                 creation_check,
+                *crew_checks,
                 *user_writes,
                 *handoff_checks,
                 {"Put": {"TableName": store.table, "Item": launches.item(launch), "ConditionExpression": "attribute_not_exists(pk)"}},
                 store._authority_check(grant),
                 store._grant_check(grant, datetime.fromtimestamp(now, UTC)),
-                {
-                    "ConditionCheck": {
-                        "TableName": store.table,
-                        "Key": {"pk": {"S": f"TENANT#{launch.tenant_id}"}, "sk": {"S": f"EXEC#{run_id}"}},
-                        "ConditionExpression": (
-                            "#status = :active AND workload_binding = :pod AND current_attempt = :attempt "
-                            "AND current_credential_epoch = :epoch AND attribute_not_exists(abort_command_id) "
-                            "AND attribute_not_exists(chat_pre_admission_cleanup)"
-                        )
-                        + (" AND chat_user_turn = :user_turn" if user_turn is not None else ""),
-                        "ExpressionAttributeNames": {"#status": "status"},
-                        "ExpressionAttributeValues": _encoded(
-                            {
-                                ":active": "active",
-                                ":pod": pod.uid,
-                                ":attempt": launch.attempt,
-                                ":epoch": launch.credential_epoch,
-                                **({":user_turn": user_turn} if user_turn is not None else {}),
-                            }
-                        ),
-                    }
-                },
+                execution_guard,
             ]
         )
     except ClientError as error:

@@ -1,0 +1,781 @@
+{
+  "status": "planned-not-run",
+  "criteria": [
+    {
+      "criterion_id": "S01-AC-01",
+      "story": "S01",
+      "issue": 8888,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "manual",
+      "scenario_reference": "modules/agent-factory/rules/agents/issue-authoring.md@a13a7d92b0d644228d02d0f38ee22cfe1a5629bf#author-check-before-assignment",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S01",
+      "epic_criteria": [
+        "EC-01"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S01-AC-02",
+      "story": "S01",
+      "issue": 8888,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "manual",
+      "scenario_reference": "modules/agent-factory/rules/agents/issue-authoring.md@a13a7d92b0d644228d02d0f38ee22cfe1a5629bf#author-check-before-assignment",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S01",
+      "epic_criteria": [
+        "EC-01"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S01-AC-03",
+      "story": "S01",
+      "issue": 8888,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "manual",
+      "scenario_reference": "modules/agent-factory/rules/agents/issue-authoring.md@a13a7d92b0d644228d02d0f38ee22cfe1a5629bf#author-check-before-assignment",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S01",
+      "epic_criteria": [
+        "EC-01"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S02-AC-01",
+      "story": "S02",
+      "issue": 8889,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s02.py::test_install",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S02",
+      "epic_criteria": [
+        "EC-02",
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S02-AC-02",
+      "story": "S02",
+      "issue": 8889,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s02.py::test_isolation",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S02",
+      "epic_criteria": [
+        "EC-02",
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S02-AC-03",
+      "story": "S02",
+      "issue": 8889,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s02.py::test_restart",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S02",
+      "epic_criteria": [
+        "EC-02",
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S02-AC-04",
+      "story": "S02",
+      "issue": 8889,
+      "acceptance_id": "AC-04",
+      "scenario_id": "SCN-04",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s02.py::test_iam_renewal",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S02",
+      "epic_criteria": [
+        "EC-02",
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S02-AC-05",
+      "story": "S02",
+      "issue": 8889,
+      "acceptance_id": "AC-05",
+      "scenario_id": "SCN-05",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s02.py::test_optional_deployment_modes",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S02",
+      "epic_criteria": [
+        "EC-02",
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S03-AC-01",
+      "story": "S03",
+      "issue": 8890,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s03.py::test_backfill",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S03",
+      "epic_criteria": [
+        "EC-02"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S03-AC-02",
+      "story": "S03",
+      "issue": 8890,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s03.py::test_normalization",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S03",
+      "epic_criteria": [
+        "EC-02"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S03-AC-03",
+      "story": "S03",
+      "issue": 8890,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s03.py::test_incremental_replay",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S03",
+      "epic_criteria": [
+        "EC-02"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S04-AC-01",
+      "story": "S04",
+      "issue": 8891,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s04.py::test_admission",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S04",
+      "epic_criteria": [
+        "EC-03"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S04-AC-02",
+      "story": "S04",
+      "issue": 8891,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s04.py::test_scope_and_gaps",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S04",
+      "epic_criteria": [
+        "EC-03"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S04-AC-03",
+      "story": "S04",
+      "issue": 8891,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s04.py::test_durable_replay",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S04",
+      "epic_criteria": [
+        "EC-03"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S05-AC-01",
+      "story": "S05",
+      "issue": 8892,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s05.py::test_evidence_chain",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S05",
+      "epic_criteria": [
+        "EC-04"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S05-AC-02",
+      "story": "S05",
+      "issue": 8892,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s05.py::test_requirement_change",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S05",
+      "epic_criteria": [
+        "EC-04"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S05-AC-03",
+      "story": "S05",
+      "issue": 8892,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s05.py::test_attempts_and_missing",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S05",
+      "epic_criteria": [
+        "EC-04"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S06-AC-01",
+      "story": "S06",
+      "issue": 8893,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s06.py::test_api_cli_projection",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S06",
+      "epic_criteria": [
+        "EC-05"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S06-AC-02",
+      "story": "S06",
+      "issue": 8893,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s06.py::test_revision_selection",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S06",
+      "epic_criteria": [
+        "EC-05"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S06-AC-03",
+      "story": "S06",
+      "issue": 8893,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s06.py::test_publication_boundaries",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S06",
+      "epic_criteria": [
+        "EC-05"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S07-AC-01",
+      "story": "S07",
+      "issue": 8894,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s07.py::test_freshness_and_bounds",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S07",
+      "epic_criteria": [
+        "EC-06",
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S07-AC-02",
+      "story": "S07",
+      "issue": 8894,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s07.py::test_integrated_recovery",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S07",
+      "epic_criteria": [
+        "EC-06",
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S07-AC-03",
+      "story": "S07",
+      "issue": 8894,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s07.py::test_compatibility_recovery",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S07",
+      "epic_criteria": [
+        "EC-06",
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S07-AC-04",
+      "story": "S07",
+      "issue": 8894,
+      "acceptance_id": "AC-04",
+      "scenario_id": "SCN-04",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s07.py::test_end_to_end_isolation",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S07",
+      "epic_criteria": [
+        "EC-06",
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S08-AC-01",
+      "story": "S08",
+      "issue": 8895,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "manual",
+      "scenario_reference": "modules/agent-factory/rules/agents/issue-authoring.md@a13a7d92b0d644228d02d0f38ee22cfe1a5629bf#author-check-before-assignment",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence",
+      "stage_report": "S08",
+      "epic_criteria": [
+        "EC-07"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S08-AC-02",
+      "story": "S08",
+      "issue": 8895,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "manual",
+      "scenario_reference": "modules/agent-factory/rules/agents/issue-authoring.md@a13a7d92b0d644228d02d0f38ee22cfe1a5629bf#author-check-before-assignment",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence",
+      "stage_report": "S08",
+      "epic_criteria": [
+        "EC-07"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S08-AC-03",
+      "story": "S08",
+      "issue": 8895,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s08.py::test_cleanup_resume",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence",
+      "stage_report": "S08",
+      "epic_criteria": [
+        "EC-07"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S09-AC-01",
+      "story": "S09",
+      "issue": 8901,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s09.py::test_source_build",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S09",
+      "epic_criteria": [
+        "EC-02"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S09-AC-02",
+      "story": "S09",
+      "issue": 8901,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s09.py::test_publication",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S09",
+      "epic_criteria": [
+        "EC-02"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S09-AC-03",
+      "story": "S09",
+      "issue": 8901,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s09.py::test_failed_build_retry",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S09",
+      "epic_criteria": [
+        "EC-02"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S10-AC-01",
+      "story": "S10",
+      "issue": 8902,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "tests/e2e/product_onboarding/test_devlake_connectors.py::test_provider_reuse",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S10",
+      "epic_criteria": [
+        "EC-08"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S10-AC-02",
+      "story": "S10",
+      "issue": 8902,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "tests/e2e/product_onboarding/test_devlake_connectors.py::test_credential_lifecycle",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S10",
+      "epic_criteria": [
+        "EC-08"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S10-AC-03",
+      "story": "S10",
+      "issue": 8902,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "tests/e2e/product_onboarding/test_devlake_connectors.py::test_bounded_discovery",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S10",
+      "epic_criteria": [
+        "EC-08"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S10-AC-04",
+      "story": "S10",
+      "issue": 8902,
+      "acceptance_id": "AC-04",
+      "scenario_id": "SCN-04",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "tests/e2e/product_onboarding/test_devlake_connectors.py::test_deployment_gate",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S10",
+      "epic_criteria": [
+        "EC-08"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S11-AC-01",
+      "story": "S11",
+      "issue": 8903,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "tests/e2e/product_onboarding/test_devlake_enrichment.py::test_profile_setup",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S11",
+      "epic_criteria": [
+        "EC-09"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S11-AC-02",
+      "story": "S11",
+      "issue": 8903,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "tests/e2e/product_onboarding/test_devlake_enrichment.py::test_refresh_conflicts",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S11",
+      "epic_criteria": [
+        "EC-09"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S11-AC-03",
+      "story": "S11",
+      "issue": 8903,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "tests/e2e/product_onboarding/test_devlake_enrichment.py::test_resume_and_denial",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S11",
+      "epic_criteria": [
+        "EC-09"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S11-AC-04",
+      "story": "S11",
+      "issue": 8903,
+      "acceptance_id": "AC-04",
+      "scenario_id": "SCN-04",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "tests/e2e/product_onboarding/test_devlake_enrichment.py::test_optional_connectors",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S11",
+      "epic_criteria": [
+        "EC-09"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S12-AC-01",
+      "story": "S12",
+      "issue": 8919,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "tests/e2e/product_onboarding/test_connector_scope.py::test_context_authority",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S12",
+      "epic_criteria": [
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S12-AC-02",
+      "story": "S12",
+      "issue": 8919,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "tests/e2e/product_onboarding/test_connector_scope.py::test_policy_realms",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S12",
+      "epic_criteria": [
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S12-AC-03",
+      "story": "S12",
+      "issue": 8919,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "tests/e2e/product_onboarding/test_connector_scope.py::test_revocation_replay",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S12",
+      "epic_criteria": [
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S13-AC-01",
+      "story": "S13",
+      "issue": 8920,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s13.py::test_source_policy_reads",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S13",
+      "epic_criteria": [
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S13-AC-02",
+      "story": "S13",
+      "issue": 8920,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s13.py::test_live_revocation",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S13",
+      "epic_criteria": [
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S13-AC-03",
+      "story": "S13",
+      "issue": 8920,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-e2e",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s13.py::test_scope_boundaries",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/pilot-evidence",
+      "stage_report": "S13",
+      "epic_criteria": [
+        "EC-10"
+      ],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S14-AC-01",
+      "story": "S14",
+      "issue": 9449,
+      "acceptance_id": "AC-01",
+      "scenario_id": "SCN-01",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s07.py::ProviderProfileSourceTests::test_seven_live_sources_and_profile_bindings_match_protected_selection",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/provider-expansion",
+      "stage_report": "S14",
+      "epic_criteria": ["EC-08"],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S14-AC-02",
+      "story": "S14",
+      "issue": 9449,
+      "acceptance_id": "AC-02",
+      "scenario_id": "SCN-02",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s07.py::SourceWorkflowReadbackTests::test_independent_provider_receipt_cannot_be_missing_or_stale",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/provider-expansion",
+      "stage_report": "S14",
+      "epic_criteria": ["EC-08"],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S14-AC-03",
+      "story": "S14",
+      "issue": 9449,
+      "acceptance_id": "AC-03",
+      "scenario_id": "SCN-03",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s14_tool_sources.py",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/provider-expansion",
+      "stage_report": "S14",
+      "epic_criteria": ["EC-09"],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S14-AC-04",
+      "story": "S14",
+      "issue": 9449,
+      "acceptance_id": "AC-04",
+      "scenario_id": "SCN-04",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s14_tool_sources.py",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/provider-expansion",
+      "stage_report": "S14",
+      "epic_criteria": ["EC-11"],
+      "status": "not-run"
+    },
+    {
+      "criterion_id": "S14-AC-05",
+      "story": "S14",
+      "issue": 9449,
+      "acceptance_id": "AC-05",
+      "scenario_id": "SCN-05",
+      "scenario_kind": "automatic-integration",
+      "scenario_reference": "modules/insights/tests/devlake_poc/test_s07.py::SourceWorkflowReadbackTests::test_bound_source_artifacts_match_native_envelope_in_synthetic_contract",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w02-pilot/provider-expansion",
+      "stage_report": "S14",
+      "epic_criteria": ["EC-08", "EC-09", "EC-11"],
+      "status": "not-run"
+    }
+  ],
+  "epic_criteria": [
+    {
+      "id": "EC-01",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "id": "EC-02",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "id": "EC-03",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "id": "EC-04",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "id": "EC-05",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "id": "EC-06",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "id": "EC-07",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "id": "EC-08",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "id": "EC-09",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    },
+    {
+      "id": "EC-10",
+      "acceptance_node": "devlake-poc-8887/epic-8887/w03-closure/closure-evidence"
+    }
+  ]
+}

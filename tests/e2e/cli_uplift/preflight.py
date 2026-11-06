@@ -111,6 +111,23 @@ DISCOVERY_POPULATED = ("user_pool_id", "client_id", "cli_client_id", "region")
 UNFETCHED = object()
 
 
+def transport_refusal(exc):
+    """The injected transport's refusal, in words this module can publish.
+
+    Both `fetch` call sites below are driven in production by the run's own HTTP
+    transport (`ports.HttpPort.get_bytes` / `.get_json`), which raises its own
+    `ports.PortError` rather than `PreflightError`. Neither call site used to
+    account for that, so a refused gateway read left the stage reporting nothing
+    but an exception class name — `stage_failure: "PortError"` — with no way to
+    tell which read was refused. Importing ports here to catch it by type would
+    defeat the point of the injection, so the type name is carried as text.
+
+    The transport's sentences are already sanitised (a URL and a status code), so
+    this adds no provider detail that was not already safe to publish.
+    """
+    return f"{type(exc).__name__}: {exc}"
+
+
 def check_unauthenticated_discovery(cfg, record, *, discovery=UNFETCHED):
     """E01's precondition: discovery is reachable, correct, and needs no token.
 
@@ -220,34 +237,51 @@ def check_served_cli_hashes(cfg, expected_hashes, record, *, fetch=None):
     """
     import hashlib
 
+    from . import release
+
     require(
         expected_hashes,
         "No expected release hashes were supplied; served bytes cannot be judged",
     )
+    # A misrouted request returns the SPA's index.html with HTTP 200, which would
+    # otherwise hash cleanly as "some file we served". #8242: which contract a
+    # released file is held to — script, JSON manifest or hash-pinned pip input —
+    # is decided by `release.artifact_mismatch`, the same rule `release.manifest`
+    # applies to the committed bytes, so the two sides cannot drift apart. Only
+    # the wording is this side's, because here the gateway is the one answering.
+    problems = {
+        release.JSON_KIND: "did not return a JSON release artifact",
+        release.REQUIREMENTS_KIND: f"did not return {release.REQUIREMENTS_PROBLEM}",
+        release.SCRIPT_KIND: (
+            "did not return a script; the release route is misconfigured"
+        ),
+    }
     read = fetch or (lambda url: http_bytes(url))
     served = {}
     for name in sorted(expected_hashes):
         url = f"{cfg['gateway_url'].rstrip('/')}/cli/{name}"
-        payload = read(url)
-        # A misrouted request returns the SPA's index.html with HTTP 200, which
-        # would otherwise hash cleanly as "some file we served".
-        if name.endswith(".json"):
-            try:
-                parsed = json.loads(payload)
-            except (ValueError, TypeError):
-                parsed = None
-            require(
-                isinstance(parsed, dict),
-                f"{url} did not return a JSON release artifact",
-            )
-        else:
-            require(
-                isinstance(payload, bytes) and payload.startswith(b"#!"),
-                f"{url} did not return a script; the release route is misconfigured",
-            )
+        try:
+            payload = read(url)
+        except PreflightError:
+            raise
+        except Exception as exc:
+            # A release the gateway will not serve still aborts — it invalidates
+            # every case — but it aborts by NAME. #8242 put a file on this route
+            # whose serving contract is new, and "the release under test is not
+            # being served" is only actionable if the report says which file and
+            # what the route answered.
+            raise PreflightError(
+                f"{url} could not be read through the run's own transport "
+                f"({transport_refusal(exc)}); the gateway is not serving {name} "
+                "from the release under test"
+            ) from None
+        mismatch = release.artifact_mismatch(name, payload)
+        if mismatch:
+            # Raised rather than require()d: the sentence only exists for a
+            # mismatch, and require() would look up the None that means the
+            # served bytes are the kind of artifact they should be.
+            raise PreflightError(f"{url} {problems[mismatch]}")
         served[name] = hashlib.sha256(payload).hexdigest()
-
-    from . import release
 
     ok, report = release.compare(served, expected_hashes)
     record["served_cli_hashes"] = served
@@ -260,6 +294,85 @@ def check_served_cli_hashes(cfg, expected_hashes, record, *, fetch=None):
         "Refusing to evaluate a mixed or stale CLI release.",
     )
     return served
+
+
+PRODUCT_RELEASE_CASES = frozenset(
+    {
+        "deploy_core_receipt",
+        "reject_false_green",
+        "rollout_recovery",
+        "automatic_release_handoff",
+    }
+)
+
+
+def check_product_release(cfg, selected, receipt, runtime, record):
+    """Reject absent selections and release/runtime drift before Product acceptance."""
+    import re
+
+    require(
+        isinstance(selected, list | tuple | set)
+        and len(selected) == len(PRODUCT_RELEASE_CASES)
+        and set(selected) == PRODUCT_RELEASE_CASES,
+        "Product release case selection is missing, incomplete or unknown",
+    )
+    require(
+        isinstance(receipt, dict) and isinstance(runtime, dict),
+        "Product release requires a pinned receipt and independent runtime observation",
+    )
+    require(
+        re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("source_revision", "")))
+        and receipt["source_revision"] == cfg["expected_revision"],
+        "Product release source is missing or stale",
+    )
+    require(
+        re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("workflow_revision", "")))
+        and type(receipt.get("run_attempt")) is int
+        and receipt["run_attempt"] > 0,
+        "Product release workflow or attempt is not pinned",
+    )
+    require(
+        receipt.get("product_profile_enabled") is True
+        and receipt.get("product_onboarding_enabled") is False
+        and receipt.get("product_profile_schema_version") == "1.0",
+        "Product release capability is not the approved core slice",
+    )
+    require(
+        re.fullmatch(r"sha256:[0-9a-f]{64}", str(receipt.get("image_digest", "")))
+        and re.fullmatch(r"[0-9a-f]{64}", str(receipt.get("cli_manifest_sha256", "")))
+        and isinstance(receipt.get("migration_head"), str)
+        and receipt["migration_head"],
+        "Product release image, CLI or migration head is unpinned",
+    )
+    require(
+        runtime.get("source_revision") == receipt["source_revision"]
+        and runtime.get("image_digest") == receipt["image_digest"]
+        and runtime.get("migration_head") == receipt["migration_head"],
+        "Product runtime source, image or schema differs from the release",
+    )
+    require(
+        record.get("served_cli_hashes", {}).get("command-manifest.json")
+        == receipt["cli_manifest_sha256"],
+        "Product served CLI differs from the release",
+    )
+    api = runtime.get("api")
+    require(
+        isinstance(api, dict)
+        and api.get("authenticated") is True
+        and api.get("product_profile_schema_version")
+        == receipt["product_profile_schema_version"]
+        and api.get("product_profile_enabled") is True
+        and api.get("product_onboarding_enabled") is False,
+        "Product API capability readback is missing; health alone cannot pass",
+    )
+    record["product_release_check"] = {
+        "cases": sorted(PRODUCT_RELEASE_CASES),
+        "source_revision": receipt["source_revision"],
+        "image_digest": receipt["image_digest"],
+        "migration_head": receipt["migration_head"],
+        "cli_manifest_sha256": receipt["cli_manifest_sha256"],
+        "run_attempt": receipt["run_attempt"],
+    }
 
 
 def check_harness_isolation(auth_helper_text, record):
@@ -378,7 +491,11 @@ def check_deployment_bindings(cfg, record, *, fetch=None):
 
     `fetch` is injectable for the same reason `check_served_cli_hashes` takes one:
     the production stage reads through the run's own HTTP transport, which refuses
-    redirects before anything is sent, instead of a second urllib path here.
+    redirects before anything is sent, instead of a second urllib path here. That
+    transport's refusal is its own type, so it is caught here as well — catching
+    only `PreflightError` made this function keep its documented behaviour under
+    the offline double and lose it in production, where one unreachable binding
+    aborted the entire preflight instead of blocking the two cases that need it.
     """
     read = fetch or (lambda url: http_json(url, expect=200))
     bindings = cfg.get("deployments") or []
@@ -397,6 +514,9 @@ def check_deployment_bindings(cfg, record, *, fetch=None):
             discovery = read(url + DISCOVERY_PATH)
         except PreflightError as exc:
             problems[name] = str(exc)
+            continue
+        except Exception as exc:
+            problems[name] = transport_refusal(exc)
             continue
         if not isinstance(discovery, dict) or [
             key for key in DISCOVERY_POPULATED if not str(discovery.get(key) or "")
@@ -518,6 +638,9 @@ def missing_fixture_report(cfg, available):
     """
     names = {
         cases.ASSISTANT_LEDGER: "implemented and deployed installation upgrade ledger (#6896/#6927); cannot be supplied by a mock or config flag",
+        cases.DEV_BOX_LIFECYCLE: (
+            "approved Dev Box target, bounded budget, two ordinary owners and a running lifecycle controller (#7217)"
+        ),
         cases.ASSISTANT_USERS: "wss:// assistant endpoint and three separate ordinary-user fixture references (assistant_users.a1/a2/b1); A1/A2 in tenant A and B1 in tenant B, no admin credentials",
         cases.SUPERPLANE_RESEARCH: "an existing Superplane domain selected for read-only checks (research_readback=true); actual CLI reads must establish readiness",
         cases.DESTINATION: "cross-account destination and provisioner roles (config destination_role_arn + provisioner_role_arn)",

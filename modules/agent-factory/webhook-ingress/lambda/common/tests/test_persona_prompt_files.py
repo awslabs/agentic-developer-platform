@@ -77,6 +77,7 @@ def _staged_persona_files() -> dict[str, Path]:
             staged[path.stem] = path  # later roots overwrite, as in staging
     # Shared SDK definitions point to the maintained canonical persona source.
     import json
+
     for role in ("architect", "product", "pm", "intent-refinement"):
         definition = (
             _REPO_ROOT / f"modules/agent-factory/codex-harness/personas/{role}.json"
@@ -204,6 +205,7 @@ def test_only_token_safe_codex_personas_extend_another_mention() -> None:
         ("@agent-codex-architect", "@agent-codex"),
         ("@agent-codex-developer", "@agent-codex"),
         ("@agent-codex-intent-refinement", "@agent-codex"),
+        ("@agent-codex-operations", "@agent-codex"),
         ("@agent-codex-pm", "@agent-codex"),
         ("@agent-codex-product", "@agent-codex"),
         ("@agent-codex-reviewer", "@agent-codex"),

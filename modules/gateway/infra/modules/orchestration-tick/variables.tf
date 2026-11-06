@@ -242,23 +242,6 @@ variable "agent_submit_queue_url" {
   default     = ""
 }
 
-variable "dispatch_repo" {
-  description = <<-EOT
-    `owner/name` of the repository the engine dispatches work into, passed as
-    BG_ORCH_DISPATCH_REPO.
-
-    This is configuration rather than graph state because `OrchestrationNode`
-    carries no repo: it stores only `issue_ref` (an issue number), while the agent
-    worker's `parse_envelope` requires `source_ref.{installation_id, repo, issue}`.
-    See the scope section of `src/orchestration/dispatch_pass.py`.
-
-    Empty means no dispatch happens — same visible-not-silent behaviour as the
-    queue URL above.
-  EOT
-  type        = string
-  default     = ""
-}
-
 variable "dispatch_persona" {
   description = <<-EOT
     The agent persona engine dispatches as (BG_ORCH_DISPATCH_PERSONA). `developer`
@@ -327,6 +310,12 @@ variable "agent_authority_enabled" {
   default     = false
 }
 
+variable "product_story_dispatch_enabled" {
+  description = "Explicit Product-bound story rollout setting, shared with gateway readiness. Does not resume paused flows."
+  type        = bool
+  default     = false
+}
+
 variable "agent_authority_prepared" {
   description = "Provision the tick authority policy before enabling dispatch."
   type        = bool
@@ -360,17 +349,12 @@ variable "webhook_events_kms_key_arn" {
 
 variable "github_app_secret_arn_pattern" {
   description = <<-EOT
-    Secrets Manager ARN pattern for the per-tenant GitHub App credentials the tick
-    uses to post a command acknowledgement (`adp/<env>/tenants/*/github-app`).
-
-    A pattern rather than a concrete ARN because tenants are created at runtime and
-    each holds its own App key; scoping to the environment's tenant prefix is
-    narrower than the alternative of `Resource = "*"` on secretsmanager, and it
-    cannot reach the platform's own secrets.
-
-    Empty omits the statement, leaving the tick able to apply commands but not to
-    acknowledge them — reported as `command_acks_failed`, which forces a
-    non-success tick rather than failing silently.
+    Optional explicit Secrets Manager ARN scope for tenant GitHub App credentials
+    used by delivery reconciliation and command acknowledgements. An explicit
+    value is preserved exactly. When empty and engine, agent authority or shared
+    reporting is enabled, the tick derives a read-only scope for this account,
+    region and environment's tenants/*/github-app secrets (including ARN suffix).
+    With all three disabled, empty omits the grant.
   EOT
   type        = string
   default     = ""
@@ -425,6 +409,16 @@ variable "persona_model_mapping_enabled" {
   default     = false
 }
 
+variable "engine_operations_executor_enabled" {
+  description = "Enable operations story admission; requires protected authority and authenticated run reporting."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.engine_operations_executor_enabled || (var.agent_authority_enabled && var.shared_run_reporting_enabled)
+    error_message = "Operations execution requires protected authority and authenticated run reporting."
+  }
+}
+
 variable "shared_run_reporting_enabled" {
   type    = bool
   default = false
@@ -440,4 +434,11 @@ variable "shared_worker_role_arn" {
 variable "run_report_key_parameter" {
   type    = string
   default = ""
+}
+
+
+variable "agent_run_logs_bucket_name" {
+  description = "Existing worker run-log bucket used to reload authenticated, content-addressed review results. Empty disables artifact reads; required for protected review/merge reconciliation."
+  type        = string
+  default     = ""
 }

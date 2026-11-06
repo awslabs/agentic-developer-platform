@@ -1,0 +1,989 @@
+{
+  "schema_version": "1.0",
+  "context_snapshot_id": "snapshot-accounts-program-1",
+  "tenant_id": "tenant-coordination-example",
+  "project_id": "project-accounts",
+  "generated_at": "2026-10-15T09:00:00Z",
+  "records": [
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "adp-example",
+      "record_type": "product",
+      "record_id": "product-accounts",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Accounts",
+        "purpose": "Provide shared authentication for participating products.",
+        "intended_users": [
+          "Online shoppers"
+        ],
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-accounts-example"
+        },
+        "starting_point": "existing_assets",
+        "lifecycle_status": "active"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/purpose",
+            "/data/intended_users",
+            "/data/owner_ref",
+            "/data/starting_point",
+            "/data/lifecycle_status"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-product-accounts",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-product",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "adp-example",
+      "record_type": "project",
+      "record_id": "project-accounts",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Accounts delivery",
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-accounts-example"
+        },
+        "state": "registered"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/owner_ref",
+            "/data/state"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-project-accounts",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-project",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "portfolio-example",
+      "record_type": "program",
+      "record_id": "program-customer-experience",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Customer Experience Transformation",
+        "objective": "Offer a consistent experience across customer products.",
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-portfolio-example"
+        },
+        "status": "in_progress",
+        "planned_start_date": "2026-10-01",
+        "target_date": "2027-03-31"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/objective",
+            "/data/owner_ref",
+            "/data/status",
+            "/data/planned_start_date",
+            "/data/target_date"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "portfolio-example",
+              "record_type": "source_observation",
+              "record_id": "input-program-customer-experience",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-program",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "portfolio-example",
+      "record_type": "initiative",
+      "record_id": "initiative-unified-identity",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Unified Customer Identity",
+        "objective": "Use one customer identity across participating products.",
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-portfolio-example"
+        },
+        "status": "in_progress"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/objective",
+            "/data/owner_ref",
+            "/data/status"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "portfolio-example",
+              "record_type": "source_observation",
+              "record_id": "input-initiative-unified-identity",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-initiative",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "adp-example",
+      "record_type": "contribution",
+      "record_id": "contribution-accounts",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "initiative_ref": {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "portfolio-example",
+          "record_type": "initiative",
+          "record_id": "initiative-unified-identity",
+          "record_revision": "1"
+        },
+        "product_ref": {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "product",
+          "record_id": "product-accounts",
+          "record_revision": "1"
+        },
+        "objective": "Provide shared authentication for participating products.",
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-accounts-example"
+        },
+        "valid_from": "2026-10-15T09:00:00Z",
+        "planned_start_date": "2026-10-15",
+        "target_date": "2026-11-01"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/initiative_ref",
+            "/data/product_ref",
+            "/data/objective",
+            "/data/owner_ref",
+            "/data/valid_from",
+            "/data/planned_start_date",
+            "/data/target_date"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-contribution-accounts",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-contribution",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "portfolio-example",
+      "record_type": "coordination_milestone",
+      "record_id": "milestone-ready-for-pilot",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Ready for pilot",
+        "scope_ref": {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "portfolio-example",
+          "record_type": "initiative",
+          "record_id": "initiative-unified-identity",
+          "record_revision": "1"
+        },
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-portfolio-example"
+        },
+        "planning_status": "planned",
+        "target_date": "2026-11-01",
+        "target_timezone": "Etc/UTC",
+        "requirements_revision": "pilot-scope-1"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/scope_ref",
+            "/data/owner_ref",
+            "/data/planning_status",
+            "/data/target_date",
+            "/data/target_timezone",
+            "/data/requirements_revision"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "portfolio-example",
+              "record_type": "source_observation",
+              "record_id": "input-milestone-ready-for-pilot",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-coordination_milestone",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "github-accounts-example",
+      "record_type": "work_item",
+      "record_id": "epic-accounts-identity",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "kind": "epic",
+        "native_type": "Epic",
+        "title": "Provide shared authentication for participating products.",
+        "status": "in_progress",
+        "status_native": "In progress"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/kind",
+            "/data/native_type",
+            "/data/title",
+            "/data/status",
+            "/data/status_native"
+          ],
+          "state": "accepted",
+          "method": "connector",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "github-accounts-example",
+              "record_type": "source_observation",
+              "record_id": "input-epic-accounts-identity",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-work_item",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z",
+          "stale_after": "2026-10-15T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "adp-example",
+      "record_type": "release",
+      "record_id": "release-accounts-identity",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Accounts identity pilot",
+        "planning_status": "planned",
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-accounts-example"
+        },
+        "target_date": "2026-11-01",
+        "target_timezone": "Etc/UTC"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/planning_status",
+            "/data/owner_ref",
+            "/data/target_date",
+            "/data/target_timezone"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-release-accounts-identity",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-release",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "adp-example",
+      "record_type": "environment",
+      "record_id": "environment-accounts-test",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Accounts test",
+        "environment_class": "test",
+        "provider": "aws"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/environment_class",
+            "/data/provider"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-environment-accounts-test",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-environment",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "adp-example",
+      "record_type": "portfolio",
+      "record_id": "portfolio-commerce",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Commerce",
+        "objective": "Guide investment in the commerce products.",
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-commerce-example"
+        },
+        "lifecycle_status": "active"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/objective",
+            "/data/owner_ref",
+            "/data/lifecycle_status"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-portfolio-commerce",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-portfolio",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "tenant_id": "tenant-coordination-example",
+      "project_id": "project-accounts",
+      "source_connection_id": "adp-example",
+      "record_type": "portfolio",
+      "record_id": "portfolio-shared-services",
+      "record_revision": "1",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "data": {
+        "name": "Shared services",
+        "objective": "Coordinate reusable services across product areas.",
+        "owner_ref": {
+          "kind": "team",
+          "id": "team-platform-example"
+        },
+        "lifecycle_status": "active"
+      },
+      "provenance": [
+        {
+          "paths": [
+            "/data/name",
+            "/data/objective",
+            "/data/owner_ref",
+            "/data/lifecycle_status"
+          ],
+          "state": "accepted",
+          "method": "manual",
+          "source_refs": [
+            {
+              "tenant_id": "tenant-coordination-example",
+              "project_id": "project-accounts",
+              "source_connection_id": "adp-example",
+              "record_type": "source_observation",
+              "record_id": "input-portfolio-shared-services",
+              "record_revision": "1"
+            }
+          ],
+          "authority_mapping_ref": {
+            "tenant_id": "tenant-coordination-example",
+            "project_id": "project-accounts",
+            "source_connection_id": "adp-example",
+            "record_type": "authority_mapping",
+            "record_id": "mapping-portfolio",
+            "record_revision": "1"
+          },
+          "observed_at": "2026-10-15T09:00:00Z"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "relationship_id": "link-accounts-project",
+      "relationship_type": "product_project",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-accounts",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "project",
+        "record_id": "project-accounts",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-accounts-project",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-accounts-program-initiative",
+      "relationship_type": "program_initiative",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "portfolio-example",
+        "record_type": "program",
+        "record_id": "program-customer-experience",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "portfolio-example",
+        "record_type": "initiative",
+        "record_id": "initiative-unified-identity",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-accounts-program-initiative",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-accounts-commitment-work",
+      "relationship_type": "contribution_work",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "contribution",
+        "record_id": "contribution-accounts",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "github-accounts-example",
+        "record_type": "work_item",
+        "record_id": "epic-accounts-identity",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-accounts-commitment-work",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-accounts-product-work",
+      "relationship_type": "product_work",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-accounts",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "github-accounts-example",
+        "record_type": "work_item",
+        "record_id": "epic-accounts-identity",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-accounts-product-work",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-accounts-release",
+      "relationship_type": "product_release",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-accounts",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "release",
+        "record_id": "release-accounts-identity",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-accounts-release",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-accounts-plan",
+      "relationship_type": "release_plans_work",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "release",
+        "record_id": "release-accounts-identity",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "github-accounts-example",
+        "record_type": "work_item",
+        "record_id": "epic-accounts-identity",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-accounts-plan",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-accounts-environment",
+      "relationship_type": "project_environment",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "project",
+        "record_id": "project-accounts",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "environment",
+        "record_id": "environment-accounts-test",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-accounts-environment",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-accounts-target",
+      "relationship_type": "release_targets_environment",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "release",
+        "record_id": "release-accounts-identity",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "environment",
+        "record_id": "environment-accounts-test",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-accounts-target",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-accounts-milestone-release",
+      "relationship_type": "milestone_release",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "portfolio-example",
+        "record_type": "coordination_milestone",
+        "record_id": "milestone-ready-for-pilot",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "release",
+        "record_id": "release-accounts-identity",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-accounts-milestone-release",
+          "record_revision": "1"
+        }
+      ],
+      "milestone_requirement": {
+        "required": true,
+        "outcome": "deployed",
+        "environment_ref": {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "environment",
+          "record_id": "environment-accounts-test",
+          "record_revision": "1"
+        },
+        "requirements_revision": "pilot-scope-1"
+      },
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-portfolio-commerce-product-accounts",
+      "relationship_type": "portfolio_product",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "portfolio",
+        "record_id": "portfolio-commerce",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-accounts",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "portfolio-membership-1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-portfolio-commerce-product-accounts",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    },
+    {
+      "relationship_id": "link-portfolio-shared-services-product-accounts",
+      "relationship_type": "portfolio_product",
+      "from_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "portfolio",
+        "record_id": "portfolio-shared-services",
+        "record_revision": "1"
+      },
+      "to_ref": {
+        "tenant_id": "tenant-coordination-example",
+        "project_id": "project-accounts",
+        "source_connection_id": "adp-example",
+        "record_type": "product",
+        "record_id": "product-accounts",
+        "record_revision": "1"
+      },
+      "valid_from": "2026-10-15T09:00:00Z",
+      "recorded_at": "2026-10-15T09:00:00Z",
+      "mapping_version": "portfolio-membership-1",
+      "source_refs": [
+        {
+          "tenant_id": "tenant-coordination-example",
+          "project_id": "project-accounts",
+          "source_connection_id": "adp-example",
+          "record_type": "mapping_decision",
+          "record_id": "mapping-link-portfolio-shared-services-product-accounts",
+          "record_revision": "1"
+        }
+      ],
+      "source_connection_id": "adp-example",
+      "relationship_revision": "1"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.org/insights/results/v1/error.schema.json",
+  "title": "Insights results read error v1",
+  "type": "object",
+  "required": ["error"],
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {"enum": ["invalid_request", "unauthenticated", "not_found", "unsupported_capability", "projection_pending", "projection_incomplete"]},
+        "message": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

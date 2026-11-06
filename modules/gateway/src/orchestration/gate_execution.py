@@ -6,9 +6,9 @@ from sqlalchemy import select
 
 from .compile import PolicyNotAcceptableError
 from .evaluation_acceptance import EvaluationAcceptanceRequest, accept_evaluation, preview_evaluation
-from .evaluation_plan import accepted_evaluation
+from .evaluation_plan import accepted_evaluation, human_evaluation, latest_human_gate_evidence, legacy_worker_gate
 from .execution_policy import Action
-from .models import OrchestrationEdge, OrchestrationNode
+from .models import OrchestrationEdge, OrchestrationFlow, OrchestrationNode
 from .policy_admission import load_in_force_policy
 from .repository import OrchestrationRepository
 from .repository_evaluation_contract import canonical
@@ -27,6 +27,16 @@ async def renew(session, flow_id, actor, request):
 
 
 async def prepare_gate_execution(session, *, gate, actor, window_request=None):
+    if gate.kind == "eval" and not await legacy_worker_gate(session, gate):
+        row, evidence = await latest_human_gate_evidence(session, gate)
+        return {
+            "required": False,
+            "ready": row is not None,
+            "runs": [],
+            "problems": [] if row is not None else ["The human evaluation gate has no verified evidence binding."],
+            "evidence_id": row.id if row is not None else None,
+            "evidence": evidence,
+        }
     repo = OrchestrationRepository(session)
     plan = await repo.get_accepted_plan(org_id=gate.org_id, flow_id=gate.flow_id)
     children = (
@@ -72,6 +82,17 @@ async def prepare_gate_execution(session, *, gate, actor, window_request=None):
                 problems.append(f"{child.title}: the plan needs an executable evaluation specification (workflow, target, limits and evidence).")
                 continue
             _, spec, _ = accepted
+            if (
+                spec.evidence_schema == "orchestration-evaluation/v1"
+                and inputs.policy is not None
+                and inputs.refusal is None
+                and await human_evaluation(session, child) is not None
+            ):
+                # The tick presents this accepted human review with predecessor
+                # evidence; it does not dispatch an evaluation. Requiring the
+                # automated action here would block a legitimate human gate.
+                # Workflow/repository producers retain their execution checks.
+                continue
             if spec.evidence_schema != "workflow-evaluation/v1":
                 # Existing machine evaluations retain their previously accepted
                 # authority. They must already be executable before this gate.
@@ -115,6 +136,15 @@ async def prepare_gate_execution(session, *, gate, actor, window_request=None):
 
 async def authorize_gate_execution(session, *, gate, actor, reviewed):
     prepared = await prepare_gate_execution(session, gate=gate, actor=actor, window_request=(reviewed or {}).get("window_request"))
+    flow = await session.scalar(
+        select(OrchestrationFlow)
+        .where(OrchestrationFlow.org_id == gate.org_id, OrchestrationFlow.id == gate.flow_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if flow is None or flow.archived_at is not None:
+        raise PolicyNotAcceptableError("Unarchive this flow before approving new gate work.")
+
     if not prepared["required"]:
         return
     if not prepared["ready"]:

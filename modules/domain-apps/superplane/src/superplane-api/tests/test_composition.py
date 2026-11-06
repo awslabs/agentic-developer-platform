@@ -569,6 +569,15 @@ async def test_composition_passes_its_actual_producer_to_lifecycle_facade():
     try:
         facade = get_operation_facade()
         assert composition.dispatcher is not None
+        assert composition.dispatcher.settlement_delivery.ledger is composition.ledger
+        assert (
+            composition.dispatcher.settlement_delivery.operation_connect
+            == composition._connections.connect
+        )
+        assert (
+            composition.dispatcher.settlement_delivery.domain_connect
+            == composition._domain_connections.connect
+        )
         assert facade._lifecycle_verify.__self__ is composition.dispatcher
         assert (
             facade._lifecycle_verify.__func__

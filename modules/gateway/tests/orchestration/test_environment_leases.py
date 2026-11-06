@@ -41,10 +41,18 @@ from src.orchestration.environment_leases import (
     LeaseState,
     ReleaseReason,
     acquire_lease,
+    begin_shared_publication,
     reconcile_lease,
+    record_shared_publication_absence,
+    recover_shared_publication,
     release_lease,
+    rollforward_shared_publication,
+    settle_shared_publication,
+    shared_release_held,
+    shared_release_target,
 )
 from src.orchestration.models import OrchestrationEnvironmentLease
+from src.orchestration.operations_publication_recovery import ImageAbsence, ImageReadback
 from src.shared.models.base import Base
 
 ORG_A = "org-alpha"
@@ -138,6 +146,258 @@ async def _expire(session: AsyncSession, key: str, *, reconciled: str | None = N
         row.reconciled_terminal_evidence = reconciled
         row.reconciled_at = datetime.now(UTC)
     await session.flush()
+
+
+async def test_unsettled_publication_blocks_reconciliation_release_and_reconciled_takeover(session):
+    target = _target()
+    holder = _holder()
+    revision = "a" * 40
+    digest = "sha256:" + "b" * 64
+    await acquire_lease(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=revision)
+    assert not await begin_shared_publication(
+        session,
+        target=target,
+        holder=_holder(action="other"),
+        manifest_entry_id=ENTRY,
+        release_ref=revision,
+        digest=digest,
+    )
+    assert await begin_shared_publication(
+        session,
+        target=target,
+        holder=holder,
+        manifest_entry_id=ENTRY,
+        release_ref=revision,
+        digest=digest,
+    )
+    row = await _row(session, target.canonical_key)
+    assert row.publication_pending_digest == digest
+    held = dict(
+        target=target,
+        org_id=holder.org_id,
+        action_id=holder.action_id,
+        release_ref=revision,
+        manifest_entry_id=ENTRY,
+        generation=holder.generation,
+        started_at=datetime.now(UTC),
+    )
+    assert not await shared_release_held(session, **held)
+    assert await shared_release_held(session, **held, allow_publication_pending=True)
+    assert not await begin_shared_publication(
+        session,
+        target=target,
+        holder=holder,
+        manifest_entry_id=ENTRY,
+        release_ref=revision,
+        digest=digest,
+    )
+    assert not await begin_shared_publication(
+        session,
+        target=target,
+        holder=holder,
+        manifest_entry_id=ENTRY,
+        release_ref=revision,
+        digest="sha256:" + "c" * 64,
+    )
+    observed = await reconcile_lease(
+        session,
+        canonical_target_key=target.canonical_key,
+        expected_revision=row.revision,
+        holder=holder,
+        terminal_evidence=EVIDENCE_TEXT,
+    )
+    assert observed.reason == "publication_unsettled"
+    released = await release_lease(
+        session,
+        canonical_target_key=target.canonical_key,
+        holder=holder,
+        reason=ReleaseReason.COMPLETED,
+        terminal_evidence=EVIDENCE_TEXT,
+    )
+    assert released.reason == "publication_unsettled"
+    await _expire(session, target.canonical_key, reconciled=EVIDENCE_TEXT)
+    contender = await acquire_lease(
+        session,
+        target=target,
+        holder=_holder(action="other"),
+        manifest_entry_id=ENTRY,
+        release_ref=revision,
+    )
+    assert contender.kind is LeaseOutcomeKind.CONFLICT
+    assert contender.lease is None
+    assert (await _row(session, target.canonical_key)).publication_pending_digest == digest
+    row = await _row(session, target.canonical_key)
+    row.lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+    await session.flush()
+    assert not await settle_shared_publication(
+        session,
+        target=target,
+        holder=holder,
+        manifest_entry_id=ENTRY,
+        release_ref=revision,
+        digest="sha256:" + "c" * 64,
+    )
+    assert await settle_shared_publication(
+        session,
+        target=target,
+        holder=holder,
+        manifest_entry_id=ENTRY,
+        release_ref=revision,
+        digest=digest,
+    )
+    assert (await _row(session, target.canonical_key)).publication_pending_digest is None
+    assert await shared_release_held(session, **held)
+    released = await release_lease(
+        session,
+        canonical_target_key=target.canonical_key,
+        holder=holder,
+        reason=ReleaseReason.COMPLETED,
+        terminal_evidence=EVIDENCE_TEXT,
+    )
+    assert released.applied
+
+
+async def test_lost_publication_reply_requires_matching_image_and_original_owner(session):
+    target = shared_release_target(_target(), environment="dev", group="adapter-foundation")
+    holder = _holder()
+    revision = "a" * 40
+    digest = "sha256:" + "b" * 64
+    assert (await acquire_lease(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=revision)).applied
+    assert await begin_shared_publication(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=revision, digest=digest)
+    await _expire(session, target.canonical_key)
+    image = ImageReadback(target.account_id, target.region, "adp-tools-dev-adapters", revision, digest, datetime.now(UTC))
+    recovery = dict(
+        target=target,
+        holder=holder,
+        manifest_entry_id=ENTRY,
+        release_ref=revision,
+        digest=digest,
+        terminal_evidence=EVIDENCE_TEXT,
+        image_readback=image,
+    )
+    row = await _row(session, target.canonical_key)
+    original_revision = row.revision
+    for changes in (
+        {"holder": _holder(action="other")},
+        {"holder": _holder(generation=holder.generation + 1)},
+        {"terminal_evidence": ""},
+        {"image_readback": None},
+        {
+            "image_readback": ImageReadback(
+                target.account_id, target.region, image.repository, revision, digest, datetime.now(UTC) - timedelta(days=2)
+            )
+        },
+        {
+            "image_readback": ImageReadback(
+                target.account_id, target.region, image.repository, revision, digest, datetime.now(UTC) + timedelta(days=2)
+            )
+        },
+        {"image_readback": ImageReadback(target.account_id, target.region, image.repository, revision, "sha256:" + "c" * 64, image.observed_at)},
+        {"image_readback": ImageReadback(target.account_id, target.region, image.repository, "c" * 40, digest, image.observed_at)},
+        {"image_readback": ImageReadback(target.account_id, target.region, "adp-tools-prod-adapters", revision, digest, image.observed_at)},
+    ):
+        assert not await recover_shared_publication(session, **{**recovery, **changes})
+        assert row.revision == original_revision
+        assert row.publication_pending_digest == digest
+    assert await recover_shared_publication(session, **recovery)
+    assert row.revision == original_revision + 1
+    assert row.publication_pending_digest is None
+    assert row.reconciled_terminal_evidence == EVIDENCE_TEXT
+    assert not await recover_shared_publication(session, **recovery)
+    assert (await acquire_lease(session, target=target, holder=_holder(action="next"), manifest_entry_id=ENTRY, release_ref="c" * 40)).applied
+
+
+async def test_terminal_missing_image_retains_pending_marker_and_fences_other_writers(session):
+    target = shared_release_target(_target(), environment="dev", group="adapter-foundation")
+    holder = _holder()
+    source = "a" * 40
+    digest = "sha256:" + "b" * 64
+    assert (await acquire_lease(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=source)).applied
+    assert await begin_shared_publication(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=source, digest=digest)
+    absence = ImageAbsence(target.account_id, target.region, "adp-tools-dev-adapters", source, digest, datetime.now(UTC))
+    proof = dict(
+        target=target,
+        holder=holder,
+        manifest_entry_id=ENTRY,
+        release_ref=source,
+        digest=digest,
+        terminal_evidence=EVIDENCE_TEXT,
+        image_absence=absence,
+    )
+    row = await _row(session, target.canonical_key)
+    original_revision = row.revision
+    for change in (
+        {"holder": _holder(action="other")},
+        {"holder": _holder(generation=2)},
+        {"release_ref": "c" * 40},
+        {"digest": "sha256:" + "c" * 64},
+        {"terminal_evidence": ""},
+        {"image_absence": None},
+        {"image_absence": ImageAbsence(target.account_id, target.region, absence.repository, source, digest, datetime.now(UTC) - timedelta(days=2))},
+        {"image_absence": ImageAbsence(target.account_id, target.region, absence.repository, source, digest, datetime.now(UTC) + timedelta(days=2))},
+        {"image_absence": ImageAbsence(target.account_id, target.region, absence.repository, source, "sha256:" + "c" * 64, absence.observed_at)},
+    ):
+        assert not await record_shared_publication_absence(session, **{**proof, **change})
+        assert row.revision == original_revision
+        assert row.publication_pending_digest == digest
+    assert await record_shared_publication_absence(session, **proof)
+    assert row.publication_pending_digest == digest
+    assert row.reconciled_terminal_evidence == EVIDENCE_TEXT
+    assert row.revision == original_revision + 1
+    assert await record_shared_publication_absence(session, **proof)
+    assert row.revision == original_revision + 1
+    refreshed = await acquire_lease(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=source)
+    assert refreshed.applied
+    assert row.reconciled_terminal_evidence == EVIDENCE_TEXT
+    assert row.reconciled_at is not None and row.publication_pending_digest == digest
+    displaced = await acquire_lease(session, target=target, holder=_holder(generation=2), manifest_entry_id=ENTRY, release_ref=source)
+    assert displaced.kind is LeaseOutcomeKind.CONFLICT
+    assert row.owner_generation == holder.generation
+    await _expire(session, target.canonical_key)
+    contender = await acquire_lease(session, target=target, holder=_holder(action="next"), manifest_entry_id=ENTRY, release_ref="c" * 40)
+    assert contender.kind is LeaseOutcomeKind.CONFLICT
+    assert not await begin_shared_publication(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=source, digest=digest)
+    assert row.publication_pending_digest == digest
+
+
+async def test_rollforward_requires_new_absence_after_recorded_terminal_and_same_holder(session):
+    target = shared_release_target(_target(), environment="dev", group="adapter-foundation")
+    holder = _holder()
+    source = "a" * 40
+    digest = "sha256:" + "b" * 64
+    await acquire_lease(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=source)
+    assert await begin_shared_publication(session, target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=source, digest=digest)
+    absence = ImageAbsence(target.account_id, target.region, "adp-tools-dev-adapters", source, digest, datetime.now(UTC))
+    proof = dict(target=target, holder=holder, manifest_entry_id=ENTRY, release_ref=source, digest=digest, terminal_evidence=EVIDENCE_TEXT)
+    retry = {**proof, "successor": _holder(generation=2)}
+    assert not await rollforward_shared_publication(session, **retry, image_absence=absence)
+    assert await record_shared_publication_absence(session, **proof, image_absence=absence)
+    row = await _row(session, target.canonical_key)
+    earlier = row.acquired_at
+    revision = row.revision
+    for changed in (
+        {"holder": _holder(action="other")},
+        {"holder": _holder(generation=2)},
+        {"successor": _holder(action="other", generation=2)},
+        {"terminal_evidence": "a different run"},
+        {"release_ref": "c" * 40},
+        {"digest": "sha256:" + "c" * 64},
+        {"image_absence": absence},
+        {"image_absence": ImageAbsence(target.account_id, target.region, absence.repository, source, digest, datetime.now(UTC) + timedelta(hours=1))},
+    ):
+        fresh = ImageAbsence(target.account_id, target.region, absence.repository, source, digest, datetime.now(UTC))
+        assert not await rollforward_shared_publication(session, **{**retry, "image_absence": fresh, **changed})
+        assert row.revision == revision and row.publication_pending_digest == digest
+    fresh = ImageAbsence(target.account_id, target.region, absence.repository, source, digest, datetime.now(UTC))
+    assert await rollforward_shared_publication(session, **retry, image_absence=fresh)
+    assert row.publication_pending_digest is None
+    assert row.reconciled_terminal_evidence is None and row.reconciled_at is None
+    assert row.acquired_at >= earlier.replace(tzinfo=UTC) and row.revision == revision + 1
+    assert row.owner_generation == 2
+    assert not await rollforward_shared_publication(session, **retry, image_absence=fresh)
+    assert (
+        await acquire_lease(session, target=target, holder=_holder(action="other"), manifest_entry_id=ENTRY, release_ref=source)
+    ).kind is LeaseOutcomeKind.CONFLICT
 
 
 class TestHolderValidation:

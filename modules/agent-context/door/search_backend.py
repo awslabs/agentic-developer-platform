@@ -18,6 +18,7 @@ import httpx
 
 from .acl import SearchHit
 from .tracing import get_tracer
+from .zoekt_transport import ZoektUnavailable, search_json
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class SearchBackend(Protocol):
         Returns
         -------
         List of SearchHit objects (with repo_name and data dict).
-        Empty list on error (fail-safe for search availability).
+        Empty list only when a completed search has no matches.
         """
         ...
 
@@ -95,44 +96,30 @@ class ZoektSearchBackend:
         """Query Zoekt and return results as SearchHit objects.
 
         Uses POST /api/search (required by Zoekt v16+; GET returns 405).
-        Returns empty list on timeout/error (fail-safe: search unavailability
-        should not crash the Door — it degrades to no exact-search results).
+        Raises ZoektUnavailable if the backend fails, so callers cannot mistake
+        a failed search for a genuine empty result.
         """
         if len(self._api_key) < 32 or self._api_key.upper().startswith("PLACEHOLDER"):
             log.error("Zoekt authentication is not configured")
-            return []
+            raise ZoektUnavailable() from None
         # Build the Zoekt query string with optional repo filter
         zoekt_query = query
         if repo_ids:
             repo_filter = _build_repo_filter(repo_ids)
             zoekt_query = f"({query}) r:{repo_filter}"
 
-        payload: dict[str, Any] = {"q": zoekt_query, "num": limit}
-
         with _search_tracer.start_as_current_span(
             "zoekt_search",
             attributes={"query": query[:100], "limit": limit},
         ):
             try:
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
-                    resp = await client.post(
-                        f"{self._base_url}/api/search",
-                        json=payload,
-                        headers={"Authorization": f"Bearer {self._api_key}"},
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-            except httpx.TimeoutException:
-                log.warning(
-                    "zoekt search timed out after %.1fs for query: %s", self._timeout, query
+                data = await search_json(
+                    self._base_url, zoekt_query, limit=limit,
+                    timeout=self._timeout, api_key=self._api_key,
                 )
-                return []
-            except httpx.HTTPStatusError as e:
-                log.warning("zoekt returned HTTP %d for query: %s", e.response.status_code, query)
-                return []
             except Exception:
-                log.warning("zoekt search failed for query: %s", query, exc_info=True)
-                return []
+                log.warning("zoekt search failed")
+                raise ZoektUnavailable() from None
 
             return _parse_zoekt_response(data)
 

@@ -40,7 +40,7 @@ log = logging.getLogger("publish-ingestion")
 # ---------------------------------------------------------------------------
 
 from config import settings
-from scope import DEFAULT_SCOPE, IngestionScope
+from scope import asset_storage_prefix, validate_ingestion_attempt, DEFAULT_SCOPE, IngestionScope
 from source_admission import validate_source
 from s3_source_guard import check_s3_source
 from url_fetch import fetch
@@ -242,6 +242,7 @@ def publish_message(
     scope: IngestionScope | None = None,
     *,
     registry_asset_id: str | None = None,
+    ingestion_attempt_id: str | None = None,
     installation_id: int | None = None,
 ) -> bool:
     """Publish a single ingestion message to SQS."""
@@ -252,11 +253,18 @@ def publish_message(
     except ValueError as exc:
         log.error("Refusing ingestion source type=%s: %s", content_type, exc)
         return False
+    if scope and (scope.is_product or (scope.is_personal and registry_asset_id)):
+        try:
+            asset_storage_prefix(scope, "content", registry_asset_id)
+            validate_ingestion_attempt(ingestion_attempt_id)
+        except ValueError as exc:
+            log.error("Refusing registered ingestion without current attempt: %s", exc)
+            return False
     now = datetime.now(timezone.utc).isoformat()
     message = {
         "source": source,
         "content_type": content_type,
-        "steps": STEPS_BY_TYPE.get(content_type, []),
+        "steps": ["embed_vectors"] if scope and (scope.is_product or (scope.is_personal and registry_asset_id)) and content_type == "repo" else STEPS_BY_TYPE.get(content_type, []),
         "force": force,
         "tags": tags,
         "triggered_by": triggered_by,
@@ -267,6 +275,8 @@ def publish_message(
         message["title"] = title
     if registry_asset_id:
         message["registry_asset_id"] = registry_asset_id
+    if ingestion_attempt_id:
+        message["ingestion_attempt_id"] = ingestion_attempt_id
     if installation_id is not None:
         message["installation_id"] = installation_id
 
@@ -366,7 +376,7 @@ def publish_from_registry(
             log.error("Refusing registered repository source: %s", exc)
             stats["errors"] += 1
             continue
-        state = get_dynamo_state(org_repo, "repo")
+        state = get_dynamo_state(asset.asset_id if asset.product_id or asset.owner_sub else org_repo, "repo")
 
         if not force and not has_changed(org_repo, state, "repo"):
             log.info("SKIP %s — no changes", org_repo)
@@ -377,9 +387,10 @@ def publish_from_registry(
         scope = IngestionScope(
             tenant_id=asset.tenant_id,
             owner_sub=asset.owner_sub,
-            project_id=asset.project_id,
+            project_id=None if asset.product_id else asset.project_id,
+            product_id=asset.product_id,
             visibility=(
-                "personal" if asset.owner_sub else "tenant" if asset.tenant_id else "shared"
+                "product" if asset.product_id else "personal" if asset.owner_sub else "tenant" if asset.tenant_id else "shared"
             ),
         )
 
@@ -391,6 +402,7 @@ def publish_from_registry(
             triggered_by=triggered_by,
             scope=scope,
             registry_asset_id=asset.asset_id,
+            ingestion_attempt_id=asset.ingestion_attempt_id,
             installation_id=asset.installation_id,
         ):
             stats["enqueued"] += 1

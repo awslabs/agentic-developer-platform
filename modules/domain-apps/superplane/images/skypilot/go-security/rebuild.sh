@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Run with Go 1.26.8 on PATH. Outputs matched, patched tools to ./bin.
+# Run with Go 1.26.9 on PATH. Outputs matched, patched tools to ./bin.
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 work=${1:?usage: rebuild.sh BUILD_DIRECTORY}
 mkdir -p "$work"
 work=$(cd -- "$work" && pwd)
-[[ $(go version) == 'go version go1.26.8 linux/amd64' ]]
+[[ $(go version) == 'go version go1.26.9 linux/amd64' ]]
 mkdir -p "$work/bin" "$work/gcp" "$work/ssm" "$work/crc"
 curl -fsSL https://codeload.github.com/kubernetes/cloud-provider-gcp/tar.gz/395432f6b23de7465d1a0ebb9b384cf96e3a04b3 -o "$work/gcp.tar.gz"
 curl -fsSL https://codeload.github.com/aws/session-manager-plugin/tar.gz/dcff8da8cdecd53789bd06a193bd2032665dccd8 -o "$work/ssm.tar.gz"
-curl -fsSL https://dl.google.com/dl/cloudsdk/channels/rapid/components/google-cloud-sdk-gcloud-crc32c-linux-x86_64-20260821073916.tar.gz -o "$work/crc.tar.gz"
-printf '%s  %s\n' 3c22633cd3f2ebee3e73398d61ceb395055f140e54f8e9081ded54db156fb162 "$work/gcp.tar.gz" f75f8c3003045bbf5da7ee4dec7454cad65b5c9053d2516f3596ecb523c4cfed "$work/ssm.tar.gz" bbc5a0a1f93eec8996f166c7b014f63cf192ea17bd0fc55aa325e52d543a6a81 "$work/crc.tar.gz" | sha256sum -c -
+curl -fsSL https://dl.google.com/dl/cloudsdk/channels/rapid/components/google-cloud-sdk-gcloud-crc32c-linux-x86_64-20261016073856.tar.gz -o "$work/crc.tar.gz"
+printf '%s  %s\n' 3c22633cd3f2ebee3e73398d61ceb395055f140e54f8e9081ded54db156fb162 "$work/gcp.tar.gz" f75f8c3003045bbf5da7ee4dec7454cad65b5c9053d2516f3596ecb523c4cfed "$work/ssm.tar.gz" 09ff51e9c02740f21b0b3d0943a83d007e46273e0c6a4590cdb0aa874cd55018 "$work/crc.tar.gz" | sha256sum -c -
 tar -xzf "$work/gcp.tar.gz" --strip-components=1 -C "$work/gcp"
 tar -xzf "$work/ssm.tar.gz" --strip-components=1 -C "$work/ssm"
 tar -xzf "$work/crc.tar.gz" -C "$work/crc"

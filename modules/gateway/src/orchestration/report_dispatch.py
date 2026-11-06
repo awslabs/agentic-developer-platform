@@ -10,7 +10,7 @@ from sqlalchemy import JSON, or_, select
 from src.shared.models.base import utcnow
 
 from .flow_execution import flow_is_paused
-from .models import DecisionKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
+from .models import DecisionKind, OrchestrationAction, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from .run_reports import OrchestrationRunReport, RunReportError, prepare_run_report, run_result_for_assignment
 
 
@@ -158,29 +158,52 @@ async def _recover_continuation(session, row, node, config):
     """
     from .dispatch_pass import PendingPublish
     from .genesis import resolve_engine_genesis
-    from .pr_bindings import active_binding_for_node, binding_scope_matches
+    from .pr_bindings import active_binding_for_node, binding_scope_matches, continuation_binding_hold
     from .pr_identity import PrIdentityError, resolve_pr_identity
+    from .review_cycle import DISPATCH_KIND
     from .shared_cycle import validate_current_report_assignment
 
     execution, identity = await validate_current_report_assignment(session, row)
-    if execution.status in {"concluded", "superseded"} or config.repo != row.repo:
+    if execution.status in {"concluded", "superseded"}:
         raise RunReportError("execution_assignment_superseded")
     binding = await active_binding_for_node(session, org_id=row.org_id, node_id=row.node_id, attempt=row.attempt)
     cycle = row.dispatch_metadata["review_cycle_input"]
+    action = await session.scalar(
+        select(OrchestrationAction).where(
+            OrchestrationAction.org_id == row.org_id,
+            OrchestrationAction.execution_id == execution.id,
+            OrchestrationAction.operation_key == cycle.get("operation_key"),
+            OrchestrationAction.kind == DISPATCH_KIND,
+        )
+    )
     if (
         binding is None
+        or action is None
+        or binding.id != action.detail.get("binding_id")
+        or binding.revision != action.detail.get("binding_revision")
+        or binding.provider_pr_node_id != action.detail.get("provider_pr_node_id")
         or not binding_scope_matches(binding, node)
         or binding.repo != row.repo
         or binding.provider_repository_id != row.provider_repository_id
+        or binding.installation_id != row.installation_id
+        or cycle.get("repo") != binding.repo
         or binding.pr_number != cycle.get("pr_number")
     ):
         raise RunReportError("repair_binding_changed")
+    hold = await continuation_binding_hold(session, node, binding)
+    if hold:
+        raise RunReportError(hold)
     await validate_report_start(session, row)
     try:
         remote = await resolve_pr_identity(org_id=row.org_id, installation_id=row.installation_id, repo=row.repo, pr_number=binding.pr_number)
     except PrIdentityError:
         raise RunReportError("pr_head_unavailable", retryable=True) from None
-    if remote.head_sha != cycle.get("head_sha") or remote.provider_pr_node_id != binding.provider_pr_node_id:
+    if (
+        remote.head_sha != cycle.get("head_sha")
+        or remote.provider_repository_id != binding.provider_repository_id
+        or remote.provider_pr_node_id != binding.provider_pr_node_id
+        or remote.repo.casefold() != binding.repo.casefold()
+    ):
         raise RunReportError("head_changed_before_dispatch")
     envelope = {key: value for key, value in row.dispatch_metadata.items() if key != "report_nonce"}
     genesis = await resolve_engine_genesis(session, org_id=row.org_id, decision_id=envelope["orchestration"]["root_decision_id"])

@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   SetupInstructions,
@@ -336,6 +336,45 @@ describe('SetupInstructions', () => {
     // Claude Code content is visible; Codex content is not rendered at all.
     expect(document.body.textContent ?? '').toContain('~/.claude/settings.json');
     expect(document.body.textContent ?? '').not.toContain('~/.codex/config.toml');
+  });
+
+  it('uses the current deployment for Claude App setup and distinguishes gateway checks from app verification', async () => {
+    render(<SetupInstructions />);
+    await userEvent.click(screen.getByRole('tab', { name: 'macOS apps' }));
+    const app = within(document.getElementById('tabpanel-claude-app')!);
+
+    expect(app.getByText('adp claude-desktop setup', { selector: 'pre' })).toBeInTheDocument();
+    expect(app.getByText('adp claude-desktop setup --check', { selector: 'pre' })).toBeInTheDocument();
+    expect(app.getByText(`${STUB_ORIGIN}/api`, { selector: 'code' })).toBeInTheDocument();
+    expect(app.getByText(/It does not change Claude App settings/)).toBeInTheDocument();
+    expect(app.getByText(/It does not verify Claude App/)).toBeInTheDocument();
+    expect(app.getByText(/Do not paste an access token/)).toBeInTheDocument();
+  });
+
+  it('marks ChatGPT desktop setup as manual without advertising a nonexistent setup command', async () => {
+    render(<SetupInstructions />);
+    await userEvent.click(screen.getByRole('tab', { name: 'macOS apps' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'ChatGPT App' }));
+    const panel = document.getElementById('tabpanel-chatgpt-app')!;
+    const app = within(panel);
+
+    expect(app.getByText(/Manual desktop configuration is currently required/)).toBeInTheDocument();
+    expect(app.getByText(/compatible Codex-based ChatGPT builds/)).toBeInTheDocument();
+    expect(app.getByText(/Neither completes desktop app authentication/)).toBeInTheDocument();
+    expect(app.getByText(/after restarting your Mac and after credential renewal/)).toBeInTheDocument();
+    expect(panel.textContent).not.toMatch(/adp (chatgpt|codex-desktop|chatgpt-desktop) setup/);
+    expect(panel.textContent).not.toContain('ADP_GATEWAY_DUMMY=unused');
+    expect(panel.textContent).not.toContain('launchctl setenv');
+  });
+
+  it('returns from desktop instructions to the existing CLI flow', async () => {
+    render(<SetupInstructions />);
+    await userEvent.click(screen.getByRole('tab', { name: 'macOS apps' }));
+    expect(screen.getByRole('heading', { name: 'Set up a macOS app' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('tab', { name: 'CLI tools' }));
+    await openCodexTab();
+    expect(screen.getByText('adp codex setup', { selector: 'pre' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'ChatGPT App' })).not.toBeInTheDocument();
   });
 
   it('switches to the Codex tab and back', async () => {

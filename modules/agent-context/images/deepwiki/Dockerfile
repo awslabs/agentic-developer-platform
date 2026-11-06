@@ -7,6 +7,9 @@
 # Build the exact Debian client source on Trixie; archive authentication uses
 # the trusted Debian keyring already present in this immutable base.
 # Tested immutable curl packages and licenses; build input only.
+FROM public.ecr.aws/docker/library/python:3.11.17-slim-trixie@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce AS python-security
+RUN rm -rf /usr/local/lib/python3.11/site-packages
+
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
 
 FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS openssh-builder
@@ -67,6 +70,22 @@ RUN python /opt/deepwiki-security/install-next-tar.py \
     /source/.next/standalone/node_modules/next /opt/next-tar/node_modules
 
 FROM node-base
+# Keep both application and system site-packages on the cp311 ABI.
+RUN find /usr/local/lib/python3.11 -mindepth 1 -maxdepth 1 ! -name site-packages -exec rm -rf {} +
+COPY --from=python-security /usr/local/bin/python3.11 /usr/local/bin/python3.11
+COPY --from=python-security /usr/local/lib/libpython3.11.so.1.0 /usr/local/lib/libpython3.11.so.1.0
+COPY --from=python-security /usr/local/lib/libpython3.so /usr/local/lib/libpython3.so
+COPY --from=python-security /usr/local/lib/python3.11/ /usr/local/lib/python3.11/
+COPY --from=python-security /usr/local/include/python3.11/ /usr/local/include/python3.11/
+RUN ln -sf /usr/local/bin/python3.11 /opt/venv/bin/python \
+    && ln -sf /usr/local/bin/python3.11 /opt/venv/bin/python3 \
+    && ln -sf /usr/local/bin/python3.11 /opt/venv/bin/python3.11 \
+    && ln -sf /usr/local/lib/libpython3.11.so.1.0 /opt/venv/lib/libpython3.11.so.1.0 \
+    && sed -i 's/^version = .*/version = 3.11.17/' /opt/venv/pyvenv.cfg \
+    && ldconfig \
+    && python -c 'import sys, ssl, sqlite3, bz2, lzma, ctypes, pyexpat; assert sys.version_info[:3] == (3, 11, 17); assert pyexpat.EXPAT_VERSION == "expat_2.8.5"' \
+    && python -m pip check
+ENV PYTHON_VERSION=3.11.17 PYTHON_SHA256=bfb74ad39efae27cda510f134ab408e00f9992c56851cfc0b1cdb5646da11599
 # Replace the complete standalone UI built from the retained upstream commit.
 RUN rm -rf /app/.next /app/node_modules
 COPY --from=web-builder /source/.next/standalone /app/
@@ -81,6 +100,15 @@ RUN apt-get update && apt-get -y upgrade \
     && python -c "import shutil,sysconfig; from pathlib import Path; shutil.rmtree(Path(sysconfig.get_path('purelib'))/'setuptools', ignore_errors=True)" \
     && python -m pip install --no-cache-dir PyJWT==2.14.0 GitPython==3.1.60 urllib3==2.8.0 setuptools==81.0.0 \
     && python -m pip check
+# Refresh the application TLS trust store in its actual virtualenv.
+ADD --checksum=sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl /tmp/critical-python/certifi-2026.10.19-py3-none-any.whl
+ADD --checksum=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70 https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl /tmp/critical-python/pip-26.2.2-py3-none-any.whl
+ADD --checksum=sha256:6b3c3d5794212a54434b4856f808f7bdf7ad48eacadaadb5b2346fc9a639365a https://files.pythonhosted.org/packages/71/7e/c1d314406ce47a39180fc66114681d9ac10c2c667e14e4dc1a5e5089f4fb/brotli-1.2.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl /tmp/critical-python/brotli-1.2.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+RUN --network=none /opt/venv/bin/python -m pip install --no-index --no-deps --no-cache-dir /tmp/critical-python/*.whl \
+    && /opt/venv/bin/python -m pip check \
+    && /usr/local/bin/python3.11 -m pip install --no-index --no-deps --no-cache-dir /tmp/critical-python/pip-26.2.2-py3-none-any.whl \
+    && /usr/local/bin/python3.11 -m pip check && rm -rf /tmp/critical-python
+
 # The active application venv and system build tooling are separate installs.
 # Patch the system setuptools vendored jaraco.context/wheel without changing /opt/venv.
 ADD --checksum=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670 https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl /tmp/setuptools-84.0.0-py3-none-any.whl
@@ -95,13 +123,10 @@ RUN dpkg --force-confold -i /tmp/openssh-client.deb \
     && rm /tmp/openssh-client.deb \
     && test "$(dpkg-query -W -f='${Version}' openssh-client)" = '1:10.0p1-7+deb13u4+adp.security.1'
 COPY --from=openssh-builder /out/source-lock.json /opt/deepwiki-security/openssh-source-lock.json
-# Reviewed CPython3.11 port; helpers/checks are canonical, source hashes are branch-specific.
-COPY security/stdlib311/ /opt/adp-stdlib-security/
-COPY security-stdlib/apply.py security-stdlib/check.py security-stdlib/PSF-LICENSE.txt /opt/adp-stdlib-security/
-RUN apt-get update && apt-get install -y --no-install-recommends patch \
-    && python /opt/adp-stdlib-security/apply.py --patch-file cpython-3.11.16.patch \
-    && python /opt/adp-stdlib-security/check.py \
-    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+# CPython 3.11.17 incorporates the earlier ADP stdlib backports upstream.
+# Keep behavioral regressions in the build rather than reapplying an older patch.
+COPY security-stdlib/check.py security-stdlib/PSF-LICENSE.txt /opt/adp-stdlib-security/
+RUN python /opt/adp-stdlib-security/check.py
 
 COPY --from=curl-security /out/curl_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/curl.deb
 COPY --from=curl-security /out/libcurl4t64_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/openssl.deb
@@ -113,6 +138,18 @@ COPY --from=curl-security /licenses/ /opt/adp-curl-security/
 # Python 3.13 interpreter is a separate vulnerable installation.
 COPY security/remove-unused-system-python.py /opt/deepwiki-security/remove-unused-system-python.py
 RUN python /opt/deepwiki-security/remove-unused-system-python.py
+
+# Upstream chat and RAG construct AdalFlow clients without constructor settings.
+# Honor OPENAI_BASE_URL for those calls while retaining explicit caller URLs.
+COPY proxy_openai.py /app/api/clients/proxy_openai.py
+COPY install-proxy-client.py /opt/deepwiki-security/install-proxy-client.py
+RUN python /opt/deepwiki-security/install-proxy-client.py
+COPY openai_chat.py /app/api/chat/openai_chat.py
+COPY install-chat-stream.py /opt/deepwiki-security/install-chat-stream.py
+RUN python /opt/deepwiki-security/install-chat-stream.py
+COPY github_clone.py /app/api/github_clone.py
+COPY install-github-clone.py /opt/deepwiki-security/install-github-clone.py
+RUN python /opt/deepwiki-security/install-github-clone.py
 
 # Override default config with our LiteLLM-proxy-aware configs
 # These point the "openai" provider at our LiteLLM proxy which routes to Bedrock
@@ -137,6 +174,22 @@ EXPOSE 8001 3000
 
 # Drop to non-root before the runtime instructions (USER must precede
 # HEALTHCHECK/CMD so the missing-user check is satisfied).
+# GHSA-2464-fhr4-w9xw: upstream-supported sharp fix for Next image optimization.
+ADD --checksum=sha256:3b6bbbe6b308f5c383938ca4a31926cd5d79c4651ed8c5fda16a97da2014a9ac https://registry.npmjs.org/sharp/-/sharp-0.35.5.tgz /tmp/critical-sharp/sharp-0.35.5.tgz
+ADD --checksum=sha256:556787285d3244c07686a355de5b5a4c4d0019a12785bf24764e756a96ea3334 https://registry.npmjs.org/@img/sharp-linux-x64/-/sharp-linux-x64-0.35.5.tgz /tmp/critical-sharp/sharp-linux-x64-0.35.5.tgz
+ADD --checksum=sha256:e371cb713fc8822c96a0d3fb60a3d092799d0aefab6d7f1fb3b72d8d75f1d109 https://registry.npmjs.org/@img/sharp-libvips-linux-x64/-/sharp-libvips-linux-x64-1.3.4.tgz /tmp/critical-sharp/sharp-libvips-linux-x64-1.3.4.tgz
+RUN --network=none set -e; \
+    if [ -d /app/node_modules/next ]; then \
+      node -e 'const fs=require("fs"),semver=require("/app/node_modules/semver"); const p=JSON.parse(fs.readFileSync("/app/node_modules/sharp/package.json")); if(!["0.35.4","0.35.5"].includes(p.version)) throw Error("Unreviewed sharp input"); for(const [n,v] of Object.entries({semver:"^7.8.5","@img/colour":"^1.1.0","detect-libc":"^2.1.2"})) if(!semver.satisfies(JSON.parse(fs.readFileSync("/app/node_modules/"+n+"/package.json")).version,v)) throw Error("Incompatible sharp dependency: "+n);'; \
+      rm -rf /app/node_modules/sharp; mkdir -p /app/node_modules/sharp; \
+      tar -xzf /tmp/critical-sharp/sharp-0.35.5.tgz --strip-components=1 -C /app/node_modules/sharp; \
+      rm -rf /app/node_modules/@img/sharp-linux-x64; mkdir -p /app/node_modules/@img/sharp-linux-x64; \
+      tar -xzf /tmp/critical-sharp/sharp-linux-x64-0.35.5.tgz --strip-components=1 -C /app/node_modules/@img/sharp-linux-x64; \
+      rm -rf /app/node_modules/@img/sharp-libvips-linux-x64; mkdir -p /app/node_modules/@img/sharp-libvips-linux-x64; \
+      tar -xzf /tmp/critical-sharp/sharp-libvips-linux-x64-1.3.4.tgz --strip-components=1 -C /app/node_modules/@img/sharp-libvips-linux-x64; \
+      node -e 'const {createRequire}=require("module");const sharp=createRequire("/app/node_modules/next/package.json")("sharp");if(sharp.versions.sharp!=="0.35.5") throw Error("Next resolves an affected sharp");'; \
+    fi; rm -rf /tmp/critical-sharp
+
 USER appuser
 
 # Health check

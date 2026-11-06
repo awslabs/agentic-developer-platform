@@ -40,6 +40,29 @@ def assignment_and_bootstrap():
     return assignment, envelope, bootstrap
 
 
+def test_codex_generic_tool_reaches_configured_host_client(assignment_and_bootstrap):
+    assignment, _, bootstrap = assignment_and_bootstrap
+    client = FakeClient(bootstrap, [])
+    calls = []
+    artifact = {'artifact_id': 'art_' + '0' * 36, 'content_type': 'application/json',
+                'content_sha256': '0' * 64, 'byte_length': 10}
+    def tool(name, body):
+        calls.append((name, body))
+        return {'schema_version': '1.0', 'task_id': assignment.task_id, 'operation_id': body['operation_id'],
+                'operation_status': 'confirmed', 'result': {'status': 'completed'}, 'artifact': artifact}
+    client.tool = tool
+    host = TaskHost(client=client)
+    request_id = '00000000-0000-4000-8000-000000000099'
+    attempt = host._binding(assignment, '00000000-0000-4000-8000-000000000098')
+    frame = {'type': 'tool.request', 'request_id': request_id, 'tool': 'websearch.search',
+             'payload': {'query': 'example'}}
+    response = host._cyber(assignment, attempt, frame)
+    assert calls == [('websearch.search', {'schema_version': '1.0', 'attempt': attempt,
+        'operation_id': request_id, 'operation': 'search', 'payload': {'query': 'example'}})]
+    assert response['operation_status'] == 'confirmed'
+    assert response['result'] == {'status': 'completed'}
+
+
 class FakeHeartbeat:
     def __init__(self, events):
         self.events = events
@@ -1446,8 +1469,9 @@ def test_workspace_is_bound_before_child_start_and_removed_on_startup_failure(tm
         ("rejected", None, None, "budget_exceeded", None),
     ],
 )
+@pytest.mark.parametrize("sdk_profile", [False, True])
 def test_only_known_predispatch_refusals_are_marked(
-    assignment_and_bootstrap, status, handoff, usage, code, expected
+    assignment_and_bootstrap, status, handoff, usage, code, expected, sdk_profile
 ):
     assignment, _, bootstrap = assignment_and_bootstrap
     turn_id = str(__import__("uuid").uuid4())
@@ -1459,9 +1483,11 @@ def test_only_known_predispatch_refusals_are_marked(
     })
     result = TaskHost(client=client)._model(
         assignment, {}, {"turn_id": turn_id}, 32,
-        prepared={"request_digest": "bound"},
+        prepared={"request_digest": "bound", **({"responses_request": {}} if sdk_profile else {})},
     )
-    assert result.get("pre_provider_refusal") == expected
+    assert result.get("pre_provider_refusal") == (expected if sdk_profile else None)
+    if not sdk_profile:
+        assert "usage" not in result
 
 
 @pytest.mark.parametrize("turns,tokens,valid", [(400, 8001, True), (1000, 10000, True), (1001, 10000, False), (1000, 10001, False)])

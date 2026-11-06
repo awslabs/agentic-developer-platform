@@ -39,9 +39,15 @@ async def observe_result(operation, context, *, artifact, provider):
         workspace_id=artifact["workspace_id"],
         require_fresh=False,
     )
-    source_metadata = json.loads(source["artifact_metadata_json"])
+    from .partial_apply_execution import result_source
+
+    prepared = await result_source(operation, context, source, metadata)
+    source_metadata = json.loads(prepared["artifact_metadata_json"])
     if (
-        source_metadata.get("next_phase") != "apply-infrastructure"
+        source_metadata.get("next_phase")
+        != (
+            "partial-apply-repair" if prepared is not source else "apply-infrastructure"
+        )
         or metadata.get("module_sha256") != source_metadata.get("module_sha256")
         or artifact["target_json"] != source["target_json"]
     ):
@@ -54,6 +60,17 @@ async def observe_result(operation, context, *, artifact, provider):
     ):
         raise LifecycleRefused("apply recovery output belongs to another workspace")
     observed = await observe_applied_target(outputs, provider.aws_read)
+    if metadata.get("repair_artifact_id"):
+        from .partial_apply_plan import require
+
+        addresses = await provider.aws_read(
+            "ec2",
+            "describe_addresses",
+            Filters=[
+                {"Name": "allocation-id", "Values": [metadata["replaced_eip_absent"]]}
+            ],
+        )
+        require(addresses.get("Addresses") == [], "replaced EIP absence changed")
     if observed != metadata["provider_snapshot"]:
         raise LifecycleRefused(
             "applied provider inventory changed since its immutable result"

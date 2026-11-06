@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Requirements and test analytics v2 envelope (section 11.0)",
+  "type": "object",
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_connection_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_system": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "ingested_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "schema_version": {
+      "const": "2.0"
+    },
+    "team_id": {
+      "type": "string"
+    },
+    "cohort": {
+      "type": "string"
+    },
+    "record_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "record_revision": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "enum": [
+          "latest",
+          "null"
+        ]
+      }
+    }
+  },
+  "required": [
+    "tenant_id",
+    "project_id",
+    "source_connection_id",
+    "source_system",
+    "source_event_id",
+    "event_time",
+    "ingested_at",
+    "schema_version",
+    "record_type",
+    "record_id",
+    "record_revision"
+  ]
+}

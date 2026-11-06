@@ -125,6 +125,16 @@ def test_baseline_is_actual_source_never_workflow_head(setup, old):
     assert SOURCE != DEFINITION
 
 
+@pytest.mark.parametrize("old", [False, True])
+def test_readback_preserves_verified_release_digest(setup, old):
+    env, state, api = setup
+    if old:
+        legacy(state)
+    assert receipt.resolve_release(env, api) == state["release"]
+    state["release"]["image_digest"] = "sha256:" + "f" * 64
+    assert receipt.resolve_release(env, api)["image_digest"] == (DIGEST if old else "sha256:" + "f" * 64)
+
+
 @pytest.mark.parametrize(
     "key,value",
     [

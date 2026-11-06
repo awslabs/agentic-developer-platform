@@ -571,6 +571,7 @@ All existing session rows already have `user_workspace` populated (written by th
 
 - **Frontend:** The sync hook is additive. localStorage continues to work as before; server data is merged on top. Users who haven't upgraded their frontend see no change.
 - **WebSocket:** The live WS path is untouched. The sync hook is a parallel read path, not a replacement.
+- **Delivery boundary (#8047):** for delegated chat the sessions row *is* the terminal delivery. The response Lambda appends the reply to `messages`/`last_response` and records `threads.<thread>.terminal_delivery` as `persisted` in one conditional write; the gateway's `/internal/v1/agent/chat/data/complete` accepts that receipt (or `sent`) to release the thread's processing lock. The WebSocket push is a best-effort notification that flips the receipt to `sent` when a live connection took the frame; a session with no `connection_id` (REST polling, the `adp` CLI, a closed tab) stays `persisted` and still completes.
 - **Lambda writes:** No changes to the ingest or response Lambda. They continue to own all writes.
 - **API route registration:** The new `src.chat.routes` module is added to `UNIT_MODULES` in `app.py`. If the module fails to import (e.g., missing boto3 in a dev setup), it's skipped gracefully (existing pattern in `create_app()`).
 

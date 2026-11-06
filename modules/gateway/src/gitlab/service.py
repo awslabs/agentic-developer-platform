@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 from datetime import UTC, datetime
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException
@@ -16,35 +15,12 @@ from sqlalchemy.exc import IntegrityError
 
 from src.agentauth.external_roots import root_bindings
 from src.auth.gitlab_sso import _discover_gitlab_url, _load_signing_key
+from src.gitlab.config import host
 from src.shared.models.organization import Organization
 from src.shared.models.vault import UserCredential, UserIdentity
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
 KEY = "gitlab_cli_v1"
-
-
-def host(value):
-    """Validate an operator-approved HTTPS base URL, including a rooted install."""
-    try:
-        if not isinstance(value, str) or any(ord(char) <= 32 or ord(char) >= 127 for char in value):
-            raise ValueError
-        parsed = urlsplit(value)
-        # Accessing port also rejects malformed/out-of-range authorities.
-        port = parsed.port
-        if (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or port == 0
-            or any(char in value for char in ("\\", "%", "?", "#"))
-            or not re.fullmatch(r"(?:/[A-Za-z0-9._~-]+)*/?", parsed.path)
-            or any(segment in {".", ".."} for segment in parsed.path.split("/"))
-        ):
-            raise ValueError
-    except ValueError:
-        raise HTTPException(503, "Approved GitLab provider must be an HTTPS base URL with a canonical path") from None
-    return value.rstrip("/")
 
 
 async def providers():

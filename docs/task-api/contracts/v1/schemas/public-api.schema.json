@@ -10,6 +10,8 @@
       "additionalProperties": false,
       "required": ["schema_version", "persona", "instructions"],
       "properties": {
+        "product_id": { "type": "string", "minLength": 1, "maxLength": 36 },
+        "project_id": { "type": "string", "minLength": 1, "maxLength": 255 },
         "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
         "persona": { "$ref": "common.schema.json#/$defs/persona" },
         "instructions": {
@@ -106,6 +108,8 @@
         "request_id"
       ],
       "properties": {
+        "product_id": { "type": "string", "minLength": 1, "maxLength": 36 },
+        "project_id": { "type": "string", "minLength": 1, "maxLength": 255 },
         "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
         "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
         "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },

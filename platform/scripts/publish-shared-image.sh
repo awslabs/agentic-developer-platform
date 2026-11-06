@@ -15,7 +15,7 @@ case "${PUBLISH_LOCAL_BUILD:-false}" in
 esac
 SHARED_REPO="${1:?Repository required}"
 case "$SHARED_REPO" in
-  adp-gateway|adp-agent-runtime|adp-chat-agent|adp-agent-gateway) ;;
+  adp-gateway|adp-agent-runtime|adp-chat-agent|adp-agent-gateway|adp-tools-facade) ;;
   *) echo 'Unsupported shared repository' >&2; exit 1 ;;
 esac
 SHARED_ROOT="${PUBLISH_SOURCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -52,6 +52,12 @@ if [[ "$REGISTRY" != "$SOURCE_ARTIFACT_REGISTRY" ]] && \
   SHARED_BUILD_OPTIONS=(--build-arg "CURL_SECURITY_IMAGE=$CURL_SECURITY_IMAGE")
   [[ "${PUBLISH_LOCAL_BUILD:-false}" == true ]] || SHARED_BUILD_OPTIONS=(--no-cache "${SHARED_BUILD_OPTIONS[@]}")
   if [[ "$SHARED_REPO" == adp-agent-runtime ]]; then
+    # Reuse the reviewed source pins, dependency patches and licenses for the
+    # worker's gh, yq and kubectl. This target excludes the full ARC runner.
+    GO_SECURITY_IMAGE="adp-go-security:$ADP_SOURCE_SHA"
+    docker build --pull --no-cache --target go-security-artifact \
+      -t "$GO_SECURITY_IMAGE" platform/arc-runner
+    SHARED_BUILD_OPTIONS+=(--build-arg "GO_SECURITY_IMAGE=$GO_SECURITY_IMAGE")
     PYTHON314_EXPAT_IMAGE="adp-python314-expat:$ADP_SOURCE_SHA"
     docker build --pull --no-cache \
       -f platform/arc-runner/security/high-tools/Dockerfile.python314-expat \
@@ -67,6 +73,14 @@ fi
 case "$SHARED_REPO" in
   adp-gateway)
     bash modules/gateway/scripts/stage-contracts.sh
+    if grep -Fq 'COPY skills-source/' modules/gateway/Dockerfile; then
+      bash modules/gateway/scripts/build-skills-archive.sh --stage
+    fi
+    if grep -Fq 'COPY l5-wheel/' modules/gateway/Dockerfile; then
+      bash modules/L5-services/scripts/stage-gateway.sh
+    elif grep -Fq 'COPY .l5-release/' modules/gateway/Dockerfile; then
+      bash modules/gateway/scripts/stage-l5-wheel.sh
+    fi
     cd modules/gateway
     docker build ${SHARED_BUILD_OPTIONS[@]+"${SHARED_BUILD_OPTIONS[@]}"} --build-arg "GATEWAY_RELEASE=$ADP_SOURCE_SHA" -t "$SHARED_IMAGE" .
     docker run --rm --entrypoint python "$SHARED_IMAGE" -m pricing_policy.selfcheck
@@ -76,6 +90,10 @@ case "$SHARED_REPO" in
   adp-agent-runtime)
     docker build ${SHARED_BUILD_OPTIONS[@]+"${SHARED_BUILD_OPTIONS[@]}"} -f modules/agent-factory/agent-worker-image/Dockerfile -t "$SHARED_IMAGE" .
     docker run --rm --entrypoint python3 "$SHARED_IMAGE" -m lib.contract_selfcheck
+    ;;
+  adp-tools-facade)
+    docker build ${SHARED_BUILD_OPTIONS[@]+"${SHARED_BUILD_OPTIONS[@]}"} -f modules/tools/facade/Dockerfile -t "$SHARED_IMAGE" .
+    docker run --rm --entrypoint python "$SHARED_IMAGE" -c "import tools_facade.server"
     ;;
   adp-chat-agent)
     cd modules/agent-factory

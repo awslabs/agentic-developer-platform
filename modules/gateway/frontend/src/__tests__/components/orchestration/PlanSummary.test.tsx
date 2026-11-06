@@ -32,7 +32,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { PlanSummary } from '@/components/orchestration/PlanSummary';
-import type { PolicySummary } from '@/types/orchestration';
+import type { GraphNode, PolicySummary } from '@/types/orchestration';
 
 function makePolicy(overrides: Partial<PolicySummary> = {}): PolicySummary {
   return {
@@ -55,6 +55,15 @@ function makePolicy(overrides: Partial<PolicySummary> = {}): PolicySummary {
 
 const COUNTS = { stories: 4, waves: 2, gates: 1, evaluations: 3, evaluationStories: 2 };
 
+it('shows repository repair authority separately from a fixed file scope', () => {
+  const { rerender } = render(<PlanSummary {...COUNTS} policy={makePolicy({ repair_scope: 'repository', repair_path_count: 0 })} />);
+  expect(screen.getByTestId('policy-repair-scope')).toHaveTextContent('files in the authorized repositories');
+  rerender(<PlanSummary {...COUNTS} policy={makePolicy({ repair_scope: 'paths', repair_path_count: 3 })} />);
+  expect(screen.getByTestId('policy-repair-scope')).toHaveTextContent('3 specified files');
+  rerender(<PlanSummary {...COUNTS} policy={makePolicy()} />);
+  expect(screen.queryByTestId('policy-repair-scope')).not.toBeInTheDocument();
+});
+
 // ---------------------------------------------------------------------------
 
 describe('the plan counts', () => {
@@ -69,6 +78,11 @@ describe('the plan counts', () => {
     render(<PlanSummary stories={1} waves={1} gates={1} evaluations={1} evaluationStories={0} />);
 
     expect(screen.getByTestId('plan-summary')).toHaveTextContent('1 story across 1 wave');
+  });
+
+  it('reports BOLTs and remaining standalone waves in a mixed plan', () => {
+    render(<PlanSummary {...COUNTS} bolts={1} waves={1} />);
+    expect(screen.getByTestId('plan-summary')).toHaveTextContent('6 stories across 1 BOLT and 1 wave');
   });
 });
 
@@ -338,4 +352,59 @@ it('explains user credential permissions and provider lifetime without claiming 
   expect(description).toHaveTextContent('Credentials already issued follow');
   expect(description).toHaveTextContent('may permit additional actions');
   expect(screen.getByTestId('policy-human-decisions')).toHaveTextContent('deploy');
+});
+
+
+describe('Product, planning epic and story targets', () => {
+  it('shows separate Product, epic and pre-dispatch issue links for distinct story repositories', () => {
+    const stories = [
+      { id: 'api', title: 'API', kind: 'story', state: 'ready', repository_identity: 'delivery/api', repository_status: 'verified', issue_ref: '#42', issue_url: 'https://github.com/delivery/api/issues/42' },
+      { id: 'web', title: 'Web', kind: 'story', state: 'ready', repository_identity: 'delivery/web', repository_status: 'verified', issue_ref: '42', issue_url: 'https://github.com/delivery/web/issues/42' },
+    ] as GraphNode[];
+    render(<PlanSummary {...COUNTS} product={{ id: 'product-a', name: 'Checkout', status: 'accessible' }}
+      planningEpics={[{ scope: 'epic', address: 'flow/epic-1', issue: { provider: 'github', repository_id: 30, repository: 'planning/epics', installation_id: 3, issue_number: 21 } }]}
+      storyTargets={stories} />);
+    expect(screen.getByTestId('plan-product')).toHaveTextContent('Checkout (product-a)');
+    expect(screen.getByText('Planning epic: planning/epics#21')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'delivery/api#42' })).toHaveAttribute('href', 'https://github.com/delivery/api/issues/42');
+    expect(screen.getByRole('link', { name: 'delivery/web#42' })).toHaveAttribute('href', 'https://github.com/delivery/web/issues/42');
+  });
+
+  it('shows the created issue without claiming its pending native epic link is complete', () => {
+    render(<PlanSummary {...COUNTS} product={{ id: 'product-a', name: 'Checkout', status: 'accessible' }}
+      storyTargets={[{ id: 'api', kind: 'story', title: 'API', state: 'ready', issue_ref: '42',
+        repository_identity: 'delivery/api', repository_status: 'verified',
+        issue_publication_status: 'issue_created_link_pending', readiness_hold: 'amendment_issue_link_unconfirmed',
+        issue_url: 'https://github.com/delivery/api/issues/42' } as GraphNode]} />);
+    const status = screen.getByTestId('plan-story-readiness-api');
+    expect(status).toHaveTextContent('Repository binding: verified binding');
+    expect(status).toHaveTextContent('Issue publication: issue created; native epic link pending');
+    expect(status).toHaveTextContent('Execution hold: native epic link unconfirmed');
+    expect(screen.getByRole('link', { name: 'delivery/api#42' })).toHaveAttribute('href', 'https://github.com/delivery/api/issues/42');
+    expect(status).not.toHaveTextContent('native epic link confirmed');
+  });
+
+  it('does not give an unbound story or inaccessible Product an invented identity', () => {
+    render(<PlanSummary {...COUNTS} product={{ id: 'private-id', status: 'unavailable' }}
+      storyTargets={[{ id: 'story', title: 'New story', kind: 'story', state: 'pending', issue_ref: '42', repository_status: 'unbound' } as GraphNode]} />);
+    expect(screen.getByTestId('plan-product')).toHaveTextContent('unavailable or inaccessible');
+    expect(screen.getByText('New story target: unbound')).toBeVisible();
+    expect(screen.queryByRole('link', { name: /#42/ })).not.toBeInTheDocument();
+  });
+});
+
+
+it('does not infer Product or repository authority for old graph responses', () => {
+  render(<PlanSummary {...COUNTS} storyTargets={[{
+    id: 'legacy', title: 'Legacy story', kind: 'story', state: 'ready',
+    issue_ref: '42', repository_identity: 'legacy/repo', issue_url: 'https://github.com/legacy/repo/issues/42',
+  } as GraphNode]} />);
+  expect(screen.queryByTestId('plan-product')).not.toBeInTheDocument();
+  expect(screen.getByTestId('plan-summary')).toHaveTextContent('Legacy story target: verification unavailable');
+  expect(screen.queryByRole('link', { name: /legacy\/repo/ })).not.toBeInTheDocument();
+});
+
+it('does not equate a Product ID with a verified Product name on an older response', () => {
+  render(<PlanSummary {...COUNTS} product={{ id: 'product-a' }} />);
+  expect(screen.getByTestId('plan-product')).toHaveTextContent('product-a (status not verified)');
 });

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette.requests import Request
 
 from src.agentauth.model_identity import AgentModelIdentityMiddleware
@@ -20,6 +21,7 @@ from src.orchestration.flow_budget import get_flow_reservations
 from src.orchestration.flow_meter import meter_target, read_flow_meter
 from src.orchestration.policy_admission import load_in_force_policy
 from src.orchestration.provider_quotes import request_digest
+from src.products.models import ProjectRun  # noqa: F401 — register Project tables before fixture schema creation
 from src.shared.middleware.logging_middleware import LoggingMiddleware
 from src.shared.middleware.request_identity import RequestIdentityMiddleware
 from src.shared.schemas.auth import TokenContext
@@ -46,7 +48,7 @@ healthy_policy_reservations, policy_budget_initializers = reservations_fixture, 
 @pytest.fixture
 async def model_path(session, assignment, monkeypatch):
     @asynccontextmanager
-    async def sessions():
+    async def sessions(**_kwargs):
         yield session
 
     caller = SimpleNamespace(tenant_id=assignment.grant.tenant_id, invocation_id="worker")
@@ -362,7 +364,8 @@ async def test_a_rate_revision_change_during_upload_requotes_instead_of_spending
     assert (await invoke(model_path, assignment, request_id="after"))[0][0]["status"] == 200
 
 
-async def test_concurrent_children_reviewers_and_restarts_cannot_exceed_one_shared_cap(model_path, assignment):
+@pytest.mark.parametrize("engine", ["file"], indirect=True)
+async def test_concurrent_children_reviewers_and_restarts_cannot_exceed_one_shared_cap(model_path, assignment, session, monkeypatch):
     """A child, reviewer or restart shares one accumulating cap; none resets it.
 
     Each admitted call holds the FULL quoted upper bound until it reconciles, so
@@ -371,6 +374,12 @@ async def test_concurrent_children_reviewers_and_restarts_cannot_exceed_one_shar
     run scope here, at a lower figure than the flow's own limit), the property
     under test is the same: a fresh run id buys no fresh allowance.
     """
+    # Concurrent HTTP requests each own a session. Sharing the fixture session
+    # races its transactions and measures invalid session use instead of the cap.
+    await session.commit()
+    sessions = async_sessionmaker(session.bind, expire_on_commit=False)
+    monkeypatch.setattr("src.shared.database.get_session_factory", lambda: sessions)
+    monkeypatch.setattr(model_path.service, "_get_session", sessions)
     quote = flow_meter.estimate_policy_model_cost(
         b'{ "model": "anthropic.claude-sonnet-4-6", "max_tokens": 16, "messages": [{"role":"user","content":"hello"}] }', "/v1/messages"
     )

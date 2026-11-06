@@ -215,13 +215,22 @@ class TestS3VectorsEmbeddingStore:
     def test_recall_returns_sorted_results(self, store: S3VectorsEmbeddingStore, mock_s3v) -> None:
         """recall() returns (entry_id, distance) sorted by distance."""
         owner = _make_uuid()
-        mock_s3v.query_vectors.return_value = {
+        response = {
             "vectors": [
                 {"key": "entry-002", "distance": 0.3},
                 {"key": "entry-001", "distance": 0.1},
                 {"key": "entry-003", "distance": 0.5},
             ]
         }
+
+        # AWS omits distances unless requested; missing distances used to
+        # become 1.0 and flatten every ExperienceTool similarity score to zero.
+        def query_vectors(**kwargs):
+            if kwargs.get("returnDistance"):
+                return response
+            return {"vectors": [{"key": row["key"]} for row in response["vectors"]]}
+
+        mock_s3v.query_vectors.side_effect = query_vectors
 
         results = store.recall(owner, _make_embedding(1), top_k=10)
         assert len(results) == 3

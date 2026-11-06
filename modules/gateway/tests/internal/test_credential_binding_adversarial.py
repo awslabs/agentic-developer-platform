@@ -128,6 +128,7 @@ async def db(engine) -> AsyncSession:
 
         # Seed victim credentials only — attacker should NEVER be able to read these.
         victim_bearer = UserCredential(
+            agent_consent=True,
             id="cred-adv-bearer-victim",
             org_id="org-adv",
             user_id=_VICTIM_USER_ID,
@@ -137,6 +138,7 @@ async def db(engine) -> AsyncSession:
             secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:adv-victim-bearer",
         )
         victim_aws = UserCredential(
+            agent_consent=True,
             id="cred-adv-aws-victim",
             org_id="org-adv",
             user_id=_VICTIM_USER_ID,
@@ -147,6 +149,7 @@ async def db(engine) -> AsyncSession:
         )
         # Attacker's own credential (for A5/A7 happy path).
         attacker_bearer = UserCredential(
+            agent_consent=True,
             id="cred-adv-bearer-attacker",
             org_id="org-adv",
             user_id=_ATTACKER_USER_ID,
@@ -156,6 +159,7 @@ async def db(engine) -> AsyncSession:
             secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:adv-attacker-bearer",
         )
         attacker_aws = UserCredential(
+            agent_consent=True,
             id="cred-adv-aws-attacker",
             org_id="org-adv",
             user_id=_ATTACKER_USER_ID,

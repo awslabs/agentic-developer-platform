@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "issue": 7776,
+  "scenarios": {
+    "SCN-01": {
+      "acceptance_ids": ["AC-01"],
+      "catalog_scenario": "MOD-018-F001-S001",
+      "working_directory": "modules/gateway",
+      "prerequisites": {
+        "interpreter": "Python 3.12 with the gateway dev dependencies, including pgserver and psycopg2",
+        "database": "isolated PostgreSQL 16 via the existing pg_url fixture; an existing BG_TEST_POSTGRES_URI is optional",
+        "missing_database_or_dependency": "test failure, never a skipped or SQLite success",
+        "evidence_directory": "FLOW_READ_EVIDENCE_DIR points to an existing private directory"
+      },
+      "commands": {
+        "fixture_and_semantics": ".venv/bin/python -m pytest -q -o junit_family=legacy tests/orchestration/test_flow_read_performance.py::test_history_scale_regression --junitxml=\"${FLOW_READ_EVIDENCE_DIR:?set a private evidence directory}/SCN-01.xml\"",
+        "bounded_query_growth": ".venv/bin/python -m pytest -q -o junit_family=legacy tests/orchestration/test_flow_read_performance.py::test_bounded_history_queries --junitxml=\"${FLOW_READ_EVIDENCE_DIR:?set a private evidence directory}/AC-01-query-growth.xml\"",
+        "injected_regression": ".venv/bin/python -m pytest -q -o junit_family=legacy tests/orchestration/test_flow_read_performance.py::test_injected_per_hop_query_regression_fails --junitxml=\"${FLOW_READ_EVIDENCE_DIR:?set a private evidence directory}/AC-01-injected.xml\""
+      },
+      "fixture": {
+        "tenants": ["fixture-tenant-a", "fixture-tenant-b"],
+        "flows": 20,
+        "nodes_per_flow": 100,
+        "nodes_total": 2000,
+        "amendment_hops": [1, 10, 30],
+        "plan_versions": [2, 11, 31],
+        "decisions": 65000,
+        "histories": 34,
+        "clock": "2026-01-01T00:00:00+00:00",
+        "seed": "uuid5:NAMESPACE_URL:flow-read-fixture",
+        "pending_nodes": 1997,
+        "running_nodes": 3,
+        "expected_costs_usd": ["1.250000", "9.750000"]
+      },
+      "evidence": {
+        "format": "JUnit XML properties fixture_manifest, fixture_source_sha256 and source_revision, plus pytest case outcomes",
+        "fixture_case": "SCN-01.xml: test_history_scale_regression passes only with the seeded rows and independent state/cost oracles",
+        "growth_case": "AC-01-query-growth.xml: SELECT count at 30 hops must be at most count at 1 hop plus 5",
+        "injected_case": "AC-01-injected.xml: 30-hop injected SELECT growth is rejected",
+        "incomplete_if": "any selector skips, fails, or lacks its JUnit receipt; a passing fixture case alone does not certify query growth",
+        "source_revision": "JUnit XML source_revision property identifies the exact tested commit"
+      }
+    },
+    "SCN-02": {
+      "acceptance_ids": ["AC-03", "AC-02"],
+      "working_directory": "modules/gateway",
+      "prerequisites": {
+        "target": "isolated synthetic fixture, private authorized API/browser configuration and current auth; never production load certification",
+        "config": "FLOW_READ_PRIVATE_CONFIG names a private JSON file with frontend_url, api_base_url, auth_file, list_flow_ids, graph_flow_id, graph_title, graph_node_ids, graph_node_refs and graph_edges",
+        "selection": "Optional list_query defaults to fixture-flow; an empty string selects the unfiltered authorized workspace. API and browser both select the first 25-row page. Pin expected identities before the run; empty lists are invalid. Real-workspace comparisons remain distinct from controlled fixture results.",
+        "auth_file": "private JSON access_token, id_token and future expiry_ms; never include credentials in the manifest or published evidence",
+        "results": "FLOW_READ_EVIDENCE_DIR names an existing private directory; run-before and run-after do not exist yet",
+        "abort": "send SIGINT to the owned benchmark process after its ownership.json exists; the command records an incomplete result and drains its browser client"
+      },
+      "commands": {
+        "self_test": ".venv/bin/python -m pytest -q -o junit_family=legacy tests/orchestration/test_flow_read_benchmark.py::test_scn_02_abort_rerun_receipts --junitxml=\"${FLOW_READ_EVIDENCE_DIR:?set a private evidence directory}/SCN-02.xml\"",
+        "before": ".venv/bin/python scripts/benchmark-flow-reads.py --config \"${FLOW_READ_PRIVATE_CONFIG:?set private config}\" --output \"${FLOW_READ_EVIDENCE_DIR:?set a private evidence directory}/run-before\"",
+        "cleanup": ".venv/bin/python scripts/benchmark-flow-reads.py --cleanup --manifest \"${FLOW_READ_EVIDENCE_DIR:?set a private evidence directory}/run-before/ownership.json\"",
+        "rerun": ".venv/bin/python scripts/benchmark-flow-reads.py --config \"${FLOW_READ_PRIVATE_CONFIG:?set private config}\" --output \"${FLOW_READ_EVIDENCE_DIR:?set a private evidence directory}/run-after\" --manifest \"${FLOW_READ_EVIDENCE_DIR}/run-before/ownership.json\""
+      },
+      "frontend_verification": {
+        "working_directory": "modules/gateway/frontend",
+        "unit": "npx vitest run src/__tests__/pages/FlowsList.test.tsx src/__tests__/services/flowExecution.test.ts",
+        "controlled_browser": "npx playwright test --config tests/e2e/flow-read.config.ts",
+        "sampler": "npx playwright test --config tests/e2e/flow-read-benchmark.config.ts",
+        "sampler_prerequisites": "private FLOW_READ_CONFIG and FLOW_READ_CAPTURE_DIR; launch via benchmark-flow-reads.py to enforce shared caps and protected artifacts"
+      },
+      "evidence": {
+        "self_test": "SCN-02.xml: interruption, same-manifest new-output rerun, idempotent cleanup and preserved protected results",
+        "before": "run-before/evidence.json remains incomplete after abort; api-attempts.jsonl retains completed attempts and ownership.json records reservations",
+        "recovery": "run-before/cleanup-receipts.jsonl preserves repeated cleanup attempts; run-after/evidence.json is an independent bounded run",
+        "ownership": "ownership.json has run_id, owned_output, owned_workspace, client_pid/client_start, attempt_limit, active_limit_seconds, state and owned_fixtures; only matching owned resources may be cleaned",
+        "cleanup": "each cleanup.json has run_id, removed_workspace, client_stopped, owned_fixture_remnants, workspace_remains, failures and complete; a leftover or cleanup failure makes evidence incomplete",
+        "measurement": "each evidence.json records source_revision, config_revision, fixture_revision, per-mode API/browser attempts, SQL counts where observed, core HTTP/meaningful/enrichment times and an explicit complete result",
+        "budget": "at most 3000 shared API/browser HTTP attempts including warm polls, 20 active minutes, five readers, 15-second request timeout and 30-second browser drain",
+        "incomplete_if": "missing or aborted samples, five consecutive failures, exhausted caps, missing cleanup receipts or owned fixture remnants; mock self-tests do not prove live latency"
+      }
+    }
+  }
+}

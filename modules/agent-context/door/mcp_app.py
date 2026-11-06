@@ -220,13 +220,16 @@ async def mcp_search(
     limit: int = 20,
     project: str = "",
     ctx: Context = None,  # type: ignore[assignment]
+    product_id: str = "",
 ) -> str:
-    """Find relevant code, documentation, and past learnings."""
+    """Search code or knowledge content. Use scope=personal for your knowledge, or scope=docs with product_id for Product knowledge. Product access requires current team membership. General docs search is not admitted by agent tools; code (default) is exact repository search."""
     headers = _get_headers_from_context(ctx)
     caller = extract_caller_principal(headers)
     arguments: dict[str, Any] = {"query": query, "scope": scope, "limit": limit}
     if project:
         arguments["project"] = project
+    if product_id:
+        arguments["product_id"] = product_id
     dispatch = _get_dispatch_tool()
     result = await dispatch("search", arguments, headers, caller)
     return json.dumps(result, default=str)

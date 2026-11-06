@@ -32,8 +32,10 @@ export async function revalidateQueuedCommand(
   const started = performance.now();
   try {
     // Private attribution is not part of the gateway request schema.
-    const { envelope, action, command_id, body_base64 } = proof;
-    const result = await postRevalidation({ body: JSON.stringify({ envelope, action, command_id, body_base64 }), started });
+    const { envelope, action, command_id, body_base64, queuedGrantRef } = proof;
+    // The expired admission envelope is not sent or treated as delivery authority.
+    const authority = queuedGrantRef ? { queued_grant_ref: queuedGrantRef } : { envelope };
+    const result = await postRevalidation({ body: JSON.stringify({ ...authority, action, command_id, body_base64 }), started });
     const allowed = performance.now() - started < MAX_REVALIDATION_MS && result.allowed === true &&
       result.command_id === proof.command_id && result.generation === generation && result.max_round_trip_ms === MAX_REVALIDATION_MS;
     // Only surfaced on an allowed decision. A receipt accompanying a refusal would
@@ -42,8 +44,24 @@ export async function revalidateQueuedCommand(
     const abortReceipt = allowed && typeof result.abort_receipt === 'string' && result.abort_receipt.length > 0
       ? result.abort_receipt
       : null;
+    if (queuedGrantRef) {
+      const consumed = result.allowed === true && result.command_id === proof.command_id &&
+        result.generation === generation && result.max_round_trip_ms === MAX_REVALIDATION_MS && result.delivery_consumed === true;
+      return { allowed: allowed && consumed, deliveryConsumed: consumed, deliveryOutcomeUnknown: !allowed || !consumed };
+    }
     return { allowed, abortReceipt };
-  } catch { return false; } // No cached approval and no credential-bearing exception logs.
+  } catch (error) {
+    // A definitive refusal means no permission. A lost/late/5xx reply can hide a
+    // committed one-use consume, so preserve uncertainty without retrying it.
+    if (proof.queuedGrantRef && !(error instanceof RevalidationRefused && [400, 401, 403, 404, 422].includes(error.status))) {
+      return { allowed: false, deliveryOutcomeUnknown: true };
+    }
+    return false;
+  } // No cached approval and no credential-bearing exception logs.
+}
+
+class RevalidationRefused extends Error {
+  constructor(readonly status: number) { super('authorization refused'); }
 }
 
 /** The proof supplies only a body; the destination is the platform's IAM API. */
@@ -65,6 +83,6 @@ async function postRevalidation(request: { body: string; started: number }): Pro
   if (remaining <= 0) throw new Error('authorization deadline exceeded');
   const response = await fetch(url, { method: 'POST', headers: signed.headers, body, redirect: 'error',
     signal: AbortSignal.timeout(Math.max(1, Math.floor(remaining))) });
-  if (!response.ok) throw new Error('authorization refused');
+  if (!response.ok) throw new RevalidationRefused(response.status);
   return await response.json() as Record<string, unknown>;
 }

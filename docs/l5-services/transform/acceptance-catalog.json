@@ -1,0 +1,378 @@
+{
+  "schema_version": 1,
+  "accepted_revision": "f02387465846acbb9eda244f5815c0ab224ea87a",
+  "epic_criteria": [
+    "EC-01",
+    "EC-02",
+    "EC-03",
+    "EC-04",
+    "EC-05",
+    "EC-06",
+    "EC-07",
+    "EC-08"
+  ],
+  "story_criteria": [
+    {
+      "id": "TF01/AC-01",
+      "scenarios": [
+        "TF01/SCN-01"
+      ],
+      "epics": [
+        "EC-01"
+      ]
+    },
+    {
+      "id": "TF01/AC-02",
+      "scenarios": [
+        "TF01/SCN-02"
+      ],
+      "epics": [
+        "EC-01",
+        "EC-02"
+      ]
+    },
+    {
+      "id": "TF01/AC-03",
+      "scenarios": [
+        "TF01/SCN-03"
+      ],
+      "epics": [
+        "EC-01",
+        "EC-04"
+      ]
+    },
+    {
+      "id": "TF02/AC-01",
+      "scenarios": [
+        "TF02/SCN-01"
+      ],
+      "epics": [
+        "EC-01"
+      ]
+    },
+    {
+      "id": "TF02/AC-02",
+      "scenarios": [
+        "TF02/SCN-02"
+      ],
+      "epics": [
+        "EC-02"
+      ]
+    },
+    {
+      "id": "TF02/AC-03",
+      "scenarios": [
+        "TF02/SCN-03"
+      ],
+      "epics": [
+        "EC-02",
+        "EC-05"
+      ]
+    },
+    {
+      "id": "TF02/AC-04",
+      "scenarios": [
+        "TF02/SCN-04"
+      ],
+      "epics": [
+        "EC-01"
+      ]
+    },
+    {
+      "id": "TF03/AC-01",
+      "scenarios": [
+        "TF03/SCN-01"
+      ],
+      "epics": [
+        "EC-03"
+      ]
+    },
+    {
+      "id": "TF03/AC-02",
+      "scenarios": [
+        "TF03/SCN-02"
+      ],
+      "epics": [
+        "EC-04"
+      ]
+    },
+    {
+      "id": "TF03/AC-03",
+      "scenarios": [
+        "TF03/SCN-03"
+      ],
+      "epics": [
+        "EC-04"
+      ]
+    },
+    {
+      "id": "TF03/AC-04",
+      "scenarios": [
+        "TF03/SCN-04"
+      ],
+      "epics": [
+        "EC-02",
+        "EC-04"
+      ]
+    },
+    {
+      "id": "TF04/AC-01",
+      "scenarios": [
+        "TF04/SCN-01"
+      ],
+      "epics": [
+        "EC-03",
+        "EC-05"
+      ]
+    },
+    {
+      "id": "TF04/AC-02",
+      "scenarios": [
+        "TF04/SCN-02"
+      ],
+      "epics": [
+        "EC-03"
+      ]
+    },
+    {
+      "id": "TF04/AC-03",
+      "scenarios": [
+        "TF04/SCN-03"
+      ],
+      "epics": [
+        "EC-03"
+      ]
+    },
+    {
+      "id": "TF04/AC-04",
+      "scenarios": [
+        "TF04/SCN-04"
+      ],
+      "epics": [
+        "EC-05"
+      ]
+    },
+    {
+      "id": "TF05/AC-01",
+      "scenarios": [
+        "TF05/SCN-01"
+      ],
+      "epics": [
+        "EC-06"
+      ]
+    },
+    {
+      "id": "TF05/AC-02",
+      "scenarios": [
+        "TF05/SCN-02"
+      ],
+      "epics": [
+        "EC-02",
+        "EC-05",
+        "EC-06"
+      ]
+    },
+    {
+      "id": "TF05/AC-03",
+      "scenarios": [
+        "TF05/SCN-03"
+      ],
+      "epics": [
+        "EC-05",
+        "EC-06"
+      ]
+    },
+    {
+      "id": "TF06/AC-01",
+      "scenarios": [
+        "TF06/SCN-01"
+      ],
+      "epics": [
+        "EC-07"
+      ]
+    },
+    {
+      "id": "TF06/AC-02",
+      "scenarios": [
+        "TF06/SCN-02"
+      ],
+      "epics": [
+        "EC-07"
+      ]
+    },
+    {
+      "id": "TF06/AC-03",
+      "scenarios": [
+        "TF06/SCN-03"
+      ],
+      "epics": [
+        "EC-06"
+      ]
+    },
+    {
+      "id": "TF07/AC-01",
+      "scenarios": [
+        "TF07/SCN-01"
+      ],
+      "epics": [
+        "EC-01",
+        "EC-08"
+      ]
+    },
+    {
+      "id": "TF07/AC-02",
+      "scenarios": [
+        "TF07/SCN-02"
+      ],
+      "epics": [
+        "EC-02"
+      ]
+    },
+    {
+      "id": "TF07/AC-03",
+      "scenarios": [
+        "TF07/SCN-03"
+      ],
+      "epics": [
+        "EC-03"
+      ]
+    },
+    {
+      "id": "TF07/AC-04",
+      "scenarios": [
+        "TF07/SCN-04"
+      ],
+      "epics": [
+        "EC-04"
+      ]
+    },
+    {
+      "id": "TF07/AC-05",
+      "scenarios": [
+        "TF07/SCN-05"
+      ],
+      "epics": [
+        "EC-05"
+      ]
+    },
+    {
+      "id": "TF07/AC-06",
+      "scenarios": [
+        "TF07/SCN-06"
+      ],
+      "epics": [
+        "EC-06"
+      ]
+    },
+    {
+      "id": "TF07/AC-07",
+      "scenarios": [
+        "TF07/SCN-07"
+      ],
+      "epics": [
+        "EC-07"
+      ]
+    },
+    {
+      "id": "TF07/AC-08",
+      "scenarios": [
+        "TF07/SCN-08"
+      ],
+      "epics": [
+        "EC-08"
+      ]
+    }
+  ],
+  "live_checks": [
+    {
+      "id": "same-artifacts",
+      "epics": [
+        "EC-08"
+      ]
+    },
+    {
+      "id": "runtime-revisions",
+      "epics": [
+        "EC-01"
+      ]
+    },
+    {
+      "id": "schema-compatible",
+      "epics": [
+        "EC-01"
+      ]
+    },
+    {
+      "id": "provider-executor-qualified",
+      "epics": [
+        "EC-01"
+      ]
+    },
+    {
+      "id": "source-and-credential-isolation",
+      "epics": [
+        "EC-02"
+      ]
+    },
+    {
+      "id": "native-refactor",
+      "epics": [
+        "EC-03"
+      ]
+    },
+    {
+      "id": "native-dependency-upgrade",
+      "epics": [
+        "EC-03"
+      ]
+    },
+    {
+      "id": "independent-patch-and-tests",
+      "epics": [
+        "EC-03"
+      ]
+    },
+    {
+      "id": "uncertain-session-recovery",
+      "epics": [
+        "EC-04"
+      ]
+    },
+    {
+      "id": "retained-results",
+      "epics": [
+        "EC-05"
+      ]
+    },
+    {
+      "id": "ui-cli-mcp-parity",
+      "epics": [
+        "EC-06"
+      ]
+    },
+    {
+      "id": "periodic-admission",
+      "epics": [
+        "EC-06"
+      ]
+    },
+    {
+      "id": "context-reuse",
+      "epics": [
+        "EC-07"
+      ]
+    },
+    {
+      "id": "two-non-adp-projects",
+      "epics": [
+        "EC-08"
+      ]
+    },
+    {
+      "id": "owned-cleanup",
+      "epics": [
+        "EC-05"
+      ]
+    }
+  ]
+}

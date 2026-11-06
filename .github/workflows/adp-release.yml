@@ -48,6 +48,7 @@ jobs:
         run: python platform/scripts/release/bootstrap.py --verify-github
       - name: Release contract and upgrade tests
         run: |
+          python -m pytest .github/scripts/tests/test_ci_evidence_s3.py .github/scripts/tests/test_release_evidence_s3.py -q
           python -m unittest discover -s platform/scripts/tests -p 'test_release*.py'
           python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py'
           python -m pytest platform/scripts/tests/test_upgrade_worker_migration.py -q
@@ -77,11 +78,14 @@ jobs:
         run: |
           python platform/scripts/release/workflow.py --directory "$RUNNER_TEMP/release"
           cp "$RUNNER_TEMP/release/manifest.json" "$RUNNER_TEMP/manifest.json"
-      - uses: actions/upload-artifact@v6
-        with:
-          name: release-manifest
-          path: ${{ runner.temp }}/manifest.json
-          retention-days: 90
+      - name: Retain release manifest in S3
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-evidence-tools"
+          for script in upload_ci_evidence_s3.py release_evidence_s3.py; do
+            git show "$GITHUB_WORKFLOW_SHA:.github/scripts/$script" > "$RUNNER_TEMP/release-evidence-tools/$script"
+          done
+          python "$RUNNER_TEMP/release-evidence-tools/release_evidence_s3.py" upload \
+            --name release-manifest --path "$RUNNER_TEMP/manifest.json"
 
   integration:
     needs: release

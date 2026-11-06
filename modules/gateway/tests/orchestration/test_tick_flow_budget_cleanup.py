@@ -3,6 +3,7 @@
 import asyncio
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,6 +14,7 @@ import redis
 
 from src.budget.config import budget_config
 from src.orchestration import flow_budget, tick_handler
+from src.orchestration.execution_policy import ExecutionPolicy
 from src.orchestration.flow_meter import meter_target, read_flow_meter
 from src.orchestration.tick import TickReport
 
@@ -35,7 +37,13 @@ def tcp_meter(monkeypatch):
     monkeypatch.setattr(budget_config, "budget_reservation_enabled", True)
     monkeypatch.setattr(budget_config, "budget_reservation_backend", "redis")
     monkeypatch.setattr(flow_budget, "_reservations", None)
-    policy = SimpleNamespace(limits=SimpleNamespace(max_spend_usd=Decimal("250")))
+    policy = ExecutionPolicy(
+        org_id="org-warm-tick",
+        repository_ids=["aws-e/adp"],
+        allowed_actions=["develop"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        limits={"max_spend_usd": "250", "max_wall_clock_seconds": 3600, "max_attempts_per_node": 3, "max_concurrent_actions": 2},
+    )
     target = meter_target(org_id="org-warm-tick", flow_id="flow-warm-tick", policy=policy)
     deadline = time.time() + 3600
     entries = {"__initialized__": f"0:{deadline}", "settled-call": f"12.75:{deadline}"}

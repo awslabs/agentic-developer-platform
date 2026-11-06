@@ -186,6 +186,54 @@ def fixture_transport(
             return
         if lifecycle and lifecycle(route, path, method, body):
             return
+        if path == PREFIX + f"/workspaces/{WORKSPACE}" and method == "GET":
+            route.fulfill(
+                json={
+                    "id": WORKSPACE,
+                    "name": "fixture-workspace",
+                    "status": "Provisioning",
+                    "provisioning_progress": {
+                        "steps": [
+                            {
+                                "id": "request",
+                                "label": "Request accepted",
+                                "state": "completed",
+                            },
+                            {
+                                "id": "plan",
+                                "label": "Prepare deployment plan",
+                                "state": "running",
+                            },
+                            {
+                                "id": "infrastructure",
+                                "label": "Provision EKS cluster",
+                                "state": "pending",
+                            },
+                            {
+                                "id": "configure",
+                                "label": "Configure workspace",
+                                "state": "pending",
+                            },
+                            {
+                                "id": "verify",
+                                "label": "Verify access and health",
+                                "state": "pending",
+                            },
+                            {
+                                "id": "ready",
+                                "label": "Workspace ready",
+                                "state": "pending",
+                            },
+                        ],
+                        "completed": 1,
+                        "total": 6,
+                        "current_step": "plan",
+                        "message": "Prepare deployment plan is in progress.",
+                        "observed_at": "2026-10-14T00:00:00Z",
+                    },
+                }
+            )
+            return
         if path == PREFIX + "/workspaces/preview" and method == "POST":
             if failure:
                 route.fulfill(
@@ -340,6 +388,9 @@ def exercise(page, requests, failure):
         submit.press("Enter")
         expect(page.get_by_text("Accepted — still being provisioned")).to_be_visible()
         expect(page.get_by_text("No next plan is available yet.")).to_be_visible()
+        progress = page.get_by_role("region", name="Deployment progress")
+        expect(progress).to_contain_text("1 of 6 steps complete · 5 remaining")
+        expect(progress.get_by_role("listitem")).to_have_count(6)
     decision = page.get_by_role("button", name="Approve this operation once")
     decision.focus()
     decision.press("Enter")

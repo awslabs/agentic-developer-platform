@@ -1,0 +1,74 @@
+[
+  {
+    "relationship_id": "example-product-project-binding",
+    "relationship_type": "product_project",
+    "from_ref": {
+      "tenant_id": "example-tenant",
+      "project_id": "00000000-0000-4000-8000-000000000002",
+      "source_connection_id": "adp.profile",
+      "record_type": "product",
+      "record_id": "00000000-0000-4000-8000-000000000001",
+      "record_revision": "example-change-1"
+    },
+    "to_ref": {
+      "tenant_id": "example-tenant",
+      "project_id": "00000000-0000-4000-8000-000000000002",
+      "source_connection_id": "adp.profile",
+      "record_type": "project",
+      "record_id": "00000000-0000-4000-8000-000000000002",
+      "record_revision": "example-change-1"
+    },
+    "source_connection_id": "adp.profile",
+    "relationship_revision": "1",
+    "valid_from": "2026-10-19T10:00:00Z",
+    "recorded_at": "2026-10-19T10:00:01Z",
+    "mapping_version": "profile-registry-1",
+    "source_refs": [
+      {
+        "tenant_id": "example-tenant",
+        "project_id": "00000000-0000-4000-8000-000000000002",
+        "source_connection_id": "adp.profile",
+        "record_type": "change",
+        "record_id": "example-change-1",
+        "record_revision": "1"
+      }
+    ]
+  },
+  {
+    "relationship_id": "example-product-project-binding",
+    "relationship_type": "product_project",
+    "from_ref": {
+      "tenant_id": "example-tenant",
+      "project_id": "00000000-0000-4000-8000-000000000002",
+      "source_connection_id": "adp.profile",
+      "record_type": "product",
+      "record_id": "00000000-0000-4000-8000-000000000001",
+      "record_revision": "example-change-1"
+    },
+    "to_ref": {
+      "tenant_id": "example-tenant",
+      "project_id": "00000000-0000-4000-8000-000000000002",
+      "source_connection_id": "adp.profile",
+      "record_type": "project",
+      "record_id": "00000000-0000-4000-8000-000000000002",
+      "record_revision": "example-change-1"
+    },
+    "source_connection_id": "adp.profile",
+    "relationship_revision": "2",
+    "valid_from": "2026-10-19T10:00:00Z",
+    "recorded_at": "2026-11-01T00:00:05Z",
+    "mapping_version": "profile-registry-1",
+    "source_refs": [
+      {
+        "tenant_id": "example-tenant",
+        "project_id": "00000000-0000-4000-8000-000000000002",
+        "source_connection_id": "adp.profile",
+        "record_type": "change",
+        "record_id": "example-change-1",
+        "record_revision": "1"
+      }
+    ],
+    "supersedes_revision": "1",
+    "valid_to": "2026-11-01T00:00:00Z"
+  }
+]
